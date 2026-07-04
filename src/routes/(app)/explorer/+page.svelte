@@ -7,6 +7,7 @@
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import ExplorerNav from '$lib/components/ExplorerNav.svelte';
 	import { formatNumber, formatBtc, formatBytes, timeAgo, formatDateTime, formatFeeRate, truncateMiddle } from '$lib/format';
+	import type { SearchResult } from '$lib/types';
 
 	let { data } = $props();
 
@@ -14,11 +15,92 @@
 	let lastSeenHeight: number | null = null;
 	onMount(() => {
 		lastSeenHeight = data.tipHeight;
-		return onNewBlock((height) => {
+		const offBlock = onNewBlock((height) => {
 			if (lastSeenHeight !== null && height === lastSeenHeight) return;
 			lastSeenHeight = height;
 			invalidate('cairn:chain');
 		});
+		return () => {
+			offBlock();
+			clearTimeout(liveTimer);
+			liveAbort?.abort();
+		};
+	});
+
+	// ---- search-as-you-type: debounced live classification of the query ----
+	//
+	// Enter still submits the GET form exactly as before; this only offers a
+	// direct link once /api/search recognizes what's being typed.
+
+	let liveResult = $state<SearchResult | null>(null);
+	let liveLoading = $state(false);
+	let liveTimer: ReturnType<typeof setTimeout> | undefined;
+	let liveAbort: AbortController | null = null;
+	let suggestionEl = $state<HTMLAnchorElement | null>(null);
+
+	function hideLive() {
+		clearTimeout(liveTimer);
+		liveAbort?.abort();
+		liveAbort = null;
+		liveResult = null;
+		liveLoading = false;
+	}
+
+	function onSearchInput(e: Event) {
+		const q = (e.currentTarget as HTMLInputElement).value.trim();
+		clearTimeout(liveTimer);
+		if (q.length < 3) {
+			hideLive();
+			return;
+		}
+		liveTimer = setTimeout(() => classifyLive(q), 300);
+	}
+
+	async function classifyLive(q: string) {
+		// The endpoint does upstream lookups — abort anything stale first.
+		liveAbort?.abort();
+		const ctrl = new AbortController();
+		liveAbort = ctrl;
+		liveLoading = true;
+		try {
+			const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`, {
+				signal: ctrl.signal
+			});
+			if (!res.ok) throw new Error(`search returned ${res.status}`);
+			liveResult = (await res.json()) as SearchResult;
+		} catch {
+			if (!ctrl.signal.aborted) liveResult = null;
+		} finally {
+			if (liveAbort === ctrl) {
+				liveLoading = false;
+				liveAbort = null;
+			}
+		}
+	}
+
+	function onSearchKeydown(e: KeyboardEvent) {
+		if (e.key === 'Escape') {
+			hideLive();
+		} else if (e.key === 'ArrowDown' && suggestionEl) {
+			e.preventDefault();
+			suggestionEl.focus();
+		}
+	}
+
+	const liveLabel = $derived.by(() => {
+		if (!liveResult || !liveResult.redirect) return null;
+		switch (liveResult.type) {
+			case 'block-height':
+				return `Block ${formatNumber(Number(liveResult.query))}`;
+			case 'block-hash':
+				return `Block ${truncateMiddle(liveResult.query, 8, 6)}`;
+			case 'tx':
+				return `Transaction ${truncateMiddle(liveResult.query, 8, 6)}`;
+			case 'address':
+				return `Address ${truncateMiddle(liveResult.query, 10, 6)}`;
+			default:
+				return null;
+		}
 	});
 
 	// ---- search detection + per-user recent searches (kept on this device) ----
@@ -112,7 +194,7 @@
 	</p>
 </HowItWorks>
 
-<form method="GET" action="/explorer" class="search fade-in" role="search">
+<form method="GET" action="/explorer" class="search fade-in" role="search" onsubmit={hideLive}>
 	<div class="search-box">
 		<span class="search-icon"><Icon name="search" size={17} /></span>
 		<input
@@ -124,7 +206,24 @@
 			autocomplete="off"
 			spellcheck="false"
 			aria-label="Search the blockchain"
+			oninput={onSearchInput}
+			onkeydown={onSearchKeydown}
 		/>
+		{#if liveLoading}
+			<span class="spinner live-spinner" aria-hidden="true"></span>
+		{/if}
+		{#if liveResult}
+			<div class="live-suggest">
+				{#if liveResult.redirect && liveLabel}
+					<a href={liveResult.redirect} class="live-link" bind:this={suggestionEl}>
+						<Icon name="arrow-right" size={13} />
+						<span>{liveLabel}</span>
+					</a>
+				{:else}
+					<span class="live-unknown">keep typing — height, hash, txid, or address</span>
+				{/if}
+			</div>
+		{/if}
 	</div>
 	<button class="btn btn-primary" type="submit">Search</button>
 </form>
@@ -225,6 +324,7 @@
 					<tr>
 						<th>Height</th>
 						<th>Mined</th>
+						<th>Miner</th>
 						<th class="num">Txs</th>
 						<th class="num">Size</th>
 						<th class="num">Fee range</th>
@@ -239,6 +339,13 @@
 								</a>
 							</td>
 							<td class="text-muted" title={formatDateTime(block.time)}>{timeAgo(block.time)}</td>
+							<td>
+								{#if block.miner}
+									<span class="badge badge-neutral miner-badge">{block.miner}</span>
+								{:else}
+									<span class="text-muted">—</span>
+								{/if}
+							</td>
 							<td class="num">{formatNumber(block.txCount)}</td>
 							<td class="num text-muted">{formatBytes(block.size)}</td>
 							<td class="num text-muted">
@@ -301,6 +408,53 @@
 
 	.search-input {
 		padding-left: 38px;
+	}
+
+	.live-spinner {
+		position: absolute;
+		right: 12px;
+		top: 50%;
+		margin-top: -8px;
+	}
+
+	.live-suggest {
+		position: absolute;
+		top: calc(100% + 4px);
+		left: 0;
+		right: 0;
+		background: var(--surface-elevated, var(--surface));
+		border: 1px solid var(--border);
+		border-radius: var(--radius-control);
+		box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+		padding: 4px;
+		z-index: 20;
+	}
+
+	.live-link {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 7px 10px;
+		border-radius: calc(var(--radius-control) - 2px);
+		font-size: 13px;
+		color: var(--text);
+	}
+
+	.live-link:hover,
+	.live-link:focus-visible {
+		background: var(--accent-muted);
+		color: var(--accent);
+	}
+
+	.live-unknown {
+		display: block;
+		padding: 7px 10px;
+		font-size: 12.5px;
+		color: var(--text-muted);
+	}
+
+	.miner-badge {
+		white-space: nowrap;
 	}
 
 	.no-results {

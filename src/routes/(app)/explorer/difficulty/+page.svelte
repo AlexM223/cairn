@@ -3,7 +3,8 @@
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import ExplorerNav from '$lib/components/ExplorerNav.svelte';
-	import { formatNumber, formatDuration, formatDateTime } from '$lib/format';
+	import { formatNumber, formatBtc, formatDuration, formatDateTime } from '$lib/format';
+	import { blockSubsidy } from '$lib/bitcoin';
 
 	let { data } = $props();
 
@@ -58,6 +59,25 @@
 	});
 
 	const diffCompact = $derived(info ? compactDifficulty(info.currentDifficulty) : null);
+
+	// Halving countdown. The tip's timestamp isn't in DifficultyInfo, so the
+	// date estimate anchors on "now" — good enough at ten-minute granularity.
+	const HALVING_INTERVAL = 210_000;
+	const halving = $derived.by(() => {
+		if (!info) return null;
+		const nextHeight = (Math.floor(info.tipHeight / HALVING_INTERVAL) + 1) * HALVING_INTERVAL;
+		const blocksRemaining = nextHeight - info.tipHeight;
+		const estimatedUnix = Math.floor(
+			(Date.now() + blocksRemaining * (info.avgBlockTimeSeconds ?? 600) * 1000) / 1000
+		);
+		return {
+			nextHeight,
+			blocksRemaining,
+			estimatedUnix,
+			currentSubsidy: blockSubsidy(info.tipHeight),
+			nextSubsidy: blockSubsidy(nextHeight)
+		};
+	});
 
 	// Bars for the retarget history chart, scaled to the largest swing.
 	const BAR_CAP = 64; // px, tallest bar
@@ -227,6 +247,26 @@
 			<span class="hero-number stat-hero tabular">{formatNumber(info.nextRetargetHeight)}</span>
 			<span class="hint">block that triggers the adjustment</span>
 		</div>
+		{#if halving}
+			<div class="card card-pad stat">
+				<span class="overline">
+					Next
+					<Term
+						tip="Every 210,000 blocks (~4 years) the new-bitcoin subsidy paid to miners halves — the mechanism enforcing the 21 million cap."
+						>halving</Term
+					>
+				</span>
+				<span class="hero-number stat-hero tabular" title="at block {formatNumber(halving.nextHeight)}">
+					{formatNumber(halving.blocksRemaining)}
+					<span class="stat-unit">blocks</span>
+				</span>
+				<span class="hint">
+					<span class="tabular">~{formatDateTime(halving.estimatedUnix)}</span> — subsidy drops
+					from <span class="tabular">{formatBtc(halving.currentSubsidy)}</span> to
+					<span class="tabular">{formatBtc(halving.nextSubsidy)}</span> BTC
+				</span>
+			</div>
+		{/if}
 	</section>
 
 	<!-- Retarget history -->
