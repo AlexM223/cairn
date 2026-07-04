@@ -106,37 +106,45 @@
 	<title>Address {truncateMiddle(info.address, 8, 8)} — Cairn</title>
 </svelte:head>
 
-<div class="head fade-in">
-	<span class="overline">Address</span>
-	<h1 class="addr mono"><CopyText value={info.address} /></h1>
-	<div class="meta">
-		{#if typeInfo}
-			<Term tip={typeInfo.explanation}>
-				<span class="badge badge-accent">{typeInfo.label} · {typeInfo.prefix}</span>
-			</Term>
-		{:else if info.scriptType}
-			<span class="badge badge-neutral">{info.scriptType.toUpperCase()}</span>
-		{/if}
-		{#if info.used}
-			<span class="badge badge-success" title="This address appears in at least one transaction on the blockchain.">Used</span>
-		{:else}
-			<span
-				class="badge badge-neutral"
-				title="No transaction has ever touched this address. It exists only as a possibility until someone sends to it."
-				>Never used</span
-			>
-		{/if}
-		{#if firstSeen}
-			<span class="meta-date" title={formatDateTime(firstSeen)}>
-				first seen {timeAgo(firstSeen)}
-			</span>
-		{/if}
-		{#if lastSeen}
-			<span class="meta-date" title={formatDateTime(lastSeen)}>
-				last active {timeAgo(lastSeen)}
-			</span>
-		{/if}
+<div class="head-wrap fade-in">
+	<div class="head">
+		<span class="overline">Address</span>
+		<h1 class="addr mono"><CopyText value={info.address} /></h1>
+		<div class="meta">
+			{#if typeInfo}
+				<Term tip={typeInfo.explanation}>
+					<span class="badge badge-accent">{typeInfo.label} · {typeInfo.prefix}</span>
+				</Term>
+			{:else if info.scriptType}
+				<span class="badge badge-neutral">{info.scriptType.toUpperCase()}</span>
+			{/if}
+			{#if info.used}
+				<span class="badge badge-success" title="This address appears in at least one transaction on the blockchain.">Used</span>
+			{:else}
+				<span
+					class="badge badge-neutral"
+					title="No transaction has ever touched this address. It exists only as a possibility until someone sends to it."
+					>Never used</span
+				>
+			{/if}
+			{#if firstSeen}
+				<span class="meta-date" title={formatDateTime(firstSeen)}>
+					first seen {timeAgo(firstSeen)}
+				</span>
+			{/if}
+			{#if lastSeen}
+				<span class="meta-date" title={formatDateTime(lastSeen)}>
+					last active {timeAgo(lastSeen)}
+				</span>
+			{/if}
+		</div>
 	</div>
+	{#if data.qr}
+		<div class="card qr-card">
+			<img src={data.qr} alt="QR code for address {info.address}" width="140" height="140" />
+			<span class="hint">Scan to copy address</span>
+		</div>
+	{/if}
 </div>
 
 <HowItWorks id="address">
@@ -301,12 +309,36 @@
 </section>
 
 <style>
+	.head-wrap {
+		display: flex;
+		align-items: flex-start;
+		gap: 16px;
+		flex-wrap: wrap;
+		margin-bottom: 16px;
+	}
+
 	.head {
 		display: flex;
 		flex-direction: column;
 		gap: 6px;
-		margin-bottom: 16px;
 		min-width: 0;
+		/* Take the row when wide; wrap the QR card below at narrow widths. */
+		flex: 1 1 320px;
+	}
+
+	.qr-card {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 6px;
+		padding: 12px 14px 10px;
+		flex-shrink: 0;
+	}
+
+	.qr-card img {
+		width: 140px;
+		height: 140px;
+		max-width: 100%;
 	}
 
 	.addr {
