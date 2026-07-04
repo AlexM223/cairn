@@ -4,7 +4,8 @@ import {
 	getTransaction,
 	updateTransaction,
 	deleteTransaction,
-	normalizePsbt
+	normalizePsbt,
+	InvalidPsbtError
 } from '$lib/server/transactions';
 import { summarizePsbt, assertSameTransaction, PsbtMismatchError } from '$lib/server/bitcoin/psbt';
 import type { PsbtSummary } from '$lib/server/bitcoin/psbt';
@@ -52,8 +53,16 @@ export const PATCH: RequestHandler = async (event) => {
 		let normalized: string;
 		try {
 			normalized = normalizePsbt(body.psbt);
-		} catch {
-			return json({ error: "That doesn't look like a valid PSBT." }, { status: 400 });
+		} catch (e) {
+			// A structurally corrupt file gets its specific message — "corrupted"
+			// reads very differently from "wrong file".
+			return json(
+				{
+					error:
+						e instanceof InvalidPsbtError ? e.message : "That doesn't look like a valid PSBT."
+				},
+				{ status: 400 }
+			);
 		}
 		if (!safeSummary(normalized)) {
 			return json({ error: "That doesn't look like a valid PSBT." }, { status: 400 });
