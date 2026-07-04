@@ -63,4 +63,43 @@ db.exec(`
 		key   TEXT PRIMARY KEY,
 		value TEXT NOT NULL
 	);
+
+	CREATE TABLE IF NOT EXISTS transactions (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		wallet_id    INTEGER NOT NULL REFERENCES wallets(id) ON DELETE CASCADE,
+		status       TEXT NOT NULL DEFAULT 'draft', -- draft | awaiting_signature | completed
+		psbt         TEXT NOT NULL,                 -- base64, replaced as signatures arrive
+		txid         TEXT,                          -- set once broadcast
+		recipient    TEXT NOT NULL,
+		amount       INTEGER NOT NULL,              -- sats to the recipient
+		fee          INTEGER NOT NULL,              -- sats
+		fee_rate     REAL NOT NULL,                 -- sat/vB at construction time
+		change_index INTEGER,                       -- change-chain index, null when changeless
+		created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+	);
+	CREATE INDEX IF NOT EXISTS idx_transactions_wallet ON transactions(wallet_id);
+
+	CREATE TABLE IF NOT EXISTS tx_labels (
+		wallet_id  INTEGER NOT NULL REFERENCES wallets(id) ON DELETE CASCADE,
+		txid       TEXT NOT NULL,
+		label      TEXT NOT NULL,
+		created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		PRIMARY KEY (wallet_id, txid)
+	);
 `);
+
+// Columns added after the original schema shipped — guarded so existing
+// databases upgrade in place. (The signing flows need the key's origin to
+// embed BIP32 derivation info in PSBTs; both stay null until provided.)
+{
+	const walletCols = (db.prepare('PRAGMA table_info(wallets)').all() as { name: string }[]).map(
+		(c) => c.name
+	);
+	if (!walletCols.includes('master_fingerprint')) {
+		db.exec('ALTER TABLE wallets ADD COLUMN master_fingerprint TEXT');
+	}
+	if (!walletCols.includes('derivation_path')) {
+		db.exec('ALTER TABLE wallets ADD COLUMN derivation_path TEXT');
+	}
+}
