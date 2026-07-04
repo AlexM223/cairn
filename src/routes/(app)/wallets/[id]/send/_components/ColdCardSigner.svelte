@@ -3,6 +3,7 @@
 	import Term from '$lib/components/Term.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import { formatBtc, formatSats, truncateMiddle } from '$lib/format';
+	import { psbtHasKeyOrigin } from '$lib/hw/keyOrigin';
 	import type { SignerProps } from './signerContract';
 
 	// ColdCard is an air-gapped signer: there is no device connection to open,
@@ -12,10 +13,16 @@
 	// unsigned PSBT on the card, and verify the destination + amount ON THE
 	// COLDCARD'S OWN SCREEN — never trusting this browser for the final check.
 	//
-	// `unsignedPsbt` (base64) is available for completeness, but the download
-	// link streams the canonical binary .psbt straight from the server, which is
-	// exactly what a ColdCard reads off the card.
-	let { context, onsigned, oncancel }: SignerProps = $props();
+	// The download link streams the canonical binary .psbt straight from the
+	// server — exactly what a ColdCard reads off the card. `unsignedPsbt` is
+	// only inspected for the key-origin gate below.
+	let { unsignedPsbt, context, onsigned, oncancel }: SignerProps = $props();
+
+	// A ColdCard matches inputs to its own keys via the PSBT's key-origin data.
+	// Bare-xpub wallets (no recorded master fingerprint) produce PSBTs without
+	// it, so the SD-card round trip is doomed before it starts — warn here
+	// instead of after the user has walked a card to the device and back.
+	const hasKeyOrigin = $derived(psbtHasKeyOrigin(unsignedPsbt));
 
 	// The server exposes the unsigned PSBT as a binary .psbt file — the format a
 	// ColdCard reads from the top level of the card.
@@ -87,6 +94,22 @@
 		</div>
 	</div>
 
+	{#if !hasKeyOrigin}
+		<div class="form-error" role="alert">
+			<strong>This wallet can't sign on a ColdCard directly.</strong> It was added without
+			key-origin data (no master fingerprint recorded), so the ColdCard won't recognize these
+			coins as its own and will refuse to sign. Use the
+			<strong>Generic wallet / file</strong> method with software that knows this wallet, or
+			re-import the wallet with its master fingerprint.
+		</div>
+		{#if oncancel}
+			<div class="coldcard-foot">
+				<button type="button" class="btn btn-secondary btn-sm" onclick={oncancel}>
+					<Icon name="chevron-left" size={14} /> Choose another method
+				</button>
+			</div>
+		{/if}
+	{:else}
 	<HowItWorks id="send-coldcard">
 		<p>
 			Your ColdCard <strong>never touches this computer.</strong> It has no network and no USB data
@@ -186,6 +209,7 @@
 				<Icon name="x" size={14} /> Use a different method
 			</button>
 		</div>
+	{/if}
 	{/if}
 </div>
 

@@ -6,6 +6,7 @@
 	import { formatBtc, formatSats, truncateMiddle } from '$lib/format';
 	import { encodePsbtToFrames, PsbtQrJoiner, looksLikeBbqrFrame } from '$lib/hw/bbqr';
 	import { isCameraScanAvailable, startScan, type ScanHandle } from '$lib/hw/qrScan';
+	import { psbtHasKeyOrigin } from '$lib/hw/keyOrigin';
 	import type { SignerProps } from './signerContract';
 	import { onDestroy } from 'svelte';
 
@@ -17,6 +18,12 @@
 	// truth for what's being signed — the verify panel exists to make the user
 	// read the destination + amount off the device, never trusting this browser.
 	let { unsignedPsbt, context, onsigned, oncancel }: SignerProps = $props();
+
+	// Camera signers match inputs to their own keys via the PSBT's key-origin
+	// data. Bare-xpub wallets (no recorded master fingerprint) produce PSBTs
+	// without it, so the QR dance is doomed before it starts — warn upfront
+	// instead of after the user has filmed frames at a device that will balk.
+	const hasKeyOrigin = $derived(psbtHasKeyOrigin(unsignedPsbt));
 
 	// ── Phase ────────────────────────────────────────────────────────────────
 	// 'display' = showing the unsigned PSBT to the device; 'scan' = reading the
@@ -244,6 +251,22 @@
 		</div>
 	</div>
 
+	{#if !hasKeyOrigin}
+		<div class="form-error" role="alert">
+			<strong>This wallet can't sign with a camera device directly.</strong> It was added without
+			key-origin data (no master fingerprint recorded), so a SeedSigner, Passport, or Jade won't
+			recognize these coins as its own and will refuse to sign. Use the
+			<strong>Generic wallet / file</strong> method with software that knows this wallet, or
+			re-import the wallet with its master fingerprint.
+		</div>
+		{#if oncancel}
+			<div class="signer-foot">
+				<button type="button" class="btn btn-secondary btn-sm" onclick={oncancel}>
+					<Icon name="chevron-left" size={14} /> Choose another method
+				</button>
+			</div>
+		{/if}
+	{:else}
 	<HowItWorks id="send-qr">
 		<p>
 			Your signing device <strong>never touches this computer.</strong> The unsigned transaction crosses
@@ -451,6 +474,7 @@
 				<Icon name="x" size={14} /> Use a different method
 			</button>
 		</div>
+	{/if}
 	{/if}
 </div>
 
