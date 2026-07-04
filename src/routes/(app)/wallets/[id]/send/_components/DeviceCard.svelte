@@ -55,12 +55,16 @@
 
 <style>
 	.device-card {
-		opacity: 0.6;
+		/* Muted with color tokens, not a blanket opacity — opacity: 0.6 dragged
+		   the hint text below WCAG AA. The title/hint keep their AA-passing
+		   tokens (--text-secondary / --text-muted); the "unavailable" reading
+		   comes from the receded background and the faint decorative icon. */
+		background: transparent;
 		cursor: not-allowed;
 	}
 
 	.device-card.selectable {
-		opacity: 1;
+		background: var(--surface);
 		cursor: pointer;
 		width: 100%;
 		text-align: left;
@@ -87,7 +91,8 @@
 		flex-shrink: 0;
 		border-radius: var(--radius-control);
 		background: var(--surface-elevated);
-		color: var(--text-muted);
+		/* Decorative (the title names the method) — faint is allowed here. */
+		color: var(--text-faint);
 	}
 
 	.device-icon.live {
