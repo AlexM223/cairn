@@ -472,7 +472,18 @@ let initPromise: Promise<TrezorConnectApi> | null = null;
 async function ensureInit(): Promise<TrezorConnectApi> {
 	if (!initPromise) {
 		initPromise = (async () => {
-			const { default: TrezorConnect } = await import('@trezor/connect-web');
+			const mod = await import('@trezor/connect-web');
+			// Some bundlers' CJS/ESM interop (observed with Vite's dep pre-bundling)
+			// double-wraps this package's default export as `{ default: { default:
+			// <real API>, ...named exports } }` instead of unwrapping it to the real
+			// API directly. Detect the real API by the presence of `.init` rather
+			// than assuming either shape, so this keeps working if a bundler's
+			// interop behavior changes.
+			const unwrapped = mod.default as unknown as { default?: TrezorConnectApi };
+			const TrezorConnect: TrezorConnectApi =
+				typeof mod.default?.init === 'function'
+					? mod.default
+					: (unwrapped.default as TrezorConnectApi);
 			await TrezorConnect.init({
 				// Trezor requires a developer manifest on every integration. Cairn is
 				// self-hosted open source, so these identify the app, not a company.
