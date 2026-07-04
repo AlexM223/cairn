@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { replaceState } from '$app/navigation';
 	import Icon from '$lib/components/Icon.svelte';
 	import Stepper from '$lib/components/Stepper.svelte';
@@ -39,8 +39,19 @@
 	// data is a per-navigation snapshot; a resume re-runs this component.
 	// svelte-ignore state_referenced_locally — per-navigation constant
 	const resumeTx: SavedTransaction | null = data.resume?.transaction ?? null;
+
+	// Contract note: summarizePsbt (src/lib/server/bitcoin/psbt.ts) is being
+	// extended to carry input/change detail on resume summaries. Typed to that
+	// contract here so a resumed Review renders the same coins a fresh build
+	// does; `value` is null when the PSBT doesn't carry the prevout amount.
+	type ResumeSummaryDetail = {
+		complete: boolean;
+		inputs?: { txid: string; vout: number; value: number | null }[];
+		change?: { vout: number; value: number } | null;
+	};
 	// svelte-ignore state_referenced_locally — per-navigation constant
-	const resumeComplete = data.resume?.summary?.complete ?? false;
+	const resumeSummary = (data.resume?.summary ?? null) as ResumeSummaryDetail | null;
+	const resumeComplete = resumeSummary?.complete ?? false;
 
 	// --- resume: derive the starting step from the saved row's lifecycle ------
 	function initialStep(): StepKey {
@@ -66,10 +77,18 @@
 	// svelte-ignore state_referenced_locally — intentional per-load seed
 	let signedComplete = $state<boolean>(resumeComplete);
 
+	// What the Review/Confirm/Sent steps render. A fresh build supplies the full
+	// ConstructedPsbt; a resume reconstructs the same shape from the saved row +
+	// PSBT summary, whose inputs may lack a prevout amount (value: null).
+	type ReviewDisplay = Omit<ConstructedPsbt, 'inputs' | 'change'> & {
+		inputs: { txid: string; vout: number; value: number | null }[];
+		change: { value: number } | null;
+	};
+
 	// Rebuild a review shape when resuming without a fresh build. The saved row
-	// carries recipient/amount/fee/feeRate; UTXO inputs + change aren't stored,
-	// so those areas note that detail is available after a rebuild.
-	const review = $derived.by<ConstructedPsbt | null>(() => {
+	// carries recipient/amount/fee/feeRate; the PSBT summary carries the coins
+	// being spent and the change output, so Review renders identically.
+	const review = $derived.by<ReviewDisplay | null>(() => {
 		if (details) return details;
 		if (!draft) return null;
 		return {
@@ -79,8 +98,8 @@
 			vsize: draft.fee && draft.feeRate ? Math.round(draft.fee / draft.feeRate) : 0,
 			amount: draft.amount,
 			recipient: draft.recipient,
-			change: null,
-			inputs: []
+			change: resumeSummary?.change ?? null,
+			inputs: resumeSummary?.inputs ?? []
 		};
 	});
 
@@ -116,6 +135,22 @@
 		if (feeChoice === 'normal') return data.fees?.halfHour ?? fallback;
 		if (feeChoice === 'economy') return data.fees?.economy ?? fallback;
 		return Math.max(1, fallback);
+	});
+
+	// Warn when the effective rate is drastically above the live fast tier —
+	// almost always a typo in the custom box, and an overpaid fee is gone the
+	// moment the transaction broadcasts. The 50 sat/vB floor keeps low-fee
+	// regimes (fast tier of 1-2 sat/vB) from tripping the warning on sane rates.
+	// Non-blocking: Review still forces a look at the absolute fee.
+	const feeWarning = $derived.by(() => {
+		const fast = data.fees?.fastest;
+		if (fast == null || fast <= 0) return null;
+		if (feeRate <= 50 || feeRate <= fast * 3) return null;
+		const multiple = feeRate / fast;
+		return {
+			fast,
+			multipleLabel: multiple >= 10 ? String(Math.round(multiple)) : multiple.toFixed(1)
+		};
 	});
 
 	// Basic client-side shape check — the server does authoritative validation.
@@ -284,6 +319,29 @@
 	}
 
 	// -------------------------------------------------------------- navigation
+	// Every step change — button, back, or programmatic (attach → Confirm,
+	// broadcast → Sent) — moves focus to the new step's section so screen
+	// readers announce the step and keyboard users aren't stranded on a button
+	// that just unmounted. Watching `step` in one effect covers all paths.
+	let pageEl = $state<HTMLElement | null>(null);
+	let initialStepRendered = false; // don't steal focus on page load / resume
+	$effect(() => {
+		void step; // the only dependency — rerun on every step change
+		if (!initialStepRendered) {
+			initialStepRendered = true;
+			return;
+		}
+		// The new step's DOM doesn't exist until after this flush.
+		void tick().then(() => {
+			pageEl?.querySelector<HTMLElement>('.step-body')?.focus();
+		});
+	});
+
+	const stepIndex = $derived(STEPS.findIndex((s) => s.key === step));
+	const stepAriaLabel = $derived(
+		`Step ${stepIndex + 1} of ${STEPS.length}: ${STEPS[stepIndex]?.label ?? ''}`
+	);
+
 	// Forward navigation is gated: you can only move to a step whose prereq is
 	// met. Backward navigation to Create (to edit) is always allowed while the
 	// draft is unsigned/unsent.
@@ -409,7 +467,7 @@
 	<title>Send · {data.wallet.name} · Cairn</title>
 </svelte:head>
 
-<div class="send-page">
+<div class="send-page" bind:this={pageEl}>
 	<header class="page-head">
 		<a class="back" href={`/wallets/${walletId}`}>
 			<Icon name="chevron-left" size={15} />
@@ -424,7 +482,7 @@
 
 	<!-- ============================================================ CREATE -->
 	{#if step === 'create'}
-		<section class="step-body fade-in">
+		<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
 			<HowItWorks id="send-psbt">
 				<p>
 					Cairn builds an <Term
@@ -548,6 +606,20 @@
 							Live fee estimates are unavailable — set a custom sat/vB rate.
 						</p>
 					{/if}
+					{#if feeWarning}
+						<div class="fee-warning" role="alert">
+							<Icon name="alert-triangle" size={16} />
+							<div>
+								<strong
+									>That's {feeWarning.multipleLabel}× the current fast rate ({formatFeeRate(
+										feeWarning.fast
+									)}).</strong
+								>
+								If this is a typo, the extra fee is gone the moment you broadcast — miners keep it
+								and there is no refund. Double-check the number before continuing.
+							</div>
+						</div>
+					{/if}
 				</div>
 
 				{#if buildError}
@@ -568,7 +640,7 @@
 
 	<!-- ============================================================ REVIEW -->
 	{:else if step === 'review' && review}
-		<section class="step-body fade-in">
+		<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
 			<p class="step-lead">
 				Check every detail. Once you sign and broadcast, this transaction
 				<strong>cannot be reversed.</strong>
@@ -605,12 +677,21 @@
 					</div>
 				{/if}
 				{#if review.inputs.length > 0}
-					{@const totalIn = review.inputs.reduce((s, i) => s + i.value, 0)}
-					<div class="detail-row">
-						<span class="text-secondary">Total input</span>
-						<span class="detail-val tabular">{formatSats(totalIn)} sats</span>
-					</div>
-					<button class="utxo-toggle" onclick={() => (inputsOpen = !inputsOpen)}>
+					{@const totalIn = review.inputs.every((i) => i.value != null)
+						? review.inputs.reduce((s, i) => s + (i.value ?? 0), 0)
+						: null}
+					{#if totalIn != null}
+						<div class="detail-row">
+							<span class="text-secondary">Total input</span>
+							<span class="detail-val tabular">{formatSats(totalIn)} sats</span>
+						</div>
+					{/if}
+					<button
+						class="utxo-toggle"
+						aria-expanded={inputsOpen}
+						aria-controls="review-utxo-list"
+						onclick={() => (inputsOpen = !inputsOpen)}
+					>
 						<Icon name={inputsOpen ? 'chevron-down' : 'chevron-right'} size={14} />
 						<span
 							>Coins being spent ({review.inputs.length}
@@ -618,18 +699,20 @@
 						>
 					</button>
 					{#if inputsOpen}
-						<div class="utxo-list fade-in">
+						<div class="utxo-list fade-in" id="review-utxo-list">
 							{#each review.inputs as inp (inp.txid + inp.vout)}
 								<div class="utxo-row">
 									<span class="mono text-muted">{truncateMiddle(inp.txid, 10, 8)}:{inp.vout}</span>
-									<span class="tabular">{formatSats(inp.value)} sats</span>
+									{#if inp.value != null}
+										<span class="tabular">{formatSats(inp.value)} sats</span>
+									{/if}
 								</div>
 							{/each}
 						</div>
 					{/if}
 				{:else}
 					<p class="hint">
-						Input details load after building this session — resume from Create to see the exact
+						Input details aren't available for this draft — rebuild from Create to see the exact
 						coins.
 					</p>
 				{/if}
@@ -647,7 +730,7 @@
 
 	<!-- ============================================================== SIGN -->
 	{:else if step === 'sign'}
-		<section class="step-body fade-in">
+		<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
 			<div class="key-frame">
 				<span class="badge badge-accent">Key 1 of 1</span>
 				<span class="text-secondary">Sign this transaction with your wallet</span>
@@ -796,7 +879,7 @@
 
 	<!-- =========================================================== CONFIRM -->
 	{:else if step === 'confirm' && review}
-		<section class="step-body fade-in">
+		<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
 			<div class="confirm-warning" role="alert">
 				<Icon name="alert-triangle" size={18} />
 				<div>
@@ -853,7 +936,7 @@
 
 	<!-- ============================================================== SENT -->
 	{:else if step === 'sent'}
-		<section class="step-body fade-in sent-body">
+		<section class="step-body fade-in sent-body" tabindex="-1" aria-label={stepAriaLabel}>
 			<div class="sent-check">
 				<Icon name="check" size={30} strokeWidth={2.5} />
 			</div>
@@ -928,6 +1011,13 @@
 		display: flex;
 		flex-direction: column;
 		gap: 18px;
+	}
+
+	/* Step sections receive programmatic focus on every step change (so screen
+	   readers announce the new step) — no ring for that, only when the global
+	   :focus-visible convention applies (keyboard). */
+	.step-body:focus:not(:focus-visible) {
+		outline: none;
 	}
 
 	.step-lead {
@@ -1077,6 +1167,30 @@
 		font-size: 11px;
 		color: var(--text-muted);
 		white-space: nowrap;
+	}
+
+	.fee-warning {
+		display: flex;
+		gap: 10px;
+		align-items: flex-start;
+		background: var(--warning-muted);
+		border: 1px solid rgba(232, 201, 90, 0.3);
+		border-radius: var(--radius-control);
+		padding: 12px 14px;
+		font-size: 13px;
+		line-height: 1.55;
+		color: var(--text);
+		margin-top: 8px;
+	}
+
+	.fee-warning :global(svg) {
+		color: var(--warning);
+		flex-shrink: 0;
+		margin-top: 1px;
+	}
+
+	.fee-warning strong {
+		display: block;
 	}
 
 	/* ---- Review ---- */
@@ -1448,6 +1562,20 @@
 
 		.confirm-recipient {
 			max-width: 60%;
+		}
+	}
+
+	/* Touch targets: the fee tiers and the BTC/Max segment are tap targets —
+	   give them the full ≥44px hit area on touch screens and narrow viewports. */
+	@media (max-width: 520px), (pointer: coarse) {
+		.seg-btn {
+			min-height: 44px;
+			padding: 10px 16px;
+		}
+
+		.fee-card {
+			min-height: 44px;
+			padding: 12px 14px;
 		}
 	}
 </style>
