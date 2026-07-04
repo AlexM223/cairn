@@ -1,6 +1,8 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { enhance } from '$app/forms';
-	import { invalidateAll } from '$app/navigation';
+	import { invalidateAll, replaceState } from '$app/navigation';
+	import { page } from '$app/state';
 	import Icon from '$lib/components/Icon.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import { formatBtc, formatSats, timeAgo, truncateMiddle } from '$lib/format';
@@ -9,6 +11,16 @@
 	let { data, form } = $props();
 
 	let bannerDismissed = $state(false);
+
+	// The ?imported=1 flag is one-shot: strip it from the URL so a reload
+	// doesn't resurrect the welcome banner minutes or days later.
+	onMount(() => {
+		if (data.imported) {
+			const url = new URL(page.url);
+			url.searchParams.delete('imported');
+			replaceState(url, {});
+		}
+	});
 	let confirmDelete = $state(false);
 	let deleting = $state(false);
 	let generating = $state(false);
@@ -47,7 +59,11 @@
 	{#if data.imported && !bannerDismissed}
 		<div class="imported-banner" role="status">
 			<Icon name="check" size={15} />
-			<span class="grow">Wallet imported — scanning history…</span>
+			<span class="grow">
+				Wallet imported — {data.scan
+					? `found ${data.scan.txs.length === 50 ? '50+' : data.scan.txs.length} transaction${data.scan.txs.length === 1 ? '' : 's'} across ${data.scan.addresses.filter((a) => a.used).length} used address${data.scan.addresses.filter((a) => a.used).length === 1 ? '' : 'es'}.`
+					: 'history will appear once the wallet can be scanned.'}
+			</span>
 			<button
 				type="button"
 				class="banner-dismiss"
