@@ -31,6 +31,13 @@ export interface ElectrumHistoryItem {
 	fee?: number;
 }
 
+export interface ElectrumUnspent {
+	tx_hash: string;
+	tx_pos: number;
+	value: number; // sats
+	height: number; // 0 = unconfirmed
+}
+
 export interface ElectrumHeader {
 	height: number;
 	hex: string;
@@ -305,6 +312,17 @@ export class ElectrumClient extends EventEmitter {
 
 	async getHistory(scripthash: string): Promise<ElectrumHistoryItem[]> {
 		return (await this.request('blockchain.scripthash.get_history', [scripthash])) as ElectrumHistoryItem[];
+	}
+
+	async listUnspent(scripthash: string): Promise<ElectrumUnspent[]> {
+		return (await this.request('blockchain.scripthash.listunspent', [
+			scripthash
+		])) as ElectrumUnspent[];
+	}
+
+	/** Broadcast a raw transaction; resolves to the txid the server reports. */
+	async broadcast(rawTxHex: string): Promise<string> {
+		return (await this.request('blockchain.transaction.broadcast', [rawTxHex])) as string;
 	}
 
 	/** Raw hex when verbose=false, decoded object when verbose=true. */
