@@ -63,6 +63,8 @@ export class ElectrumClient extends EventEmitter {
 	private readonly timeoutMs: number;
 
 	private socket: net.Socket | null = null;
+	/** Socket for a connection still being established — see close(). */
+	private connectingSocket: net.Socket | null = null;
 	private connecting: Promise<void> | null = null;
 	private closed = false;
 	private buffer = '';
@@ -107,6 +109,14 @@ export class ElectrumClient extends EventEmitter {
 
 			let socket: net.Socket;
 			const onReady = () => {
+				// close() may have been called while the TCP/TLS handshake was in
+				// flight — don't adopt the socket or start the protocol handshake.
+				if (this.closed) {
+					socket.destroy();
+					fail(new Error('Client is closed'));
+					return;
+				}
+				this.connectingSocket = null;
 				this.socket = socket;
 				// Handshake, then resubscribe anything that was active before a drop.
 				this.rawRequest('server.version', [CLIENT_NAME, PROTOCOL_VERSION])
@@ -137,6 +147,7 @@ export class ElectrumClient extends EventEmitter {
 				} else {
 					socket = net.connect({ host: this.host, port: this.port }, onReady);
 				}
+				this.connectingSocket = socket;
 			} catch (e) {
 				fail(e instanceof Error ? e : new Error(String(e)));
 				return;
@@ -159,6 +170,7 @@ export class ElectrumClient extends EventEmitter {
 	}
 
 	private onDisconnect(): void {
+		this.connectingSocket = null;
 		if (this.socket) {
 			this.socket.removeAllListeners();
 			this.socket.destroy();
@@ -343,6 +355,12 @@ export class ElectrumClient extends EventEmitter {
 		this.headersSubscribed = false;
 		this.scripthashSubs.clear();
 		this.rejectAllPending(new Error('Client closed'));
+		// Abort a connection still being established — its 'close' handler
+		// rejects the in-flight connect promise immediately.
+		if (this.connectingSocket) {
+			this.connectingSocket.destroy();
+			this.connectingSocket = null;
+		}
 		if (this.socket) {
 			this.socket.removeAllListeners();
 			this.socket.destroy();
