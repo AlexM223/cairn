@@ -47,6 +47,9 @@ export function createSession(userId: number): { token: string; expiresAt: Date 
 		userId,
 		expiresAt.toISOString()
 	);
+	db.prepare(
+		`UPDATE users SET last_login = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`
+	).run(userId);
 	return { token, expiresAt };
 }
 
@@ -176,10 +179,6 @@ export function loginUser(email: string, password: string): SessionUser {
 	if (!row || !verifyPassword(password, row.password_hash))
 		throw new AuthError('Invalid email or password.', 'bad_credentials');
 	if (row.disabled) throw new AuthError('This account has been disabled.', 'disabled');
-
-	db.prepare(
-		`UPDATE users SET last_login = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`
-	).run(row.id);
 
 	return {
 		id: row.id,

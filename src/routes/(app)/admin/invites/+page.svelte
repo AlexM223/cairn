@@ -18,6 +18,14 @@
 		return timeAgo(Math.floor(new Date(iso).getTime() / 1000));
 	}
 
+	function until(iso: string | null): string {
+		if (!iso) return 'never';
+		const days = Math.ceil((new Date(iso).getTime() - Date.now()) / 86400_000);
+		if (days < 0) return 'expired';
+		if (days === 0) return 'today';
+		return `in ${days}d`;
+	}
+
 	const badgeClass: Record<string, string> = {
 		active: 'badge-success',
 		exhausted: 'badge-neutral',
@@ -118,9 +126,7 @@
 							<td><span class="badge {badgeClass[invite.status]}">{invite.status}</span></td>
 							<td class="num">{invite.usedCount}/{invite.maxUses}</td>
 							<td class="text-muted">{since(invite.createdAt)}</td>
-							<td class="text-muted">
-								{invite.expiresAt ? since(invite.expiresAt).replace(' ago', '') : 'never'}
-							</td>
+							<td class="text-muted">{until(invite.expiresAt)}</td>
 							<td style="text-align: right">
 								{#if invite.status === 'active'}
 									<form method="POST" action="?/revoke" use:enhance style="display: inline">
