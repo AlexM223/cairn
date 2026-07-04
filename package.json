@@ -43,10 +43,13 @@
 	"dependencies": {
 		"@fontsource-variable/fraunces": "^5.2.9",
 		"@fontsource/inter": "^5.2.8",
+		"@ledgerhq/hw-app-btc": "^11.2.1",
+		"@ledgerhq/hw-transport-webhid": "^6.36.0",
 		"@noble/hashes": "^2.2.0",
 		"@scure/base": "^2.2.0",
 		"@scure/bip32": "^2.2.0",
 		"@scure/btc-signer": "^2.2.0",
+		"bbqr": "^1.2.0",
 		"qrcode": "^1.5.4"
 	}
 }
