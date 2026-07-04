@@ -14,6 +14,8 @@ import type {
 	AddressTx,
 	BlockDetail,
 	BlockSummary,
+	DifficultyAdjustment,
+	DifficultyInfo,
 	FeeEstimates,
 	FeeHistogram,
 	MempoolBlockProjection,
@@ -311,6 +313,88 @@ export class ChainService {
 
 	async getFeeEstimates(): Promise<FeeEstimates> {
 		return this.esplora.getFeeEstimates();
+	}
+
+	/**
+	 * Current difficulty-epoch state. Prefers the mempool.space endpoint;
+	 * on plain esplora it derives everything from the tip block and the
+	 * first block of the epoch (two cheap, cached lookups).
+	 */
+	async getDifficultyInfo(): Promise<DifficultyInfo> {
+		const EPOCH = 2016;
+		const TARGET_SECONDS = 600;
+
+		const tipHash = await this.esplora.getTipHash();
+		const tip = await this.esplora.getBlockByHash(tipHash);
+		const epochStartHeight = Math.floor(tip.height / EPOCH) * EPOCH;
+		const blocksIntoEpoch = tip.height - epochStartHeight + 1;
+		const nextRetargetHeight = epochStartHeight + EPOCH;
+
+		const base: DifficultyInfo = {
+			currentDifficulty: tip.difficulty,
+			tipHeight: tip.height,
+			epochStartHeight,
+			nextRetargetHeight,
+			blocksIntoEpoch,
+			blocksRemaining: nextRetargetHeight - tip.height,
+			progressPercent: (blocksIntoEpoch / EPOCH) * 100,
+			projectedChangePercent: null,
+			previousChangePercent: null,
+			avgBlockTimeSeconds: null,
+			estimatedRetargetDate: null
+		};
+
+		const v1 = await this.esplora.getDifficultyAdjustment();
+		if (v1) {
+			return {
+				...base,
+				progressPercent: v1.progressPercent,
+				blocksRemaining: v1.remainingBlocks,
+				nextRetargetHeight: v1.nextRetargetHeight,
+				projectedChangePercent: v1.difficultyChange,
+				previousChangePercent: v1.previousRetarget,
+				avgBlockTimeSeconds: v1.timeAvg / 1000,
+				estimatedRetargetDate: Math.round(v1.estimatedRetargetDate / 1000)
+			};
+		}
+
+		// Plain esplora: measure this epoch's pace directly.
+		try {
+			const startHash = await this.esplora.getBlockHashAtHeight(epochStartHeight);
+			const start = await this.esplora.getBlockByHash(startHash);
+			const elapsed = tip.timestamp - start.timestamp;
+			const intervals = Math.max(1, tip.height - epochStartHeight);
+			const avg = elapsed / intervals;
+			// Retarget multiplier = target/actual pace, clamped to 4x either way
+			// (the consensus rule) — expressed here as a percent change.
+			const projected = Math.max(-75, Math.min(300, (TARGET_SECONDS / avg - 1) * 100));
+			return {
+				...base,
+				avgBlockTimeSeconds: avg,
+				projectedChangePercent: projected,
+				estimatedRetargetDate: tip.timestamp + base.blocksRemaining * avg
+			};
+		} catch {
+			return base;
+		}
+	}
+
+	/** Recent difficulty retargets, oldest first; null when history is unavailable. */
+	async getDifficultyHistory(limit = 10): Promise<DifficultyAdjustment[] | null> {
+		const raw = await this.esplora.getDifficultyHistory('1y');
+		if (!raw || raw.length === 0) return null;
+		// Tuples arrive newest first: [timestamp, height, difficulty, change].
+		const oldestFirst = [...raw].sort((a, b) => a[1] - b[1]);
+		const out: DifficultyAdjustment[] = oldestFirst.map(([time, height, difficulty], i) => {
+			const prev = i > 0 ? oldestFirst[i - 1][2] : null;
+			return {
+				time,
+				height,
+				difficulty,
+				changePercent: prev ? ((difficulty - prev) / prev) * 100 : null
+			};
+		});
+		return out.slice(-limit);
 	}
 
 	/** Network hashrate in H/s. Falls back to difficulty * 2^32 / 600. */

@@ -115,6 +115,19 @@ export interface EsploraMempoolStat {
 	total_fee: number;
 }
 
+/** mempool.space /v1/difficulty-adjustment payload. */
+export interface EsploraDifficultyAdjustment {
+	progressPercent: number;
+	difficultyChange: number; // projected retarget, percent
+	estimatedRetargetDate: number; // unix milliseconds
+	remainingBlocks: number;
+	remainingTime: number; // milliseconds
+	previousRetarget: number; // percent applied at the last retarget
+	nextRetargetHeight: number;
+	timeAvg: number; // average block interval this epoch, milliseconds
+	expectedBlocks: number;
+}
+
 export interface NormalizedFees {
 	fastest: number;
 	halfHour: number;
@@ -348,6 +361,32 @@ export class EsploraApi {
 		if (!(await this.probeV1())) return null;
 		try {
 			return await this.get<EsploraMempoolStat[]>('/v1/statistics/2h', 60_000);
+		} catch {
+			return null;
+		}
+	}
+
+	/** Live difficulty-epoch state via mempool.space; null on plain esplora. */
+	async getDifficultyAdjustment(): Promise<EsploraDifficultyAdjustment | null> {
+		if (!(await this.probeV1())) return null;
+		try {
+			return await this.get<EsploraDifficultyAdjustment>('/v1/difficulty-adjustment', SHORT_TTL_MS);
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * Historical difficulty retargets, newest first, as
+	 * [timestamp, height, difficulty, change] tuples. mempool.space only.
+	 */
+	async getDifficultyHistory(interval = '1y'): Promise<[number, number, number, number][] | null> {
+		if (!(await this.probeV1())) return null;
+		try {
+			return await this.get<[number, number, number, number][]>(
+				`/v1/mining/difficulty-adjustments/${interval}`,
+				10 * 60_000
+			);
 		} catch {
 			return null;
 		}

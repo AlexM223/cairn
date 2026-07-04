@@ -146,6 +146,34 @@ export interface MempoolTrendPoint {
 	txCount: number;
 }
 
+/** State of the current 2,016-block difficulty epoch. */
+export interface DifficultyInfo {
+	currentDifficulty: number;
+	tipHeight: number;
+	epochStartHeight: number;
+	nextRetargetHeight: number;
+	blocksIntoEpoch: number; // 0..2015
+	blocksRemaining: number;
+	progressPercent: number;
+	/** Projected retarget, e.g. +3.2 means difficulty rises ~3.2%. Null when unknown. */
+	projectedChangePercent: number | null;
+	/** The change applied at the previous retarget. Null when unknown. */
+	previousChangePercent: number | null;
+	/** Average block interval this epoch, seconds. Null when unknown. */
+	avgBlockTimeSeconds: number | null;
+	/** Unix seconds. Null when unknown. */
+	estimatedRetargetDate: number | null;
+}
+
+/** One historical difficulty retarget. */
+export interface DifficultyAdjustment {
+	time: number; // unix seconds
+	height: number;
+	difficulty: number;
+	/** Percent change vs the previous difficulty; null for the oldest sample. */
+	changePercent: number | null;
+}
+
 export interface FeeEstimates {
 	fastest: number; // next block, sat/vB
 	halfHour: number;

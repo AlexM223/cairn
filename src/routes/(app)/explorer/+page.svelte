@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import Icon from '$lib/components/Icon.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
+	import ExplorerNav from '$lib/components/ExplorerNav.svelte';
 	import { formatNumber, formatBtc, formatBytes, timeAgo, formatDateTime, formatFeeRate, truncateMiddle } from '$lib/format';
 
 	let { data } = $props();
@@ -81,6 +82,8 @@
 	<span class="overline">Explorer</span>
 	<h1 class="page-title">Blocks, transactions &amp; addresses</h1>
 </div>
+
+<ExplorerNav active="overview" />
 
 <HowItWorks id="explorer">
 	<p>

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
+	import ExplorerNav from '$lib/components/ExplorerNav.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import { formatNumber, formatBtc, formatBytes, formatFeeRate, timeAgo } from '$lib/format';
 
@@ -78,8 +79,9 @@
 
 <div class="head fade-in">
 	<h1 class="page-title">Mempool</h1>
-	<a href="/explorer" class="see-all">Explorer <Icon name="arrow-right" size={13} /></a>
 </div>
+
+<ExplorerNav active="mempool" />
 
 <HowItWorks id="mempool">
 	<p>
@@ -136,6 +138,9 @@
 				>
 					<span class="hint">how is this known?</span>
 				</Term>
+				<a href="/explorer/mempool/blocks" class="viz-link">
+					Visualize <Icon name="arrow-right" size={13} />
+				</a>
 			</div>
 			<div class="proj-row">
 				{#each data.projected.slice(0, 6) as block, i (i)}
@@ -238,13 +243,6 @@
 		margin-bottom: 18px;
 	}
 
-	.see-all {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		font-size: 12.5px;
-	}
-
 	.stats {
 		display: grid;
 		grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
@@ -277,6 +275,14 @@
 
 	.section-head .hint {
 		margin-left: auto;
+	}
+
+	.viz-link {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		font-size: 12.5px;
+		white-space: nowrap;
 	}
 
 	.proj-row {
