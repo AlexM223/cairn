@@ -406,6 +406,13 @@
 		opacity: 0.7;
 	}
 
+	.banner-dismiss:focus-visible {
+		opacity: 1;
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
+		border-radius: 2px;
+	}
+
 	.banner-dismiss:hover {
 		opacity: 1;
 	}

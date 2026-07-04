@@ -263,7 +263,12 @@
 				{r.type === 'block-height' ? `#${formatNumber(Number(r.q))}` : truncateMiddle(r.q, 8, 6)}
 			</a>
 		{/each}
-		<button class="clear-recent" onclick={clearRecent} title="Clear recent searches">
+		<button
+			class="clear-recent"
+			onclick={clearRecent}
+			title="Clear recent searches"
+			aria-label="Clear recent searches"
+		>
 			<Icon name="x" size={12} />
 		</button>
 	</div>
@@ -536,7 +541,7 @@
 		background: none;
 		border: none;
 		border-radius: 50%;
-		color: var(--text-faint);
+		color: var(--text-muted);
 		cursor: pointer;
 	}
 

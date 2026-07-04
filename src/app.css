@@ -16,11 +16,14 @@
 	--border: #3a3330;
 	--border-subtle: #2e2925;
 
-	/* Text */
+	/* Text
+	   Contrast on the darkest surfaces (measured): secondary 6.8:1,
+	   muted 4.6:1 (WCAG AA for normal text). --text-faint fails AA by
+	   design — decorative/disabled use only, never informative copy. */
 	--text: #f0ebe5;
 	--text-secondary: #a89e94;
-	--text-muted: #6b6058;
-	--text-faint: #4a4038;
+	--text-muted: #92857a;
+	--text-faint: #5c5147;
 
 	/* Accent — copper / ember */
 	--accent: #e8935a;
@@ -355,6 +358,15 @@ textarea.input:focus {
 
 .table-wrap {
 	overflow-x: auto;
+	/* Scroll shadows: edge fades appear only while content extends past the
+	   visible area, signalling that the table scrolls horizontally. The cover
+	   layers scroll with the content (local) and hide the fixed shadows at
+	   the ends. */
+	background:
+		linear-gradient(to right, var(--surface) 30%, transparent) left/40px 100% no-repeat local,
+		linear-gradient(to left, var(--surface) 30%, transparent) right/40px 100% no-repeat local,
+		linear-gradient(to right, rgba(0, 0, 0, 0.35), transparent) left/14px 100% no-repeat scroll,
+		linear-gradient(to left, rgba(0, 0, 0, 0.35), transparent) right/14px 100% no-repeat scroll;
 }
 
 .table {

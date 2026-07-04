@@ -487,7 +487,7 @@
 
 	.fee-desc {
 		font-size: 11px;
-		color: var(--text-faint);
+		color: var(--text-muted);
 		margin-top: 6px;
 	}
 

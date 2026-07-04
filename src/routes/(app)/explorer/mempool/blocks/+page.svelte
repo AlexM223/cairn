@@ -243,7 +243,11 @@
 <div class="sr-only" aria-live="polite">{announcement}</div>
 
 {#if tip}
-	<div class="tooltip" style:left="{Math.min(tip.x + 14, window.innerWidth - 210)}px" style:top="{tip.y + 14}px">
+	<div
+		class="tooltip"
+		style:left="{Math.max(8, Math.min(tip.x + 14, window.innerWidth - 210))}px"
+		style:top="{tip.y + 14}px"
+	>
 		<div class="tooltip-head">
 			{tip.rect.txCount > 1
 				? `~${formatNumber(tip.rect.txCount)} transactions`
@@ -477,7 +481,7 @@
 	.tooltip {
 		position: fixed;
 		z-index: 50;
-		width: 196px;
+		width: min(196px, calc(100vw - 16px));
 		background: var(--surface-elevated);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-control);

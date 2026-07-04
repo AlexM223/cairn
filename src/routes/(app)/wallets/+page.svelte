@@ -128,7 +128,7 @@
 	}
 
 	.muted-balance {
-		color: var(--text-faint);
+		color: var(--text-muted);
 	}
 
 	.unit {

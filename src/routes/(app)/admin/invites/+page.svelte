@@ -167,9 +167,22 @@
 		flex: 0 0 120px;
 	}
 
+	@media (max-width: 560px) {
+		.create-form {
+			flex-direction: column;
+			align-items: stretch;
+		}
+
+		.create-form .field,
+		.create-form .narrow {
+			flex: none;
+			width: 100%;
+		}
+	}
+
 	.opt {
 		font-weight: 400;
-		color: var(--text-faint);
+		color: var(--text-muted);
 	}
 
 	.created-box {
