@@ -85,6 +85,14 @@ const OUTPUT_VSIZE = 34; // worst-case-ish; fine for estimates
 const TX_OVERHEAD_VSIZE = 11;
 const DUST_SATS = 546;
 
+/**
+ * Hard server-side fee-rate ceiling (sat/vB). Even at the worst fee spikes in
+ * Bitcoin's history, next-block confirmation never cost four figures per vB —
+ * anything above this is a typo (sats-total pasted into a rate field) that
+ * would burn real money. UI warnings kick in far lower; this is the backstop.
+ */
+export const MAX_FEE_RATE = 1000;
+
 const HARDENED = 0x80000000;
 
 /** "m/84'/0'/0'" → [0x80000054, 0x80000000, 0x80000000]; throws on nonsense. */
@@ -115,6 +123,12 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 	}
 	if (!Number.isFinite(feeRate) || feeRate < 1) {
 		throw new PsbtError('Fee rate must be at least 1 sat/vB.', 'invalid_amount');
+	}
+	if (feeRate > MAX_FEE_RATE) {
+		throw new PsbtError(
+			`A fee rate above ${MAX_FEE_RATE} sat/vB is almost certainly a mistake — refusing to build this transaction.`,
+			'invalid_amount'
+		);
 	}
 	if (params.amount !== 'max' && (!Number.isInteger(params.amount) || params.amount <= 0)) {
 		throw new PsbtError('Amount must be a positive number of sats.', 'invalid_amount');
@@ -147,7 +161,32 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		if (!params.fetchRawTx) {
 			throw new PsbtError('Legacy inputs need raw previous transactions.', 'construction_failed');
 		}
-		const bytes = hexToBytes(await params.fetchRawTx(txid));
+		const raw = await params.fetchRawTx(txid);
+		// Verify the fetched tx actually hashes to the txid we asked for BEFORE
+		// handing it to the PSBT builder — btc-signer enforces the same check
+		// inside addInput, but its error is opaque; a mismatch here means the
+		// chain source returned inconsistent data and deserves a clear message.
+		let bytes: Uint8Array;
+		let actualTxid: string;
+		try {
+			bytes = hexToBytes(raw);
+			actualTxid = Transaction.fromRaw(bytes, {
+				allowUnknownInputs: true,
+				allowUnknownOutputs: true,
+				disableScriptCheck: true
+			}).id;
+		} catch {
+			throw new PsbtError(
+				`The previous transaction ${txid} could not be parsed — the chain source returned bad data.`,
+				'construction_failed'
+			);
+		}
+		if (actualTxid !== txid) {
+			throw new PsbtError(
+				`The chain source returned the wrong previous transaction (asked for ${txid}, got ${actualTxid}) — refusing to build from inconsistent data.`,
+				'construction_failed'
+			);
+		}
 		prevTxCache.set(txid, bytes);
 		return bytes;
 	}
@@ -169,6 +208,15 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 				script: addressToScriptPubKey(utxo.address),
 				amount: toBigInt(utxo.value)
 			};
+			// Segwit v0 inputs also get the full previous transaction: a bare
+			// witnessUtxo amount is an unverifiable assertion (the classic
+			// fee-lying surface), and several hardware signers warn or refuse
+			// without it. Taproot inputs would not need this (BIP-341 commits to
+			// all input amounts), but p2tr spending is not supported yet anyway.
+			// witnessUtxo stays alongside — segwit signers use it for the sighash.
+			if (scriptType !== 'p2tr' && params.fetchRawTx) {
+				input.nonWitnessUtxo = await rawPrevTx(utxo.txid);
+			}
 			if (scriptType === 'p2sh-p2wpkh') {
 				// Redeem script = the wrapped v0 keyhash program.
 				input.redeemScript = p2wpkh(child.publicKey, NETWORK).script;
@@ -257,6 +305,28 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 	const totalIn = chosen.reduce((s, u) => s + u.value, 0);
 	const changeValue = totalIn - params.amount - fee;
 	const hasChange = selection.change === true && changeValue > 0;
+
+	// Mark the change output with its BIP32 derivation when the key origin is
+	// known: hardware signers use it to verify change really pays back to the
+	// wallet (instead of listing it as a second recipient), and summarizePsbt
+	// uses it to identify change when a saved draft is re-opened.
+	if (hasChange && originPath && fingerprint !== null) {
+		const changeScript = bytesToHex(addressToScriptPubKey(params.changeAddress));
+		const changeChild = parsed.hdkey.deriveChild(1).deriveChild(params.changeIndex);
+		if (!changeChild.publicKey) throw new PsbtError('Key derivation failed.', 'construction_failed');
+		for (let i = 0; i < tx.outputsLength; i++) {
+			const out = tx.getOutput(i);
+			if (out.script && bytesToHex(out.script) === changeScript) {
+				tx.updateOutput(i, {
+					bip32Derivation: [
+						[changeChild.publicKey, { fingerprint, path: [...originPath, 1, params.changeIndex] }]
+					]
+				});
+				break;
+			}
+		}
+	}
+
 	const vsize = Math.max(
 		1,
 		TX_OVERHEAD_VSIZE +
@@ -289,6 +359,14 @@ export interface PsbtSummary {
 	inputCount: number;
 	outputCount: number;
 	outputs: { address: string | null; value: number }[];
+	/**
+	 * Per-input coin references, txid in display (explorer) hex order. value is
+	 * sats from witnessUtxo, or from the referenced output of nonWitnessUtxo;
+	 * null only when the PSBT genuinely carries neither.
+	 */
+	inputs: { txid: string; vout: number; value: number | null }[];
+	/** The output identified as change (via its bip32Derivation), when identifiable. */
+	change: { vout: number; value: number } | null;
 	/** Signature completeness: how many inputs carry at least one signature. */
 	signedInputs: number;
 	complete: boolean;
@@ -308,16 +386,39 @@ function addressFromScript(script: Uint8Array): string | null {
 export function summarizePsbt(psbtBase64: string): PsbtSummary {
 	const tx = Transaction.fromPSBT(base64.decode(psbtBase64.trim()));
 	const outputs: PsbtSummary['outputs'] = [];
+	let change: PsbtSummary['change'] = null;
 	for (let i = 0; i < tx.outputsLength; i++) {
 		const out = tx.getOutput(i);
 		outputs.push({
 			address: out.script ? addressFromScript(out.script) : null,
 			value: Number(out.amount ?? 0n)
 		});
+		// constructPsbt marks the change output with the wallet's derivation
+		// info; a PSBT without it (foreign origin, no known fingerprint) simply
+		// has no identifiable change.
+		if (change === null && (out.bip32Derivation?.length ?? 0) > 0) {
+			change = { vout: i, value: Number(out.amount ?? 0n) };
+		}
 	}
 	let signedInputs = 0;
+	const inputs: PsbtSummary['inputs'] = [];
 	for (let i = 0; i < tx.inputsLength; i++) {
 		const inp = tx.getInput(i);
+		// Prefer witnessUtxo's amount; otherwise read the referenced output of
+		// the embedded previous transaction. btc-signer keeps txid bytes in
+		// display order (matching Transaction.id), so plain hex is correct.
+		let value: number | null = null;
+		if (inp.witnessUtxo) {
+			value = Number(inp.witnessUtxo.amount);
+		} else if (inp.nonWitnessUtxo && inp.index !== undefined) {
+			const prevOut = inp.nonWitnessUtxo.outputs[inp.index];
+			if (prevOut) value = Number(prevOut.amount);
+		}
+		inputs.push({
+			txid: inp.txid ? bytesToHex(inp.txid) : '',
+			vout: inp.index ?? 0,
+			value
+		});
 		// Fields can be present-but-empty on unsigned inputs (btc-signer
 		// materializes an empty finalScriptSig) — require actual content.
 		const hasSig =
@@ -331,6 +432,8 @@ export function summarizePsbt(psbtBase64: string): PsbtSummary {
 		inputCount: tx.inputsLength,
 		outputCount: tx.outputsLength,
 		outputs,
+		inputs,
+		change,
 		signedInputs,
 		complete: signedInputs === tx.inputsLength && tx.inputsLength > 0
 	};

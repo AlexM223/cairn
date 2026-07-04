@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { HDKey } from '@scure/bip32';
 import { base64, base58check } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { Transaction } from '@scure/btc-signer';
+import { hexToBytes } from '@noble/hashes/utils.js';
+import { Transaction, NETWORK } from '@scure/btc-signer';
 import {
 	constructPsbt,
 	summarizePsbt,
@@ -45,6 +46,35 @@ function accountKey(): HDKey {
 	const raw = b58.decode(ZPRV);
 	raw.set([0x04, 0x88, 0xad, 0xe4], 0); // rewrite SLIP-132 zprv → xprv
 	return HDKey.fromExtendedKey(b58.encode(raw)).derive("m/84'/0'/0'");
+}
+
+/**
+ * A synthetic previous transaction paying the given outputs, with its REAL
+ * txid (display-order hex, as explorers and Electrum report it). Lets tests
+ * exercise the nonWitnessUtxo path, where btc-signer verifies the raw tx
+ * hashes to the input's txid.
+ */
+function fundingTx(outputs: { address: string; value: number }[]): { hex: string; txid: string } {
+	const tx = new Transaction({ allowUnknownInputs: true, disableScriptCheck: true });
+	tx.addInput({ txid: '00'.repeat(32), index: 0 });
+	for (const o of outputs) tx.addOutputAddress(o.address, BigInt(o.value), NETWORK);
+	return { hex: tx.hex, txid: tx.id };
+}
+
+const FUND_A = fundingTx([{ address: RECEIVE_0, value: 60_000 }]);
+const FUND_B = fundingTx([{ address: RECEIVE_1, value: 40_000 }]);
+const RAW_TXS: Record<string, string> = { [FUND_A.txid]: FUND_A.hex, [FUND_B.txid]: FUND_B.hex };
+
+/** UTXOs whose txids genuinely hash from RAW_TXS — usable with fetchRawTx. */
+const REAL_UTXOS: SpendableUtxo[] = [
+	{ txid: FUND_A.txid, vout: 0, value: 60_000, height: 800_000, address: RECEIVE_0, chain: 0, index: 0 },
+	{ txid: FUND_B.txid, vout: 0, value: 40_000, height: 800_001, address: RECEIVE_1, chain: 0, index: 1 }
+];
+
+async function fetchRawTx(txid: string): Promise<string> {
+	const hex = RAW_TXS[txid];
+	if (!hex) throw new Error(`no such tx ${txid}`);
+	return hex;
 }
 
 describe('constructPsbt', () => {
@@ -141,6 +171,192 @@ describe('constructPsbt', () => {
 	it('refuses to finalize an unsigned PSBT', async () => {
 		const draft = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 30_000, feeRate: 10 });
 		expect(() => finalizePsbt(draft.psbtBase64)).toThrow();
+	});
+});
+
+describe('fee-rate ceiling', () => {
+	it('rejects fee rates above 1000 sat/vB as a probable mistake', async () => {
+		await expect(
+			constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 1_000, feeRate: 1001 })
+		).rejects.toMatchObject({ code: 'invalid_amount' });
+		await expect(
+			constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 1_000, feeRate: 5_000 })
+		).rejects.toThrow(/1000 sat\/vB/);
+	});
+
+	it('still allows exactly 1000 sat/vB (the ceiling is exclusive)', async () => {
+		const whale: SpendableUtxo[] = [
+			{ txid: 'ab'.repeat(32), vout: 0, value: 10_000_000, height: 800_000, address: RECEIVE_0, chain: 0, index: 0 }
+		];
+		const draft = await constructPsbt({
+			...COMMON,
+			utxos: whale,
+			recipient: RECIPIENT,
+			amount: 30_000,
+			feeRate: 1000
+		});
+		expect(draft.amount).toBe(30_000);
+		expect(draft.fee).toBeGreaterThan(50_000); // ~110 vB at 1000 sat/vB
+	});
+});
+
+describe('segwit nonWitnessUtxo (fee-lying protection)', () => {
+	const WITH_RAW = { ...COMMON, utxos: REAL_UTXOS, fetchRawTx };
+
+	it('attaches the full previous tx ALONGSIDE witnessUtxo on every input', async () => {
+		const draft = await constructPsbt({ ...WITH_RAW, recipient: RECIPIENT, amount: 70_000, feeRate: 10 });
+		const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
+		expect(tx.inputsLength).toBeGreaterThan(0);
+		for (let i = 0; i < tx.inputsLength; i++) {
+			const inp = tx.getInput(i);
+			expect(inp.witnessUtxo, `input ${i} keeps witnessUtxo`).toBeDefined();
+			expect(inp.nonWitnessUtxo, `input ${i} carries nonWitnessUtxo`).toBeDefined();
+		}
+	});
+
+	it('does the same on the send-max sweep path', async () => {
+		const draft = await constructPsbt({ ...WITH_RAW, recipient: RECIPIENT, amount: 'max', feeRate: 5 });
+		expect(draft.amount).toBe(100_000 - draft.fee);
+		const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
+		expect(tx.inputsLength).toBe(2);
+		for (let i = 0; i < tx.inputsLength; i++) {
+			expect(tx.getInput(i).nonWitnessUtxo).toBeDefined();
+			expect(tx.getInput(i).witnessUtxo).toBeDefined();
+		}
+	});
+
+	it('does not change fee estimation relative to witnessUtxo-only', async () => {
+		const withRaw = await constructPsbt({ ...WITH_RAW, recipient: RECIPIENT, amount: 30_000, feeRate: 10 });
+		const withoutRaw = await constructPsbt({
+			...COMMON,
+			utxos: REAL_UTXOS,
+			recipient: RECIPIENT,
+			amount: 30_000,
+			feeRate: 10
+		});
+		expect(withRaw.fee).toBe(withoutRaw.fee);
+		expect(withRaw.vsize).toBe(withoutRaw.vsize);
+	});
+
+	it('remains signable and finalizable with both fields present', async () => {
+		const draft = await constructPsbt({ ...WITH_RAW, recipient: RECIPIENT, amount: 70_000, feeRate: 12 });
+		const account = accountKey();
+		const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
+		for (let i = 0; i < tx.inputsLength; i++) {
+			const path = tx.getInput(i).bip32Derivation![0][1].path;
+			tx.signIdx(account.deriveChild(path[3]).deriveChild(path[4]).privateKey!, i);
+		}
+		const { txid } = finalizePsbt(base64.encode(tx.toPSBT()));
+		expect(txid).toMatch(/^[0-9a-f]{64}$/);
+	});
+
+	it('rejects with a clear error when the fetched prev tx does not match the txid', async () => {
+		// Chain source hands back FUND_B's bytes when asked for FUND_A's txid.
+		const lying = async () => FUND_B.hex;
+		const p = constructPsbt({
+			...COMMON,
+			utxos: [REAL_UTXOS[0]],
+			fetchRawTx: lying,
+			recipient: RECIPIENT,
+			amount: 10_000,
+			feeRate: 5
+		});
+		await expect(p).rejects.toMatchObject({ code: 'construction_failed' });
+		await expect(
+			constructPsbt({
+				...COMMON,
+				utxos: [REAL_UTXOS[0]],
+				fetchRawTx: lying,
+				recipient: RECIPIENT,
+				amount: 10_000,
+				feeRate: 5
+			})
+		).rejects.toThrow(/wrong previous transaction/);
+	});
+
+	it('rejects unparseable prev-tx bytes with a clear error', async () => {
+		await expect(
+			constructPsbt({
+				...COMMON,
+				utxos: [REAL_UTXOS[0]],
+				fetchRawTx: async () => 'deadbeef',
+				recipient: RECIPIENT,
+				amount: 10_000,
+				feeRate: 5
+			})
+		).rejects.toThrow(/could not be parsed/);
+	});
+
+	it('stays witnessUtxo-only when no raw-tx source is provided', async () => {
+		// constructPsbt must remain usable without a chain hookup (pure tests,
+		// offline preview) — segwit inputs then carry witnessUtxo alone.
+		const draft = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 30_000, feeRate: 10 });
+		const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
+		for (let i = 0; i < tx.inputsLength; i++) {
+			expect(tx.getInput(i).nonWitnessUtxo).toBeUndefined();
+			expect(tx.getInput(i).witnessUtxo).toBeDefined();
+		}
+	});
+});
+
+describe('summarizePsbt coin transparency', () => {
+	it('reports per-input txid/vout/value, txid in display order', async () => {
+		const draft = await constructPsbt({
+			...COMMON,
+			utxos: REAL_UTXOS,
+			fetchRawTx,
+			recipient: RECIPIENT,
+			amount: 70_000,
+			feeRate: 10
+		});
+		const summary = summarizePsbt(draft.psbtBase64);
+		expect(summary.inputs).toHaveLength(draft.inputs.length);
+		// Round-trip check: FUND_A.txid is a real double-SHA id in display order
+		// (what Transaction.id, explorers, and Electrum report). If summarize
+		// ever emitted wire-order bytes this would come back reversed.
+		expect(summary.inputs).toContainEqual({ txid: FUND_A.txid, vout: 0, value: 60_000 });
+		expect(summary.inputs).toContainEqual({ txid: FUND_B.txid, vout: 0, value: 40_000 });
+		const reversed = FUND_A.txid.match(/../g)!.reverse().join('');
+		expect(summary.inputs.some((i) => i.txid === reversed)).toBe(false);
+	});
+
+	it('recovers input values from nonWitnessUtxo when witnessUtxo is absent', () => {
+		// Hand-built legacy-style input: full prev tx only, as p2pkh spends carry.
+		const tx = new Transaction({ allowUnknownInputs: true, disableScriptCheck: true });
+		tx.addInput({ txid: FUND_A.txid, index: 0, nonWitnessUtxo: hexToBytes(FUND_A.hex) });
+		tx.addOutputAddress(RECIPIENT, 59_000n, NETWORK);
+		const summary = summarizePsbt(base64.encode(tx.toPSBT()));
+		expect(summary.inputs).toEqual([{ txid: FUND_A.txid, vout: 0, value: 60_000 }]);
+	});
+
+	it('identifies the change output by its bip32Derivation', async () => {
+		const draft = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 30_000, feeRate: 10 });
+		expect(draft.change).not.toBeNull();
+		const summary = summarizePsbt(draft.psbtBase64);
+		expect(summary.change).not.toBeNull();
+		expect(summary.change!.value).toBe(draft.change!.value);
+		// The identified vout really is the change address's output.
+		expect(summary.outputs[summary.change!.vout]).toEqual({
+			address: CHANGE_0,
+			value: draft.change!.value
+		});
+	});
+
+	it('returns null change when the wallet has no key origin', async () => {
+		const draft = await constructPsbt({
+			...COMMON,
+			origin: null,
+			recipient: RECIPIENT,
+			amount: 30_000,
+			feeRate: 10
+		});
+		expect(draft.change).not.toBeNull(); // change exists…
+		expect(summarizePsbt(draft.psbtBase64).change).toBeNull(); // …but is not identifiable
+	});
+
+	it('returns null change on a changeless sweep', async () => {
+		const draft = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 'max', feeRate: 5 });
+		expect(summarizePsbt(draft.psbtBase64).change).toBeNull();
 	});
 });
 
