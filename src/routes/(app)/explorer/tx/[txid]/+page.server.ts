@@ -1,4 +1,4 @@
-import { error } from '@sveltejs/kit';
+import { error, redirect } from '@sveltejs/kit';
 import { getChain } from '$lib/server/chain';
 import { isNotFoundError, chainErrorMessage } from '$lib/server/search';
 import type { PageServerLoad } from './$types';
@@ -8,9 +8,14 @@ import type { CpfpInfo, FeeEstimates, RbfInfo } from '$lib/types';
 // ship hundreds of KB to the client just for a curiosity viewer.
 const RAW_HEX_LIMIT = 400_000;
 
-export const load: PageServerLoad = async ({ params }) => {
+export const load: PageServerLoad = async ({ params, url }) => {
 	const txid = params.txid.trim().toLowerCase();
 	if (!/^[0-9a-f]{64}$/.test(txid)) error(404, 'Transaction not found');
+
+	// Explains the hop when the visitor arrived via a replaced-tx redirect.
+	const replacedFromRaw = url.searchParams.get('replaced');
+	const replacedFrom =
+		replacedFromRaw && /^[0-9a-f]{64}$/.test(replacedFromRaw) ? replacedFromRaw : null;
 
 	try {
 		const chain = getChain();
@@ -47,9 +52,21 @@ export const load: PageServerLoad = async ({ params }) => {
 		const rawTooLarge = fetchedHex !== null && fetchedHex.length > RAW_HEX_LIMIT;
 		const rawHex = rawTooLarge ? null : fetchedHex;
 
-		return { tx, fees, rbf, cpfp, rawHex, rawTooLarge };
+		return { tx, fees, rbf, cpfp, rawHex, rawTooLarge, replacedFrom };
 	} catch (e) {
-		if (isNotFoundError(e)) error(404, 'Transaction not found');
+		if (isNotFoundError(e)) {
+			// Replaced transactions are evicted from the backend, so their pages
+			// 404 — but the RBF index may still know what superseded them. Send
+			// the visitor to the live version instead of a dead end.
+			const rbf = await getChain()
+				.getTxRbfInfo(txid)
+				.catch(() => null);
+			const newest = rbf?.chain[rbf.chain.length - 1];
+			if (newest && newest.txid !== txid) {
+				redirect(302, `/explorer/tx/${newest.txid}?replaced=${txid}`);
+			}
+			error(404, 'Transaction not found');
+		}
 		error(502, chainErrorMessage(e));
 	}
 };

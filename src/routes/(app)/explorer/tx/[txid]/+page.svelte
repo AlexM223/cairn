@@ -88,6 +88,18 @@
 	<h1 class="txid mono"><CopyText value={tx.txid} truncate={18} /></h1>
 </div>
 
+{#if data.replacedFrom}
+	<div class="replaced-note fade-in" role="status">
+		<Icon name="refresh" size={15} />
+		<span>
+			The transaction you followed
+			(<span class="mono">{truncateMiddle(data.replacedFrom, 8, 8)}</span>) was replaced by
+			this one — the sender rebroadcast it with a higher fee, and only this version can
+			confirm.
+		</span>
+	</div>
+{/if}
+
 <HowItWorks id="tx">
 	<p>
 		<strong>Bitcoin doesn't have accounts — it has unspent outputs.</strong> A transaction
@@ -469,6 +481,20 @@
 		font-size: 19px;
 		font-weight: 550;
 		min-width: 0;
+	}
+
+	.replaced-note {
+		display: flex;
+		gap: 10px;
+		align-items: flex-start;
+		font-size: 13px;
+		line-height: 1.55;
+		color: var(--accent);
+		background: var(--accent-muted);
+		border: 1px solid rgba(232, 147, 90, 0.3);
+		border-radius: var(--radius-control);
+		padding: 10px 13px;
+		margin-bottom: 14px;
 	}
 
 	.status {
