@@ -1,0 +1,604 @@
+<script lang="ts">
+	import { enhance } from '$app/forms';
+	import { invalidateAll } from '$app/navigation';
+	import Icon from '$lib/components/Icon.svelte';
+	import CopyText from '$lib/components/CopyText.svelte';
+	import { formatBtc, formatSats, timeAgo, truncateMiddle } from '$lib/format';
+	import { SCRIPT_TYPE_LABELS } from '../labels';
+
+	let { data, form } = $props();
+
+	let bannerDismissed = $state(false);
+	let confirmDelete = $state(false);
+	let deleting = $state(false);
+	let generating = $state(false);
+	let retrying = $state(false);
+	let tab = $state<'transactions' | 'addresses'>('transactions');
+	let addrFilter = $state<'used' | 'unused'>('used');
+
+	const receive = $derived(form?.receive ?? data.receive);
+	const usedAddrs = $derived((data.scan?.addresses ?? []).filter((a) => a.used));
+	// Unused = the forward gap window on the receive chain.
+	const unusedAddrs = $derived(
+		(data.scan?.addresses ?? []).filter((a) => !a.used && !a.change)
+	);
+	const shownAddrs = $derived(addrFilter === 'used' ? usedAddrs : unusedAddrs);
+
+	async function retry() {
+		retrying = true;
+		try {
+			await invalidateAll();
+		} finally {
+			retrying = false;
+		}
+	}
+</script>
+
+<svelte:head>
+	<title>{data.wallet.name} — Cairn</title>
+</svelte:head>
+
+<div class="detail fade-in">
+	<a href="/wallets" class="back-link">
+		<Icon name="chevron-left" size={14} />
+		Wallets
+	</a>
+
+	{#if data.imported && !bannerDismissed}
+		<div class="imported-banner" role="status">
+			<Icon name="check" size={15} />
+			<span class="grow">Wallet imported — scanning history…</span>
+			<button
+				type="button"
+				class="banner-dismiss"
+				aria-label="Dismiss"
+				onclick={() => (bannerDismissed = true)}
+			>
+				<Icon name="x" size={14} />
+			</button>
+		</div>
+	{/if}
+
+	<!-- Header -->
+	<div class="head row">
+		<div class="row grow" style="gap: 12px; min-width: 0">
+			<h1 class="page-title truncate">{data.wallet.name}</h1>
+			<span class="badge badge-neutral">{SCRIPT_TYPE_LABELS[data.wallet.scriptType]}</span>
+		</div>
+		{#if !confirmDelete}
+			<button
+				type="button"
+				class="btn btn-ghost btn-sm delete-trigger"
+				onclick={() => (confirmDelete = true)}
+			>
+				<Icon name="trash" size={14} />
+				Delete
+			</button>
+		{:else}
+			<form
+				method="POST"
+				action="?/delete"
+				class="row"
+				style="gap: 8px"
+				use:enhance={() => {
+					deleting = true;
+					return async ({ update }) => {
+						deleting = false;
+						await update();
+					};
+				}}
+			>
+				<span class="confirm-text">Really delete?</span>
+				<button class="btn btn-danger btn-sm" disabled={deleting}>
+					{#if deleting}<span class="spinner"></span>{/if}
+					Delete wallet
+				</button>
+				<button
+					type="button"
+					class="btn btn-ghost btn-sm"
+					onclick={() => (confirmDelete = false)}
+					disabled={deleting}
+				>
+					Cancel
+				</button>
+			</form>
+		{/if}
+	</div>
+	<p class="hint watch-note">
+		<Icon name="eye" size={12} />
+		Watch-only · {truncateMiddle(data.wallet.xpub, 10, 8)}
+	</p>
+
+	{#if data.scanError}
+		<!-- ------------------------------------------- scan failed -->
+		<div class="card card-pad scan-error">
+			<Icon name="alert-triangle" size={18} />
+			<div class="grow">
+				<div style="font-weight: 500">Can't reach the wallet scanner</div>
+				<div class="hint">{data.scanError}</div>
+			</div>
+			<button type="button" class="btn btn-secondary btn-sm" onclick={retry} disabled={retrying}>
+				{#if retrying}<span class="spinner"></span>{:else}<Icon name="refresh" size={14} />{/if}
+				Retry
+			</button>
+		</div>
+	{:else if data.scan}
+		<div class="top-grid">
+			<!-- ------------------------------------------- balance hero -->
+			<section class="card card-pad balance-card">
+				<span class="overline">Confirmed balance</span>
+				<div class="balance-line">
+					<span class="hero-number balance-btc" title="{formatSats(data.scan.confirmed)} sats">
+						{formatBtc(data.scan.confirmed)}
+					</span>
+					<span class="balance-unit">BTC</span>
+				</div>
+				{#if data.scan.unconfirmed !== 0}
+					<span class="badge badge-warning" style="align-self: flex-start">
+						<Icon name="clock" size={12} />
+						{data.scan.unconfirmed > 0 ? '+' : ''}{formatBtc(data.scan.unconfirmed)} BTC pending
+					</span>
+				{/if}
+				<span class="hint tabular">≈ {formatSats(data.scan.confirmed)} sats</span>
+			</section>
+
+			<!-- ------------------------------------------- receive -->
+			<section class="card card-pad receive-card">
+				<div class="row" style="gap: 8px">
+					<Icon name="arrow-down-left" size={15} />
+					<span class="card-title grow">Receive</span>
+					{#if receive}
+						<span class="hint mono">{receive.path}</span>
+					{/if}
+				</div>
+				{#if receive}
+					<div class="receive-body">
+						<img class="qr" src={receive.qr} alt="QR code for {receive.address}" width="110" height="110" />
+						<div class="receive-meta">
+							<div class="receive-addr">
+								<CopyText value={receive.address} truncate={13} />
+							</div>
+							<span class="hint">Unused address — a fresh one every click, within the gap limit.</span>
+							{#if form?.receiveError}
+								<div class="form-error" role="alert">{form.receiveError}</div>
+							{/if}
+							<form
+								method="POST"
+								action="?/receive"
+								use:enhance={() => {
+									generating = true;
+									return async ({ update }) => {
+										generating = false;
+										await update({ reset: false });
+									};
+								}}
+							>
+								<input type="hidden" name="current" value={receive.index} />
+								<button class="btn btn-secondary btn-sm" disabled={generating}>
+									{#if generating}<span class="spinner"></span>{:else}<Icon name="refresh" size={13} />{/if}
+									Generate next address
+								</button>
+							</form>
+						</div>
+					</div>
+				{/if}
+			</section>
+		</div>
+
+		<!-- ------------------------------------------- tabs -->
+		<div class="tabs" role="tablist">
+			<button
+				type="button"
+				role="tab"
+				class="tab"
+				class:active={tab === 'transactions'}
+				aria-selected={tab === 'transactions'}
+				onclick={() => (tab = 'transactions')}
+			>
+				Transactions
+				<span class="tab-count">{data.scan.txs.length}</span>
+			</button>
+			<button
+				type="button"
+				role="tab"
+				class="tab"
+				class:active={tab === 'addresses'}
+				aria-selected={tab === 'addresses'}
+				onclick={() => (tab = 'addresses')}
+			>
+				Addresses
+				<span class="tab-count">{data.scan.addresses.length}</span>
+			</button>
+		</div>
+
+		{#if tab === 'transactions'}
+			<section class="card">
+				{#if data.scan.txs.length === 0}
+					<div class="empty-state">
+						<Icon name="activity" size={22} />
+						<span class="empty-title">No transactions yet</span>
+						<span>Send some sats to a receive address and they'll show up here.</span>
+					</div>
+				{:else}
+					<div class="table-wrap">
+						<table class="table">
+							<thead>
+								<tr>
+									<th>Transaction</th>
+									<th></th>
+									<th class="num">Amount</th>
+									<th>When</th>
+									<th class="num">Fee</th>
+								</tr>
+							</thead>
+							<tbody>
+								{#each data.scan.txs as tx (tx.txid)}
+									<tr>
+										<td>
+											<a href="/explorer/tx/{tx.txid}" class="mono">
+												{truncateMiddle(tx.txid, 8, 8)}
+											</a>
+										</td>
+										<td>
+											<span class="dir" class:in={tx.delta >= 0} class:out={tx.delta < 0}>
+												<Icon
+													name={tx.delta >= 0 ? 'arrow-down-left' : 'arrow-up-right'}
+													size={14}
+												/>
+												{tx.delta >= 0 ? 'Received' : 'Sent'}
+											</span>
+										</td>
+										<td class="num">
+											<span
+												class="delta tabular"
+												class:in={tx.delta >= 0}
+												class:out={tx.delta < 0}
+												title="{formatSats(tx.delta)} sats"
+											>
+												{tx.delta > 0 ? '+' : ''}{formatBtc(tx.delta)} BTC
+											</span>
+										</td>
+										<td>
+											{#if tx.height <= 0}
+												<span class="badge badge-warning">
+													<Icon name="clock" size={11} />
+													pending
+												</span>
+											{:else}
+												<span class="text-muted">{timeAgo(tx.time)}</span>
+											{/if}
+										</td>
+										<td class="num text-muted">
+											{tx.fee != null ? `${formatSats(tx.fee)} sats` : '—'}
+										</td>
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				{/if}
+			</section>
+		{:else}
+			<section class="card">
+				<div class="chips">
+					<button
+						type="button"
+						class="chip"
+						class:active={addrFilter === 'used'}
+						onclick={() => (addrFilter = 'used')}
+					>
+						Used {usedAddrs.length}
+					</button>
+					<button
+						type="button"
+						class="chip"
+						class:active={addrFilter === 'unused'}
+						onclick={() => (addrFilter = 'unused')}
+					>
+						Unused {unusedAddrs.length}
+					</button>
+				</div>
+				{#if shownAddrs.length === 0}
+					<div class="empty-state">
+						<span class="empty-title">
+							{addrFilter === 'used' ? 'No used addresses yet' : 'No unused addresses in the window'}
+						</span>
+					</div>
+				{:else}
+					<div class="table-wrap">
+						<table class="table">
+							<thead>
+								<tr>
+									<th>Path</th>
+									<th>Address</th>
+									<th class="num">Balance</th>
+									<th class="num">Txs</th>
+								</tr>
+							</thead>
+							<tbody>
+								{#each shownAddrs as addr (addr.address)}
+									<tr>
+										<td class="mono text-muted">{addr.derivationPath}</td>
+										<td class="addr-cell">
+											<CopyText value={addr.address} truncate={12} />
+										</td>
+										<td class="num" title="{formatSats(addr.balance)} sats">
+											{#if addr.balance !== 0}
+												{formatBtc(addr.balance)}
+											{:else}
+												<span class="text-muted">0</span>
+											{/if}
+										</td>
+										<td class="num text-muted">{addr.txCount}</td>
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				{/if}
+			</section>
+		{/if}
+	{/if}
+</div>
+
+<style>
+	.detail {
+		display: flex;
+		flex-direction: column;
+	}
+
+	.back-link {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		font-size: 12.5px;
+		color: var(--text-secondary);
+		margin-bottom: 14px;
+		align-self: flex-start;
+	}
+
+	.back-link:hover {
+		color: var(--accent);
+	}
+
+	.imported-banner {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 10px 14px;
+		margin-bottom: 16px;
+		font-size: 13px;
+		color: var(--success);
+		background: var(--success-muted);
+		border: 1px solid rgba(107, 191, 107, 0.3);
+		border-radius: var(--radius-control);
+	}
+
+	.banner-dismiss {
+		display: flex;
+		align-items: center;
+		background: none;
+		border: none;
+		color: inherit;
+		cursor: pointer;
+		padding: 2px;
+		opacity: 0.7;
+	}
+
+	.banner-dismiss:hover {
+		opacity: 1;
+	}
+
+	.head {
+		gap: 14px;
+		flex-wrap: wrap;
+	}
+
+	.watch-note {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		margin: 6px 0 18px;
+	}
+
+	.delete-trigger:hover {
+		color: var(--error);
+		background: var(--error-muted);
+	}
+
+	.confirm-text {
+		font-size: 12.5px;
+		color: var(--error);
+		white-space: nowrap;
+	}
+
+	.scan-error {
+		display: flex;
+		align-items: center;
+		gap: 14px;
+		color: var(--warning);
+	}
+
+	.scan-error .hint {
+		color: var(--text-muted);
+	}
+
+	/* --- top grid --- */
+
+	.top-grid {
+		display: grid;
+		grid-template-columns: 1fr 1.2fr;
+		gap: 14px;
+		margin-bottom: 18px;
+	}
+
+	@media (max-width: 860px) {
+		.top-grid {
+			grid-template-columns: 1fr;
+		}
+	}
+
+	.balance-card {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.balance-line {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+	}
+
+	.balance-btc {
+		font-size: 40px;
+	}
+
+	.balance-unit {
+		font-size: 14px;
+		color: var(--text-muted);
+	}
+
+	.receive-card {
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
+	}
+
+	.receive-body {
+		display: flex;
+		gap: 16px;
+		align-items: flex-start;
+	}
+
+	.qr {
+		flex-shrink: 0;
+		border-radius: var(--radius-control);
+		background: var(--bg);
+		border: 1px solid var(--border-subtle);
+		padding: 6px;
+	}
+
+	.receive-meta {
+		display: flex;
+		flex-direction: column;
+		gap: 9px;
+		min-width: 0;
+		flex: 1;
+	}
+
+	.receive-addr {
+		font-size: 13.5px;
+	}
+
+	/* --- tabs --- */
+
+	.tabs {
+		display: flex;
+		gap: 4px;
+		border-bottom: 1px solid var(--border-subtle);
+		margin-bottom: 14px;
+	}
+
+	.tab {
+		display: inline-flex;
+		align-items: center;
+		gap: 7px;
+		padding: 8px 14px;
+		background: none;
+		border: none;
+		border-bottom: 2px solid transparent;
+		margin-bottom: -1px;
+		color: var(--text-secondary);
+		font: inherit;
+		font-size: 13.5px;
+		font-weight: 500;
+		cursor: pointer;
+		transition: color 120ms var(--ease);
+	}
+
+	.tab:hover {
+		color: var(--text);
+	}
+
+	.tab.active {
+		color: var(--accent);
+		border-bottom-color: var(--accent);
+	}
+
+	.tab-count {
+		font-size: 11px;
+		padding: 1px 7px;
+		border-radius: 99px;
+		background: var(--surface-elevated);
+		color: var(--text-muted);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.tab.active .tab-count {
+		background: var(--accent-muted);
+		color: var(--accent);
+	}
+
+	/* --- transactions --- */
+
+	.dir {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 12.5px;
+	}
+
+	.dir.in,
+	.delta.in {
+		color: var(--success);
+	}
+
+	.dir.out,
+	.delta.out {
+		color: var(--error);
+	}
+
+	.delta {
+		font-weight: 500;
+	}
+
+	/* --- addresses --- */
+
+	.chips {
+		display: flex;
+		gap: 8px;
+		padding: 14px 14px 4px;
+	}
+
+	.chip {
+		padding: 4px 12px;
+		border-radius: 99px;
+		border: 1px solid var(--border);
+		background: transparent;
+		color: var(--text-secondary);
+		font: inherit;
+		font-size: 12px;
+		font-weight: 500;
+		cursor: pointer;
+		font-variant-numeric: tabular-nums;
+		transition:
+			background 120ms var(--ease),
+			color 120ms var(--ease),
+			border-color 120ms var(--ease);
+	}
+
+	.chip:hover {
+		color: var(--text);
+	}
+
+	.chip.active {
+		background: var(--accent-muted);
+		border-color: transparent;
+		color: var(--accent);
+	}
+
+	.addr-cell {
+		max-width: 320px;
+	}
+</style>
