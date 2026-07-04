@@ -8,6 +8,21 @@
 	let connectionMode = $state(data.settings.connectionMode);
 	let saving = $state(false);
 	let testing = $state<'electrum' | 'esplora' | null>(null);
+
+	type TestResult = { ok: boolean; tipHeight?: number; error?: string } | null;
+
+	// Test results are copied into local state as they arrive: the two test
+	// actions share one ActionData slot, so rendering `form` directly would
+	// let each result wipe the other's badge.
+	let electrumResult = $state<TestResult>(null);
+	let esploraResult = $state<TestResult>(null);
+
+	$effect(() => {
+		if (form?.electrumTest) electrumResult = form.electrumTest as TestResult;
+	});
+	$effect(() => {
+		if (form?.esploraTest) esploraResult = form.esploraTest as TestResult;
+	});
 </script>
 
 <svelte:head>
@@ -120,15 +135,15 @@
 							{#if testing === 'electrum'}<span class="spinner"></span>{/if}
 							Test connection
 						</button>
-						{#if form?.electrumTest}
-							{#if form.electrumTest.ok}
+						{#if electrumResult}
+							{#if electrumResult.ok}
 								<span class="badge badge-success">
-									Connected{'tipHeight' in form.electrumTest && form.electrumTest.tipHeight
-										? ` — tip ${formatNumber(form.electrumTest.tipHeight)}`
+									Connected{electrumResult.tipHeight
+										? ` — tip ${formatNumber(electrumResult.tipHeight)}`
 										: ''}
 								</span>
 							{:else}
-								<span class="badge badge-error">{form.electrumTest.error ?? 'Failed'}</span>
+								<span class="badge badge-error">{electrumResult.error ?? 'Failed'}</span>
 							{/if}
 						{/if}
 					</div>
@@ -160,15 +175,15 @@
 							{#if testing === 'esplora'}<span class="spinner"></span>{/if}
 							Test connection
 						</button>
-						{#if form?.esploraTest}
-							{#if form.esploraTest.ok}
+						{#if esploraResult}
+							{#if esploraResult.ok}
 								<span class="badge badge-success">
-									OK{'tipHeight' in form.esploraTest && form.esploraTest.tipHeight
-										? ` — tip ${formatNumber(form.esploraTest.tipHeight)}`
+									OK{esploraResult.tipHeight
+										? ` — tip ${formatNumber(esploraResult.tipHeight)}`
 										: ''}
 								</span>
 							{:else}
-								<span class="badge badge-error">{form.esploraTest.error ?? 'Failed'}</span>
+								<span class="badge badge-error">{esploraResult.error ?? 'Failed'}</span>
 							{/if}
 						{/if}
 					</div>

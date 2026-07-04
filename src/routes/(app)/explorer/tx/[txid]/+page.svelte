@@ -229,7 +229,9 @@
 						<span class="io-value tabular" title="{formatSats(vout.value)} sats">
 							{formatBtc(vout.value)} BTC
 						</span>
-						{#if vout.spent === true}
+						{#if vout.scriptType === 'op_return'}
+							<span class="badge badge-neutral" title="This output embeds data in the blockchain and is provably unspendable — the coins (if any) are destroyed.">Unspendable</span>
+						{:else if vout.spent === true}
 							<span class="badge badge-neutral" title="A later transaction has already consumed this output.">Spent</span>
 						{:else if vout.spent === false}
 							<span class="badge badge-success" title="Still part of the UTXO set — these coins sit at this address until spent.">Unspent</span>

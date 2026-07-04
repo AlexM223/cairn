@@ -3,6 +3,23 @@
 
 	let { data, form } = $props();
 	let submitting = $state(false);
+	let clientError = $state<string | null>(null);
+
+	// Validation runs here (not via native bubbles) so failures render in
+	// Cairn's own error style instead of the browser default tooltip.
+	function validate(el: HTMLFormElement): string | null {
+		const value = (name: string) =>
+			(el.elements.namedItem(name) as HTMLInputElement | null)?.value.trim() ?? '';
+		if (!value('displayName')) return 'Enter a display name.';
+		const email = value('email');
+		if (!email) return 'Enter your email address.';
+		if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return 'Enter a valid email address.';
+		if ((el.elements.namedItem('password') as HTMLInputElement).value.length < 8)
+			return 'Password must be at least 8 characters.';
+		if (el.elements.namedItem('inviteCode') && !value('inviteCode'))
+			return 'This instance requires an invite code to join.';
+		return null;
+	}
 </script>
 
 <svelte:head>
@@ -25,7 +42,13 @@
 	<form
 		method="POST"
 		class="stack"
-		use:enhance={() => {
+		novalidate
+		use:enhance={({ formElement, cancel }) => {
+			clientError = validate(formElement);
+			if (clientError) {
+				cancel();
+				return;
+			}
 			submitting = true;
 			return async ({ update }) => {
 				submitting = false;
@@ -33,7 +56,9 @@
 			};
 		}}
 	>
-		{#if form?.error}
+		{#if clientError}
+			<div class="form-error" role="alert">{clientError}</div>
+		{:else if form?.error}
 			<div class="form-error" role="alert">{form.error}</div>
 		{/if}
 
