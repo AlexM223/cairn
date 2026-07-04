@@ -337,6 +337,62 @@ export function summarizePsbt(psbtBase64: string): PsbtSummary {
 }
 
 /**
+ * A PSBT's transaction "commitment": the exact inputs it spends and outputs
+ * it creates. Signing changes none of these — so a signed PSBT that differs
+ * here is not the transaction the user reviewed.
+ */
+function commitment(psbtBase64: string): { inputs: string; outputs: string } {
+	const tx = Transaction.fromPSBT(base64.decode(psbtBase64.trim()));
+
+	const inputs: string[] = [];
+	for (let i = 0; i < tx.inputsLength; i++) {
+		const inp = tx.getInput(i);
+		inputs.push(`${inp.txid ? bytesToHex(inp.txid) : ''}:${inp.index ?? ''}`);
+	}
+	const outputs: string[] = [];
+	for (let i = 0; i < tx.outputsLength; i++) {
+		const out = tx.getOutput(i);
+		outputs.push(`${out.script ? bytesToHex(out.script) : ''}:${out.amount ?? 0n}`);
+	}
+	// Order matters — a reordered tx is a different tx — so no sorting.
+	return { inputs: inputs.join('|'), outputs: outputs.join('|') };
+}
+
+export class PsbtMismatchError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = 'PsbtMismatchError';
+	}
+}
+
+/**
+ * Verify a signed PSBT commits to the SAME inputs and outputs as the reviewed
+ * draft. This is the guard against a malicious or buggy signer returning a
+ * transaction that pays a different destination than the one approved.
+ * Throws PsbtMismatchError when they diverge.
+ */
+export function assertSameTransaction(draftPsbtBase64: string, signedPsbtBase64: string): void {
+	let a: { inputs: string; outputs: string };
+	let b: { inputs: string; outputs: string };
+	try {
+		a = commitment(draftPsbtBase64);
+		b = commitment(signedPsbtBase64);
+	} catch {
+		throw new PsbtMismatchError('The signed transaction could not be read.');
+	}
+	if (a.outputs !== b.outputs) {
+		throw new PsbtMismatchError(
+			'The signed transaction pays different outputs than the one you reviewed. It was not accepted.'
+		);
+	}
+	if (a.inputs !== b.inputs) {
+		throw new PsbtMismatchError(
+			'The signed transaction spends different inputs than the one you reviewed. It was not accepted.'
+		);
+	}
+}
+
+/**
  * Finalize a fully-signed PSBT and extract the raw transaction hex ready for
  * broadcast. Throws (with btc-signer's reason) when signatures are missing.
  */
