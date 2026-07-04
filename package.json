@@ -49,6 +49,7 @@
 		"@scure/base": "^2.2.0",
 		"@scure/bip32": "^2.2.0",
 		"@scure/btc-signer": "^2.2.0",
+		"@trezor/connect-web": "^9.7.3",
 		"bbqr": "^1.2.0",
 		"qrcode": "^1.5.4"
 	}
