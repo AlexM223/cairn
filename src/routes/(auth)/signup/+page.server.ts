@@ -52,7 +52,12 @@ export const actions: Actions = {
 		} catch (e) {
 			if (e instanceof AuthError) {
 				if (e.code === 'bad_invite') noteInviteFailure(ip);
-				return fail(400, { error: e.message, email, displayName, inviteCode });
+				// Invite dead-ends get a pointer to the human who can fix them.
+				const error =
+					e.code === 'invite_required' || e.code === 'bad_invite'
+						? `${e.message} Invites come from whoever runs this Cairn instance — ask them for a code.`
+						: e.message;
+				return fail(400, { error, email, displayName, inviteCode });
 			}
 			throw e;
 		}

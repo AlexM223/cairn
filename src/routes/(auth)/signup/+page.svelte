@@ -112,6 +112,9 @@
 					required
 					value={form?.inviteCode ?? ''}
 				/>
+				<span class="hint">
+					Invites come from whoever runs this Cairn instance — ask them for a code.
+				</span>
 			</div>
 		{/if}
 

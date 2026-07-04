@@ -17,6 +17,12 @@
 	let electrumResult = $state<TestResult>(null);
 	let esploraResult = $state<TestResult>(null);
 
+	// Danger zone: the destructive submit stays disabled until the admin has
+	// opened the inline confirm AND typed the word RESET.
+	let confirmingReset = $state(false);
+	let resetConfirmText = $state('');
+	let resetting = $state(false);
+
 	$effect(() => {
 		if (form?.electrumTest) electrumResult = form.electrumTest as TestResult;
 	});
@@ -242,6 +248,77 @@
 	</div>
 </form>
 
+<section class="card card-pad section danger-zone fade-in">
+	<div class="section-head">
+		<span class="card-title danger-title">Danger zone</span>
+		<p class="hint">
+			Reset this instance: deletes all users, sessions, wallets, and invites, and returns Cairn to
+			first-run setup. Settings and node configuration are wiped too — a full factory reset.
+			Wallets here are watch-only, so no funds are at risk, but nothing else survives.
+		</p>
+	</div>
+
+	{#if !confirmingReset}
+		<div>
+			<button
+				type="button"
+				class="btn btn-secondary danger-btn"
+				onclick={() => {
+					confirmingReset = true;
+					resetConfirmText = '';
+				}}
+			>
+				Reset this instance
+			</button>
+		</div>
+	{:else}
+		<form
+			method="POST"
+			action="?/resetInstance"
+			class="reset-confirm"
+			use:enhance={() => {
+				resetting = true;
+				return async ({ update }) => {
+					resetting = false;
+					await update();
+				};
+			}}
+		>
+			<label class="label" for="resetConfirm">
+				This cannot be undone. Type <strong>RESET</strong> to confirm.
+			</label>
+			<div class="reset-row">
+				<input
+					class="input mono"
+					id="resetConfirm"
+					name="confirm"
+					autocomplete="off"
+					spellcheck="false"
+					placeholder="RESET"
+					bind:value={resetConfirmText}
+				/>
+				<button
+					class="btn btn-secondary danger-btn"
+					disabled={resetConfirmText !== 'RESET' || resetting}
+				>
+					{#if resetting}<span class="spinner"></span>{/if}
+					Erase everything
+				</button>
+				<button
+					type="button"
+					class="btn btn-ghost"
+					onclick={() => {
+						confirmingReset = false;
+						resetConfirmText = '';
+					}}
+				>
+					Cancel
+				</button>
+			</div>
+		</form>
+	{/if}
+</section>
+
 <style>
 	.settings-form {
 		gap: 14px;
@@ -370,5 +447,42 @@
 	.save-row {
 		display: flex;
 		justify-content: flex-end;
+	}
+
+	.danger-zone {
+		max-width: 760px;
+		margin-top: 24px;
+		border-color: rgba(232, 90, 90, 0.4);
+	}
+
+	.danger-title {
+		color: var(--error);
+	}
+
+	.danger-btn {
+		color: var(--error);
+		border-color: rgba(232, 90, 90, 0.4);
+	}
+
+	.danger-btn:hover:not(:disabled) {
+		background: var(--error-muted);
+		border-color: var(--error);
+	}
+
+	.reset-confirm {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.reset-row {
+		display: flex;
+		gap: 10px;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+
+	.reset-row .input {
+		flex: 0 1 180px;
 	}
 </style>

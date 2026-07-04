@@ -1,6 +1,8 @@
-import { fail } from '@sveltejs/kit';
+import { fail, redirect } from '@sveltejs/kit';
 import { getPublicInstanceSettings, setSetting } from '$lib/server/settings';
 import { reconfigureChain, testElectrum, testEsplora } from '$lib/server/chain';
+import { resetInstance } from '$lib/server/admin';
+import { invalidateWalletCache } from '$lib/server/bitcoin/walletScan';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async () => {
@@ -73,5 +75,22 @@ export const actions: Actions = {
 
 		const result = await testEsplora(url.replace(/\/+$/, ''));
 		return { esploraTest: result };
+	},
+
+	resetInstance: async ({ request, locals }) => {
+		// The admin layout already gates this route, but a factory reset deserves
+		// a second, explicit check.
+		if (!locals.user?.isAdmin) return fail(403, { error: 'Admin access required.' });
+
+		const form = await request.formData();
+		if (String(form.get('confirm') ?? '') !== 'RESET')
+			return fail(400, { error: 'Type RESET to confirm the instance reset.' });
+
+		resetInstance();
+		invalidateWalletCache(); // no args — drop every cached wallet scan
+
+		// Everything (including the caller's session) is gone; /signup is now the
+		// first-run setup flow again.
+		redirect(303, '/signup');
 	}
 };

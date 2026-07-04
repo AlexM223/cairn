@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { db } from './db';
-import { registerUser, createSession, getSessionUser } from './auth';
+import { registerUser, createSession, getSessionUser, verifyPassword } from './auth';
 import { setSetting } from './settings';
 import {
 	listUsers,
@@ -10,7 +10,9 @@ import {
 	createInvites,
 	revokeInvite,
 	listInvites,
-	instanceStats
+	instanceStats,
+	resetUserPassword,
+	resetInstance
 } from './admin';
 
 function wipe(): void {
@@ -142,6 +144,57 @@ describe('invites', () => {
 		const byId = new Map(listInvites().map((i) => [i.id, i.status]));
 		expect(byId.get(used.id)).toBe('exhausted');
 		expect(byId.get(expired.id)).toBe('expired');
+	});
+});
+
+describe('resetUserPassword', () => {
+	it('sets a working temporary password and kills sessions', () => {
+		makeUser('admin@example.com');
+		const user = makeUser('user@example.com');
+		const { token } = createSession(user.id);
+
+		const { tempPassword } = resetUserPassword(user.id);
+
+		expect(tempPassword.length).toBeGreaterThanOrEqual(16); // 12 random bytes, base64url
+		const row = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(user.id) as {
+			password_hash: string;
+		};
+		expect(row.password_hash).toMatch(/^scrypt:16384:8:1:/);
+		expect(verifyPassword(tempPassword, row.password_hash)).toBe(true);
+		expect(verifyPassword(PASSWORD, row.password_hash)).toBe(false);
+		expect(getSessionUser(token)).toBeNull();
+	});
+
+	it('works on an admin (no last-admin guard) and throws not_found for missing users', () => {
+		const admin = makeUser('admin@example.com');
+		expect(() => resetUserPassword(admin.id)).not.toThrow();
+		expect(listUsers().find((u) => u.id === admin.id)?.isAdmin).toBe(true);
+		expect(() => resetUserPassword(9999)).toThrowError(
+			expect.objectContaining({ code: 'not_found' })
+		);
+	});
+});
+
+describe('resetInstance', () => {
+	it('wipes users, sessions, wallets, invites and settings', () => {
+		const admin = makeUser('admin@example.com');
+		const user = makeUser('user@example.com');
+		createSession(admin.id);
+		createSession(user.id);
+		createInvites({ createdBy: admin.id, count: 2 });
+		db.prepare(
+			"INSERT INTO wallets (user_id, name, xpub, script_type) VALUES (?, 'w', 'xpub-test', 'p2wpkh')"
+		).run(user.id);
+
+		resetInstance();
+
+		for (const table of ['users', 'sessions', 'wallets', 'invites', 'settings']) {
+			const { n } = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number };
+			expect(n, table).toBe(0);
+		}
+		// Back to first-run: the next registration becomes the admin.
+		const fresh = registerUser({ email: 'new@example.com', password: PASSWORD, displayName: 'new' });
+		expect(fresh.isAdmin).toBe(true);
 	});
 });
 
