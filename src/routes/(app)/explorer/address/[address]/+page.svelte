@@ -12,28 +12,94 @@
 		formatDateTime,
 		truncateMiddle
 	} from '$lib/format';
+	import type { AddressTx } from '$lib/types';
 
 	let { data } = $props();
 
 	const info = $derived(data.info);
 	const typeInfo = $derived(addressTypeInfo(info.scriptType));
 
+	// Cursor page size varies by backend (blockstream esplora pages confirmed
+	// txs 25 at a time, mempool.space 50), so we can't treat a "short" page as
+	// the end. Instead: offer more while the total count says history remains,
+	// and stop once a fetch brings nothing new.
+	const seedHasMore = () => data.txs.length > 0 && data.info.txCount > data.txs.length;
+
+	// Pages loaded on the client, appended after the server-loaded first page.
+	let extraTxs = $state<AddressTx[]>([]);
+	let loadingMore = $state(false);
+	let loadMoreError = $state<string | null>(null);
+	let hasMore = $state(seedHasMore());
+
+	// Reset accumulation whenever the loaded data changes (new address or reload).
+	$effect(() => {
+		extraTxs = [];
+		loadingMore = false;
+		loadMoreError = null;
+		hasMore = seedHasMore();
+	});
+
+	// Full accumulated list, newest first, de-duplicated by txid (mempool txs
+	// can confirm between fetches and show up again in a later page).
+	const allTxs = $derived.by(() => {
+		const seen = new Set<string>();
+		const out: AddressTx[] = [];
+		for (const tx of [...data.txs, ...extraTxs]) {
+			if (seen.has(tx.txid)) continue;
+			seen.add(tx.txid);
+			out.push(tx);
+		}
+		return out;
+	});
+
 	// Newest-first walk from the current balance yields the balance after each
-	// transaction — correct even when we only have the most recent page.
+	// transaction — correct even when we only have the most recent pages.
 	const rows = $derived.by(() => {
 		let running = info.confirmedBalance + info.unconfirmedBalance;
-		return data.txs.map((tx) => {
+		return allTxs.map((tx) => {
 			const balanceAfter = running;
 			running -= tx.delta ?? 0;
 			return { ...tx, balanceAfter };
 		});
 	});
 
-	const haveFullHistory = $derived(data.txs.length >= info.txCount);
+	const haveFullHistory = $derived(allTxs.length >= info.txCount);
 	const firstSeen = $derived(
-		haveFullHistory && data.txs.length > 0 ? (data.txs[data.txs.length - 1].time ?? null) : null
+		haveFullHistory && allTxs.length > 0 ? (allTxs[allTxs.length - 1].time ?? null) : null
 	);
-	const lastSeen = $derived(data.txs.length > 0 ? (data.txs[0].time ?? null) : null);
+	const lastSeen = $derived(allTxs.length > 0 ? (allTxs[0].time ?? null) : null);
+
+	const showLoadMore = $derived(hasMore && !haveFullHistory && allTxs.length > 0);
+
+	async function loadMore(): Promise<void> {
+		if (loadingMore) return;
+		// Oldest loaded tx; confirmed txs sort after mempool ones, so this is a
+		// valid confirmed-page cursor for esplora.
+		const last = allTxs[allTxs.length - 1];
+		if (!last) return;
+		loadingMore = true;
+		loadMoreError = null;
+		try {
+			const res = await fetch(
+				`/api/address/${encodeURIComponent(info.address)}?after=${last.txid}`
+			);
+			const body = await res.json().catch(() => null);
+			if (!res.ok) {
+				throw new Error(body?.error ?? `Request failed (${res.status})`);
+			}
+			const incoming: AddressTx[] = Array.isArray(body?.txs) ? body.txs : [];
+			const seen = new Set(allTxs.map((t) => t.txid));
+			const fresh = incoming.filter((t) => !seen.has(t.txid));
+			extraTxs = [...extraTxs, ...fresh];
+			// Nothing new means the cursor is exhausted (txCount can overshoot
+			// what the chain pages return, e.g. after a mempool tx drops).
+			if (fresh.length === 0) hasMore = false;
+		} catch (e) {
+			loadMoreError = e instanceof Error ? e.message : String(e);
+		} finally {
+			loadingMore = false;
+		}
+	}
 </script>
 
 <svelte:head>
@@ -139,8 +205,8 @@
 	<div class="txs-head">
 		<Icon name="activity" size={17} />
 		<span class="card-title">Transaction history</span>
-		{#if data.txs.length > 0 && data.txs.length < info.txCount}
-			<span class="hint pages">Latest {data.txs.length} of {formatNumber(info.txCount)}</span>
+		{#if allTxs.length > 0 && allTxs.length < info.txCount}
+			<span class="hint pages">Latest {allTxs.length} of {formatNumber(info.txCount)}</span>
 		{/if}
 	</div>
 
@@ -149,7 +215,7 @@
 			<Icon name="alert-triangle" size={15} />
 			<span>Couldn't load transactions — {data.txError}</span>
 		</div>
-	{:else if data.txs.length === 0}
+	{:else if allTxs.length === 0}
 		<div class="empty-state">
 			<span class="empty-title">No transactions</span>
 			<span>This address hasn't sent or received anything yet.</span>
@@ -209,6 +275,28 @@
 				</tbody>
 			</table>
 		</div>
+		{#if showLoadMore || loadMoreError}
+			<div class="load-more">
+				{#if loadMoreError}
+					<span class="hint load-more-error" role="alert">
+						Couldn't load more — {loadMoreError}
+					</span>
+				{/if}
+				<button
+					type="button"
+					class="btn btn-secondary btn-sm"
+					onclick={loadMore}
+					disabled={loadingMore}
+				>
+					{#if loadingMore}
+						<span class="spinner"></span>
+					{:else}
+						<Icon name="chevron-down" size={14} />
+					{/if}
+					{loadMoreError ? 'Retry' : 'Load more'}
+				</button>
+			</div>
+		{/if}
 	{/if}
 </section>
 
@@ -294,5 +382,18 @@
 		align-items: center;
 		gap: 8px;
 		margin: 0 16px 16px;
+	}
+
+	.load-more {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 12px;
+		flex-wrap: wrap;
+		padding: 12px 20px 16px;
+	}
+
+	.load-more-error {
+		color: var(--error);
 	}
 </style>
