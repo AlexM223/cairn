@@ -1,6 +1,12 @@
 import { fail } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { hashPassword, verifyPassword, destroyUserSessions, createSession, SESSION_COOKIE } from '$lib/server/auth';
+import {
+	passwordChangeRetryAfter,
+	notePasswordChangeFailure,
+	notePasswordChangeSuccess,
+	tooManyAttemptsMessage
+} from '$lib/server/rateLimit';
 import type { Actions, PageServerLoad } from './$types';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -41,11 +47,17 @@ export const actions: Actions = {
 			return fail(400, { passwordError: 'New password must be at least 8 characters.' });
 		if (next !== confirm) return fail(400, { passwordError: 'New passwords do not match.' });
 
+		const wait = passwordChangeRetryAfter(locals.user!.id);
+		if (wait !== null) return fail(429, { passwordError: tooManyAttemptsMessage(wait) });
+
 		const row = db
 			.prepare('SELECT password_hash FROM users WHERE id = ?')
 			.get(locals.user!.id) as { password_hash: string } | undefined;
-		if (!row || !verifyPassword(current, row.password_hash))
+		if (!row || !verifyPassword(current, row.password_hash)) {
+			notePasswordChangeFailure(locals.user!.id);
 			return fail(400, { passwordError: 'Current password is incorrect.' });
+		}
+		notePasswordChangeSuccess(locals.user!.id);
 
 		db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(
 			hashPassword(next),
