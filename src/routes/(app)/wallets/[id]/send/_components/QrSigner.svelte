@@ -27,17 +27,21 @@
 	// ── DISPLAY: encode the PSBT to BBQr frames + render each as a QR image ────
 	// Encoding is deterministic and cheap; do it once up front. A malformed PSBT
 	// (shouldn't happen — the parent built it) surfaces as an inline error rather
-	// than a blank card.
-	let encodeError = $state<string | null>(null);
-	const frames = $derived.by<string[]>(() => {
+	// than a blank card. Frames and error come out of ONE derived — a derived must
+	// not write other $state (Svelte throws state_unsafe_mutation), so the error
+	// is part of the derived value instead of a separate $state cell.
+	const encoded = $derived.by<{ frames: string[]; error: string | null }>(() => {
 		try {
-			encodeError = null;
-			return encodePsbtToFrames(unsignedPsbt);
+			return { frames: encodePsbtToFrames(unsignedPsbt), error: null };
 		} catch (e) {
-			encodeError = e instanceof Error ? e.message : 'Could not encode this transaction as QR.';
-			return [];
+			return {
+				frames: [],
+				error: e instanceof Error ? e.message : 'Could not encode this transaction as QR.'
+			};
 		}
 	});
+	const frames = $derived(encoded.frames);
+	const encodeError = $derived(encoded.error);
 
 	// Render every frame to an SVG data URL once, keyed by frame text. `toString`
 	// with type:'svg' needs no canvas and stays crisp at any size.
