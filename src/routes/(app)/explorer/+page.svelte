@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
-	import { invalidateAll } from '$app/navigation';
+	import { invalidate } from '$app/navigation';
 	import { onNewBlock } from '$lib/liveBlocks';
 	import Icon from '$lib/components/Icon.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
@@ -10,14 +10,14 @@
 
 	let { data } = $props();
 
-	// Live new-block updates: refresh the server data when the chain advances.
+	// Live new-block updates: refresh only the chain snapshot.
 	let lastSeenHeight: number | null = null;
 	onMount(() => {
 		lastSeenHeight = data.tipHeight;
 		return onNewBlock((height) => {
 			if (lastSeenHeight !== null && height === lastSeenHeight) return;
 			lastSeenHeight = height;
-			invalidateAll();
+			invalidate('cairn:chain');
 		});
 	});
 

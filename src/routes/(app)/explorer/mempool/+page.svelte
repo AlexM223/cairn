@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { invalidateAll } from '$app/navigation';
+	import { invalidate } from '$app/navigation';
 	import { onNewBlock } from '$lib/liveBlocks';
 	import Icon from '$lib/components/Icon.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
@@ -18,7 +18,7 @@
 		onNewBlock((height) => {
 			if (lastSeenHeight !== null && height === lastSeenHeight) return;
 			lastSeenHeight = height;
-			invalidateAll();
+			invalidate('cairn:chain');
 		})
 	);
 

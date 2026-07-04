@@ -14,6 +14,7 @@ import type {
 	AddressTx,
 	BlockDetail,
 	BlockSummary,
+	CpfpInfo,
 	DifficultyAdjustment,
 	DifficultyInfo,
 	FeeEstimates,
@@ -22,12 +23,21 @@ import type {
 	MempoolSummary,
 	MempoolTrendPoint,
 	NodeInfo,
+	RbfInfo,
 	TxDetail,
 	TxVin,
 	TxVout
 } from '$lib/types';
 
 const BLOCK_TXS_PAGE_SIZE = 25;
+
+/** Loose shape of one node in mempool.space's RBF replacement tree. */
+interface RbfTreeNode {
+	tx?: { txid?: string };
+	time?: number;
+	fullRbf?: boolean;
+	replaces?: RbfTreeNode[];
+}
 
 // --------------------------------------------------------------------- helpers
 
@@ -76,19 +86,30 @@ function toTxDetail(tx: EsploraTx, tipHeight: number, outspends?: (boolean | nul
 
 	const vin: TxVin[] = tx.vin.map((v) =>
 		v.is_coinbase
-			? { txid: null, vout: null, address: null, value: null, coinbase: true }
+			? {
+					txid: null,
+					vout: null,
+					address: null,
+					value: null,
+					coinbase: true,
+					scriptSig: v.scriptsig || null,
+					witness: v.witness?.length ? v.witness : null
+				}
 			: {
 					txid: v.txid,
 					vout: v.vout,
 					address: v.prevout?.scriptpubkey_address ?? null,
 					value: v.prevout?.value ?? null,
-					coinbase: false
+					coinbase: false,
+					scriptSig: v.scriptsig || null,
+					witness: v.witness?.length ? v.witness : null
 				}
 	);
 	const vout: TxVout[] = tx.vout.map((v, i) => ({
 		address: v.scriptpubkey_address ?? null,
 		value: v.value,
 		scriptType: v.scriptpubkey_type,
+		scriptPubKey: v.scriptpubkey,
 		spent: outspends?.[i] ?? null
 	}));
 
@@ -239,6 +260,70 @@ export class ChainService {
 			outspends = undefined;
 		}
 		return toTxDetail(tx, tipHeight, outspends);
+	}
+
+	/** Raw serialization of a transaction, hex. */
+	getTxHex(txid: string): Promise<string> {
+		return this.esplora.getTxHex(txid);
+	}
+
+	/**
+	 * Replace-by-fee timeline for a transaction, oldest version first.
+	 * Null when the backend has no RBF index or the tx was never replaced.
+	 */
+	async getTxRbfInfo(txid: string): Promise<RbfInfo | null> {
+		const raw = (await this.esplora.getTxRbf(txid)) as {
+			replacements?: RbfTreeNode | null;
+			replaces?: unknown[];
+		} | null;
+		if (!raw) return null;
+
+		const root = raw.replacements;
+		if (!root || typeof root !== 'object' || !root.tx?.txid) {
+			return null;
+		}
+
+		// The tree's root is the newest version; each node's `replaces` holds
+		// what it displaced. Multiple branches are possible (a replacement can
+		// evict several conflicting txs) — follow the branch containing the
+		// queried tx when there is one, else the first.
+		const chain: RbfInfo['chain'] = [];
+		let node: RbfTreeNode | undefined = root;
+		let fullRbf = false;
+		while (node && node.tx?.txid && chain.length < 25) {
+			chain.push({ txid: node.tx.txid, time: typeof node.time === 'number' ? node.time : null });
+			if (node.fullRbf) fullRbf = true;
+			const next: RbfTreeNode[] = Array.isArray(node.replaces) ? node.replaces : [];
+			node = next.find((n) => n.tx?.txid === txid) ?? next[0];
+		}
+		if (chain.length < 2) return null; // no actual replacement happened
+		chain.reverse(); // oldest first
+		return { chain, fullRbf };
+	}
+
+	/** CPFP package context for an unconfirmed tx; null when not applicable. */
+	async getCpfpInfo(txid: string): Promise<CpfpInfo | null> {
+		const raw = (await this.esplora.getCpfp(txid)) as {
+			ancestors?: { txid?: string }[];
+			descendants?: { txid?: string }[];
+			bestDescendant?: { txid?: string } | null;
+			effectiveFeePerVsize?: number;
+		} | null;
+		if (!raw || typeof raw.effectiveFeePerVsize !== 'number') return null;
+
+		const ancestors = (raw.ancestors ?? [])
+			.map((a) => a.txid)
+			.filter((t): t is string => typeof t === 'string');
+		const descendants = [...(raw.descendants ?? []), raw.bestDescendant ?? undefined]
+			.map((d) => d?.txid)
+			.filter((t): t is string => typeof t === 'string');
+		if (ancestors.length === 0 && descendants.length === 0) return null;
+
+		return {
+			effectiveFeeRate: round2(raw.effectiveFeePerVsize),
+			ancestors,
+			descendants: [...new Set(descendants)]
+		};
 	}
 
 	async getAddressInfo(address: string): Promise<AddressInfo> {

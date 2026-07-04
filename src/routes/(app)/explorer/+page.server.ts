@@ -5,7 +5,10 @@ import type { BlockSummary, MempoolSummary, SearchResult } from '$lib/types';
 
 const PAGE_SIZE = 15;
 
-export const load: PageServerLoad = async ({ url }) => {
+export const load: PageServerLoad = async ({ url, depends }) => {
+	// Re-run on new-block SSE events without re-running unrelated loads.
+	depends('cairn:chain');
+
 	const rawQ = url.searchParams.get('q');
 	const q = rawQ?.trim() ?? '';
 

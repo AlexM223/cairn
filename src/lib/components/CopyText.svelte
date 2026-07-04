@@ -58,7 +58,9 @@
 	.copy-icon {
 		color: var(--text-muted);
 		display: inline-flex;
-		opacity: 0;
+		/* Always faintly visible: touch devices have no hover state, and the
+		   icon is the only cue that the value is tappable. */
+		opacity: 0.45;
 		transition: opacity 100ms var(--ease);
 	}
 
@@ -67,7 +69,14 @@
 		opacity: 1;
 	}
 
-	.copy-text:hover .copy-icon {
+	.copy-text:hover .copy-icon,
+	.copy-text:focus-visible .copy-icon {
 		opacity: 1;
+	}
+
+	.copy-text:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
+		border-radius: 2px;
 	}
 </style>

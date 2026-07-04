@@ -1,6 +1,5 @@
 import { db } from '$lib/server/db';
 import { getChain } from '$lib/server/chain';
-import { scanWallet } from '$lib/server/bitcoin/walletScan';
 import type { PageServerLoad } from './$types';
 import type { BlockSummary, FeeEstimates, MempoolSummary } from '$lib/types';
 
@@ -45,38 +44,19 @@ async function loadChainSnapshot(): Promise<ChainSnapshot> {
 	}
 }
 
-async function loadPortfolio(userId: number) {
-	const wallets = db
-		.prepare('SELECT id, name, xpub FROM wallets WHERE user_id = ? ORDER BY created_at ASC')
-		.all(userId) as { id: number; name: string; xpub: string }[];
+export const load: PageServerLoad = async ({ locals, depends }) => {
+	// New-block SSE events invalidate this tag only — the portfolio is fetched
+	// client-side from /api/portfolio so wallet scans aren't retriggered by
+	// every block (see the portfolio endpoint).
+	depends('cairn:chain');
 
-	if (wallets.length === 0) return null;
+	const hasWallets =
+		(db.prepare('SELECT COUNT(*) AS n FROM wallets WHERE user_id = ?').get(locals.user!.id) as {
+			n: number;
+		}).n > 0;
 
-	let confirmed = 0;
-	let unconfirmed = 0;
-	let reachable = 0;
-	for (const w of wallets) {
-		try {
-			const scan = await scanWallet(w.xpub);
-			confirmed += scan.confirmed;
-			unconfirmed += scan.unconfirmed;
-			reachable++;
-		} catch {
-			// Wallet scan failure shouldn't take down the dashboard.
-		}
-	}
-	return {
-		walletCount: wallets.length,
-		scannedCount: reachable,
-		confirmed,
-		unconfirmed
-	};
-}
-
-export const load: PageServerLoad = async ({ locals }) => {
 	return {
 		chain: await loadChainSnapshot(),
-		// Streamed: the dashboard renders instantly, the portfolio card fills in.
-		portfolio: loadPortfolio(locals.user!.id)
+		hasWallets
 	};
 };

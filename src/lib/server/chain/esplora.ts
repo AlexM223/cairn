@@ -286,6 +286,34 @@ export class EsploraApi {
 		return this.get<EsploraOutspend[]>(`/tx/${txid}/outspends`, SHORT_TTL_MS);
 	}
 
+	/** Raw transaction serialization as hex. Immutable per txid. */
+	async getTxHex(txid: string): Promise<string> {
+		return String(await this.get<unknown>(`/tx/${txid}/hex`, IMMUTABLE_TTL_MS));
+	}
+
+	/**
+	 * Replace-by-fee history for a transaction (mempool.space only).
+	 * The shape is a replacement tree; callers should parse defensively.
+	 */
+	async getTxRbf(txid: string): Promise<unknown | null> {
+		if (!(await this.probeV1())) return null;
+		try {
+			return await this.get<unknown>(`/v1/tx/${txid}/rbf`, SHORT_TTL_MS);
+		} catch {
+			return null;
+		}
+	}
+
+	/** CPFP (fee-package) context for an unconfirmed tx (mempool.space only). */
+	async getCpfp(txid: string): Promise<unknown | null> {
+		if (!(await this.probeV1())) return null;
+		try {
+			return await this.get<unknown>(`/v1/cpfp/${txid}`, SHORT_TTL_MS);
+		} catch {
+			return null;
+		}
+	}
+
 	// ------------------------------------------------------------------ addresses
 
 	async getAddress(address: string): Promise<EsploraAddress> {

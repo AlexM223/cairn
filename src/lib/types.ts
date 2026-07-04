@@ -71,13 +71,36 @@ export interface TxVin {
 	address: string | null;
 	value: number | null; // sats
 	coinbase: boolean;
+	scriptSig: string | null; // hex, null when empty/absent
+	witness: string[] | null; // hex items, null when non-segwit input
 }
 
 export interface TxVout {
 	address: string | null;
 	value: number; // sats
 	scriptType: string;
+	scriptPubKey: string; // hex
 	spent: boolean | null;
+}
+
+/** One step of a replace-by-fee timeline, oldest first. */
+export interface RbfStep {
+	txid: string;
+	time: number | null; // unix seconds when this version was seen
+}
+
+export interface RbfInfo {
+	/** Replacement sequence oldest → newest (the newest is the live version). */
+	chain: RbfStep[];
+	fullRbf: boolean;
+}
+
+/** Child-pays-for-parent context for an unconfirmed transaction. */
+export interface CpfpInfo {
+	/** Package fee rate miners actually evaluate, sat/vB. */
+	effectiveFeeRate: number;
+	ancestors: string[]; // txids
+	descendants: string[]; // txids
 }
 
 export interface TxDetail {
@@ -223,6 +246,14 @@ export interface AdminUserInfo {
 }
 
 export type RegistrationMode = 'open' | 'invite' | 'closed';
+
+/** Aggregate balance across a user's wallets (dashboard portfolio card). */
+export interface PortfolioSummary {
+	walletCount: number;
+	scannedCount: number;
+	confirmed: number; // sats
+	unconfirmed: number; // sats
+}
 
 export interface InstanceSettings {
 	registrationMode: RegistrationMode;

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
-	import { invalidateAll } from '$app/navigation';
+	import { invalidate } from '$app/navigation';
 	import { onNewBlock } from '$lib/liveBlocks';
 	import Icon from '$lib/components/Icon.svelte';
 	import {
@@ -13,18 +13,35 @@
 		timeAgo,
 		formatFeeRate
 	} from '$lib/format';
+	import type { PortfolioSummary } from '$lib/types';
 
 	let { data } = $props();
 
-	// Live new-block updates: refresh the server data when the chain advances.
+	// Live new-block updates refresh only the chain snapshot — the portfolio
+	// is deliberately outside the invalidation path so wallets aren't
+	// rescanned on every block.
 	let lastSeenHeight: number | null = null;
 	onMount(() => {
 		lastSeenHeight = data.chain.tipHeight;
 		return onNewBlock((height) => {
 			if (lastSeenHeight !== null && height === lastSeenHeight) return;
 			lastSeenHeight = height;
-			invalidateAll();
+			invalidate('cairn:chain');
 		});
+	});
+
+	// Portfolio loads client-side, once per visit.
+	let portfolio = $state<PortfolioSummary | null>(null);
+	let portfolioLoading = $state(false);
+
+	onMount(() => {
+		if (!data.hasWallets) return;
+		portfolioLoading = true;
+		fetch('/api/portfolio')
+			.then((res) => (res.ok ? res.json() : null))
+			.then((body) => (portfolio = body?.portfolio ?? null))
+			.catch(() => (portfolio = null))
+			.finally(() => (portfolioLoading = false));
 	});
 
 	// One-time orientation for new users; dismissal is remembered per account.
@@ -136,34 +153,41 @@
 	</section>
 
 	<!-- Portfolio (only when the user has wallets) -->
-	{#await data.portfolio then portfolio}
-		{#if portfolio}
-			<a href="/wallets" class="card card-pad portfolio fade-in">
-				<div class="row" style="gap: 10px">
-					<Icon name="wallet" size={18} />
-					<span class="card-title grow">Portfolio</span>
-					<span class="hint">
-						{portfolio.walletCount} wallet{portfolio.walletCount === 1 ? '' : 's'}
-						{#if portfolio.scannedCount < portfolio.walletCount}
-							· {portfolio.walletCount - portfolio.scannedCount} unreachable
-						{/if}
-					</span>
-					<Icon name="chevron-right" size={16} />
-				</div>
-				<div class="portfolio-balance">
-					<span class="hero-number portfolio-btc">{formatBtc(portfolio.confirmed)}</span>
-					<span class="portfolio-unit">BTC</span>
-					{#if portfolio.unconfirmed !== 0}
-						<span class="badge badge-warning">
-							{portfolio.unconfirmed > 0 ? '+' : ''}{formatSats(portfolio.unconfirmed)} sats pending
-						</span>
+	{#if portfolioLoading}
+		<div class="card card-pad portfolio fade-in">
+			<div class="row" style="gap: 10px">
+				<Icon name="wallet" size={18} />
+				<span class="card-title grow">Portfolio</span>
+				<span class="spinner"></span>
+			</div>
+			<div class="portfolio-balance">
+				<span class="hero-number portfolio-btc skeleton">0.00000000</span>
+			</div>
+		</div>
+	{:else if portfolio}
+		<a href="/wallets" class="card card-pad portfolio fade-in">
+			<div class="row" style="gap: 10px">
+				<Icon name="wallet" size={18} />
+				<span class="card-title grow">Portfolio</span>
+				<span class="hint">
+					{portfolio.walletCount} wallet{portfolio.walletCount === 1 ? '' : 's'}
+					{#if portfolio.scannedCount < portfolio.walletCount}
+						· {portfolio.walletCount - portfolio.scannedCount} unreachable
 					{/if}
-				</div>
-			</a>
-		{/if}
-	{:catch}
-		<!-- portfolio is best-effort -->
-	{/await}
+				</span>
+				<Icon name="chevron-right" size={16} />
+			</div>
+			<div class="portfolio-balance">
+				<span class="hero-number portfolio-btc">{formatBtc(portfolio.confirmed)}</span>
+				<span class="portfolio-unit">BTC</span>
+				{#if portfolio.unconfirmed !== 0}
+					<span class="badge badge-warning">
+						{portfolio.unconfirmed > 0 ? '+' : ''}{formatSats(portfolio.unconfirmed)} sats pending
+					</span>
+				{/if}
+			</div>
+		</a>
+	{/if}
 
 	<div class="columns">
 		<!-- Recommended fees -->
