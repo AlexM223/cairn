@@ -1,11 +1,25 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { page } from '$app/state';
+	import { invalidateAll } from '$app/navigation';
+	import { onNewBlock } from '$lib/liveBlocks';
 	import Icon from '$lib/components/Icon.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import ExplorerNav from '$lib/components/ExplorerNav.svelte';
 	import { formatNumber, formatBtc, formatBytes, timeAgo, formatDateTime, formatFeeRate, truncateMiddle } from '$lib/format';
 
 	let { data } = $props();
+
+	// Live new-block updates: refresh the server data when the chain advances.
+	let lastSeenHeight: number | null = null;
+	onMount(() => {
+		lastSeenHeight = data.tipHeight;
+		return onNewBlock((height) => {
+			if (lastSeenHeight !== null && height === lastSeenHeight) return;
+			lastSeenHeight = height;
+			invalidateAll();
+		});
+	});
 
 	// ---- search detection + per-user recent searches (kept on this device) ----
 

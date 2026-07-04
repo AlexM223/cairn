@@ -1,5 +1,8 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { page } from '$app/state';
+	import { invalidateAll } from '$app/navigation';
+	import { onNewBlock } from '$lib/liveBlocks';
 	import Icon from '$lib/components/Icon.svelte';
 	import {
 		formatNumber,
@@ -12,6 +15,17 @@
 	} from '$lib/format';
 
 	let { data } = $props();
+
+	// Live new-block updates: refresh the server data when the chain advances.
+	let lastSeenHeight: number | null = null;
+	onMount(() => {
+		lastSeenHeight = data.chain.tipHeight;
+		return onNewBlock((height) => {
+			if (lastSeenHeight !== null && height === lastSeenHeight) return;
+			lastSeenHeight = height;
+			invalidateAll();
+		});
+	});
 
 	// One-time orientation for new users; dismissal is remembered per account.
 	const tourKey = $derived(`cairn.tour.${page.data.user?.id ?? 'anon'}`);

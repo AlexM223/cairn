@@ -1,4 +1,7 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
+	import { invalidateAll } from '$app/navigation';
+	import { onNewBlock } from '$lib/liveBlocks';
 	import Icon from '$lib/components/Icon.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import ExplorerNav from '$lib/components/ExplorerNav.svelte';
@@ -6,6 +9,18 @@
 	import { formatNumber, formatBtc, formatBytes, formatFeeRate, timeAgo } from '$lib/format';
 
 	let { data } = $props();
+
+	// Live new-block updates: refresh the mempool stats when the chain advances.
+	// This page exposes no tip height, so the initial SSE event triggers one
+	// harmless refresh shortly after mount.
+	let lastSeenHeight: number | null = null;
+	onMount(() =>
+		onNewBlock((height) => {
+			if (lastSeenHeight !== null && height === lastSeenHeight) return;
+			lastSeenHeight = height;
+			invalidateAll();
+		})
+	);
 
 	// A full block holds ~1M vB; how many block-fulls are waiting right now.
 	const blocksWorth = $derived(data.summary ? data.summary.vsize / 1_000_000 : 0);
