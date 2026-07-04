@@ -1,5 +1,6 @@
 import { error } from '@sveltejs/kit';
 import { getWallet, getWalletDetail } from '$lib/server/wallets';
+import { listSavedAddresses } from '$lib/server/addressBook';
 import { getTransaction } from '$lib/server/transactions';
 import { summarizePsbt, type PsbtSummary } from '$lib/server/bitcoin/psbt';
 import { getChain } from '$lib/server/chain';
@@ -63,6 +64,9 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 		confirmed,
 		scanError,
 		fees,
-		resume
+		resume,
+		// The user's address book seeds the recipient autocomplete. User-scoped,
+		// small, and cheap to load alongside the page.
+		savedAddresses: listSavedAddresses(locals.user!.id)
 	};
 };

@@ -113,3 +113,19 @@ db.exec(`
 		db.exec('ALTER TABLE transactions ADD COLUMN broadcast_started_at TEXT');
 	}
 }
+
+// Address book: saved recipients, scoped to the user (not the wallet — who you
+// pay doesn't depend on which wallet you pay from). Kept in its own exec so it
+// lands on existing databases too. See src/lib/server/addressBook.ts.
+db.exec(`
+	CREATE TABLE IF NOT EXISTS saved_addresses (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		label        TEXT NOT NULL,
+		address      TEXT NOT NULL,
+		created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		last_used_at TEXT,
+		UNIQUE (user_id, address)
+	);
+	CREATE INDEX IF NOT EXISTS idx_saved_addresses_user ON saved_addresses(user_id);
+`);

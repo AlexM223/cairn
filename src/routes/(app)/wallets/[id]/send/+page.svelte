@@ -11,7 +11,9 @@
 	import { isTrezorConnectAvailable } from '$lib/hw/trezor';
 	import type { ConstructedPsbt } from '$lib/server/bitcoin/psbt';
 	import type { SavedTransaction } from '$lib/server/transactions';
+	import type { SavedAddress } from '$lib/server/addressBook';
 	import DeviceCard from './_components/DeviceCard.svelte';
+	import RecipientCombobox from './_components/RecipientCombobox.svelte';
 	import ColdCardSigner from './_components/ColdCardSigner.svelte';
 	import LedgerSigner from './_components/LedgerSigner.svelte';
 	import QrSigner from './_components/QrSigner.svelte';
@@ -115,6 +117,32 @@
 		}
 	}
 
+	// ----------------------------------------------------------- address book
+	// The saved-recipient list seeds the combobox; mutations (inline delete,
+	// save-from-Sent) update it locally so the dropdown reflects them at once.
+	// svelte-ignore state_referenced_locally — intentional per-load seed
+	let savedAddresses = $state<SavedAddress[]>(data.savedAddresses);
+
+	async function deleteSavedAddress(entry: SavedAddress) {
+		savedAddresses = savedAddresses.filter((a) => a.id !== entry.id);
+		try {
+			await fetch(`/api/address-book/${entry.id}`, { method: 'DELETE' });
+		} catch {
+			/* best-effort — a failed delete resurfaces on the next page load */
+		}
+	}
+
+	// Fire-and-forget: sending to a saved recipient bumps its last_used_at so
+	// frequent payees float to the top of the dropdown.
+	function touchSavedAddress(address: string) {
+		if (!savedAddresses.some((a) => a.address === address)) return;
+		void fetch('/api/address-book', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ address })
+		}).catch(() => {});
+	}
+
 	// ------------------------------------------------------------- CREATE step
 	// svelte-ignore state_referenced_locally — intentional per-load seed
 	let recipient = $state(resumeTx?.recipient ?? '');
@@ -187,6 +215,7 @@
 			draft = body.draft as SavedTransaction;
 			details = body.details as ConstructedPsbt;
 			signedComplete = false;
+			touchSavedAddress(draft.recipient);
 			syncTxParam(draft.id);
 			step = 'review';
 		} catch {
@@ -350,6 +379,49 @@
 		step = 'create';
 	}
 
+	// ------------------------------------------- Sent: save-address affordance
+	// After a broadcast, offer to remember an unsaved recipient. Dismissible
+	// and entirely off the critical path — the transaction is already sent.
+	let saveLabel = $state('');
+	let savingAddress = $state(false);
+	let saveAddressError = $state<string | null>(null);
+	let saveDismissed = $state(false);
+	let addressJustSaved = $state(false);
+
+	const sentRecipient = $derived(review?.recipient ?? null);
+	const showSaveOffer = $derived(
+		step === 'sent' &&
+			!saveDismissed &&
+			!addressJustSaved &&
+			sentRecipient !== null &&
+			!savedAddresses.some((a) => a.address === sentRecipient)
+	);
+
+	async function saveRecipient() {
+		const label = saveLabel.trim();
+		if (!sentRecipient || !label || savingAddress) return;
+		savingAddress = true;
+		saveAddressError = null;
+		try {
+			const res = await fetch('/api/address-book', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ address: sentRecipient, label })
+			});
+			const body = await res.json();
+			if (!res.ok) {
+				saveAddressError = body.error ?? 'Could not save the address.';
+				return;
+			}
+			savedAddresses = [body.address as SavedAddress, ...savedAddresses];
+			addressJustSaved = true;
+		} catch {
+			saveAddressError = 'Could not reach Cairn to save the address.';
+		} finally {
+			savingAddress = false;
+		}
+	}
+
 	const fileUrl = $derived(
 		draft ? `/api/wallets/${walletId}/transactions/${draft.id}/file` : '#'
 	);
@@ -506,14 +578,11 @@
 			<div class="card card-pad stack" style="gap: 18px">
 				<div class="field">
 					<label class="label" for="recipient">Recipient address</label>
-					<input
-						id="recipient"
-						class="input mono"
-						placeholder="bc1q…"
+					<RecipientCombobox
 						bind:value={recipient}
-						autocomplete="off"
-						spellcheck="false"
-						aria-invalid={recipient.length > 0 && !recipientLooksValid}
+						saved={savedAddresses}
+						invalid={recipient.length > 0 && !recipientLooksValid}
+						ondelete={deleteSavedAddress}
 					/>
 					{#if recipient.length > 0 && !recipientLooksValid}
 						<p class="hint" style="color: var(--warning)">
@@ -966,6 +1035,49 @@
 						<span class="detail-val tabular">{formatSats(review.fee)} sats</span>
 					</div>
 				</div>
+			{/if}
+
+			{#if showSaveOffer && sentRecipient}
+				<div class="card card-pad save-offer fade-in">
+					<div class="save-offer-head">
+						<span class="save-offer-title">Save this address for next time?</span>
+						<button
+							type="button"
+							class="save-dismiss"
+							aria-label="Dismiss"
+							onclick={() => (saveDismissed = true)}
+						>
+							<Icon name="x" size={14} />
+						</button>
+					</div>
+					<p class="save-offer-addr mono">{truncateMiddle(sentRecipient, 16, 12)}</p>
+					<div class="save-offer-row">
+						<input
+							class="input"
+							placeholder="Label — e.g. Cold storage"
+							maxlength={60}
+							bind:value={saveLabel}
+							aria-label="Label for this address"
+							onkeydown={(e) => {
+								if (e.key === 'Enter') void saveRecipient();
+							}}
+						/>
+						<button
+							class="btn btn-secondary"
+							onclick={saveRecipient}
+							disabled={savingAddress || saveLabel.trim().length === 0}
+						>
+							{#if savingAddress}<span class="spinner"></span> Saving…{:else}Save{/if}
+						</button>
+					</div>
+					{#if saveAddressError}
+						<div class="form-error" role="alert">{saveAddressError}</div>
+					{/if}
+				</div>
+			{:else if addressJustSaved}
+				<p class="hint saved-note" role="status">
+					<Icon name="check" size={13} /> Saved to your address book.
+				</p>
 			{/if}
 
 			<div class="row step-actions" style="justify-content: center">
@@ -1549,6 +1661,68 @@
 		width: 100%;
 		text-align: left;
 		margin-top: 8px;
+	}
+
+	/* ---- Sent: save-address offer ---- */
+	.save-offer {
+		width: 100%;
+		text-align: left;
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+
+	.save-offer-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 10px;
+	}
+
+	.save-offer-title {
+		font-size: 13.5px;
+		font-weight: 600;
+	}
+
+	.save-dismiss {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 26px;
+		height: 26px;
+		flex-shrink: 0;
+		background: none;
+		border: none;
+		border-radius: var(--radius-chip);
+		color: var(--text-muted);
+		cursor: pointer;
+	}
+
+	.save-dismiss:hover {
+		color: var(--text);
+		background: var(--bg);
+	}
+
+	.save-offer-addr {
+		font-size: 12.5px;
+		color: var(--text-muted);
+		word-break: break-all;
+	}
+
+	.save-offer-row {
+		display: flex;
+		gap: 8px;
+	}
+
+	.save-offer-row .input {
+		flex: 1;
+	}
+
+	.saved-note {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		color: var(--success);
 	}
 
 	@media (max-width: 520px) {
