@@ -285,6 +285,10 @@
 		align-items: start;
 	}
 
+	.columns > section {
+		min-width: 0;
+	}
+
 	@media (max-width: 900px) {
 		.columns {
 			grid-template-columns: 1fr;
