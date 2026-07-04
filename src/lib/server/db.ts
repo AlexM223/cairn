@@ -102,4 +102,14 @@ db.exec(`
 	if (!walletCols.includes('derivation_path')) {
 		db.exec('ALTER TABLE wallets ADD COLUMN derivation_path TEXT');
 	}
+
+	// In-flight broadcast claim marker: set atomically before a broadcast goes
+	// out to the network so concurrent broadcast attempts cannot double-send;
+	// cleared again when a broadcast fails (successful ones set txid instead).
+	const txCols = (db.prepare('PRAGMA table_info(transactions)').all() as { name: string }[]).map(
+		(c) => c.name
+	);
+	if (!txCols.includes('broadcast_started_at')) {
+		db.exec('ALTER TABLE transactions ADD COLUMN broadcast_started_at TEXT');
+	}
 }

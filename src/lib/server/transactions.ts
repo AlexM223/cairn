@@ -2,6 +2,7 @@
 // UTXO set and persists them through draft → awaiting-signature → completed.
 
 import { base64 } from '@scure/base';
+import { Transaction } from '@scure/btc-signer';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { db } from './db';
 import { getChain } from './chain';
@@ -214,21 +215,46 @@ function hasPsbtMagic(bytes: Uint8Array): boolean {
 	return bytes.length > 5 && bytesToHex(bytes.slice(0, 5)) === PSBT_MAGIC_HEX;
 }
 
+/** A file that is recognizably meant to be a PSBT but cannot be parsed. */
+export class InvalidPsbtError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = 'InvalidPsbtError';
+	}
+}
+
+/**
+ * Structural check beyond the magic bytes: a truncated or bit-rotted file
+ * that still starts with "psbt\xff" must fail HERE with a plain "corrupted"
+ * message, not later in the substitution guard with an alarming mismatch one.
+ */
+function assertParseablePsbt(bytes: Uint8Array): Uint8Array {
+	try {
+		Transaction.fromPSBT(bytes);
+	} catch {
+		throw new InvalidPsbtError(
+			'This PSBT could not be read — it may be truncated or corrupted. Try exporting it from your signer again.'
+		);
+	}
+	return bytes;
+}
+
 /**
  * Accept a PSBT in any of the shapes signers hand back — base64 text, hex
  * text, or base64-of-a-text-file that itself contains base64/hex — and return
- * canonical base64 of the raw binary. Throws on anything that isn't a PSBT.
+ * canonical base64 of the raw binary. Throws on anything that isn't a PSBT
+ * (InvalidPsbtError when it looks like one but doesn't parse).
  */
 export function normalizePsbt(input: string, depth = 0): string {
 	const trimmed = input.trim();
 	if (!trimmed) throw new Error('Empty PSBT');
 
 	if (new RegExp(`^${PSBT_MAGIC_HEX}[0-9a-fA-F]*$`, 'i').test(trimmed)) {
-		return base64.encode(hexToBytes(trimmed.toLowerCase()));
+		return base64.encode(assertParseablePsbt(hexToBytes(trimmed.toLowerCase())));
 	}
 
 	const bytes = base64.decode(trimmed); // throws on non-base64
-	if (hasPsbtMagic(bytes)) return base64.encode(bytes);
+	if (hasPsbtMagic(bytes)) return base64.encode(assertParseablePsbt(bytes));
 
 	// A .psbt "file" that's actually text (base64/hex with a trailing newline)
 	// arrives here as base64-encoded ASCII — unwrap one layer, once.
@@ -269,8 +295,13 @@ export async function broadcastTransaction(
 	if (signedPsbt?.trim()) {
 		try {
 			psbt = normalizePsbt(signedPsbt);
-		} catch {
-			throw new BroadcastError("That doesn't look like a valid PSBT.", 'incomplete');
+		} catch (e) {
+			// A recognizably-PSBT-but-corrupt file gets its specific message;
+			// everything else (not base64, wrong magic, …) the generic one.
+			throw new BroadcastError(
+				e instanceof InvalidPsbtError ? e.message : "That doesn't look like a valid PSBT.",
+				'incomplete'
+			);
 		}
 		// Never broadcast something other than what was reviewed and saved.
 		try {
@@ -298,10 +329,33 @@ export async function broadcastTransaction(
 		);
 	}
 
+	// Atomically claim the broadcast before touching the network. The opening
+	// read-check above gives friendly errors but is racy on its own: two
+	// concurrent calls can both see txid IS NULL while the first is awaiting
+	// Electrum. This single guarded UPDATE lets exactly one caller through;
+	// the loser sees zero affected rows and gets the same already-sent error.
+	// A stale claim (crash mid-broadcast) expires after 60s so the user can
+	// retry rather than being wedged forever.
+	const claimed = db
+		.prepare(
+			`UPDATE transactions
+			 SET broadcast_started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+			     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			 WHERE id = ? AND wallet_id = ? AND txid IS NULL AND status != 'completed'
+			   AND (broadcast_started_at IS NULL
+			        OR broadcast_started_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-60 seconds'))`
+		)
+		.run(txId, walletId);
+	if (Number(claimed.changes) === 0) {
+		throw new BroadcastError('This transaction has already been broadcast.', 'already_sent');
+	}
+
 	let broadcastTxid: string;
 	try {
 		broadcastTxid = await getChain().electrum.broadcast(finalized.rawHex);
 	} catch (e) {
+		// Release the claim: a failed broadcast must stay retryable.
+		db.prepare('UPDATE transactions SET broadcast_started_at = NULL WHERE id = ?').run(txId);
 		// Surface the node's rejection reason in as-plain-as-possible language.
 		const raw = e instanceof Error ? e.message : String(e);
 		throw new BroadcastError(`The network rejected this transaction: ${raw}`, 'rejected');
