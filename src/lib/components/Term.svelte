@@ -36,12 +36,15 @@
 	}
 
 	.tip {
+		/* display:none keeps the hidden tooltip out of the page's scrollable
+		   area — visibility alone still widens the page near screen edges. */
+		display: none;
 		position: absolute;
 		bottom: calc(100% + 8px);
 		left: 50%;
 		transform: translateX(-50%);
 		width: max-content;
-		max-width: 280px;
+		max-width: min(280px, calc(100vw - 32px));
 		background: var(--surface-elevated);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-control);
@@ -69,7 +72,17 @@
 	.term:hover .tip,
 	.term:focus-visible .tip,
 	.term:focus .tip {
+		display: block;
 		opacity: 1;
 		visibility: visible;
+	}
+
+	/* Fade-in still works with display toggling in engines that support it. */
+	@starting-style {
+		.term:hover .tip,
+		.term:focus-visible .tip,
+		.term:focus .tip {
+			opacity: 0;
+		}
 	}
 </style>

@@ -432,9 +432,20 @@
 		margin-bottom: 18px;
 	}
 
+	.top-grid > :global(*) {
+		min-width: 0;
+	}
+
 	@media (max-width: 860px) {
 		.top-grid {
 			grid-template-columns: 1fr;
+		}
+	}
+
+	@media (max-width: 480px) {
+		.receive-body {
+			flex-direction: column;
+			align-items: center;
 		}
 	}
 
