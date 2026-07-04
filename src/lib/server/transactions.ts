@@ -6,6 +6,7 @@ import { getChain } from './chain';
 import { scanWallet, findNextUnusedIndex } from './bitcoin/walletScan';
 import {
 	constructPsbt,
+	finalizePsbt,
 	DEFAULT_ORIGIN_PATH,
 	PsbtError,
 	type ConstructedPsbt,
@@ -198,6 +199,64 @@ export function updateTransaction(
 	).run(fields.status ?? null, fields.psbt ?? null, fields.txid ?? null, txId);
 
 	return getTransaction(userId, walletId, txId);
+}
+
+export class BroadcastError extends Error {
+	constructor(
+		message: string,
+		public readonly code: 'not_found' | 'already_sent' | 'incomplete' | 'rejected'
+	) {
+		super(message);
+		this.name = 'BroadcastError';
+	}
+}
+
+/**
+ * Finalize a saved transaction's (fully-signed) PSBT and broadcast it. Guards
+ * against double-broadcast: a transaction already carrying a txid is refused.
+ * On success the txid is recorded and the row moves to 'completed'.
+ */
+export async function broadcastTransaction(
+	userId: number,
+	walletId: number,
+	txId: number,
+	signedPsbt?: string
+): Promise<{ txid: string; transaction: SavedTransaction }> {
+	const tx = getTransaction(userId, walletId, txId);
+	if (!tx) throw new BroadcastError('Transaction not found.', 'not_found');
+	if (tx.status === 'completed' || tx.txid)
+		throw new BroadcastError('This transaction has already been broadcast.', 'already_sent');
+
+	const psbt = signedPsbt?.trim() || tx.psbt;
+
+	let finalized: { rawHex: string; txid: string };
+	try {
+		finalized = finalizePsbt(psbt);
+	} catch (e) {
+		// finalize() throws when signatures are missing or malformed.
+		throw new BroadcastError(
+			e instanceof Error
+				? `This PSBT isn't fully signed yet: ${e.message}`
+				: 'This PSBT is not fully signed.',
+			'incomplete'
+		);
+	}
+
+	let broadcastTxid: string;
+	try {
+		broadcastTxid = await getChain().electrum.broadcast(finalized.rawHex);
+	} catch (e) {
+		// Surface the node's rejection reason in as-plain-as-possible language.
+		const raw = e instanceof Error ? e.message : String(e);
+		throw new BroadcastError(`The network rejected this transaction: ${raw}`, 'rejected');
+	}
+
+	const updated = updateTransaction(userId, walletId, txId, {
+		status: 'completed',
+		psbt,
+		txid: broadcastTxid
+	});
+	return { txid: broadcastTxid, transaction: updated! };
 }
 
 export function deleteTransaction(userId: number, walletId: number, txId: number): boolean {
