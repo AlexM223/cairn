@@ -34,6 +34,66 @@
 	let addrFilter = $state<'used' | 'unused'>('used');
 
 	const receive = $derived(form?.receive ?? data.receive);
+
+	// --- tx labels ---
+	// Server-loaded labels plus optimistic local edits layered on top; an
+	// override of '' hides a label that was just cleared.
+	const LABEL_PRIVACY_NOTE =
+		'Labels are private to this wallet and stored only on your Cairn instance.';
+	let labelOverrides = $state<Record<string, string>>({});
+	const labels = $derived<Record<string, string>>({ ...data.labels, ...labelOverrides });
+	let editingTxid = $state<string | null>(null);
+	let editValue = $state('');
+	let savingLabel = $state(false);
+	let labelError = $state<string | null>(null);
+
+	function startLabelEdit(txid: string) {
+		editingTxid = txid;
+		editValue = labels[txid] ?? '';
+		labelError = null;
+	}
+
+	function cancelLabelEdit() {
+		editingTxid = null;
+		labelError = null;
+	}
+
+	function focusInput(node: HTMLInputElement) {
+		node.focus();
+		node.select();
+	}
+
+	async function saveLabel() {
+		if (editingTxid === null || savingLabel) return;
+		const txid = editingTxid;
+		const next = editValue.trim().slice(0, 120);
+		const prev = labels[txid] ?? '';
+		if (next === prev) {
+			cancelLabelEdit();
+			return;
+		}
+
+		// Optimistic: show the new label immediately, revert if the PUT fails.
+		labelOverrides = { ...labelOverrides, [txid]: next };
+		editingTxid = null;
+		savingLabel = true;
+		try {
+			const res = await fetch(`/api/wallets/${data.wallet.id}/labels`, {
+				method: 'PUT',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ txid, label: next })
+			});
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			labelError = null;
+		} catch {
+			labelOverrides = { ...labelOverrides, [txid]: prev };
+			editingTxid = txid;
+			editValue = next;
+			labelError = "Couldn't save the label — try again.";
+		} finally {
+			savingLabel = false;
+		}
+	}
 	const usedAddrs = $derived((data.scan?.addresses ?? []).filter((a) => a.used));
 	// Unused = the forward gap window on the receive chain.
 	const unusedAddrs = $derived(
@@ -259,6 +319,75 @@
 											<a href="/explorer/tx/{tx.txid}" class="mono">
 												{truncateMiddle(tx.txid, 8, 8)}
 											</a>
+											{#if editingTxid === tx.txid}
+												<form
+													class="label-editor"
+													onsubmit={(e) => {
+														e.preventDefault();
+														saveLabel();
+													}}
+												>
+													<input
+														class="input label-input"
+														type="text"
+														maxlength={120}
+														placeholder="e.g. rent, invoice #4021"
+														title={LABEL_PRIVACY_NOTE}
+														bind:value={editValue}
+														use:focusInput
+														disabled={savingLabel}
+														onkeydown={(e) => {
+															if (e.key === 'Escape') {
+																e.preventDefault();
+																cancelLabelEdit();
+															}
+														}}
+													/>
+													<button
+														class="btn btn-ghost btn-sm label-editor-btn"
+														type="submit"
+														disabled={savingLabel}
+														aria-label="Save label"
+													>
+														<Icon name="check" size={13} />
+													</button>
+													<button
+														class="btn btn-ghost btn-sm label-editor-btn"
+														type="button"
+														disabled={savingLabel}
+														aria-label="Cancel"
+														onclick={cancelLabelEdit}
+													>
+														<Icon name="x" size={13} />
+													</button>
+													{#if labelError}
+														<span class="form-error" role="alert">{labelError}</span>
+													{/if}
+												</form>
+											{:else if labels[tx.txid]}
+												<div class="tx-label-row">
+													<button
+														type="button"
+														class="tx-label"
+														title="{LABEL_PRIVACY_NOTE} Click to edit."
+														onclick={() => startLabelEdit(tx.txid)}
+													>
+														{labels[tx.txid]}
+													</button>
+												</div>
+											{:else}
+												<div class="tx-label-row">
+													<button
+														type="button"
+														class="label-add"
+														title={LABEL_PRIVACY_NOTE}
+														onclick={() => startLabelEdit(tx.txid)}
+													>
+														<Icon name="plus" size={11} />
+														label
+													</button>
+												</div>
+											{/if}
 										</td>
 										<td>
 											<span class="dir" class:in={tx.delta >= 0} class:out={tx.delta < 0}>
@@ -600,6 +729,81 @@
 
 	.delta {
 		font-weight: 500;
+	}
+
+	/* --- tx labels --- */
+
+	.tx-label-row {
+		margin-top: 3px;
+	}
+
+	.tx-label {
+		display: inline-block;
+		max-width: 260px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		background: none;
+		border: none;
+		padding: 0;
+		font: inherit;
+		font-size: 12px;
+		font-style: italic;
+		color: var(--text-muted);
+		cursor: pointer;
+		text-align: left;
+	}
+
+	.tx-label:hover {
+		color: var(--text-secondary);
+		text-decoration: underline;
+		text-decoration-style: dotted;
+	}
+
+	.label-add {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		background: none;
+		border: none;
+		padding: 0;
+		font: inherit;
+		font-size: 11.5px;
+		color: var(--text-muted);
+		cursor: pointer;
+		opacity: 0;
+		transition: opacity 120ms var(--ease);
+	}
+
+	tr:hover .label-add,
+	.label-add:focus-visible {
+		opacity: 0.8;
+	}
+
+	.label-add:hover {
+		opacity: 1;
+		color: var(--accent);
+	}
+
+	.label-editor {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		margin-top: 4px;
+	}
+
+	.label-input {
+		font-size: 12px;
+		padding: 3px 8px;
+		width: 200px;
+	}
+
+	.label-editor-btn {
+		padding: 3px 6px;
+	}
+
+	.label-editor .form-error {
+		font-size: 11.5px;
 	}
 
 	/* --- addresses --- */

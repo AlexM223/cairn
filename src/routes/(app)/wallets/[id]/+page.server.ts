@@ -4,6 +4,7 @@ import {
 	getWallet,
 	getWalletDetail,
 	deleteWallet,
+	getLabels,
 	nextReceiveAddress,
 	peekReceiveAddress
 } from '$lib/server/wallets';
@@ -34,7 +35,9 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 			xpub: row.xpub,
 			createdAt: row.created_at
 		},
-		imported: url.searchParams.get('imported') === '1'
+		imported: url.searchParams.get('imported') === '1',
+		// Tx labels are local bookkeeping — one cheap SQLite read, no network.
+		labels: getLabels(locals.user!.id, id) ?? {}
 	};
 
 	try {

@@ -167,6 +167,50 @@ export async function getWalletDetail(
 	}
 }
 
+// ------------------------------------------------------------- tx labels
+
+export const TX_LABEL_MAX = 120;
+
+/**
+ * All transaction labels for a wallet, keyed by txid.
+ * Returns null when the wallet doesn't exist or isn't owned by userId.
+ */
+export function getLabels(userId: number, walletId: number): Record<string, string> | null {
+	if (!getWallet(userId, walletId)) return null;
+	const rows = db
+		.prepare('SELECT txid, label FROM tx_labels WHERE wallet_id = ?')
+		.all(walletId) as unknown as { txid: string; label: string }[];
+	const labels: Record<string, string> = {};
+	for (const row of rows) labels[row.txid] = row.label;
+	return labels;
+}
+
+/**
+ * Upsert a free-text label on a transaction in this wallet. The label is
+ * trimmed and capped at TX_LABEL_MAX characters; an empty (or all-whitespace)
+ * label clears any existing one. Returns the stored value, or null when the
+ * wallet doesn't exist or isn't owned by userId.
+ */
+export function setLabel(
+	userId: number,
+	walletId: number,
+	txid: string,
+	label: string
+): { txid: string; label: string } | null {
+	if (!getWallet(userId, walletId)) return null;
+
+	const trimmed = String(label ?? '').trim().slice(0, TX_LABEL_MAX);
+	if (!trimmed) {
+		db.prepare('DELETE FROM tx_labels WHERE wallet_id = ? AND txid = ?').run(walletId, txid);
+		return { txid, label: '' };
+	}
+	db.prepare(
+		`INSERT INTO tx_labels (wallet_id, txid, label) VALUES (?, ?, ?)
+		 ON CONFLICT (wallet_id, txid) DO UPDATE SET label = excluded.label`
+	).run(walletId, txid, trimmed);
+	return { txid, label: trimmed };
+}
+
 // ------------------------------------------------------- receive addresses
 
 function clampToGap(idx: number, nextUnused: number): number {
