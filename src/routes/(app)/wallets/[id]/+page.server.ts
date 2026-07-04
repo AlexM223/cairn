@@ -8,6 +8,7 @@ import {
 	nextReceiveAddress,
 	peekReceiveAddress
 } from '$lib/server/wallets';
+import { listTransactions } from '$lib/server/transactions';
 import type { Actions, PageServerLoad } from './$types';
 
 const QR_OPTS = {
@@ -37,7 +38,10 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 		},
 		imported: url.searchParams.get('imported') === '1',
 		// Tx labels are local bookkeeping — one cheap SQLite read, no network.
-		labels: getLabels(locals.user!.id, id) ?? {}
+		labels: getLabels(locals.user!.id, id) ?? {},
+		// Saved transactions in the draft → awaiting-signature → broadcast
+		// lifecycle. Cheap local SQLite read, newest first.
+		transactions: listTransactions(locals.user!.id, id) ?? []
 	};
 
 	try {

@@ -3,7 +3,8 @@
 	import { afterNavigate, invalidateAll, replaceState } from '$app/navigation';
 	import Icon from '$lib/components/Icon.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
-	import { formatBtc, formatSats, timeAgo, truncateMiddle } from '$lib/format';
+	import TxStatusBadge from '$lib/components/TxStatusBadge.svelte';
+	import { formatBtc, formatFeeRate, formatSats, timeAgo, truncateMiddle } from '$lib/format';
 	import { SCRIPT_TYPE_LABELS } from '../labels';
 
 	let { data, form } = $props();
@@ -30,8 +31,43 @@
 	let deleting = $state(false);
 	let generating = $state(false);
 	let retrying = $state(false);
-	let tab = $state<'transactions' | 'addresses'>('transactions');
+	let tab = $state<'transactions' | 'addresses' | 'saved'>('transactions');
 	let addrFilter = $state<'used' | 'unused'>('used');
+
+	// --- saved transactions (draft → awaiting-signature → broadcast) ---
+	// Rows removed optimistically on delete; a failed DELETE restores the id.
+	let deletedTxIds = $state<number[]>([]);
+	const savedTxs = $derived(data.transactions.filter((t) => !deletedTxIds.includes(t.id)));
+	// Unfinished drafts surface in an always-visible card so a transaction
+	// parked mid-signing is never lost behind a tab.
+	const inProgress = $derived(savedTxs.filter((t) => t.status !== 'completed'));
+	let confirmTxId = $state<number | null>(null);
+	let deletingTxId = $state<number | null>(null);
+
+	// createdAt is an ISO string; timeAgo wants unix seconds.
+	function isoToUnix(iso: string): number {
+		return Math.floor(Date.parse(iso) / 1000);
+	}
+
+	async function deleteSavedTx(id: number) {
+		if (deletingTxId !== null) return;
+		deletingTxId = id;
+		const prev = deletedTxIds;
+		deletedTxIds = [...deletedTxIds, id];
+		confirmTxId = null;
+		try {
+			const res = await fetch(`/api/wallets/${data.wallet.id}/transactions/${id}`, {
+				method: 'DELETE'
+			});
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+		} catch {
+			// Restore the row so the user can retry.
+			deletedTxIds = prev;
+			confirmTxId = id;
+		} finally {
+			deletingTxId = null;
+		}
+	}
 
 	const receive = $derived(form?.receive ?? data.receive);
 
@@ -146,6 +182,10 @@
 			<h1 class="page-title truncate">{data.wallet.name}</h1>
 			<span class="badge badge-neutral">{SCRIPT_TYPE_LABELS[data.wallet.scriptType]}</span>
 		</div>
+		<a href="/wallets/{data.wallet.id}/send" class="btn btn-primary btn-sm">
+			<Icon name="arrow-up-right" size={14} />
+			Send
+		</a>
 		{#if !confirmDelete}
 			<button
 				type="button"
@@ -189,6 +229,32 @@
 		<Icon name="eye" size={12} />
 		Watch-only · {truncateMiddle(data.wallet.xpub, 10, 8)}
 	</p>
+
+	{#if inProgress.length > 0}
+		<!-- ------------------------------ transactions in progress -->
+		<section class="card card-pad progress-card" aria-label="Transactions in progress">
+			<div class="row" style="gap: 8px">
+				<Icon name="clock" size={15} />
+				<span class="card-title grow">Transactions in progress</span>
+			</div>
+			<ul class="progress-list">
+				{#each inProgress as tx (tx.id)}
+					<li class="progress-row">
+						<TxStatusBadge status={tx.status} />
+						<span class="mono text-muted">{truncateMiddle(tx.recipient, 8, 6)}</span>
+						<span class="tabular grow" title="{formatSats(tx.amount)} sats">
+							{formatBtc(tx.amount)} BTC
+						</span>
+						<span class="hint">{timeAgo(isoToUnix(tx.createdAt))}</span>
+						<a href="/wallets/{data.wallet.id}/send?tx={tx.id}" class="btn btn-secondary btn-sm">
+							Resume
+							<Icon name="arrow-right" size={13} />
+						</a>
+					</li>
+				{/each}
+			</ul>
+		</section>
+	{/if}
 
 	{#if data.scanError}
 		<!-- ------------------------------------------- scan failed -->
@@ -289,6 +355,19 @@
 			>
 				Addresses
 				<span class="tab-count">{data.scan.addresses.length}</span>
+			</button>
+			<button
+				type="button"
+				role="tab"
+				class="tab"
+				class:active={tab === 'saved'}
+				aria-selected={tab === 'saved'}
+				onclick={() => (tab = 'saved')}
+			>
+				Sending
+				{#if savedTxs.length > 0}
+					<span class="tab-count">{savedTxs.length}</span>
+				{/if}
 			</button>
 		</div>
 
@@ -428,7 +507,7 @@
 					</div>
 				{/if}
 			</section>
-		{:else}
+		{:else if tab === 'addresses'}
 			<section class="card">
 				<div class="chips">
 					<button
@@ -487,6 +566,130 @@
 					</div>
 				{/if}
 			</section>
+		{:else}
+			<div class="saved-head">
+				<div class="saved-head-text">
+					<span class="hint">
+						Transactions you're building live here — a <strong>draft</strong> PSBT, one
+						<strong>awaiting signature</strong> on your hardware wallet, then
+						<strong>broadcast</strong> once sent.
+					</span>
+				</div>
+				<a href="/wallets/{data.wallet.id}/send" class="btn btn-primary btn-sm">
+					<Icon name="plus" size={14} />
+					New transaction
+				</a>
+			</div>
+
+			{#if savedTxs.length === 0}
+				<section class="card">
+					<div class="empty-state">
+						<Icon name="arrow-up-right" size={22} />
+						<span class="empty-title">Nothing in progress</span>
+						<span>
+							This is where transactions you're building and signing live. Cairn builds an
+							unsigned transaction (a PSBT) that you sign on your hardware wallet — your keys
+							never touch this server.
+						</span>
+						<a
+							href="/wallets/{data.wallet.id}/send"
+							class="btn btn-primary btn-sm"
+							style="margin-top: 4px"
+						>
+							<Icon name="plus" size={14} />
+							New transaction
+						</a>
+					</div>
+				</section>
+			{:else}
+				<div class="saved-list">
+					{#each savedTxs as tx (tx.id)}
+						<section class="card card-pad saved-row">
+							<div class="saved-row-top">
+								<TxStatusBadge status={tx.status} />
+								<span class="hint saved-time">{timeAgo(isoToUnix(tx.createdAt))}</span>
+							</div>
+
+							<div class="saved-grid">
+								<div class="saved-field">
+									<span class="saved-label">To</span>
+									<a href="/explorer/address/{tx.recipient}" class="mono saved-recipient">
+										{truncateMiddle(tx.recipient, 10, 8)}
+									</a>
+								</div>
+								<div class="saved-field">
+									<span class="saved-label">Amount</span>
+									<span class="tabular" title="{formatSats(tx.amount)} sats">
+										{formatBtc(tx.amount)} BTC
+									</span>
+								</div>
+								<div class="saved-field">
+									<span class="saved-label">Fee</span>
+									<span class="tabular" title="{formatSats(tx.fee)} sats">
+										{formatSats(tx.fee)} sats · {formatFeeRate(tx.feeRate)}
+									</span>
+								</div>
+							</div>
+
+							{#if tx.status === 'completed' && tx.txid}
+								<div class="saved-field">
+									<span class="saved-label">Transaction</span>
+									<a href="/explorer/tx/{tx.txid}" class="mono">
+										{truncateMiddle(tx.txid, 10, 8)}
+									</a>
+								</div>
+							{:else}
+								<div class="saved-actions">
+									<a
+										href="/wallets/{data.wallet.id}/send?tx={tx.id}"
+										class="btn btn-secondary btn-sm"
+									>
+										<Icon name="arrow-right" size={14} />
+										Continue
+									</a>
+									<a
+										href="/api/wallets/{data.wallet.id}/transactions/{tx.id}/file"
+										class="btn btn-ghost btn-sm"
+										download="cairn-tx-{tx.id}.psbt"
+									>
+										<Icon name="arrow-down-left" size={14} />
+										Download PSBT
+									</a>
+									<span class="grow"></span>
+									{#if confirmTxId === tx.id}
+										<button
+											type="button"
+											class="btn btn-danger btn-sm"
+											disabled={deletingTxId === tx.id}
+											onclick={() => deleteSavedTx(tx.id)}
+										>
+											{#if deletingTxId === tx.id}<span class="spinner"></span>{/if}
+											Delete
+										</button>
+										<button
+											type="button"
+											class="btn btn-ghost btn-sm"
+											disabled={deletingTxId === tx.id}
+											onclick={() => (confirmTxId = null)}
+										>
+											Cancel
+										</button>
+									{:else}
+										<button
+											type="button"
+											class="btn btn-ghost btn-sm delete-tx"
+											aria-label="Discard transaction"
+											onclick={() => (confirmTxId = tx.id)}
+										>
+											<Icon name="trash" size={14} />
+										</button>
+									{/if}
+								</div>
+							{/if}
+						</section>
+					{/each}
+				</div>
+			{/if}
 		{/if}
 	{/if}
 </div>
@@ -843,5 +1046,126 @@
 
 	.addr-cell {
 		max-width: 320px;
+	}
+
+	/* --- transactions in progress --- */
+
+	.progress-card {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		margin-bottom: 18px;
+	}
+
+	.progress-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+
+	.progress-row {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		flex-wrap: wrap;
+		font-size: 13px;
+	}
+
+	/* --- saved transactions --- */
+
+	.saved-head {
+		display: flex;
+		align-items: center;
+		gap: 14px;
+		margin-bottom: 14px;
+		flex-wrap: wrap;
+	}
+
+	.saved-head-text {
+		flex: 1;
+		min-width: 220px;
+	}
+
+	.saved-head-text strong {
+		font-weight: 600;
+		color: var(--text-secondary);
+	}
+
+	.saved-head .btn {
+		flex-shrink: 0;
+	}
+
+	.saved-list {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.saved-row {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.saved-row-top {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+
+	.saved-time {
+		margin-left: auto;
+	}
+
+	.saved-grid {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 10px 28px;
+	}
+
+	.saved-field {
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+		min-width: 0;
+	}
+
+	.saved-label {
+		font-size: 11px;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+	}
+
+	.saved-recipient {
+		font-size: 13px;
+	}
+
+	.saved-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+		border-top: 1px solid var(--border-subtle);
+		padding-top: 12px;
+	}
+
+	.delete-tx:hover {
+		color: var(--error);
+		background: var(--error-muted);
+	}
+
+	@media (max-width: 480px) {
+		.saved-time {
+			margin-left: 0;
+		}
+
+		.saved-actions .grow {
+			display: none;
+		}
 	}
 </style>

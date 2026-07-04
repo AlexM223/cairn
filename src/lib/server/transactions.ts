@@ -1,12 +1,16 @@
 // Transaction lifecycle service: builds unsigned PSBTs from a wallet's live
 // UTXO set and persists them through draft → awaiting-signature → completed.
 
+import { base64 } from '@scure/base';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { db } from './db';
 import { getChain } from './chain';
 import { scanWallet, findNextUnusedIndex } from './bitcoin/walletScan';
 import {
 	constructPsbt,
 	finalizePsbt,
+	assertSameTransaction,
+	PsbtMismatchError,
 	DEFAULT_ORIGIN_PATH,
 	PsbtError,
 	type ConstructedPsbt,
@@ -161,8 +165,9 @@ function mapRow(r: Record<string, unknown>): SavedTransaction {
 
 export function listTransactions(userId: number, walletId: number): SavedTransaction[] | null {
 	if (!ownedWallet(userId, walletId)) return null;
+	// id DESC tiebreaks rows created within the same millisecond.
 	const rows = db
-		.prepare('SELECT * FROM transactions WHERE wallet_id = ? ORDER BY created_at DESC')
+		.prepare('SELECT * FROM transactions WHERE wallet_id = ? ORDER BY created_at DESC, id DESC')
 		.all(walletId) as Record<string, unknown>[];
 	return rows.map(mapRow);
 }
@@ -201,10 +206,43 @@ export function updateTransaction(
 	return getTransaction(userId, walletId, txId);
 }
 
+// -------------------------------------------------------- PSBT safety checks
+
+const PSBT_MAGIC_HEX = '70736274ff'; // "psbt\xff"
+
+function hasPsbtMagic(bytes: Uint8Array): boolean {
+	return bytes.length > 5 && bytesToHex(bytes.slice(0, 5)) === PSBT_MAGIC_HEX;
+}
+
+/**
+ * Accept a PSBT in any of the shapes signers hand back — base64 text, hex
+ * text, or base64-of-a-text-file that itself contains base64/hex — and return
+ * canonical base64 of the raw binary. Throws on anything that isn't a PSBT.
+ */
+export function normalizePsbt(input: string, depth = 0): string {
+	const trimmed = input.trim();
+	if (!trimmed) throw new Error('Empty PSBT');
+
+	if (new RegExp(`^${PSBT_MAGIC_HEX}[0-9a-fA-F]*$`, 'i').test(trimmed)) {
+		return base64.encode(hexToBytes(trimmed.toLowerCase()));
+	}
+
+	const bytes = base64.decode(trimmed); // throws on non-base64
+	if (hasPsbtMagic(bytes)) return base64.encode(bytes);
+
+	// A .psbt "file" that's actually text (base64/hex with a trailing newline)
+	// arrives here as base64-encoded ASCII — unwrap one layer, once.
+	if (depth === 0) {
+		const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+		return normalizePsbt(text, 1);
+	}
+	throw new Error('Not a PSBT');
+}
+
 export class BroadcastError extends Error {
 	constructor(
 		message: string,
-		public readonly code: 'not_found' | 'already_sent' | 'incomplete' | 'rejected'
+		public readonly code: 'not_found' | 'already_sent' | 'incomplete' | 'mismatch' | 'rejected'
 	) {
 		super(message);
 		this.name = 'BroadcastError';
@@ -227,7 +265,25 @@ export async function broadcastTransaction(
 	if (tx.status === 'completed' || tx.txid)
 		throw new BroadcastError('This transaction has already been broadcast.', 'already_sent');
 
-	const psbt = signedPsbt?.trim() || tx.psbt;
+	let psbt = tx.psbt;
+	if (signedPsbt?.trim()) {
+		try {
+			psbt = normalizePsbt(signedPsbt);
+		} catch {
+			throw new BroadcastError("That doesn't look like a valid PSBT.", 'incomplete');
+		}
+		// Never broadcast something other than what was reviewed and saved.
+		try {
+			assertSameTransaction(tx.psbt, psbt);
+		} catch (e) {
+			throw new BroadcastError(
+				e instanceof PsbtMismatchError
+					? e.message
+					: 'The supplied PSBT describes a different transaction than this draft — refusing to broadcast it.',
+				'mismatch'
+			);
+		}
+	}
 
 	let finalized: { rawHex: string; txid: string };
 	try {

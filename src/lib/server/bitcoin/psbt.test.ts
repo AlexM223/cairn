@@ -145,18 +145,25 @@ describe('constructPsbt', () => {
 });
 
 describe('assertSameTransaction (signer-substitution guard)', () => {
-	it('accepts a PSBT with identical inputs and outputs', async () => {
-		const draft = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 30_000, feeRate: 10 });
-		// A re-serialization is byte-identical in commitment terms.
-		expect(() => assertSameTransaction(draft.psbtBase64, draft.psbtBase64)).not.toThrow();
+	it('accepts a signed PSBT with identical inputs and outputs', async () => {
+		const draft = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 70_000, feeRate: 12 });
+		const account = accountKey();
+		const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
+		for (let i = 0; i < tx.inputsLength; i++) {
+			const path = tx.getInput(i).bip32Derivation![0][1].path;
+			tx.signIdx(account.deriveChild(path[3]).deriveChild(path[4]).privateKey!, i);
+		}
+		// Signing only adds signatures — the guard must not trip.
+		expect(() =>
+			assertSameTransaction(draft.psbtBase64, base64.encode(tx.toPSBT()))
+		).not.toThrow();
 	});
 
-	it('rejects a PSBT that pays a different recipient', async () => {
-		// The tester's exact attack: two drafts, then substitute one for the other.
+	it('rejects a PSBT that pays a different recipient (the substitution attack)', async () => {
 		const a = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 30_000, feeRate: 10 });
 		const b = await constructPsbt({
 			...COMMON,
-			recipient: 'bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3', // different address
+			recipient: 'bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3',
 			amount: 30_000,
 			feeRate: 10
 		});
@@ -167,19 +174,6 @@ describe('assertSameTransaction (signer-substitution guard)', () => {
 		const a = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 30_000, feeRate: 10 });
 		const b = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 31_000, feeRate: 10 });
 		expect(() => assertSameTransaction(a.psbtBase64, b.psbtBase64)).toThrow(PsbtMismatchError);
-	});
-
-	it('accepts the same transaction after it has been signed', async () => {
-		// Signing must NOT trip the guard — inputs/outputs are unchanged.
-		const draft = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 70_000, feeRate: 12 });
-		const account = accountKey();
-		const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
-		for (let i = 0; i < tx.inputsLength; i++) {
-			const path = tx.getInput(i).bip32Derivation![0][1].path;
-			tx.signIdx(account.deriveChild(path[3]).deriveChild(path[4]).privateKey!, i);
-		}
-		const signed = base64.encode(tx.toPSBT());
-		expect(() => assertSameTransaction(draft.psbtBase64, signed)).not.toThrow();
 	});
 });
 

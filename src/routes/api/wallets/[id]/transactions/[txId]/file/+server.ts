@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit';
+import { base64 } from '@scure/base';
 import { requireUser } from '$lib/server/api';
 import { getTransaction } from '$lib/server/transactions';
-import { base64 } from '@scure/base';
 import type { RequestHandler } from './$types';
 
 /**
@@ -24,11 +24,12 @@ export const GET: RequestHandler = async (event) => {
 		error(500, 'Stored PSBT is corrupt');
 	}
 
-	const filename = `cairn-tx-${txId}${tx.txid ? '-' + tx.txid.slice(0, 8) : ''}.psbt`;
+	const filename = `cairn-wallet${walletId}-tx${txId}-unsigned.psbt`;
 	return new Response(bytes as unknown as BodyInit, {
 		headers: {
 			'content-type': 'application/octet-stream',
-			'content-disposition': `attachment; filename="${filename}"`
+			'content-disposition': `attachment; filename="${filename}"`,
+			'cache-control': 'no-store'
 		}
 	});
 };

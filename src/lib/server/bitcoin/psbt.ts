@@ -354,7 +354,8 @@ function commitment(psbtBase64: string): { inputs: string; outputs: string } {
 		const out = tx.getOutput(i);
 		outputs.push(`${out.script ? bytesToHex(out.script) : ''}:${out.amount ?? 0n}`);
 	}
-	// Order matters — a reordered tx is a different tx — so no sorting.
+	// Order-sensitive: a reordered transaction is a different transaction, and
+	// our construction emits BIP69-canonical order that signers don't touch.
 	return { inputs: inputs.join('|'), outputs: outputs.join('|') };
 }
 
@@ -367,8 +368,9 @@ export class PsbtMismatchError extends Error {
 
 /**
  * Verify a signed PSBT commits to the SAME inputs and outputs as the reviewed
- * draft. This is the guard against a malicious or buggy signer returning a
- * transaction that pays a different destination than the one approved.
+ * draft — the guard against a malicious or buggy signer returning a
+ * transaction that pays a different destination than the one approved. Wired
+ * into both the upload and broadcast paths of the transactions service.
  * Throws PsbtMismatchError when they diverge.
  */
 export function assertSameTransaction(draftPsbtBase64: string, signedPsbtBase64: string): void {

@@ -5,8 +5,8 @@ import type { RequestHandler } from './$types';
 
 /**
  * Finalize and broadcast a saved transaction. Optionally accepts a freshly
- * signed PSBT in the body (e.g. straight from an in-browser device flow)
- * which is finalized in place. Refuses transactions that already have a txid.
+ * signed PSBT in the body, which must describe the same payment as the saved
+ * draft (verified server-side). Refuses transactions that already have a txid.
  */
 export const POST: RequestHandler = async (event) => {
 	const user = requireUser(event);
