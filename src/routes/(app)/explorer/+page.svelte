@@ -1,9 +1,53 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import Icon from '$lib/components/Icon.svelte';
-	import { formatNumber, formatBtc, formatBytes, timeAgo, formatDateTime, formatFeeRate } from '$lib/format';
+	import HowItWorks from '$lib/components/HowItWorks.svelte';
+	import { formatNumber, formatBtc, formatBytes, timeAgo, formatDateTime, formatFeeRate, truncateMiddle } from '$lib/format';
 
 	let { data } = $props();
+
+	// ---- search detection + per-user recent searches (kept on this device) ----
+
+	const DETECTED: Record<string, { label: string; verb: string }> = {
+		'block-height': { label: 'a block height', verb: 'View block' },
+		'block-hash': { label: 'a block hash', verb: 'View block' },
+		tx: { label: 'a transaction ID', verb: 'View transaction' },
+		address: { label: 'a Bitcoin address', verb: 'View address' }
+	};
+
+	interface RecentSearch {
+		q: string;
+		type: string;
+		redirect: string;
+	}
+
+	const recentKey = $derived(`cairn.recent-searches.${page.data.user?.id ?? 'anon'}`);
+	let recent = $state<RecentSearch[]>([]);
+
+	$effect(() => {
+		try {
+			recent = JSON.parse(localStorage.getItem(recentKey) ?? '[]');
+		} catch {
+			recent = [];
+		}
+	});
+
+	// Remember every successfully classified search, newest first, capped at 6.
+	$effect(() => {
+		const s = data.search;
+		if (!s || !s.redirect) return;
+		const entry: RecentSearch = { q: s.query, type: s.type, redirect: s.redirect };
+		const next = [entry, ...recent.filter((r) => r.q !== entry.q)].slice(0, 6);
+		if (JSON.stringify(next) !== JSON.stringify(recent)) {
+			recent = next;
+			localStorage.setItem(recentKey, JSON.stringify(next));
+		}
+	});
+
+	function clearRecent() {
+		recent = [];
+		localStorage.removeItem(recentKey);
+	}
 
 	const lastHeight = $derived(data.blocks.at(-1)?.height ?? null);
 	const firstHeight = $derived(data.blocks[0]?.height ?? null);
@@ -38,6 +82,19 @@
 	<h1 class="page-title">Blocks, transactions &amp; addresses</h1>
 </div>
 
+<HowItWorks id="explorer">
+	<p>
+		<strong>The blockchain is a public ledger anyone can inspect</strong> — this explorer is
+		your window into it. Every ~10 minutes a new block of transactions is added; the list
+		below shows the newest ones. Click anything: blocks contain transactions, transactions
+		move coins between addresses, and every hop is a link.
+	</p>
+	<p>
+		The search box understands block heights (800000), block hashes, transaction IDs, and
+		addresses — paste anything and Cairn works out what it is.
+	</p>
+</HowItWorks>
+
 <form method="GET" action="/explorer" class="search fade-in" role="search">
 	<div class="search-box">
 		<span class="search-icon"><Icon name="search" size={17} /></span>
@@ -55,10 +112,44 @@
 	<button class="btn btn-primary" type="submit">Search</button>
 </form>
 
-{#if data.q}
-	<div class="no-results card card-pad fade-in">
-		<Icon name="info" size={16} />
-		<span>No results for <span class="mono">“{data.q}”</span> — try a block height, block hash, txid or address.</span>
+{#if data.search}
+	{#if data.search.redirect && DETECTED[data.search.type]}
+		<div class="detected card card-pad fade-in">
+			<Icon name="check" size={16} />
+			<span class="detected-text">
+				Looks like <strong>{DETECTED[data.search.type].label}</strong>
+			</span>
+			<a href={data.search.redirect} class="btn btn-primary btn-sm">
+				{DETECTED[data.search.type].verb}
+				<span class="mono detected-q">
+					{data.search.type === 'block-height'
+						? formatNumber(Number(data.search.query))
+						: truncateMiddle(data.search.query, 8, 6)}
+				</span>
+				<Icon name="arrow-right" size={13} />
+			</a>
+		</div>
+	{:else}
+		<div class="no-results card card-pad fade-in">
+			<Icon name="info" size={16} />
+			<span>
+				Couldn't classify <span class="mono">“{truncateMiddle(data.search.query, 14, 10)}”</span>
+				— searches match a block height (like <a href="/explorer?q=800000">800000</a>), a
+				64-character block hash or txid, or an address (1…, 3…, bc1…).
+			</span>
+		</div>
+	{/if}
+{:else if recent.length > 0}
+	<div class="recent fade-in">
+		<span class="hint">Recent:</span>
+		{#each recent as r (r.q)}
+			<a href={r.redirect} class="recent-chip mono" title={r.q}>
+				{r.type === 'block-height' ? `#${formatNumber(Number(r.q))}` : truncateMiddle(r.q, 8, 6)}
+			</a>
+		{/each}
+		<button class="clear-recent" onclick={clearRecent} title="Clear recent searches">
+			<Icon name="x" size={12} />
+		</button>
 	</div>
 {/if}
 
@@ -92,6 +183,9 @@
 			{data.mempool ? formatBytes(data.mempool.vsize) : '—'}
 		</span>
 	</div>
+	<a href="/explorer/mempool" class="mempool-link">
+		Explore the mempool <Icon name="arrow-right" size={13} />
+	</a>
 </section>
 
 <!-- Blocks -->
@@ -216,11 +310,84 @@
 		white-space: nowrap;
 	}
 
+	.detected {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		flex-wrap: wrap;
+		margin-bottom: 14px;
+		color: var(--success);
+	}
+
+	.detected-text {
+		color: var(--text-secondary);
+		flex: 1;
+	}
+
+	.detected-text strong {
+		color: var(--text);
+		font-weight: 500;
+	}
+
+	.detected-q {
+		font-size: 12px;
+	}
+
+	.recent {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+		margin: -6px 0 14px;
+	}
+
+	.recent-chip {
+		font-size: 12px;
+		padding: 3px 9px;
+		background: var(--surface);
+		border: 1px solid var(--border-subtle);
+		border-radius: 999px;
+		color: var(--text-secondary);
+		transition: border-color 120ms var(--ease), color 120ms var(--ease);
+	}
+
+	.recent-chip:hover {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+
+	.clear-recent {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 20px;
+		height: 20px;
+		background: none;
+		border: none;
+		border-radius: 50%;
+		color: var(--text-faint);
+		cursor: pointer;
+	}
+
+	.clear-recent:hover {
+		color: var(--error);
+		background: var(--error-muted);
+	}
+
 	.mempool {
 		display: flex;
+		align-items: center;
 		gap: 40px;
 		flex-wrap: wrap;
 		margin-bottom: 14px;
+	}
+
+	.mempool-link {
+		margin-left: auto;
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		font-size: 12.5px;
 	}
 
 	.mempool-stat {

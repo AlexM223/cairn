@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { page } from '$app/state';
 	import Icon from '$lib/components/Icon.svelte';
 	import {
 		formatNumber,
@@ -11,6 +12,19 @@
 	} from '$lib/format';
 
 	let { data } = $props();
+
+	// One-time orientation for new users; dismissal is remembered per account.
+	const tourKey = $derived(`cairn.tour.${page.data.user?.id ?? 'anon'}`);
+	let showTour = $state(false);
+
+	$effect(() => {
+		showTour = localStorage.getItem(tourKey) !== 'done';
+	});
+
+	function dismissTour() {
+		showTour = false;
+		localStorage.setItem(tourKey, 'done');
+	}
 
 	const feeTiers = $derived(
 		data.chain.fees
@@ -27,6 +41,40 @@
 <svelte:head>
 	<title>Dashboard — Cairn</title>
 </svelte:head>
+
+{#if showTour}
+	<section class="card card-pad tour fade-in">
+		<div class="tour-head">
+			<span class="tour-title">Welcome to Cairn</span>
+			<button class="tour-close" onclick={dismissTour} aria-label="Dismiss welcome tour">
+				<Icon name="x" size={15} />
+			</button>
+		</div>
+		<div class="tour-items">
+			<a href="/explorer" class="tour-item" onclick={dismissTour}>
+				<Icon name="blocks" size={18} />
+				<span class="tour-item-title">Explorer</span>
+				<span class="tour-item-desc">
+					Browse blocks, transactions, and addresses — every technical term explains itself.
+				</span>
+			</a>
+			<a href="/wallets" class="tour-item" onclick={dismissTour}>
+				<Icon name="wallet" size={18} />
+				<span class="tour-item-title">Wallets</span>
+				<span class="tour-item-desc">
+					Import an xpub to watch balances and history. Keys never leave your hardware.
+				</span>
+			</a>
+			<a href="/explorer/mempool" class="tour-item" onclick={dismissTour}>
+				<Icon name="zap" size={18} />
+				<span class="tour-item-title">Mempool</span>
+				<span class="tour-item-desc">
+					See what's waiting to confirm and what a transaction costs right now.
+				</span>
+			</a>
+		</div>
+	</section>
+{/if}
 
 {#if data.chain.error}
 	<div class="card card-pad chain-error fade-in">
@@ -186,6 +234,77 @@
 		gap: 12px;
 		align-items: flex-start;
 		color: var(--warning);
+	}
+
+	.tour {
+		margin-bottom: 16px;
+		background: linear-gradient(160deg, rgba(232, 147, 90, 0.1), var(--surface) 55%);
+		border-color: rgba(232, 147, 90, 0.3);
+	}
+
+	.tour-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-bottom: 14px;
+	}
+
+	.tour-title {
+		font-family: var(--font-serif);
+		font-size: 19px;
+		font-weight: 600;
+	}
+
+	.tour-close {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 26px;
+		height: 26px;
+		background: none;
+		border: none;
+		border-radius: var(--radius-chip);
+		color: var(--text-muted);
+		cursor: pointer;
+	}
+
+	.tour-close:hover {
+		color: var(--text);
+		background: var(--surface-elevated);
+	}
+
+	.tour-items {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+		gap: 12px;
+	}
+
+	.tour-item {
+		display: flex;
+		flex-direction: column;
+		gap: 5px;
+		padding: 14px;
+		background: var(--bg);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-control);
+		color: var(--accent);
+		transition: border-color 120ms var(--ease);
+	}
+
+	.tour-item:hover {
+		border-color: var(--accent);
+	}
+
+	.tour-item-title {
+		font-size: 14px;
+		font-weight: 600;
+		color: var(--text);
+	}
+
+	.tour-item-desc {
+		font-size: 12.5px;
+		line-height: 1.55;
+		color: var(--text-secondary);
 	}
 
 	.hero {

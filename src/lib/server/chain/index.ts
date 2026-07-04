@@ -15,7 +15,10 @@ import type {
 	BlockDetail,
 	BlockSummary,
 	FeeEstimates,
+	FeeHistogram,
+	MempoolBlockProjection,
 	MempoolSummary,
+	MempoolTrendPoint,
 	NodeInfo,
 	TxDetail,
 	TxVin,
@@ -87,6 +90,11 @@ function toTxDetail(tx: EsploraTx, tipHeight: number, outspends?: (boolean | nul
 		spent: outspends?.[i] ?? null
 	}));
 
+	// SegWit moves signatures out of the base serialization, so weight < size*4.
+	const segwit = tx.weight < tx.size * 4 || tx.vin.some((v) => (v.witness?.length ?? 0) > 0);
+	// BIP125: any input with sequence below 0xfffffffe opts in to replacement.
+	const rbf = !coinbase && tx.vin.some((v) => (v.sequence ?? 0xffffffff) < 0xfffffffe);
+
 	return {
 		txid: tx.txid,
 		confirmed,
@@ -101,6 +109,8 @@ function toTxDetail(tx: EsploraTx, tipHeight: number, outspends?: (boolean | nul
 		feeRate: fee !== null && vsize > 0 ? round2(fee / vsize) : null,
 		locktime: tx.locktime,
 		version: tx.version,
+		segwit,
+		rbf,
 		vin,
 		vout
 	};
@@ -240,6 +250,7 @@ export class ChainService {
 			unconfirmedBalance: mem.funded_txo_sum - mem.spent_txo_sum,
 			txCount: chain.tx_count + mem.tx_count,
 			totalReceived: chain.funded_txo_sum,
+			totalSent: chain.spent_txo_sum,
 			used: chain.tx_count + mem.tx_count > 0
 		};
 	}
@@ -258,6 +269,44 @@ export class ChainService {
 	async getMempoolSummary(): Promise<MempoolSummary> {
 		const m = await this.esplora.getMempool();
 		return { txCount: m.count, vsize: m.vsize, totalFees: m.total_fee };
+	}
+
+	/** Fee-rate distribution of the current mempool; null when unavailable. */
+	async getFeeHistogram(): Promise<FeeHistogram | null> {
+		const m = await this.esplora.getMempool();
+		return Array.isArray(m.fee_histogram) && m.fee_histogram.length > 0
+			? m.fee_histogram
+			: null;
+	}
+
+	/** Projected next blocks by fee rate; null on plain esplora backends. */
+	async getMempoolBlocks(): Promise<MempoolBlockProjection[] | null> {
+		const blocks = await this.esplora.getMempoolBlocks();
+		if (!blocks) return null;
+		return blocks.map((b) => ({
+			nTx: b.nTx,
+			vsize: b.blockVSize,
+			totalFees: b.totalFees,
+			medianFee: round2(b.medianFee),
+			feeRange:
+				b.feeRange.length >= 2
+					? [round2(b.feeRange[0]), round2(b.feeRange[b.feeRange.length - 1])]
+					: [round2(b.medianFee), round2(b.medianFee)]
+		}));
+	}
+
+	/** Mempool size over the recent past, oldest first; null when unavailable. */
+	async getMempoolTrend(): Promise<MempoolTrendPoint[] | null> {
+		const stats = await this.esplora.getMempoolStatistics();
+		if (!stats || stats.length === 0) return null;
+		return stats
+			.map((s) => ({
+				time: s.added,
+				// Statistics report weight units; virtual bytes = weight / 4.
+				vsize: Math.round(s.mempool_byte_weight / 4),
+				txCount: s.count
+			}))
+			.sort((a, b) => a.time - b.time);
 	}
 
 	async getFeeEstimates(): Promise<FeeEstimates> {

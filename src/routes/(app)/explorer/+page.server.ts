@@ -1,17 +1,19 @@
-import { redirect } from '@sveltejs/kit';
 import { getChain } from '$lib/server/chain';
 import { classifySearch, chainErrorMessage } from '$lib/server/search';
 import type { PageServerLoad } from './$types';
-import type { BlockSummary, MempoolSummary } from '$lib/types';
+import type { BlockSummary, MempoolSummary, SearchResult } from '$lib/types';
 
 const PAGE_SIZE = 15;
 
 export const load: PageServerLoad = async ({ url }) => {
 	const rawQ = url.searchParams.get('q');
 	const q = rawQ?.trim() ?? '';
+
+	// Classification is surfaced to the user ("looks like a transaction ID")
+	// rather than silently redirecting — the detection itself is informative.
+	let search: SearchResult | null = null;
 	if (q !== '') {
-		const result = await classifySearch(q);
-		if (result.redirect) redirect(302, result.redirect);
+		search = await classifySearch(q);
 	}
 
 	const beforeParam = url.searchParams.get('before') ?? '';
@@ -36,5 +38,5 @@ export const load: PageServerLoad = async ({ url }) => {
 		chainError = chainErrorMessage(e);
 	}
 
-	return { q, before, blocks, mempool, tipHeight, chainError };
+	return { q, search, before, blocks, mempool, tipHeight, chainError };
 };

@@ -1,6 +1,9 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
+	import Term from '$lib/components/Term.svelte';
+	import HowItWorks from '$lib/components/HowItWorks.svelte';
+	import { blockSubsidy } from '$lib/bitcoin';
 	import {
 		formatNumber,
 		formatBtc,
@@ -22,6 +25,7 @@
 	const totalTxPages = $derived(Math.max(1, Math.ceil(data.txTotal / 25)));
 	const hasPrev = $derived(block.height > 0);
 	const hasNext = $derived(data.tipHeight !== null && block.height < data.tipHeight);
+	const subsidy = $derived(blockSubsidy(block.height));
 
 	function valueOut(tx: TxDetail): number {
 		return tx.vout.reduce((sum, v) => sum + v.value, 0);
@@ -37,6 +41,12 @@
 		<span class="overline">Block</span>
 		<h1 class="hero-number height">{formatNumber(block.height)}</h1>
 		<div class="hash mono text-secondary">
+			<span class="overline">
+				<Term
+					tip="A unique fingerprint created by double-hashing the block header. The long run of leading zeros is not decoration — it is the proof of work itself."
+					>Hash</Term
+				>
+			</span>
 			<CopyText value={block.hash} truncate={16} />
 		</div>
 		<div class="meta">
@@ -45,13 +55,22 @@
 				{formatDateTime(block.time)} · {timeAgo(block.time)}
 			</span>
 			{#if confirmations !== null}
-				<span class="badge badge-success">
+				<span
+					class="badge badge-success"
+					title="Each block mined on top of this one makes it exponentially harder to reverse. Six confirmations is the customary threshold for treating history as settled."
+				>
 					<Icon name="check" size={12} />
 					{formatNumber(confirmations)} confirmation{confirmations === 1 ? '' : 's'}
 				</span>
 			{/if}
 			{#if block.miner}
-				<span class="badge badge-neutral">{block.miner}</span>
+				<span
+					class="badge badge-neutral"
+					title="Mined by {block.miner} — the pool whose hardware found a header hash below the difficulty target, winning the right to add this block."
+				>
+					<Icon name="flame" size={11} />
+					{block.miner}
+				</span>
 			{/if}
 		</div>
 	</div>
@@ -69,6 +88,20 @@
 	</div>
 </div>
 
+<HowItWorks id="block">
+	<p>
+		<strong>A block is a bundle of confirmed transactions</strong> added to the blockchain
+		roughly every ten minutes. Miners compete to find a valid block by hashing its header
+		over and over until the result falls below the network's difficulty target — proof that
+		real work was spent.
+	</p>
+	<p>
+		The winning miner collects the <strong>block reward</strong>: newly created bitcoin (the
+		subsidy) plus every fee paid by the transactions inside. Each block references the hash
+		of the one before it, forming the chain that makes rewriting history impractical.
+	</p>
+</HowItWorks>
+
 <section class="card card-pad fade-in details-card">
 	<div class="details">
 		<div class="detail">
@@ -80,12 +113,22 @@
 			<span class="detail-value tabular">{formatBytes(block.size)}</span>
 		</div>
 		<div class="detail">
-			<span class="overline">Weight</span>
+			<span class="overline">
+				<Term
+					tip="Blocks are limited by weight (4 million weight units), not raw bytes. SegWit signature data counts less toward the limit, which is what made blocks larger than 1 MB possible."
+					>Weight</Term
+				>
+			</span>
 			<span class="detail-value tabular">{formatNumber(block.weight)} WU</span>
 		</div>
 		{#if block.totalFees !== null}
 			<div class="detail">
-				<span class="overline">Total fees</span>
+				<span class="overline">
+					<Term
+						tip="Every transaction pays a fee to be included. Fees are the miner's incentive to pick your transaction from the mempool — and as the subsidy halves over time, they become the network's long-term security budget."
+						>Total fees</Term
+					>
+				</span>
 				<span class="detail-value tabular" title="{formatSats(block.totalFees)} sats">
 					{formatBtc(block.totalFees)} BTC
 				</span>
@@ -93,7 +136,12 @@
 		{/if}
 		{#if block.reward !== null}
 			<div class="detail">
-				<span class="overline">Block reward</span>
+				<span class="overline">
+					<Term
+						tip="{formatBtc(subsidy)} BTC subsidy (newly created bitcoin) + {formatBtc(block.totalFees ?? Math.max(0, block.reward - subsidy))} BTC in fees = {formatBtc(block.reward)} BTC paid to the miner via the coinbase transaction."
+						>Block reward</Term
+					>
+				</span>
 				<span class="detail-value tabular" title="{formatSats(block.reward)} sats">
 					{formatBtc(block.reward)} BTC
 				</span>
@@ -101,28 +149,58 @@
 		{/if}
 		{#if block.medianFee !== null}
 			<div class="detail">
-				<span class="overline">Median fee</span>
+				<span class="overline">
+					<Term
+						tip="Half the transactions in this block paid more than this rate, half paid less — a snapshot of what confirmation cost when it was mined."
+						>Median fee</Term
+					>
+				</span>
 				<span class="detail-value tabular">{formatFeeRate(block.medianFee)}</span>
 			</div>
 		{/if}
 		<div class="detail">
-			<span class="overline">Difficulty</span>
+			<span class="overline">
+				<Term
+					tip="How hard it was to find this block. The network retunes difficulty every 2,016 blocks (~2 weeks) so blocks keep arriving about every 10 minutes no matter how much mining hardware joins."
+					>Difficulty</Term
+				>
+			</span>
 			<span class="detail-value tabular">{formatNumber(block.difficulty)}</span>
 		</div>
 		<div class="detail">
-			<span class="overline">Nonce</span>
+			<span class="overline">
+				<Term
+					tip="The number miners changed over and over to get a different header hash — the knob they turn while searching for a hash below the target. Finding it is the 'work' in proof of work."
+					>Nonce</Term
+				>
+			</span>
 			<span class="detail-value tabular">{formatNumber(block.nonce)}</span>
 		</div>
 		<div class="detail">
-			<span class="overline">Bits</span>
+			<span class="overline">
+				<Term
+					tip="The difficulty target in the block header's compact encoding. A valid block's hash must be below the value these bits encode."
+					>Bits</Term
+				>
+			</span>
 			<span class="detail-value mono">{block.bits}</span>
 		</div>
 		<div class="detail">
-			<span class="overline">Version</span>
+			<span class="overline">
+				<Term
+					tip="Header version bits. Miners also use spare bits here to signal readiness for protocol upgrades."
+					>Version</Term
+				>
+			</span>
 			<span class="detail-value mono">0x{block.version.toString(16)}</span>
 		</div>
 		<div class="detail wide">
-			<span class="overline">Merkle root</span>
+			<span class="overline">
+				<Term
+					tip="A fingerprint of every transaction in this block, folded together pairwise into a single hash. If even one transaction changed by one byte, this value would change too."
+					>Merkle root</Term
+				>
+			</span>
 			<span class="detail-value"><CopyText value={block.merkleRoot} truncate={12} /></span>
 		</div>
 		{#if block.prevHash}
@@ -174,7 +252,12 @@
 							</td>
 							<td>
 								{#if tx.vin.some((v) => v.coinbase)}
-									<span class="badge badge-accent"><Icon name="flame" size={11} /> Coinbase</span>
+									<span
+										class="badge badge-accent"
+										title="The special first transaction of every block: it has no inputs and creates new bitcoin — the miner's reward (subsidy plus all fees in this block)."
+									>
+										<Icon name="flame" size={11} /> Coinbase
+									</span>
 								{/if}
 							</td>
 							<td class="num text-muted">{tx.vin.length} → {tx.vout.length}</td>
@@ -228,6 +311,9 @@
 
 	.hash {
 		font-size: 13px;
+		display: flex;
+		align-items: center;
+		gap: 8px;
 	}
 
 	.meta {

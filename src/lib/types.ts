@@ -94,6 +94,10 @@ export interface TxDetail {
 	feeRate: number | null; // sat/vB
 	locktime: number;
 	version: number;
+	/** Uses Segregated Witness (weight savings vs legacy format) */
+	segwit: boolean;
+	/** Signals BIP125 replace-by-fee (any input sequence < 0xfffffffe) */
+	rbf: boolean;
 	vin: TxVin[];
 	vout: TxVout[];
 }
@@ -105,6 +109,7 @@ export interface AddressInfo {
 	unconfirmedBalance: number; // sats
 	txCount: number;
 	totalReceived: number | null; // sats
+	totalSent: number | null; // sats
 	used: boolean;
 }
 
@@ -120,6 +125,25 @@ export interface MempoolSummary {
 	txCount: number;
 	vsize: number; // total vbytes
 	totalFees: number; // sats
+}
+
+/** [feeRate sat/vB, vsize] pairs, highest rate first. */
+export type FeeHistogram = [number, number][];
+
+/** A projected block assembled from the mempool by fee rate. */
+export interface MempoolBlockProjection {
+	nTx: number;
+	vsize: number;
+	totalFees: number; // sats
+	medianFee: number; // sat/vB
+	feeRange: [number, number]; // sat/vB
+}
+
+/** One point of mempool history (for the trend sparkline). */
+export interface MempoolTrendPoint {
+	time: number; // unix seconds
+	vsize: number; // virtual bytes waiting
+	txCount: number;
 }
 
 export interface FeeEstimates {

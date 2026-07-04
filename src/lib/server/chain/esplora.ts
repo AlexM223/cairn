@@ -38,6 +38,7 @@ export interface EsploraVin {
 	prevout: EsploraVout | null;
 	scriptsig?: string;
 	sequence?: number;
+	witness?: string[];
 }
 
 export interface EsploraVout {
@@ -90,6 +91,27 @@ export interface EsploraAddress {
 export interface EsploraMempool {
 	count: number;
 	vsize: number;
+	total_fee: number;
+	/** [feeRate sat/vB, vsize] pairs, highest rate first. */
+	fee_histogram?: [number, number][];
+}
+
+/** mempool.space projected block template (/v1/fees/mempool-blocks). */
+export interface EsploraMempoolBlock {
+	blockSize: number;
+	blockVSize: number;
+	nTx: number;
+	totalFees: number;
+	medianFee: number;
+	feeRange: number[];
+}
+
+/** One sample from mempool.space /v1/statistics (mempool over time). */
+export interface EsploraMempoolStat {
+	added: number; // unix seconds
+	count: number;
+	vbytes_per_second: number;
+	mempool_byte_weight: number;
 	total_fee: number;
 }
 
@@ -303,6 +325,32 @@ export class EsploraApi {
 			hour,
 			economy: target(144, 1)
 		};
+	}
+
+	/**
+	 * Projected next blocks assembled from the current mempool by fee rate.
+	 * mempool.space only; null on plain esplora.
+	 */
+	async getMempoolBlocks(): Promise<EsploraMempoolBlock[] | null> {
+		if (!(await this.probeV1())) return null;
+		try {
+			return await this.get<EsploraMempoolBlock[]>('/v1/fees/mempool-blocks', SHORT_TTL_MS);
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * Mempool size samples over the last two hours (newest first).
+	 * mempool.space only; null on plain esplora.
+	 */
+	async getMempoolStatistics(): Promise<EsploraMempoolStat[] | null> {
+		if (!(await this.probeV1())) return null;
+		try {
+			return await this.get<EsploraMempoolStat[]>('/v1/statistics/2h', 60_000);
+		} catch {
+			return null;
+		}
 	}
 
 	/** Current network hashrate (H/s) via mempool.space; null on plain esplora. */
