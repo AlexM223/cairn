@@ -3,7 +3,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import ExplorerNav from '$lib/components/ExplorerNav.svelte';
-	import { synthesizeBlocks, feeColor, type VizRect } from '$lib/mempoolViz';
+	import { synthesizeBlocks, synthKey, feeColor, type VizRect } from '$lib/mempoolViz';
 	import { formatNumber, formatBtc, formatBytes, formatSats, formatFeeRate } from '$lib/format';
 	import type { FeeHistogram, MempoolBlockProjection } from '$lib/types';
 
@@ -18,6 +18,13 @@
 	let tipHeight = $state<number | null>(data.tipHeight);
 	let lastUpdated = $state(Date.now());
 	let stale = $state(false);
+	// Fingerprint of the last inputs handed to synthesizeBlocks — when a poll
+	// returns the same picture, we skip reassigning state entirely so the DOM
+	// (and its 500+ CSS-transitioned rects) doesn't churn for nothing.
+	// svelte-ignore state_referenced_locally
+	let lastKey = $state(synthKey(data.histogram, data.projected));
+	// Screen-reader announcement — only set on meaningful changes (new tip block).
+	let announcement = $state('');
 
 	const POLL_MS = 10_000;
 
@@ -28,9 +35,20 @@
 				const res = await fetch('/api/mempool/projected');
 				if (!res.ok) throw new Error(String(res.status));
 				const next = await res.json();
-				projected = next.projected;
-				histogram = next.histogram;
+				if (
+					typeof next.tipHeight === 'number' &&
+					tipHeight !== null &&
+					next.tipHeight !== tipHeight
+				) {
+					announcement = `New block ${formatNumber(next.tipHeight)} — projections updated`;
+				}
 				tipHeight = next.tipHeight;
+				const key = synthKey(next.histogram, next.projected);
+				if (key !== lastKey) {
+					lastKey = key;
+					projected = next.projected;
+					histogram = next.histogram;
+				}
 				lastUpdated = Date.now();
 				stale = false;
 			} catch {
@@ -42,11 +60,65 @@
 
 	const blocks = $derived(synthesizeBlocks(histogram, projected, 6));
 
-	// Shared tooltip that follows the pointer.
+	// Shared tooltip that follows the pointer (or, for keyboard users, sits
+	// below-right of the focused rectangle).
 	let tip = $state<{ x: number; y: number; rect: VizRect } | null>(null);
 
 	function showTip(e: MouseEvent, rect: VizRect) {
 		tip = { x: e.clientX, y: e.clientY, rect };
+	}
+
+	function showTipFromFocus(e: FocusEvent, rect: VizRect) {
+		const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+		// Anchor below-right of the rect, clamped so the ~200x120px tooltip
+		// stays inside the viewport (the template clamps x again).
+		tip = {
+			x: Math.max(0, Math.min(r.right, window.innerWidth - 224)),
+			y: Math.max(0, Math.min(r.bottom, window.innerHeight - 150)),
+			rect
+		};
+	}
+
+	/** Plain-language summary of the tooltip for the button's aria-label. */
+	function rectLabel(rect: VizRect): string {
+		const txs =
+			rect.txCount > 1 ? `~${formatNumber(rect.txCount)} transactions` : '1 transaction';
+		const rate = formatFeeRate(rect.feeRate).replace('sat/vB', 'sat per virtual byte');
+		const size = formatBytes(Math.round(rect.vsize))
+			.replace(/ kB$/, ' kilobytes')
+			.replace(/ MB$/, ' megabytes')
+			.replace(/ B$/, ' bytes');
+		return `${txs}, ${rate}, ${size}, about ${formatSats(rect.fee)} sats in fees`;
+	}
+
+	/**
+	 * Roving keyboard navigation within one block. Each block is a single tab
+	 * stop (first rect tabindex 0, the rest -1); arrows move between rects.
+	 * Simplification: rects live in treemap order (largest first), not a grid,
+	 * so Left/Right step ±1 through that order and Up/Down jump ±8 — an
+	 * approximation of spatial movement that keeps this dependency-free.
+	 */
+	function onRectKeydown(e: KeyboardEvent) {
+		if (e.key === 'Escape') {
+			tip = null; // hide the tooltip, keep focus where it is
+			return;
+		}
+		const delta =
+			e.key === 'ArrowRight' ? 1
+			: e.key === 'ArrowLeft' ? -1
+			: e.key === 'ArrowDown' ? 8
+			: e.key === 'ArrowUp' ? -8
+			: 0;
+		if (delta === 0) return;
+		e.preventDefault(); // don't scroll the page
+		const btn = e.currentTarget as HTMLButtonElement;
+		const group = btn.closest('.viz');
+		if (!group) return;
+		const rects = Array.from(group.querySelectorAll<HTMLButtonElement>('.tx-rect'));
+		const idx = rects.indexOf(btn);
+		if (idx === -1) return;
+		const next = Math.max(0, Math.min(rects.length - 1, idx + delta));
+		rects[next]?.focus();
 	}
 
 	const LEGEND = [1, 5, 12, 25, 60, 150];
@@ -113,11 +185,17 @@
 					<span class="median tabular">{formatFeeRate(block.projection.medianFee)}</span>
 				</div>
 
-				<div class="viz" role="img" aria-label="Projected block {i + 1}: {formatNumber(block.projection.nTx)} transactions, median {formatFeeRate(block.projection.medianFee)}">
-					{#each block.rects as rect (rect.key)}
-						<div
+				<div
+					class="viz"
+					role="group"
+					aria-label="Projected block {i + 1} of {blocks.length}: {formatNumber(block.projection.nTx)} transactions, median {formatFeeRate(block.projection.medianFee)}. Use arrow keys to explore transactions."
+				>
+					{#each block.rects as rect, ri (rect.key)}
+						<button
+							type="button"
 							class="tx-rect"
-							role="presentation"
+							tabindex={ri === 0 ? 0 : -1}
+							aria-label={rectLabel(rect)}
 							style:left="{rect.x * 100}%"
 							style:top="{rect.y * 100}%"
 							style:width="{rect.w * 100}%"
@@ -126,7 +204,10 @@
 							onmouseenter={(e) => showTip(e, rect)}
 							onmousemove={(e) => showTip(e, rect)}
 							onmouseleave={() => (tip = null)}
-						></div>
+							onfocus={(e) => showTipFromFocus(e, rect)}
+							onblur={() => (tip = null)}
+							onkeydown={onRectKeydown}
+						></button>
 					{/each}
 				</div>
 
@@ -147,7 +228,7 @@
 		<div class="legend-ramp">
 			{#each LEGEND as rate (rate)}
 				<span class="legend-stop">
-					<span class="legend-swatch" style:background={feeColor(rate)}></span>
+					<span class="legend-swatch" aria-hidden="true" style:background={feeColor(rate)}></span>
 					<span class="legend-label tabular">{rate}</span>
 				</span>
 			{/each}
@@ -158,6 +239,8 @@
 		</a>
 	</div>
 {/if}
+
+<div class="sr-only" aria-live="polite">{announcement}</div>
 
 {#if tip}
 	<div class="tooltip" style:left="{Math.min(tip.x + 14, window.innerWidth - 210)}px" style:top="{tip.y + 14}px">
@@ -290,6 +373,13 @@
 
 	.tx-rect {
 		position: absolute;
+		/* Reset button chrome — geometry and background come from inline styles. */
+		appearance: none;
+		border: none;
+		padding: 0;
+		margin: 0;
+		font: inherit;
+		cursor: pointer;
 		box-shadow: inset 0 0 0 1px var(--bg);
 		transition:
 			left 500ms var(--ease),
@@ -309,6 +399,24 @@
 	.tx-rect:hover {
 		filter: brightness(1.3);
 		z-index: 2;
+	}
+
+	.tx-rect:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 1px;
+		z-index: 3; /* keep the outline above sibling rects */
+	}
+
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
 	}
 
 	.block-stats {

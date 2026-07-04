@@ -190,6 +190,9 @@ export class EsploraApi {
 
 	/** GET with per-path TTL caching. Failed requests are not cached. */
 	private get<T>(path: string, ttlMs: number): Promise<T> {
+		// Normalize so equivalent spellings share one cache entry: collapse
+		// duplicate slashes and strip a trailing slash (keeping the leading one).
+		path = path.replace(/\/{2,}/g, '/').replace(/(.+)\/$/, '$1');
 		const now = Date.now();
 		const hit = this.cache.get(path);
 		if (hit && hit.expires > now) return hit.promise as Promise<T>;

@@ -29,6 +29,37 @@ export interface VizBlock {
 
 const MAX_RECTS_PER_BLOCK = 90;
 
+/**
+ * Cheap stable fingerprint of the inputs to `synthesizeBlocks`. Callers can
+ * compare keys between polls and skip re-synthesizing (and re-rendering) when
+ * the mempool picture hasn't moved. Not a cryptographic hash — just lengths,
+ * first/last entries and totals, which is plenty to detect real changes.
+ */
+export function synthKey(
+	histogram: FeeHistogram | null,
+	projected: MempoolBlockProjection[] | null
+): string {
+	const parts: (string | number)[] = [];
+	if (histogram && histogram.length > 0) {
+		let totalVsize = 0;
+		for (const [, vsize] of histogram) totalVsize += vsize;
+		const [firstRate, firstVsize] = histogram[0];
+		const [lastRate, lastVsize] = histogram[histogram.length - 1];
+		parts.push('h', histogram.length, firstRate, firstVsize, lastRate, lastVsize, Math.round(totalVsize));
+	} else {
+		parts.push('h0');
+	}
+	if (projected && projected.length > 0) {
+		parts.push('p', projected.length);
+		for (const b of projected) {
+			parts.push(b.nTx, Math.round(b.vsize), b.totalFees, b.medianFee, b.feeRange[0], b.feeRange[1]);
+		}
+	} else {
+		parts.push('p0');
+	}
+	return parts.join('|');
+}
+
 /** Deterministic hash → [0,1). Stable keys/sizes across polls, no Math.random. */
 function unitHash(...parts: number[]): number {
 	let h = 2166136261;
