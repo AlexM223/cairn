@@ -6,6 +6,11 @@ Cairn is a self-hosted Bitcoin command center — a block explorer, watch-only
 wallet navigator, and multi-user instance you run yourself. A cairn is a
 waymarker: a stack of stones marking the path.
 
+|                                                                       |                                                                                |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| ![Dashboard — block height, fees, recent blocks](docs/screenshots/dashboard.png) | ![Block detail — header fields and transaction list](docs/screenshots/block-detail.png) |
+| ![Mempool visualizer — projected next blocks](docs/screenshots/mempool-blocks.png) | ![Watch-only wallet — balance, receive address, history](docs/screenshots/wallets.png) |
+
 ## Features (v1)
 
 - **Block explorer** — blocks, transactions, addresses, mempool, and fee
@@ -46,6 +51,48 @@ node build         # serve it
 The SQLite database lives in `./data/cairn.db` (override with the
 `CAIRN_DB` environment variable). Back that file up and you've backed up
 the instance.
+
+## Deployment
+
+The recommended way to run Cairn in production is Docker:
+
+```sh
+docker compose up -d --build
+```
+
+That builds the image, starts the app on <http://localhost:3000>, and
+mounts `./data` into the container at `/data` for the SQLite database.
+Prefer a named volume? Swap the mount in `docker-compose.yml` — the
+comments show how.
+
+> **Mount something at `/data`.** Without a volume the database lives in
+> the container's writable layer and is gone the moment the container is
+> replaced — along with every account, wallet, and invite.
+
+Environment variables (defaults baked into the image):
+
+| Variable         | Default          | Meaning                                                          |
+| ---------------- | ---------------- | ---------------------------------------------------------------- |
+| `CAIRN_DB`       | `/data/cairn.db` | Path to the SQLite database file.                                 |
+| `PORT`           | `3000`           | Port the Node server listens on.                                  |
+| `ADDRESS_HEADER` | `x-forwarded-for` | Header the server trusts for the client IP (see below).          |
+
+`ADDRESS_HEADER=x-forwarded-for` makes the login rate limiter see real
+client IPs instead of the proxy's. Only run the container behind a
+reverse proxy that **sets or overwrites** `X-Forwarded-For` — if clients
+can reach the port directly, they can spoof the header; unset the
+variable in that case.
+
+Reverse-proxy note: live updates use Server-Sent Events, so response
+buffering must be off for `/api/events`. Cairn already sends
+`X-Accel-Buffering: no` (nginx honors it out of the box); for other
+proxies, disable buffering for that route.
+
+Liveness: `GET /api/health` is unauthenticated and returns
+`{"status":"ok"}` (or 503 when the database is unhappy). The image ships
+a `HEALTHCHECK` that probes it.
+
+Locked out? See [docs/RECOVERY.md](docs/RECOVERY.md).
 
 ## First run
 
