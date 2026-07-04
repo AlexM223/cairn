@@ -98,7 +98,17 @@
 	 * so Left/Right step ±1 through that order and Up/Down jump ±8 — an
 	 * approximation of spatial movement that keeps this dependency-free.
 	 */
-	function onRectKeydown(e: KeyboardEvent) {
+	// True roving tabindex: the last-focused rect in each block carries
+	// tabindex=0, so tabbing back into a block resumes where the user left
+	// off. Focus events (keyboard or mouse) keep this in sync; the clamp in
+	// activeFor() handles polls shrinking a block's rect count.
+	let activeRect = $state<Record<number, number>>({});
+
+	function activeFor(blockIdx: number, rectCount: number): number {
+		return Math.min(activeRect[blockIdx] ?? 0, rectCount - 1);
+	}
+
+	function onRectKeydown(e: KeyboardEvent, blockIdx: number) {
 		if (e.key === 'Escape') {
 			tip = null; // hide the tooltip, keep focus where it is
 			return;
@@ -118,6 +128,9 @@
 		const idx = rects.indexOf(btn);
 		if (idx === -1) return;
 		const next = Math.max(0, Math.min(rects.length - 1, idx + delta));
+		// Update the roving tab stop here as well as in onfocus — focus events
+		// don't fire reliably in unfocused (automated) documents.
+		activeRect[blockIdx] = next;
 		rects[next]?.focus();
 	}
 
@@ -194,7 +207,7 @@
 						<button
 							type="button"
 							class="tx-rect"
-							tabindex={ri === 0 ? 0 : -1}
+							tabindex={ri === activeFor(i, block.rects.length) ? 0 : -1}
 							aria-label={rectLabel(rect)}
 							style:left="{rect.x * 100}%"
 							style:top="{rect.y * 100}%"
@@ -204,9 +217,12 @@
 							onmouseenter={(e) => showTip(e, rect)}
 							onmousemove={(e) => showTip(e, rect)}
 							onmouseleave={() => (tip = null)}
-							onfocus={(e) => showTipFromFocus(e, rect)}
+							onfocus={(e) => {
+							activeRect[i] = ri;
+							showTipFromFocus(e, rect);
+						}}
 							onblur={() => (tip = null)}
-							onkeydown={onRectKeydown}
+							onkeydown={(e) => onRectKeydown(e, i)}
 						></button>
 					{/each}
 				</div>
