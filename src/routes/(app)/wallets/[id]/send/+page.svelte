@@ -8,12 +8,14 @@
 	import CopyText from '$lib/components/CopyText.svelte';
 	import { formatBtc, formatSats, formatFeeRate, truncateMiddle } from '$lib/format';
 	import { isWebHidAvailable } from '$lib/hw/ledger';
+	import { isTrezorConnectAvailable } from '$lib/hw/trezor';
 	import type { ConstructedPsbt } from '$lib/server/bitcoin/psbt';
 	import type { SavedTransaction } from '$lib/server/transactions';
 	import DeviceCard from './_components/DeviceCard.svelte';
 	import ColdCardSigner from './_components/ColdCardSigner.svelte';
 	import LedgerSigner from './_components/LedgerSigner.svelte';
 	import QrSigner from './_components/QrSigner.svelte';
+	import TrezorSigner from './_components/TrezorSigner.svelte';
 	import type { DeviceMethod, SignerContext } from './_components/signerContract';
 
 	let { data } = $props();
@@ -298,7 +300,7 @@
 	// ---------------------------------------------------- Sign: method selection
 	// One signing method is active (expanded) at a time; the rest collapse to
 	// selectable tiles. `null` = nothing chosen yet (pure method selection).
-	type SignMethod = 'file' | 'ledger' | 'coldcard' | 'qr';
+	type SignMethod = 'file' | 'trezor' | 'ledger' | 'coldcard' | 'qr';
 	let activeMethod = $state<SignMethod | null>(null);
 	// Bumped to remount the active signer from scratch — a clean retry after the
 	// server-side guard rejects what a device returned.
@@ -313,12 +315,21 @@
 
 	// The device signer methods, gated per the DeviceMethod contract. The generic
 	// file card is handled separately (it is always available and hosts its own
-	// upload/paste UI); Trezor stays a disabled "coming soon" tile for now.
+	// upload/paste UI).
 	const deviceMethods: (DeviceMethod & {
 		key: Exclude<SignMethod, 'file'>;
 		icon: string;
 		unavailableReason: string;
 	})[] = [
+		{
+			key: 'trezor',
+			name: 'Trezor',
+			blurb: 'Sign on-device over USB via Trezor Connect — approve in the Connect popup',
+			icon: 'shield',
+			available: () => isTrezorConnectAvailable(),
+			unavailableReason:
+				'Needs a secure context (HTTPS or localhost) for the Trezor Connect popup.'
+		},
 		{
 			key: 'ledger',
 			name: 'Ledger',
@@ -351,6 +362,7 @@
 
 	// Only one Svelte component per method key — the {#each} below picks from here.
 	const SIGNER_COMPONENTS = {
+		trezor: TrezorSigner,
 		ledger: LedgerSigner,
 		coldcard: ColdCardSigner,
 		qr: QrSigner
@@ -751,9 +763,6 @@
 						/>
 					{/if}
 				{/each}
-
-				<!-- Trezor is still a seam — its live card lands with the Trezor bead. -->
-				<DeviceCard name="Trezor" hint="USB signing" />
 			</div>
 
 			<!-- Shared attach status for device signers: the components report their
