@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { replaceState } from '$app/navigation';
 	import Icon from '$lib/components/Icon.svelte';
 	import Stepper from '$lib/components/Stepper.svelte';
@@ -6,9 +7,14 @@
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import { formatBtc, formatSats, formatFeeRate, truncateMiddle } from '$lib/format';
+	import { isWebHidAvailable } from '$lib/hw/ledger';
 	import type { ConstructedPsbt } from '$lib/server/bitcoin/psbt';
 	import type { SavedTransaction } from '$lib/server/transactions';
 	import DeviceCard from './_components/DeviceCard.svelte';
+	import ColdCardSigner from './_components/ColdCardSigner.svelte';
+	import LedgerSigner from './_components/LedgerSigner.svelte';
+	import QrSigner from './_components/QrSigner.svelte';
+	import type { DeviceMethod, SignerContext } from './_components/signerContract';
 
 	let { data } = $props();
 
@@ -193,8 +199,11 @@
 		}
 	}
 
-	async function attachSigned() {
-		const psbt = signedPsbtText.trim();
+	// Central attach path: EVERY signing method — the generic file card and each
+	// device signer — funnels its signed PSBT through this PATCH, where the
+	// server-side substitution guard verifies the signatures commit to the same
+	// transaction the user reviewed before the flow may advance to Confirm.
+	async function attachSignedPsbt(psbt: string) {
 		if (!psbt || attaching || !draft) return;
 		attaching = true;
 		signError = null;
@@ -226,6 +235,10 @@
 		} finally {
 			attaching = false;
 		}
+	}
+
+	async function attachSigned() {
+		await attachSignedPsbt(signedPsbtText.trim());
 	}
 
 	// ------------------------------------------------------------ CONFIRM step
@@ -282,13 +295,102 @@
 	);
 	const explorerUrl = $derived(sentTxid ? `/explorer/tx/${sentTxid}` : '#');
 
-	// Devices beyond the generic file method are seams for the hardware epic.
-	const comingSoonDevices = [
-		{ name: 'Trezor', hint: 'USB signing' },
-		{ name: 'Ledger', hint: 'USB signing' },
-		{ name: 'ColdCard', hint: 'Air-gapped SD / USB' },
-		{ name: 'QR / Animated', hint: 'Scan to sign' }
+	// ---------------------------------------------------- Sign: method selection
+	// One signing method is active (expanded) at a time; the rest collapse to
+	// selectable tiles. `null` = nothing chosen yet (pure method selection).
+	type SignMethod = 'file' | 'ledger' | 'coldcard' | 'qr';
+	let activeMethod = $state<SignMethod | null>(null);
+	// Bumped to remount the active signer from scratch — a clean retry after the
+	// server-side guard rejects what a device returned.
+	let signerEpoch = $state(0);
+
+	// Availability is probed client-side only (navigator.* does not exist during
+	// SSR) — start pessimistic and re-check after mount, like the signers do.
+	let mounted = $state(false);
+	onMount(() => {
+		mounted = true;
+	});
+
+	// The device signer methods, gated per the DeviceMethod contract. The generic
+	// file card is handled separately (it is always available and hosts its own
+	// upload/paste UI); Trezor stays a disabled "coming soon" tile for now.
+	const deviceMethods: (DeviceMethod & {
+		key: Exclude<SignMethod, 'file'>;
+		icon: string;
+		unavailableReason: string;
+	})[] = [
+		{
+			key: 'ledger',
+			name: 'Ledger',
+			blurb: 'Sign on-device over USB (WebHID) — nothing leaves the device but signatures',
+			icon: 'shield',
+			available: () => isWebHidAvailable(),
+			unavailableReason:
+				'Needs WebHID, which is only in Chromium desktop browsers (Chrome, Edge, Brave) over HTTPS or localhost.'
+		},
+		{
+			key: 'coldcard',
+			name: 'ColdCard (microSD)',
+			blurb: 'Air-gapped signing over a microSD card — no cable, no connection',
+			icon: 'shield',
+			// Pure file round-trip: works in any browser that can download + upload.
+			available: () => true,
+			unavailableReason: ''
+		},
+		{
+			key: 'qr',
+			name: 'Animated QR (SeedSigner, Passport, Jade)',
+			blurb: 'Air-gapped signing over the camera — QR codes cross the gap in both directions',
+			icon: 'qr',
+			// Displaying the unsigned QR always works; the signer itself falls back
+			// to a paste box when the browser can't camera-scan the signature back.
+			available: () => true,
+			unavailableReason: ''
+		}
 	];
+
+	// Only one Svelte component per method key — the {#each} below picks from here.
+	const SIGNER_COMPONENTS = {
+		ledger: LedgerSigner,
+		coldcard: ColdCardSigner,
+		qr: QrSigner
+	} as const;
+
+	function selectMethod(m: SignMethod) {
+		activeMethod = m;
+		signError = null;
+		signerEpoch += 1;
+	}
+
+	function collapseMethod() {
+		activeMethod = null;
+		signError = null;
+	}
+
+	// Every signer hands its result here → same substitution-guard PATCH as the
+	// generic file method, then the stepper advances identically.
+	function handleDeviceSigned(signedPsbtBase64: string) {
+		void attachSignedPsbt(signedPsbtBase64.trim());
+	}
+
+	// The PSBT the signers consume: the server row is the source of truth (it is
+	// refreshed by every successful attach), with the build response as fallback.
+	const unsignedPsbt = $derived(draft?.psbt ?? details?.psbtBase64 ?? '');
+
+	// Human-readable context so each signer can tell the user what to verify on
+	// the device screen. Null until a draft + review exist (i.e. before build).
+	const signerContext = $derived.by<SignerContext | null>(() => {
+		if (!draft || !review) return null;
+		return {
+			walletId,
+			draftId: draft.id,
+			scriptType: data.wallet.scriptType,
+			destinationAddress: review.recipient,
+			amountSats: review.amount,
+			feeSats: review.fee,
+			changeSats: review.change?.value ?? 0
+		};
+	});
 </script>
 
 <svelte:head>
@@ -541,75 +643,140 @@
 
 			<HowItWorks id="send-sign">
 				<p>
-					Signing happens <strong>on your device</strong>, never here. Download the unsigned PSBT,
-					open it in your wallet, review the amount and address <em>on the device screen</em>, and
-					approve. Then bring the signed file back.
+					Signing happens <strong>on your device</strong>, never here. Pick how your signer receives
+					the unsigned transaction — USB, a microSD card, QR codes, or a plain file — then review
+					the amount and address <em>on the device screen</em> and approve. Cairn verifies that
+					every returned signature commits to the exact transaction you reviewed before it can be
+					broadcast.
 				</p>
 			</HowItWorks>
 
 			<div class="method-grid">
-				<!-- The generic / file method — fully implemented for this bead. -->
-				<div class="card card-pad method-active">
-					<div class="method-head">
-						<span class="method-icon"><Icon name="wallet" size={18} /></span>
-						<div>
-							<h3 class="method-title">Generic wallet / file</h3>
-							<p class="method-sub">Sparrow, ColdCard, Electrum, BlueWallet, or any PSBT-capable signer</p>
+				<!-- Generic / file method: always available, hosts its own upload UI. -->
+				{#if activeMethod === 'file'}
+					<div class="card card-pad method-active">
+						<div class="method-head">
+							<span class="method-icon"><Icon name="wallet" size={18} /></span>
+							<div>
+								<h3 class="method-title">Generic wallet / file</h3>
+								<p class="method-sub">Sparrow, ColdCard, Electrum, BlueWallet, or any PSBT-capable signer</p>
+							</div>
+						</div>
+
+						<ol class="sign-steps">
+							<li>
+								<div class="sign-step-body">
+									<span class="sign-step-title">Download the unsigned PSBT</span>
+									<a class="btn btn-secondary btn-sm" href={fileUrl} download>
+										<Icon name="arrow-down-left" size={14} /> Download .psbt
+									</a>
+								</div>
+							</li>
+							<li>
+								<div class="sign-step-body">
+									<span class="sign-step-title">Sign it in your wallet</span>
+									<span class="hint">
+										Open the file in Sparrow / ColdCard / Electrum, verify the recipient and amount on
+										the device, and export the signed PSBT.
+									</span>
+								</div>
+							</li>
+							<li>
+								<div class="sign-step-body">
+									<span class="sign-step-title">Bring the signed PSBT back</span>
+									<label class="file-drop">
+										<input type="file" accept=".psbt,.txt,text/plain,application/octet-stream" onchange={onSignedFile} />
+										<Icon name="arrow-up-right" size={15} />
+										<span>Upload signed .psbt file</span>
+									</label>
+									<div class="or-divider"><span>or paste base64 / hex</span></div>
+									<textarea
+										class="input mono"
+										rows="3"
+										placeholder="cHNidP8BA…"
+										bind:value={signedPsbtText}
+									></textarea>
+									{#if signError}
+										<div class="form-error" role="alert">{signError}</div>
+									{/if}
+									<button
+										class="btn btn-primary"
+										onclick={attachSigned}
+										disabled={attaching || signedPsbtText.trim().length === 0}
+									>
+										{#if attaching}<span class="spinner"></span> Checking signatures…{:else}Attach signed transaction{/if}
+									</button>
+								</div>
+							</li>
+						</ol>
+
+						<div class="method-foot">
+							<button type="button" class="btn btn-ghost btn-sm" onclick={collapseMethod}>
+								<Icon name="x" size={14} /> Use a different method
+							</button>
 						</div>
 					</div>
+				{:else}
+					<DeviceCard
+						name="Generic wallet / file"
+						hint="Sparrow, Electrum, BlueWallet, or any PSBT-capable signer — download, sign, upload"
+						icon="wallet"
+						disabled={false}
+						onselect={() => selectMethod('file')}
+					/>
+				{/if}
 
-					<ol class="sign-steps">
-						<li>
-							<div class="sign-step-body">
-								<span class="sign-step-title">Download the unsigned PSBT</span>
-								<a class="btn btn-secondary btn-sm" href={fileUrl} download>
-									<Icon name="arrow-down-left" size={14} /> Download .psbt
-								</a>
-							</div>
-						</li>
-						<li>
-							<div class="sign-step-body">
-								<span class="sign-step-title">Sign it in your wallet</span>
-								<span class="hint">
-									Open the file in Sparrow / ColdCard / Electrum, verify the recipient and amount on
-									the device, and export the signed PSBT.
-								</span>
-							</div>
-						</li>
-						<li>
-							<div class="sign-step-body">
-								<span class="sign-step-title">Bring the signed PSBT back</span>
-								<label class="file-drop">
-									<input type="file" accept=".psbt,.txt,text/plain,application/octet-stream" onchange={onSignedFile} />
-									<Icon name="arrow-up-right" size={15} />
-									<span>Upload signed .psbt file</span>
-								</label>
-								<div class="or-divider"><span>or paste base64 / hex</span></div>
-								<textarea
-									class="input mono"
-									rows="3"
-									placeholder="cHNidP8BA…"
-									bind:value={signedPsbtText}
-								></textarea>
-								{#if signError}
-									<div class="form-error" role="alert">{signError}</div>
-								{/if}
-								<button
-									class="btn btn-primary"
-									onclick={attachSigned}
-									disabled={attaching || signedPsbtText.trim().length === 0}
-								>
-									{#if attaching}<span class="spinner"></span> Checking signatures…{:else}Attach signed transaction{/if}
-								</button>
-							</div>
-						</li>
-					</ol>
-				</div>
-
-				{#each comingSoonDevices as dev (dev.name)}
-					<DeviceCard name={dev.name} hint={dev.hint} />
+				<!-- Device signers: selecting one mounts its component; the guard-side
+				     attach path is shared with the file method via handleDeviceSigned. -->
+				{#each deviceMethods as m (m.key)}
+					{#if activeMethod === m.key && signerContext}
+						{#key signerEpoch}
+							{@const Signer = SIGNER_COMPONENTS[m.key]}
+							<Signer
+								{unsignedPsbt}
+								context={signerContext}
+								onsigned={handleDeviceSigned}
+								oncancel={collapseMethod}
+							/>
+						{/key}
+					{:else}
+						<DeviceCard
+							name={m.name}
+							hint={m.blurb}
+							icon={m.icon}
+							disabled={!mounted || !m.available()}
+							badge="Unavailable"
+							reason={mounted && !m.available() ? m.unavailableReason : undefined}
+							onselect={() => selectMethod(m.key)}
+						/>
+					{/if}
 				{/each}
+
+				<!-- Trezor is still a seam — its live card lands with the Trezor bead. -->
+				<DeviceCard name="Trezor" hint="USB signing" />
 			</div>
+
+			<!-- Shared attach status for device signers: the components report their
+			     own device errors, but the substitution-guard verdict lives here. -->
+			{#if activeMethod !== null && activeMethod !== 'file'}
+				{#if attaching}
+					<div class="attach-status" role="status">
+						<span class="spinner"></span> Checking signatures against the transaction you reviewed…
+					</div>
+				{:else if signError}
+					<div class="form-error" role="alert">
+						{signError}
+						<div class="reject-actions">
+							<button class="btn btn-secondary btn-sm" onclick={() => selectMethod(activeMethod!)}>
+								<Icon name="refresh" size={14} /> Try again
+							</button>
+							<button class="btn btn-ghost btn-sm" onclick={collapseMethod}>
+								Choose another method
+							</button>
+						</div>
+					</div>
+				{/if}
+			{/if}
 
 			<div class="row step-actions">
 				<button class="btn btn-secondary" onclick={() => (step = 'review')}>
@@ -1143,6 +1310,24 @@
 
 	.or-divider span {
 		padding: 0 10px;
+	}
+
+	.method-foot {
+		display: flex;
+		justify-content: flex-end;
+		margin-top: 16px;
+	}
+
+	.attach-status {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 13px;
+		color: var(--text-secondary);
+		background: var(--surface-elevated);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-control);
+		padding: 12px 14px;
 	}
 
 	/* ---- Confirm ---- */
