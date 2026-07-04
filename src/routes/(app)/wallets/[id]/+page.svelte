@@ -1,8 +1,6 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { enhance } from '$app/forms';
-	import { invalidateAll, replaceState } from '$app/navigation';
-	import { page } from '$app/state';
+	import { afterNavigate, invalidateAll, replaceState } from '$app/navigation';
 	import Icon from '$lib/components/Icon.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import { formatBtc, formatSats, timeAgo, truncateMiddle } from '$lib/format';
@@ -13,13 +11,20 @@
 	let bannerDismissed = $state(false);
 
 	// The ?imported=1 flag is one-shot: strip it from the URL so a reload
-	// doesn't resurrect the welcome banner minutes or days later.
-	onMount(() => {
-		if (data.imported) {
-			const url = new URL(page.url);
+	// doesn't resurrect the welcome banner minutes or days later. Deferred a
+	// tick because the router rejects replaceState mid-hydration; the native
+	// fallback covers any remaining timing edge.
+	afterNavigate(() => {
+		setTimeout(() => {
+			const url = new URL(window.location.href);
+			if (!url.searchParams.has('imported')) return;
 			url.searchParams.delete('imported');
-			replaceState(url, {});
-		}
+			try {
+				replaceState(url, {});
+			} catch {
+				history.replaceState(history.state, '', url);
+			}
+		}, 0);
 	});
 	let confirmDelete = $state(false);
 	let deleting = $state(false);
