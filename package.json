@@ -1,7 +1,25 @@
 {
 	"name": "cairn",
+	"description": "Self-hosted Bitcoin command center — block explorer, watch-only wallet navigator, and multi-user instance you run yourself.",
 	"private": true,
-	"version": "0.0.1",
+	"version": "0.1.0",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/OWNER/cairn"
+	},
+	"keywords": [
+		"bitcoin",
+		"block-explorer",
+		"electrum",
+		"self-hosted",
+		"watch-only",
+		"xpub",
+		"sveltekit"
+	],
+	"engines": {
+		"node": ">=22.5"
+	},
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",

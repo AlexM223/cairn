@@ -1,10 +1,10 @@
 import { fail } from '@sveltejs/kit';
-import { getInstanceSettings, setSetting } from '$lib/server/settings';
+import { getPublicInstanceSettings, setSetting } from '$lib/server/settings';
 import { reconfigureChain, testElectrum, testEsplora } from '$lib/server/chain';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async () => {
-	return { settings: getInstanceSettings() };
+	return { settings: getPublicInstanceSettings() };
 };
 
 export const actions: Actions = {
@@ -40,7 +40,11 @@ export const actions: Actions = {
 
 			setSetting('core_rpc_url', String(form.get('coreRpcUrl') ?? '').trim());
 			setSetting('core_rpc_user', String(form.get('coreRpcUser') ?? '').trim());
-			setSetting('core_rpc_pass', String(form.get('coreRpcPass') ?? '').trim());
+			// Blank means "keep the stored password" — the secret is never echoed
+			// back to the form, so an untouched field must not clear it.
+			const rpcPass = String(form.get('coreRpcPass') ?? '');
+			if (rpcPass !== '') setSetting('core_rpc_pass', rpcPass);
+			if (form.get('clearCoreRpcPass') === 'on') setSetting('core_rpc_pass', '');
 		}
 
 		// Apply the new connection immediately — no restart needed.

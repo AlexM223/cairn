@@ -1,6 +1,6 @@
 node_modules
 
-# Output
+# Build output
 .output
 .vercel
 .netlify
@@ -11,6 +11,7 @@ node_modules
 # OS
 .DS_Store
 Thumbs.db
+Desktop.ini
 
 # Env
 .env
@@ -22,4 +23,15 @@ Thumbs.db
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
+# Logs
+*.log
+npm-debug.log*
+
+# Editors / local tooling
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.claude/
+
+# Runtime data (SQLite database)
 data/

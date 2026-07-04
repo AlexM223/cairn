@@ -206,8 +206,12 @@
 								id="coreRpcPass"
 								name="coreRpcPass"
 								type="password"
-								value={data.settings.coreRpcPass ?? ''}
+								autocomplete="new-password"
+								placeholder={data.settings.hasCoreRpcPass ? '•••••••• (unchanged)' : ''}
 							/>
+							{#if data.settings.hasCoreRpcPass}
+								<span class="hint">A password is stored. Leave blank to keep it.</span>
+							{/if}
 						</div>
 					</div>
 				</div>

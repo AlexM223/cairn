@@ -58,6 +58,18 @@ export function getInstanceSettings(): InstanceSettings {
 }
 
 /**
+ * Instance settings safe to serialize to the client: the stored Core RPC
+ * password is replaced by a presence flag so the secret never leaves the
+ * server.
+ */
+export function getPublicInstanceSettings(): Omit<InstanceSettings, 'coreRpcPass'> & {
+	hasCoreRpcPass: boolean;
+} {
+	const { coreRpcPass, ...rest } = getInstanceSettings();
+	return { ...rest, hasCoreRpcPass: !!coreRpcPass };
+}
+
+/**
  * The chain connection config the app should actually use right now.
  * In public mode this ignores any custom values and returns the public defaults.
  */
