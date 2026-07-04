@@ -9,6 +9,7 @@
 	import { psbtHasKeyOrigin } from '$lib/hw/keyOrigin';
 	import type { SignerProps } from './signerContract';
 	import { onDestroy } from 'svelte';
+	import { MediaQuery } from 'svelte/reactivity';
 
 	// Air-gapped QR signer for camera-based devices (SeedSigner, Foundation
 	// Passport, Blockstream Jade). No cable, no connection: the unsigned PSBT
@@ -89,13 +90,29 @@
 	let currentFrame = $state(0);
 	const FRAME_MS = 300;
 
+	// A 300ms flicker is exactly what prefers-reduced-motion asks us not to do,
+	// and the signing device doesn't need it — BBQr frames reassemble in any
+	// order, so the user can step them by hand. When the OS asks for reduced
+	// motion, hold still and show previous/next controls instead of the timer.
+	const reducedMotion = new MediaQuery('(prefers-reduced-motion: reduce)', false);
+
 	$effect(() => {
-		if (phase !== 'display' || frameImages.length <= 1) return;
+		if (phase !== 'display' || frameImages.length <= 1 || reducedMotion.current) return;
 		const id = setInterval(() => {
 			currentFrame = (currentFrame + 1) % frameImages.length;
 		}, FRAME_MS);
 		return () => clearInterval(id);
 	});
+
+	// Manual stepping for the reduced-motion display. Wraps at both ends so the
+	// user can loop through the sequence as many times as the device needs.
+	function prevFrame() {
+		currentFrame = (currentFrame - 1 + frameImages.length) % frameImages.length;
+	}
+
+	function nextFrame() {
+		currentFrame = (currentFrame + 1) % frameImages.length;
+	}
 
 	// Reset to the first frame whenever we (re)enter the display phase.
 	$effect(() => {
@@ -114,8 +131,20 @@
 	let progress = $state<{ have: number; total: number }>({ have: 0, total: 0 });
 	let scanComplete = $state(false);
 
-	// ── Manual paste fallback (no camera, or a device that shows one QR at a
-	//    time the user copies, or a plain base64 export) ───────────────────────
+	// Screen-reader mirror of the visual progress bar. Lives in an aria-live
+	// region so each newly captured frame is announced without stealing focus.
+	const scanAnnouncement = $derived(
+		scanComplete
+			? 'Signed transaction received.'
+			: progress.total > 0
+				? `${progress.have} of ${progress.total} frames captured.`
+				: ''
+	);
+
+	// ── Manual paste fallback (no camera, camera permission locked down, or a
+	//    device that exports plain base64). Offered up front alongside the
+	//    camera — not just as error recovery — and still auto-opened when the
+	//    camera fails to start. ────────────────────────────────────────────────
 	let showManual = $state(false);
 	let manualText = $state('');
 	let manualError = $state<string | null>(null);
@@ -341,7 +370,22 @@
 									<span class="dot" class:on={i === currentFrame}></span>
 								{/each}
 							</div>
-							<span class="hint">The frames cycle automatically — let your device watch the whole loop.</span>
+							{#if reducedMotion.current}
+								<!-- Reduced motion: the timer is off, so hand the user the reins. -->
+								<div class="frame-controls">
+									<button type="button" class="btn btn-secondary btn-sm" onclick={prevFrame}>
+										<Icon name="chevron-left" size={14} /> Previous frame
+									</button>
+									<button type="button" class="btn btn-secondary btn-sm" onclick={nextFrame}>
+										Next frame <Icon name="chevron-right" size={14} />
+									</button>
+								</div>
+								<span class="hint">
+									Step through the frames while your device watches — it reads them in any order.
+								</span>
+							{:else}
+								<span class="hint">The frames cycle automatically — let your device watch the whole loop.</span>
+							{/if}
 						{:else}
 							<span class="frame-count">Single frame — hold your device steady on it.</span>
 						{/if}
@@ -385,6 +429,10 @@
 				<span class="scan-title">Scan the signed transaction from your device</span>
 			</div>
 
+			<!-- Screen-reader progress: announces each captured frame politely. The
+			     region is always mounted so the first update is not swallowed. -->
+			<div class="sr-only" role="status" aria-live="polite">{scanAnnouncement}</div>
+
 			{#if scanComplete}
 				<div class="scan-done">
 					<Icon name="check" size={20} />
@@ -396,9 +444,17 @@
 						Start the camera, then hold the device's signed-transaction QR in view. Multi-frame
 						sequences reassemble as the device cycles them.
 					</p>
-					<button type="button" class="btn btn-primary btn-sm" onclick={beginCameraScan}>
-						<Icon name="eye" size={14} /> Start camera
-					</button>
+					<!-- Paste sits beside the camera as a first-class alternative — a user
+					     with no camera (or a locked-down one) must be able to see it before
+					     ever attempting a scan, not only after one fails. -->
+					<div class="scan-actions">
+						<button type="button" class="btn btn-primary btn-sm" onclick={beginCameraScan}>
+							<Icon name="eye" size={14} /> Start camera
+						</button>
+						<button type="button" class="btn btn-secondary btn-sm" onclick={() => (showManual = true)}>
+							Paste the signed transaction instead
+						</button>
+					</div>
 				{/if}
 
 				{#if scanning}
@@ -435,10 +491,11 @@
 			{/if}
 
 			{#if !scanComplete}
-				<!-- Manual fallback is ALWAYS reachable: some devices show a single QR
-				     the user photographs, and a paste box is the universal escape hatch. -->
+				<!-- Manual fallback is ALWAYS reachable: offered up front next to "Start
+				     camera", as an escape hatch mid-scan, and auto-opened when the camera
+				     fails. A paste box is the universal way in. -->
 				<div class="manual">
-					{#if cameraAvailable && !showManual}
+					{#if cameraAvailable && !showManual && scanning}
 						<button type="button" class="link-btn" onclick={() => (showManual = true)}>
 							Camera not working? Paste the signed transaction instead
 						</button>
@@ -462,6 +519,12 @@
 						>
 							Use pasted transaction
 						</button>
+						{#if cameraAvailable && !scanning}
+							<!-- Way back out of the paste box — it's an alternative, not a trap. -->
+							<button type="button" class="link-btn" onclick={beginCameraScan}>
+								Scan with the camera instead
+							</button>
+						{/if}
 					{/if}
 				</div>
 			{/if}
@@ -693,12 +756,38 @@
 		background: var(--accent);
 	}
 
+	/* Manual previous/next stepping shown when prefers-reduced-motion is set. */
+	.frame-controls {
+		display: flex;
+		gap: 8px;
+	}
+
 	/* ---- Scan phase ---- */
 	.scan-head {
 		display: flex;
 		align-items: center;
 		gap: 10px;
 		flex-wrap: wrap;
+	}
+
+	.scan-actions {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		flex-wrap: wrap;
+	}
+
+	/* Visually hidden but announced — same idiom as the mempool block view. */
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
 	}
 
 	.scan-title {
