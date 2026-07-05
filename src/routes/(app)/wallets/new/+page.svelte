@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { enhance, applyAction } from '$app/forms';
 	import Icon from '$lib/components/Icon.svelte';
-	import type { ScriptType } from '$lib/types';
+	import DevicePicker from '$lib/components/DevicePicker.svelte';
+	import Term from '$lib/components/Term.svelte';
+	import type { ScriptType, WalletDeviceType } from '$lib/types';
 	import { SCRIPT_TYPE_LABELS } from '../labels';
 
 	const STEPS = ['Type', 'Key', 'Preview', 'Name', 'Done'];
@@ -19,6 +21,9 @@
 	let scriptType = $state<ScriptType | null>(null);
 	let validatedXpub = $state('');
 	let name = $state('');
+	// Which device holds this key. null = the user skipped it; the wallet then
+	// signs via the universal file/PSBT fallback. Saved on the wallet record.
+	let deviceType = $state<WalletDeviceType | null>(null);
 
 	const looksLikeKey = $derived(/^[xyz]pub[1-9A-HJ-NP-Za-km-z]{20,}$/.test(xpubInput.trim()));
 </script>
@@ -58,15 +63,16 @@
 		<div class="card card-pad pane fade-in">
 			<span class="overline">Step 1 · Wallet type</span>
 			<button type="button" class="type-card selected" aria-pressed="true">
-				<span class="type-icon"><Icon name="eye" size={20} /></span>
+				<span class="type-icon"><Icon name="wallet" size={20} /></span>
 				<span class="type-body">
 					<span class="type-name">
-						Watch-only (xpub)
+						Single-key wallet (xpub)
 						<span class="badge badge-accent">selected</span>
 					</span>
 					<span class="type-desc">
-						Track balances and history from an extended public key. Cairn never touches
-						private keys. More types coming.
+						A full wallet backed by one key. Cairn tracks your balance and history from the
+						extended <strong>public</strong> key, and you spend by signing on your own device —
+						your private key never leaves it.
 					</span>
 				</span>
 				<Icon name="check" size={17} />
@@ -246,6 +252,7 @@
 				}}
 			>
 				<input type="hidden" name="xpub" value={validatedXpub} />
+				<input type="hidden" name="deviceType" value={deviceType ?? ''} />
 				<div class="field">
 					<label class="label" for="name">What should we call it?</label>
 					<input
@@ -257,6 +264,20 @@
 						bind:value={name}
 					/>
 					<span class="hint">Just a label — you can't break anything here.</span>
+				</div>
+
+				<div class="field">
+					<span class="label">
+						Which device holds this key?
+						<span class="optional">(optional)</span>
+					</span>
+					<p class="hint" style="margin-bottom: 4px">
+						This is how you'll <Term
+							tip="Cairn prepares an unsigned transaction; you approve it on this device. Your private key never leaves it."
+							>sign when you spend</Term
+						>. Not sure? Leave it — you can pick when you send, and any PSBT wallet works.
+					</p>
+					<DevicePicker bind:selected={deviceType} />
 				</div>
 
 				{#if createError}
@@ -516,6 +537,11 @@
 
 	.help-body strong {
 		color: var(--text);
+	}
+
+	.optional {
+		font-weight: 400;
+		color: var(--text-muted);
 	}
 
 	/* --- step 3: preview --- */

@@ -33,6 +33,7 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 			id: row.id,
 			name: row.name,
 			scriptType: row.script_type,
+			deviceType: row.device_type ?? null,
 			xpub: row.xpub,
 			createdAt: row.created_at
 		},

@@ -26,10 +26,12 @@ export const actions: Actions = {
 		const form = await request.formData();
 		const xpub = String(form.get('xpub') ?? '').trim();
 		const name = String(form.get('name') ?? '').trim();
+		// Empty string = the user skipped it; createWallet normalizes to null.
+		const deviceType = String(form.get('deviceType') ?? '').trim();
 
 		let id: number;
 		try {
-			id = createWallet(locals.user!.id, { name, xpub }).id;
+			id = createWallet(locals.user!.id, { name, xpub, deviceType }).id;
 		} catch (e) {
 			return fail(400, {
 				error: e instanceof Error ? e.message : 'Could not import that wallet.'

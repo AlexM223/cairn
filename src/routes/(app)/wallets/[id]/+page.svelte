@@ -3,12 +3,18 @@
 	import { afterNavigate, goto, invalidateAll, replaceState } from '$app/navigation';
 	import Icon from '$lib/components/Icon.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
+	import Term from '$lib/components/Term.svelte';
 	import TxStatusBadge from '$lib/components/TxStatusBadge.svelte';
 	import ConsolidationCard from './_components/ConsolidationCard.svelte';
 	import { formatBtc, formatFeeRate, formatSats, timeAgo, truncateMiddle } from '$lib/format';
-	import { SCRIPT_TYPE_LABELS } from '../labels';
+	import { SCRIPT_TYPE_LABELS, WALLET_DEVICE_LABELS, walletTypeLabel } from '../labels';
 
 	let { data, form } = $props();
+
+	// How the wallet describes itself: "Trezor wallet" when a device is on
+	// record, otherwise just "Wallet" — never "watch-only", since it can always
+	// sign (a device signs directly, an unassociated key signs via a file/PSBT).
+	const walletKind = $derived(walletTypeLabel(data.wallet.deviceType));
 
 	let bannerDismissed = $state(false);
 
@@ -243,11 +249,21 @@
 	<div class="head row">
 		<div class="row grow" style="gap: 12px; min-width: 0">
 			<h1 class="page-title truncate">{data.wallet.name}</h1>
+			<span class="badge badge-neutral">{walletKind}</span>
 			<span class="badge badge-neutral">{SCRIPT_TYPE_LABELS[data.wallet.scriptType]}</span>
 		</div>
 		<a href="/wallets/{data.wallet.id}/send" class="btn btn-primary btn-sm">
 			<Icon name="arrow-up-right" size={14} />
 			Send
+		</a>
+		<a
+			href="/api/wallets/{data.wallet.id}/history.csv"
+			class="btn btn-ghost btn-sm"
+			download
+			title="Download this wallet's transaction history as a CSV file"
+		>
+			<Icon name="arrow-down-left" size={14} />
+			Export history
 		</a>
 		{#if !confirmDelete}
 			<button
@@ -289,8 +305,17 @@
 		{/if}
 	</div>
 	<p class="hint watch-note">
-		<Icon name="eye" size={12} />
-		Watch-only · {truncateMiddle(data.wallet.xpub, 10, 8)}
+		<Term
+			tip="This wallet tracks your bitcoin using your public key. To send, you'll sign the transaction on your hardware device — your private key never leaves the device."
+		>
+			<Icon name="shield" size={12} />
+			{#if data.wallet.deviceType && data.wallet.deviceType !== 'file'}
+				Signs with your {WALLET_DEVICE_LABELS[data.wallet.deviceType]}
+			{:else}
+				Signs on your device
+			{/if}
+		</Term>
+		· {truncateMiddle(data.wallet.xpub, 10, 8)}
 	</p>
 
 	{#if inProgress.length > 0}

@@ -199,6 +199,15 @@
 				<span class="backup-dot" title="No backup downloaded yet"></span>
 			{/if}
 		</a>
+		<a
+			href="/api/vaults/{data.vault.id}/history.csv"
+			class="btn btn-ghost btn-sm"
+			download
+			title="Download this vault's transaction history as a CSV file"
+		>
+			<Icon name="arrow-down-left" size={14} />
+			Export history
+		</a>
 		{#if !confirmDelete}
 			<button
 				type="button"
