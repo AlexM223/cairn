@@ -18,6 +18,19 @@
 		if (href === '/') return page.url.pathname === '/';
 		return page.url.pathname === href || page.url.pathname.startsWith(href + '/');
 	}
+
+	// Persistent "back up your wallet(s)" banner. A lost config can mean lost
+	// funds, so it shows until resolved (server-tracked), dismissible only for the
+	// current session so it returns on the next visit until backups are done.
+	const unbacked = $derived(data.unbackedWallets ?? []);
+	let backupDismissed = $state(false);
+	$effect(() => {
+		backupDismissed = sessionStorage.getItem('cairn.backup.banner.dismissed') === '1';
+	});
+	function dismissBackupBanner() {
+		backupDismissed = true;
+		sessionStorage.setItem('cairn.backup.banner.dismissed', '1');
+	}
 </script>
 
 <div class="shell">
@@ -53,6 +66,30 @@
 	</aside>
 
 	<main class="main">
+		{#if unbacked.length > 0 && !backupDismissed}
+			<div class="backup-banner" role="status">
+				<Icon name="alert-triangle" size={16} />
+				<span class="grow">
+					{#if unbacked.length === 1}
+						<strong>{unbacked[0].name}</strong> isn't backed up.
+						<a href={unbacked[0].href}>Download its config</a> — without it, a lost server can mean
+						lost funds.
+					{:else}
+						<strong>{unbacked.length} wallets</strong> aren't backed up.
+						<a href={unbacked[0].href}>Start with {unbacked[0].name}</a> — a lost config can mean
+						permanently lost funds.
+					{/if}
+				</span>
+				<button
+					type="button"
+					class="backup-banner-dismiss"
+					aria-label="Dismiss for now"
+					onclick={dismissBackupBanner}
+				>
+					<Icon name="x" size={14} />
+				</button>
+			</div>
+		{/if}
 		{@render children()}
 	</main>
 </div>
@@ -192,6 +229,49 @@
 		min-width: 0;
 		padding: 28px 32px 64px;
 		max-width: 1200px;
+	}
+
+	.backup-banner {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		margin-bottom: 20px;
+		padding: 10px 14px;
+		font-size: 13px;
+		line-height: 1.5;
+		color: var(--text-secondary);
+		background: var(--warning-muted);
+		border: 1px solid rgba(232, 201, 90, 0.3);
+		border-radius: var(--radius-control);
+	}
+
+	.backup-banner :global(svg) {
+		color: var(--warning);
+		flex-shrink: 0;
+	}
+
+	.backup-banner strong {
+		color: var(--text);
+	}
+
+	.backup-banner a {
+		color: var(--accent);
+		font-weight: 500;
+	}
+
+	.backup-banner-dismiss {
+		display: flex;
+		align-items: center;
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		cursor: pointer;
+		padding: 2px;
+		flex-shrink: 0;
+	}
+
+	.backup-banner-dismiss:hover {
+		color: var(--text);
 	}
 
 	@media (max-width: 768px) {

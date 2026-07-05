@@ -4,6 +4,7 @@ import {
 	hasAcceptedCurrentAgreement
 } from '$lib/server/disclosures';
 import { hasRecoverySetup } from '$lib/server/recovery';
+import { listUnbackedWallets } from '$lib/server/backups';
 import type { LayoutServerLoad } from './$types';
 
 export const load: LayoutServerLoad = async ({ locals, url }) => {
@@ -36,5 +37,8 @@ export const load: LayoutServerLoad = async ({ locals, url }) => {
 		if (!recoveryComplete) redirect(302, '/recovery-setup');
 	}
 
-	return { user: locals.user };
+	// Wallets whose config backup hasn't been downloaded — drives the persistent
+	// "back up your wallet" banner (a lost config can mean permanently lost
+	// funds, so this stays until resolved). Cheap anti-join query.
+	return { user: locals.user, unbackedWallets: listUnbackedWallets(locals.user.id) };
 };
