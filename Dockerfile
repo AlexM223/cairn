@@ -2,6 +2,13 @@
 FROM node:22-alpine AS build
 WORKDIR /app
 
+# Toolchain for node-gyp: the `usb` native addon is a HARD transitive dependency
+# of @trezor/connect-web, so `npm ci` must build it — even though Cairn only ever
+# uses Trezor Connect client-side (browser popup) and never loads `usb` on the
+# server. These tools live only in this (discarded) build stage; the runtime
+# image below stays lean.
+RUN apk add --no-cache python3 make g++ linux-headers eudev-dev
+
 COPY package.json package-lock.json ./
 RUN npm ci
 
