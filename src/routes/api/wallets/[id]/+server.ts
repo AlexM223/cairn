@@ -1,6 +1,9 @@
 import { json, requireUser, readJson } from '$lib/server/api';
 import { getWalletDetail, deleteWallet, toWalletSummary, setWalletDevice } from '$lib/server/wallets';
 import type { RequestHandler } from './$types';
+import { childLogger } from '$lib/server/logger';
+
+const log = childLogger('wallet');
 
 function parseId(param: string): number | null {
 	const id = Number(param);
@@ -26,6 +29,7 @@ export const GET: RequestHandler = async (event) => {
 			unconfirmed: detail.scan.unconfirmed
 		});
 	} catch (e) {
+		log.error({ err: e, walletId: Number(event.params.id) }, 'wallet scan failed');
 		return json(
 			{ error: e instanceof Error ? e.message : 'Wallet scan failed' },
 			{ status: 502 }

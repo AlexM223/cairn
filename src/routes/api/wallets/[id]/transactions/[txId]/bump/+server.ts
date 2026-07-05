@@ -3,6 +3,9 @@ import { requireUser, readJson } from '$lib/server/api';
 import { bumpTransaction, BumpError } from '$lib/server/transactions';
 import { PsbtError } from '$lib/server/bitcoin/psbt';
 import type { RequestHandler } from './$types';
+import { childLogger } from '$lib/server/logger';
+
+const log = childLogger('wallet');
 
 /**
  * POST /api/wallets/:id/transactions/:txId/bump — build an RBF replacement
@@ -38,6 +41,7 @@ export const POST: RequestHandler = async (event) => {
 		if (e instanceof PsbtError) {
 			return json({ error: e.message, code: e.code }, { status: 400 });
 		}
+		log.error({ err: e, walletId, txId }, 'wallet fee-bump failed');
 		return json(
 			{ error: e instanceof Error ? e.message : 'Fee bump failed' },
 			{ status: 500 }

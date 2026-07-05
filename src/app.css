@@ -37,6 +37,10 @@
 	--warning-muted: rgba(232, 201, 90, 0.14);
 	--error: #e85a5a;
 	--error-muted: rgba(232, 90, 90, 0.14);
+	/* "danger" is the same semantic red as "error"; aliased so call sites using
+	   var(--danger)/var(--danger-muted) resolve correctly instead of falling back. */
+	--danger: var(--error);
+	--danger-muted: var(--error-muted);
 
 	/* Typography */
 	--font-ui: 'Inter', system-ui, -apple-system, sans-serif;

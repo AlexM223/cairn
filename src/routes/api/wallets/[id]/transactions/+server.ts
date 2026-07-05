@@ -1,6 +1,9 @@
 import { json, requireUser } from '$lib/server/api';
 import { getWalletDetail } from '$lib/server/wallets';
 import type { RequestHandler } from './$types';
+import { childLogger } from '$lib/server/logger';
+
+const log = childLogger('wallet');
 
 /** GET /api/wallets/:id/transactions — wallet history, newest first. */
 export const GET: RequestHandler = async (event) => {
@@ -15,6 +18,7 @@ export const GET: RequestHandler = async (event) => {
 		if (!detail) return json({ error: 'Wallet not found' }, { status: 404 });
 		return json({ txs: detail.scan.txs });
 	} catch (e) {
+		log.error({ err: e, walletId: id, userId: user.id }, 'wallet transactions scan failed');
 		return json(
 			{ error: e instanceof Error ? e.message : 'Wallet scan failed' },
 			{ status: 502 }

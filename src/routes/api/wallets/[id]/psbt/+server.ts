@@ -2,7 +2,10 @@ import { json } from '@sveltejs/kit';
 import { requireUser, readJson } from '$lib/server/api';
 import { buildDraft } from '$lib/server/transactions';
 import { PsbtError } from '$lib/server/bitcoin/psbt';
+import { childLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
+
+const log = childLogger('wallet');
 
 interface RecipientBody {
 	address?: unknown;
@@ -72,6 +75,7 @@ export const POST: RequestHandler = async (event) => {
 			const status = e.code === 'construction_failed' ? 404 : 400;
 			return json({ error: e.message, code: e.code }, { status });
 		}
+		log.error({ err: e, walletId }, 'wallet psbt build failed');
 		return json(
 			{ error: e instanceof Error ? e.message : 'Could not build the transaction' },
 			{ status: 502 }
