@@ -2,26 +2,46 @@
 
 **Your bitcoin. Your rules.**
 
-Cairn is a self-hosted Bitcoin command center — a block explorer, watch-only
-wallet navigator, and multi-user instance you run yourself. A cairn is a
+Cairn is a self-hosted Bitcoin command center — a block explorer, a wallet
+suite that watches, sends, and signs with your hardware wallets (single-sig
+or multisig), and a multi-user instance you run yourself. A cairn is a
 waymarker: a stack of stones marking the path.
 
 |                                                                       |                                                                                |
 | --------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| ![Dashboard — block height, fees, recent blocks](docs/screenshots/dashboard.png) | ![Block detail — header fields and transaction list](docs/screenshots/block-detail.png) |
+| ![Explorer — block height, fees, recent blocks](docs/screenshots/dashboard.png) | ![Block detail — header fields and transaction list](docs/screenshots/block-detail.png) |
 | ![Mempool visualizer — projected next blocks](docs/screenshots/mempool-blocks.png) | ![Watch-only wallet — balance, receive address, history](docs/screenshots/wallets.png) |
+| ![Send flow — Review step of the guided stepper](docs/screenshots/send-review.png) | ![Multisig wallet — quorum, key health checks, balance](docs/screenshots/multisig-wallet.png) |
 
-## Features (v1)
+## Features
 
+- **Portfolio dashboard** — every wallet on one screen: combined balance,
+  history chart, allocation, and recent activity.
 - **Block explorer** — blocks, transactions, addresses, mempool, and fee
   estimates, with universal search.
 - **Wallet navigator** — import an xpub/ypub/zpub watch-only wallet, see
-  balances, address usage, transaction history, and generate receive
-  addresses with QR codes. Private keys never touch the server.
-- **Multi-user** — email/password accounts with invite codes. The first
-  account becomes the administrator.
-- **Admin panel** — user management, invite creation, registration modes
-  (open / invite-only / closed), and node configuration.
+  balances, address usage, transaction history (with CSV export), and
+  generate receive addresses with QR codes. Private keys never touch the
+  server.
+- **Send bitcoin** — a guided five-step flow (Create → Review → Sign →
+  Confirm → Sent) builds a PSBT from your coins, with batch sends, coin
+  control, an address book that powers recipient autocomplete, and RBF
+  fee-bumping for stuck transactions.
+- **Hardware-wallet signing** — sign in the browser with Trezor (Connect)
+  or Ledger (WebHID), by SD card with a ColdCard, or fully air-gapped via
+  animated QR codes — plus plain PSBT download/upload for anything else.
+  Big transactions warn upfront how long on-device verification will take.
+- **Multisig wallets** — a guided creation wizard, per-key signing stepper,
+  periodic key health checks, Ledger policy registration, ColdCard
+  registration files, and wallet-config import/export that round-trips
+  with Caravan, Sparrow, and Unchained. A stateless signer can coordinate
+  a spend from a config file without storing the wallet at all.
+- **Multi-user** — email/password accounts (passkeys optional) with invite
+  codes and a per-account activity feed. The first account becomes the
+  administrator.
+- **Admin panel** — user management, invites, registration modes
+  (open / invite-only / closed), node configuration, encrypted instance
+  backup/restore, and a server log viewer.
 - **Works without your own node** — public Electrum + Esplora servers by
   default; point it at your own Fulcrum/electrs and mempool instance from
   the admin panel, applied live without a restart.
@@ -32,7 +52,11 @@ waymarker: a stack of stones marking the path.
 - `node:sqlite` — no external database, no native addons
 - Electrum protocol client (TCP/TLS) + Esplora-compatible HTTP for rich
   explorer data
-- [@scure/bip32](https://github.com/paulmillr/scure-bip32) for key derivation
+- [@scure/bip32](https://github.com/paulmillr/scure-bip32) +
+  [@scure/btc-signer](https://github.com/paulmillr/scure-btc-signer) for key
+  derivation and PSBT construction
+- Trezor Connect, Ledger WebHID, and [BBQr](https://bbqr.org/) animated QR
+  for hardware-wallet signing — keys stay on the devices
 
 ## Running
 
@@ -111,4 +135,6 @@ Locked out? See [docs/RECOVERY.md](docs/RECOVERY.md).
   can't provide (block transaction lists, fee ranges, mempool totals). A
   self-hosted [mempool](https://mempool.space/docs) instance works, as does
   `https://blockstream.info/api` (with some fields gracefully degraded).
-- **Bitcoin Core RPC** — optional, stored for upcoming features.
+- **Bitcoin Core RPC** — optional; credentials are stored for upcoming
+  features but nothing uses them yet. Wallet queries and transaction
+  broadcasting go through the Electrum server.
