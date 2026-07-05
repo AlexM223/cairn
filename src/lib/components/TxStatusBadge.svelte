@@ -4,7 +4,9 @@
 	const BADGE: Record<TxStatus, { class: string; label: string }> = {
 		draft: { class: 'badge-neutral', label: 'Draft' },
 		awaiting_signature: { class: 'badge-warning', label: 'Awaiting signature' },
-		completed: { class: 'badge-success', label: 'Broadcast' }
+		completed: { class: 'badge-success', label: 'Broadcast' },
+		// Replaced by a fee-bumped (RBF) transaction — kept for the record.
+		superseded: { class: 'badge-neutral', label: 'Replaced' }
 	};
 </script>
 

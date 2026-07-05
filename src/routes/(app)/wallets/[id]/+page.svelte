@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
-	import { afterNavigate, invalidateAll, replaceState } from '$app/navigation';
+	import { afterNavigate, goto, invalidateAll, replaceState } from '$app/navigation';
 	import Icon from '$lib/components/Icon.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import TxStatusBadge from '$lib/components/TxStatusBadge.svelte';
@@ -39,10 +39,72 @@
 	let deletedTxIds = $state<number[]>([]);
 	const savedTxs = $derived(data.transactions.filter((t) => !deletedTxIds.includes(t.id)));
 	// Unfinished drafts surface in an always-visible card so a transaction
-	// parked mid-signing is never lost behind a tab.
-	const inProgress = $derived(savedTxs.filter((t) => t.status !== 'completed'));
+	// parked mid-signing is never lost behind a tab. Superseded rows are done
+	// (replaced by a fee bump), not in progress.
+	const inProgress = $derived(
+		savedTxs.filter((t) => t.status !== 'completed' && t.status !== 'superseded')
+	);
 	let confirmTxId = $state<number | null>(null);
 	let deletingTxId = $state<number | null>(null);
+
+	// --- fee bumping (RBF) ---
+	let bumpTxId = $state<number | null>(null);
+	let bumpRate = $state('');
+	let bumping = $state(false);
+	let bumpError = $state<string | null>(null);
+
+	// "Plausibly unconfirmed": the wallet scan still reports this txid as
+	// pending (height <= 0). The server re-checks against the chain anyway —
+	// this only decides whether to offer the button.
+	function plausiblyUnconfirmed(txid: string | null): boolean {
+		if (!txid || !data.scan) return false;
+		const seen = data.scan.txs.find((t) => t.txid === txid);
+		return seen ? seen.height <= 0 : false;
+	}
+
+	async function openBump(tx: { id: number; feeRate: number }) {
+		bumpTxId = tx.id;
+		bumpError = null;
+		// Fallback seed: just above the original's rate. Replaced by the live
+		// fast tier when the fee oracle is reachable and actually higher.
+		bumpRate = String(Math.max(2, Math.ceil(tx.feeRate) + 1));
+		try {
+			const res = await fetch('/api/mempool/fees');
+			if (res.ok) {
+				const fees = (await res.json()) as { fastest?: number };
+				if (typeof fees.fastest === 'number' && fees.fastest > tx.feeRate) {
+					bumpRate = String(fees.fastest);
+				}
+			}
+		} catch {
+			// keep the fallback seed
+		}
+	}
+
+	async function submitBump(id: number) {
+		if (bumping) return;
+		bumping = true;
+		bumpError = null;
+		try {
+			const res = await fetch(`/api/wallets/${data.wallet.id}/transactions/${id}/bump`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ feeRate: Number(bumpRate) })
+			});
+			const body = await res.json();
+			if (!res.ok) {
+				bumpError = typeof body?.error === 'string' ? body.error : 'Fee bump failed.';
+				return;
+			}
+			// The send flow resumes drafts at Review with the full
+			// sign-and-broadcast machinery.
+			await goto(`/wallets/${data.wallet.id}/send?tx=${body.id}`);
+		} catch {
+			bumpError = 'Fee bump failed — check your connection and try again.';
+		} finally {
+			bumping = false;
+		}
+	}
 
 	// createdAt is an ISO string; timeAgo wants unix seconds.
 	function isoToUnix(iso: string): number {
@@ -631,13 +693,65 @@
 								</div>
 							</div>
 
-							{#if tx.status === 'completed' && tx.txid}
+							{#if (tx.status === 'completed' || tx.status === 'superseded') && tx.txid}
 								<div class="saved-field">
 									<span class="saved-label">Transaction</span>
 									<a href="/explorer/tx/{tx.txid}" class="mono">
 										{truncateMiddle(tx.txid, 10, 8)}
 									</a>
 								</div>
+								{#if tx.status === 'superseded'}
+									<span class="hint">Replaced by a fee-bumped transaction.</span>
+								{:else if plausiblyUnconfirmed(tx.txid)}
+									<div class="saved-actions">
+										{#if bumpTxId === tx.id}
+											<form
+												class="bump-form"
+												onsubmit={(e) => {
+													e.preventDefault();
+													submitBump(tx.id);
+												}}
+											>
+												<label class="hint" for="bump-rate-{tx.id}">New rate</label>
+												<input
+													id="bump-rate-{tx.id}"
+													class="input bump-input"
+													type="number"
+													min="1"
+													step="any"
+													bind:value={bumpRate}
+													disabled={bumping}
+												/>
+												<span class="hint">sat/vB</span>
+												<button class="btn btn-primary btn-sm" type="submit" disabled={bumping}>
+													{#if bumping}<span class="spinner"></span>{/if}
+													Bump
+												</button>
+												<button
+													type="button"
+													class="btn btn-ghost btn-sm"
+													disabled={bumping}
+													onclick={() => (bumpTxId = null)}
+												>
+													Cancel
+												</button>
+											</form>
+										{:else}
+											<button
+												type="button"
+												class="btn btn-secondary btn-sm"
+												onclick={() => openBump(tx)}
+											>
+												<Icon name="zap" size={14} />
+												Bump fee
+											</button>
+											<span class="hint">Stuck? Replace it with a higher-fee version (RBF).</span>
+										{/if}
+										{#if bumpTxId === tx.id && bumpError}
+											<div class="form-error bump-error" role="alert">{bumpError}</div>
+										{/if}
+									</div>
+								{/if}
 							{:else}
 								<div class="saved-actions">
 									<a
@@ -1157,6 +1271,26 @@
 	.delete-tx:hover {
 		color: var(--error);
 		background: var(--error-muted);
+	}
+
+	/* --- fee bump (RBF) --- */
+
+	.bump-form {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+
+	.bump-input {
+		width: 90px;
+		font-size: 12.5px;
+		padding: 4px 8px;
+	}
+
+	.bump-error {
+		flex-basis: 100%;
+		font-size: 12.5px;
 	}
 
 	@media (max-width: 480px) {

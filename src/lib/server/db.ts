@@ -67,7 +67,7 @@ db.exec(`
 	CREATE TABLE IF NOT EXISTS transactions (
 		id           INTEGER PRIMARY KEY AUTOINCREMENT,
 		wallet_id    INTEGER NOT NULL REFERENCES wallets(id) ON DELETE CASCADE,
-		status       TEXT NOT NULL DEFAULT 'draft', -- draft | awaiting_signature | completed
+		status       TEXT NOT NULL DEFAULT 'draft', -- draft | awaiting_signature | completed | superseded
 		psbt         TEXT NOT NULL,                 -- base64, replaced as signatures arrive
 		txid         TEXT,                          -- set once broadcast
 		recipient    TEXT NOT NULL,
@@ -129,3 +129,16 @@ db.exec(`
 	);
 	CREATE INDEX IF NOT EXISTS idx_saved_addresses_user ON saved_addresses(user_id);
 `);
+
+// Replace-by-fee lineage: a fee bump saves a NEW transaction row whose
+// replaces_txid points at the txid it was built to replace; the original row
+// is marked 'superseded' when the replacement broadcasts. Guarded and
+// additive like the migrations above. See bumpTransaction in transactions.ts.
+{
+	const txCols = (db.prepare('PRAGMA table_info(transactions)').all() as { name: string }[]).map(
+		(c) => c.name
+	);
+	if (!txCols.includes('replaces_txid')) {
+		db.exec('ALTER TABLE transactions ADD COLUMN replaces_txid TEXT');
+	}
+}

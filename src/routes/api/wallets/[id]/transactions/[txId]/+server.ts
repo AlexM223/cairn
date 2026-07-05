@@ -43,7 +43,7 @@ export const PATCH: RequestHandler = async (event) => {
 	const { walletId, txId } = ids(event);
 	const existing = getTransaction(user.id, walletId, txId);
 	if (!existing) return json({ error: 'Transaction not found' }, { status: 404 });
-	if (existing.status === 'completed')
+	if (existing.status === 'completed' || existing.status === 'superseded')
 		return json({ error: 'This transaction has already been broadcast.' }, { status: 409 });
 
 	const body = await readJson<{ psbt?: string; status?: string }>(event);

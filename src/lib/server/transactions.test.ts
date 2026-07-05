@@ -4,26 +4,37 @@ import { base64, base58check } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { Transaction } from '@scure/btc-signer';
+import { NETWORK } from '@scure/btc-signer';
 import { db } from './db';
 import { registerUser } from './auth';
 import { setSetting } from './settings';
-import { constructPsbt, type SpendableUtxo } from './bitcoin/psbt';
+import { constructPsbt, summarizePsbt, type SpendableUtxo } from './bitcoin/psbt';
 import {
 	listTransactions,
 	getTransaction,
 	updateTransaction,
 	deleteTransaction,
 	broadcastTransaction,
+	bumpTransaction,
 	normalizePsbt,
 	InvalidPsbtError,
-	BroadcastError
+	BroadcastError,
+	BumpError
 } from './transactions';
 
-// The broadcast tests exercise the real service path up to the network edge;
-// only Electrum itself is faked.
-const { broadcastMock } = vi.hoisted(() => ({ broadcastMock: vi.fn() }));
+// The broadcast/bump tests exercise the real service path up to the network
+// edge; only the chain source itself is faked.
+const { broadcastMock, getTxMock, getTxHexMock } = vi.hoisted(() => ({
+	broadcastMock: vi.fn(),
+	getTxMock: vi.fn(),
+	getTxHexMock: vi.fn()
+}));
 vi.mock('./chain', () => ({
-	getChain: () => ({ electrum: { broadcast: broadcastMock } })
+	getChain: () => ({
+		electrum: { broadcast: broadcastMock },
+		getTx: getTxMock,
+		getTxHex: getTxHexMock
+	})
 }));
 
 function wipe(): void {
@@ -35,6 +46,8 @@ function wipe(): void {
 beforeEach(() => {
 	wipe();
 	broadcastMock.mockReset();
+	getTxMock.mockReset();
+	getTxHexMock.mockReset();
 	setSetting('registration_mode', 'open');
 });
 
@@ -262,5 +275,216 @@ describe('normalizePsbt', () => {
 		expect(() => normalizePsbt('')).toThrow();
 		expect(() => normalizePsbt('definitely not a psbt')).toThrow();
 		expect(() => normalizePsbt(base64.encode(new TextEncoder().encode('hello world')))).toThrow();
+	});
+});
+
+describe('bumpTransaction (RBF fee bumping)', () => {
+	/**
+	 * A synthetic previous transaction with a REAL txid (display-order hex), so
+	 * the replacement's nonWitnessUtxo fetch passes hash verification.
+	 */
+	function fundingTx(outputs: { address: string; value: number }[]): { hex: string; txid: string } {
+		const tx = new Transaction({ allowUnknownInputs: true, disableScriptCheck: true });
+		tx.addInput({ txid: '00'.repeat(32), index: 0 });
+		for (const o of outputs) tx.addOutputAddress(o.address, BigInt(o.value), NETWORK);
+		return { hex: tx.hex, txid: tx.id };
+	}
+	const FUND = fundingTx([{ address: RECEIVE_0, value: 100_000 }]);
+	const ORIGINAL_TXID = 'ab'.repeat(32);
+
+	function accountKey(): HDKey {
+		const b58 = base58check(sha256);
+		const raw = b58.decode(ZPRV);
+		raw.set([0x04, 0x88, 0xad, 0xe4], 0); // rewrite SLIP-132 zprv → xprv
+		return HDKey.fromExtendedKey(b58.encode(raw)).derive("m/84'/0'/0'");
+	}
+
+	/** A wallet whose xpub is real (bump re-derives the change address from it). */
+	function seedRealWallet(email: string): { userId: number; walletId: number } {
+		const user = registerUser({ email, password: 'correct horse battery', displayName: 'u' });
+		const res = db
+			.prepare(
+				`INSERT INTO wallets (user_id, name, type, xpub, script_type, master_fingerprint, derivation_path)
+				 VALUES (?, 'W', 'xpub', ?, 'p2wpkh', ?, ?)`
+			)
+			.run(user.id, ZPUB, '73c5da0a', "m/84'/0'/0'");
+		return { userId: user.id, walletId: Number(res.lastInsertRowid) };
+	}
+
+	/** A Cairn-built, already-broadcast original: RBF-signaling, with change. */
+	async function seedBroadcastOriginal(walletId: number, feeRate = 5) {
+		const details = await constructPsbt({
+			xpub: ZPUB,
+			utxos: [
+				{ txid: FUND.txid, vout: 0, value: 100_000, height: 800_000, address: RECEIVE_0, chain: 0, index: 0 }
+			],
+			recipient: RECIPIENT,
+			amount: 30_000,
+			feeRate,
+			changeAddress: CHANGE_0,
+			changeIndex: 0,
+			origin: { fingerprint: '73c5da0a', path: "m/84'/0'/0'" },
+			fetchRawTx: async () => FUND.hex
+		});
+		const res = db
+			.prepare(
+				`INSERT INTO transactions (wallet_id, status, psbt, txid, recipient, amount, fee, fee_rate, change_index)
+				 VALUES (?, 'completed', ?, ?, ?, ?, ?, ?, 0)`
+			)
+			.run(walletId, details.psbtBase64, ORIGINAL_TXID, RECIPIENT, details.amount, details.fee, details.feeRate);
+		return { txId: Number(res.lastInsertRowid), txid: ORIGINAL_TXID, details };
+	}
+
+	beforeEach(() => {
+		// Defaults: the original is still unconfirmed, and prev-tx fetches for
+		// the replacement's nonWitnessUtxo resolve from the funding tx.
+		getTxMock.mockResolvedValue({ confirmed: false });
+		getTxHexMock.mockResolvedValue(FUND.hex);
+	});
+
+	it('builds a replacement spending identical inputs with the same recipient and amount', async () => {
+		const { userId, walletId } = seedRealWallet('rbf@example.com');
+		const orig = await seedBroadcastOriginal(walletId);
+
+		const { draft, details } = await bumpTransaction(userId, walletId, orig.txId, 25);
+
+		expect(draft.status).toBe('draft');
+		expect(draft.replacesTxid).toBe(orig.txid);
+		expect(draft.recipient).toBe(RECIPIENT);
+		expect(draft.amount).toBe(30_000);
+
+		// Identical input set — the two transactions necessarily conflict.
+		expect(details.inputs.map((i) => `${i.txid}:${i.vout}`)).toEqual(
+			orig.details.inputs.map((i) => `${i.txid}:${i.vout}`)
+		);
+		// The recipient output is untouched; the entire fee delta comes out of
+		// change (value conservation over the same inputs).
+		const summary = summarizePsbt(details.psbtBase64);
+		expect(summary.outputs).toContainEqual({ address: RECIPIENT, value: 30_000 });
+		expect(details.change).not.toBeNull();
+		expect(details.change!.address).toBe(CHANGE_0);
+		expect(orig.details.change!.value - details.change!.value).toBe(details.fee - orig.details.fee);
+		// And the replacement clears the BIP-125 rule-4 floor.
+		expect(details.fee).toBeGreaterThanOrEqual(orig.details.fee + details.vsize);
+	});
+
+	it('rejects a fee rate at or below the original effective rate', async () => {
+		const { userId, walletId } = seedRealWallet('rbf@example.com');
+		const orig = await seedBroadcastOriginal(walletId);
+		const origRate = getTransaction(userId, walletId, orig.txId)!.feeRate;
+
+		await expect(bumpTransaction(userId, walletId, orig.txId, origRate)).rejects.toMatchObject({
+			code: 'fee_too_low'
+		});
+		await expect(bumpTransaction(userId, walletId, orig.txId, origRate - 1)).rejects.toThrow(
+			/higher than the original/
+		);
+	});
+
+	it('enforces the BIP-125 rule-4 absolute fee minimum (old fee + vsize sats)', async () => {
+		const { userId, walletId } = seedRealWallet('rbf@example.com');
+		const orig = await seedBroadcastOriginal(walletId);
+		const origRate = getTransaction(userId, walletId, orig.txId)!.feeRate;
+
+		// Marginally above the original's rate: passes the rate check but cannot
+		// pay the original fee plus 1 sat/vB of the replacement's own size.
+		const p = bumpTransaction(userId, walletId, orig.txId, origRate + 0.3);
+		await expect(p).rejects.toMatchObject({ code: 'fee_too_low' });
+		await expect(
+			bumpTransaction(userId, walletId, orig.txId, origRate + 0.3)
+		).rejects.toThrow(/original fee plus 1 sat\/vB/);
+	});
+
+	it('rejects when change cannot absorb the higher fee', async () => {
+		const { userId, walletId } = seedRealWallet('rbf@example.com');
+		const orig = await seedBroadcastOriginal(walletId);
+		// change ≈ 69k sats; at 500 sat/vB the fee (~73k) overruns it.
+		await expect(bumpTransaction(userId, walletId, orig.txId, 500)).rejects.toMatchObject({
+			code: 'insufficient_funds'
+		});
+	});
+
+	it('rejects an original that does not signal RBF', async () => {
+		const { userId, walletId } = seedRealWallet('rbf@example.com');
+		// Hand-built with default (0xffffffff) sequences — like rows created
+		// before Cairn started setting RBF_SEQUENCE on every input.
+		const legacy = new Transaction({ allowUnknownInputs: true, disableScriptCheck: true });
+		legacy.addInput({ txid: FUND.txid, index: 0 });
+		legacy.addOutputAddress(RECIPIENT, 30_000n, NETWORK);
+		const res = db
+			.prepare(
+				`INSERT INTO transactions (wallet_id, status, psbt, txid, recipient, amount, fee, fee_rate, change_index)
+				 VALUES (?, 'completed', ?, ?, ?, 30000, 700, 5, 0)`
+			)
+			.run(walletId, base64.encode(legacy.toPSBT()), 'cd'.repeat(32), RECIPIENT);
+		const txId = Number(res.lastInsertRowid);
+
+		await expect(bumpTransaction(userId, walletId, txId, 25)).rejects.toMatchObject({
+			code: 'not_rbf'
+		});
+		await expect(bumpTransaction(userId, walletId, txId, 25)).rejects.toThrow(
+			/doesn't signal RBF/
+		);
+	});
+
+	it('rejects an already-confirmed original', async () => {
+		const { userId, walletId } = seedRealWallet('rbf@example.com');
+		const orig = await seedBroadcastOriginal(walletId);
+		getTxMock.mockResolvedValue({ confirmed: true });
+		await expect(bumpTransaction(userId, walletId, orig.txId, 25)).rejects.toMatchObject({
+			code: 'confirmed'
+		});
+	});
+
+	it('rejects non-broadcast rows, superseded rows, and duplicate replacements', async () => {
+		const { userId, walletId } = seedRealWallet('rbf@example.com');
+		const draftRow = seedTx(walletId, 'draft');
+		await expect(bumpTransaction(userId, walletId, draftRow, 25)).rejects.toMatchObject({
+			code: 'not_bumpable'
+		});
+		await expect(bumpTransaction(userId, walletId, 99_999, 25)).rejects.toMatchObject({
+			code: 'not_found'
+		});
+
+		const orig = await seedBroadcastOriginal(walletId);
+		await bumpTransaction(userId, walletId, orig.txId, 25);
+		// A live replacement draft already points at this txid.
+		await expect(bumpTransaction(userId, walletId, orig.txId, 30)).rejects.toMatchObject({
+			code: 'already_replaced'
+		});
+		// Once marked superseded, the row itself refuses further bumps.
+		db.prepare("UPDATE transactions SET status = 'superseded' WHERE id = ?").run(orig.txId);
+		await expect(bumpTransaction(userId, walletId, orig.txId, 30)).rejects.toMatchObject({
+			code: 'superseded'
+		});
+		expect(BumpError).toBeDefined();
+	});
+
+	it('marks the original superseded when the replacement broadcasts', async () => {
+		const { userId, walletId } = seedRealWallet('rbf@example.com');
+		const orig = await seedBroadcastOriginal(walletId);
+		const { draft } = await bumpTransaction(userId, walletId, orig.txId, 25);
+
+		// Sign the replacement the way a hardware wallet would, via the
+		// embedded derivation paths.
+		const account = accountKey();
+		const tx = Transaction.fromPSBT(base64.decode(draft.psbt));
+		for (let i = 0; i < tx.inputsLength; i++) {
+			const path = tx.getInput(i).bip32Derivation![0][1].path;
+			tx.signIdx(account.deriveChild(path[3]).deriveChild(path[4]).privateKey!, i);
+		}
+
+		broadcastMock.mockResolvedValueOnce('ee'.repeat(32));
+		const { transaction } = await broadcastTransaction(
+			userId,
+			walletId,
+			draft.id,
+			base64.encode(tx.toPSBT())
+		);
+		expect(transaction.status).toBe('completed');
+		expect(transaction.txid).toBe('ee'.repeat(32));
+		// The replaced original leaves the 'completed' pool but stays on record.
+		expect(getTransaction(userId, walletId, orig.txId)?.status).toBe('superseded');
+		expect(deleteTransaction(userId, walletId, orig.txId)).toBe(false);
 	});
 });
