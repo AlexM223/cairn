@@ -534,7 +534,12 @@
 	}
 
 	// -------------------------------------------------------------- step 5: done
+	// The wallet-config backup is MANDATORY for multisig: it's the only way to
+	// reconstruct the wallet if Cairn's data is lost, so the "Go to your wallet"
+	// CTA is gated on it. Any of the three download links flips this true.
+	let backedUp = $state(false);
 	function markBackupDownloaded() {
+		backedUp = true;
 		if (createdId !== null) {
 			localStorage.setItem(`cairn.multisig.backup.${createdId}`, 'done');
 		}
@@ -1556,11 +1561,31 @@
 				</p>
 			</div>
 
+			{#if !backedUp}
+				<p id="backup-gate-note" class="backup-gate-warning" role="alert">
+					<Icon name="alert-triangle" size={14} />
+					Download your backup above before continuing — it's the only way to reconstruct
+					this multisig wallet if Cairn's data is lost.
+				</p>
+			{/if}
+
 			<div class="pane-actions" style="justify-content: center">
-				<a href="/wallets/multisig/{createdId}?created=1" class="btn btn-primary">
-					Go to your multisig wallet
-					<Icon name="arrow-right" size={14} />
-				</a>
+				{#if backedUp}
+					<a href="/wallets/multisig/{createdId}?created=1" class="btn btn-primary">
+						Go to your multisig wallet
+						<Icon name="arrow-right" size={14} />
+					</a>
+				{:else}
+					<button
+						type="button"
+						class="btn btn-primary"
+						disabled
+						aria-describedby="backup-gate-note"
+					>
+						Go to your multisig wallet
+						<Icon name="arrow-right" size={14} />
+					</button>
+				{/if}
 			</div>
 		</section>
 	{/if}
@@ -2274,6 +2299,24 @@
 	.seed-warning-body p.seed-note {
 		font-size: 12px;
 		color: var(--text-muted);
+	}
+
+	/* Backup gate on the Done step — the "Go to your wallet" CTA is disabled
+	   until a config backup is downloaded; this explains why. */
+	.backup-gate-warning {
+		display: flex;
+		align-items: flex-start;
+		gap: 8px;
+		margin: 0;
+		font-size: 12.5px;
+		line-height: 1.55;
+		color: var(--warning);
+		text-align: left;
+	}
+
+	.backup-gate-warning > :global(svg) {
+		flex-shrink: 0;
+		margin-top: 2px;
 	}
 
 	/* --- step 3: review --- */

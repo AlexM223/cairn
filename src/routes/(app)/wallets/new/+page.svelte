@@ -29,6 +29,10 @@
 	// Which device holds this key. null = the user skipped it; the wallet then
 	// signs via the universal file/PSBT fallback. Saved on the wallet record.
 	let deviceType = $state<WalletDeviceType | null>(null);
+	// After creation: the new wallet id, and whether its config backup was
+	// downloaded (required before the wizard can finish — cairn-dcp).
+	let createdId = $state<number | null>(null);
+	let backedUp = $state(false);
 
 	const looksLikeKey = $derived(/^[xyz]pub[1-9A-HJ-NP-Za-km-z]{20,}$/.test(xpubInput.trim()));
 </script>
@@ -274,6 +278,10 @@
 							createError =
 								(result.data as { error?: string } | undefined)?.error ??
 								'Could not import that wallet.';
+						} else if (result.type === 'success' && result.data) {
+							// Move to the mandatory backup step instead of leaving the wizard.
+							createdId = (result.data as { id: number }).id;
+							step = 4;
 						} else {
 							await applyAction(result);
 						}
@@ -325,12 +333,107 @@
 				</div>
 			</form>
 		</div>
+	{:else if step === 4 && createdId !== null}
+		<!-- ------------------------------------------- Step 5: back up (required) -->
+		<div class="card card-pad pane fade-in">
+			<span class="overline">Step 5 · Back up your wallet</span>
+			<h2 class="done-title">Wallet imported — one important step left</h2>
+
+			<div class="backup-warning" role="alert">
+				<Icon name="alert-triangle" size={18} />
+				<div>
+					<strong>Download your wallet configuration now.</strong>
+					This file is the only way to rebuild this wallet if Cairn's data is ever lost. It holds
+					your <Term
+						tip="Your wallet configuration file contains the public keys and settings needed to find your bitcoin on the blockchain. It cannot spend — but without it, restoring the wallet elsewhere is much harder."
+						>public keys and settings</Term
+					> — nothing that can spend — but without it you may permanently lose access to your bitcoin.
+				</div>
+			</div>
+
+			<a
+				class="btn btn-primary"
+				href="/api/wallets/{createdId}/config"
+				download
+				onclick={() => (backedUp = true)}
+			>
+				<Icon name="arrow-down-left" size={15} />
+				Download wallet config (JSON)
+			</a>
+
+			{#if backedUp}
+				<p class="backup-done" role="status">
+					<Icon name="check" size={14} />
+					Saved. Keep it somewhere safe — with your seed backup, not on this server.
+				</p>
+			{/if}
+
+			<div class="pane-actions">
+				<span class="hint">
+					{#if !backedUp}Download the file to continue.{/if}
+				</span>
+				<a
+					class="btn btn-primary"
+					class:disabled-link={!backedUp}
+					href={backedUp ? `/wallets/${createdId}?imported=1` : undefined}
+					aria-disabled={!backedUp}
+					tabindex={backedUp ? undefined : -1}
+				>
+					Go to your wallet
+					<Icon name="arrow-right" size={14} />
+				</a>
+			</div>
+		</div>
 	{/if}
 </div>
 
 <style>
 	.wizard {
 		max-width: 620px;
+	}
+
+	.done-title {
+		font-family: var(--font-serif);
+		font-size: 20px;
+		font-weight: 560;
+		letter-spacing: -0.01em;
+	}
+
+	.backup-warning {
+		display: flex;
+		gap: 12px;
+		align-items: flex-start;
+		background: var(--warning-muted);
+		border: 1px solid rgba(232, 201, 90, 0.3);
+		border-radius: var(--radius-control);
+		padding: 14px 16px;
+		font-size: 13px;
+		line-height: 1.6;
+		color: var(--text-secondary);
+	}
+
+	.backup-warning :global(svg) {
+		color: var(--warning);
+		flex-shrink: 0;
+		margin-top: 1px;
+	}
+
+	.backup-warning strong {
+		color: var(--text);
+	}
+
+	.backup-done {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 12.5px;
+		color: var(--success);
+	}
+
+	.disabled-link {
+		opacity: 0.5;
+		pointer-events: none;
+		cursor: not-allowed;
 	}
 
 	.back-link {

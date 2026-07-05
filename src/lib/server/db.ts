@@ -391,6 +391,24 @@ db.exec(`
 		ON user_agreement_acceptances(user_id);
 `);
 
+// Wallet-config backup tracking (see src/lib/server/backups.ts). Losing a
+// wallet's configuration — the public keys + settings needed to find and, for
+// multisig, RECONSTRUCT the wallet — can mean permanently losing access to
+// funds, so backup status is treated as first-class and tracked server-side
+// (not just a localStorage flag). One row per wallet once its config file has
+// been downloaded. wallet_kind ('wallet' | 'multisig') disambiguates the id,
+// which is not unique across the two tables.
+db.exec(`
+	CREATE TABLE IF NOT EXISTS wallet_backups (
+		user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		wallet_kind   TEXT NOT NULL,   -- 'wallet' | 'multisig'
+		wallet_id     INTEGER NOT NULL,
+		downloaded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		PRIMARY KEY (wallet_kind, wallet_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_wallet_backups_user ON wallet_backups(user_id);
+`);
+
 // User-facing activity feed (adapted from Bastion's audit_log, but for
 // friendly "here's what your instance is doing" events rather than a security
 // trail). One row per notable happening. user_id is NULL for instance-wide

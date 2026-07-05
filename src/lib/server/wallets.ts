@@ -40,6 +40,9 @@ export interface WalletRow {
 	xpub: string;
 	script_type: ScriptType;
 	device_type: WalletDeviceType | null;
+	/** Key origin, embedded in PSBTs and the config backup; null until known. */
+	master_fingerprint: string | null;
+	derivation_path: string | null;
 	receive_cursor: number;
 	created_at: string;
 }

@@ -2,6 +2,7 @@ import { json, requireUser } from '$lib/server/api';
 import { getMultisig, toMultisigConfig } from '$lib/server/wallets/multisig';
 import { multisigToDescriptor, MultisigError } from '$lib/server/bitcoin/multisig';
 import { descriptorBackup } from '$lib/server/multisigExport';
+import { markBackedUp } from '$lib/server/backups';
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
 
@@ -29,7 +30,9 @@ export const GET: RequestHandler = async (event) => {
 
 	try {
 		if (event.url.searchParams.get('download') === '1') {
-			return new Response(descriptorBackup(multisig), {
+			const body = descriptorBackup(multisig);
+			markBackedUp(user.id, 'multisig', id);
+			return new Response(body, {
 				headers: {
 					'content-type': 'text/plain; charset=utf-8',
 					'content-disposition': `attachment; filename="cairn-multisig-${safeFilename(multisig.name)}-descriptor.txt"`

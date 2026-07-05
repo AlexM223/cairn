@@ -1,4 +1,4 @@
-import { fail, redirect } from '@sveltejs/kit';
+import { fail } from '@sveltejs/kit';
 import { parseXpub } from '$lib/server/bitcoin/xpub';
 import { derivePreviewAddresses } from '$lib/server/bitcoin/walletScan';
 import { createWallet, friendlyXpubError } from '$lib/server/wallets';
@@ -21,7 +21,10 @@ export const actions: Actions = {
 		}
 	},
 
-	/** Step 4: create the wallet and hand off to the detail page. */
+	/**
+	 * Create the wallet, then hand the id back so the wizard can require a config
+	 * backup download before finishing (cairn-dcp) — no redirect here.
+	 */
 	create: async ({ request, locals }) => {
 		const form = await request.formData();
 		const xpub = String(form.get('xpub') ?? '').trim();
@@ -37,6 +40,6 @@ export const actions: Actions = {
 				error: e instanceof Error ? e.message : 'Could not import that wallet.'
 			});
 		}
-		redirect(303, `/wallets/${id}?imported=1`);
+		return { created: true, id };
 	}
 };
