@@ -13,17 +13,20 @@
 		value = $bindable(''),
 		saved,
 		invalid = false,
-		ondelete
+		ondelete,
+		id = 'recipient'
 	}: {
 		value: string;
 		saved: SavedAddress[];
 		invalid?: boolean;
 		/** Inline delete from the dropdown — the parent owns the list + API call. */
 		ondelete: (entry: SavedAddress) => void;
+		/** Unique per instance — batch sending mounts one combobox per row. */
+		id?: string;
 	} = $props();
 
-	const LISTBOX_ID = 'recipient-listbox';
-	const optionId = (entry: SavedAddress) => `recipient-option-${entry.id}`;
+	const LISTBOX_ID = $derived(`${id}-listbox`);
+	const optionId = (entry: SavedAddress) => `${id}-option-${entry.id}`;
 
 	let open = $state(false);
 	let activeIndex = $state(-1);
@@ -105,7 +108,7 @@
 
 <div class="combo" bind:this={rootEl} onfocusout={onFocusOut}>
 	<input
-		id="recipient"
+		{id}
 		class="input mono"
 		placeholder="bc1q…"
 		bind:value

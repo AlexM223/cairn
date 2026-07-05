@@ -651,9 +651,10 @@
 						{/if}
 						<div class="field">
 							{#if rows.length === 1}
-								<label class="label" for="recipient">Recipient address</label>
+								<label class="label" for={`recipient-${row.key}`}>Recipient address</label>
 							{/if}
 							<RecipientCombobox
+								id={`recipient-${row.key}`}
 								bind:value={row.address}
 								saved={savedAddresses}
 								invalid={row.address.length > 0 && !looksLikeAddress(row.address)}
