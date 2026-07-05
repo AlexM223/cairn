@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
 import { Transaction, p2wpkh, p2ms, p2wsh, NETWORK } from '@scure/btc-signer';
 import { base64 } from '@scure/base';
 import { HDKey } from '@scure/bip32';
@@ -17,8 +17,11 @@ import {
 	multisigDevicePubkeys,
 	mergeMultisigSignatures,
 	signMultisigPsbtWithLedger,
+	singleSigAccountPath,
+	readSingleSigKeyFromLedger,
 	type MultisigSignKey
 } from './ledger';
+import type { ScriptType } from '$lib/types';
 
 // A deterministic compressed pubkey (secp256k1 generator, X-only prefixed 0x02).
 const PUBKEY = hexToBytes('0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798');
@@ -490,6 +493,10 @@ describe('without a Node Buffer global (browser environment)', () => {
 			mod.mergeMultisigSignatures(mtx, new Map([[0, msig]]), pubkeys);
 			expect(mtx.getInput(0).partialSig).toHaveLength(1);
 
+			// Single-sig path math is Buffer-free too (the standard-wallet reader's
+			// pure part — the SLIP-132 re-encode runs on plain Uint8Arrays).
+			expect(mod.singleSigAccountPath('p2wpkh')).toBe("m/84'/0'/0'");
+
 			// Error mapping is Buffer-free too.
 			expect(mod.toLedgerError({ statusCode: 0x6e01 }).code).toBe('app_not_open');
 			expect((globalThis as { Buffer?: unknown }).Buffer).toBeUndefined();
@@ -509,5 +516,107 @@ describe('signMultisigPsbtWithLedger', () => {
 				policyHmac: null
 			})
 		).rejects.toMatchObject({ name: 'LedgerError', code: 'policy_unregistered' });
+	});
+});
+
+// ------------------------------------------------------------------ single-sig
+
+describe('singleSigAccountPath (Ledger)', () => {
+	it('maps each script type to its standard BIP44/49/84/86 account path', () => {
+		expect(singleSigAccountPath('p2pkh')).toBe("m/44'/0'/0'");
+		expect(singleSigAccountPath('p2sh-p2wpkh')).toBe("m/49'/0'/0'");
+		expect(singleSigAccountPath('p2wpkh')).toBe("m/84'/0'/0'");
+		expect(singleSigAccountPath('p2tr')).toBe("m/86'/0'/0'");
+	});
+
+	it('honours a non-default account index and rejects bogus ones', () => {
+		expect(singleSigAccountPath('p2wpkh', 3)).toBe("m/84'/0'/3'");
+		expect(() => singleSigAccountPath('p2wpkh', -1)).toThrow(LedgerError);
+	});
+});
+
+// Stubs the two lazily-imported vendor modules the reader touches so the
+// single-sig account read (getMasterFingerprint + getExtendedPubkey) runs
+// without WebHID or a device. ledgerStub.xpub / .fp drive each test.
+const ledgerStub = {
+	fp: Buffer.alloc(4),
+	xpub: '',
+	getExtendedPubkey: vi.fn()
+};
+vi.mock('@ledgerhq/hw-transport-webhid', () => ({
+	default: { create: vi.fn(async () => ({ close: vi.fn(async () => {}) })) }
+}));
+vi.mock('@ledgerhq/hw-app-btc/lib/newops/appClient', () => ({
+	AppClient: class {
+		getMasterFingerprint = vi.fn(async () => ledgerStub.fp);
+		getExtendedPubkey = vi.fn(async (_display: boolean, path: number[]) => {
+			ledgerStub.getExtendedPubkey(path);
+			return ledgerStub.xpub;
+		});
+	}
+}));
+
+describe('readSingleSigKeyFromLedger', () => {
+	const master = HDKey.fromMasterSeed(new Uint8Array(32).fill(11));
+	const EXPECTED_FP = (master.fingerprint >>> 0).toString(16).padStart(8, '0');
+
+	// Script type → its standard purpose and the SLIP-132 prefix the stored key
+	// must carry (xpub for p2pkh AND p2tr, ypub for p2sh-p2wpkh, zpub for p2wpkh).
+	const CASES: [ScriptType, number, string][] = [
+		['p2pkh', 44, 'xpub'],
+		['p2sh-p2wpkh', 49, 'ypub'],
+		['p2wpkh', 84, 'zpub'],
+		['p2tr', 86, 'xpub']
+	];
+
+	let savedNavigator: PropertyDescriptor | undefined;
+	beforeAll(() => {
+		// navigator is a getter-only global under Node — redefine it so
+		// isWebHidAvailable() sees a `hid` object, then restore it afterwards.
+		savedNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+		Object.defineProperty(globalThis, 'navigator', {
+			value: { hid: {} },
+			configurable: true,
+			writable: true
+		});
+		// The device reports its master fingerprint as the 4-byte big-endian value.
+		ledgerStub.fp = Buffer.from(fingerprintToBuffer(master.fingerprint >>> 0));
+	});
+	afterAll(() => {
+		if (savedNavigator) Object.defineProperty(globalThis, 'navigator', savedNavigator);
+		else delete (globalThis as { navigator?: unknown }).navigator;
+	});
+	afterEach(() => {
+		ledgerStub.getExtendedPubkey.mockReset();
+	});
+
+	for (const [scriptType, purpose, prefix] of CASES) {
+		it(`reads ${scriptType} at m/${purpose}'/0'/0' and normalizes to the ${prefix} prefix`, async () => {
+			const path = `m/${purpose}'/0'/0'`;
+			// The app returns a plain xpub for the account node; the reader must
+			// re-encode it to the script type's SLIP-132 prefix.
+			ledgerStub.xpub = master.derive(path).publicExtendedKey;
+
+			const key = await readSingleSigKeyFromLedger(scriptType);
+
+			expect(key.path).toBe(path);
+			expect(key.fingerprint).toBe(EXPECTED_FP);
+			expect(key.xpub.startsWith(prefix)).toBe(true);
+			// The reader asked the app for the account path as hardened-offset ints.
+			const requested = ledgerStub.getExtendedPubkey.mock.calls[0][0] as number[];
+			expect(requested).toEqual([purpose + HARDENED, 0 + HARDENED, 0 + HARDENED]);
+		});
+	}
+
+	it('honours a non-default account index in the path it requests', async () => {
+		const path = "m/84'/0'/2'";
+		ledgerStub.xpub = master.derive(path).publicExtendedKey;
+		const key = await readSingleSigKeyFromLedger('p2wpkh', 2);
+		expect(key.path).toBe(path);
+		expect(ledgerStub.getExtendedPubkey.mock.calls[0][0]).toEqual([
+			84 + HARDENED,
+			0 + HARDENED,
+			2 + HARDENED
+		]);
 	});
 });

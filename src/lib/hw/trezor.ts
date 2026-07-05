@@ -25,6 +25,7 @@ import { base64, createBase58check } from '@scure/base';
 import { HDKey } from '@scure/bip32';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
+import type { ScriptType } from '$lib/types';
 
 const HARDENED = 0x80000000;
 const SIGHASH_ALL = 0x01;
@@ -1329,6 +1330,135 @@ export async function readMultisigKeyFromTrezor(
 
 	return {
 		xpub: normalizeMultisigXpub(accountXpub),
+		fingerprint: xfpFromXpub(masterXpub),
+		path
+	};
+}
+
+// ------------------------------------------------------------------ single-sig
+//
+// SINGLE-SIG key reading for the standard-wallet creation wizard — the sibling
+// of readMultisigKeyFromTrezor. Same device machinery (a silent getPublicKey
+// bundle: m for the master fingerprint, the account node for the xpub), but a
+// standard BIP44/49/84/86 single-sig account path and the SLIP-132 SINGLE-SIG
+// xpub prefix family (xpub/ypub/zpub, p2tr→xpub — see xpub.ts's PUBLIC_VERSIONS)
+// rather than the multisig Ypub/Zpub convention. Kept a separate function, not a
+// parameterized merge, so each key kind reads exactly like its wizard.
+
+/** SLIP-132 single-sig public version bytes per script type — the prefix family
+ *  xpub.ts's PUBLIC_VERSIONS recognizes (xpub for p2pkh AND p2tr, ypub for
+ *  p2sh-p2wpkh, zpub for p2wpkh). NOT the multisig Ypub/Zpub convention. */
+const SINGLE_SIG_VERSIONS: Record<ScriptType, number> = {
+	p2pkh: 0x0488b21e, // xpub (BIP44)
+	'p2sh-p2wpkh': 0x049d7cb2, // ypub (BIP49)
+	p2wpkh: 0x04b24746, // zpub (BIP84)
+	p2tr: 0x0488b21e // xpub (BIP86 — no dedicated SLIP-132 prefix)
+};
+
+/**
+ * The standard single-sig account path for a script type:
+ * m/44'/0'/{account}' (p2pkh), m/49'/0'/{account}' (p2sh-p2wpkh),
+ * m/84'/0'/{account}' (p2wpkh), m/86'/0'/{account}' (p2tr). Mainnet only,
+ * matching the rest of Cairn. Mirrors multisigAccountPath. Exported for unit
+ * testing.
+ */
+export function singleSigAccountPath(scriptType: ScriptType, account = 0): string {
+	const purpose =
+		scriptType === 'p2pkh'
+			? 44
+			: scriptType === 'p2sh-p2wpkh'
+				? 49
+				: scriptType === 'p2wpkh'
+					? 84
+					: scriptType === 'p2tr'
+						? 86
+						: null;
+	if (purpose === null) {
+		throw new TrezorError(`Unsupported single-sig script type "${scriptType}".`, 'unexpected');
+	}
+	if (!Number.isInteger(account) || account < 0 || account >= HARDENED) {
+		throw new TrezorError(`Invalid account index ${account}.`, 'unexpected');
+	}
+	return `m/${purpose}'/0'/${account}'`;
+}
+
+/**
+ * Rewrite an account xpub to the SLIP-132 single-sig prefix for its script type
+ * (xpub/ypub/zpub, p2tr→xpub). The device may return the key as a plain xpub or
+ * already SLIP-132-prefixed depending on the path; either way this re-encodes
+ * only the 4 version bytes so the stored key matches xpub.ts's PUBLIC_VERSIONS.
+ * Anything that doesn't decode as a 78-byte extended key passes through unchanged
+ * so the caller's parse produces the real error.
+ */
+function normalizeSingleSigXpub(input: string, scriptType: ScriptType): string {
+	const version = SINGLE_SIG_VERSIONS[scriptType];
+	if (version === undefined) {
+		throw new TrezorError(`Unsupported single-sig script type "${scriptType}".`, 'unexpected');
+	}
+	const trimmed = input.trim();
+	let raw: Uint8Array;
+	try {
+		raw = b58check.decode(trimmed);
+	} catch {
+		return trimmed;
+	}
+	if (raw.length !== 78) return trimmed;
+	const out = new Uint8Array(raw);
+	out[0] = (version >>> 24) & 0xff;
+	out[1] = (version >>> 16) & 0xff;
+	out[2] = (version >>> 8) & 0xff;
+	out[3] = version & 0xff;
+	return b58check.encode(out);
+}
+
+/**
+ * Read a single-sig key straight from a connected Trezor for the standard wallet
+ * creation wizard: the BIP44/49/84/86 account xpub at m/{44|49|84|86}'/0'/{account}'
+ * plus the device's MASTER fingerprint. Connect never reports the master
+ * fingerprint, so it's recovered from a silent m-path xpub read (xfpFromXpub).
+ * Both reads are silent single-round-trip bundle entries; the m-level entry
+ * deliberately carries no `coin` because Connect refuses to pair a coin with a
+ * depth-0 path.
+ *
+ * Returns exactly the { xpub, fingerprint, path } shape single-sig wallets store
+ * — the xpub in its SLIP-132 single-sig prefix (xpub/ypub/zpub), apostrophe path
+ * notation.
+ */
+export async function readSingleSigKeyFromTrezor(
+	scriptType: ScriptType,
+	account = 0
+): Promise<{ xpub: string; fingerprint: string; path: string }> {
+	if (!isTrezorConnectAvailable()) {
+		throw new TrezorError(
+			'Trezor signing needs a secure browser context (HTTPS or localhost) so the Trezor Connect popup can open.',
+			'unavailable'
+		);
+	}
+	const path = singleSigAccountPath(scriptType, account);
+	const TrezorConnect = await ensureInit();
+
+	let masterXpub: string;
+	let accountXpub: string;
+	try {
+		const res = await TrezorConnect.getPublicKey({
+			bundle: [
+				{ path: 'm', showOnTrezor: false },
+				{ path, coin: 'btc', showOnTrezor: false }
+			]
+		});
+		if (!res.success) throw toTrezorError(res.payload);
+		const payload = res.payload;
+		if (!Array.isArray(payload) || payload.length < 2 || !payload[0]?.xpub || !payload[1]?.xpub) {
+			throw new TrezorError('The Trezor returned an unexpected key response.', 'unexpected');
+		}
+		masterXpub = payload[0].xpub;
+		accountXpub = payload[1].xpub;
+	} catch (err) {
+		throw toTrezorError(err);
+	}
+
+	return {
+		xpub: normalizeSingleSigXpub(accountXpub, scriptType),
 		fingerprint: xfpFromXpub(masterXpub),
 		path
 	};

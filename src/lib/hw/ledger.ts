@@ -18,6 +18,7 @@ import { base64, createBase58check } from '@scure/base';
 import { HDKey } from '@scure/bip32';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
+import type { ScriptType } from '$lib/types';
 
 // ---- Types imported for annotations only (erased at build, no runtime load) --
 import type { AppClient as AppClientType } from '@ledgerhq/hw-app-btc/lib/newops/appClient';
@@ -1185,6 +1186,148 @@ export async function readMultisigKeyFromLedger(
 			throw toLedgerError(err);
 		}
 		return { xpub, fingerprint: bytesToFpHex(masterFp), path };
+	} finally {
+		if (transport) {
+			try {
+				await transport.close();
+			} catch {
+				/* releasing the HID handle is best-effort */
+			}
+		}
+	}
+}
+
+// ------------------------------------------------------------------ single-sig
+//
+// SINGLE-SIG key reading for the standard-wallet creation wizard — the sibling
+// of readMultisigKeyFromLedger. Same device machinery (getMasterFingerprint +
+// getExtendedPubkey over WebHID), but a standard BIP44/49/84/86 single-sig
+// account path and the SLIP-132 SINGLE-SIG xpub prefix family (xpub/ypub/zpub,
+// p2tr→xpub — see xpub.ts's PUBLIC_VERSIONS) rather than the multisig Ypub/Zpub
+// convention. Kept a separate function, not a parameterized merge, so each key
+// kind reads exactly like its wizard.
+
+/** SLIP-132 single-sig public version bytes per script type — the prefix family
+ *  xpub.ts's PUBLIC_VERSIONS recognizes (xpub for p2pkh AND p2tr, ypub for
+ *  p2sh-p2wpkh, zpub for p2wpkh). NOT the multisig Ypub/Zpub convention. */
+const SINGLE_SIG_VERSIONS: Record<ScriptType, number> = {
+	p2pkh: 0x0488b21e, // xpub (BIP44)
+	'p2sh-p2wpkh': 0x049d7cb2, // ypub (BIP49)
+	p2wpkh: 0x04b24746, // zpub (BIP84)
+	p2tr: 0x0488b21e // xpub (BIP86 — no dedicated SLIP-132 prefix)
+};
+
+/**
+ * The standard single-sig account path for a script type:
+ * m/44'/0'/{account}' (p2pkh), m/49'/0'/{account}' (p2sh-p2wpkh),
+ * m/84'/0'/{account}' (p2wpkh), m/86'/0'/{account}' (p2tr). Mainnet only,
+ * matching the rest of Cairn. Mirrors multisigAccountPath. Exported for unit
+ * testing.
+ */
+export function singleSigAccountPath(scriptType: ScriptType, account = 0): string {
+	const purpose =
+		scriptType === 'p2pkh'
+			? 44
+			: scriptType === 'p2sh-p2wpkh'
+				? 49
+				: scriptType === 'p2wpkh'
+					? 84
+					: scriptType === 'p2tr'
+						? 86
+						: null;
+	if (purpose === null) {
+		throw new LedgerError(`Unsupported single-sig script type "${scriptType}".`, 'unexpected');
+	}
+	if (!Number.isInteger(account) || account < 0 || account >= HW_HARDENED) {
+		throw new LedgerError(`Invalid account index ${account}.`, 'unexpected');
+	}
+	return `m/${purpose}'/0'/${account}'`;
+}
+
+/**
+ * Rewrite an account xpub to the SLIP-132 single-sig prefix for its script type
+ * (xpub/ypub/zpub, p2tr→xpub). The Ledger app returns a plain xpub for the
+ * account path; this re-encodes only the 4 version bytes so the stored key
+ * matches xpub.ts's PUBLIC_VERSIONS. Anything that doesn't decode as a 78-byte
+ * extended key passes through unchanged so the caller's parse produces the real
+ * error.
+ */
+function normalizeSingleSigXpub(input: string, scriptType: ScriptType): string {
+	const version = SINGLE_SIG_VERSIONS[scriptType];
+	if (version === undefined) {
+		throw new LedgerError(`Unsupported single-sig script type "${scriptType}".`, 'unexpected');
+	}
+	const trimmed = input.trim();
+	let raw: Uint8Array;
+	try {
+		raw = b58check.decode(trimmed);
+	} catch {
+		return trimmed;
+	}
+	if (raw.length !== 78) return trimmed;
+	const out = new Uint8Array(raw);
+	out[0] = (version >>> 24) & 0xff;
+	out[1] = (version >>> 16) & 0xff;
+	out[2] = (version >>> 8) & 0xff;
+	out[3] = version & 0xff;
+	return b58check.encode(out);
+}
+
+/**
+ * Read a single-sig key straight from a connected Ledger for the standard wallet
+ * creation wizard: the BIP44/49/84/86 account xpub at m/{44|49|84|86}'/0'/{account}'
+ * plus the device's master fingerprint (which the Ledger app reports directly,
+ * unlike Trezor Connect). Silent reads — the wizard's on-screen test address is
+ * the cross-check.
+ *
+ * Returns exactly the { xpub, fingerprint, path } shape single-sig wallets store
+ * — the xpub in its SLIP-132 single-sig prefix (xpub/ypub/zpub), apostrophe path
+ * notation.
+ */
+export async function readSingleSigKeyFromLedger(
+	scriptType: ScriptType,
+	account = 0
+): Promise<{ xpub: string; fingerprint: string; path: string }> {
+	if (!isWebHidAvailable()) {
+		throw new LedgerError(
+			'WebHID is not available in this browser. Ledger signing needs a Chromium-based desktop browser (Chrome, Edge, or Brave) served over HTTPS or localhost.',
+			'unavailable'
+		);
+	}
+	const path = singleSigAccountPath(scriptType, account);
+	const pathElements = parseMultisigKeyPath(path, 'single-sig account path');
+
+	// The Node globals (Buffer, process) must exist before the vendor modules evaluate.
+	await ensureNodeGlobals();
+	const [transportMod, appClientMod] = await Promise.all([
+		import('@ledgerhq/hw-transport-webhid'),
+		import('@ledgerhq/hw-app-btc/lib/newops/appClient')
+	]);
+	const { default: TransportWebHID } = transportMod;
+	const { AppClient } = appClientMod;
+
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	let transport: any;
+	try {
+		try {
+			transport = await TransportWebHID.create();
+		} catch (err) {
+			throw toLedgerError(err);
+		}
+		const client: AppClientType = new AppClient(transport);
+		let masterFp: Buffer;
+		let xpub: string;
+		try {
+			masterFp = await client.getMasterFingerprint();
+			xpub = await client.getExtendedPubkey(false, pathElements);
+		} catch (err) {
+			throw toLedgerError(err);
+		}
+		return {
+			xpub: normalizeSingleSigXpub(xpub, scriptType),
+			fingerprint: bytesToFpHex(masterFp),
+			path
+		};
 	} finally {
 		if (transport) {
 			try {

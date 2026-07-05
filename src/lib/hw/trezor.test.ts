@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeAll, afterAll } from 'vitest';
 import { Transaction, p2wpkh, p2pkh, p2ms, p2wsh, p2sh, NETWORK } from '@scure/btc-signer';
 import { base64 } from '@scure/base';
 import { HDKey } from '@scure/bip32';
@@ -17,8 +17,11 @@ import {
 	selectMultisigKeyForDevice,
 	xfpFromXpub,
 	multisigAccountPath,
+	singleSigAccountPath,
+	readSingleSigKeyFromTrezor,
 	type MultisigSignParams
 } from './trezor';
+import type { ScriptType } from '$lib/types';
 
 // A deterministic compressed pubkey (secp256k1 generator, X-only prefixed 0x02).
 const PUBKEY = hexToBytes('0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798');
@@ -756,5 +759,103 @@ describe('multisigAccountPath (Trezor)', () => {
 	it('rejects a bogus account index', () => {
 		expect(() => multisigAccountPath('p2wsh', -1)).toThrow(TrezorError);
 		expect(() => multisigAccountPath('p2wsh', 1.5)).toThrow(TrezorError);
+	});
+});
+
+// ------------------------------------------------------------------ single-sig
+
+describe('singleSigAccountPath (Trezor)', () => {
+	it('maps each script type to its standard BIP44/49/84/86 account path', () => {
+		expect(singleSigAccountPath('p2pkh')).toBe("m/44'/0'/0'");
+		expect(singleSigAccountPath('p2sh-p2wpkh')).toBe("m/49'/0'/0'");
+		expect(singleSigAccountPath('p2wpkh')).toBe("m/84'/0'/0'");
+		expect(singleSigAccountPath('p2tr')).toBe("m/86'/0'/0'");
+	});
+
+	it('honours a non-default account index', () => {
+		expect(singleSigAccountPath('p2wpkh', 3)).toBe("m/84'/0'/3'");
+	});
+
+	it('rejects a bogus account index', () => {
+		expect(() => singleSigAccountPath('p2wpkh', -1)).toThrow(TrezorError);
+		expect(() => singleSigAccountPath('p2wpkh', 1.5)).toThrow(TrezorError);
+	});
+});
+
+// A single stubbed TrezorConnect the mocked module returns; each test sets what
+// getPublicKey resolves to. Mirrors readMultisigKeyFromTrezor's bundle read
+// ([m-path xpub → fingerprint, account xpub → key]) without a real popup.
+const trezorStub = {
+	init: vi.fn(async () => {}),
+	getPublicKey: vi.fn(
+		async (_params: { bundle: { path: string; coin?: string; showOnTrezor?: boolean }[] }) => ({
+			success: true,
+			payload: [] as { xpub: string }[]
+		})
+	)
+};
+vi.mock('@trezor/connect-web', () => ({ default: trezorStub }));
+
+describe('readSingleSigKeyFromTrezor', () => {
+	// A depth-0 master + its account nodes, so xfpFromXpub recovers a real
+	// fingerprint and the account xpub is a genuine 78-byte extended key the
+	// SLIP-132 re-encode can act on.
+	const master = HDKey.fromMasterSeed(new Uint8Array(32).fill(11));
+	const masterXpub = master.publicExtendedKey;
+	const EXPECTED_FP = (master.fingerprint >>> 0).toString(16).padStart(8, '0');
+
+	// Script type → its standard purpose and the SLIP-132 prefix the stored key
+	// must carry (xpub for p2pkh AND p2tr, ypub for p2sh-p2wpkh, zpub for p2wpkh).
+	const CASES: [ScriptType, number, string][] = [
+		['p2pkh', 44, 'xpub'],
+		['p2sh-p2wpkh', 49, 'ypub'],
+		['p2wpkh', 84, 'zpub'],
+		['p2tr', 86, 'xpub']
+	];
+
+	beforeAll(() => {
+		(globalThis as { window?: unknown }).window = { isSecureContext: true, location: { origin: 'https://localhost' } };
+	});
+	afterAll(() => {
+		delete (globalThis as { window?: unknown }).window;
+	});
+	afterEach(() => {
+		trezorStub.getPublicKey.mockReset();
+	});
+
+	for (const [scriptType, purpose, prefix] of CASES) {
+		it(`reads ${scriptType} at m/${purpose}'/0'/0' and normalizes to the ${prefix} prefix`, async () => {
+			const path = `m/${purpose}'/0'/0'`;
+			// The device returns a plain xpub for the account node; the reader must
+			// re-encode it to the script type's SLIP-132 prefix.
+			const accountXpub = master.derive(path).publicExtendedKey;
+			trezorStub.getPublicKey.mockResolvedValueOnce({
+				success: true,
+				payload: [{ xpub: masterXpub }, { xpub: accountXpub }]
+			});
+
+			const key = await readSingleSigKeyFromTrezor(scriptType);
+
+			expect(key.path).toBe(path);
+			expect(key.fingerprint).toBe(EXPECTED_FP);
+			expect(key.xpub.startsWith(prefix)).toBe(true);
+			// The reader asked the device for [m, account-path] silently.
+			const call = trezorStub.getPublicKey.mock.calls[0]![0];
+			expect(call.bundle[0]!.path).toBe('m');
+			expect(call.bundle[1]!.path).toBe(path);
+			expect(call.bundle[1]!.coin).toBe('btc');
+			expect(call.bundle[0]!.showOnTrezor).toBe(false);
+		});
+	}
+
+	it('honours a non-default account index in the path it requests', async () => {
+		const path = "m/84'/0'/2'";
+		trezorStub.getPublicKey.mockResolvedValueOnce({
+			success: true,
+			payload: [{ xpub: masterXpub }, { xpub: master.derive(path).publicExtendedKey }]
+		});
+		const key = await readSingleSigKeyFromTrezor('p2wpkh', 2);
+		expect(key.path).toBe(path);
+		expect(trezorStub.getPublicKey.mock.calls[0]![0].bundle[1]!.path).toBe(path);
 	});
 });

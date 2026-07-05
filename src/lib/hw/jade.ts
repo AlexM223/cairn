@@ -1,0 +1,659 @@
+// Blockstream Jade hardware-wallet signer — USB (Web Serial) driver.
+//
+// ⚠️ MAINTENANCE RISK (Cairn hardware plan §2.2). Blockstream ships NO official
+// JS/TypeScript SDK for Jade — its only official client is Python. This driver
+// depends on `jadets` (npm), an unofficial, thin, single-maintainer TypeScript
+// reimplementation of Jade's CBOR-RPC protocol (github.com/Austin-Fulbright/
+// jadets, created 2025). It is what a real production coordinator (Caravan)
+// ships with today, but it is young and lightly maintained. We therefore:
+//   - pin the version and never auto-update (foundation: jadets@^1.1.18);
+//   - defensively wrap EVERY jadets call in try/catch → JadeError, never
+//     trusting an unhandled shape to bubble up as a raw Error;
+//   - keep all pure, testable logic (path derivation, SLIP-132 xpub
+//     normalization, descriptor adaptation) OUT of the device-I/O functions so
+//     the bulk of this file is verifiable without hardware or the library.
+// If jadets proves unreliable, the fallback (per §2.2) is a hand-rolled CBOR-RPC
+// client over Web Serial — larger effort, only worth it if this breaks.
+//
+// Framework-agnostic on purpose: no Svelte, no DOM beyond the Web Serial feature
+// check. The heavy jadets module is imported lazily inside each device function
+// — never at module top level — so SSR and non-Jade users never pay to load it,
+// and the navigator.serial globals it touches are only referenced in a browser
+// after a click.
+//
+// Cairn holds no private keys: the device signs. We hand Jade the exact unsigned
+// PSBT built by src/lib/server/bitcoin/psbt.ts and receive the signed PSBT back.
+// The parent Sign step re-checks that the returned transaction commits to the
+// same inputs/outputs the user reviewed (assertSameTransaction).
+//
+// This module covers the USB / Web Serial path ONLY. Jade's air-gapped QR mode
+// uses BC-UR (a different codec from Cairn's existing BBQr) and is a separate
+// follow-on driver (hw/jadeUr.ts, plan Unit E2) — not built here.
+
+import { createBase58check } from '@scure/base';
+import { sha256 } from '@noble/hashes/sha2.js';
+import type { ScriptType } from '$lib/types';
+
+// ---- Types imported for annotations only (erased at build, no runtime load) --
+import type { MultisigDescriptor, SignerDescriptor } from 'jadets';
+
+const HARDENED = 0x80000000;
+
+// Cairn is mainnet-only, matching the rest of the codebase. jadets' network
+// strings are "mainnet"/"testnet" (see its getFingerprintFromXpub).
+const JADE_NETWORK = 'mainnet';
+
+/**
+ * A typed error the UI can present verbatim. `code` lets callers branch (e.g.
+ * offer "unlock your Jade" vs "use a Chromium browser") without string-matching.
+ * Mirrors LedgerError/TrezorError.
+ */
+export type JadeErrorCode =
+	| 'unsupported-browser' // Web Serial not present (non-Chromium / insecure context)
+	| 'no_device' // no serial port chosen from the browser picker / disconnected
+	| 'auth_failed' // PIN unlock (authUser) did not complete
+	| 'rejected' // user declined on-device
+	| 'bad_psbt' // the PSBT could not be read / signed
+	| 'wrong_device' // the connected Jade holds none of the multisig's keys
+	| 'unexpected'; // anything else
+
+export class JadeError extends Error {
+	constructor(
+		message: string,
+		public readonly code: JadeErrorCode,
+		options?: { cause?: unknown }
+	) {
+		super(message);
+		this.name = 'JadeError';
+		if (options?.cause !== undefined) (this as { cause?: unknown }).cause = options.cause;
+	}
+}
+
+/** True only in a browser that exposes Web Serial (Chromium desktop, secure
+ *  context). Jade USB shares Ledger's Chromium-only posture. */
+export function isWebSerialAvailable(): boolean {
+	return (
+		typeof navigator !== 'undefined' &&
+		typeof (navigator as Navigator & { serial?: unknown }).serial !== 'undefined' &&
+		!!(navigator as Navigator & { serial?: unknown }).serial
+	);
+}
+
+// ---------------------------------------------------------------- pure logic
+//
+// Everything below the device functions is pure and unit-tested without a
+// device or the jadets library.
+
+const b58check = /* @__PURE__ */ createBase58check(sha256);
+
+// Standard BIP32 mainnet xpub version bytes.
+const XPUB_VERSION = 0x0488b21e;
+
+// Single-sig SLIP-132 mainnet public version bytes per script type. Cairn's
+// single-sig wallets are keyed by the prefix the account xpub carries (see
+// xpub.ts PUBLIC_VERSIONS, the inverse of this map). BIP-86 taproot has NO
+// SLIP-132 prefix — its account key stays a plain xpub.
+const SLIP132_SINGLESIG_VERSION: Record<ScriptType, number> = {
+	p2pkh: 0x0488b21e, // xpub  (BIP44)
+	'p2sh-p2wpkh': 0x049d7cb2, // ypub  (BIP49)
+	p2wpkh: 0x04b24746, // zpub  (BIP84)
+	p2tr: 0x0488b21e // xpub  (BIP86 — no dedicated SLIP-132 prefix)
+};
+
+// BIP purpose (first hardened path element) per single-sig script type.
+const SCRIPT_TYPE_PURPOSE: Record<ScriptType, number> = {
+	p2pkh: 44, // BIP44
+	'p2sh-p2wpkh': 49, // BIP49
+	p2wpkh: 84, // BIP84
+	p2tr: 86 // BIP86
+};
+
+/**
+ * The standard single-sig BIP44/49/84/86 account path for a script type, as a
+ * hardened-offset index array (the form jadets' getXpub wants): purpose', 0'
+ * (mainnet coin type), account'. Mainnet only, matching the rest of Cairn.
+ *
+ * Exported for unit testing — the load-bearing single-sig derivation.
+ */
+export function singleSigAccountPath(scriptType: ScriptType, account = 0): number[] {
+	const purpose = SCRIPT_TYPE_PURPOSE[scriptType];
+	if (purpose === undefined) {
+		throw new JadeError(`Unsupported single-sig script type "${scriptType}".`, 'unexpected');
+	}
+	if (!Number.isInteger(account) || account < 0 || account >= HARDENED) {
+		throw new JadeError(`Invalid account index ${account}.`, 'unexpected');
+	}
+	return [purpose + HARDENED, 0 + HARDENED, account + HARDENED];
+}
+
+/** The three multisig script forms — mirrors multisig.ts's MultisigScriptType
+ *  (duplicated here so this browser driver never imports server code). */
+export type MultisigScriptType = 'p2wsh' | 'p2sh-p2wsh' | 'p2sh';
+
+/**
+ * The BIP-48 account path for a multisig cosigner key:
+ * m/48'/0'/{account}'/{script}' where the script suffix is 2' for p2wsh and 1'
+ * for BOTH p2sh forms (BIP-48 gives p2sh and p2sh-p2wsh the same 1' — only
+ * native p2wsh gets 2'). Returned as a hardened-offset index array. Mainnet
+ * only. Exported for unit testing.
+ */
+export function multisigAccountPathIndexes(scriptType: MultisigScriptType, account = 0): number[] {
+	if (scriptType !== 'p2wsh' && scriptType !== 'p2sh-p2wsh' && scriptType !== 'p2sh') {
+		throw new JadeError(`Unsupported multisig script type "${scriptType}".`, 'unexpected');
+	}
+	if (!Number.isInteger(account) || account < 0 || account >= HARDENED) {
+		throw new JadeError(`Invalid account index ${account}.`, 'unexpected');
+	}
+	const sub = scriptType === 'p2wsh' ? 2 : 1;
+	return [48 + HARDENED, 0 + HARDENED, account + HARDENED, sub + HARDENED];
+}
+
+/** Hardened-offset index array → apostrophe-notation path string, e.g.
+ *  [84',0',0'] → "m/84'/0'/0'". [] → "m". Exported for unit testing. */
+export function formatPath(indexes: number[]): string {
+	if (indexes.length === 0) return 'm';
+	return `m/${indexes.map((i) => (i >= HARDENED ? `${i - HARDENED}'` : `${i}`)).join('/')}`;
+}
+
+/**
+ * Rewrite a standard xpub (as Jade returns it) to the SLIP-132 prefix Cairn's
+ * single-sig wallets are keyed by for this script type. Taproot stays xpub.
+ * Anything that doesn't decode to a 78-byte extended key passes through
+ * unchanged so later parsing surfaces the real error.
+ *
+ * Exported for unit testing.
+ */
+export function toSingleSigXpub(input: string, scriptType: ScriptType): string {
+	const targetVersion = SLIP132_SINGLESIG_VERSION[scriptType];
+	if (targetVersion === undefined) {
+		throw new JadeError(`Unsupported single-sig script type "${scriptType}".`, 'unexpected');
+	}
+	const trimmed = input.trim();
+	let raw: Uint8Array;
+	try {
+		raw = b58check.decode(trimmed);
+	} catch {
+		return trimmed;
+	}
+	if (raw.length !== 78) return trimmed;
+	if (targetVersion === XPUB_VERSION) {
+		// Ensure a canonical xpub prefix (Jade already returns xpub, but normalize
+		// in case a SLIP-132 alias ever arrives here).
+		const out = new Uint8Array(raw);
+		out[0] = (XPUB_VERSION >>> 24) & 0xff;
+		out[1] = (XPUB_VERSION >>> 16) & 0xff;
+		out[2] = (XPUB_VERSION >>> 8) & 0xff;
+		out[3] = XPUB_VERSION & 0xff;
+		return b58check.encode(out);
+	}
+	const out = new Uint8Array(raw);
+	out[0] = (targetVersion >>> 24) & 0xff;
+	out[1] = (targetVersion >>> 16) & 0xff;
+	out[2] = (targetVersion >>> 8) & 0xff;
+	out[3] = targetVersion & 0xff;
+	return b58check.encode(out);
+}
+
+/** One cosigner key, exactly as the multisig stores it (MultisigKeyRow shape). */
+export interface MultisigSignKey {
+	/** Account xpub (SLIP-132 ypub/zpub/Ypub/Zpub accepted; standard xpub too). */
+	xpub: string;
+	/** Master fingerprint, 8 hex chars ("00000000" when unknown). */
+	fingerprint: string;
+	/** Account origin path, e.g. "m/48'/0'/0'/2'" ("m" when unknown). */
+	path: string;
+}
+
+/** What building a Jade multisig registration needs — the multisig's quorum,
+ *  keys, script form, and a display name. */
+export interface JadeMultisigParams {
+	/** Multisig name; sanitized to a Jade-safe registration name. */
+	name: string;
+	threshold: number;
+	keys: MultisigSignKey[];
+	scriptType: MultisigScriptType;
+}
+
+/** jadets multisig `variant` string per Cairn script form. Jade's sorted-multi
+ *  is expressed as variant + `sorted: true` (BIP-67), so the base multi()
+ *  variant is what we hand it. */
+const JADE_MULTISIG_VARIANT: Record<MultisigScriptType, string> = {
+	p2wsh: 'wsh(multi(k))',
+	'p2sh-p2wsh': 'sh(wsh(multi(k)))',
+	p2sh: 'sh(multi(k))'
+};
+
+/** "m/48'/0'/0'/2'" (h/H/' markers, leading m/ optional) → hardened-offset
+ *  index array; "m"/"" → []. */
+function parseKeyPath(path: string, label: string): number[] {
+	const stripped = path.trim().replace(/^m\/?/i, '');
+	if (stripped === '') return [];
+	return stripped.split('/').map((p) => {
+		const hardened = /['’hH]$/.test(p);
+		const digits = hardened ? p.slice(0, -1) : p;
+		if (!/^\d+$/.test(digits)) {
+			throw new JadeError(`${label}: bad derivation path segment "${p}".`, 'unexpected');
+		}
+		const n = parseInt(digits, 10);
+		if (n >= HARDENED) {
+			throw new JadeError(`${label}: derivation path segment out of range "${p}".`, 'unexpected');
+		}
+		return hardened ? n + HARDENED : n;
+	});
+}
+
+/** 8-hex-char fingerprint string → 4-byte Uint8Array (the form jadets' signer
+ *  descriptor wants). Throws on malformed input. */
+function fingerprintToBytes(fingerprint: string, label: string): Uint8Array {
+	if (!/^[0-9a-fA-F]{8}$/.test(fingerprint)) {
+		throw new JadeError(`${label}: malformed fingerprint "${fingerprint}".`, 'unexpected');
+	}
+	const out = new Uint8Array(4);
+	for (let i = 0; i < 4; i++) {
+		out[i] = parseInt(fingerprint.slice(i * 2, i * 2 + 2), 16);
+	}
+	return out;
+}
+
+/**
+ * Adapt a Cairn multisig (the same quorum/keys/scriptType shape
+ * multisigToDescriptor consumes) into a jadets MultisigDescriptor for
+ * jade.registerMultisig: the script `variant`, `sorted: true` (Cairn multisigs
+ * are always BIP-67 sortedmulti), the threshold, and one SignerDescriptor per
+ * cosigner — fingerprint (4 bytes), derivation (the origin path as an index
+ * array), and the account xpub (canonical form). This is a light adapter over
+ * Cairn's existing descriptor shape, not new descriptor-building logic (§2.2).
+ *
+ * Exported for unit testing: this is the load-bearing descriptor adaptation.
+ */
+export function buildJadeMultisigDescriptor(params: JadeMultisigParams): MultisigDescriptor {
+	const keys = params.keys ?? [];
+	if (keys.length === 0) {
+		throw new JadeError('This multisig has no keys.', 'unexpected');
+	}
+	if (
+		!Number.isInteger(params.threshold) ||
+		params.threshold < 1 ||
+		params.threshold > keys.length
+	) {
+		throw new JadeError(
+			`Invalid multisig threshold ${params.threshold} for ${keys.length} keys.`,
+			'unexpected'
+		);
+	}
+	const variant = JADE_MULTISIG_VARIANT[params.scriptType];
+	if (!variant) {
+		throw new JadeError(`Unsupported multisig script type "${params.scriptType}".`, 'unexpected');
+	}
+
+	const signers: SignerDescriptor[] = keys.map((key, i) => {
+		const label = `multisig key ${i + 1}`;
+		const derivation = parseKeyPath(key.path, label);
+		return {
+			fingerprint: fingerprintToBytes(key.fingerprint, label),
+			derivation,
+			// Cairn stores the account xpub verbatim (SLIP-132 aliases accepted); the
+			// origin-path derivation above is what Jade uses to place it, and the
+			// xpub is the account-level key the signer contributes. Keys are emitted
+			// in config order — sorted:true tells Jade to BIP-67 sort at derivation.
+			xpub: key.xpub.trim()
+		};
+	});
+
+	return {
+		variant,
+		sorted: true,
+		threshold: params.threshold,
+		signers
+	};
+}
+
+/**
+ * Sanitize a multisig name into a Jade registration name. Jade registration
+ * names are short identifiers, not free text: printable ASCII, no spaces,
+ * trimmed to a conservative length. Empty input falls back to "cairnms".
+ *
+ * Exported for unit testing.
+ */
+export function sanitizeJadeMultisigName(raw: string): string {
+	// eslint-disable-next-line no-control-regex
+	const ascii = (raw || '').replace(/[^\x21-\x7e]/g, '').trim();
+	const cleaned = ascii || 'cairnms';
+	// Jade caps registration names (16 chars in its firmware); stay under it.
+	return cleaned.length > 16 ? cleaned.slice(0, 16) : cleaned;
+}
+
+/**
+ * Translate a raw jadets/Web-Serial error into a typed, plain-language
+ * JadeError. jadets throws bare `Error`s (often `RPC Error <code>: <message>`
+ * from the device, or Web Serial DOMExceptions), so this is string-matching by
+ * necessity — the thin library exposes no structured error codes. Anything
+ * unrecognized is surfaced verbatim under `unexpected` rather than swallowed.
+ *
+ * Exported for unit testing.
+ */
+export function toJadeError(err: unknown): JadeError {
+	if (err instanceof JadeError) return err;
+
+	const anyErr = err as { message?: unknown; name?: unknown } | null;
+	const msg = String((anyErr && anyErr.message) || err || '');
+	const name = String((anyErr && anyErr.name) || '');
+
+	if (/No serial port selected|No port selected|NotFoundError|did not select|no device/i.test(msg) ||
+		name === 'NotFoundError') {
+		return new JadeError(
+			'No Jade was selected. Plug it in, unlock it, then pick it from the browser prompt.',
+			'no_device',
+			{ cause: err }
+		);
+	}
+	if (/not supported in this browser|Web Serial/i.test(msg)) {
+		return new JadeError(
+			'Web Serial is not available in this browser. Jade over USB needs a Chromium-based desktop browser (Chrome, Edge, or Brave) served over HTTPS or localhost.',
+			'unsupported-browser',
+			{ cause: err }
+		);
+	}
+	if (/denied|declined|rejected|user cancelled|CBOR_RPC_USER_CANCELLED/i.test(msg)) {
+		return new JadeError('You rejected the request on the Jade.', 'rejected', { cause: err });
+	}
+	if (/auth_user|authenticate|PIN|not unlocked|HTTP request function/i.test(msg)) {
+		return new JadeError(
+			'Could not unlock the Jade. Enter your PIN on the device, then try again.',
+			'auth_failed',
+			{ cause: err }
+		);
+	}
+	if (/disconnect|InvalidStateError|in use|Port not available|Not connected|NetworkError/i.test(msg)) {
+		return new JadeError(
+			'The Jade was disconnected or is busy (another tab or app may be holding it). Reconnect it and retry.',
+			'unexpected',
+			{ cause: err }
+		);
+	}
+	if (/RPC call timed out|timed out|timeout/i.test(msg)) {
+		return new JadeError(
+			'The Jade did not respond in time. Reconnect it, make sure it is unlocked, and retry.',
+			'unexpected',
+			{ cause: err }
+		);
+	}
+	return new JadeError(msg ? `Jade error: ${msg}` : 'The Jade request failed.', 'unexpected', {
+		cause: err
+	});
+}
+
+// ------------------------------------------------------------------ device I/O
+//
+// The functions below talk to a real device over Web Serial. They are NOT
+// unit-tested (that needs the emulator / real hardware, plan §2.2). They keep
+// no pure logic of their own — everything derivable is done above.
+
+/** The jadets HTTP-relay function shape. Jade's PIN-unlock is INVERTED: the
+ *  DEVICE decides the PIN-server request/response, and the host's only job is
+ *  to relay fetch() on the device's behalf (a "blind oracle" — Blockstream's
+ *  PIN server never sees the PIN, only a hash+nonce). We implement it as a thin
+ *  fetch relay, nothing more. */
+type JadeHttpRequestParams = {
+	urls?: string[];
+	method?: string;
+	data?: unknown;
+	accept?: string;
+};
+export type JadeHttpRequestFunction = (params: JadeHttpRequestParams) => Promise<{ body: unknown }>;
+
+/**
+ * The PIN-unlock HTTP relay. Jade hands us a request (target URL(s), method,
+ * body); we perform exactly that fetch and hand the response body back. We
+ * never inspect or alter it — the device drives the whole handshake. Uses the
+ * first URL Jade offers (its list is ordered by preference). Kept tiny and
+ * side-effect-free beyond the single fetch.
+ */
+function makeHttpRelay(): JadeHttpRequestFunction {
+	return async (params: JadeHttpRequestParams) => {
+		const urls = params?.urls ?? [];
+		const url = urls[0];
+		if (!url) {
+			throw new JadeError('The Jade requested an empty PIN-server URL.', 'auth_failed');
+		}
+		let res: Response;
+		try {
+			res = await fetch(url, {
+				method: params.method || 'POST',
+				headers: { 'Content-Type': 'application/json', Accept: params.accept || 'application/json' },
+				body: params.data !== undefined ? JSON.stringify(params.data) : undefined
+			});
+		} catch (err) {
+			throw new JadeError(
+				'Could not reach the Jade PIN server. Check your internet connection and try again.',
+				'auth_failed',
+				{ cause: err }
+			);
+		}
+		if (!res.ok) {
+			throw new JadeError(
+				`The Jade PIN server returned an error (${res.status}).`,
+				'auth_failed'
+			);
+		}
+		const body = await res.json();
+		return { body };
+	};
+}
+
+/**
+ * Open a Jade over Web Serial and PIN-unlock it. Returns the connected `Jade`
+ * plus a `dispose()` the caller MUST run in a finally block.
+ *
+ * Connection (jadets SerialTransport → JadeInterface → Jade):
+ *   1. navigator.serial.requestPort() — NOTE: jadets applies NO VID/PID filter
+ *      (no Jade USB VID/PID was found in any source during research, §2.2), so
+ *      Chrome shows its full generic serial-port list. This is a materially
+ *      worse first-connect UX than Ledger/Trezor's filtered picker — a known
+ *      gap to revisit if a real VID/PID surfaces.
+ *   2. jade.connect() opens the port at 115200 baud (CBOR framing).
+ *   3. jade.authUser(network, httpRelay) — PIN handshake, host relays fetch()
+ *      only (see makeHttpRelay). The user enters their PIN on the device.
+ */
+async function openJade(): Promise<{
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	jade: any;
+	dispose: () => Promise<void>;
+}> {
+	if (!isWebSerialAvailable()) {
+		throw new JadeError(
+			'Web Serial is not available in this browser. Jade over USB needs a Chromium-based desktop browser (Chrome, Edge, or Brave) served over HTTPS or localhost.',
+			'unsupported-browser'
+		);
+	}
+
+	// Lazy, browser-only import — kept inside the function so nothing jadets- or
+	// Web-Serial-related is evaluated during SSR or for users who never connect.
+	let mod: typeof import('jadets');
+	try {
+		mod = await import('jadets');
+	} catch (err) {
+		throw toJadeError(err);
+	}
+	const { Jade, JadeInterface, SerialTransport } = mod;
+
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	let jade: any;
+	try {
+		const transport = new SerialTransport({ baudRate: 115200 });
+		const iface = new JadeInterface(transport);
+		jade = new Jade(iface);
+	} catch (err) {
+		throw toJadeError(err);
+	}
+
+	const dispose = async () => {
+		try {
+			await jade.disconnect();
+		} catch {
+			/* releasing the serial port is best-effort */
+		}
+	};
+
+	try {
+		await jade.connect();
+	} catch (err) {
+		await dispose();
+		throw toJadeError(err);
+	}
+
+	try {
+		const ok = await jade.authUser(JADE_NETWORK, makeHttpRelay());
+		if (ok === false) {
+			throw new JadeError(
+				'Could not unlock the Jade. Enter your PIN on the device, then try again.',
+				'auth_failed'
+			);
+		}
+	} catch (err) {
+		await dispose();
+		throw toJadeError(err);
+	}
+
+	return { jade, dispose };
+}
+
+/**
+ * Read a single-sig key straight from a connected Jade for the single-sig wallet
+ * import flow: the account xpub at the standard BIP44/49/84/86 path for the
+ * script type, plus the device's master fingerprint. The xpub is returned in
+ * Cairn's single-sig SLIP-132 form (xpub/ypub/zpub; taproot stays xpub).
+ *
+ * Returns the { xpub, fingerprint, path } shape single-sig import expects.
+ */
+export async function readSingleSigKeyFromJade(
+	scriptType: ScriptType,
+	account = 0
+): Promise<{ xpub: string; fingerprint: string; path: string }> {
+	const pathIndexes = singleSigAccountPath(scriptType, account); // validates + fails fast
+	const { jade, dispose } = await openJade();
+	try {
+		let rawXpub: string;
+		let fingerprint: string | null;
+		try {
+			rawXpub = await jade.getXpub(JADE_NETWORK, pathIndexes);
+			fingerprint = await jade.getMasterFingerPrint(JADE_NETWORK);
+		} catch (err) {
+			throw toJadeError(err);
+		}
+		if (!fingerprint) {
+			throw new JadeError('The Jade did not report its master fingerprint.', 'unexpected');
+		}
+		return {
+			xpub: toSingleSigXpub(rawXpub, scriptType),
+			fingerprint: fingerprint.toLowerCase(),
+			path: formatPath(pathIndexes)
+		};
+	} finally {
+		await dispose();
+	}
+}
+
+/**
+ * Read a multisig cosigner key straight from a connected Jade for the multisig
+ * creation wizard: the BIP-48 account xpub at m/48'/0'/{account}'/{script}'
+ * plus the device's master fingerprint. The xpub is returned as the canonical
+ * standard xpub (the multisig layer accepts and normalizes it).
+ *
+ * Returns the { xpub, fingerprint, path } shape multisig keys store.
+ */
+export async function readMultisigKeyFromJade(
+	scriptType: MultisigScriptType,
+	account = 0
+): Promise<{ xpub: string; fingerprint: string; path: string }> {
+	const pathIndexes = multisigAccountPathIndexes(scriptType, account); // validates + fails fast
+	const { jade, dispose } = await openJade();
+	try {
+		let xpub: string;
+		let fingerprint: string | null;
+		try {
+			xpub = await jade.getXpub(JADE_NETWORK, pathIndexes);
+			fingerprint = await jade.getMasterFingerPrint(JADE_NETWORK);
+		} catch (err) {
+			throw toJadeError(err);
+		}
+		if (!fingerprint) {
+			throw new JadeError('The Jade did not report its master fingerprint.', 'unexpected');
+		}
+		return { xpub: xpub.trim(), fingerprint: fingerprint.toLowerCase(), path: formatPath(pathIndexes) };
+	} finally {
+		await dispose();
+	}
+}
+
+/**
+ * Register a multisig on a connected Jade — the one-time on-device approval
+ * Jade requires before it will derive addresses or sign for a multisig (same
+ * shape as the Ledger/BitBox02 registration requirement). Builds the jadets
+ * MultisigDescriptor from Cairn's own multisig config (buildJadeMultisigDescriptor)
+ * and calls jade.registerMultisig; the device walks the user through the quorum
+ * and cosigner keys. Returns the registration name Jade stored it under (needed
+ * later for address verification / signing lookups).
+ */
+export async function registerMultisigWithJade(
+	params: JadeMultisigParams
+): Promise<{ name: string }> {
+	// Build (and validate) the descriptor before touching the device.
+	const descriptor = buildJadeMultisigDescriptor(params);
+	const name = sanitizeJadeMultisigName(params.name);
+
+	const { jade, dispose } = await openJade();
+	try {
+		let ok: boolean;
+		try {
+			ok = await jade.registerMultisig(JADE_NETWORK, name, descriptor);
+		} catch (err) {
+			throw toJadeError(err);
+		}
+		if (ok === false) {
+			throw new JadeError(
+				'The Jade did not confirm the multisig registration. Approve it on the device and try again.',
+				'rejected'
+			);
+		}
+		return { name };
+	} finally {
+		await dispose();
+	}
+}
+
+/**
+ * Sign a PSBT with a connected Jade and return the signed PSBT bytes. Cairn's
+ * PSBT is the source of truth: we hand Jade the exact unsigned PSBT and receive
+ * the signed bytes back, which the parent Sign step re-checks commits to the
+ * same transaction (assertSameTransaction). Works for both single-sig and
+ * (already-registered) multisig PSBTs — Jade routes on the PSBT's own contents.
+ */
+export async function signPsbtWithJade(
+	network: string,
+	psbtBytes: Uint8Array
+): Promise<Uint8Array> {
+	// Jade takes a network string; Cairn is mainnet-only, so ignore any other
+	// value and use the canonical one (kept in the signature for parity with the
+	// other drivers and future testnet support).
+	void network;
+	if (!(psbtBytes instanceof Uint8Array) || psbtBytes.length === 0) {
+		throw new JadeError('That transaction could not be read as a PSBT.', 'bad_psbt');
+	}
+
+	const { jade, dispose } = await openJade();
+	try {
+		let signed: Uint8Array;
+		try {
+			signed = await jade.signPSBT(JADE_NETWORK, psbtBytes);
+		} catch (err) {
+			throw toJadeError(err);
+		}
+		if (!(signed instanceof Uint8Array) || signed.length === 0) {
+			throw new JadeError('The Jade returned an empty signed transaction.', 'unexpected');
+		}
+		return signed;
+	} finally {
+		await dispose();
+	}
+}
