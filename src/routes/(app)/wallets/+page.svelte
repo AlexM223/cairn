@@ -157,7 +157,7 @@
 	}
 
 	.multisig-card {
-		border-color: rgba(232, 147, 90, 0.25);
+		border-color: var(--accent-border);
 	}
 
 	.multisig-icon {

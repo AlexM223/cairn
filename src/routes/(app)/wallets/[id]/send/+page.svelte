@@ -1696,7 +1696,7 @@
 		gap: 10px;
 		align-items: flex-start;
 		background: var(--warning-muted);
-		border: 1px solid rgba(232, 201, 90, 0.3);
+		border: 1px solid var(--warning-border);
 		border-radius: var(--radius-control);
 		padding: 12px 14px;
 		font-size: 13px;
@@ -2023,7 +2023,7 @@
 
 	.mass-panel.amber {
 		background: var(--warning-muted);
-		border: 1px solid rgba(232, 201, 90, 0.3);
+		border: 1px solid var(--warning-border);
 	}
 
 	.mass-panel.amber :global(svg) {
@@ -2032,7 +2032,7 @@
 
 	.mass-panel.red {
 		background: var(--error-muted);
-		border: 1px solid rgba(232, 90, 90, 0.3);
+		border: 1px solid var(--error-border);
 	}
 
 	.mass-panel.red :global(svg) {
@@ -2082,7 +2082,7 @@
 		gap: 10px;
 		align-items: flex-start;
 		background: var(--warning-muted);
-		border: 1px solid rgba(232, 201, 90, 0.3);
+		border: 1px solid var(--warning-border);
 		border-radius: var(--radius-card);
 		padding: 14px 16px;
 		font-size: 13.5px;

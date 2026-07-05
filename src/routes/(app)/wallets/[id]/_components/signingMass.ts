@@ -14,15 +14,15 @@
  * /api/wallets/[id]/utxo-mass returns per-coin masses.
  */
 
-// Type-only imports of the server's canonical definitions — erased at compile
-// time (same idiom as the send page importing ConstructedPsbt), so nothing
-// server-only ever reaches the client bundle and the shapes cannot drift.
+// Type-only imports of the canonical definitions from the shared,
+// environment-neutral module (the same shapes the server module re-exports),
+// so nothing server-only reaches the client bundle and the shapes cannot drift.
 import type {
 	SigningMass,
 	MassTier,
 	ParentSource,
 	SignerDevice
-} from '$lib/server/bitcoin/signingMass';
+} from '$lib/shared/signingMass';
 
 export type { SigningMass, MassTier };
 export type MassSource = ParentSource;

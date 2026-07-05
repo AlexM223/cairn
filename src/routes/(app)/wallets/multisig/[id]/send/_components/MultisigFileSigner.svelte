@@ -339,7 +339,7 @@
 		gap: 10px;
 		align-items: flex-start;
 		background: var(--warning-muted);
-		border: 1px solid rgba(232, 201, 90, 0.3);
+		border: 1px solid var(--warning-border);
 		border-radius: var(--radius-card);
 		padding: 12px 14px;
 		font-size: 13px;
@@ -367,7 +367,7 @@
 		flex-direction: column;
 		gap: 8px;
 		background: var(--warning-muted);
-		border: 1px solid rgba(232, 201, 90, 0.3);
+		border: 1px solid var(--warning-border);
 		border-radius: var(--radius-card);
 		padding: 12px 14px;
 		margin-bottom: 16px;

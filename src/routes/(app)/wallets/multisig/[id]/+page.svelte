@@ -921,7 +921,7 @@
 		gap: 9px;
 		padding: 13px 14px;
 		background: var(--accent-muted);
-		border: 1px solid rgba(232, 147, 90, 0.35);
+		border: 1px solid var(--accent-border);
 		border-radius: var(--radius-control);
 	}
 
@@ -1030,7 +1030,7 @@
 		flex-direction: column;
 		gap: 12px;
 		margin-bottom: 18px;
-		border-color: rgba(232, 147, 90, 0.3);
+		border-color: var(--accent-border);
 	}
 
 	.backup-copy {

@@ -29,6 +29,11 @@
 	--accent: #e8935a;
 	--accent-hover: #f0a06a;
 	--accent-muted: rgba(232, 147, 90, 0.15);
+	/* Border weight for accent-tinted panels/cards that sit on --accent-muted
+	   fills. --accent-border is the default; --accent-border-strong is for
+	   intentionally-emphasized "next step" cards. */
+	--accent-border: rgba(232, 147, 90, 0.3);
+	--accent-border-strong: rgba(232, 147, 90, 0.45);
 	/* Text placed ON the accent (button labels, active stepper dots). */
 	--on-accent: #201409;
 
@@ -37,8 +42,14 @@
 	--success-muted: rgba(107, 191, 107, 0.14);
 	--warning: #e8c95a;
 	--warning-muted: rgba(232, 201, 90, 0.14);
+	/* Border weight for warning-tinted panels on --warning-muted fills.
+	   --warning-border-strong emphasizes high-severity callouts. */
+	--warning-border: rgba(232, 201, 90, 0.3);
+	--warning-border-strong: rgba(232, 201, 90, 0.45);
 	--error: #e85a5a;
 	--error-muted: rgba(232, 90, 90, 0.14);
+	/* Border weight for error-tinted panels on --error-muted fills. */
+	--error-border: rgba(232, 90, 90, 0.3);
 	/* "danger" is the same semantic red as "error"; aliased so call sites using
 	   var(--danger)/var(--danger-muted) resolve correctly instead of falling back. */
 	--danger: var(--error);

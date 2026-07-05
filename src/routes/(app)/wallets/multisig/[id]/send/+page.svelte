@@ -8,7 +8,11 @@
 	import CopyText from '$lib/components/CopyText.svelte';
 	import { formatBtc, formatSats, formatFeeRate, truncateMiddle } from '$lib/format';
 	import type { ConstructedMultisigPsbt, MultisigSigningProgress } from '$lib/server/bitcoin/multisigPsbt';
-	import type { MassTier, SigningMass } from '$lib/server/bitcoin/signingMass';
+	// Signing-mass estimator: the pure constants + math live in the shared
+	// (environment-neutral) module so this page runs the SAME arithmetic the
+	// server does — no restated device profiles or tier thresholds.
+	import { tierForVsize, quorumSecondsRange } from '$lib/shared/signingMass';
+	import type { MassTier, SigningMass } from '$lib/shared/signingMass';
 	import type { SavedMultisigTransaction } from '$lib/server/multisigTransactions';
 	import { KEY_CATEGORY_LABELS, quorumLabel } from '../../labels';
 	// The QR signer is a props-driven pass-through (the DEVICE does the
@@ -281,36 +285,20 @@
 		high: 'slow to sign'
 	};
 
-	// Client-side mirror of estimateSigningSeconds/quorumSecondsRange in
-	// $lib/server/bitcoin/signingMass.ts — that module is server-only (SvelteKit
-	// blocks runtime imports of $lib/server into client code), so the constants
-	// are restated here verbatim. Keep in sync with DEVICE_PROFILES,
-	// KEYS_PER_INPUT_FACTOR and the tier thresholds there.
-	const MIRROR_PROFILES = [
-		{ baseLo: 3, baseHi: 8, perInputLo: 0.5, perInputHi: 1.5, rateFast: 8_000, rateSlow: 1_500 },
-		{ baseLo: 2, baseHi: 5, perInputLo: 0.3, perInputHi: 1.0, rateFast: 20_000, rateSlow: 6_000 },
-		{ baseLo: 2, baseHi: 6, perInputLo: 0.2, perInputHi: 0.8, rateFast: 35_000, rateSlow: 10_000 }
-	] as const;
-
-	function mirrorBracket(
+	// Per-signer (m = 1) or whole-ceremony (m = quorum threshold) estimate,
+	// bracketed across the shared device profiles. Delegates to the shared
+	// quorumSecondsRange so the page and server never drift.
+	function massBracket(
 		totalParentVsize: number,
 		inputCount: number,
 		m: number
 	): { lo: number; hi: number } {
-		const kf = 1 + 0.15 * Math.max(0, keys.length - 1);
-		let lo = Infinity;
-		let hi = 0;
-		for (const p of MIRROR_PROFILES) {
-			lo = Math.min(lo, (p.baseLo + inputCount * p.perInputLo * kf + totalParentVsize / p.rateFast) * m);
-			hi = Math.max(hi, (p.baseHi + inputCount * p.perInputHi * kf + totalParentVsize / p.rateSlow) * m);
-		}
-		return { lo: Math.max(1, Math.round(lo)), hi: Math.max(1, Math.round(hi)) };
-	}
-
-	function mirrorTier(totalParentVsize: number): MassTier {
-		if (totalParentVsize < 8_000) return 'low';
-		if (totalParentVsize <= 40_000) return 'medium';
-		return 'high';
+		return quorumSecondsRange({
+			totalParentVsize,
+			inputCount,
+			threshold: m,
+			totalKeys: keys.length
+		});
 	}
 
 	/**
@@ -341,9 +329,9 @@
 			}
 			if (complete) {
 				return {
-					tier: mirrorTier(totalParentVsize),
-					perSigner: mirrorBracket(totalParentVsize, review.inputs.length, 1),
-					total: mirrorBracket(totalParentVsize, review.inputs.length, required)
+					tier: tierForVsize(totalParentVsize),
+					perSigner: massBracket(totalParentVsize, review.inputs.length, 1),
+					total: massBracket(totalParentVsize, review.inputs.length, required)
 				};
 			}
 		}
@@ -1831,7 +1819,7 @@
 
 	.mass-panel.amber {
 		background: var(--warning-muted);
-		border: 1px solid rgba(232, 201, 90, 0.3);
+		border: 1px solid var(--warning-border);
 	}
 
 	.mass-panel.amber :global(svg) {
@@ -1840,7 +1828,7 @@
 
 	.mass-panel.red {
 		background: var(--error-muted);
-		border: 1px solid rgba(232, 90, 90, 0.35);
+		border: 1px solid var(--error-border);
 	}
 
 	.mass-panel.red :global(svg) {
@@ -2013,7 +2001,7 @@
 		gap: 10px;
 		align-items: flex-start;
 		background: var(--warning-muted);
-		border: 1px solid rgba(232, 201, 90, 0.3);
+		border: 1px solid var(--warning-border);
 		border-radius: var(--radius-card);
 		padding: 12px 14px;
 		font-size: 13px;
@@ -2076,7 +2064,7 @@
 		gap: 10px;
 		align-items: flex-start;
 		background: var(--warning-muted);
-		border: 1px solid rgba(232, 201, 90, 0.3);
+		border: 1px solid var(--warning-border);
 		border-radius: var(--radius-card);
 		padding: 14px 16px;
 		font-size: 13.5px;

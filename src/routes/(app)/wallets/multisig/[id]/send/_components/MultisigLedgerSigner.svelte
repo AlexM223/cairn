@@ -473,7 +473,7 @@
 		gap: 10px;
 		align-items: flex-start;
 		background: var(--warning-muted);
-		border: 1px solid rgba(232, 201, 90, 0.3);
+		border: 1px solid var(--warning-border);
 		border-radius: var(--radius-card);
 		padding: 12px 14px;
 		font-size: 13px;
@@ -492,7 +492,7 @@
 	}
 
 	.verify-callout {
-		border: 1px solid rgba(232, 147, 90, 0.35);
+		border: 1px solid var(--accent-border);
 		background: var(--accent-muted);
 		border-radius: var(--radius-card);
 		padding: 14px;

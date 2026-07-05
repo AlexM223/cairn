@@ -1627,7 +1627,7 @@
 		gap: 9px;
 		padding: 14px 16px;
 		background: var(--accent-muted);
-		border: 1px solid rgba(232, 147, 90, 0.25);
+		border: 1px solid var(--accent-border);
 		border-radius: var(--radius-card);
 	}
 
@@ -2233,7 +2233,7 @@
 		gap: 10px;
 		padding: 12px 14px;
 		background: var(--warning-muted);
-		border: 1px solid rgba(232, 201, 90, 0.45);
+		border: 1px solid var(--warning-border-strong);
 		border-radius: var(--radius-control);
 		color: var(--warning);
 	}
@@ -2299,7 +2299,7 @@
 		gap: 12px;
 		padding: 16px;
 		background: var(--accent-muted);
-		border: 1px solid rgba(232, 147, 90, 0.3);
+		border: 1px solid var(--accent-border);
 		border-radius: var(--radius-control);
 	}
 
@@ -2437,12 +2437,12 @@
 	}
 
 	.backup-card {
-		border-color: rgba(232, 147, 90, 0.4);
+		border-color: var(--accent-border-strong);
 		background: var(--accent-muted);
 	}
 
 	.register-card {
-		border-color: rgba(232, 147, 90, 0.5);
+		border-color: var(--accent-border-strong);
 	}
 
 	.register-card .next-title {

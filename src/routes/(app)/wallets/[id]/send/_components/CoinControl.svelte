@@ -245,7 +245,7 @@
 	.mass-chip.high {
 		background: var(--warning-muted);
 		color: var(--warning);
-		border: 1px solid rgba(232, 201, 90, 0.45);
+		border: 1px solid var(--warning-border-strong);
 		font-weight: 600;
 	}
 
@@ -260,7 +260,7 @@
 		line-height: 1.55;
 		color: var(--text-secondary);
 		background: var(--warning-muted);
-		border: 1px solid rgba(232, 201, 90, 0.25);
+		border: 1px solid var(--warning-border);
 		border-radius: var(--radius-control);
 		padding: 9px 12px;
 	}
