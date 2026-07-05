@@ -326,6 +326,9 @@
 			}
 			keys = [...keys, key];
 			lastAdded = `${key.name} added${key.fingerprint !== '00000000' ? ` · fingerprint ${key.fingerprint}` : ''}`;
+			// Manually adding a key means this is a from-scratch build, not an
+			// untouched imported config — restore the mandatory backup gate.
+			configImported = false;
 			resetKeyForm();
 			return true;
 		} finally {
@@ -447,6 +450,9 @@
 	function removeKey(i: number) {
 		keys = keys.filter((_, idx) => idx !== i);
 		lastAdded = null;
+		// Editing the key set means this no longer matches an imported config file,
+		// so it's now a from-scratch build → its backup becomes mandatory again.
+		configImported = false;
 	}
 
 	// --- same-seed detection (cairn-h4l) ---
