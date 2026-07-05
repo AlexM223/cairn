@@ -4,7 +4,7 @@
 // the matching /register/verify call. No user is created here.
 
 import { json, readJson } from '$lib/server/api';
-import { assertCanRegister, AuthError } from '$lib/server/auth';
+import { assertCanRegister, reclaimableUserId, credentialDescriptors, AuthError } from '$lib/server/auth';
 import { buildRegistrationOptions, setRegChallenge } from '$lib/server/webauthn';
 import { inviteRetryAfter, noteInviteFailure, tooManyAttemptsMessage } from '$lib/server/rateLimit';
 import { childLogger } from '$lib/server/logger';
@@ -23,18 +23,30 @@ export const POST: RequestHandler = async (event) => {
 	const wait = inviteRetryAfter(ip);
 	if (wait !== null) return json({ error: tooManyAttemptsMessage(wait) }, { status: 429 });
 
-	try {
-		assertCanRegister({ email, displayName, inviteCode });
-	} catch (e) {
-		if (e instanceof AuthError) {
-			if (e.code === 'bad_invite') noteInviteFailure(ip);
-			return json({ error: e.message, code: e.code }, { status: 400 });
+	// A credential-less account (only ever produced by a backup restore) is
+	// reclaimed by attaching a passkey — no invite/mode gate for that path.
+	const reclaimUserId = reclaimableUserId(email);
+	if (reclaimUserId === null) {
+		try {
+			assertCanRegister({ email, displayName, inviteCode });
+		} catch (e) {
+			if (e instanceof AuthError) {
+				if (e.code === 'bad_invite') noteInviteFailure(ip);
+				return json({ error: e.message, code: e.code }, { status: 400 });
+			}
+			log.error({ err: e }, 'register options failed');
+			return json({ error: 'Could not start registration.' }, { status: 500 });
 		}
-		log.error({ err: e }, 'register options failed');
-		return json({ error: 'Could not start registration.' }, { status: 500 });
 	}
 
-	const options = await buildRegistrationOptions(event, { email, displayName, exclude: [] });
-	setRegChallenge(event, { challenge: options.challenge, email, displayName, inviteCode });
+	const exclude = reclaimUserId ? credentialDescriptors(reclaimUserId) : [];
+	const options = await buildRegistrationOptions(event, { email, displayName, exclude });
+	setRegChallenge(event, {
+		challenge: options.challenge,
+		email,
+		displayName,
+		inviteCode,
+		reclaimUserId: reclaimUserId ?? undefined
+	});
 	return json(options);
 };

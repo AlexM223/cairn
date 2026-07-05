@@ -18,6 +18,8 @@ import {
 	updateCredentialCounter,
 	renameCredential,
 	deleteCredential,
+	reclaimableUserId,
+	hasNoCredentials,
 	AuthError
 } from './auth';
 import { createInvites, revokeInvite } from './admin';
@@ -221,6 +223,17 @@ describe('passkey credentials', () => {
 		addCredential(admin.id, makeCred());
 		db.prepare('DELETE FROM users WHERE id = ?').run(admin.id);
 		expect(getCredentialForAuth('cred-a')).toBeNull();
+	});
+
+	it('reclaim: only a credential-less account can be reclaimed', () => {
+		const admin = registerAdmin(); // no passkey yet (restored-account shape)
+		expect(hasNoCredentials(admin.id)).toBe(true);
+		expect(reclaimableUserId('admin@example.com')).toBe(admin.id);
+		expect(reclaimableUserId('ghost@example.com')).toBeNull();
+
+		addCredential(admin.id, makeCred());
+		// Once it has a passkey it can never be reclaimed (taken over).
+		expect(reclaimableUserId('admin@example.com')).toBeNull();
 	});
 });
 

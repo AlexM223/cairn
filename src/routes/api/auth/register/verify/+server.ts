@@ -9,6 +9,8 @@ import {
 	addCredential,
 	createSession,
 	setSessionCookie,
+	getUserById,
+	hasNoCredentials,
 	AuthError
 } from '$lib/server/auth';
 import { verifyRegistration, readRegChallenge, clearRegChallenge } from '$lib/server/webauthn';
@@ -42,9 +44,40 @@ export const POST: RequestHandler = async (event) => {
 	}
 
 	const { credential, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
+	const newCredential = {
+		credentialId: credential.id,
+		publicKey: credential.publicKey,
+		counter: credential.counter,
+		transports: credential.transports,
+		deviceType: credentialDeviceType,
+		backedUp: credentialBackedUp,
+		name: body.name ?? null
+	};
 
-	// Create the account and its first passkey atomically — never leave a user
-	// with no way to sign in, nor a credential with no user.
+	// Reclaim: attach the passkey to an existing credential-less account
+	// (restored from a backup) instead of creating a new one.
+	if (pending.reclaimUserId != null) {
+		const existing = getUserById(pending.reclaimUserId);
+		// Re-check under the same request that it is still reclaimable (no race).
+		if (!existing || !hasNoCredentials(existing.id)) {
+			clearRegChallenge(event);
+			return json({ error: 'That account can no longer be reclaimed.' }, { status: 400 });
+		}
+		try {
+			addCredential(existing.id, newCredential);
+		} catch (e) {
+			clearRegChallenge(event);
+			log.error({ err: e, userId: existing.id }, 'reclaim add credential failed');
+			return json({ error: 'Could not reclaim the account.' }, { status: 500 });
+		}
+		clearRegChallenge(event);
+		const { token, expiresAt } = createSession(existing.id);
+		setSessionCookie(event.cookies, token, expiresAt);
+		return json({ user: existing });
+	}
+
+	// Otherwise create the account and its first passkey atomically — never leave
+	// a user with no way to sign in, nor a credential with no user.
 	db.exec('BEGIN');
 	let user;
 	try {
@@ -53,15 +86,7 @@ export const POST: RequestHandler = async (event) => {
 			displayName: pending.displayName ?? '',
 			inviteCode: pending.inviteCode
 		});
-		addCredential(user.id, {
-			credentialId: credential.id,
-			publicKey: credential.publicKey,
-			counter: credential.counter,
-			transports: credential.transports,
-			deviceType: credentialDeviceType,
-			backedUp: credentialBackedUp,
-			name: body.name ?? null
-		});
+		addCredential(user.id, newCredential);
 		db.exec('COMMIT');
 	} catch (e) {
 		db.exec('ROLLBACK');

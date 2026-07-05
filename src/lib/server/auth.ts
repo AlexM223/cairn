@@ -191,6 +191,28 @@ export function getUserById(id: number): SessionUser | null {
 	return { id: row.id, email: row.email, displayName: row.display_name, isAdmin: row.is_admin === 1 };
 }
 
+/** True when the user has no passkeys — only possible for accounts brought in by
+ *  a backup restore (every normal account is created with its first passkey). */
+export function hasNoCredentials(userId: number): boolean {
+	const { n } = db
+		.prepare('SELECT COUNT(*) AS n FROM user_credentials WHERE user_id = ?')
+		.get(userId) as { n: number };
+	return n === 0;
+}
+
+/**
+ * The id of an existing account this email is allowed to RECLAIM by adding a
+ * passkey (rather than registering fresh), or null. Reclaim is how a
+ * credential-less account restored from a backup gets a passkey and becomes
+ * usable again. Only credential-less, non-disabled accounts qualify, so an
+ * account that already has a passkey can never be taken over this way.
+ */
+export function reclaimableUserId(email: string): number | null {
+	const user = getUserByEmail(email);
+	if (user && hasNoCredentials(user.id)) return user.id;
+	return null;
+}
+
 /** Look up a user by email for the login ceremony. Null when unknown/disabled. */
 export function getUserByEmail(email: string): SessionUser | null {
 	const row = db
