@@ -10,7 +10,7 @@ import {
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
 
-const log = childLogger('vault');
+const log = childLogger('wallet');
 
 /**
  * How many parent transactions to fetch from the chain source at once — same
@@ -81,7 +81,7 @@ export const GET: RequestHandler = async (event) => {
 
 		return json({ masses });
 	} catch (e) {
-		log.error({ err: e, vaultId: Number(event.params.id) }, 'vault utxo-mass failed');
+		log.error({ err: e, vaultId: Number(event.params.id) }, 'wallet utxo-mass failed');
 		return json(
 			{ error: e instanceof Error ? e.message : 'Could not classify this vault’s coins' },
 			{ status: 502 }

@@ -10,7 +10,7 @@ import { createVault, type NewVaultKey } from '$lib/server/vaults';
 import { childLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
 
-const log = childLogger('vault');
+const log = childLogger('wallet');
 
 interface ImportBody {
 	/** A wsh(sortedmulti(...)) descriptor OR a Caravan/Unchained wallet JSON. */
@@ -60,7 +60,7 @@ export const POST: RequestHandler = async (event) => {
 			e instanceof VaultError
 				? e.message
 				: 'Could not read that — paste a descriptor or a Caravan wallet JSON.';
-		if (!(e instanceof VaultError)) log.error({ err: e }, 'vault import parse failed');
+		if (!(e instanceof VaultError)) log.error({ err: e }, 'wallet import parse failed');
 		return json({ error: message }, { status: 400 });
 	}
 
@@ -84,7 +84,7 @@ export const POST: RequestHandler = async (event) => {
 		return json({ vault }, { status: 201 });
 	} catch (e) {
 		const message = e instanceof VaultError ? e.message : 'Could not create that vault.';
-		if (!(e instanceof VaultError)) log.error({ err: e }, 'vault import create failed');
+		if (!(e instanceof VaultError)) log.error({ err: e }, 'wallet import create failed');
 		return json({ error: message }, { status: 400 });
 	}
 };

@@ -5,7 +5,7 @@ import { VaultError } from '$lib/server/bitcoin/multisig';
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
 
-const log = childLogger('vault');
+const log = childLogger('wallet');
 
 function safeFilename(name: string): string {
 	const slug = name
@@ -36,7 +36,7 @@ export const GET: RequestHandler = async (event) => {
 		});
 	} catch (e) {
 		if (!(e instanceof VaultError)) {
-			log.error({ err: e, vaultId: id }, 'vault coldcard export failed');
+			log.error({ err: e, vaultId: id }, 'wallet coldcard export failed');
 		}
 		const message =
 			e instanceof VaultError ? e.message : 'Could not build the ColdCard registration file.';

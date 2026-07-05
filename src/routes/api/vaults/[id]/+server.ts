@@ -4,7 +4,7 @@ import { getVaultDetail, invalidateVaultCache, toVaultSummary } from '$lib/serve
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
 
-const log = childLogger('vault');
+const log = childLogger('wallet');
 
 function parseId(param: string): number | null {
 	const id = Number(param);
@@ -31,7 +31,7 @@ export const GET: RequestHandler = async (event) => {
 			...detail
 		});
 	} catch (e) {
-		log.error({ err: e, vaultId: Number(event.params.id) }, 'vault scan failed');
+		log.error({ err: e, vaultId: Number(event.params.id) }, 'wallet scan failed');
 		return json({ error: e instanceof Error ? e.message : 'Vault scan failed' }, { status: 502 });
 	}
 };

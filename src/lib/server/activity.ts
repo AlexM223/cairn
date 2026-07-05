@@ -24,7 +24,7 @@ export type ActivityType =
 	| 'signing_started'
 	| 'electrum_switched'
 	| 'wallet_added'
-	| 'vault_created';
+	| 'wallet_created';
 
 export interface ActivityEvent {
 	id: number;

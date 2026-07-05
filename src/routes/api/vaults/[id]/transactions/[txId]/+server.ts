@@ -14,7 +14,7 @@ import { summarizePsbt, type PsbtSummary } from '$lib/server/bitcoin/psbt';
 import { childLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
 
-const log = childLogger('vault');
+const log = childLogger('wallet');
 
 function ids(event: { params: { id: string; txId: string } }) {
 	return { vaultId: Number(event.params.id), txId: Number(event.params.txId) };
@@ -87,7 +87,7 @@ export const PATCH: RequestHandler = async (event) => {
 			if (e instanceof BroadcastError && e.code === 'already_sent') {
 				return json({ error: e.message }, { status: 409 });
 			}
-			log.error({ err: e }, 'vault transaction update failed');
+			log.error({ err: e }, 'wallet transaction update failed');
 			return json({ error: "That doesn't look like a valid PSBT." }, { status: 400 });
 		}
 	}

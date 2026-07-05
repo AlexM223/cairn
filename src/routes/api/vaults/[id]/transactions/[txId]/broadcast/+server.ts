@@ -6,7 +6,7 @@ import { childLogger } from '$lib/server/logger';
 import { recordActivity } from '$lib/server/activity';
 import type { RequestHandler } from './$types';
 
-const log = childLogger('vault');
+const log = childLogger('wallet');
 
 /**
  * Finalize and broadcast a quorum-complete vault transaction. Optionally
@@ -34,7 +34,7 @@ export const POST: RequestHandler = async (event) => {
 			type: 'broadcast',
 			level: 'success',
 			message: `Transaction broadcast successfully: ${txid.slice(0, 12)}…`,
-			detail: { scope: 'vault', vaultId, txId, txid }
+			detail: { scope: 'wallet', vaultId, txId, txid }
 		});
 		return json({ txid, transaction });
 	} catch (e) {
@@ -43,7 +43,7 @@ export const POST: RequestHandler = async (event) => {
 			return json({ error: e.message, code: e.code }, { status });
 		}
 		// Unexpected: the broadcast reached neither a known error nor success.
-		log.error({ err: e, vaultId, txId }, 'vault broadcast failed');
+		log.error({ err: e, vaultId, txId }, 'wallet broadcast failed');
 		return json({ error: e instanceof Error ? e.message : 'Broadcast failed' }, { status: 502 });
 	}
 };

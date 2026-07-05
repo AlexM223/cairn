@@ -60,7 +60,7 @@
 		electrum_switched: 'refresh',
 		scan_complete: 'refresh',
 		wallet_added: 'wallet',
-		vault_created: 'shield'
+		wallet_created: 'shield'
 	};
 	const iconFor = (type: string) => ICON[type] ?? 'info';
 

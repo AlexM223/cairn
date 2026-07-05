@@ -7,7 +7,7 @@ import { childLogger } from '$lib/server/logger';
 import { recordActivity } from '$lib/server/activity';
 import type { RequestHandler } from './$types';
 
-const log = childLogger('vault');
+const log = childLogger('wallet');
 
 interface RecipientBody {
 	address?: unknown;
@@ -75,7 +75,7 @@ export const POST: RequestHandler = async (event) => {
 		recordActivity({
 			userId: user.id,
 			type: 'signing_started',
-			message: `Signing session started for vault “${vault.name}”`,
+			message: `Signing session started for wallet “${vault.name}”`,
 			detail: { vaultId, threshold: vault.threshold, keys: vault.keys.length }
 		});
 		return json({ draft, details, progress: vaultTransactionProgress(vault, draft) }, { status: 201 });
@@ -85,7 +85,7 @@ export const POST: RequestHandler = async (event) => {
 			return json({ error: e.message, code: e.code }, { status });
 		}
 		// Unexpected construction failure — not a known PsbtError.
-		log.error({ err: e, vaultId }, 'vault psbt build failed');
+		log.error({ err: e, vaultId }, 'wallet psbt build failed');
 		return json(
 			{ error: e instanceof Error ? e.message : 'Could not build the transaction' },
 			{ status: 502 }

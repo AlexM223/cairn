@@ -5,7 +5,7 @@ import { VaultError } from '$lib/server/bitcoin/multisig';
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
 
-const log = childLogger('vault');
+const log = childLogger('wallet');
 
 /**
  * GET /api/vaults/:id/address-detail?chain=0|1&index=N — the verification
@@ -34,7 +34,7 @@ export const GET: RequestHandler = async (event) => {
 	} catch (e) {
 		const status = e instanceof VaultError ? 400 : 500;
 		if (!(e instanceof VaultError)) {
-			log.error({ err: e, id, chain, index }, 'vault address-detail failed');
+			log.error({ err: e, id, chain, index }, 'wallet address-detail failed');
 		}
 		return json(
 			{ error: e instanceof Error ? e.message : 'Address derivation failed' },

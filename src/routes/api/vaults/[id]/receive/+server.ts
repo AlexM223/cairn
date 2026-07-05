@@ -4,7 +4,7 @@ import { nextVaultReceiveAddress } from '$lib/server/vaultScan';
 import { childLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
 
-const log = childLogger('vault');
+const log = childLogger('wallet');
 
 /**
  * GET /api/vaults/:id/receive[?after=N] — the next unused receive address,
@@ -28,7 +28,7 @@ export const GET: RequestHandler = async (event) => {
 		);
 		return json(next);
 	} catch (e) {
-		log.error({ err: e, vaultId: Number(event.params.id) }, 'vault receive-address failed');
+		log.error({ err: e, vaultId: Number(event.params.id) }, 'wallet receive-address failed');
 		return json(
 			{ error: e instanceof Error ? e.message : 'Could not derive a receive address' },
 			{ status: 502 }
