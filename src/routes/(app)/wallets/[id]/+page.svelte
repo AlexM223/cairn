@@ -249,7 +249,9 @@
 	<div class="head row">
 		<div class="row grow" style="gap: 12px; min-width: 0">
 			<h1 class="page-title truncate">{data.wallet.name}</h1>
-			<span class="badge badge-neutral">{walletKind}</span>
+			{#if data.wallet.deviceType && data.wallet.deviceType !== 'file'}
+				<span class="badge badge-neutral">{walletKind}</span>
+			{/if}
 			<span class="badge badge-neutral">{SCRIPT_TYPE_LABELS[data.wallet.scriptType]}</span>
 		</div>
 		<a href="/wallets/{data.wallet.id}/send" class="btn btn-primary btn-sm">
