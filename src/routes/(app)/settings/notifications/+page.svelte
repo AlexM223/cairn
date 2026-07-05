@@ -222,6 +222,7 @@
 	type PrefRow = { eventType: string; channel: string; enabled: boolean; config: Record<string, unknown> };
 	// svelte-ignore state_referenced_locally
 	let prefs = $state<PrefRow[]>(data.preferences as PrefRow[]);
+	// svelte-ignore state_referenced_locally
 	const defaults = data.defaultPreferences as Record<string, string[]>;
 
 	function savedRow(eventType: string, ch: ChannelId): PrefRow | undefined {

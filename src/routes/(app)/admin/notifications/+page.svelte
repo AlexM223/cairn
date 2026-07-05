@@ -20,6 +20,7 @@
 
 	// Seed editable state from the load; the stored secrets are never sent here,
 	// only presence booleans (hasSmtpPass / hasTelegramBotToken).
+	// svelte-ignore state_referenced_locally
 	const init = data.settings as Settings;
 	// svelte-ignore state_referenced_locally
 	let smtpHost = $state(init.smtpHost);
@@ -135,6 +136,7 @@
 		return timeAgo(Math.floor(new Date(iso).getTime() / 1000));
 	}
 
+	// svelte-ignore state_referenced_locally
 	const health = data.health as {
 		counts: Record<string, number>;
 		failures: {

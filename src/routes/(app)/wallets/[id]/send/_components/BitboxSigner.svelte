@@ -28,6 +28,7 @@
 	// The wallet's script type decides whether the BitBox02 can sign at all: the
 	// device firmware has no legacy (P2PKH) single-sig config, so a p2pkh wallet
 	// is a hard "can't sign here" that we surface up front rather than mid-flow.
+	// svelte-ignore state_referenced_locally
 	const scriptType = context.scriptType as ScriptType;
 	const scriptSupported = bitbox02SupportsScriptType(scriptType);
 

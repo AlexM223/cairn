@@ -576,6 +576,7 @@
 
 	// The wallet's script type — the BitBox02 tile is greyed out for legacy
 	// (p2pkh) wallets it can't sign (the device firmware has no legacy config).
+	// svelte-ignore state_referenced_locally
 	const walletScriptType = data.wallet.scriptType as ScriptType;
 
 	// The device associated with this wallet, tracked locally so associating one

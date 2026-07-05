@@ -73,6 +73,7 @@
 	// The BitBox02 can't sign a plain-P2SH multisig — the device firmware has no
 	// legacy-P2SH multisig script config. That's a hard "can't sign here" we show
 	// up front rather than failing mid-flow.
+	// svelte-ignore state_referenced_locally
 	const scriptSupported = bitbox02SupportsMultisigScriptType(scriptType);
 
 	// idle → signing → done. Errors live alongside (not a state) so a failed
