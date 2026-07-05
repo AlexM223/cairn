@@ -1,12 +1,27 @@
 // M-of-N multisig ("vault") foundations: BIP-67 sorted-multisig address
 // derivation, BIP-380 output descriptors, and the descriptor checksum.
 //
-// Vaults are native-segwit sortedmulti only — wsh(sortedmulti(M, ...)), the
-// BIP-48 script-type-2' convention every current descriptor wallet agrees on.
-// BIP-67 (lexicographic pubkey order inside the witness script) makes the
+// Vaults are sortedmulti in one of three script forms:
+//   - p2wsh       wsh(sortedmulti(M, ...))      bc1q… (the recommended default;
+//                 BIP-48 script-type 2' convention)
+//   - p2sh-p2wsh  sh(wsh(sortedmulti(M, ...)))  3…    (wrapped segwit; BIP-48
+//                 script-type 1')
+//   - p2sh        sh(sortedmulti(M, ...))       3…    (legacy; BIP-48
+//                 script-type 1' as well — BIP-48 gives BOTH p2sh forms the
+//                 same 1' suffix, and only p2wsh gets 2'. That affects path
+//                 GUIDANCE only; derivation always uses the paths the user's
+//                 keys actually carry.)
+// Taproot multisig (tr() descriptors) is deliberately NOT supported: on-chain
+// key-path multisig needs MuSig2 and script-path needs FROST or huge leaf
+// trees, and hardware/coordinator support for either is still immature —
+// there is no interoperable tr() multisig convention to target yet.
+//
+// BIP-67 (lexicographic pubkey order inside the multisig script) makes the
 // address a function of the key SET, not the key order, so cosigner order
-// never matters — in the config, the descriptor, or across tools. One user
-// typically holds all N keys; nothing here ever touches private material.
+// never matters — in the config, the descriptor, or across tools. The sort
+// happens on the derived child pubkeys, identically for all three script
+// forms. One user typically holds all N keys; nothing here ever touches
+// private material.
 //
 // Portability: descriptor export is the interchange target. Sparrow imports
 // descriptors directly and recent Electrum versions do too (classic Electrum
@@ -20,7 +35,7 @@
 // PSBT construction for vault spends is a later integration; the
 // bip32Derivation ingredients it will need come from vaultKeyDerivations().
 
-import { p2ms, p2wsh, NETWORK } from '@scure/btc-signer';
+import { p2ms, p2wsh, p2sh, NETWORK } from '@scure/btc-signer';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { createBase58check } from '@scure/base';
 import type { HDKey } from '@scure/bip32';
@@ -38,17 +53,32 @@ export interface VaultKeyDescriptor {
 	name?: string;
 }
 
+/** The three supported vault script forms. Absent on a config = 'p2wsh'. */
+export type VaultScriptType = 'p2wsh' | 'p2sh-p2wsh' | 'p2sh';
+
 export interface VaultConfig {
 	/** Signatures required to spend (M of keys.length). */
 	threshold: number;
 	keys: VaultKeyDescriptor[];
+	/** Script form of every address this vault derives. Absent = 'p2wsh'. */
+	scriptType?: VaultScriptType;
 }
 
 export interface VaultAddress {
 	address: string;
-	/** The p2ms script the address commits to (sha256 → witness program). */
-	witnessScript: Uint8Array;
-	/** BIP-67 order — exactly the order the pubkeys appear in witnessScript. */
+	/**
+	 * The p2ms script the address commits to via sha256 → witness program.
+	 * Present for the wsh forms (p2wsh, p2sh-p2wsh); absent for legacy p2sh,
+	 * where the p2ms script is the redeemScript instead.
+	 */
+	witnessScript?: Uint8Array;
+	/**
+	 * PSBT redeemScript for the sh forms: the p2ms script itself (p2sh) or the
+	 * wsh program script OP_0 <sha256(witnessScript)> (p2sh-p2wsh). Absent for
+	 * native p2wsh.
+	 */
+	redeemScript?: Uint8Array;
+	/** BIP-67 order — exactly the order the pubkeys appear in the p2ms script. */
 	sortedPubkeys: Uint8Array[];
 }
 
@@ -185,10 +215,23 @@ function resolveKey(key: VaultKeyDescriptor, i: number): ResolvedKey {
 	};
 }
 
+/** Resolve (and validate) a config's script form; absent means p2wsh.
+ *  Taproot multisig is rejected by name: MuSig2 (key path) and FROST (script
+ *  path) tooling is not mature or interoperable enough to build vaults on. */
+function vaultScriptType(config: VaultConfig): VaultScriptType {
+	const st = config.scriptType ?? 'p2wsh';
+	if (st === 'p2wsh' || st === 'p2sh-p2wsh' || st === 'p2sh') return st;
+	throw new VaultError(
+		`Vault script type "${st}" is not supported — use p2wsh, p2sh-p2wsh, or p2sh (taproot multisig is not supported).`,
+		'invalid_config'
+	);
+}
+
 /** Full config validation: threshold bounds, key count, parseability, and
  *  distinctness (compared on the CANONICAL xpub, so a Zpub alias of an
  *  already-listed xpub is still a duplicate). */
 function resolveVault(config: VaultConfig): ResolvedKey[] {
+	vaultScriptType(config); // reject unknown script forms everywhere, early
 	const keys = config.keys ?? [];
 	if (keys.length === 0) {
 		throw new VaultError('A vault needs at least one key.', 'invalid_config');
@@ -255,21 +298,54 @@ function childPubkeys(
 
 /**
  * Derive the vault's address at <chain>/<index>: each cosigner's child pubkey,
- * BIP-67 sorted, wrapped p2ms-in-p2wsh. Key input order is irrelevant by
- * construction — the sort happens here, per address, exactly as sortedmulti
- * specifies. Validates the whole config on every call (cheap, and address
- * derivation is the operation where a bad config costs real money).
+ * BIP-67 sorted, then the p2ms script wrapped per the config's scriptType —
+ * p2wsh (default), p2sh(p2wsh(...)), or legacy p2sh. Key input order is
+ * irrelevant by construction — the sort happens here, per address, exactly as
+ * sortedmulti specifies, identically for every script form. Validates the
+ * whole config on every call (cheap, and address derivation is the operation
+ * where a bad config costs real money).
+ *
+ * The returned scripts are exactly what PSBT construction needs per form:
+ * witnessScript for the wsh forms, redeemScript for the sh forms (both for
+ * p2sh-p2wsh).
  */
 export function deriveVaultAddress(config: VaultConfig, chain: 0 | 1, index: number): VaultAddress {
 	const resolved = resolveVault(config);
+	const scriptType = vaultScriptType(config);
 	const sorted = childPubkeys(resolved, chain, index)
 		.map((c) => c.pubkey)
 		.sort(compareBytes);
-	const payment = p2wsh(p2ms(config.threshold, sorted), NETWORK);
-	if (!payment.address || !payment.witnessScript) {
+	const ms = p2ms(config.threshold, sorted);
+
+	if (scriptType === 'p2wsh') {
+		const payment = p2wsh(ms, NETWORK);
+		if (!payment.address || !payment.witnessScript) {
+			throw new VaultError('Address construction failed.', 'derivation_failed');
+		}
+		return {
+			address: payment.address,
+			witnessScript: payment.witnessScript,
+			sortedPubkeys: sorted
+		};
+	}
+	if (scriptType === 'p2sh-p2wsh') {
+		const payment = p2sh(p2wsh(ms, NETWORK), NETWORK);
+		if (!payment.address || !payment.redeemScript || !payment.witnessScript) {
+			throw new VaultError('Address construction failed.', 'derivation_failed');
+		}
+		return {
+			address: payment.address,
+			witnessScript: payment.witnessScript,
+			redeemScript: payment.redeemScript,
+			sortedPubkeys: sorted
+		};
+	}
+	// Legacy p2sh: the p2ms script IS the redeemScript; no witness data at all.
+	const payment = p2sh(ms, NETWORK);
+	if (!payment.address || !payment.redeemScript) {
 		throw new VaultError('Address construction failed.', 'derivation_failed');
 	}
-	return { address: payment.address, witnessScript: payment.witnessScript, sortedPubkeys: sorted };
+	return { address: payment.address, redeemScript: payment.redeemScript, sortedPubkeys: sorted };
 }
 
 /**
@@ -355,8 +431,11 @@ export function descriptorChecksum(s: string): string {
 // -------------------------------------------------------------- descriptors
 
 /**
- * Export the vault as a checksummed output descriptor:
- * `wsh(sortedmulti(M,[fp/48h/0h/0h/2h]xpub/0/*,...))#checksum`.
+ * Export the vault as a checksummed output descriptor, wrapped per the
+ * config's scriptType:
+ *   p2wsh       `wsh(sortedmulti(M,[fp/48h/0h/0h/2h]xpub/0/*,...))#checksum`
+ *   p2sh-p2wsh  `sh(wsh(sortedmulti(...)))#checksum`
+ *   p2sh        `sh(sortedmulti(...))#checksum`
  * chain 0 (default) is the receive branch (/0/*), chain 1 the change branch
  * (/1/*). Keys are emitted in config order — sortedmulti sorts the DERIVED
  * pubkeys per address, so descriptor key order does not affect addresses.
@@ -366,6 +445,7 @@ export function descriptorChecksum(s: string): string {
  */
 export function vaultToDescriptor(config: VaultConfig, opts: { chain?: 0 | 1 } = {}): string {
 	const resolved = resolveVault(config);
+	const scriptType = vaultScriptType(config);
 	const chain = opts.chain ?? 0;
 	if (chain !== 0 && chain !== 1) {
 		throw new VaultError(`Invalid chain ${chain} (0 = receive, 1 = change).`, 'invalid_config');
@@ -374,7 +454,13 @@ export function vaultToDescriptor(config: VaultConfig, opts: { chain?: 0 | 1 } =
 		const origin = k.pathIndexes.length ? `[${k.fingerprint}/${formatPath(k.pathIndexes, 'h')}]` : '';
 		return `${origin}${k.xpub}/${chain}/*`;
 	});
-	const body = `wsh(sortedmulti(${config.threshold},${keyExprs.join(',')}))`;
+	const inner = `sortedmulti(${config.threshold},${keyExprs.join(',')})`;
+	const body =
+		scriptType === 'p2wsh'
+			? `wsh(${inner})`
+			: scriptType === 'p2sh-p2wsh'
+				? `sh(wsh(${inner}))`
+				: `sh(${inner})`;
 	return `${body}#${descriptorChecksum(body)}`;
 }
 
@@ -427,13 +513,18 @@ function parseKeyExpression(expr: string, i: number): VaultKeyDescriptor {
 }
 
 /**
- * Parse a `wsh(sortedmulti(...))` descriptor (checksum optional, verified when
+ * Parse a sortedmulti output descriptor (checksum optional, verified when
  * present; h / ' / ’ hardened markers; key origins optional) into a
- * VaultConfig. Names are not part of a descriptor and come back empty.
+ * VaultConfig. All three vault script forms are accepted:
+ *   wsh(sortedmulti(…))      → scriptType 'p2wsh'
+ *   sh(wsh(sortedmulti(…)))  → scriptType 'p2sh-p2wsh'
+ *   sh(sortedmulti(…))       → scriptType 'p2sh'
+ * Names are not part of a descriptor and come back empty.
  * Rejections are deliberate product boundaries, not parser gaps:
  *   - multi(…)      unsorted keys make the address depend on key order;
  *                    re-export as sortedmulti (every modern wallet supports it)
- *   - sh(wsh(…))    wrapped-segwit multisig — a possible future extension
+ *   - tr(…)         taproot multisig — MuSig2/FROST tooling is not mature or
+ *                    interoperable enough to build vaults on (see file header)
  *   - anything else  not a multisig vault
  */
 export function parseDescriptor(desc: string): VaultConfig {
@@ -460,19 +551,30 @@ export function parseDescriptor(desc: string): VaultConfig {
 	}
 
 	const lower = s.toLowerCase();
-	if (lower.startsWith('sh(wsh(')) {
+	if (lower.startsWith('tr(')) {
 		throw new VaultError(
-			'Wrapped-segwit multisig (sh(wsh(...))) is not supported yet — export a native segwit wsh(sortedmulti(...)) descriptor instead.',
+			'Taproot multisig (tr(...)) is not supported — on-chain taproot multisig needs MuSig2 or FROST, which signing devices and coordinators do not interoperably support yet. Use a wsh(sortedmulti(...)) descriptor instead.',
 			'unsupported_descriptor'
 		);
 	}
-	if (!lower.startsWith('wsh(') || !s.endsWith(')')) {
+
+	let scriptType: VaultScriptType;
+	let inner: string;
+	if (lower.startsWith('sh(wsh(') && s.endsWith('))')) {
+		scriptType = 'p2sh-p2wsh';
+		inner = s.slice(7, -2);
+	} else if (lower.startsWith('wsh(') && s.endsWith(')')) {
+		scriptType = 'p2wsh';
+		inner = s.slice(4, -1);
+	} else if (lower.startsWith('sh(') && s.endsWith(')')) {
+		scriptType = 'p2sh';
+		inner = s.slice(3, -1);
+	} else {
 		throw new VaultError(
-			'Only wsh(sortedmulti(...)) descriptors are supported.',
+			'Only wsh(sortedmulti(...)), sh(wsh(sortedmulti(...))) and sh(sortedmulti(...)) descriptors are supported.',
 			'unsupported_descriptor'
 		);
 	}
-	const inner = s.slice(4, -1);
 	const innerLower = inner.toLowerCase();
 	if (innerLower.startsWith('multi(')) {
 		throw new VaultError(
@@ -482,7 +584,7 @@ export function parseDescriptor(desc: string): VaultConfig {
 	}
 	if (!innerLower.startsWith('sortedmulti(') || !inner.endsWith(')')) {
 		throw new VaultError(
-			'Only wsh(sortedmulti(...)) descriptors are supported.',
+			'Only wsh(sortedmulti(...)), sh(wsh(sortedmulti(...))) and sh(sortedmulti(...)) descriptors are supported.',
 			'unsupported_descriptor'
 		);
 	}
@@ -504,7 +606,8 @@ export function parseDescriptor(desc: string): VaultConfig {
 
 	const config: VaultConfig = {
 		threshold: parseInt(thresholdStr, 10),
-		keys: args.slice(1).map((expr, i) => parseKeyExpression(expr, i))
+		keys: args.slice(1).map((expr, i) => parseKeyExpression(expr, i)),
+		scriptType
 	};
 	resolveVault(config); // threshold/key-count bounds, parseability, duplicates
 	return config;

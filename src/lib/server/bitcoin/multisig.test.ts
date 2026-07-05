@@ -3,6 +3,7 @@ import { HDKey } from '@scure/bip32';
 import { base58check } from '@scure/base';
 import { p2ms } from '@scure/btc-signer';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { ripemd160 } from '@noble/hashes/legacy.js';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
 import { parseXpub, addressToScriptPubKey } from './xpub';
 import {
@@ -15,7 +16,8 @@ import {
 	VaultError,
 	MAX_VAULT_KEYS,
 	type VaultConfig,
-	type VaultKeyDescriptor
+	type VaultKeyDescriptor,
+	type VaultScriptType
 } from './multisig';
 
 // Deterministic cosigner fixtures: master seeds 0x01…, accounts at the BIP-48
@@ -77,23 +79,23 @@ describe('deriveVaultAddress', () => {
 
 		// Cross-check with xpub.ts's independently hand-rolled address decoder:
 		// scriptPubKey must be OP_0 PUSH32 sha256(witnessScript).
-		const program = sha256(witnessScript);
+		const program = sha256(witnessScript!);
 		const expectedSpk = new Uint8Array([0x00, 0x20, ...program]);
 		expect(bytesToHex(addressToScriptPubKey(address))).toBe(bytesToHex(expectedSpk));
 
 		// Witness script structure: OP_2 <33> <33> <33> OP_3 OP_CHECKMULTISIG.
-		expect(witnessScript[0]).toBe(0x52);
-		expect(witnessScript[witnessScript.length - 2]).toBe(0x53);
-		expect(witnessScript[witnessScript.length - 1]).toBe(0xae);
+		expect(witnessScript![0]).toBe(0x52);
+		expect(witnessScript![witnessScript!.length - 2]).toBe(0x53);
+		expect(witnessScript![witnessScript!.length - 1]).toBe(0xae);
 		expect(sortedPubkeys).toHaveLength(3);
 		for (const pk of sortedPubkeys) expect(pk.length).toBe(33);
 	});
 
 	it('3-of-5: OP_3 … OP_5 OP_CHECKMULTISIG', () => {
 		const { witnessScript, sortedPubkeys } = deriveVaultAddress(VAULT_3OF5, 0, 0);
-		expect(witnessScript[0]).toBe(0x53);
-		expect(witnessScript[witnessScript.length - 2]).toBe(0x55);
-		expect(witnessScript[witnessScript.length - 1]).toBe(0xae);
+		expect(witnessScript![0]).toBe(0x53);
+		expect(witnessScript![witnessScript!.length - 2]).toBe(0x55);
+		expect(witnessScript![witnessScript!.length - 1]).toBe(0xae);
 		expect(sortedPubkeys).toHaveLength(5);
 	});
 
@@ -106,7 +108,7 @@ describe('deriveVaultAddress', () => {
 			const a = deriveVaultAddress(VAULT_3OF5, 0, index);
 			const b = deriveVaultAddress(shuffled, 0, index);
 			expect(b.address).toBe(a.address);
-			expect(bytesToHex(b.witnessScript)).toBe(bytesToHex(a.witnessScript));
+			expect(bytesToHex(b.witnessScript!)).toBe(bytesToHex(a.witnessScript!));
 		}
 	});
 
@@ -155,7 +157,7 @@ describe('deriveVaultAddress', () => {
 		const a = deriveVaultAddress(VAULT_3OF5, 0, 42);
 		const b = deriveVaultAddress(VAULT_3OF5, 0, 42);
 		expect(b.address).toBe(a.address);
-		expect(bytesToHex(b.witnessScript)).toBe(bytesToHex(a.witnessScript));
+		expect(bytesToHex(b.witnessScript!)).toBe(bytesToHex(a.witnessScript!));
 		expect(vaultToDescriptor(VAULT_3OF5)).toBe(vaultToDescriptor(VAULT_3OF5));
 	});
 
@@ -173,6 +175,84 @@ describe('deriveVaultAddress', () => {
 		expect(deriveVaultAddress(viaZpub, 0, 0).address).toBe(
 			deriveVaultAddress(VAULT_2OF3, 0, 0).address
 		);
+	});
+});
+
+// ── Script types (p2wsh / p2sh-p2wsh / p2sh) ─────────────────────────────────
+
+describe('deriveVaultAddress script types', () => {
+	const hash160 = (b: Uint8Array) => ripemd160(sha256(b));
+	const withType = (scriptType: VaultScriptType): VaultConfig => ({
+		...VAULT_2OF3,
+		scriptType
+	});
+
+	it('absent scriptType means p2wsh (identical address)', () => {
+		expect(deriveVaultAddress(withType('p2wsh'), 0, 0).address).toBe(
+			deriveVaultAddress(VAULT_2OF3, 0, 0).address
+		);
+	});
+
+	it('p2wsh: bc1q… address, witnessScript only', () => {
+		const a = deriveVaultAddress(withType('p2wsh'), 0, 0);
+		expect(a.address.startsWith('bc1q')).toBe(true);
+		expect(a.address.length).toBe(62); // 32-byte program
+		expect(a.witnessScript).toBeDefined();
+		expect(a.redeemScript).toBeUndefined();
+	});
+
+	it('p2sh: base58 3… address; redeemScript IS the p2ms script; no witness data', () => {
+		const a = deriveVaultAddress(withType('p2sh'), 0, 0);
+		expect(a.address.startsWith('3')).toBe(true);
+		expect(a.address.length).toBe(34);
+		expect(a.witnessScript).toBeUndefined();
+		expect(a.redeemScript).toBeDefined();
+		// redeemScript = OP_2 <33> <33> <33> OP_3 OP_CHECKMULTISIG (BIP-67 sorted).
+		expect(bytesToHex(a.redeemScript!)).toBe(bytesToHex(p2ms(2, a.sortedPubkeys).script));
+		// scriptPubKey (via the independent decoder in xpub.ts) commits to
+		// hash160(redeemScript): a914 <20 bytes> 87.
+		expect(bytesToHex(addressToScriptPubKey(a.address))).toBe(
+			'a914' + bytesToHex(hash160(a.redeemScript!)) + '87'
+		);
+	});
+
+	it('p2sh-p2wsh: 3… address; redeemScript = OP_0 <sha256(witnessScript)>; witnessScript = p2ms', () => {
+		const a = deriveVaultAddress(withType('p2sh-p2wsh'), 0, 0);
+		expect(a.address.startsWith('3')).toBe(true);
+		expect(a.address.length).toBe(34);
+		expect(a.witnessScript).toBeDefined();
+		expect(a.redeemScript).toBeDefined();
+		expect(bytesToHex(a.witnessScript!)).toBe(bytesToHex(p2ms(2, a.sortedPubkeys).script));
+		expect(bytesToHex(a.redeemScript!)).toBe('0020' + bytesToHex(sha256(a.witnessScript!)));
+		expect(bytesToHex(addressToScriptPubKey(a.address))).toBe(
+			'a914' + bytesToHex(hash160(a.redeemScript!)) + '87'
+		);
+	});
+
+	it('the three script types derive three DISTINCT addresses from one key set', () => {
+		const addrs = (['p2wsh', 'p2sh-p2wsh', 'p2sh'] as const).map(
+			(t) => deriveVaultAddress(withType(t), 0, 0).address
+		);
+		expect(new Set(addrs).size).toBe(3);
+	});
+
+	it('BIP-67 sorting is identical across all three script types', () => {
+		const wsh = deriveVaultAddress(withType('p2wsh'), 0, 5);
+		const shwsh = deriveVaultAddress(withType('p2sh-p2wsh'), 0, 5);
+		const sh = deriveVaultAddress(withType('p2sh'), 0, 5);
+		const hex = (pks: Uint8Array[]) => pks.map(bytesToHex);
+		expect(hex(shwsh.sortedPubkeys)).toEqual(hex(wsh.sortedPubkeys));
+		expect(hex(sh.sortedPubkeys)).toEqual(hex(wsh.sortedPubkeys));
+		// Same key set + same sort = the very same p2ms script everywhere; only
+		// the wrapping differs.
+		expect(bytesToHex(shwsh.witnessScript!)).toBe(bytesToHex(wsh.witnessScript!));
+		expect(bytesToHex(sh.redeemScript!)).toBe(bytesToHex(wsh.witnessScript!));
+	});
+
+	it('rejects an unknown script type (taproot multisig included) by name', () => {
+		const bad = { ...VAULT_2OF3, scriptType: 'p2tr' as VaultScriptType };
+		expect(() => deriveVaultAddress(bad, 0, 0)).toThrow(/not supported/);
+		expect(() => vaultToDescriptor(bad)).toThrow(/not supported/);
 	});
 });
 
@@ -281,6 +361,9 @@ describe('vaultToDescriptor', () => {
 	});
 });
 
+// parseDescriptor always reports the script form it recognized.
+const BASTION_PARSED: VaultConfig = { ...BASTION_CFG, scriptType: 'p2wsh' };
+
 describe('parseDescriptor', () => {
 	it('round-trips: config → descriptor → identical config', () => {
 		const noNames: VaultConfig = {
@@ -288,9 +371,28 @@ describe('parseDescriptor', () => {
 			keys: VAULT_2OF3.keys.map(({ xpub, fingerprint, path }) => ({ xpub, fingerprint, path }))
 		};
 		const desc = vaultToDescriptor(noNames);
-		expect(parseDescriptor(desc)).toEqual(noNames);
+		expect(parseDescriptor(desc)).toEqual({ ...noNames, scriptType: 'p2wsh' });
 		// And the re-export is byte-identical.
 		expect(vaultToDescriptor(parseDescriptor(desc))).toBe(desc);
+	});
+
+	it('round-trips every script type, with the matching wrapper and checksum', () => {
+		const wrappers: Record<VaultScriptType, RegExp> = {
+			p2wsh: /^wsh\(sortedmulti\(2,/,
+			'p2sh-p2wsh': /^sh\(wsh\(sortedmulti\(2,/,
+			p2sh: /^sh\(sortedmulti\(2,/
+		};
+		for (const scriptType of ['p2wsh', 'p2sh-p2wsh', 'p2sh'] as const) {
+			const cfg: VaultConfig = { ...BASTION_CFG, scriptType };
+			const desc = vaultToDescriptor(cfg);
+			expect(desc).toMatch(wrappers[scriptType]);
+			expect(desc).toMatch(/#[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{8}$/);
+			const parsed = parseDescriptor(desc);
+			expect(parsed).toEqual(cfg);
+			expect(vaultToDescriptor(parsed)).toBe(desc);
+			// The parsed config derives the same first address as the original.
+			expect(vaultTestAddress(parsed)).toBe(vaultTestAddress(cfg));
+		}
 	});
 
 	it('parses a config that derives the same addresses as the original', () => {
@@ -299,17 +401,17 @@ describe('parseDescriptor', () => {
 	});
 
 	it('accepts a checksum-less descriptor and apostrophe hardened markers', () => {
-		expect(parseDescriptor(BASTION_RECEIVE)).toEqual(BASTION_CFG);
+		expect(parseDescriptor(BASTION_RECEIVE)).toEqual(BASTION_PARSED);
 		const apostrophes = `wsh(sortedmulti(2,[3442193e/48'/0'/0'/2']${TV1_MASTER}/0/*,[deadbeef/48'/0'/0'/2']${TV2_MASTER}/0/*))`;
-		expect(parseDescriptor(apostrophes)).toEqual(BASTION_CFG);
+		expect(parseDescriptor(apostrophes)).toEqual(BASTION_PARSED);
 	});
 
 	it('accepts /1/* (change) and <0;1> multipath variants as the same vault', () => {
 		expect(parseDescriptor(`${BASTION_CHANGE}#${descriptorChecksum(BASTION_CHANGE)}`)).toEqual(
-			BASTION_CFG
+			BASTION_PARSED
 		);
 		const multipath = BASTION_RECEIVE.replace(/\/0\/\*/g, '/<0;1>/*');
-		expect(parseDescriptor(multipath)).toEqual(BASTION_CFG);
+		expect(parseDescriptor(multipath)).toEqual(BASTION_PARSED);
 	});
 
 	it('accepts origin-less keys with a placeholder fingerprint', () => {
@@ -338,9 +440,14 @@ describe('parseDescriptor', () => {
 		}
 	});
 
-	it('rejects sh(wsh(…)) as not-yet-supported', () => {
-		const desc = `sh(wsh(sortedmulti(2,${TV1_MASTER}/0/*,${TV2_MASTER}/0/*)))`;
-		expect(() => parseDescriptor(desc)).toThrow(/not supported yet/);
+	it('rejects tr(…) taproot multisig with a "not supported" message', () => {
+		const desc = `tr(${TV1_MASTER}/0/*,sortedmulti_a(2,${TV1_MASTER}/0/*,${TV2_MASTER}/0/*))`;
+		expect(() => parseDescriptor(desc)).toThrow(/not supported/);
+		try {
+			parseDescriptor(desc);
+		} catch (e) {
+			expect((e as VaultError).code).toBe('unsupported_descriptor');
+		}
 	});
 
 	it('rejects non-multisig descriptors and malformed bodies', () => {
