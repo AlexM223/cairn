@@ -51,6 +51,77 @@
 			totalKeys <= 15
 	);
 
+	// --------------------------------------- quorum signing-time estimates
+	//
+	// GET /api/signing-time-preview compares quorums: one fetch returns the
+	// standard presets (2-of-3, 3-of-5) plus the requested combo, so the
+	// initial call covers both preset cards; custom M-of-N changes refetch,
+	// debounced. Estimates INFORM the trade-off (bigger quorum = more devices
+	// each verifying every input = longer ceremony) — they never gate the
+	// step, and they are about signing time only, never network fees.
+
+	type QuorumEstimate = { m: number; n: number; totalSecondsLo: number; totalSecondsHi: number };
+	let previewBasis = $state<'your-utxos' | 'typical' | null>(null);
+	let quorumEstimates = $state<Record<string, QuorumEstimate>>({});
+
+	async function fetchSigningPreview(m: number, n: number) {
+		try {
+			const res = await fetch(`/api/signing-time-preview?m=${m}&n=${n}`);
+			if (!res.ok) return;
+			const body = (await res.json()) as { basis: 'your-utxos' | 'typical'; estimates: QuorumEstimate[] };
+			previewBasis = body.basis;
+			const next = { ...quorumEstimates };
+			for (const e of body.estimates) next[`${e.m}/${e.n}`] = e;
+			quorumEstimates = next;
+		} catch {
+			// Estimates enhance the cards; a failed fetch just shows none.
+		}
+	}
+
+	function estimateFor(m: number, n: number): QuorumEstimate | undefined {
+		return quorumEstimates[`${m}/${n}`];
+	}
+
+	/** Humane range: minutes once the top clears 90 s, else seconds (5s steps). */
+	function signingRange(lo: number, hi: number): string {
+		const l = Math.max(0, lo);
+		const h = Math.max(l, hi);
+		if (h > 90) {
+			const lm = Math.max(1, Math.round(l / 60));
+			const hm = Math.max(lm, Math.round(h / 60));
+			return lm === hm ? `~${lm} min` : `~${lm}–${hm} min`;
+		}
+		const round5 = (s: number) => Math.max(5, Math.round(s / 5) * 5);
+		const ls = round5(l);
+		const hs = Math.max(ls, round5(h));
+		return ls === hs ? `~${ls} sec` : `~${ls}–${hs} sec`;
+	}
+
+	function estimateLine(m: number, n: number): string | null {
+		const e = estimateFor(m, n);
+		return e ? `${signingRange(e.totalSecondsLo, e.totalSecondsHi)} total signing time` : null;
+	}
+
+	// One initial fetch (client-only via $effect) covers both preset cards.
+	let previewSeeded = false;
+	$effect(() => {
+		if (previewSeeded) return;
+		previewSeeded = true;
+		void fetchSigningPreview(2, 3);
+	});
+
+	// Custom M-of-N: refetch as the values change, debounced 300 ms, skipping
+	// combos already fetched (the estimate map doubles as a cache).
+	let customDebounce: ReturnType<typeof setTimeout> | undefined;
+	$effect(() => {
+		if (preset !== 'custom' || !quorumValid) return;
+		const m = threshold;
+		const n = totalKeys;
+		if (quorumEstimates[`${m}/${n}`]) return;
+		customDebounce = setTimeout(() => void fetchSigningPreview(m, n), 300);
+		return () => clearTimeout(customDebounce);
+	});
+
 	// -------------------------------------------------------------- step 2: keys
 	interface WizardKey {
 		name: string;
@@ -557,6 +628,9 @@
 						Any 2 of your 3 keys can spend. Lose one key — nothing is lost. Someone steals
 						one — they get nothing. The right choice for most people.
 					</span>
+					{#if estimateLine(2, 3)}
+						<span class="preset-time tabular">{estimateLine(2, 3)}</span>
+					{/if}
 				</button>
 				<button
 					type="button"
@@ -570,6 +644,9 @@
 						Any 3 of 5 keys spend. Two keys can fail or fall into the wrong hands before
 						anything is at risk. More keys to set up and store.
 					</span>
+					{#if estimateLine(3, 5)}
+						<span class="preset-time tabular">{estimateLine(3, 5)}</span>
+					{/if}
 				</button>
 				<button
 					type="button"
@@ -580,8 +657,23 @@
 					<span class="preset-quorum">M of N</span>
 					<span class="preset-name">Custom</span>
 					<span class="preset-desc">Choose your own numbers, up to 15 keys.</span>
+					{#if preset === 'custom' && quorumValid && estimateLine(threshold, totalKeys)}
+						<span class="preset-time tabular">{estimateLine(threshold, totalKeys)}</span>
+					{/if}
 				</button>
 			</div>
+
+			{#if previewBasis}
+				<p class="preview-caption">
+					<Term
+						tip="Larger quorums are more secure but take longer to sign transactions. Each signing device must independently verify every input."
+						>Signing time</Term
+					>
+					estimates are {previewBasis === 'your-utxos'
+						? 'based on your current coins'
+						: 'based on typical coins'} — they never affect the network fee.
+				</p>
+			{/if}
 
 			{#if preset === 'custom'}
 				<div class="custom-quorum fade-in">
@@ -1560,6 +1652,18 @@
 		font-size: 12.5px;
 		color: var(--text-secondary);
 		line-height: 1.55;
+	}
+
+	/* Quiet, informational — the estimate must not dominate the card. */
+	.preset-time {
+		font-size: 11.5px;
+		color: var(--text-muted);
+	}
+
+	.preview-caption {
+		font-size: 12px;
+		color: var(--text-muted);
+		margin-top: -6px;
 	}
 
 	.custom-quorum {

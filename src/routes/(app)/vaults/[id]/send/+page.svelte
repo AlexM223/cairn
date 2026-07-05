@@ -8,6 +8,7 @@
 	import CopyText from '$lib/components/CopyText.svelte';
 	import { formatBtc, formatSats, formatFeeRate, truncateMiddle } from '$lib/format';
 	import type { ConstructedVaultPsbt, VaultSigningProgress } from '$lib/server/bitcoin/vaultPsbt';
+	import type { MassTier, SigningMass } from '$lib/server/bitcoin/signingMass';
 	import type { SavedVaultTransaction } from '$lib/server/vaultTransactions';
 	import { KEY_CATEGORY_LABELS, quorumLabel } from '../../labels';
 	// The QR signer is a props-driven pass-through (the DEVICE does the
@@ -188,6 +189,172 @@
 	const feePctOfAmount = $derived.by(() => {
 		if (!review || review.amount <= 0) return null;
 		return (review.fee / review.amount) * 100;
+	});
+
+	// --------------------------------------------- signing-mass ceremony copy
+	//
+	// The build response's signingMass block (see signingMass.ts) drives every
+	// time estimate here. One copy rule everywhere: signing time is DEVICE
+	// VERIFICATION time — it never changes the network fee.
+
+	const signingMass = $derived<SigningMass | null>(details?.signingMass ?? null);
+
+	/** Humane duration range: minutes once the top clears 90 s, else seconds. */
+	function signingRange(lo: number, hi: number, style: 'short' | 'long' = 'short'): string {
+		const l = Math.max(0, lo);
+		const h = Math.max(l, hi);
+		if (h > 90) {
+			const lm = Math.max(1, Math.round(l / 60));
+			const hm = Math.max(lm, Math.round(h / 60));
+			const unit = style === 'long' ? (hm === 1 ? 'minute' : 'minutes') : 'min';
+			return lm === hm ? `${lm} ${unit}` : `${lm}–${hm} ${unit}`;
+		}
+		const round5 = (s: number) => Math.max(5, Math.round(s / 5) * 5);
+		const ls = round5(l);
+		const hs = Math.max(ls, round5(h));
+		const unit = style === 'long' ? 'seconds' : 'sec';
+		return ls === hs ? `${ls} ${unit}` : `${ls}–${hs} ${unit}`;
+	}
+
+	/** Per-signer bracket across device kinds: fastest lo … slowest hi. */
+	function perSignerBracket(mass: SigningMass): { lo: number; hi: number } {
+		let lo = Infinity;
+		let hi = 0;
+		for (const d of mass.perDevice) {
+			lo = Math.min(lo, d.secondsLo);
+			hi = Math.max(hi, d.secondsHi);
+		}
+		return { lo: lo === Infinity ? 0 : lo, hi };
+	}
+
+	/** Chip estimate for a pending key: perDevice matched on the key's device
+	 *  routing. file/qr keys could be ANY device, so they honestly get none. */
+	function deviceEstimate(key: VaultKey): string | null {
+		if (!signingMass) return null;
+		const d = signingMass.perDevice.find((p) => p.device === key.deviceType);
+		return d ? `~${signingRange(d.secondsLo, d.secondsHi)}` : null;
+	}
+
+	// ------------------------- per-coin masses (lazy, one fetch, client math)
+	//
+	// The Review step's "Coins being spent" list is this flow's input display
+	// (the vault Create step has no coin control), so the mass disclosure
+	// attaches there: opening the list fetches /api/vaults/:id/utxo-mass ONCE,
+	// then everything below is client-side arithmetic — no per-toggle round
+	// trips.
+
+	type UtxoMassRow = { txid: string; vout: number; parentVsize: number; tier: MassTier };
+	let utxoMasses = $state<Map<string, UtxoMassRow> | null>(null);
+	let massFetch: 'idle' | 'loading' | 'done' | 'failed' = 'idle';
+
+	async function ensureUtxoMasses() {
+		if (massFetch !== 'idle') return;
+		massFetch = 'loading';
+		try {
+			const res = await fetch(`/api/vaults/${vaultId}/utxo-mass`);
+			if (!res.ok) {
+				massFetch = 'failed';
+				return;
+			}
+			const body = (await res.json()) as { masses?: UtxoMassRow[] };
+			const map = new Map<string, UtxoMassRow>();
+			for (const m of body.masses ?? []) map.set(`${m.txid}:${m.vout}`, m);
+			utxoMasses = map;
+			massFetch = 'done';
+		} catch {
+			massFetch = 'failed';
+		}
+	}
+
+	function toggleInputs() {
+		inputsOpen = !inputsOpen;
+		if (inputsOpen) void ensureUtxoMasses();
+	}
+
+	function coinMass(txid: string, vout: number): UtxoMassRow | undefined {
+		return utxoMasses?.get(`${txid}:${vout}`);
+	}
+
+	const MASS_TIER_LABELS: Record<MassTier, string> = {
+		low: 'fast to sign',
+		medium: 'slower to sign',
+		high: 'slow to sign'
+	};
+
+	// Client-side mirror of estimateSigningSeconds/quorumSecondsRange in
+	// $lib/server/bitcoin/signingMass.ts — that module is server-only (SvelteKit
+	// blocks runtime imports of $lib/server into client code), so the constants
+	// are restated here verbatim. Keep in sync with DEVICE_PROFILES,
+	// KEYS_PER_INPUT_FACTOR and the tier thresholds there.
+	const MIRROR_PROFILES = [
+		{ baseLo: 3, baseHi: 8, perInputLo: 0.5, perInputHi: 1.5, rateFast: 8_000, rateSlow: 1_500 },
+		{ baseLo: 2, baseHi: 5, perInputLo: 0.3, perInputHi: 1.0, rateFast: 20_000, rateSlow: 6_000 },
+		{ baseLo: 2, baseHi: 6, perInputLo: 0.2, perInputHi: 0.8, rateFast: 35_000, rateSlow: 10_000 }
+	] as const;
+
+	function mirrorBracket(
+		totalParentVsize: number,
+		inputCount: number,
+		m: number
+	): { lo: number; hi: number } {
+		const kf = 1 + 0.15 * Math.max(0, keys.length - 1);
+		let lo = Infinity;
+		let hi = 0;
+		for (const p of MIRROR_PROFILES) {
+			lo = Math.min(lo, (p.baseLo + inputCount * p.perInputLo * kf + totalParentVsize / p.rateFast) * m);
+			hi = Math.max(hi, (p.baseHi + inputCount * p.perInputHi * kf + totalParentVsize / p.rateSlow) * m);
+		}
+		return { lo: Math.max(1, Math.round(lo)), hi: Math.max(1, Math.round(hi)) };
+	}
+
+	function mirrorTier(totalParentVsize: number): MassTier {
+		if (totalParentVsize < 8_000) return 'low';
+		if (totalParentVsize <= 40_000) return 'medium';
+		return 'high';
+	}
+
+	/**
+	 * The coin-list mass summary, recomputed locally from the fetched per-coin
+	 * masses (unique parents only, matching computeSigningMass). Degrade rule:
+	 * if any spent coin's mass is unknown, fall back to the server's
+	 * signingMass block; if that's absent too, show nothing.
+	 */
+	const coinMassLine = $derived.by<{
+		tier: MassTier;
+		perSigner: { lo: number; hi: number };
+		total: { lo: number; hi: number };
+	} | null>(() => {
+		if (!review || review.inputs.length === 0) return null;
+		if (utxoMasses) {
+			const seen = new Set<string>();
+			let totalParentVsize = 0;
+			let complete = true;
+			for (const inp of review.inputs) {
+				const m = coinMass(inp.txid, inp.vout);
+				if (!m) {
+					complete = false;
+					break;
+				}
+				if (seen.has(m.txid)) continue;
+				seen.add(m.txid);
+				totalParentVsize += m.parentVsize;
+			}
+			if (complete) {
+				return {
+					tier: mirrorTier(totalParentVsize),
+					perSigner: mirrorBracket(totalParentVsize, review.inputs.length, 1),
+					total: mirrorBracket(totalParentVsize, review.inputs.length, required)
+				};
+			}
+		}
+		if (signingMass) {
+			return {
+				tier: signingMass.tier,
+				perSigner: perSignerBracket(signingMass),
+				total: signingMass.totalSeconds
+			};
+		}
+		return null;
 	});
 
 	// -------------------------------------------------- SIGN: per-key stepper
@@ -419,6 +586,50 @@
 	const explorerUrl = $derived(sentTxid ? `/explorer/tx/${sentTxid}` : '#');
 	const quorum = quorumLabel(required, keys.length);
 </script>
+
+<!-- Signing-mass advisory panel (Review + Sign). Advisory only — it never
+     blocks a step. Amber past ~10 min of total ceremony, red past ~30 min or
+     on device-timeout risk; the split suggestion appears only when the mass
+     is actually divisible (splitSuggested), because splitting a spend whose
+     mass comes from ONE huge parent wouldn't help. -->
+{#snippet massPanel(mass: SigningMass)}
+	{#if mass.warnLevel === 'red'}
+		<div class="mass-panel red" role="alert">
+			<Icon name="alert-triangle" size={16} />
+			<div>
+				<strong>
+					This will take approximately {signingRange(
+						mass.totalSeconds.lo,
+						mass.totalSeconds.hi,
+						'long'
+					)} across all {required} signing devices.
+				</strong>
+				{#if mass.splitSuggested}
+					Consider sending as two separate transactions to avoid device timeouts.
+				{:else}
+					Keep each device connected until it finishes — this is verification time on the
+					devices, not a network delay.
+				{/if}
+				<span class="mass-note">The network fee is not affected.</span>
+			</div>
+		</div>
+	{:else if mass.warnLevel === 'amber'}
+		<div class="mass-panel amber" role="note">
+			<Icon name="alert-triangle" size={16} />
+			<div>
+				<strong>
+					This will take approximately {signingRange(
+						mass.totalSeconds.lo,
+						mass.totalSeconds.hi,
+						'long'
+					)} across all {required} signing devices.
+				</strong>
+				Some coins in this spend came from large batch payouts, which each device verifies in
+				full. <span class="mass-note">The network fee is not affected.</span>
+			</div>
+		</div>
+	{/if}
+{/snippet}
 
 <svelte:head>
 	<title>Send · {data.vault.name} · Cairn</title>
@@ -672,12 +883,27 @@
 					<span class="text-secondary">Signatures required</span>
 					<span class="detail-val">{quorum}</span>
 				</div>
+				{#if signingMass}
+					<!-- The IMPACT line's ceremony estimate: per-signer time × the M
+					     devices that must each verify the full transaction. -->
+					<div class="detail-row">
+						<span class="text-secondary">
+							<Term
+								tip="Each signing device reads every coin's full parent transaction to verify amounts, and all {required} devices do that work independently. This is device verification time only — it never changes the network fee."
+								>Total signing time</Term
+							> across {required} devices
+						</span>
+						<span class="detail-val tabular"
+							>~{signingRange(signingMass.totalSeconds.lo, signingMass.totalSeconds.hi)}</span
+						>
+					</div>
+				{/if}
 				{#if review.inputs.length > 0}
 					<button
 						class="utxo-toggle"
 						aria-expanded={inputsOpen}
 						aria-controls="review-utxo-list"
-						onclick={() => (inputsOpen = !inputsOpen)}
+						onclick={toggleInputs}
 					>
 						<Icon name={inputsOpen ? 'chevron-down' : 'chevron-right'} size={14} />
 						<span
@@ -687,18 +913,53 @@
 					</button>
 					{#if inputsOpen}
 						<div class="utxo-list fade-in" id="review-utxo-list">
+							{#if coinMassLine}
+								<p class="mass-line">
+									Spending {review.inputs.length}
+									{review.inputs.length === 1 ? 'coin' : 'coins'} · signing mass:
+									<span class={`mass-tier ${coinMassLine.tier}`}>{coinMassLine.tier}</span>
+									· ~{signingRange(coinMassLine.perSigner.lo, coinMassLine.perSigner.hi)} per signer
+									× {required}
+									{required === 1 ? 'signer' : 'signers'} = ~{signingRange(
+										coinMassLine.total.lo,
+										coinMassLine.total.hi
+									)}
+								</p>
+							{/if}
 							{#each review.inputs as inp (inp.txid + inp.vout)}
+								{@const mass = coinMass(inp.txid, inp.vout)}
 								<div class="utxo-row">
 									<span class="mono text-muted">{truncateMiddle(inp.txid, 10, 8)}:{inp.vout}</span>
-									{#if inp.value != null}
-										<span class="tabular">{formatSats(inp.value)} sats</span>
-									{/if}
+									<span class="utxo-row-right">
+										{#if mass}
+											<span
+												class={`mass-tier ${mass.tier}`}
+												title="How long signing devices spend verifying this coin's parent transaction — the network fee is not affected."
+												>{MASS_TIER_LABELS[mass.tier]}</span
+											>
+										{/if}
+										{#if inp.value != null}
+											<span class="tabular">{formatSats(inp.value)} sats</span>
+										{/if}
+									</span>
 								</div>
 							{/each}
+							{#if coinMassLine?.tier === 'high'}
+								<p class="hint">
+									The slowest coins here came from very large batch payouts. They're exactly as
+									safe to spend as any other coin — but every signing device verifies their full
+									parent transactions, so the ceremony runs long. Sending them in a separate,
+									smaller transaction keeps each signing session shorter.
+								</p>
+							{/if}
 						</div>
 					{/if}
 				{/if}
 			</div>
+
+			{#if signingMass}
+				{@render massPanel(signingMass)}
+			{/if}
 
 			<div class="row step-actions">
 				<button class="btn btn-secondary" onclick={() => (step = 'create')}>
@@ -719,6 +980,10 @@
 					Each signature comes from a different device — that's what makes it a vault.
 				</span>
 			</div>
+
+			{#if signingMass}
+				{@render massPanel(signingMass)}
+			{/if}
 
 			<!-- Live quorum progress, straight from the server's PSBT inspection. -->
 			<div class="card card-pad quorum-card">
@@ -751,6 +1016,7 @@
 								<span class="chip-meta">{KEY_CATEGORY_LABELS[key.category]} · <span class="mono">{key.fingerprint}</span></span>
 							</div>
 						{:else}
+							{@const chipEstimate = deviceEstimate(key)}
 							<button
 								type="button"
 								class="key-chip"
@@ -762,6 +1028,13 @@
 								<span class="chip-dot" aria-hidden="true"></span>
 								<span class="chip-name">{key.name}</span>
 								<span class="chip-meta">{KEY_CATEGORY_LABELS[key.category]} · <span class="mono">{key.fingerprint}</span></span>
+								{#if chipEstimate}
+									<span
+										class="chip-time"
+										title="Estimated signing time on this device — it never changes the network fee."
+										>{chipEstimate}</span
+									>
+								{/if}
 								{#if spare}
 									<span class="chip-badge">Not needed — {quorum} is enough</span>
 								{:else if !active}
@@ -1413,6 +1686,101 @@
 		padding: 7px 10px;
 		background: var(--bg);
 		border-radius: var(--radius-chip);
+	}
+
+	.utxo-row-right {
+		display: flex;
+		align-items: baseline;
+		gap: 10px;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+	}
+
+	/* ---- signing-mass copy: coin-list summary line, tier chips, panels ---- */
+	.mass-line {
+		font-size: 12.5px;
+		color: var(--text-secondary);
+		line-height: 1.55;
+	}
+
+	.mass-tier {
+		font-size: 11px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		border-radius: var(--radius-chip);
+		padding: 1px 7px;
+		white-space: nowrap;
+	}
+
+	.mass-tier.low {
+		background: var(--success-muted);
+		color: var(--success);
+	}
+
+	.mass-tier.medium {
+		background: var(--warning-muted);
+		color: var(--warning);
+	}
+
+	.mass-tier.high {
+		background: var(--error-muted);
+		color: var(--error);
+	}
+
+	.mass-panel {
+		display: flex;
+		gap: 10px;
+		align-items: flex-start;
+		border-radius: var(--radius-card);
+		padding: 12px 14px;
+		font-size: 13px;
+		line-height: 1.55;
+		color: var(--text);
+	}
+
+	.mass-panel :global(svg) {
+		flex-shrink: 0;
+		margin-top: 1px;
+	}
+
+	.mass-panel strong {
+		display: block;
+	}
+
+	.mass-panel.amber {
+		background: var(--warning-muted);
+		border: 1px solid rgba(232, 201, 90, 0.3);
+	}
+
+	.mass-panel.amber :global(svg) {
+		color: var(--warning);
+	}
+
+	.mass-panel.red {
+		background: var(--error-muted);
+		border: 1px solid rgba(232, 90, 90, 0.35);
+	}
+
+	.mass-panel.red :global(svg) {
+		color: var(--error);
+	}
+
+	.mass-note {
+		display: block;
+		margin-top: 4px;
+		font-size: 12px;
+		color: var(--text-secondary);
+	}
+
+	.chip-time {
+		font-size: 11px;
+		color: var(--text-secondary);
+		background: var(--surface-elevated);
+		border-radius: var(--radius-chip);
+		padding: 2px 8px;
+		white-space: nowrap;
+		font-variant-numeric: tabular-nums;
 	}
 
 	/* ---- Sign: quorum progress + per-key chips ---- */
