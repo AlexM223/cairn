@@ -189,17 +189,35 @@ db.exec(`
 	// the plain rename below would skip (target exists) and orphan the real data.
 	// Detect that exact case — old `vaults` has rows, new `multisigs` is empty —
 	// and drop the empty shells (children before parent) so the rename can move
-	// the real data across. Only ever discards provably-empty tables.
+	// the real data across. Only ever discards provably-empty tables: we verify
+	// EACH shell table (parent and every child) is independently empty before
+	// dropping any of them, rather than assuming the children are empty because
+	// the parent is (FK-cascade semantics). If any child holds rows while the
+	// parent is empty — the precise data-loss anomaly this migration exists to
+	// catch — we abort the recovery and leave every table intact. rowCount()
+	// already returns 0 for tables that do not exist, so absent children are
+	// treated as empty. (The rename below then no-ops on the pre-existing
+	// targets, surfacing the inconsistency rather than silently destroying data.)
 	if (tableNames.has('vaults') && rowCount('vaults') > 0 && rowCount('multisigs') === 0) {
-		for (const t of [
+		const shellTables = [
 			'multisig_keys',
 			'multisig_transactions',
 			'ledger_multisig_registrations',
 			'multisigs'
-		]) {
-			if (tableNames.has(t)) {
-				db.exec(`DROP TABLE ${t}`);
-				tableNames.delete(t);
+		];
+		const nonEmptyShells = shellTables.filter((t) => rowCount(t) > 0);
+		if (nonEmptyShells.length > 0) {
+			console.warn(
+				`[db migration] Skipping empty-shell recovery: 'multisigs' is empty but ` +
+					`shell table(s) ${nonEmptyShells.join(', ')} hold rows. Leaving all tables ` +
+					`intact to avoid data loss; manual reconciliation required.`
+			);
+		} else {
+			for (const t of shellTables) {
+				if (tableNames.has(t)) {
+					db.exec(`DROP TABLE ${t}`);
+					tableNames.delete(t);
+				}
 			}
 		}
 	}
