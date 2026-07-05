@@ -90,7 +90,25 @@
 	</div>
 {/if}
 
+<!-- The stateless (Caravan-style) escape hatch — secondary but not buried. -->
+<p class="stateless-link hint">
+	Have a config file?
+	<a href="/vaults/stateless">Use the stateless signer</a> — balance, spending, and signatures
+	straight from a descriptor or Caravan JSON, with nothing saved.
+</p>
+
 <style>
+	.stateless-link {
+		margin-top: 26px;
+		text-align: center;
+	}
+
+	.stateless-link a {
+		color: var(--accent);
+		text-decoration: underline;
+		text-underline-offset: 2px;
+	}
+
 	.head {
 		gap: 16px;
 		margin-bottom: 22px;
