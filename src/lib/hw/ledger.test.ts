@@ -1,14 +1,23 @@
 import { describe, it, expect } from 'vitest';
-import { Transaction, p2wpkh, NETWORK } from '@scure/btc-signer';
+import { Transaction, p2wpkh, p2ms, p2wsh, NETWORK } from '@scure/btc-signer';
 import { base64 } from '@scure/base';
-import { hexToBytes } from '@noble/hashes/utils.js';
+import { HDKey } from '@scure/bip32';
+import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
 import {
 	isWebHidAvailable,
 	accountOriginFromPsbt,
 	fingerprintToBuffer,
 	mergeSignatures,
 	toLedgerError,
-	LedgerError
+	LedgerError,
+	buildVaultPolicy,
+	compareVaultPolicyKeys,
+	sanitizeVaultPolicyName,
+	vaultAccountPath,
+	vaultDevicePubkeys,
+	mergeVaultSignatures,
+	signVaultPsbtWithLedger,
+	type VaultSignKey
 } from './ledger';
 
 // A deterministic compressed pubkey (secp256k1 generator, X-only prefixed 0x02).
@@ -174,5 +183,257 @@ describe('toLedgerError', () => {
 		const e = toLedgerError(new Error('weird failure'));
 		expect(e.code).toBe('unexpected');
 		expect(e.message).toContain('weird failure');
+	});
+});
+
+// ------------------------------------------------------------------- vaults
+
+// Three deterministic cosigners at the BIP-48 p2wsh account path, exactly the
+// { xpub, fingerprint, path } shape vault keys store. Same seeds as the Trezor
+// fixtures so both drivers are exercised against identical material.
+const VAULT_PATH = "m/48'/0'/0'/2'";
+const VAULT_ORIGIN = [48 + HARDENED, 0 + HARDENED, 0 + HARDENED, 2 + HARDENED];
+const VAULT_MASTERS = [1, 2, 3].map((fill) =>
+	HDKey.fromMasterSeed(new Uint8Array(32).fill(fill))
+);
+const VAULT_ACCOUNTS = VAULT_MASTERS.map((m) => m.derive(VAULT_PATH));
+const VAULT_KEYS: VaultSignKey[] = VAULT_MASTERS.map((m, i) => ({
+	xpub: VAULT_ACCOUNTS[i].publicExtendedKey,
+	fingerprint: (m.fingerprint >>> 0).toString(16).padStart(8, '0'),
+	path: VAULT_PATH
+}));
+
+function vaultChild(k: number, chain: number, index: number): Uint8Array {
+	return VAULT_ACCOUNTS[k].deriveChild(chain).deriveChild(index).publicKey!;
+}
+
+/** A 2-of-3 p2wsh vault PSBT: one input at 0/5, one plain output. */
+function makeVaultPsbt(): string {
+	const sorted = [0, 1, 2]
+		.map((k) => vaultChild(k, 0, 5))
+		.sort((a, b) => (bytesToHex(a) < bytesToHex(b) ? -1 : 1));
+	const payment = p2wsh(p2ms(2, sorted), NETWORK);
+	const tx = new Transaction();
+	tx.addInput({
+		txid: hexToBytes('a'.repeat(64)),
+		index: 0,
+		witnessUtxo: { script: payment.script, amount: 100_000n },
+		witnessScript: payment.witnessScript,
+		bip32Derivation: [0, 1, 2].map((k) => [
+			vaultChild(k, 0, 5),
+			{
+				fingerprint: parseInt(VAULT_KEYS[k].fingerprint, 16) >>> 0,
+				path: [...VAULT_ORIGIN, 0, 5]
+			}
+		])
+	});
+	tx.addOutputAddress('bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4', 60_000n, NETWORK);
+	return base64.encode(tx.toPSBT());
+}
+
+describe('buildVaultPolicy', () => {
+	// Pinned against the exact strings the device will hash into the HMAC
+	// preimage: apostrophe-hardened origins, no /branch/* suffix, and the keys
+	// CASE-SENSITIVELY sorted by their xpub substring (6D < 6E < 6F here).
+	const EXPECTED_KEYS = [
+		"[4ba43603/48'/0'/0'/2']xpub6DknhdAsmeDQc7uaCcTBvPM5HJ2sN2gaBmNiJJtpczK3hMQWdKeodaBUSgi9qJrMKqPLqPuNFa7egPzCn8oJ7uU1zzhgAeHvzgYpxqchsQS",
+		"[56c4fac3/48'/0'/0'/2']xpub6Ewx2N9hNSArJyF35CUGhaZLuZxQPNmJzWVwmpoV9U7Xu5wqka93nd3zEzokew9MzkNV4u6TCVDkHHR6QHQuYEFaasKzWkrkncXHMXGNdZP",
+		"[8dfc9b34/48'/0'/0'/2']xpub6FAQRNJPfe8DZextv3BwkyE9GovxWr6NPx5DFosrY4WDdAeu96gcry37PJrV9agkn2pRsLieS487vaom77nSinfuerwfz926ZaNwkjUbhdt"
+	];
+
+	it('builds the exact 2-of-3 p2wsh template and key-origin strings', () => {
+		const policy = buildVaultPolicy({
+			policyName: 'Family vault',
+			threshold: 2,
+			keys: VAULT_KEYS,
+			scriptType: 'p2wsh'
+		});
+		expect(policy.name).toBe('Family vault');
+		expect(policy.template).toBe('wsh(sortedmulti(2,@0/**,@1/**,@2/**))');
+		expect(policy.keys).toEqual(EXPECTED_KEYS);
+	});
+
+	it('sorts by xpub regardless of the order the keys are passed in', () => {
+		const shuffled = [VAULT_KEYS[2], VAULT_KEYS[0], VAULT_KEYS[1]];
+		const policy = buildVaultPolicy({
+			policyName: 'x',
+			threshold: 2,
+			keys: shuffled,
+			scriptType: 'p2wsh'
+		});
+		expect(policy.keys).toEqual(EXPECTED_KEYS);
+	});
+
+	it('wraps the other script forms in sh() / sh(wsh())', () => {
+		expect(
+			buildVaultPolicy({ policyName: 'x', threshold: 2, keys: VAULT_KEYS, scriptType: 'p2sh' })
+				.template
+		).toBe('sh(sortedmulti(2,@0/**,@1/**,@2/**))');
+		expect(
+			buildVaultPolicy({
+				policyName: 'x',
+				threshold: 2,
+				keys: VAULT_KEYS,
+				scriptType: 'p2sh-p2wsh'
+			}).template
+		).toBe('sh(wsh(sortedmulti(2,@0/**,@1/**,@2/**)))');
+	});
+
+	it('emits a key with an unknown origin ("m") as [xfp]xpub', () => {
+		const keys = [{ ...VAULT_KEYS[0], path: 'm' }];
+		const policy = buildVaultPolicy({ policyName: 'x', threshold: 1, keys, scriptType: 'p2wsh' });
+		expect(policy.keys[0]).toBe(`[${VAULT_KEYS[0].fingerprint}]${VAULT_KEYS[0].xpub}`);
+	});
+
+	it('rejects a nonsense threshold', () => {
+		expect(() =>
+			buildVaultPolicy({ policyName: 'x', threshold: 4, keys: VAULT_KEYS, scriptType: 'p2wsh' })
+		).toThrow(LedgerError);
+		expect(() =>
+			buildVaultPolicy({ policyName: 'x', threshold: 0, keys: VAULT_KEYS, scriptType: 'p2wsh' })
+		).toThrow(LedgerError);
+	});
+});
+
+describe('compareVaultPolicyKeys', () => {
+	it('compares the xpub substring case-SENSITIVELY (never normalize case)', () => {
+		// ASCII 'B' (0x42) < 'a' (0x61): case-sensitive order puts xpubB first,
+		// while a case-insensitive comparison would reverse the pair. The HMAC
+		// preimage depends on this order, so it must never change.
+		expect(compareVaultPolicyKeys('[aaaaaaaa]xpubB', '[bbbbbbbb]xpuba')).toBeLessThan(0);
+		expect(compareVaultPolicyKeys('[bbbbbbbb]xpuba', '[aaaaaaaa]xpubB')).toBeGreaterThan(0);
+		// …and it ignores the origin bracket entirely (compares xpubs only).
+		expect(compareVaultPolicyKeys('[ffffffff]xpubA', '[00000000]xpubB')).toBeLessThan(0);
+	});
+});
+
+describe('sanitizeVaultPolicyName', () => {
+	it('strips non-ASCII and trims', () => {
+		expect(sanitizeVaultPolicyName('Family Vault 🏰')).toBe('Family Vault');
+		expect(sanitizeVaultPolicyName('  padded  ')).toBe('padded');
+	});
+
+	it('truncates to at most 64 chars with an ASCII marker', () => {
+		const long = 'v'.repeat(80);
+		const name = sanitizeVaultPolicyName(long);
+		expect(name.length).toBeLessThanOrEqual(64);
+		expect(name).toBe(`${'v'.repeat(61)}...`);
+	});
+
+	it('falls back for an empty or all-non-ASCII name', () => {
+		expect(sanitizeVaultPolicyName('')).toBe('Cairn vault');
+		expect(sanitizeVaultPolicyName('🏰🏰🏰')).toBe('Cairn vault');
+	});
+});
+
+describe('vaultAccountPath (Ledger)', () => {
+	it("maps p2wsh to the BIP-48 2' suffix and both p2sh forms to 1'", () => {
+		expect(vaultAccountPath('p2wsh')).toBe("m/48'/0'/0'/2'");
+		expect(vaultAccountPath('p2sh-p2wsh')).toBe("m/48'/0'/0'/1'");
+		expect(vaultAccountPath('p2sh')).toBe("m/48'/0'/0'/1'");
+	});
+
+	it('honours a non-default account index and rejects bogus ones', () => {
+		expect(vaultAccountPath('p2wsh', 3)).toBe("m/48'/0'/3'/2'");
+		expect(() => vaultAccountPath('p2wsh', -1)).toThrow(LedgerError);
+	});
+});
+
+describe('vaultDevicePubkeys', () => {
+	it("derives this device's per-input pubkey from its account xpub", () => {
+		const pubkeys = vaultDevicePubkeys(makeVaultPsbt(), VAULT_KEYS[1]);
+		expect(pubkeys).toHaveLength(1);
+		expect(bytesToHex(pubkeys[0])).toBe(bytesToHex(vaultChild(1, 0, 5)));
+	});
+
+	it("rejects a PSBT that doesn't include the key (wasn't built for this vault)", () => {
+		const stranger: VaultSignKey = {
+			xpub: HDKey.fromMasterSeed(new Uint8Array(32).fill(9)).derive(VAULT_PATH)
+				.publicExtendedKey,
+			fingerprint: 'deadbeef',
+			path: VAULT_PATH
+		};
+		try {
+			vaultDevicePubkeys(makeVaultPsbt(), stranger);
+			expect.unreachable('expected a rejection');
+		} catch (e) {
+			expect(e).toBeInstanceOf(LedgerError);
+			expect((e as LedgerError).code).toBe('bad_psbt');
+			expect((e as LedgerError).message).toMatch(/wasn't built for this vault/);
+		}
+	});
+
+	it('rejects an input with no key-origin information', () => {
+		const tx = new Transaction();
+		tx.addInput({
+			txid: hexToBytes('b'.repeat(64)),
+			index: 0,
+			witnessUtxo: { script: p2wpkh(PUBKEY, NETWORK).script, amount: 100_000n }
+		});
+		tx.addOutputAddress('bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4', 90_000n, NETWORK);
+		expect(() => vaultDevicePubkeys(base64.encode(tx.toPSBT()), VAULT_KEYS[0])).toThrow(
+			LedgerError
+		);
+	});
+});
+
+describe('mergeVaultSignatures', () => {
+	// Ledger signatures arrive WITH their sighash byte — merged verbatim.
+	const SIG = Buffer.from([
+		0x30, 0x44, 0x02, 0x20, ...new Array(32).fill(0x11), 0x02, 0x20, ...new Array(32).fill(0x22),
+		0x01
+	]);
+
+	it('attaches the signature to the device pubkey for that input', () => {
+		const tx = Transaction.fromPSBT(base64.decode(makeVaultPsbt()));
+		const pubkeys = vaultDevicePubkeys(makeVaultPsbt(), VAULT_KEYS[0]);
+
+		mergeVaultSignatures(tx, new Map([[0, SIG]]), pubkeys);
+
+		const sigs = tx.getInput(0).partialSig!;
+		expect(sigs).toHaveLength(1);
+		expect(bytesToHex(Uint8Array.from(sigs[0][0]))).toBe(bytesToHex(vaultChild(0, 0, 5)));
+		expect(Array.from(sigs[0][1])).toEqual(Array.from(SIG));
+	});
+
+	it("preserves another cosigner's existing partialSig (combined-PSBT merge)", () => {
+		const tx = Transaction.fromPSBT(base64.decode(makeVaultPsbt()));
+		tx.updateInput(0, { partialSig: [[vaultChild(2, 0, 5), Uint8Array.from(SIG)]] });
+
+		mergeVaultSignatures(tx, new Map([[0, SIG]]), [vaultChild(0, 0, 5)]);
+
+		const sigs = tx.getInput(0).partialSig!;
+		expect(sigs).toHaveLength(2);
+	});
+
+	it('rejects a signature whose pubkey is not declared in the input derivations', () => {
+		const tx = Transaction.fromPSBT(base64.decode(makeVaultPsbt()));
+		expect(() => mergeVaultSignatures(tx, new Map([[0, SIG]]), [PUBKEY])).toThrow(
+			/isn't part of this vault/
+		);
+	});
+
+	it('rejects an empty result and a nonexistent input index', () => {
+		const tx = Transaction.fromPSBT(base64.decode(makeVaultPsbt()));
+		const pubkeys = [vaultChild(0, 0, 5)];
+		expect(() => mergeVaultSignatures(tx, new Map(), pubkeys)).toThrow(/no signatures/);
+		expect(() => mergeVaultSignatures(tx, new Map([[7, SIG]]), pubkeys)).toThrow(
+			/nonexistent input/
+		);
+	});
+});
+
+describe('signVaultPsbtWithLedger', () => {
+	it('rejects up-front with policy_unregistered when no HMAC is stored', async () => {
+		await expect(
+			signVaultPsbtWithLedger({
+				unsignedPsbt: makeVaultPsbt(),
+				threshold: 2,
+				keys: VAULT_KEYS,
+				scriptType: 'p2wsh',
+				policyName: 'Family vault',
+				policyHmac: null
+			})
+		).rejects.toMatchObject({ name: 'LedgerError', code: 'policy_unregistered' });
 	});
 });

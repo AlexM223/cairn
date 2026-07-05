@@ -21,8 +21,9 @@
 // (assertSameTransaction).
 
 import { Transaction, Address, OutScript, NETWORK } from '@scure/btc-signer';
-import { base64 } from '@scure/base';
+import { base64, createBase58check } from '@scure/base';
 import { HDKey } from '@scure/bip32';
+import { sha256 } from '@noble/hashes/sha2.js';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
 
 const HARDENED = 0x80000000;
@@ -38,6 +39,7 @@ export type TrezorErrorCode =
 	| 'cancelled' // popup closed / permissions not granted (host-side, not on-device)
 	| 'no_device' // no Trezor found, or it disconnected mid-flow
 	| 'bad_psbt' // the PSBT lacks the data Trezor Connect needs
+	| 'wrong_device' // the connected Trezor holds none of the vault's keys
 	| 'unexpected'; // anything else
 
 export class TrezorError extends Error {
@@ -573,6 +575,846 @@ export async function signPsbtWithTrezor(unsignedPsbtBase64: string): Promise<st
 	}
 
 	mergeTrezorSignatures(sourceTx, signatures);
+
+	return base64.encode(sourceTx.toPSBT());
+}
+
+// ------------------------------------------------------------------- vaults
+//
+// MULTISIG ("vault") signing. A vault is an M-of-N sortedmulti (BIP-67) wallet
+// in one of three script forms (see src/lib/server/bitcoin/multisig.ts). The
+// Trezor firmware has no persistent multisig registration: the FULL cosigner
+// set travels with every signTransaction call as a per-input `multisig` field.
+//
+// The one rule that matters (Bastion RISK #2): the `multisig.pubkeys` nodes
+// MUST be listed in the SAME order as the pubkeys appear in the input's actual
+// multisig script. Trezor does NOT sort them — a mismatched order makes the
+// device build a different script, producing a signature that can never
+// finalize. We therefore RECOVER the order from the PSBT's own
+// witnessScript/redeemScript rather than re-sorting anything ourselves.
+// (Connect also has `pubkeys_order: LEXICOGRAPHIC`, but that needs firmware
+// ≥ 2.8.7 — explicit script-order nodes work on every firmware, so we use
+// those and skip the flag entirely.)
+
+/** The three vault script forms — mirrors multisig.ts's VaultScriptType
+ *  (duplicated here so this browser driver never imports server code). */
+export type VaultScriptType = 'p2wsh' | 'p2sh-p2wsh' | 'p2sh';
+
+/** One cosigner key, exactly as the vault stores it (VaultKeyRow shape). */
+export interface VaultSignKey {
+	/** Account xpub (SLIP-132 ypub/zpub/Ypub/Zpub accepted, normalized internally). */
+	xpub: string;
+	/** Master fingerprint, 8 hex chars ("00000000" when unknown). */
+	fingerprint: string;
+	/** Account origin path, e.g. "m/48'/0'/0'/2'" ("m" when unknown). */
+	path: string;
+}
+
+/** Everything vault signing needs. Framework-agnostic plain values the UI
+ *  passes straight from the vault row + the sign session's combined PSBT. */
+export interface VaultSignParams {
+	/** Base64 PSBT — the CURRENT combined PSBT (other cosigners' partialSigs kept). */
+	unsignedPsbt: string;
+	threshold: number;
+	keys: VaultSignKey[];
+	scriptType: VaultScriptType;
+}
+
+export type TrezorVaultInputScriptType = 'SPENDWITNESS' | 'SPENDP2SHWITNESS' | 'SPENDMULTISIG';
+export type TrezorVaultChangeScriptType = 'PAYTOWITNESS' | 'PAYTOP2SHWITNESS' | 'PAYTOSCRIPTHASH';
+
+const VAULT_SPEND: Record<VaultScriptType, TrezorVaultInputScriptType> = {
+	p2wsh: 'SPENDWITNESS',
+	'p2sh-p2wsh': 'SPENDP2SHWITNESS',
+	p2sh: 'SPENDMULTISIG'
+};
+const VAULT_PAYTO: Record<VaultScriptType, TrezorVaultChangeScriptType> = {
+	p2wsh: 'PAYTOWITNESS',
+	'p2sh-p2wsh': 'PAYTOP2SHWITNESS',
+	p2sh: 'PAYTOSCRIPTHASH'
+};
+
+/** One cosigner node inside Connect's `multisig` field. `node` is the account
+ *  xpub as a string (Connect deserializes it), `address_n` the non-hardened
+ *  [chain, index] suffix appended to it. */
+export interface TrezorMultisigPubkey {
+	node: string;
+	address_n: number[];
+}
+
+/** Connect's MultisigRedeemScriptType, as this driver emits it. */
+export interface TrezorMultisig {
+	/** In the SCRIPT's pubkey order — see the section comment. */
+	pubkeys: TrezorMultisigPubkey[];
+	/** Positional placeholders (''), one per cosigner. */
+	signatures: string[];
+	m: number;
+}
+
+export interface TrezorVaultInput {
+	/** This DEVICE's full derivation for the input (its origin + chain/index). */
+	address_n: number[];
+	prev_hash: string;
+	prev_index: number;
+	amount: string;
+	script_type: TrezorVaultInputScriptType;
+	sequence: number;
+	multisig: TrezorMultisig;
+}
+
+export type TrezorVaultOutput =
+	| { address: string; address_n?: undefined; amount: string; script_type: 'PAYTOADDRESS' }
+	| {
+			address?: undefined;
+			address_n: number[];
+			amount: string;
+			script_type: TrezorVaultChangeScriptType;
+			multisig: TrezorMultisig;
+	  };
+
+export interface TrezorVaultSignRequest {
+	coin: 'btc';
+	inputs: TrezorVaultInput[];
+	outputs: TrezorVaultOutput[];
+	refTxs?: TrezorRefTx[];
+	version: number;
+	locktime: number;
+}
+
+// SLIP-132 public-key version bytes, rewritten to standard xpub before parsing.
+// (Vault rows store the xpub as the user pasted it, which may be ypub/zpub for
+// single-sig-style prefixes or Ypub/Zpub for the multisig conventions.)
+const XPUB_VERSION = 0x0488b21e;
+const SLIP132_VERSIONS = new Set([
+	0x049d7cb2, // ypub
+	0x04b24746, // zpub
+	0x0295b43f, // Ypub (p2sh-p2wsh multisig)
+	0x02aa7ed3 // Zpub (p2wsh multisig)
+]);
+const b58check = /* @__PURE__ */ createBase58check(sha256);
+
+/** Rewrite a SLIP-132 prefix to standard xpub bytes; anything else (including
+ *  invalid input) passes through unchanged so HDKey produces the real error. */
+function normalizeVaultXpub(input: string): string {
+	const trimmed = input.trim();
+	let raw: Uint8Array;
+	try {
+		raw = b58check.decode(trimmed);
+	} catch {
+		return trimmed;
+	}
+	if (raw.length !== 78) return trimmed;
+	const version = ((raw[0] << 24) | (raw[1] << 16) | (raw[2] << 8) | raw[3]) >>> 0;
+	if (!SLIP132_VERSIONS.has(version)) return trimmed;
+	const out = new Uint8Array(raw);
+	out[0] = (XPUB_VERSION >>> 24) & 0xff;
+	out[1] = (XPUB_VERSION >>> 16) & 0xff;
+	out[2] = (XPUB_VERSION >>> 8) & 0xff;
+	out[3] = XPUB_VERSION & 0xff;
+	return b58check.encode(out);
+}
+
+/** "m/48'/0'/0'/2'" (h/H/' markers, leading m/ optional) → hardened-offset
+ *  index array; "m"/"" → []. */
+function parseVaultKeyPath(path: string, label: string): number[] {
+	const stripped = path.trim().replace(/^m\/?/i, '');
+	if (stripped === '') return [];
+	return stripped.split('/').map((p) => {
+		const hardened = /['’hH]$/.test(p);
+		const digits = hardened ? p.slice(0, -1) : p;
+		if (!/^\d+$/.test(digits)) {
+			throw new TrezorError(`${label}: bad derivation path segment "${p}".`, 'unexpected');
+		}
+		const n = parseInt(digits, 10);
+		if (n >= HARDENED) {
+			throw new TrezorError(`${label}: derivation path segment out of range "${p}".`, 'unexpected');
+		}
+		return hardened ? n + HARDENED : n;
+	});
+}
+
+/** Hardened-offset index array → "m/48'/0'/0'/2'" (apostrophe markers). */
+function formatVaultKeyPath(indexes: number[]): string {
+	if (indexes.length === 0) return 'm';
+	return `m/${indexes.map((i) => (i >= HARDENED ? `${i - HARDENED}'` : `${i}`)).join('/')}`;
+}
+
+/**
+ * Master fingerprint (8 lowercase hex) of an extended public key — hash160 of
+ * the embedded pubkey, first 4 bytes. Given a depth-0 (m-level) xpub this is
+ * the wallet's root fingerprint: the `xfp` used in PSBT key origins. Trezor
+ * Connect never reports the master fingerprint directly (account-level
+ * getPublicKey carries the PARENT's), so this recovers it from a silent
+ * m-path xpub read — same convention as Bastion's xfpFromXpub.
+ *
+ * Exported for unit testing.
+ */
+export function xfpFromXpub(xpub: string): string {
+	let node: HDKey;
+	try {
+		node = HDKey.fromExtendedKey(normalizeVaultXpub(xpub));
+	} catch (err) {
+		throw new TrezorError('The Trezor returned an unexpected key response.', 'unexpected', {
+			cause: err
+		});
+	}
+	return (node.fingerprint >>> 0).toString(16).padStart(8, '0');
+}
+
+/**
+ * The BIP-48 account path for a vault cosigner key: m/48'/0'/{account}'/{script}'
+ * where the script suffix is 2' for p2wsh and 1' for BOTH p2sh forms (BIP-48
+ * gives p2sh and p2sh-p2wsh the same 1' — only native p2wsh gets 2'). Mainnet
+ * only, matching the rest of Cairn. Exported for unit testing.
+ */
+export function vaultAccountPath(scriptType: VaultScriptType, account = 0): string {
+	if (!VAULT_SPEND[scriptType]) {
+		throw new TrezorError(`Unsupported vault script type "${scriptType}".`, 'unexpected');
+	}
+	if (!Number.isInteger(account) || account < 0 || account >= HARDENED) {
+		throw new TrezorError(`Invalid account index ${account}.`, 'unexpected');
+	}
+	const sub = scriptType === 'p2wsh' ? 2 : 1;
+	return `m/48'/0'/${account}'/${sub}'`;
+}
+
+/**
+ * Parse an `OP_M <pubkey…> OP_N OP_CHECKMULTISIG` script into { m, pubkeys }
+ * with the pubkeys in *script order* — for a sortedmulti vault that IS the
+ * BIP-67 order, recovered from the script itself rather than recomputed, so
+ * the device is always shown exactly the script it must reproduce.
+ *
+ * Exported for unit testing.
+ */
+export function multisigScriptPubkeys(script: Uint8Array): { m: number; pubkeys: Uint8Array[] } {
+	// OutScript's union carries TArg/TRet ArrayBuffer generics that don't
+	// round-trip through a plain declaration — bridge them like addressFromScript.
+	let decoded: { type: string; m?: number; pubkeys?: Uint8Array[] };
+	try {
+		decoded = OutScript.decode(script) as unknown as {
+			type: string;
+			m?: number;
+			pubkeys?: Uint8Array[];
+		};
+	} catch (err) {
+		throw new TrezorError('An input script could not be parsed as multisig.', 'bad_psbt', {
+			cause: err
+		});
+	}
+	if (decoded.type !== 'ms' || decoded.m === undefined || !decoded.pubkeys) {
+		throw new TrezorError(
+			`Expected a multisig script but found ${decoded.type} — this transaction was not built for this vault.`,
+			'bad_psbt'
+		);
+	}
+	return { m: decoded.m, pubkeys: decoded.pubkeys.map((p) => Uint8Array.from(p)) };
+}
+
+/** Lexicographic byte order — the BIP-67 sort (used only for change outputs
+ *  whose script is absent from the PSBT; inputs always use the script). */
+function compareBytes(a: Uint8Array, b: Uint8Array): number {
+	const len = Math.min(a.length, b.length);
+	for (let i = 0; i < len; i++) if (a[i] !== b[i]) return a[i] - b[i];
+	return a.length - b.length;
+}
+
+interface ResolvedVaultSignKey {
+	hdkey: HDKey;
+	/** Canonical xpub string (SLIP-132 normalized) — what Connect's `node` gets. */
+	xpub: string;
+	/** Parsed origin path (hardened offsets applied); [] when unknown ("m"). */
+	origin: number[];
+	/** Lowercase 8-hex fingerprint. */
+	fingerprint: string;
+}
+
+function resolveVaultSignKeys(params: {
+	threshold: number;
+	keys: VaultSignKey[];
+}): ResolvedVaultSignKey[] {
+	const keys = params.keys ?? [];
+	if (keys.length === 0) {
+		throw new TrezorError('This vault has no keys.', 'unexpected');
+	}
+	if (
+		!Number.isInteger(params.threshold) ||
+		params.threshold < 1 ||
+		params.threshold > keys.length
+	) {
+		throw new TrezorError(
+			`Invalid vault threshold ${params.threshold} for ${keys.length} keys.`,
+			'unexpected'
+		);
+	}
+	return keys.map((key, i) => {
+		const label = `vault key ${i + 1}`;
+		const xpub = normalizeVaultXpub(key.xpub);
+		let hdkey: HDKey;
+		try {
+			hdkey = HDKey.fromExtendedKey(xpub);
+		} catch (err) {
+			throw new TrezorError(`${label}: unreadable extended public key.`, 'unexpected', {
+				cause: err
+			});
+		}
+		if (!/^[0-9a-fA-F]{8}$/.test(key.fingerprint)) {
+			throw new TrezorError(`${label}: malformed fingerprint "${key.fingerprint}".`, 'unexpected');
+		}
+		return {
+			hdkey,
+			xpub: hdkey.publicExtendedKey,
+			origin: parseVaultKeyPath(key.path, label),
+			fingerprint: key.fingerprint.toLowerCase()
+		};
+	});
+}
+
+/** The (chain, index) suffix shared by every bip32Derivation entry of an
+ *  input/output. Throws if entries disagree or a suffix element is hardened. */
+function vaultChainIndex(
+	derivations: [Uint8Array | number[], { fingerprint: number; path: number[] }][],
+	where: string
+): [number, number] {
+	let suffix: [number, number] | null = null;
+	for (const [, meta] of derivations) {
+		const path = meta.path;
+		if (!path || path.length < 2) {
+			throw new TrezorError(`${where} has an unexpected derivation path.`, 'bad_psbt');
+		}
+		const chain = path[path.length - 2];
+		const index = path[path.length - 1];
+		if (chain >= HARDENED || index >= HARDENED) {
+			throw new TrezorError(`${where} has a hardened chain/index derivation.`, 'bad_psbt');
+		}
+		if (suffix && (suffix[0] !== chain || suffix[1] !== index)) {
+			throw new TrezorError(`${where} mixes derivations of different addresses.`, 'bad_psbt');
+		}
+		suffix = [chain, index];
+	}
+	if (!suffix) throw new TrezorError(`${where} has no key-origin information.`, 'bad_psbt');
+	return suffix;
+}
+
+/** Every cosigner's child pubkey at chain/index, in vault-key order. */
+function vaultChildPubkeys(
+	resolved: ResolvedVaultSignKey[],
+	chain: number,
+	index: number
+): Uint8Array[] {
+	return resolved.map((key, i) => {
+		let pubkey: Uint8Array | null;
+		try {
+			pubkey = key.hdkey.deriveChild(chain).deriveChild(index).publicKey;
+		} catch (err) {
+			throw new TrezorError(`Key derivation failed for vault key ${i + 1}.`, 'unexpected', {
+				cause: err
+			});
+		}
+		if (!pubkey) {
+			throw new TrezorError(`Key derivation failed for vault key ${i + 1}.`, 'unexpected');
+		}
+		return pubkey;
+	});
+}
+
+/**
+ * Build Connect's `multisig` field for one input/output. When `script` is
+ * given (always, for inputs) the cosigner order is RECOVERED from it by
+ * mapping each script pubkey back to the cosigner that derives it. When the
+ * script is absent (tolerated only for change outputs, defensively) the
+ * BIP-67 sort of the derived pubkeys is used — identical by construction for
+ * a sortedmulti vault, and the firmware independently verifies the resulting
+ * script against the output anyway.
+ */
+function vaultMultisigField(
+	resolved: ResolvedVaultSignKey[],
+	children: Uint8Array[],
+	chain: number,
+	index: number,
+	script: Uint8Array | undefined,
+	threshold: number,
+	where: string
+): TrezorMultisig {
+	let order: number[];
+	if (script) {
+		const ms = multisigScriptPubkeys(script);
+		if (ms.m !== threshold) {
+			throw new TrezorError(
+				`${where}: the script requires ${ms.m} signatures but this vault's threshold is ${threshold}.`,
+				'bad_psbt'
+			);
+		}
+		if (ms.pubkeys.length !== resolved.length) {
+			throw new TrezorError(
+				`${where}: the script has ${ms.pubkeys.length} keys but this vault has ${resolved.length}.`,
+				'bad_psbt'
+			);
+		}
+		const byHex = new Map(children.map((pk, ki) => [bytesToHex(pk), ki]));
+		order = ms.pubkeys.map((pk) => {
+			const ki = byHex.get(bytesToHex(pk));
+			if (ki === undefined) {
+				throw new TrezorError(
+					`${where}: the multisig script contains a key that isn't derived from this vault's cosigners.`,
+					'bad_psbt'
+				);
+			}
+			return ki;
+		});
+	} else {
+		order = children.map((_, ki) => ki).sort((a, b) => compareBytes(children[a], children[b]));
+	}
+	return {
+		pubkeys: order.map((ki) => ({ node: resolved[ki].xpub, address_n: [chain, index] })),
+		signatures: order.map(() => ''),
+		m: threshold
+	};
+}
+
+/**
+ * Translate a vault PSBT into Connect signTransaction params for ONE cosigner
+ * device (`deviceKeyIndex` into params.keys), plus the per-input pubkey the
+ * device will be signing with (`devicePubkeys` — Trezor's signatures come back
+ * positionally with no pubkey attached, so this is what the merge step
+ * attributes them to).
+ *
+ * Exported for unit testing: this is the load-bearing pure logic.
+ */
+export function trezorVaultSignRequest(
+	params: VaultSignParams,
+	deviceKeyIndex: number
+): { request: TrezorVaultSignRequest; devicePubkeys: Uint8Array[] } {
+	const resolved = resolveVaultSignKeys(params);
+	if (
+		!Number.isInteger(deviceKeyIndex) ||
+		deviceKeyIndex < 0 ||
+		deviceKeyIndex >= resolved.length
+	) {
+		throw new TrezorError(`Invalid vault key index ${deviceKeyIndex}.`, 'unexpected');
+	}
+	const spendType = VAULT_SPEND[params.scriptType];
+	if (!spendType) {
+		throw new TrezorError(`Unsupported vault script type "${params.scriptType}".`, 'unexpected');
+	}
+
+	const tx = parsePsbt(params.unsignedPsbt);
+	if (tx.inputsLength === 0) {
+		throw new TrezorError('This transaction has no inputs to sign.', 'bad_psbt');
+	}
+
+	// Derive each address's cosigner set once — inputs often share (chain, index).
+	const childCache = new Map<string, Uint8Array[]>();
+	const childrenAt = (chain: number, index: number): Uint8Array[] => {
+		const key = `${chain}/${index}`;
+		let children = childCache.get(key);
+		if (!children) {
+			children = vaultChildPubkeys(resolved, chain, index);
+			childCache.set(key, children);
+		}
+		return children;
+	};
+
+	const inputs: TrezorVaultInput[] = [];
+	const devicePubkeys: Uint8Array[] = [];
+	const refTxs = new Map<string, TrezorRefTx>();
+
+	for (let i = 0; i < tx.inputsLength; i++) {
+		const input = tx.getInput(i);
+		const derivations = input.bip32Derivation;
+		if (!derivations || derivations.length === 0) {
+			throw new TrezorError(
+				`Input ${i} is missing the key-origin information the Trezor needs. Re-create the draft from this vault.`,
+				'bad_psbt'
+			);
+		}
+		const [chain, index] = vaultChainIndex(derivations, `Input ${i}`);
+		const children = childrenAt(chain, index);
+
+		// The multisig script itself: witnessScript for the wsh forms, the p2ms
+		// redeemScript for legacy p2sh. This is the order source — never re-sorted.
+		const script = params.scriptType === 'p2sh' ? input.redeemScript : input.witnessScript;
+		if (!script) {
+			throw new TrezorError(
+				`Input ${i} is missing its ${params.scriptType === 'p2sh' ? 'redeemScript' : 'witnessScript'} — the Trezor can't reconstruct the vault script. Re-create the draft.`,
+				'bad_psbt'
+			);
+		}
+		const multisig = vaultMultisigField(
+			resolved,
+			children,
+			chain,
+			index,
+			script,
+			params.threshold,
+			`Input ${i}`
+		);
+
+		if (!input.txid || input.index === undefined || input.sequence === undefined) {
+			throw new TrezorError('The transaction has an incomplete input.', 'bad_psbt');
+		}
+
+		// Input amount: segwit forms carry it in witnessUtxo; legacy p2sh proves it
+		// via the full previous transaction (streamed to the firmware as a refTx).
+		let amount: bigint;
+		if (input.witnessUtxo) {
+			amount = input.witnessUtxo.amount;
+		} else if (input.nonWitnessUtxo) {
+			const prevOut = input.nonWitnessUtxo.outputs[input.index];
+			if (!prevOut) {
+				throw new TrezorError(
+					'An input references an output its previous transaction does not have.',
+					'bad_psbt'
+				);
+			}
+			amount = prevOut.amount;
+			const hash = bytesToHex(input.txid);
+			if (!refTxs.has(hash)) refTxs.set(hash, refTxFromNonWitnessUtxo(hash, input.nonWitnessUtxo));
+		} else {
+			throw new TrezorError(
+				'An input is missing its coin data (no witnessUtxo or previous transaction).',
+				'bad_psbt'
+			);
+		}
+
+		inputs.push({
+			address_n: [...resolved[deviceKeyIndex].origin, chain, index],
+			prev_hash: bytesToHex(input.txid),
+			prev_index: input.index,
+			amount: amount.toString(),
+			script_type: spendType,
+			sequence: input.sequence,
+			multisig
+		});
+		devicePubkeys.push(children[deviceKeyIndex]);
+	}
+
+	const outputs: TrezorVaultOutput[] = [];
+	for (let o = 0; o < tx.outputsLength; o++) {
+		const out = tx.getOutput(o);
+		if (!out.script || out.amount === undefined) {
+			throw new TrezorError('The transaction has an incomplete output.', 'bad_psbt');
+		}
+		const derivations = out.bip32Derivation;
+		if (derivations && derivations.length > 0) {
+			// Change back to this vault: send address_n + the multisig field so the
+			// device derives and verifies the change script itself instead of asking
+			// the user to confirm paying an unfamiliar address. Anything that doesn't
+			// cleanly resolve as vault change (e.g. a deliberate send to another
+			// wallet of ours) falls through to a plain address the user confirms.
+			try {
+				const [chain, index] = vaultChainIndex(derivations, `Output ${o}`);
+				const children = childrenAt(chain, index);
+				// Defensive: the PSBT builder should attach the change witnessScript,
+				// but vaultMultisigField can fall back to the BIP-67 sort without it.
+				const script = out.witnessScript ?? out.redeemScript;
+				const multisig = vaultMultisigField(
+					resolved,
+					children,
+					chain,
+					index,
+					script,
+					params.threshold,
+					`Output ${o}`
+				);
+				outputs.push({
+					address_n: [...resolved[deviceKeyIndex].origin, chain, index],
+					amount: out.amount.toString(),
+					script_type: VAULT_PAYTO[params.scriptType],
+					multisig
+				});
+				continue;
+			} catch {
+				// Not vault change after all — display it as a recipient below.
+			}
+		}
+		const address = addressFromScript(out.script);
+		if (!address) {
+			throw new TrezorError(
+				'The transaction pays an output the Trezor cannot display as an address.',
+				'bad_psbt'
+			);
+		}
+		outputs.push({ address, amount: out.amount.toString(), script_type: 'PAYTOADDRESS' });
+	}
+
+	return {
+		request: {
+			coin: 'btc',
+			inputs,
+			outputs,
+			...(refTxs.size > 0 ? { refTxs: [...refTxs.values()] } : {}),
+			version: tx.version,
+			locktime: tx.lockTime
+		},
+		devicePubkeys
+	};
+}
+
+/**
+ * Merge the device's positional vault signatures into the source PSBT as
+ * partialSig entries. Trezor returns one bare-DER signature per input (no
+ * sighash byte, no pubkey), so each is completed with SIGHASH_ALL and
+ * attributed to `devicePubkeys[i]` — this device's derived key for that input,
+ * computed by trezorVaultSignRequest — after checking that pubkey really is
+ * declared in the input's bip32Derivation. Existing partialSig entries from
+ * other cosigners are preserved (btc-signer merges keyed PSBT fields).
+ *
+ * Exported for unit testing.
+ */
+export function mergeTrezorVaultSignatures(
+	tx: Transaction,
+	signatures: string[],
+	devicePubkeys: Uint8Array[]
+): void {
+	if (signatures.length !== tx.inputsLength) {
+		throw new TrezorError(
+			`The Trezor returned ${signatures.length} signatures for ${tx.inputsLength} inputs.`,
+			'unexpected'
+		);
+	}
+	if (devicePubkeys.length !== tx.inputsLength) {
+		throw new TrezorError(
+			`Have ${devicePubkeys.length} device keys for ${tx.inputsLength} inputs.`,
+			'unexpected'
+		);
+	}
+
+	let applied = 0;
+	signatures.forEach((sigHex, index) => {
+		if (!sigHex) return; // input not signed by this device
+		let sig: Uint8Array;
+		try {
+			sig = hexToBytes(sigHex); // throws on odd-length hex — never drop a nibble silently
+		} catch (err) {
+			throw new TrezorError(
+				`The Trezor returned an unreadable signature for input ${index}.`,
+				'unexpected',
+				{ cause: err }
+			);
+		}
+		if (sig.length < 8 || sig.length > 72 || sig[0] !== 0x30) {
+			throw new TrezorError(
+				`The Trezor returned a malformed signature for input ${index}.`,
+				'unexpected'
+			);
+		}
+		const withHashType = new Uint8Array(sig.length + 1);
+		withHashType.set(sig);
+		withHashType[sig.length] = SIGHASH_ALL;
+
+		const pubkey = devicePubkeys[index];
+		const derivations = tx.getInput(index).bip32Derivation;
+		if (
+			!derivations ||
+			!derivations.some(([pk]) => bytesEqual(Uint8Array.from(pk), pubkey))
+		) {
+			throw new TrezorError(
+				`The signature for input ${index} is from a key that isn't part of this vault.`,
+				'unexpected'
+			);
+		}
+		tx.updateInput(index, { partialSig: [[pubkey, withHashType]] });
+		applied++;
+	});
+
+	if (applied === 0) {
+		throw new TrezorError('The Trezor returned no signatures for this vault.', 'unexpected');
+	}
+}
+
+/**
+ * Decide which of the vault's keys the connected device is. Primary match:
+ * an account xpub read from the device equals a cosigner xpub (key material —
+ * pubkey + chain code — so version prefixes and path bookkeeping can't cause
+ * a false negative). Fallback: the device's master fingerprint equals a
+ * cosigner's recorded (non-placeholder) fingerprint — covers keys imported
+ * with an origin path of "m" whose xpub we can't ask the device to re-derive.
+ *
+ * Throws a `wrong_device` TrezorError naming both sides when nothing matches.
+ * Exported for unit testing.
+ */
+export function selectVaultKeyForDevice(
+	keys: VaultSignKey[],
+	deviceAccounts: { xpub: string }[],
+	deviceFingerprint: string | null
+): number {
+	const parsed = keys.map((k) => {
+		try {
+			return HDKey.fromExtendedKey(normalizeVaultXpub(k.xpub));
+		} catch {
+			return null;
+		}
+	});
+	for (const account of deviceAccounts) {
+		let node: HDKey;
+		try {
+			node = HDKey.fromExtendedKey(normalizeVaultXpub(account.xpub));
+		} catch {
+			continue;
+		}
+		for (let i = 0; i < parsed.length; i++) {
+			const key = parsed[i];
+			if (
+				key &&
+				key.publicKey &&
+				node.publicKey &&
+				key.chainCode &&
+				node.chainCode &&
+				bytesEqual(Uint8Array.from(key.publicKey), Uint8Array.from(node.publicKey)) &&
+				bytesEqual(Uint8Array.from(key.chainCode), Uint8Array.from(node.chainCode))
+			) {
+				return i;
+			}
+		}
+	}
+
+	const fp = deviceFingerprint?.toLowerCase();
+	if (fp && fp !== '00000000') {
+		const byFp = keys.findIndex((k) => k.fingerprint.toLowerCase() === fp);
+		if (byFp >= 0) return byFp;
+	}
+
+	throw new TrezorError(
+		`This Trezor isn't one of this vault's keys — its fingerprint is ${deviceFingerprint ?? 'unknown'}, and the vault expects ${keys
+			.map((k) => k.fingerprint.toLowerCase())
+			.join(', ')}. Connect one of the vault's devices.`,
+		'wrong_device'
+	);
+}
+
+/**
+ * Read a vault cosigner key straight from a connected Trezor for the vault
+ * creation wizard: the BIP-48 account xpub at m/48'/0'/{account}'/{script}'
+ * plus the device's MASTER fingerprint. Connect never reports the master
+ * fingerprint, so it's recovered from a silent m-path xpub read (hash160 of
+ * the master pubkey — xfpFromXpub). Both reads are silent single-round-trip
+ * bundle entries; the m-level entry deliberately carries no `coin` because
+ * Connect refuses to pair a coin with a depth-0 path.
+ *
+ * Returns exactly the { xpub, fingerprint, path } shape vault keys store
+ * (standard xpub form, apostrophe path notation).
+ */
+export async function readVaultKeyFromTrezor(
+	scriptType: VaultScriptType,
+	account = 0
+): Promise<{ xpub: string; fingerprint: string; path: string }> {
+	if (!isTrezorConnectAvailable()) {
+		throw new TrezorError(
+			'Trezor signing needs a secure browser context (HTTPS or localhost) so the Trezor Connect popup can open.',
+			'unavailable'
+		);
+	}
+	const path = vaultAccountPath(scriptType, account);
+	const TrezorConnect = await ensureInit();
+
+	let masterXpub: string;
+	let accountXpub: string;
+	try {
+		const res = await TrezorConnect.getPublicKey({
+			bundle: [
+				{ path: 'm', showOnTrezor: false },
+				{ path, coin: 'btc', showOnTrezor: false }
+			]
+		});
+		if (!res.success) throw toTrezorError(res.payload);
+		const payload = res.payload;
+		if (!Array.isArray(payload) || payload.length < 2 || !payload[0]?.xpub || !payload[1]?.xpub) {
+			throw new TrezorError('The Trezor returned an unexpected key response.', 'unexpected');
+		}
+		masterXpub = payload[0].xpub;
+		accountXpub = payload[1].xpub;
+	} catch (err) {
+		throw toTrezorError(err);
+	}
+
+	return {
+		xpub: normalizeVaultXpub(accountXpub),
+		fingerprint: xfpFromXpub(masterXpub),
+		path
+	};
+}
+
+/**
+ * Sign a vault (M-of-N multisig) PSBT with a Trezor and return the PSBT with
+ * this device's signatures merged in (other cosigners' partialSigs preserved).
+ *
+ * Flow:
+ *   1. Validate + translate the PSBT into Connect params BEFORE touching the
+ *      device (fail fast on a bad PSBT) — except cosigner selection, which
+ *      needs the device: Connect never reports the master fingerprint, so the
+ *      driver silently reads the m-path xpub (fingerprint) plus the account
+ *      xpub at each cosigner origin path and matches them against the vault's
+ *      keys. No match → a clear `wrong_device` error naming both sides.
+ *   2. signTransaction with per-input `multisig` fields whose cosigner nodes
+ *      are in the SCRIPT's BIP-67 pubkey order (recovered from the PSBT's
+ *      witnessScript/redeemScript — see the section comment). Change outputs
+ *      carry address_n + multisig so the device verifies change ownership.
+ *   3. Merge the positional signatures back into the ORIGINAL PSBT as
+ *      partialSig entries attributed to this device's derived pubkeys.
+ *
+ * Throws a TrezorError (typed, plain-language) on every failure.
+ */
+export async function signVaultPsbtWithTrezor(params: VaultSignParams): Promise<string> {
+	if (!isTrezorConnectAvailable()) {
+		throw new TrezorError(
+			'Trezor signing needs a secure browser context (HTTPS or localhost) so the Trezor Connect popup can open.',
+			'unavailable'
+		);
+	}
+
+	// Fail fast on unreadable vault keys / PSBT before any device interaction.
+	const resolved = resolveVaultSignKeys(params);
+	const sourceTx = parsePsbt(params.unsignedPsbt);
+
+	const TrezorConnect = await ensureInit();
+
+	// Which cosigner is this device? Silent reads: master node (fingerprint)
+	// plus the account node at each distinct cosigner origin path.
+	const originPaths = [...new Set(resolved.filter((k) => k.origin.length > 0).map((k) => formatVaultKeyPath(k.origin)))];
+	let masterXpub: string;
+	let accountReads: { xpub: string }[];
+	try {
+		const res = await TrezorConnect.getPublicKey({
+			bundle: [
+				{ path: 'm', showOnTrezor: false },
+				...originPaths.map((p) => ({ path: p, coin: 'btc', showOnTrezor: false }))
+			]
+		});
+		if (!res.success) throw toTrezorError(res.payload);
+		const payload = res.payload;
+		if (!Array.isArray(payload) || payload.length < 1 + originPaths.length || !payload[0]?.xpub) {
+			throw new TrezorError('The Trezor returned an unexpected key response.', 'unexpected');
+		}
+		masterXpub = payload[0].xpub;
+		accountReads = payload.slice(1).map((p) => ({ xpub: p.xpub }));
+	} catch (err) {
+		throw toTrezorError(err);
+	}
+	const deviceKeyIndex = selectVaultKeyForDevice(params.keys, accountReads, xfpFromXpub(masterXpub));
+
+	const { request, devicePubkeys } = trezorVaultSignRequest(params, deviceKeyIndex);
+
+	// The device shows each output on its own screen and blocks on approval.
+	let signatures: string[];
+	try {
+		const res = await TrezorConnect.signTransaction({
+			coin: request.coin,
+			inputs: request.inputs,
+			outputs: request.outputs,
+			...(request.refTxs ? { refTxs: request.refTxs } : {}),
+			version: request.version,
+			locktime: request.locktime,
+			// Cairn broadcasts through its own node after the server-side
+			// substitution guard — never let Connect push the transaction itself.
+			push: false
+		});
+		if (!res.success) throw toTrezorError(res.payload);
+		signatures = res.payload.signatures;
+	} catch (err) {
+		throw toTrezorError(err);
+	}
+
+	mergeTrezorVaultSignatures(sourceTx, signatures, devicePubkeys);
 
 	return base64.encode(sourceTx.toPSBT());
 }
