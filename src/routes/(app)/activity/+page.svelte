@@ -91,8 +91,8 @@
 	<div class="grow">
 		<h1 class="page-title">Activity</h1>
 		<p class="text-muted sub">
-			What your instance has been doing — network, blocks, and your own wallet activity. Newest
-			first.
+			Your bitcoin — payments received and confirmed, transactions you sent, backups, signing,
+			and account security. Newest first.
 		</p>
 	</div>
 	<div class="controls">
@@ -125,7 +125,7 @@
 		<div class="empty-state">
 			<Icon name="activity" size={22} />
 			<span class="empty-title">Nothing here yet</span>
-			<span>Events appear as your instance connects, sees new blocks, and you use your wallets.</span>
+			<span>Your activity appears here as you receive payments, download backups, and sign transactions.</span>
 		</div>
 	{:else}
 		<ul class="feed">

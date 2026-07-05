@@ -11,25 +11,15 @@
 // their OWN rows or instance-wide rows, never another user's.
 
 import { json, requireUser, readJson } from '$lib/server/api';
-import { db } from '$lib/server/db';
-import { listActivity } from '$lib/server/activity';
+import { listUserFeed, unreadUserFeedCount, markUserFeedRead } from '$lib/server/activity';
 import { childLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
 
 const log = childLogger('notify:inapp');
 
-/** Unread = the caller's own rows OR instance-wide rows, not yet read. */
-function unreadCount(userId: number): number {
-	const row = db
-		.prepare(
-			`SELECT COUNT(*) AS n
-			   FROM events
-			  WHERE (user_id = ? OR user_id IS NULL)
-			    AND read_at IS NULL`
-		)
-		.get(userId) as { n: number };
-	return row.n;
-}
+// The bell shows the user's SIMPLIFIED feed — their own relevant events only, no
+// server internals or other users' events (see listUserFeed). Read state is the
+// events.read_at column, scoped to the user's own rows.
 
 export const GET: RequestHandler = (event) => {
 	const user = requireUser(event);
@@ -37,8 +27,8 @@ export const GET: RequestHandler = (event) => {
 	const limitRaw = Number(url.searchParams.get('limit') ?? '30');
 	const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, Math.floor(limitRaw)), 100) : 30;
 
-	const notifications = listActivity(user.id, limit);
-	return json({ notifications, unread: unreadCount(user.id) });
+	const notifications = listUserFeed(user.id, limit);
+	return json({ notifications, unread: unreadUserFeedCount(user.id) });
 };
 
 export const PATCH: RequestHandler = async (event) => {
@@ -47,35 +37,14 @@ export const PATCH: RequestHandler = async (event) => {
 
 	try {
 		if (body.all === true) {
-			// Every unread row this user can see (their own + instance-wide).
-			db.prepare(
-				`UPDATE events
-				    SET read_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-				  WHERE (user_id = ? OR user_id IS NULL)
-				    AND read_at IS NULL`
-			).run(user.id);
+			markUserFeedRead(user.id);
 		} else if (Array.isArray(body.ids) && body.ids.length > 0) {
-			// Sanitize to a bounded list of integers, then mark just those — still
-			// scoped so a user can only touch their own or instance-wide rows.
-			const ids = body.ids
-				.map((n) => Number(n))
-				.filter((n) => Number.isInteger(n))
-				.slice(0, 500);
-			if (ids.length > 0) {
-				const placeholders = ids.map(() => '?').join(', ');
-				db.prepare(
-					`UPDATE events
-					    SET read_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-					  WHERE id IN (${placeholders})
-					    AND (user_id = ? OR user_id IS NULL)
-					    AND read_at IS NULL`
-				).run(...ids, user.id);
-			}
+			markUserFeedRead(user.id, body.ids);
 		}
 	} catch (e) {
 		log.error({ err: e, userId: user.id }, 'mark-read failed');
 		return json({ error: 'Could not update notifications.' }, { status: 500 });
 	}
 
-	return json({ unread: unreadCount(user.id) });
+	return json({ unread: unreadUserFeedCount(user.id) });
 };

@@ -122,6 +122,11 @@ function prune(userId: number | null): void {
 /**
  * The activity feed for one user: their own events plus instance-wide ones,
  * newest first. `limit` is clamped to [1, EVENTS_PER_BUCKET].
+ *
+ * NOTE: this is the RAW feed (everything the user is allowed to see, including
+ * instance-wide operational events). The user-facing /activity page and the bell
+ * use {@link listUserFeed} instead — the simplified "what happened with MY
+ * bitcoin" view. listActivity is kept for internal/admin-adjacent callers.
  */
 export function listActivity(userId: number, limit = 100): ActivityEvent[] {
 	const capped = Math.min(Math.max(1, Math.floor(limit) || 0), EVENTS_PER_BUCKET);
@@ -135,4 +140,191 @@ export function listActivity(userId: number, limit = 100): ActivityEvent[] {
 		)
 		.all(userId, capped) as unknown as EventRow[];
 	return rows.map(mapRow);
+}
+
+// ---------------------------------------------------------------------------
+// USER feed vs ADMIN log split.
+//
+// The USER feed is "what happened with MY bitcoin" — a clean, iPhone-notification-
+// center-style view of the user's OWN relevant events in plain language. It hides
+// server internals (network/block/electrum), other users' events, and admin
+// broadcasts. The ADMIN log (listAllActivity) is the operational firehose: every
+// event, every user, filterable.
+//
+// FAIL CLOSED: the user feed shows ONLY the explicitly-whitelisted types below,
+// so any operational event type added later can never leak into it — a new type
+// is admin-only until someone deliberately adds it here.
+
+/** Event types that belong in a user's personal activity feed. */
+export const USER_FEED_TYPES: ReadonlySet<string> = new Set([
+	// Your bitcoin moving
+	'tx_received',
+	'tx_confirmed',
+	'tx_large',
+	'broadcast',
+	// Your wallets
+	'wallet_added',
+	'wallet_created',
+	'backup_downloaded',
+	'backup_missing',
+	'backup_stale',
+	// Signing
+	'signing_started',
+	'sign_session_waiting',
+	// Key health nudge
+	'key_health_due',
+	// Your own account security ("was this you?")
+	'security_new_passkey',
+	'security_failed_login',
+	'account_recovery',
+	'account_recovery_codes_set',
+	'account_recovery_phrase_set',
+	'admin_break_glass'
+]);
+
+/** Whether an event type is shown in the simplified per-user activity feed. */
+export function isUserFeedType(type: string): boolean {
+	return USER_FEED_TYPES.has(type);
+}
+
+/**
+ * The simplified activity feed for one user: only THEIR OWN events (never
+ * instance-wide ones) and only user-relevant types (see USER_FEED_TYPES).
+ * Plain-language "what happened with my bitcoin" — no server internals.
+ */
+export function listUserFeed(userId: number, limit = 100): ActivityEvent[] {
+	const capped = Math.min(Math.max(1, Math.floor(limit) || 0), EVENTS_PER_BUCKET);
+	const placeholders = [...USER_FEED_TYPES].map(() => '?').join(', ');
+	const rows = db
+		.prepare(
+			`SELECT id, user_id, type, level, message, detail, created_at, read_at
+			   FROM events
+			  WHERE user_id = ? AND type IN (${placeholders})
+			  ORDER BY id DESC
+			  LIMIT ?`
+		)
+		.all(userId, ...USER_FEED_TYPES, capped) as unknown as EventRow[];
+	return rows.map(mapRow);
+}
+
+/** Unread count for a user's simplified feed (own, whitelisted, unread). */
+export function unreadUserFeedCount(userId: number): number {
+	const placeholders = [...USER_FEED_TYPES].map(() => '?').join(', ');
+	const row = db
+		.prepare(
+			`SELECT COUNT(*) AS n FROM events
+			  WHERE user_id = ? AND read_at IS NULL AND type IN (${placeholders})`
+		)
+		.get(userId, ...USER_FEED_TYPES) as { n: number };
+	return row.n;
+}
+
+/** Mark a user's own feed events read (all, or a specific id list). */
+export function markUserFeedRead(userId: number, ids?: number[]): void {
+	if (ids && ids.length === 0) return;
+	const now = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+	if (ids && ids.length) {
+		const clean = ids.map(Number).filter(Number.isInteger).slice(0, 500);
+		if (!clean.length) return;
+		const ph = clean.map(() => '?').join(', ');
+		db.prepare(
+			`UPDATE events SET read_at = ${now}
+			  WHERE id IN (${ph}) AND user_id = ? AND read_at IS NULL`
+		).run(...clean, userId);
+	} else {
+		const typePh = [...USER_FEED_TYPES].map(() => '?').join(', ');
+		db.prepare(
+			`UPDATE events SET read_at = ${now}
+			  WHERE user_id = ? AND read_at IS NULL AND type IN (${typePh})`
+		).run(userId, ...USER_FEED_TYPES);
+	}
+}
+
+/** One row of the admin activity log — an event plus who it belongs to. */
+export interface AdminActivityEvent extends ActivityEvent {
+	/** The user this event is scoped to, or null for an instance-wide event. */
+	userId: number | null;
+	userEmail: string | null;
+	userName: string | null;
+}
+
+export interface AdminActivityFilters {
+	/** Exact event type (e.g. 'tx_received'). */
+	type?: string;
+	/** Exact level ('info'|'success'|'warn'|'error'). */
+	level?: string;
+	/** Restrict to one user's events; pass null for instance-wide only. */
+	userId?: number | null;
+	/** Case-insensitive substring match on the message. */
+	search?: string;
+	limit?: number;
+	offset?: number;
+}
+
+/**
+ * The full activity log for admins: EVERY event across all users and the
+ * instance-wide bucket, joined to the owning user, filterable and paginated.
+ * Newest first. This is the operational visibility the user feed deliberately
+ * hides.
+ */
+export function listAllActivity(filters: AdminActivityFilters = {}): {
+	events: AdminActivityEvent[];
+	total: number;
+} {
+	const where: string[] = [];
+	const params: (string | number)[] = [];
+	if (filters.type) {
+		where.push('e.type = ?');
+		params.push(filters.type);
+	}
+	if (filters.level) {
+		where.push('e.level = ?');
+		params.push(filters.level);
+	}
+	if (filters.userId === null) {
+		where.push('e.user_id IS NULL');
+	} else if (typeof filters.userId === 'number') {
+		where.push('e.user_id = ?');
+		params.push(filters.userId);
+	}
+	if (filters.search) {
+		where.push('e.message LIKE ? COLLATE NOCASE');
+		params.push(`%${filters.search}%`);
+	}
+	const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+	const total = (
+		db.prepare(`SELECT COUNT(*) AS n FROM events e ${whereSql}`).get(...params) as { n: number }
+	).n;
+
+	const limit = Math.min(Math.max(1, Math.floor(filters.limit ?? 200)), 1000);
+	const offset = Math.max(0, Math.floor(filters.offset ?? 0));
+	const rows = db
+		.prepare(
+			`SELECT e.id, e.user_id, e.type, e.level, e.message, e.detail, e.created_at, e.read_at,
+			        u.email AS user_email, u.display_name AS user_name
+			   FROM events e LEFT JOIN users u ON u.id = e.user_id
+			   ${whereSql}
+			  ORDER BY e.id DESC
+			  LIMIT ? OFFSET ?`
+		)
+		.all(...params, limit, offset) as unknown as (EventRow & {
+		user_email: string | null;
+		user_name: string | null;
+	})[];
+
+	const events = rows.map((r) => ({
+		...mapRow(r),
+		userId: r.user_id,
+		userEmail: r.user_email,
+		userName: r.user_name
+	}));
+	return { events, total };
+}
+
+/** Distinct event types present in the log — powers the admin filter dropdown. */
+export function distinctActivityTypes(): string[] {
+	return (db.prepare('SELECT DISTINCT type FROM events ORDER BY type').all() as { type: string }[]).map(
+		(r) => r.type
+	);
 }

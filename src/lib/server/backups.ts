@@ -6,6 +6,7 @@
 // flag. See db.ts (wallet_backups) and the creation wizards / persistent banner.
 
 import { db } from './db';
+import { recordActivity } from './activity';
 import type { WalletKind } from '$lib/types';
 
 /** A wallet that still has no config backup on record. */
@@ -25,6 +26,21 @@ export function markBackedUp(userId: number, kind: WalletKind, id: number): void
 		`INSERT INTO wallet_backups (user_id, wallet_kind, wallet_id) VALUES (?, ?, ?)
 		 ON CONFLICT (wallet_kind, wallet_id) DO UPDATE SET downloaded_at = excluded.downloaded_at`
 	).run(userId, kind, id);
+
+	// Surface it in the user's activity feed ("Wallet backup downloaded"). Best-
+	// effort via recordActivity, which never throws.
+	const table = kind === 'multisig' ? 'multisigs' : 'wallets';
+	const row = db.prepare(`SELECT name FROM ${table} WHERE id = ?`).get(id) as
+		| { name: string }
+		| undefined;
+	const name = row?.name ?? 'your wallet';
+	recordActivity({
+		type: 'backup_downloaded',
+		level: 'success',
+		userId,
+		message: `Backup downloaded for “${name}”`,
+		detail: { walletKind: kind, walletId: id }
+	});
 }
 
 /** Whether a wallet's config backup has been downloaded. */
