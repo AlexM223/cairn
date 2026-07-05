@@ -201,3 +201,34 @@ db.exec(`
 		UNIQUE (vault_id, master_fp)
 	);
 `);
+
+// Vault spends: DELIBERATELY a parallel table to `transactions` rather than a
+// nullable wallet_id/vault_id merge — wallet queries (and their indexes,
+// cascades, and status vocabulary) stay untouched, and the two lifecycles can
+// diverge freely (vaults collect M signatures per spend and have no RBF bump
+// lineage yet; wallets have replaces_txid/superseded). Columns mirror
+// `transactions` where the meaning is identical: `psbt` holds the CURRENT
+// combined PSBT and is replaced as each key's signature merges in; quorum
+// progress is never stored — it is derived from the PSBT by vaultPsbtProgress
+// (src/lib/server/bitcoin/vaultPsbt.ts), which cannot disagree with reality.
+// broadcast_started_at is the same atomic broadcast-claim marker transactions
+// uses. See src/lib/server/vaultTransactions.ts.
+db.exec(`
+	CREATE TABLE IF NOT EXISTS vault_transactions (
+		id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+		vault_id             INTEGER NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
+		status               TEXT NOT NULL DEFAULT 'draft', -- draft | awaiting_signature | completed
+		psbt                 TEXT NOT NULL,                 -- base64, the working combined PSBT
+		txid                 TEXT,                          -- set once broadcast
+		recipient            TEXT NOT NULL,                 -- first recipient (display anchor)
+		amount               INTEGER NOT NULL,              -- total sats across recipients
+		recipients           TEXT,                          -- JSON breakdown for batch sends, NULL for single
+		fee                  INTEGER NOT NULL,              -- sats
+		fee_rate             REAL NOT NULL,                 -- sat/vB at construction time
+		change_index         INTEGER,                       -- vault change-chain index, NULL when changeless
+		broadcast_started_at TEXT,                          -- in-flight broadcast claim (see transactions)
+		created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+	);
+	CREATE INDEX IF NOT EXISTS idx_vault_transactions_vault ON vault_transactions(vault_id);
+`);
