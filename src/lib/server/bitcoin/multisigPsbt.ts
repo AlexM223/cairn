@@ -27,6 +27,7 @@ import {
 } from './psbt';
 import { addressToScriptPubKey, isValidAddress } from './xpub';
 import { signingMassFromFetchedParents, type SigningMass } from './signingMass';
+import { coinbaseMaturity, isImmatureCoinbase } from '$lib/shared/coinbase';
 
 /** Script wrapping for the multisig's multisig — mirrors multisigs.ts's type without
  *  importing the DB layer (this module stays pure/chain-free for tests). */
@@ -153,6 +154,9 @@ export interface MultisigConstructParams {
 	/** Manual coin control: restrict selection to these coins (candidate
 	 *  allowlist, not a force-spend list). Ignored when empty. */
 	onlyUtxos?: { txid: string; vout: number }[];
+	/** Current chain tip height — enables coinbase maturity checking (an immature
+	 *  coinbase input is skipped in auto-selection, rejected if explicitly chosen). */
+	tipHeight?: number;
 }
 
 export interface ConstructedMultisigPsbt {
@@ -276,6 +280,27 @@ export async function constructMultisigPsbt(params: MultisigConstructParams): Pr
 		}
 	}
 
+	// Coinbase maturity (100-confirmation consensus rule): skip immature mining
+	// rewards in auto-selection; reject an explicitly-chosen immature one.
+	if (params.tipHeight != null) {
+		const tip = params.tipHeight;
+		const isImmature = (u: SpendableUtxo) => u.coinbase === true && isImmatureCoinbase(u.height, tip);
+		const immature = spendable.filter(isImmature);
+		if (immature.length > 0) {
+			if (coinControl) {
+				const m = coinbaseMaturity(immature[0].height, tip);
+				throw new PsbtError(
+					`A selected coin is an immature mining reward — it needs ${m.blocksRemaining} more confirmation${m.blocksRemaining === 1 ? '' : 's'} (~${m.etaHours}h) before it can be spent.`,
+					'immature_coinbase'
+				);
+			}
+			spendable = spendable.filter((u) => !isImmature(u));
+			if (spendable.length === 0) {
+				throw new PsbtError('This multisig has no mature coins to spend right now.', 'no_utxos');
+			}
+		}
+	}
+
 	// ---- per-address derivation cache (several UTXOs can share an address) --
 	const derivationCache = new Map<
 		string,
@@ -357,6 +382,13 @@ export async function constructMultisigPsbt(params: MultisigConstructParams): Pr
 
 	type PsbtInput = Record<string, unknown>;
 	async function buildInput(utxo: SpendableUtxo): Promise<PsbtInput> {
+		// A coinbase input always needs its full previous transaction to sign.
+		if (utxo.coinbase && !params.fetchRawTx) {
+			throw new PsbtError(
+				'Spending a mining reward needs its full previous transaction, which is unavailable right now.',
+				'construction_failed'
+			);
+		}
 		const { scripts, bip32Derivation } = deriveFor(utxo.chain, utxo.index, utxo.address);
 		const input: PsbtInput = {
 			txid: hexToBytes(utxo.txid),
@@ -376,8 +408,9 @@ export async function constructMultisigPsbt(params: MultisigConstructParams): Pr
 			input.witnessScript = scripts.witnessScript;
 			if (scriptType === 'p2sh-p2wsh') input.redeemScript = scripts.redeemScript;
 			// Full prev tx alongside witnessUtxo when available: a bare amount is
-			// the classic fee-lying surface and several devices warn without it.
-			if (params.fetchRawTx) input.nonWitnessUtxo = await rawPrevTx(utxo.txid);
+			// the classic fee-lying surface and several devices warn without it —
+			// and for a coinbase input it's mandatory, not just belt-and-braces.
+			if (utxo.coinbase || params.fetchRawTx) input.nonWitnessUtxo = await rawPrevTx(utxo.txid);
 		}
 		return input;
 	}

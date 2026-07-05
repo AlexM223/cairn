@@ -13,6 +13,7 @@
 
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { deriveMultisigAddress, multisigToDescriptor } from './bitcoin/multisig';
+import { annotateCoinbase } from './bitcoin/coinbaseScan';
 import { addressToScripthash, scriptPubKeyHex } from './bitcoin/xpub';
 import { getChain } from './chain/index';
 import type { ElectrumBalance, ElectrumHistoryItem } from './electrum/client';
@@ -334,7 +335,8 @@ export async function getMultisigUtxos(multisig: MultisigRow): Promise<Spendable
 			}));
 		})
 	);
-	return results.flat();
+	// Tag mining-reward (coinbase) outputs — maturity enforcement + UI badging.
+	return annotateCoinbase(results.flat());
 }
 
 /** Everything the multisig detail page (and the send flow) needs in one scan. */

@@ -851,3 +851,81 @@ describe('signingMass on construction (cairn-194)', () => {
 		expect(draft.signingMass).toBeDefined(); // both parents fetched → mass present
 	});
 });
+
+describe('coinbase maturity', () => {
+	const CB_IMMATURE: SpendableUtxo = {
+		txid: '44'.repeat(32),
+		vout: 0,
+		value: 60_000,
+		height: 900_000,
+		address: RECEIVE_0,
+		chain: 0,
+		index: 0,
+		coinbase: true
+	};
+
+	it('rejects an explicitly-selected immature coinbase (coin control)', async () => {
+		await expect(
+			constructPsbt({
+				...COMMON,
+				utxos: [CB_IMMATURE],
+				recipients: [{ address: RECIPIENT, amount: 30_000 }],
+				feeRate: 10,
+				onlyUtxos: [{ txid: CB_IMMATURE.txid, vout: 0 }],
+				tipHeight: 900_050 // 51 confirmations → immature
+			})
+		).rejects.toMatchObject({ code: 'immature_coinbase' });
+	});
+
+	it('skips an immature coinbase in automatic selection', async () => {
+		// The only candidate is immature → nothing mature left to spend.
+		await expect(
+			constructPsbt({
+				...COMMON,
+				utxos: [CB_IMMATURE],
+				recipients: [{ address: RECIPIENT, amount: 30_000 }],
+				feeRate: 10,
+				tipHeight: 900_050
+			})
+		).rejects.toMatchObject({ code: 'no_utxos' });
+	});
+
+	it('spends a MATURE coinbase (its full previous transaction is required)', async () => {
+		const fund = fundingTx([{ address: RECEIVE_0, value: 60_000 }]);
+		const mature: SpendableUtxo = {
+			txid: fund.txid,
+			vout: 0,
+			value: 60_000,
+			height: 800_000,
+			address: RECEIVE_0,
+			chain: 0,
+			index: 0,
+			coinbase: true
+		};
+		const draft = await constructPsbt({
+			...COMMON,
+			utxos: [mature],
+			recipients: [{ address: RECIPIENT, amount: 30_000 }],
+			feeRate: 10,
+			fetchRawTx: async (txid) => {
+				if (txid === fund.txid) return fund.hex;
+				throw new Error(`no such tx ${txid}`);
+			},
+			tipHeight: 900_000 // >> 100 confirmations → mature
+		});
+		expect(draft.amount).toBe(30_000);
+	});
+
+	it('refuses a coinbase spend when the previous transaction cannot be fetched', async () => {
+		const mature: SpendableUtxo = { ...CB_IMMATURE, txid: '55'.repeat(32), height: 800_000 };
+		await expect(
+			constructPsbt({
+				...COMMON,
+				utxos: [mature],
+				recipients: [{ address: RECIPIENT, amount: 30_000 }],
+				feeRate: 10,
+				tipHeight: 900_000 // mature, but no fetchRawTx provided
+			})
+		).rejects.toMatchObject({ code: 'construction_failed' });
+	});
+});

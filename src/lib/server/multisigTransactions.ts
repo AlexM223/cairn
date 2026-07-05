@@ -153,6 +153,7 @@ export async function buildMultisigDraft(
 
 	const utxos = await getMultisigUtxos(multisig);
 	const changeIndex = await nextMultisigChangeIndex(multisig);
+	const tipHeight = (await getChain().getTip()).height;
 
 	const details = await constructMultisigPsbt({
 		config: toMultisigConfig(multisig),
@@ -161,7 +162,8 @@ export async function buildMultisigDraft(
 		feeRate: input.feeRate,
 		changeIndex,
 		fetchRawTx: (txid) => getChain().getTxHex(txid),
-		onlyUtxos: input.onlyUtxos
+		onlyUtxos: input.onlyUtxos,
+		tipHeight
 	});
 
 	const res = db

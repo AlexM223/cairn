@@ -18,6 +18,7 @@ import {
 	type ConstructedPsbt,
 	type SpendableUtxo
 } from './bitcoin/psbt';
+import { annotateCoinbase } from './bitcoin/coinbaseScan';
 import { parseXpub, deriveAddress, addressToScripthash } from './bitcoin/xpub';
 import type { ScriptType } from '$lib/types';
 
@@ -87,7 +88,9 @@ export async function getWalletUtxos(xpub: string): Promise<SpendableUtxo[]> {
 			}));
 		})
 	);
-	return results.flat();
+	// Tag mining-reward (coinbase) outputs so the send flow can enforce maturity
+	// and the UI can badge them. Cached, so this is near-free on repeat scans.
+	return annotateCoinbase(results.flat());
 }
 
 export interface BuildDraftInput {
@@ -125,6 +128,8 @@ export async function buildDraft(
 
 	const scriptType = wallet.script_type as ScriptType;
 	const utxos = await getWalletUtxos(wallet.xpub);
+	// Tip height enables the coinbase-maturity guard in constructPsbt.
+	const tipHeight = (await getChain().getTip()).height;
 
 	// Change goes to the wallet's own change chain, next unused index.
 	const parsed = parseXpub(wallet.xpub);
@@ -150,7 +155,8 @@ export async function buildDraft(
 		changeIndex,
 		origin,
 		fetchRawTx: (txid) => getChain().getTxHex(txid),
-		onlyUtxos: input.onlyUtxos
+		onlyUtxos: input.onlyUtxos,
+		tipHeight
 	});
 
 	const res = db

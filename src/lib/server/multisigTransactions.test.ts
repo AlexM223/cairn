@@ -34,7 +34,9 @@ const { broadcastMock, getTxHexMock, utxosMock, changeIndexMock } = vi.hoisted((
 vi.mock('./chain', () => ({
 	getChain: () => ({
 		electrum: { broadcast: broadcastMock },
-		getTxHex: getTxHexMock
+		getTxHex: getTxHexMock,
+		// buildMultisigDraft reads the tip for the coinbase-maturity guard.
+		getTip: async () => ({ height: 900_000, hash: '00'.repeat(32) })
 	})
 }));
 vi.mock('./multisigScan', () => ({

@@ -15,6 +15,7 @@ import {
 	preferLowMassOrder,
 	type SigningMass
 } from './signingMass';
+import { coinbaseMaturity, isImmatureCoinbase } from '$lib/shared/coinbase';
 import type { ScriptType } from '$lib/types';
 
 /** A spendable output attributed to a wallet-derived address. */
@@ -26,6 +27,10 @@ export interface SpendableUtxo {
 	address: string;
 	chain: 0 | 1; // receive / change
 	index: number;
+	/** True when this output was created by a coinbase (mining reward) tx.
+	 *  Coinbase outputs need 100 confirmations to spend and always carry the full
+	 *  previous transaction (nonWitnessUtxo). undefined = not yet determined. */
+	coinbase?: boolean;
 }
 
 export interface KeyOrigin {
@@ -73,6 +78,13 @@ export interface ConstructParams {
 	 * spent (that is exactInputs). Ignored when empty.
 	 */
 	onlyUtxos?: { txid: string; vout: number }[];
+	/**
+	 * Current chain tip height. When provided, coinbase (mining reward) inputs are
+	 * maturity-checked: an immature coinbase (< 100 confirmations) is skipped in
+	 * automatic selection and rejected if explicitly chosen via coin control.
+	 * Omitted = no maturity check (e.g. RBF, tests without coinbase inputs).
+	 */
+	tipHeight?: number;
 }
 
 export interface ConstructedPsbt {
@@ -105,6 +117,7 @@ export class PsbtError extends Error {
 			| 'invalid_amount'
 			| 'insufficient_funds'
 			| 'no_utxos'
+			| 'immature_coinbase'
 			| 'construction_failed'
 	) {
 		super(message);
@@ -254,6 +267,29 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		}
 	}
 
+	// Coinbase maturity: a coinbase (mining reward) output needs 100 confirmations
+	// before consensus lets it be spent. When we know the tip, drop immature ones
+	// from automatic selection; if the user explicitly picked one via coin control,
+	// reject with a clear message rather than silently building an invalid tx.
+	if (params.tipHeight != null && !params.exactInputs) {
+		const tip = params.tipHeight;
+		const isImmature = (u: SpendableUtxo) => u.coinbase === true && isImmatureCoinbase(u.height, tip);
+		const immature = spendable.filter(isImmature);
+		if (immature.length > 0) {
+			if (coinControl) {
+				const m = coinbaseMaturity(immature[0].height, tip);
+				throw new PsbtError(
+					`A selected coin is an immature mining reward — it needs ${m.blocksRemaining} more confirmation${m.blocksRemaining === 1 ? '' : 's'} (~${m.etaHours}h) before it can be spent.`,
+					'immature_coinbase'
+				);
+			}
+			spendable = spendable.filter((u) => !isImmature(u));
+			if (spendable.length === 0) {
+				throw new PsbtError('This wallet has no mature coins to spend right now.', 'no_utxos');
+			}
+		}
+	}
+
 	// Low-mass selection bias (normal selection only — exact-inputs must spend
 	// what it's given, and send-max spends every candidate anyway): stable
 	// re-sort by CACHED parent mass so equal-value ties resolve toward coins
@@ -312,6 +348,16 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 
 	const inputs = [];
 	for (const utxo of spendable) {
+		// Coinbase inputs MUST carry the full previous transaction — hardware
+		// signers require it to safely sign a mining reward. Every non-p2tr input
+		// already attaches nonWitnessUtxo when fetchRawTx is present (below); this
+		// only rejects the pathological case of a coinbase spend with no fetcher.
+		if (utxo.coinbase && !params.fetchRawTx) {
+			throw new PsbtError(
+				'Spending a mining reward needs its full previous transaction, which is unavailable right now.',
+				'construction_failed'
+			);
+		}
 		const child = parsed.hdkey.deriveChild(utxo.chain).deriveChild(utxo.index);
 		if (!child.publicKey) throw new PsbtError('Key derivation failed.', 'construction_failed');
 
