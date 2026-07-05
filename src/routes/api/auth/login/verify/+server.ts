@@ -21,6 +21,8 @@ const log = childLogger('auth');
 export const POST: RequestHandler = async (event) => {
 	const body = await readJson<{ response?: AuthenticationResponseJSON }>(event);
 	const pending = readAuthChallenge(event);
+	// Single-use: consume the challenge cookie now, whatever the outcome.
+	clearAuthChallenge(event);
 	const ip = event.getClientAddress();
 
 	if (!pending || !body.response) {

@@ -19,6 +19,8 @@ export const POST: RequestHandler = async (event) => {
 	const user = requireUser(event);
 	const body = await readJson<{ response?: RegistrationResponseJSON; name?: string }>(event);
 	const pending = readRegChallenge(event);
+	// Single-use: consume the challenge cookie now, whatever the outcome.
+	clearRegChallenge(event);
 
 	// Must be an add-passkey ceremony for THIS user.
 	if (!pending || pending.userId !== user.id || !body.response) {

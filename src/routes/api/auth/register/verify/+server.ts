@@ -23,6 +23,8 @@ const log = childLogger('auth');
 export const POST: RequestHandler = async (event) => {
 	const body = await readJson<{ response?: RegistrationResponseJSON; name?: string }>(event);
 	const pending = readRegChallenge(event);
+	// Single-use: consume the challenge cookie now, whatever the outcome.
+	clearRegChallenge(event);
 
 	// Must be a signup ceremony (has email, no userId). An add-passkey cookie
 	// (userId set) belongs to /api/auth/passkeys, not here.
