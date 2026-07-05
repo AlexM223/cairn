@@ -48,6 +48,7 @@
 		"@noble/hashes": "^2.2.0",
 		"@scure/base": "^2.2.0",
 		"@scure/bip32": "^2.2.0",
+		"@scure/bip39": "^1.6.0",
 		"@scure/btc-signer": "^2.2.0",
 		"@simplewebauthn/browser": "^13.3.0",
 		"@simplewebauthn/server": "^13.3.2",

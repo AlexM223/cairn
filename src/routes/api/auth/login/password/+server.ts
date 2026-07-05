@@ -2,7 +2,15 @@
 // Email + password sign-in (the default method). Throttled to blunt guessing.
 
 import { json, readJson } from '$lib/server/api';
-import { loginWithPassword, createSession, setSessionCookie, AuthError } from '$lib/server/auth';
+import {
+	loginWithPassword,
+	createSession,
+	setSessionCookie,
+	getUserById,
+	hasNoCredentials,
+	AuthError
+} from '$lib/server/auth';
+import { tryAdminBreakGlass, recordBreakGlassLogin } from '$lib/server/recovery';
 import { loginRetryAfter, noteLoginFailure, noteLoginSuccess, tooManyAttemptsMessage } from '$lib/server/rateLimit';
 import type { RequestHandler } from './$types';
 
@@ -23,7 +31,24 @@ export const POST: RequestHandler = async (event) => {
 		return json({ user });
 	} catch (e) {
 		if (e instanceof AuthError) {
-			if (e.code === 'bad_credentials') noteLoginFailure(ip, email);
+			// Break-glass admin recovery (OFF unless CAIRN_ADMIN_RECOVERY === 'true').
+			// Only a locked-out admin (no usable passkeys) matching the deployment
+			// password env var gets in this way; it never widens normal auth, so it
+			// is only consulted AFTER normal password login has failed.
+			if (e.code === 'bad_credentials') {
+				const grant = tryAdminBreakGlass(email, password, hasNoCredentials);
+				if (grant) {
+					const admin = getUserById(grant.userId);
+					if (admin) {
+						noteLoginSuccess(ip, email);
+						recordBreakGlassLogin(admin.id, admin.email);
+						const { token, expiresAt } = createSession(admin.id);
+						setSessionCookie(event.cookies, token, expiresAt, event.url);
+						return json({ user: admin });
+					}
+				}
+				noteLoginFailure(ip, email);
+			}
 			return json({ error: e.message, code: e.code }, { status: e.code === 'disabled' ? 403 : 401 });
 		}
 		throw e;
