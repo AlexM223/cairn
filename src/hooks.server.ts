@@ -57,12 +57,17 @@ export const handle: Handle = async ({ event, resolve }) => {
 };
 
 /**
- * Catches unexpected server errors (not the intentional `error(4xx)` throws,
- * which SvelteKit treats as expected). The full error + stack is logged
- * server-side under a short error ID; the client only ever sees that ID, so an
- * operator can grep the logs for the exact failure without leaking internals.
+ * Runs for errors thrown while handling a request. Only 5xx failures are true
+ * server errors: those get a full stack logged under a short error ID, and the
+ * client sees only "Something went wrong" + that ID so an operator can grep the
+ * logs for the exact failure without leaking internals. 404s and other <500s
+ * reach here in this SvelteKit version but are expected — the request-logging
+ * above already recorded them, so we leave SvelteKit's default error shape
+ * untouched (no stack, no error ID on a plain "not found" page).
  */
 export const handleError: HandleServerError = ({ error, event, status, message }) => {
+	if (status < 500) return;
+
 	const errorId = randomBytes(4).toString('hex');
 	errLog.error(
 		{
