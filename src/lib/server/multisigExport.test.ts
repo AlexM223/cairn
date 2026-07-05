@@ -84,7 +84,7 @@ describe('coldcardName', () => {
 	});
 
 	it('truncates to 20 characters', () => {
-		expect(coldcardName('An extremely long multisig name here')).toBe('An extremely long va');
+		expect(coldcardName('An extremely long multisig name here')).toBe('An extremely long mu');
 		expect(coldcardName('An extremely long multisig name here').length).toBeLessThanOrEqual(20);
 	});
 
