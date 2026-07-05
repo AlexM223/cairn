@@ -2,13 +2,15 @@ import { describe, it, expect } from 'vitest';
 import { HDKey } from '@scure/bip32';
 import { base64, base58check } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { hexToBytes } from '@noble/hashes/utils.js';
-import { Transaction, NETWORK } from '@scure/btc-signer';
+import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
+import { Transaction, NETWORK, Address, OutScript } from '@scure/btc-signer';
+import { addressToScriptPubKey } from './xpub';
 import {
 	constructPsbt,
 	summarizePsbt,
 	finalizePsbt,
 	assertSameTransaction,
+	addressFromScript,
 	parseOriginPath,
 	PsbtError,
 	PsbtMismatchError,
@@ -170,6 +172,168 @@ describe('constructPsbt', () => {
 	it('refuses to finalize an unsigned PSBT', async () => {
 		const draft = await constructPsbt({ ...COMMON, recipients: [{ address: RECIPIENT, amount: 30_000 }], feeRate: 10 });
 		expect(() => finalizePsbt(draft.psbtBase64)).toThrow();
+	});
+});
+
+describe('destination address types (all six)', () => {
+	// Known-good fixtures. P2SH-P2WPKH shares the 3… script form with plain
+	// P2SH — as a DESTINATION they are indistinguishable, so both rows simply
+	// exercise the a914…87 template with different known addresses.
+	const b58 = base58check(sha256);
+	const plainP2sh = (() => {
+		// Deterministic 3… address over a fixed 20-byte hash (self-checking:
+		// the test derives the expected script from the same hash).
+		const payload = new Uint8Array(21);
+		payload[0] = 0x05;
+		payload.set(Uint8Array.from({ length: 20 }, (_, i) => 0xa0 + i), 1);
+		return b58.encode(payload);
+	})();
+
+	const DESTS: { kind: string; address: string; spkLen: number; spkHead: string }[] = [
+		{
+			kind: 'p2pkh',
+			address: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa', // genesis
+			spkLen: 25,
+			spkHead: '76a914'
+		},
+		{ kind: 'p2sh', address: plainP2sh, spkLen: 23, spkHead: 'a914' },
+		{
+			kind: 'p2sh-p2wpkh',
+			address: '37VucYSaXLCAsxYyAPfbSi9eh4iEcbShgf', // BIP-49 test vector
+			spkLen: 23,
+			spkHead: 'a914'
+		},
+		{
+			kind: 'p2wpkh',
+			address: 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4', // BIP-173 vector
+			spkLen: 22,
+			spkHead: '0014'
+		},
+		{
+			kind: 'p2wsh',
+			address: 'bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3', // BIP-173 vector
+			spkLen: 34,
+			spkHead: '0020'
+		},
+		{
+			kind: 'p2tr',
+			address: 'bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr', // BIP-86 vector m/86'/0'/0'/0/0
+			spkLen: 34,
+			spkHead: '5120'
+		}
+	];
+
+	it.each(DESTS)('fixture $kind decodes identically in xpub.ts and btc-signer', ({ address, spkLen, spkHead }) => {
+		// Cross-implementation check: our hand-rolled decoder vs btc-signer's —
+		// two independent codebases must produce the same scriptPubKey.
+		const ours = addressToScriptPubKey(address);
+		// Same ArrayBuffer-generics bridge psbt.ts uses for Address/OutScript.
+		const theirs = OutScript.encode(Address(NETWORK).decode(address) as never);
+		expect(bytesToHex(ours)).toBe(bytesToHex(theirs));
+		expect(ours.length).toBe(spkLen);
+		expect(bytesToHex(ours).startsWith(spkHead)).toBe(true);
+	});
+
+	it.each(DESTS)(
+		'constructPsbt pays a $kind destination: script byte-match, value conserved, summary round-trip',
+		async ({ address }) => {
+			const draft = await constructPsbt({
+				...COMMON,
+				recipients: [{ address, amount: 20_000 }],
+				feeRate: 10
+			});
+
+			// The output scriptPubKey byte-matches the address decoder.
+			const expectSpk = bytesToHex(addressToScriptPubKey(address));
+			const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
+			let matched = 0;
+			for (let i = 0; i < tx.outputsLength; i++) {
+				const out = tx.getOutput(i);
+				if (out.script && bytesToHex(out.script) === expectSpk) {
+					matched++;
+					expect(out.amount).toBe(20_000n);
+				}
+			}
+			expect(matched).toBe(1);
+
+			// Value conservation: inputs = amount + fee + change.
+			const totalIn = draft.inputs.reduce((s, u) => s + u.value, 0);
+			expect(totalIn).toBe(draft.amount + draft.fee + (draft.change?.value ?? 0));
+
+			// summarizePsbt round-trips the exact address string for review UI.
+			const summary = summarizePsbt(draft.psbtBase64);
+			expect(summary.outputs).toContainEqual({ address, value: 20_000 });
+		}
+	);
+
+	it.each(DESTS)('addressFromScript reverse-maps the $kind script to the address', ({ address }) => {
+		expect(addressFromScript(addressToScriptPubKey(address))).toBe(address);
+	});
+
+	it('addressFromScript returns null for a non-standard script', () => {
+		expect(addressFromScript(hexToBytes('6a0548656c6c6f'))).toBeNull(); // OP_RETURN "Hello"
+		expect(addressFromScript(new Uint8Array([0x51]))).toBeNull(); // bare OP_1
+	});
+
+	it('pays P2TR + P2WPKH + P2PKH simultaneously in one transaction', async () => {
+		const p2tr = DESTS.find((d) => d.kind === 'p2tr')!.address;
+		const p2wpkh = DESTS.find((d) => d.kind === 'p2wpkh')!.address;
+		const p2pkh = DESTS.find((d) => d.kind === 'p2pkh')!.address;
+		const draft = await constructPsbt({
+			...COMMON,
+			recipients: [
+				{ address: p2tr, amount: 15_000 },
+				{ address: p2wpkh, amount: 12_000 },
+				{ address: p2pkh, amount: 11_000 }
+			],
+			feeRate: 8
+		});
+		expect(draft.amount).toBe(38_000);
+		const totalIn = draft.inputs.reduce((s, u) => s + u.value, 0);
+		expect(totalIn).toBe(draft.amount + draft.fee + (draft.change?.value ?? 0));
+
+		const summary = summarizePsbt(draft.psbtBase64);
+		expect(summary.outputs).toContainEqual({ address: p2tr, value: 15_000 });
+		expect(summary.outputs).toContainEqual({ address: p2wpkh, value: 12_000 });
+		expect(summary.outputs).toContainEqual({ address: p2pkh, value: 11_000 });
+
+		// Each destination's scriptPubKey is on the wire exactly as decoded.
+		const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
+		const scripts = new Set<string>();
+		for (let i = 0; i < tx.outputsLength; i++) scripts.add(bytesToHex(tx.getOutput(i).script!));
+		for (const address of [p2tr, p2wpkh, p2pkh]) {
+			expect(scripts.has(bytesToHex(addressToScriptPubKey(address)))).toBe(true);
+		}
+	});
+
+	it('send-max to taproot prices the 43-vB output correctly', async () => {
+		const p2tr = DESTS.find((d) => d.kind === 'p2tr')!.address;
+		const draft = await constructPsbt({
+			...COMMON,
+			recipients: [{ address: p2tr, amount: 'max' }],
+			feeRate: 5
+		});
+		// 11 overhead + 2 × 68 (p2wpkh inputs) + 43 (p2tr output) = 190 vB.
+		expect(draft.vsize).toBe(190);
+		expect(draft.fee).toBe(950);
+		expect(draft.amount).toBe(100_000 - draft.fee);
+	});
+
+	it('remains signable and finalizable when paying a taproot destination', async () => {
+		const p2tr = DESTS.find((d) => d.kind === 'p2tr')!.address;
+		const draft = await constructPsbt({
+			...COMMON,
+			recipients: [{ address: p2tr, amount: 70_000 }],
+			feeRate: 10
+		});
+		const account = accountKey();
+		const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
+		for (let i = 0; i < tx.inputsLength; i++) {
+			const path = tx.getInput(i).bip32Derivation![0][1].path;
+			tx.signIdx(account.deriveChild(path[3]).deriveChild(path[4]).privateKey!, i);
+		}
+		const { txid } = finalizePsbt(base64.encode(tx.toPSBT()));
+		expect(txid).toMatch(/^[0-9a-f]{64}$/);
 	});
 });
 

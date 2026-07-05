@@ -109,7 +109,6 @@ export const DEFAULT_ORIGIN_PATH: Record<ScriptType, string> = {
 
 // Approximate virtual sizes for fee estimation (sat/vB pricing).
 const INPUT_VSIZE: Record<string, number> = { p2pkh: 148, 'p2sh-p2wpkh': 91, p2wpkh: 68 };
-const OUTPUT_VSIZE = 34; // worst-case-ish; fine for estimates
 const TX_OVERHEAD_VSIZE = 11;
 const DUST_SATS = 546;
 
@@ -145,6 +144,17 @@ export function parseOriginPath(path: string): number[] {
 
 function toBigInt(sats: number): bigint {
 	return BigInt(Math.round(sats));
+}
+
+/**
+ * Exact vsize of one output paying `address`: 8-byte value + compactSize
+ * script length (all standard scripts are < 253 bytes → 1 byte) + the
+ * scriptPubKey itself. Output size varies by destination type — p2wpkh 31,
+ * p2sh/p2pkh 32/34, p2wsh/p2tr 43 — so a flat constant would under-price
+ * sweeps to taproot/p2wsh destinations.
+ */
+function outputVsize(address: string): number {
+	return 9 + addressToScriptPubKey(address).length;
 }
 
 /**
@@ -325,7 +335,7 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		const recipient = params.recipients[0].address;
 		const totalIn = spendable.reduce((s, u) => s + u.value, 0);
 		const vsize =
-			TX_OVERHEAD_VSIZE + spendable.length * INPUT_VSIZE[scriptType] + OUTPUT_VSIZE;
+			TX_OVERHEAD_VSIZE + spendable.length * INPUT_VSIZE[scriptType] + outputVsize(recipient);
 		const fee = Math.ceil(vsize * feeRate);
 		const amount = totalIn - fee;
 		if (amount <= DUST_SATS) {
@@ -383,7 +393,8 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		const vsizeEst =
 			TX_OVERHEAD_VSIZE +
 			chosen.length * INPUT_VSIZE[scriptType] +
-			(recipients.length + 1) * OUTPUT_VSIZE;
+			recipients.reduce((s, r) => s + outputVsize(r.address), 0) +
+			outputVsize(params.changeAddress);
 		fee = Math.ceil(vsizeEst * feeRate);
 		const change = totalIn - totalAmount - fee;
 		if (change < DUST_SATS) {
@@ -479,7 +490,8 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		1,
 		TX_OVERHEAD_VSIZE +
 			chosen.length * INPUT_VSIZE[scriptType] +
-			(recipients.length + (hasChange ? 1 : 0)) * OUTPUT_VSIZE
+			recipients.reduce((s, r) => s + outputVsize(r.address), 0) +
+			(hasChange ? outputVsize(params.changeAddress) : 0)
 	);
 
 	return {

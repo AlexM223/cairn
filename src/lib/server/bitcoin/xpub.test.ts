@@ -176,6 +176,60 @@ describe('addressToScriptPubKey', () => {
 		expect(() => addressToScriptPubKey(bad)).toThrow();
 	});
 
+	it('rejects segwit v0 encoded with bech32m (not bech32)', () => {
+		const program = Uint8Array.from({ length: 20 }, (_, i) => i);
+		const bad = bech32m.encode('bc', [0, ...bech32m.toWords(program)]);
+		expect(() => addressToScriptPubKey(bad)).toThrow();
+	});
+
+	it('rejects a witness v1 program that is not exactly 32 bytes (BIP-341)', () => {
+		// 20- and 33-byte v1 programs are valid bech32m but NOT valid taproot —
+		// Core treats them as non-standard, and funds sent there may be stuck.
+		for (const len of [20, 31, 33, 40]) {
+			const program = Uint8Array.from({ length: len }, (_, i) => i + 1);
+			const addr = bech32m.encode('bc', [1, ...bech32m.toWords(program)]);
+			expect(() => addressToScriptPubKey(addr)).toThrow(/taproot/i);
+			expect(isValidAddress(addr)).toBe(false);
+		}
+	});
+
+	it('accepts future witness versions v2..v16 with any 2-40 byte program', () => {
+		// Forward compatibility: v2+ semantics are undefined today, so only the
+		// BIP-141 program-length bounds apply.
+		const cases: [number, number][] = [
+			[2, 32],
+			[2, 20],
+			[16, 2],
+			[16, 40]
+		];
+		for (const [version, len] of cases) {
+			const program = Uint8Array.from({ length: len }, (_, i) => i + 1);
+			const addr = bech32m.encode('bc', [version, ...bech32m.toWords(program)]);
+			const script = addressToScriptPubKey(addr);
+			expect(script[0]).toBe(0x50 + version); // OP_2..OP_16
+			expect(script[1]).toBe(len);
+			expect(script.length).toBe(2 + len);
+		}
+	});
+
+	it('rejects v2+ programs outside the 2-40 byte BIP-141 bounds', () => {
+		for (const len of [1, 41]) {
+			const program = Uint8Array.from({ length: len }, (_, i) => i + 1);
+			const addr = bech32m.encode('bc', [2, ...bech32m.toWords(program)]);
+			expect(() => addressToScriptPubKey(addr)).toThrow(/program length/i);
+		}
+	});
+
+	it('accepts all-uppercase bech32 and bech32m addresses (the QR form)', () => {
+		const upperV0 = 'BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4'; // BIP-173 vector
+		expect(bytesToHex(addressToScriptPubKey(upperV0))).toBe(
+			'0014751e76e8199196d454941c45d1b3a323f1433bd6'
+		);
+		const program = Uint8Array.from({ length: 32 }, (_, i) => i);
+		const upperV1 = bech32m.encode('bc', [1, ...bech32m.toWords(program)]).toUpperCase();
+		expect(bytesToHex(addressToScriptPubKey(upperV1))).toBe('5120' + bytesToHex(program));
+	});
+
 	it('rejects empty and garbage input', () => {
 		expect(() => addressToScriptPubKey('')).toThrow(/empty/i);
 		expect(() => addressToScriptPubKey('hello world')).toThrow();
@@ -200,9 +254,13 @@ describe('addressToScripthash', () => {
 describe('isValidAddress', () => {
 	it.each([
 		['1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa', true],
+		['37VucYSaXLCAsxYyAPfbSi9eh4iEcbShgf', true], // P2SH (BIP-49 vector)
 		['bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4', true],
+		['bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3', true], // P2WSH
+		['bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr', true], // P2TR (BIP-86)
 		['bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5', false], // bad bech32 checksum
 		['bc1Qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4', false], // mixed-case bech32
+		['bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcs', false], // bad bech32m checksum
 		['1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNb', false], // bad base58 checksum
 		['', false],
 		['   ', false],

@@ -210,7 +210,9 @@
 	});
 
 	// Basic client-side shape check — the server does authoritative validation.
-	const looksLikeAddress = (a: string) => /^(bc1|[13])[a-zA-HJ-NP-Z0-9]{6,90}$/.test(a.trim());
+	// BC1 alternative: bech32/bech32m addresses are valid in all-uppercase too
+	// (the QR-code form); mixed case slips this pre-check but the server rejects it.
+	const looksLikeAddress = (a: string) => /^(bc1|BC1|[13])[a-zA-HJ-NP-Z0-9]{6,90}$/.test(a.trim());
 	const isMax = $derived(amountMode === 'max' && rows.length === 1);
 	const rowsValid = $derived(
 		rows.every((r) => {
