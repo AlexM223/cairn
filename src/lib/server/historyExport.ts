@@ -26,7 +26,8 @@ const CSV_HEADER = [
 	'Fee (sats)',
 	'TxID',
 	'Confirmations',
-	'Counterparty Address'
+	'Address',
+	'Label'
 ];
 
 const SATS_PER_BTC = 100_000_000;
@@ -82,8 +83,10 @@ export async function buildHistoryCsv(opts: {
 	ownedAddresses: Iterable<string>;
 	tipHeight: number;
 	getTx: (txid: string) => Promise<TxDetail>;
+	/** Optional per-txid labels (private, single-sig wallets); absent = blank. */
+	labels?: Record<string, string>;
 }): Promise<string> {
-	const { rows, tipHeight, getTx } = opts;
+	const { rows, tipHeight, getTx, labels } = opts;
 	const owned = new Set(opts.ownedAddresses);
 
 	// Resolve counterparties with bounded concurrency; a failed detail fetch
@@ -114,7 +117,8 @@ export async function buildHistoryCsv(opts: {
 				row.fee != null ? String(row.fee) : '',
 				row.txid,
 				String(confirmationsOf(row.height, tipHeight)),
-				counterparties[idx]
+				counterparties[idx],
+				labels?.[row.txid] ?? ''
 			]
 				.map(csvField)
 				.join(',')

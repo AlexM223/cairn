@@ -1,6 +1,6 @@
 import { error } from '@sveltejs/kit';
 import { requireUser } from '$lib/server/api';
-import { getWallet } from '$lib/server/wallets';
+import { getWallet, getLabels } from '$lib/server/wallets';
 import { scanWallet } from '$lib/server/bitcoin/walletScan';
 import { getChain } from '$lib/server/chain';
 import { buildHistoryCsv, historyCsvFilename } from '$lib/server/historyExport';
@@ -9,7 +9,7 @@ import type { RequestHandler } from './$types';
 /**
  * GET /api/wallets/:id/history.csv — this wallet's transaction history as a
  * CSV download (Date, Type, Amount BTC/sats, Fee, TxID, Confirmations,
- * Counterparty). Same 50-tx window the detail page shows.
+ * Address, Label). Same 50-tx window the detail page shows.
  */
 export const GET: RequestHandler = async (event) => {
 	const user = requireUser(event);
@@ -39,7 +39,8 @@ export const GET: RequestHandler = async (event) => {
 		rows: scan.txs,
 		ownedAddresses: scan.addresses.map((a) => a.address),
 		tipHeight,
-		getTx: (txid) => chain.getTx(txid)
+		getTx: (txid) => chain.getTx(txid),
+		labels: getLabels(user.id, id) ?? {}
 	});
 
 	const today = new Date().toISOString().slice(0, 10);

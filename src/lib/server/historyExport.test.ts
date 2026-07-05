@@ -44,7 +44,7 @@ describe('buildHistoryCsv', () => {
 		});
 		const lines = csv.trimEnd().split('\r\n');
 		expect(lines[0]).toBe(
-			'Date,Type,Amount (BTC),Amount (sats),Fee (sats),TxID,Confirmations,Counterparty Address'
+			'Date,Type,Amount (BTC),Amount (sats),Fee (sats),TxID,Confirmations,Address,Label'
 		);
 		expect(lines).toHaveLength(2);
 		expect(csv.endsWith('\r\n')).toBe(true);
@@ -64,7 +64,21 @@ describe('buildHistoryCsv', () => {
 		expect(cols[3]).toBe('12345678');
 		expect(cols[4]).toBe('500');
 		expect(cols[6]).toBe('11'); // 800010 - 800000 + 1
-		expect(cols[7]).toBe(PAYER);
+		expect(cols[7]).toBe(PAYER); // Address = external payer
+	});
+
+	it('includes the per-txid label in the Label column', async () => {
+		const txid = 'l'.repeat(64);
+		const csv = await buildHistoryCsv({
+			rows: rows({ txid, height: 800000, time: 1_700_000_000, delta: 5000, fee: 100 }),
+			ownedAddresses: [OWN],
+			tipHeight: 800000,
+			getTx: async () => tx({ txid, vin: [vinFrom(PAYER)], vout: [voutTo(OWN, 5000)] }),
+			labels: { [txid]: 'rent, March' }
+		});
+		const [, row] = csv.trimEnd().split('\r\n');
+		// The label contains a comma so it must be RFC-4180 quoted as the last field.
+		expect(row.endsWith(',"rent, March"')).toBe(true);
 	});
 
 	it('classifies a sent tx and reports the external payee (skipping own change)', async () => {
