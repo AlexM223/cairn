@@ -151,3 +151,37 @@ db.exec(`
 		db.exec('ALTER TABLE transactions ADD COLUMN recipients TEXT');
 	}
 }
+
+// Vaults: local M-of-N multisig where ONE user holds several keys — not
+// collaborative custody, so there is no roster/session machinery; signing
+// progress lives in the PSBT itself (see src/lib/server/bitcoin/vaultPsbt.ts)
+// and quorum is threshold-of-keys. Key metadata is relational rather than a
+// config JSON blob so the wizard can edit keys one at a time; the descriptor
+// (the portable artifact) is derived on demand by src/lib/server/vaults.ts.
+db.exec(`
+	CREATE TABLE IF NOT EXISTS vaults (
+		id             INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		name           TEXT NOT NULL,
+		threshold      INTEGER NOT NULL,
+		script_type    TEXT NOT NULL DEFAULT 'p2wsh', -- 'p2wsh' | 'p2sh-p2wsh' | 'p2sh'
+		receive_cursor INTEGER NOT NULL DEFAULT 0,
+		created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+	);
+	CREATE INDEX IF NOT EXISTS idx_vaults_user ON vaults(user_id);
+
+	CREATE TABLE IF NOT EXISTS vault_keys (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		vault_id    INTEGER NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
+		position    INTEGER NOT NULL,          -- stable display/signing order
+		name        TEXT NOT NULL,             -- "My Trezor", "Steel backup"
+		category    TEXT NOT NULL,             -- 'hardware' | 'mobile' | 'recovery'
+		device_type TEXT,                      -- 'trezor'|'ledger'|'coldcard'|'qr'|'file'; routes the signing stepper
+		xpub        TEXT NOT NULL,
+		fingerprint TEXT NOT NULL,             -- 8 lowercase hex; '00000000' when unknown
+		path        TEXT NOT NULL,             -- "m/48'/0'/0'/2'" (BIP-48)
+		UNIQUE (vault_id, position),
+		UNIQUE (vault_id, xpub)
+	);
+	CREATE INDEX IF NOT EXISTS idx_vault_keys_vault ON vault_keys(vault_id);
+`);
