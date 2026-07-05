@@ -17,6 +17,11 @@
 	let xpubInput = $state('');
 	let showHelp = $state(false);
 	let validating = $state(false);
+	// Restore-from-backup (cairn-lun6): the hidden file input on the Key step, plus
+	// the feedback shown under it after a file is read.
+	let restoreFileInput = $state<HTMLInputElement | null>(null);
+	let restoreError = $state<string | null>(null);
+	let restoreNote = $state<string | null>(null);
 	let creating = $state(false);
 	let previewError = $state<string | null>(null);
 	let createError = $state<string | null>(null);
@@ -35,6 +40,56 @@
 	let backedUp = $state(false);
 
 	const looksLikeKey = $derived(/^[xyz]pub[1-9A-HJ-NP-Za-km-z]{20,}$/.test(xpubInput.trim()));
+
+	// Restore a single-sig wallet from a Cairn backup file. We only prefill the
+	// xpub + name inputs — the user still walks the normal Validate → Preview →
+	// Name → Backup flow, so nothing bypasses server validation.
+	async function handleRestoreFile(e: Event) {
+		const input = e.currentTarget as HTMLInputElement;
+		const file = input.files?.[0];
+		input.value = ''; // allow re-selecting the same file
+		if (!file) return;
+
+		restoreError = null;
+		restoreNote = null;
+
+		let config: unknown;
+		try {
+			config = JSON.parse(await file.text());
+		} catch {
+			restoreError = "That file isn't valid JSON. Pick a Cairn wallet-config backup (.json).";
+			return;
+		}
+
+		if (!config || typeof config !== 'object') {
+			restoreError = "That file doesn't look like a wallet backup.";
+			return;
+		}
+		const c = config as Record<string, unknown>;
+
+		// A multisig / Caravan file — restore those from the multisig wizard.
+		if (
+			'quorum' in c ||
+			'extendedPublicKeys' in c ||
+			c.type === 'multisig' ||
+			(typeof c.format === 'string' && c.format !== 'cairn-wallet-config')
+		) {
+			restoreError = 'multisig';
+			return;
+		}
+
+		if (c.format === 'cairn-wallet-config' && c.type === 'single-sig' && typeof c.xpub === 'string') {
+			xpubInput = c.xpub;
+			previewError = null;
+			if (typeof c.name === 'string' && c.name.trim()) name = c.name.trim();
+			restoreNote = `Loaded the key from your backup${
+				typeof c.name === 'string' && c.name.trim() ? ` ("${c.name.trim()}")` : ''
+			}. Validate it to continue.`;
+			return;
+		}
+
+		restoreError = "That file isn't a Cairn single-key wallet backup.";
+	}
 </script>
 
 <svelte:head>
@@ -122,6 +177,43 @@
 		<!-- ------------------------------------------------- Step 2: key -->
 		<div class="card card-pad pane fade-in">
 			<span class="overline">Step 2 · Extended public key</span>
+
+			<!-- Restore from a backup file (cairn-lun6): prefills the xpub + name below. -->
+			<div class="restore-box">
+				<div class="restore-lead">
+					<Icon name="arrow-down-left" size={14} />
+					<span>Already backed this wallet up? Restore it from the file.</span>
+				</div>
+				<input
+					type="file"
+					accept=".json,application/json"
+					class="visually-hidden-file"
+					bind:this={restoreFileInput}
+					onchange={handleRestoreFile}
+				/>
+				<button
+					type="button"
+					class="btn btn-secondary btn-sm"
+					onclick={() => restoreFileInput?.click()}
+				>
+					Restore from a backup file (.json)
+				</button>
+				{#if restoreError === 'multisig'}
+					<div class="restore-msg restore-note" role="status">
+						This looks like a multisig backup — <a href="/wallets/multisig/new"
+							>restore it from the multisig wizard</a
+						>.
+					</div>
+				{:else if restoreError}
+					<div class="restore-msg form-error" role="alert">{restoreError}</div>
+				{:else if restoreNote}
+					<div class="restore-msg restore-note" role="status">
+						<Icon name="check" size={13} />
+						{restoreNote}
+					</div>
+				{/if}
+			</div>
+
 			<form
 				method="POST"
 				action="?/preview"
@@ -630,6 +722,62 @@
 		resize: vertical;
 		word-break: break-all;
 		font-size: 13px;
+	}
+
+	/* restore-from-backup affordance (cairn-lun6) */
+	.restore-box {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 10px;
+		padding: 14px 16px;
+		background: var(--bg);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-control);
+	}
+
+	.restore-lead {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 12.5px;
+		color: var(--text-secondary);
+	}
+
+	.restore-lead :global(svg) {
+		color: var(--accent);
+		flex-shrink: 0;
+	}
+
+	.restore-msg {
+		font-size: 12.5px;
+		line-height: 1.55;
+	}
+
+	.restore-note {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		color: var(--text-secondary);
+	}
+
+	.restore-note :global(svg) {
+		color: var(--success);
+		flex-shrink: 0;
+	}
+
+	.restore-note a {
+		color: var(--accent);
+		text-decoration: underline;
+	}
+
+	.visually-hidden-file {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		opacity: 0;
+		overflow: hidden;
+		pointer-events: none;
 	}
 
 	.help-box {

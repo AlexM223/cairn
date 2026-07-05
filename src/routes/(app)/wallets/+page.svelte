@@ -63,10 +63,16 @@
 			only ever sees <em>public</em> keys — it tracks your balance and history, and you sign every
 			spend on your own device. Nothing here can move your bitcoin on its own.
 		</p>
-		<a href="/wallets/new" class="btn btn-primary">
-			<Icon name="plus" size={15} />
-			Add your first wallet
-		</a>
+		<div class="onboard-actions">
+			<a href="/wallets/new" class="btn btn-primary">
+				<Icon name="plus" size={15} />
+				Add your first wallet
+			</a>
+			<a href="/wallets/new" class="restore-link">
+				<Icon name="arrow-down-left" size={14} />
+				Restore from a backup
+			</a>
+		</div>
 	</div>
 {:else}
 	<div class="grid fade-in">
@@ -252,5 +258,28 @@
 		font-style: normal;
 		color: var(--text);
 		font-weight: 500;
+	}
+
+	.onboard-actions {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 12px;
+	}
+
+	.restore-link {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 12.5px;
+		color: var(--text-secondary);
+	}
+
+	.restore-link:hover {
+		color: var(--accent);
+	}
+
+	.restore-link :global(svg) {
+		flex-shrink: 0;
 	}
 </style>
