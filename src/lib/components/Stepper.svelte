@@ -120,7 +120,7 @@
 	.step.done .circle {
 		background: var(--accent);
 		border-color: var(--accent);
-		color: #201409;
+		color: var(--on-accent);
 	}
 
 	.step.current .circle {

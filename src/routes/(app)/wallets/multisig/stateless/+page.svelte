@@ -1525,7 +1525,7 @@
 
 	.quorum-bar {
 		height: 6px;
-		border-radius: 3px;
+		border-radius: var(--radius-chip);
 		background: var(--bg);
 		border: 1px solid var(--border-subtle);
 		overflow: hidden;
@@ -1534,7 +1534,7 @@
 	.quorum-bar-fill {
 		height: 100%;
 		background: var(--accent);
-		border-radius: 3px;
+		border-radius: var(--radius-chip);
 		transition: width 240ms var(--ease);
 	}
 

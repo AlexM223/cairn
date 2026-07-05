@@ -200,9 +200,14 @@
 		}
 	}
 	const usedAddrs = $derived((data.scan?.addresses ?? []).filter((a) => a.used));
-	// Unused = the forward gap window on the receive chain.
+	// Unused = the forward gap window on BOTH chains — used-change addresses
+	// already show under Used, so hiding unused-change here left a slice of the
+	// wallet's addresses invisible in every view. Receive first: those are the
+	// ones you hand out.
 	const unusedAddrs = $derived(
-		(data.scan?.addresses ?? []).filter((a) => !a.used && !a.change)
+		(data.scan?.addresses ?? [])
+			.filter((a) => !a.used)
+			.toSorted((a, b) => Number(a.change) - Number(b.change))
 	);
 	const shownAddrs = $derived(addrFilter === 'used' ? usedAddrs : unusedAddrs);
 

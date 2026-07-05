@@ -29,6 +29,8 @@
 	--accent: #e8935a;
 	--accent-hover: #f0a06a;
 	--accent-muted: rgba(232, 147, 90, 0.15);
+	/* Text placed ON the accent (button labels, active stepper dots). */
+	--on-accent: #201409;
 
 	/* Status */
 	--success: #6bbf6b;
@@ -215,13 +217,13 @@ a:hover {
 
 .btn-primary {
 	background: var(--accent);
-	color: #201409;
+	color: var(--on-accent);
 	font-weight: 600;
 }
 
 .btn-primary:hover:not(:disabled) {
 	background: var(--accent-hover);
-	color: #201409;
+	color: var(--on-accent);
 }
 
 .btn-secondary {

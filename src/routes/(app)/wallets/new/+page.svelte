@@ -399,7 +399,7 @@
 	.step-item.active .step-dot {
 		background: var(--accent);
 		border-color: var(--accent);
-		color: #201409;
+		color: var(--on-accent);
 	}
 
 	.step-item.done .step-dot {
