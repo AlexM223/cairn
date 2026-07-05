@@ -140,16 +140,15 @@
 
 	const receive = $derived(form?.receive ?? data.receive);
 
-	// Backup nudge: gentle reminder until the first download happens (matches
-	// the multisig detail page). Optimistic until localStorage is checked so the
-	// badge doesn't flash on a wallet that's already backed up.
-	let backupDone = $state(true);
-	$effect(() => {
-		backupDone = localStorage.getItem(`cairn.wallet.backup.${data.wallet.id}`) === 'done';
-	});
+	// Backup nudge: gentle reminder until the config has been downloaded. Source
+	// of truth is the server-tracked wallet_backups table (data.backedUp) — the
+	// same value the creation wizard and the persistent banner use, so a download
+	// from anywhere (wizard, another browser) reflects here. The local flag is a
+	// purely-optimistic overlay for instant feedback on this page's own button.
+	let downloadedNow = $state(false);
+	const backupDone = $derived(data.backedUp || downloadedNow);
 	function markBackupDownloaded() {
-		localStorage.setItem(`cairn.wallet.backup.${data.wallet.id}`, 'done');
-		backupDone = true;
+		downloadedNow = true;
 	}
 
 	// --- tx labels ---

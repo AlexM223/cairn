@@ -8,6 +8,7 @@ import {
 	peekMultisigReceiveAddress
 } from '$lib/server/multisigScan';
 import { multisigToDescriptor } from '$lib/server/bitcoin/multisig';
+import { isBackedUp } from '$lib/server/backups';
 import type { Actions, PageServerLoad } from './$types';
 
 const QR_OPTS = {
@@ -45,6 +46,9 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 			}))
 		},
 		created: url.searchParams.get('created') === '1',
+		// Server-tracked backup status (wallet_backups) — authoritative, matching
+		// the wizard's download step and the persistent banner.
+		backedUp: isBackedUp('multisig', id),
 		descriptor: multisigToDescriptor(toMultisigConfig(multisig))
 	};
 

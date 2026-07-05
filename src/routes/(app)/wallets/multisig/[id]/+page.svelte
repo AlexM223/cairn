@@ -38,14 +38,14 @@
 
 	const receive = $derived(form?.receive ?? data.receive);
 
-	// Backup nudge: gentle reminder until the first download happens.
-	let backupDone = $state(true); // optimistic until localStorage is checked
-	$effect(() => {
-		backupDone = localStorage.getItem(`cairn.multisig.backup.${data.multisig.id}`) === 'done';
-	});
+	// Backup nudge: gentle reminder until the config has been downloaded. Source
+	// of truth is the server-tracked wallet_backups table (data.backedUp); the
+	// local flag is a purely-optimistic overlay for this page's own download
+	// buttons, so a download from anywhere else still reflects on next load.
+	let downloadedNow = $state(false);
+	const backupDone = $derived(data.backedUp || downloadedNow);
 	function markBackupDownloaded() {
-		localStorage.setItem(`cairn.multisig.backup.${data.multisig.id}`, 'done');
-		backupDone = true;
+		downloadedNow = true;
 	}
 
 	// ColdCard-family devices refuse to sign for multisigs they haven't registered

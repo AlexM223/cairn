@@ -9,6 +9,7 @@ import {
 	peekReceiveAddress
 } from '$lib/server/wallets';
 import { listTransactions } from '$lib/server/transactions';
+import { isBackedUp } from '$lib/server/backups';
 import type { Actions, PageServerLoad } from './$types';
 
 const QR_OPTS = {
@@ -38,6 +39,9 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 			createdAt: row.created_at
 		},
 		imported: url.searchParams.get('imported') === '1',
+		// Server-tracked backup status (wallet_backups) — the single source of
+		// truth the wizard's download step and the persistent banner both use.
+		backedUp: isBackedUp('wallet', id),
 		// Tx labels are local bookkeeping — one cheap SQLite read, no network.
 		labels: getLabels(locals.user!.id, id) ?? {},
 		// Saved transactions in the draft → awaiting-signature → broadcast
