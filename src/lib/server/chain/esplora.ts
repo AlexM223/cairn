@@ -4,6 +4,7 @@
 const REQUEST_TIMEOUT_MS = 12_000;
 const SHORT_TTL_MS = 10_000; // tip / mempool / fees
 const IMMUTABLE_TTL_MS = 10 * 60_000; // confirmed txs, blocks
+const PRICE_TTL_MS = 5 * 60_000; // spot price moves slowly; don't hammer the source
 
 // ------------------------------------------------------------------ payload types
 
@@ -204,6 +205,26 @@ export class EsploraApi {
 		this.cache.set(path, { expires: now + ttlMs, promise });
 		promise.catch(() => this.cache.delete(path));
 		return promise as Promise<T>;
+	}
+
+	/** Public probe: does the configured backend expose mempool.space /v1/ endpoints? */
+	supportsV1(): Promise<boolean> {
+		return this.probeV1();
+	}
+
+	/**
+	 * BTC→USD spot from this backend's mempool.space /v1/prices endpoint.
+	 * Null on a plain esplora backend (no such endpoint) or on any failure —
+	 * the caller decides whether to fall back elsewhere.
+	 */
+	async getBtcUsdPrice(): Promise<number | null> {
+		if (!(await this.probeV1())) return null;
+		try {
+			const body = await this.get<{ USD?: number }>('/v1/prices', PRICE_TTL_MS);
+			return body && typeof body.USD === 'number' && body.USD > 0 ? body.USD : null;
+		} catch {
+			return null;
+		}
 	}
 
 	/**

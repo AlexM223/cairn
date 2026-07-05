@@ -33,6 +33,35 @@ import type {
 
 const BLOCK_TXS_PAGE_SIZE = 25;
 
+// Public price fallback for plain esplora backends (blockstream.info) that have
+// no /v1/prices endpoint of their own. Cached process-wide (independent of the
+// configured backend, so it survives a chain reconfigure) to avoid hammering
+// the public source. A v1-capable backend never reaches this — it serves its
+// own prices — so a self-hoster with their own mempool instance is never
+// silently redirected to the public internet.
+const PUBLIC_PRICE_URL = 'https://mempool.space/api/v1/prices';
+const PUBLIC_PRICE_TTL_MS = 5 * 60_000;
+let publicPriceCache: { at: number; usd: number | null } | null = null;
+
+async function fetchPublicBtcUsdPrice(): Promise<number | null> {
+	const now = Date.now();
+	if (publicPriceCache && now - publicPriceCache.at < PUBLIC_PRICE_TTL_MS) {
+		return publicPriceCache.usd;
+	}
+	let usd: number | null = null;
+	try {
+		const res = await fetch(PUBLIC_PRICE_URL, { signal: AbortSignal.timeout(6000) });
+		if (res.ok) {
+			const body = (await res.json()) as { USD?: number };
+			if (typeof body.USD === 'number' && body.USD > 0) usd = body.USD;
+		}
+	} catch {
+		usd = null;
+	}
+	publicPriceCache = { at: now, usd };
+	return usd;
+}
+
 /** Loose shape of one node in mempool.space's RBF replacement tree. */
 interface RbfTreeNode {
 	tx?: { txid?: string };
@@ -497,6 +526,22 @@ export class ChainService {
 		} catch {
 			return null;
 		}
+	}
+
+	/**
+	 * BTC→USD spot for the opt-in fiat estimate. Prefers the admin's own
+	 * configured backend when it serves prices (a self-hosted mempool instance),
+	 * so a sovereignty-minded operator who pointed Cairn at their own node never
+	 * quietly leaks to the public internet. Only a plain esplora backend
+	 * (blockstream.info) — which has no price endpoint at all — falls back to the
+	 * public mempool.space; a v1-capable backend that merely fails is reported as
+	 * unavailable rather than silently bypassed.
+	 */
+	async getBtcUsdPrice(): Promise<number | null> {
+		if (await this.esplora.supportsV1()) {
+			return this.esplora.getBtcUsdPrice();
+		}
+		return fetchPublicBtcUsdPrice();
 	}
 
 	async getNodeInfo(): Promise<NodeInfo> {
