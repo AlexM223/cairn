@@ -12,6 +12,9 @@
 			<span class="auth-tagline">Your bitcoin. Your rules.</span>
 		</div>
 		{@render children()}
+		<div class="auth-foot">
+			<a href="/terms">Terms</a>
+		</div>
 	</div>
 </div>
 
@@ -22,6 +25,20 @@
 		align-items: center;
 		justify-content: center;
 		padding: 24px;
+	}
+
+	.auth-foot {
+		margin-top: 22px;
+		text-align: center;
+		font-size: 11.5px;
+	}
+
+	.auth-foot a {
+		color: var(--text-muted);
+	}
+
+	.auth-foot a:hover {
+		color: var(--accent);
 	}
 
 	.auth-card {

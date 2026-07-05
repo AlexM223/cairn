@@ -3,13 +3,24 @@ import { getPublicInstanceSettings, setSetting } from '$lib/server/settings';
 import { reconfigureChain, testElectrum, testEsplora } from '$lib/server/chain';
 import { resetInstance } from '$lib/server/admin';
 import { invalidateWalletCache } from '$lib/server/bitcoin/walletScan';
+import { getUserAgreement, setUserAgreement } from '$lib/server/disclosures';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async () => {
-	return { settings: getPublicInstanceSettings() };
+	return { settings: getPublicInstanceSettings(), agreement: getUserAgreement() };
 };
 
 export const actions: Actions = {
+	saveAgreement: async ({ request, locals }) => {
+		if (!locals.user?.isAdmin) return fail(403, { error: 'Admin access required.' });
+		const form = await request.formData();
+		const text = String(form.get('agreementText') ?? '');
+		const operator = String(form.get('operatorName') ?? '');
+		const saved = setUserAgreement({ text, operator });
+		// Report whether this bumped the version (so existing users re-accept).
+		return { agreementSaved: true, agreementVersion: saved.version };
+	},
+
 	save: async ({ request }) => {
 		const form = await request.formData();
 

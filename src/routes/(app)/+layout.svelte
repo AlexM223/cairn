@@ -36,6 +36,7 @@
 		</nav>
 
 		<div class="sidebar-foot">
+			<a href="/terms" class="terms-link">Terms</a>
 			<div class="user-chip">
 				<div class="avatar">{data.user.displayName.slice(0, 1).toUpperCase()}</div>
 				<div class="user-meta">
@@ -115,6 +116,17 @@
 	.sidebar-foot {
 		padding: 12px 10px;
 		border-top: 1px solid var(--border-subtle);
+	}
+
+	.terms-link {
+		display: block;
+		font-size: 11.5px;
+		color: var(--text-muted);
+		padding: 2px 6px 8px;
+	}
+
+	.terms-link:hover {
+		color: var(--accent);
 	}
 
 	.user-chip {

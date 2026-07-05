@@ -17,6 +17,13 @@
 	let electrumResult = $state<TestResult>(null);
 	let esploraResult = $state<TestResult>(null);
 
+	// User agreement editor (its own form/action, independent of chain settings).
+	// svelte-ignore state_referenced_locally — seeds the editable fields
+	let agreementText = $state(data.agreement.text);
+	// svelte-ignore state_referenced_locally
+	let operatorName = $state(data.agreement.operator);
+	let savingAgreement = $state(false);
+
 	// Danger zone: the destructive submit stays disabled until the admin has
 	// opened the inline confirm AND typed the word RESET.
 	let confirmingReset = $state(false);
@@ -272,6 +279,70 @@
 	</div>
 </form>
 
+<!-- User Agreement -->
+<form
+	method="POST"
+	action="?/saveAgreement"
+	class="card card-pad section fade-in agreement-form"
+	use:enhance={() => {
+		savingAgreement = true;
+		return async ({ update }) => {
+			savingAgreement = false;
+			await update({ reset: false });
+		};
+	}}
+>
+	<div class="section-head">
+		<span class="card-title">User agreement</span>
+		<p class="hint">
+			The terms every user must accept before using this instance. Edit freely to add your own.
+			Saving a change bumps the version, so existing users re-accept on their next visit.
+			<a href="/terms" target="_blank" rel="noopener">Preview the public terms page →</a>
+		</p>
+	</div>
+
+	{#if form?.agreementSaved}
+		<div class="save-note" role="status">
+			Saved — the agreement is now version {form.agreementVersion}.
+		</div>
+	{/if}
+
+	<div class="field">
+		<label class="label" for="operatorName">Operator name</label>
+		<input
+			class="input"
+			id="operatorName"
+			name="operatorName"
+			placeholder="e.g. Acme Bitcoin Services, or your name"
+			bind:value={operatorName}
+		/>
+		<span class="hint">Shown to users as “This instance is operated by …”.</span>
+	</div>
+
+	<div class="field">
+		<label class="label" for="agreementText">Agreement text</label>
+		<textarea
+			class="input mono agreement-text"
+			id="agreementText"
+			name="agreementText"
+			rows="16"
+			bind:value={agreementText}
+		></textarea>
+		<span class="hint">
+			Blank lines separate paragraphs. Start a paragraph with an UPPERCASE lead-in (e.g. “NOT A
+			CUSTODIAN.”) and it renders bold.
+		</span>
+	</div>
+
+	<div class="save-row">
+		<span class="hint">Current version: {data.agreement.version}</span>
+		<button class="btn btn-primary" disabled={savingAgreement}>
+			{#if savingAgreement}<span class="spinner"></span>{/if}
+			Save agreement
+		</button>
+	</div>
+</form>
+
 <section class="card card-pad section danger-zone fade-in">
 	<div class="section-head">
 		<span class="card-title danger-title">Danger zone</span>
@@ -471,6 +542,35 @@
 	.save-row {
 		display: flex;
 		justify-content: flex-end;
+	}
+
+	.agreement-form {
+		max-width: 760px;
+		margin-top: 24px;
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
+	}
+
+	.agreement-form .save-row {
+		justify-content: space-between;
+		align-items: center;
+	}
+
+	.agreement-text {
+		resize: vertical;
+		font-size: 12.5px;
+		line-height: 1.6;
+		min-height: 260px;
+	}
+
+	.save-note {
+		font-size: 12.5px;
+		color: var(--success);
+		background: var(--success-muted);
+		border: 1px solid rgba(107, 191, 107, 0.3);
+		border-radius: var(--radius-control);
+		padding: 8px 12px;
 	}
 
 	.danger-zone {
