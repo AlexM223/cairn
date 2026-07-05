@@ -19,7 +19,7 @@ export const POST: RequestHandler = async (event) => {
 		const user = loginWithPassword(email, password);
 		noteLoginSuccess(ip, email);
 		const { token, expiresAt } = createSession(user.id);
-		setSessionCookie(event.cookies, token, expiresAt);
+		setSessionCookie(event.cookies, token, expiresAt, event.url);
 		return json({ user });
 	} catch (e) {
 		if (e instanceof AuthError) {

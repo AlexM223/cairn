@@ -29,7 +29,10 @@ export default defineConfig({
 			'@scure/base',
 			'@scure/bip32',
 			'@noble/hashes/sha2.js',
-			'@noble/hashes/utils.js'
+			'@noble/hashes/utils.js',
+			// Trezor Connect is loaded through the same lazy-import pattern and
+			// would hit the identical first-click re-optimization otherwise.
+			'@trezor/connect-web'
 		]
 	},
 	plugins: [

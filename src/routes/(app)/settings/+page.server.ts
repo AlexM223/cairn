@@ -48,7 +48,7 @@ export const actions: Actions = {
 		return { profileSaved: true };
 	},
 
-	password: async ({ request, locals, cookies }) => {
+	password: async ({ request, locals, cookies, url }) => {
 		const form = await request.formData();
 		const current = String(form.get('currentPassword') ?? '');
 		const next = String(form.get('newPassword') ?? '');
@@ -76,7 +76,7 @@ export const actions: Actions = {
 		// Rotate all sessions: sign everything out, then start a fresh one here.
 		destroyUserSessions(uid);
 		const { token, expiresAt } = createSession(uid);
-		setSessionCookie(cookies, token, expiresAt);
+		setSessionCookie(cookies, token, expiresAt, url);
 
 		return { passwordSaved: true };
 	}

@@ -70,7 +70,7 @@ export const POST: RequestHandler = async (event) => {
 
 	try {
 		const { token, expiresAt } = createSession(user.id);
-		setSessionCookie(event.cookies, token, expiresAt);
+		setSessionCookie(event.cookies, token, expiresAt, event.url);
 	} catch (e) {
 		log.error({ err: e, userId: user.id }, 'session creation failed after login');
 		return json({ error: 'Could not start a session.' }, { status: 500 });

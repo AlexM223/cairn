@@ -81,12 +81,23 @@ export function destroyUserSessions(userId: number): void {
 	db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
 }
 
-/** Set the session cookie (httpOnly, lax) for a freshly created session. */
-export function setSessionCookie(cookies: Cookies, token: string, expiresAt: Date): void {
+/**
+ * Set the session cookie (httpOnly, lax) for a freshly created session.
+ * `secure` follows the request protocol — explicit, matching the WebAuthn
+ * challenge cookie: locked to HTTPS when served over it, while plain-HTTP
+ * LAN deployments (Umbrel on umbrel.local) keep working.
+ */
+export function setSessionCookie(
+	cookies: Cookies,
+	token: string,
+	expiresAt: Date,
+	url: URL
+): void {
 	cookies.set(SESSION_COOKIE, token, {
 		path: '/',
 		httpOnly: true,
 		sameSite: 'lax',
+		secure: url.protocol === 'https:',
 		expires: expiresAt
 	});
 }

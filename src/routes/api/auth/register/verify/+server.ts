@@ -74,7 +74,7 @@ export const POST: RequestHandler = async (event) => {
 		}
 		clearRegChallenge(event);
 		const { token, expiresAt } = createSession(existing.id);
-		setSessionCookie(event.cookies, token, expiresAt);
+		setSessionCookie(event.cookies, token, expiresAt, event.url);
 		return json({ user: existing });
 	}
 
@@ -100,6 +100,6 @@ export const POST: RequestHandler = async (event) => {
 
 	clearRegChallenge(event);
 	const { token, expiresAt } = createSession(user.id);
-	setSessionCookie(event.cookies, token, expiresAt);
+	setSessionCookie(event.cookies, token, expiresAt, event.url);
 	return json({ user }, { status: 201 });
 };
