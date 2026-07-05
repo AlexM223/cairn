@@ -343,6 +343,12 @@ export interface InstanceSettings {
 	electrumHost: string;
 	electrumPort: number;
 	electrumTls: boolean;
+	/** Skip TLS certificate validation for the Electrum connection. Off by
+	 *  default: a valid, trusted certificate is required. Only turn this on for a
+	 *  custom self-hosted Electrum server that presents a self-signed certificate
+	 *  AND that you reach over a trusted network path — it disables the protection
+	 *  against a man-in-the-middle feeding forged chain data (cairn-azei). */
+	electrumTlsInsecure: boolean;
 	esploraUrl: string;
 	coreRpcUrl: string | null;
 	coreRpcUser: string | null;

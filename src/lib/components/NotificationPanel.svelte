@@ -53,6 +53,7 @@
 		sign_session_waiting: 'clock',
 		admin_new_signup: 'users',
 		admin_invite_used: 'ticket',
+		admin_restore: 'alert-triangle',
 		admin_server_health: 'server',
 		security_failed_login: 'shield',
 		security_new_passkey: 'shield'

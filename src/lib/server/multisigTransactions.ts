@@ -367,15 +367,29 @@ export async function broadcastMultisigTransaction(
 		throw new BroadcastError('This transaction has already been broadcast.', 'already_sent');
 	}
 
-	let broadcastTxid: string;
+	let reportedTxid: string;
 	try {
-		broadcastTxid = await getChain().electrum.broadcast(finalized.rawHex);
+		reportedTxid = await getChain().electrum.broadcast(finalized.rawHex);
 	} catch (e) {
 		// Release the claim: a failed broadcast must stay retryable.
 		db.prepare('UPDATE multisig_transactions SET broadcast_started_at = NULL WHERE id = ?').run(txId);
 		const raw = e instanceof Error ? e.message : String(e);
 		throw new BroadcastError(`The network rejected this transaction: ${raw}`, 'rejected');
 	}
+
+	// A malicious or misbehaving Electrum server can return an arbitrary txid for
+	// a broadcast it never performed. finalized.txid is the double-SHA256 of the
+	// exact bytes we sent — recomputed locally, it can't be forged. On a mismatch,
+	// don't trust that the broadcast happened: release the claim (keep it
+	// retryable) and refuse to record a bogus txid (cairn-ziwm).
+	if (reportedTxid.trim().toLowerCase() !== finalized.txid.toLowerCase()) {
+		db.prepare('UPDATE multisig_transactions SET broadcast_started_at = NULL WHERE id = ?').run(txId);
+		throw new BroadcastError(
+			'The server acknowledged the broadcast with a different transaction id than the one we signed — refusing to record it. Check your Electrum server and try again.',
+			'rejected'
+		);
+	}
+	const broadcastTxid = finalized.txid;
 
 	const updated = updateMultisigTransaction(userId, multisigId, txId, {
 		status: 'completed',

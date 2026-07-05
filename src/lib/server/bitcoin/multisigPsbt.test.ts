@@ -572,6 +572,49 @@ describe('combineMultisigPsbts', () => {
 			expect((e as MultisigPsbtError).code).toBe('foreign_signature');
 		}
 	});
+
+	// A device's signature is DER bytes + a trailing sighash-flag byte. Cairn must
+	// only ever combine SIGHASH_ALL (0x01) signatures — anything else commits to
+	// less than the whole tx and could be replayed onto another transaction
+	// spending the same input (cairn-srte).
+	/** Re-flag input 0's (real, membership-valid) signature with a non-ALL sighash. */
+	async function draftWithSighash(flag: number): Promise<{ draft: string; tampered: string }> {
+		const draft = await build2of3();
+		const signed = Transaction.fromPSBT(base64.decode(signWith(draft.psbtBase64, SIGNERS[0])));
+		const [pubkey, sig] = signed.getInput(0).partialSig![0];
+		const reflagged = new Uint8Array(sig);
+		reflagged[reflagged.length - 1] = flag; // swap only the trailing sighash byte
+
+		const tampered = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
+		tampered.updateInput(0, { partialSig: [[pubkey, reflagged]] }, true);
+		return { draft: draft.psbtBase64, tampered: base64.encode(tampered.toPSBT()) };
+	}
+
+	it.each([
+		['SIGHASH_NONE', 0x02],
+		['SIGHASH_SINGLE', 0x03],
+		['SIGHASH_ALL|ANYONECANPAY', 0x81],
+		['SIGHASH_SINGLE|ANYONECANPAY', 0x83]
+	])('rejects a %s signature during combine', async (_label, flag) => {
+		const { draft, tampered } = await draftWithSighash(flag);
+		try {
+			combineMultisigPsbts(draft, tampered);
+			expect.unreachable();
+		} catch (e) {
+			expect(e).toBeInstanceOf(MultisigPsbtError);
+			expect((e as MultisigPsbtError).code).toBe('wrong_sighash');
+		}
+	});
+
+	it('accepts a normal SIGHASH_ALL signature (the default) unchanged', async () => {
+		const draft = await build2of3();
+		const signed = signWith(draft.psbtBase64, SIGNERS[0]);
+		// Sanity-check the fixture: btc-signer's default trailing byte IS 0x01.
+		const tx = Transaction.fromPSBT(base64.decode(signed));
+		const sig = tx.getInput(0).partialSig![0][1];
+		expect(sig[sig.length - 1]).toBe(0x01);
+		expect(partialSigCount(combineMultisigPsbts(draft.psbtBase64, signed), 0)).toBe(1);
+	});
 });
 
 // ── quorum matrix ────────────────────────────────────────────────────────────

@@ -325,6 +325,102 @@ describe('device-flow guards (no hardware)', () => {
 		).rejects.toMatchObject({ name: 'Bitbox02Error', code: 'bad_psbt' });
 	});
 
+	// ── multisig registration before signing (cairn-5kth / audit F6) ───────────
+	//
+	// A BitBox02 must have a multisig script config REGISTERED (user-approved
+	// on-device) before it will sign for it. These stub the full connect→pair→sign
+	// chain to assert signPsbtWithBitbox02 checks registration and registers when
+	// needed BEFORE it ever calls btcSignPSBT.
+
+	const MS_KEYS: MultisigSignKey[] = [0, 1, 2].map((i) => ({
+		xpub: XPUB,
+		fingerprint: `0000000${i}`,
+		path: "m/48'/0'/0'/2'"
+	}));
+
+	/** A fake PairedBitBox recording the order device calls happen in. */
+	function makePaired(registered: boolean) {
+		const calls: string[] = [];
+		const paired = {
+			btcIsScriptConfigRegistered: vi.fn(async () => {
+				calls.push('check');
+				return registered;
+			}),
+			btcRegisterScriptConfig: vi.fn(async () => {
+				calls.push('register');
+			}),
+			btcSignPSBT: vi.fn(async () => {
+				calls.push('sign');
+				return 'SIGNED_PSBT';
+			}),
+			close: vi.fn()
+		};
+		return { paired, calls };
+	}
+
+	/** bitbox-api mock whose connect chain yields the given fake paired device. */
+	function bitboxMock(paired: unknown) {
+		return {
+			bitbox02ConnectWebHID: vi.fn(async () => ({
+				unlockAndPair: async () => ({
+					getPairingCode: () => undefined, // already paired — no code
+					waitConfirm: async () => paired
+				})
+			})),
+			ensureError: (e: unknown) => e,
+			isUserAbort: () => false
+		};
+	}
+
+	async function runSign(
+		registered: boolean,
+		scriptType: 'multisig' | 'simple'
+	): Promise<{ calls: string[]; paired: ReturnType<typeof makePaired>['paired']; out: string }> {
+		const { paired, calls } = makePaired(registered);
+		vi.doMock('bitbox-api', () => bitboxMock(paired));
+		vi.stubGlobal('navigator', { hid: {} }); // make WebHID look available
+		try {
+			vi.resetModules();
+			const { signPsbtWithBitbox02, buildMultisigScriptConfig, buildSimpleScriptConfig } =
+				await import('./bitbox02');
+			const params =
+				scriptType === 'multisig'
+					? {
+							scriptConfig: buildMultisigScriptConfig(MS_KEYS, 0, 2, 'p2wsh' as const),
+							keypath: "m/48'/0'/0'/2'",
+							walletName: 'My Vault'
+						}
+					: { scriptConfig: buildSimpleScriptConfig('p2wpkh'), keypath: "m/84'/0'/0'" };
+			const out = await signPsbtWithBitbox02('cHNidP8=', params);
+			return { calls, paired, out };
+		} finally {
+			vi.doUnmock('bitbox-api');
+			vi.unstubAllGlobals();
+			vi.resetModules();
+		}
+	}
+
+	it('registers an unregistered multisig on-device BEFORE signing (check → register → sign)', async () => {
+		const { calls, paired, out } = await runSign(false, 'multisig');
+		expect(out).toBe('SIGNED_PSBT');
+		expect(calls).toEqual(['check', 'register', 'sign']);
+		expect(paired.btcRegisterScriptConfig).toHaveBeenCalledOnce();
+		expect(paired.close).toHaveBeenCalled();
+	});
+
+	it('skips registration when the multisig is already registered (check → sign)', async () => {
+		const { calls, paired } = await runSign(true, 'multisig');
+		expect(calls).toEqual(['check', 'sign']);
+		expect(paired.btcRegisterScriptConfig).not.toHaveBeenCalled();
+	});
+
+	it('never checks or registers for a single-sig config (sign only)', async () => {
+		const { calls, paired } = await runSign(false, 'simple');
+		expect(calls).toEqual(['sign']);
+		expect(paired.btcIsScriptConfigRegistered).not.toHaveBeenCalled();
+		expect(paired.btcRegisterScriptConfig).not.toHaveBeenCalled();
+	});
+
 	it('a supported-scriptType read surfaces unsupported-browser when navigator.hid is absent', async () => {
 		// Mock the WASM module so import() never loads real WASM; the connect guard
 		// throws unsupported-browser first because Vitest has no navigator.hid.

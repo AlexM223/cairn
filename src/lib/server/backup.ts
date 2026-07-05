@@ -143,6 +143,9 @@ export function decryptBackup(envelopeText: string, passphrase: string): BackupD
 export interface RestoreSummary {
 	usersAdded: number;
 	usersSkipped: number;
+	/** Imported rows that were flagged is_admin in the backup and were forcibly
+	 *  demoted to a normal account on restore (see restoreBackup for why). */
+	adminDowngraded: number;
 	wallets: number;
 	multisigs: number;
 	addresses: number;
@@ -160,11 +163,22 @@ const orNull = (v: unknown): string | null => (v == null ? null : String(v));
  * skipped; new accounts are inserted credential-less (their owner reclaims them
  * by adding a passkey at signup). Ids are remapped, so this is safe to run on an
  * instance that already has the restoring admin. Runs in one transaction.
+ *
+ * SECURITY (cairn-cpb5): every imported account is forced to is_admin = 0,
+ * regardless of what the backup file claims. A backup file is untrusted input
+ * (an admin can be social-engineered into restoring an attacker-crafted one);
+ * combined with the credential-less-account reclaim path, honouring an imported
+ * is_admin flag would let an attacker register a passkey for that email and walk
+ * straight into admin — bypassing the instance's registration lockdown entirely.
+ * Legitimately restored admins are simply re-promoted by an existing admin from
+ * the users screen. The count of demoted rows is surfaced so the restore is
+ * visible, not silent.
  */
 export function restoreBackup(data: BackupData): RestoreSummary {
 	const summary: RestoreSummary = {
 		usersAdded: 0,
 		usersSkipped: 0,
+		adminDowngraded: 0,
 		wallets: 0,
 		multisigs: 0,
 		addresses: 0,
@@ -186,10 +200,13 @@ export function restoreBackup(data: BackupData): RestoreSummary {
 				summary.usersSkipped++;
 				continue;
 			}
+			// NEVER trust an imported is_admin flag — force every restored account to
+			// a normal (non-admin) role. See the function doc comment (cairn-cpb5).
+			if (u.is_admin) summary.adminDowngraded++;
 			const res = insertUser.run(
 				email,
 				str(u.display_name) || email,
-				u.is_admin ? 1 : 0,
+				0, // is_admin — always non-admin on restore
 				u.disabled ? 1 : 0,
 				str(u.created_at) || new Date().toISOString(),
 				orNull(u.last_login)

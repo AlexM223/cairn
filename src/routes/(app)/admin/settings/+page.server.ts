@@ -55,6 +55,12 @@ export const actions: Actions = {
 			setSetting('electrum_host', host);
 			setSetting('electrum_port', String(port));
 			setSetting('electrum_tls', form.get('electrumTls') === 'on' ? 'true' : 'false');
+			// Certificate validation is ON unless the admin explicitly opts out for a
+			// self-signed custom server (cairn-azei).
+			setSetting(
+				'electrum_tls_insecure',
+				form.get('electrumTlsInsecure') === 'on' ? 'true' : 'false'
+			);
 
 			const esplora = String(form.get('esploraUrl') ?? '').trim();
 			if (esplora && !/^https?:\/\//.test(esplora))
@@ -81,10 +87,11 @@ export const actions: Actions = {
 		const host = String(form.get('electrumHost') ?? '').trim();
 		const port = Number(form.get('electrumPort'));
 		const tls = form.get('electrumTls') === 'on';
+		const tlsInsecure = form.get('electrumTlsInsecure') === 'on';
 		if (!host || !Number.isInteger(port))
 			return fail(400, { electrumTest: { ok: false, error: 'Enter a host and port first.' } });
 
-		const result = await testElectrum({ host, port, tls });
+		const result = await testElectrum({ host, port, tls, tlsInsecure });
 		return { electrumTest: result };
 	},
 

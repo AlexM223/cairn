@@ -198,7 +198,8 @@ export class ChainService {
 		this.electrum = new ElectrumClient({
 			host: config.electrumHost,
 			port: config.electrumPort,
-			tls: config.electrumTls
+			tls: config.electrumTls,
+			tlsInsecure: config.electrumTlsInsecure
 		});
 		// Surface connect/disconnect/new-block on the user activity feed + server log.
 		wireChainEvents(this.electrum);
@@ -636,6 +637,7 @@ export async function testElectrum(cfg: {
 	host: string;
 	port: number;
 	tls: boolean;
+	tlsInsecure?: boolean;
 }): Promise<{ ok: boolean; banner?: string; tipHeight?: number; error?: string }> {
 	const client = new ElectrumClient({ ...cfg, timeoutMs: 8_000 });
 	try {

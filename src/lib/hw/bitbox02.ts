@@ -590,6 +590,72 @@ export interface Bitbox02SignParams {
 	scriptConfig: BitboxSimpleScriptConfig | BitboxMultisigScriptConfig;
 	/** Account keypath (apostrophe string or index array). */
 	keypath: string | number[];
+	/**
+	 * For a MULTISIG config, the wallet name shown on the device during the
+	 * one-time on-device registration (see signPsbtWithBitbox02). Ignored for
+	 * single-sig. The BitBox02 firmware caps account names at 30 characters, so a
+	 * longer name is truncated; if omitted, the device prompts the user to enter a
+	 * name during registration.
+	 */
+	walletName?: string;
+}
+
+/** True when a script config is the multisig variant (needs device registration). */
+function isMultisigConfig(
+	cfg: BitboxSimpleScriptConfig | BitboxMultisigScriptConfig
+): cfg is BitboxMultisigScriptConfig {
+	return 'multisig' in cfg;
+}
+
+/** BitBox02 firmware limit on a registered account name. */
+const MAX_ACCOUNT_NAME = 30;
+
+/**
+ * A multisig script config must be REGISTERED on the BitBox02 before it will
+ * sign for it (the BitBox02 API contract, and the whole point of "verify on
+ * device": the device shows the user the wallet's quorum + every cosigner key
+ * and pins that exact policy on first use). Ledger and Jade do this too; the
+ * BitBox02 was the outlier that signed without it (cairn-5kth / audit F6).
+ *
+ * This checks whether the config is already registered and, only if not, runs
+ * the on-device registration ceremony. It is idempotent by design — a device
+ * that already registered this exact wallet skips straight to signing, so
+ * re-signing never re-prompts. Single-sig configs need no registration and are
+ * left untouched.
+ */
+async function maybeRegisterMultisig(
+	paired: PairedBitBoxType,
+	mod: BitboxModule,
+	params: Bitbox02SignParams
+): Promise<void> {
+	if (!isMultisigConfig(params.scriptConfig)) return;
+
+	// bitbox-api's BtcScriptConfig multisig variant is structurally identical to
+	// our BitboxMultisigScriptConfig; the account keypath is required for multisig.
+	const scriptConfig = params.scriptConfig as unknown as Parameters<
+		PairedBitBoxType['btcRegisterScriptConfig']
+	>[1];
+
+	let alreadyRegistered: boolean;
+	try {
+		alreadyRegistered = await paired.btcIsScriptConfigRegistered(
+			COIN,
+			scriptConfig,
+			params.keypath
+		);
+	} catch (err) {
+		throw toBitbox02Error(err, mod);
+	}
+	if (alreadyRegistered) return;
+
+	const name = params.walletName?.trim().slice(0, MAX_ACCOUNT_NAME) || undefined;
+	try {
+		// 'autoXpubTpub' picks the standard xpub/tpub encoding per network (mainnet
+		// xpub here). A falsy name lets the device prompt the user to enter one.
+		await paired.btcRegisterScriptConfig(COIN, scriptConfig, params.keypath, 'autoXpubTpub', name);
+	} catch (err) {
+		throw toBitbox02Error(err, mod);
+	}
 }
 
 /**
@@ -602,13 +668,15 @@ export interface Bitbox02SignParams {
  * reviewed on-device, and the parent Sign step re-checks that commitment
  * server-side (assertSameTransaction), same as the other drivers.
  *
- * For a MULTISIG PSBT the script config must be REGISTERED on the device first
- * (btcRegisterScriptConfig, checked lazily via btcIsScriptConfigRegistered) —
- * that registration flow is a separate signer-component concern (Unit F) and is
- * NOT performed here; this function assumes single-sig or an already-registered
- * multisig config. (A `bitbox02_multisig_registrations` table, analogous to
- * ledger_multisig_registrations, is the follow-on that makes registration
- * persistent — deliberately not built in this driver unit.)
+ * For a MULTISIG PSBT the script config must be REGISTERED on the device first:
+ * maybeRegisterMultisig() checks btcIsScriptConfigRegistered and, only when the
+ * config is not yet known to this device, runs the on-device registration
+ * ceremony (btcRegisterScriptConfig) so the user reviews and approves the exact
+ * quorum + cosigner set before the device will ever sign for it. This is
+ * idempotent — an already-registered wallet goes straight to signing. Single-sig
+ * configs need no registration. (The registration lives on the device itself, so
+ * unlike Ledger there is no Cairn-side record to persist; a browser-data wipe
+ * simply re-runs the one-time on-device approval.)
  */
 export async function signPsbtWithBitbox02(
 	psbtBase64: string,
@@ -621,6 +689,10 @@ export async function signPsbtWithBitbox02(
 	const mod = await loadBitbox();
 	const { paired, close } = await connectAndPair(mod);
 	try {
+		// A multisig config the device hasn't registered would otherwise be signed
+		// blind — register (with on-device approval) before signing (cairn-5kth).
+		await maybeRegisterMultisig(paired, mod, params);
+
 		let signed: string;
 		try {
 			// force_script_config carries the script config + account keypath; the

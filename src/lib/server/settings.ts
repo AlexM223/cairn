@@ -7,6 +7,7 @@ const DEFAULTS: InstanceSettings = {
 	electrumHost: 'electrum.blockstream.info',
 	electrumPort: 50002,
 	electrumTls: true,
+	electrumTlsInsecure: false,
 	esploraUrl: 'https://mempool.space/api',
 	coreRpcUrl: null,
 	coreRpcUser: null,
@@ -49,6 +50,7 @@ export function getInstanceSettings(): InstanceSettings {
 	if (str('electrum_host')) s.electrumHost = str('electrum_host')!;
 	if (str('electrum_port')) s.electrumPort = parseInt(str('electrum_port')!, 10);
 	if (map.has('electrum_tls')) s.electrumTls = str('electrum_tls') === 'true';
+	if (map.has('electrum_tls_insecure')) s.electrumTlsInsecure = str('electrum_tls_insecure') === 'true';
 	if (str('esplora_url')) s.esploraUrl = str('esplora_url')!;
 	if (str('core_rpc_url')) s.coreRpcUrl = str('core_rpc_url')!;
 	if (str('core_rpc_user')) s.coreRpcUser = str('core_rpc_user')!;
@@ -77,17 +79,21 @@ export function getChainConfig(): {
 	electrumHost: string;
 	electrumPort: number;
 	electrumTls: boolean;
+	electrumTlsInsecure: boolean;
 	esploraUrl: string;
 	mode: 'public' | 'custom';
 } {
 	const s = getInstanceSettings();
 	if (s.connectionMode === 'public') {
-		return { ...PUBLIC_DEFAULTS, mode: 'public' };
+		// The public default server presents a valid, trusted certificate — always
+		// verify it. The insecure opt-out is a custom-server-only escape hatch.
+		return { ...PUBLIC_DEFAULTS, electrumTlsInsecure: false, mode: 'public' };
 	}
 	return {
 		electrumHost: s.electrumHost,
 		electrumPort: s.electrumPort,
 		electrumTls: s.electrumTls,
+		electrumTlsInsecure: s.electrumTlsInsecure,
 		esploraUrl: s.esploraUrl || DEFAULTS.esploraUrl,
 		mode: 'custom'
 	};

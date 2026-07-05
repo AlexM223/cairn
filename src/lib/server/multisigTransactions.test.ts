@@ -1,14 +1,14 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { HDKey } from '@scure/bip32';
 import { base64 } from '@scure/base';
-import { bytesToHex } from '@noble/hashes/utils.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { Transaction, NETWORK } from '@scure/btc-signer';
 import { db } from './db';
 import { registerUser } from './auth';
 import { setSetting } from './settings';
 import { getMultisig, toMultisigConfig } from './wallets/multisig';
 import { deriveMultisigAddress } from './bitcoin/multisig';
-import { constructMultisigPsbt, MultisigPsbtError } from './bitcoin/multisigPsbt';
+import { constructMultisigPsbt, MultisigPsbtError, finalizeMultisigPsbt } from './bitcoin/multisigPsbt';
 import type { SpendableUtxo } from './bitcoin/psbt';
 import {
 	buildMultisigDraft,
@@ -299,6 +299,18 @@ describe('broadcastMultisigTransaction', () => {
 		return txId;
 	}
 
+	/** The true txid of a raw tx — what an honest Electrum server echoes back on
+	 *  broadcast (equals the locally-computed finalized.txid the code now checks). */
+	function txidOf(rawHex: string): string {
+		return Transaction.fromRaw(hexToBytes(rawHex), { disableScriptCheck: true }).id;
+	}
+
+	/** Make the broadcast mock behave like an honest server: return the real txid
+	 *  of whatever bytes it is handed, so it matches the code's local computation. */
+	function honestBroadcastOnce(): void {
+		broadcastMock.mockImplementationOnce((rawHex: string) => Promise.resolve(txidOf(rawHex)));
+	}
+
 	it('refuses to broadcast below quorum with "X of M signatures collected"', async () => {
 		const { userId, multisigId } = seedMultisig('quorum@example.com');
 		const { txId, psbt } = await seedDraft(userId, multisigId);
@@ -312,23 +324,37 @@ describe('broadcastMultisigTransaction', () => {
 		expect(broadcastMock).not.toHaveBeenCalled();
 	});
 
-	it('broadcasts a quorum-complete transaction and records the txid', async () => {
+	it('broadcasts a quorum-complete transaction and records the LOCALLY-computed txid', async () => {
 		const { userId, multisigId } = seedMultisig('send@example.com');
 		const txId = await signedToQuorum(userId, multisigId);
-		broadcastMock.mockResolvedValueOnce('cc'.repeat(32));
+		honestBroadcastOnce();
 
 		const { txid, transaction } = await broadcastMultisigTransaction(userId, multisigId, txId);
-		expect(txid).toBe('cc'.repeat(32));
+		expect(txid).toMatch(/^[0-9a-f]{64}$/);
 		expect(transaction.status).toBe('completed');
-		expect(transaction.txid).toBe('cc'.repeat(32));
+		expect(transaction.txid).toBe(txid);
 		expect(broadcastMock).toHaveBeenCalledTimes(1);
+	});
+
+	it('rejects a broadcast whose server-reported txid differs from ours (cairn-ziwm)', async () => {
+		const { userId, multisigId } = seedMultisig('forge@example.com');
+		const txId = await signedToQuorum(userId, multisigId);
+		// A server claiming success with an invented txid for a broadcast it never did.
+		broadcastMock.mockResolvedValueOnce('cc'.repeat(32));
+
+		await expect(broadcastMultisigTransaction(userId, multisigId, txId)).rejects.toMatchObject({
+			code: 'rejected'
+		});
+		const after = getMultisigTransaction(userId, multisigId, txId);
+		expect(after?.txid).toBeNull();
+		expect(after?.status).not.toBe('completed');
 	});
 
 	it('accepts the final signature riding along with the broadcast call', async () => {
 		const { userId, multisigId } = seedMultisig('ride@example.com');
 		const { txId, psbt } = await seedDraft(userId, multisigId);
 		const first = attachMultisigSignature(userId, multisigId, txId, signWith(psbt, 0))!;
-		broadcastMock.mockResolvedValueOnce('dd'.repeat(32));
+		honestBroadcastOnce();
 
 		const { txid } = await broadcastMultisigTransaction(
 			userId,
@@ -336,13 +362,15 @@ describe('broadcastMultisigTransaction', () => {
 			txId,
 			signWith(first.transaction.psbt, 2) // key 3 completes the quorum here
 		);
-		expect(txid).toBe('dd'.repeat(32));
+		expect(txid).toMatch(/^[0-9a-f]{64}$/);
 	});
 
 	it('lets exactly one of two concurrent broadcasts through (atomic claim)', async () => {
 		const { userId, multisigId } = seedMultisig('race@example.com');
 		const txId = await signedToQuorum(userId, multisigId);
 
+		// The honest txid the server will echo back (matches the code's local check).
+		const want = finalizeMultisigPsbt(getMultisigTransaction(userId, multisigId, txId)!.psbt).txid;
 		let resolveBroadcast!: (txid: string) => void;
 		broadcastMock.mockImplementationOnce(
 			() => new Promise<string>((res) => (resolveBroadcast = res))
@@ -351,9 +379,9 @@ describe('broadcastMultisigTransaction', () => {
 		const second = broadcastMultisigTransaction(userId, multisigId, txId);
 		await expect(second).rejects.toMatchObject({ code: 'already_sent' });
 
-		resolveBroadcast('ee'.repeat(32));
+		resolveBroadcast(want);
 		const winner = await first;
-		expect(winner.txid).toBe('ee'.repeat(32));
+		expect(winner.txid).toBe(want);
 		expect(broadcastMock).toHaveBeenCalledTimes(1);
 		expect(getMultisigTransaction(userId, multisigId, txId)?.status).toBe('completed');
 	});
@@ -370,15 +398,15 @@ describe('broadcastMultisigTransaction', () => {
 		expect(afterFailure?.txid).toBeNull();
 		expect(afterFailure?.status).not.toBe('completed');
 
-		broadcastMock.mockResolvedValueOnce('ab'.repeat(32));
+		honestBroadcastOnce();
 		const retry = await broadcastMultisigTransaction(userId, multisigId, txId);
-		expect(retry.txid).toBe('ab'.repeat(32));
+		expect(retry.txid).toMatch(/^[0-9a-f]{64}$/);
 	});
 
 	it('refuses double-broadcast of a completed transaction before touching the network', async () => {
 		const { userId, multisigId } = seedMultisig('done@example.com');
 		const txId = await signedToQuorum(userId, multisigId);
-		broadcastMock.mockResolvedValueOnce('cd'.repeat(32));
+		honestBroadcastOnce();
 		await broadcastMultisigTransaction(userId, multisigId, txId);
 		broadcastMock.mockClear();
 

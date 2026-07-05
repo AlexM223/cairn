@@ -211,6 +211,7 @@
 			events: [
 				{ type: 'admin_new_signup', label: 'New sign-up', desc: 'A new user account was created.' },
 				{ type: 'admin_invite_used', label: 'Invite redeemed', desc: 'An invite code was redeemed.' },
+				{ type: 'admin_restore', label: 'Backup restored', desc: 'An encrypted instance backup was restored — flags any imported accounts.' },
 				{ type: 'admin_server_health', label: 'Server health', desc: 'Node connection down, reconnect looping, or disk space low.' }
 			]
 		}

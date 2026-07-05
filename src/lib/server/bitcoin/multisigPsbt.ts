@@ -29,6 +29,10 @@ import { addressToScriptPubKey, isValidAddress } from './xpub';
 import { signingMassFromFetchedParents, type SigningMass } from './signingMass';
 import { coinbaseMaturity, isImmatureCoinbase } from '$lib/shared/coinbase';
 
+/** The only sighash flag Cairn accepts on a co-signer signature: SIGHASH_ALL —
+ *  the whole-transaction commitment. Enforced in combineMultisigPsbts. */
+const SIGHASH_ALL = 0x01;
+
 /** Script wrapping for the multisig's multisig — mirrors multisigs.ts's type without
  *  importing the DB layer (this module stays pure/chain-free for tests). */
 export type MultisigScriptType = 'p2wsh' | 'p2sh-p2wsh' | 'p2sh';
@@ -53,6 +57,7 @@ export class MultisigPsbtError extends Error {
 		public readonly code:
 			| 'different_transaction'
 			| 'foreign_signature'
+			| 'wrong_sighash'
 			| 'not_enough_signatures'
 			| 'combine_failed'
 	) {
@@ -599,6 +604,14 @@ export async function constructMultisigPsbt(params: MultisigConstructParams): Pr
  * If the incoming PSBT arrives already finalized (a device that completes the
  * quorum may finalize and strip partialSig), the final witness is carried
  * through so the signature work isn't lost.
+ *
+ * Every incoming signature must also be flagged SIGHASH_ALL (trailing byte
+ * 0x01). A co-signer or a buggy/malicious device could otherwise slip in a
+ * SIGHASH_SINGLE / SIGHASH_NONE / ANYONECANPAY signature that Cairn would count
+ * toward quorum and broadcast — such a signature commits to less than the whole
+ * transaction and could be legally replayed onto a different, attacker-chosen
+ * transaction spending the same input (cairn-srte). We reject anything but
+ * SIGHASH_ALL at combine time rather than trusting the finalize path.
  */
 export function combineMultisigPsbts(basePsbt: string, incomingPsbt: string): string {
 	try {
@@ -637,6 +650,16 @@ export function combineMultisigPsbts(basePsbt: string, incomingPsbt: string): st
 				throw new MultisigPsbtError(
 					`The signature for input ${i + 1} is from a key that isn't one of this multisig's keys — it looks like the wrong device or the wrong wallet signed.`,
 					'foreign_signature'
+				);
+			}
+			// A legacy/segwit-v0 ECDSA signature is DER bytes followed by a single
+			// sighash-flag byte; that byte MUST be SIGHASH_ALL (0x01). Anything else
+			// (SIGHASH_SINGLE/NONE, or any ANYONECANPAY variant) commits to less than
+			// the full transaction and is refused — see the doc comment above.
+			if (sig.length === 0 || sig[sig.length - 1] !== SIGHASH_ALL) {
+				throw new MultisigPsbtError(
+					`The signature for input ${i + 1} is not a SIGHASH_ALL signature — Cairn only accepts signatures that commit to the entire transaction. Re-sign with default (SIGHASH_ALL) settings.`,
+					'wrong_sighash'
 				);
 			}
 			if (present.has(pkHex)) continue; // idempotent re-submission

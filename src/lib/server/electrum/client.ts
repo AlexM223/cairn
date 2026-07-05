@@ -15,6 +15,14 @@ export interface ElectrumClientOptions {
 	host: string;
 	port: number;
 	tls: boolean;
+	/**
+	 * When true, skip TLS certificate validation (accept self-signed/mismatched
+	 * certs). Defaults to false — a valid, trusted certificate is required. Only
+	 * enable for a trusted self-hosted server with a self-signed cert; leaving
+	 * verification off exposes the connection to a MITM that can feed forged chain
+	 * data (cairn-azei).
+	 */
+	tlsInsecure?: boolean;
 	/** Per-request timeout in ms (default 15000). */
 	timeoutMs?: number;
 }
@@ -67,6 +75,7 @@ export class ElectrumClient extends EventEmitter {
 	private readonly host: string;
 	private readonly port: number;
 	private readonly useTls: boolean;
+	private readonly tlsInsecure: boolean;
 	private readonly timeoutMs: number;
 
 	private socket: net.Socket | null = null;
@@ -89,6 +98,7 @@ export class ElectrumClient extends EventEmitter {
 		this.host = opts.host;
 		this.port = opts.port;
 		this.useTls = opts.tls;
+		this.tlsInsecure = opts.tlsInsecure ?? false;
 		this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 		// Consumers may not attach an 'error' listener; never let EventEmitter throw.
 		this.on('error', () => {});
@@ -144,11 +154,19 @@ export class ElectrumClient extends EventEmitter {
 
 			try {
 				if (this.useTls) {
-					// Public electrum servers almost universally use self-signed
-					// certificates, so certificate verification is disabled here.
-					// The protocol carries no secrets — only public chain data.
+					// Validate the server's TLS certificate by default. Although the
+					// protocol carries no secrets, an unauthenticated TLS connection lets
+					// a network-level attacker MITM the Electrum host and feed forged
+					// balances/UTXOs/history or interfere with broadcast (cairn-azei).
+					// `tlsInsecure` is an explicit, custom-server-only opt-out for a
+					// trusted self-hosted node with a self-signed certificate.
 					socket = tls.connect(
-						{ host: this.host, port: this.port, rejectUnauthorized: false },
+						{
+							host: this.host,
+							port: this.port,
+							servername: this.host,
+							rejectUnauthorized: !this.tlsInsecure
+						},
 						onReady
 					);
 				} else {
@@ -328,6 +346,27 @@ export class ElectrumClient extends EventEmitter {
 	/** Raw hex when verbose=false, decoded object when verbose=true. */
 	async getTransaction(txid: string, verbose = false): Promise<unknown> {
 		return this.request('blockchain.transaction.get', [txid, verbose]);
+	}
+
+	/**
+	 * A merkle inclusion proof for a confirmed transaction: the sibling hashes
+	 * (display-order hex) and the tx's position within its block. Used with the
+	 * block header to independently verify the tx is really confirmed (SPV).
+	 */
+	async getMerkleProof(
+		txid: string,
+		height: number
+	): Promise<{ block_height: number; merkle: string[]; pos: number }> {
+		return (await this.request('blockchain.transaction.get_merkle', [txid, height])) as {
+			block_height: number;
+			merkle: string[];
+			pos: number;
+		};
+	}
+
+	/** The 80-byte block header at a given height, as hex. */
+	async getBlockHeader(height: number): Promise<string> {
+		return (await this.request('blockchain.block.header', [height])) as string;
 	}
 
 	/** Returns BTC/kvB (electrum convention) or -1 when the server has no estimate. */

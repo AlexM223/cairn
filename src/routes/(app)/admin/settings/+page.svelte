@@ -177,6 +177,18 @@
 							<span>TLS</span>
 						</label>
 					</div>
+					<label class="tls-insecure">
+						<input
+							type="checkbox"
+							name="electrumTlsInsecure"
+							checked={data.settings.electrumTlsInsecure}
+						/>
+						<span>
+							Allow self-signed certificate (skip TLS verification) — only for a
+							self-hosted server you trust on a trusted network. Leaving this on lets a
+							network attacker impersonate the server.
+						</span>
+					</label>
 					<div class="test-row">
 						<button
 							type="submit"

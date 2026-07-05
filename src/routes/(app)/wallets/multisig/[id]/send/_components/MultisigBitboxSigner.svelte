@@ -103,7 +103,13 @@
 				scriptType
 			);
 			const keypath = multisigAccountPath(scriptType);
-			const signed = await signPsbtWithBitbox02(unsignedPsbt, { scriptConfig, keypath });
+			// walletName is shown on-device during the one-time registration the driver
+			// performs before the first signature for this multisig (cairn-5kth).
+			const signed = await signPsbtWithBitbox02(unsignedPsbt, {
+				scriptConfig,
+				keypath,
+				walletName: multisigName
+			});
 			done = true;
 			onsigned(signed);
 		} catch (err) {

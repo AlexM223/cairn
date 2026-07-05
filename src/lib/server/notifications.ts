@@ -56,6 +56,7 @@ export const DEFAULT_PREFERENCES: Record<string, NotificationChannelId[]> = {
 	sign_session_waiting: ['inapp'],
 	admin_new_signup: ['inapp'],
 	admin_invite_used: ['inapp'],
+	admin_restore: ['inapp'],
 	admin_server_health: ['inapp'],
 	security_failed_login: ['inapp'],
 	security_new_passkey: ['inapp']

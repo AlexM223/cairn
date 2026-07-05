@@ -61,7 +61,11 @@ export const POST: RequestHandler = async (event) => {
 	if (pending.reclaimUserId != null) {
 		const existing = getUserById(pending.reclaimUserId);
 		// Re-check under the same request that it is still reclaimable (no race).
-		if (!existing || !hasNoCredentials(existing.id)) {
+		// An admin account is never reclaimable via passkey signup (cairn-cpb5): the
+		// reclaim path skips the registration-mode gate, so it must never confer
+		// admin. Backup restore already forces imports to non-admin; this is the
+		// second line of defence.
+		if (!existing || existing.isAdmin || !hasNoCredentials(existing.id)) {
 			clearRegChallenge(event);
 			return json({ error: 'That account can no longer be reclaimed.' }, { status: 400 });
 		}

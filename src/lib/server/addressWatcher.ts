@@ -29,7 +29,9 @@ import { parseXpub, deriveAddress, addressToScripthash } from './bitcoin/xpub';
 import { deriveMultisigAddress } from './bitcoin/multisig';
 import { toMultisigConfig, type MultisigRow, type MultisigKeyRow } from './wallets/multisig';
 import { notify } from './notifications';
+import { verifyTxInclusion } from './bitcoin/spv';
 import { childLogger } from './logger';
+import type { ChainService } from './chain/index';
 import type { ElectrumClient, ElectrumHeader, ElectrumHistoryItem } from './electrum/client';
 
 const log = childLogger('notify:txwatch');
@@ -72,6 +74,9 @@ interface WatchState {
 	/** In-flight change handling per scripthash, so overlapping notifications for
 	 *  the same address don't double-process. */
 	inFlight: Set<string>;
+	/** Best known chain-tip height, updated on every 'header' event. Used as the
+	 *  upper bound for SPV proofs (reject a tx claiming a height above the tip). */
+	tipHeight: number;
 }
 
 const state: WatchState = {
@@ -81,7 +86,8 @@ const state: WatchState = {
 	onHeader: null,
 	started: false,
 	baselined: false,
-	inFlight: new Set()
+	inFlight: new Set(),
+	tipHeight: 0
 };
 
 // ------------------------------------------------------------- address enumeration
@@ -275,6 +281,61 @@ function formatBtc(sats: number): string {
 	return `${(sats / 1e8).toFixed(8).replace(/0+$/, '').replace(/\.$/, '')} BTC`;
 }
 
+// ------------------------------------------------------------------------- SPV
+//
+// Before raising ANY payment notification off an Electrum-reported transaction,
+// independently prove the tx really is confirmed in a proof-of-work-valid block
+// (cairn-7zj6). A hostile or buggy server can otherwise invent a txid and Cairn
+// would fire a "payment received" alert for a transaction that never existed.
+// Forging the proof would require mining a real block at current difficulty.
+
+/** Best-known tip height, falling back to a live tip fetch the first time. */
+async function tipHeightNow(chain: ChainService): Promise<number> {
+	if (state.tipHeight > 0) return state.tipHeight;
+	try {
+		const tip = await chain.getTip();
+		if (tip.height > 0) state.tipHeight = tip.height;
+		return tip.height;
+	} catch {
+		return 0; // unknown tip → verifyTxInclusion skips only the height-vs-tip check
+	}
+}
+
+/**
+ * True only when `txid` at `height` is provably confirmed: the Electrum server
+ * supplies a merkle branch and the block header, and both the header's PoW and
+ * the branch check out. On any fetch/verify failure we return false (fail
+ * closed: do not notify, do not record — a later event can retry).
+ */
+async function spvVerifyConfirmed(txid: string, height: number): Promise<boolean> {
+	if (height <= 0) return false; // mempool: no inclusion proof is possible yet
+	try {
+		const chain = getChain();
+		const [proof, headerHex, tipHeight] = await Promise.all([
+			chain.electrum.getMerkleProof(txid, height),
+			chain.electrum.getBlockHeader(height),
+			tipHeightNow(chain)
+		]);
+		const res = verifyTxInclusion({
+			txid,
+			height,
+			proof: { merkle: proof.merkle, pos: proof.pos },
+			headerHex,
+			tipHeight
+		});
+		if (!res.ok) {
+			log.warn(
+				{ txid, height, reason: res.reason },
+				'SPV verification failed — not trusting this transaction for a notification'
+			);
+		}
+		return res.ok;
+	} catch (e) {
+		log.warn({ err: e, txid, height }, 'SPV proof could not be fetched — deferring notification');
+		return false;
+	}
+}
+
 // -------------------------------------------------------------- change handling
 
 /**
@@ -305,6 +366,15 @@ async function handleScripthashChange(scripthash: string): Promise<void> {
 		for (const item of history) {
 			const txid = item.tx_hash;
 			if (alreadyNotified(w.kind, w.walletId, txid)) continue;
+
+			// SPV gate (cairn-7zj6): only ever notify for a transaction we can
+			// independently prove is confirmed in a PoW-valid block. An unconfirmed
+			// (mempool) tx can't be proven yet, so we defer — when it confirms, this
+			// address's scripthash status changes and this handler re-runs, at which
+			// point the proof exists. A confirmed tx that fails verification (a
+			// server feeding a forged txid) is skipped WITHOUT recording, so a later
+			// legitimate event can still be picked up.
+			if (!(await spvVerifyConfirmed(txid, item.height))) continue;
 
 			// Compute the inbound value to THIS wallet's addresses. We attribute a
 			// tx to the wallet by output address membership against the watched set,
@@ -543,7 +613,10 @@ function attachListeners(electrum: ElectrumClient): void {
 			log.error({ err: e }, 'scripthash handler threw')
 		);
 	};
-	state.onHeader = () => {
+	state.onHeader = (header: ElectrumHeader) => {
+		if (header && typeof header.height === 'number' && header.height > state.tipHeight) {
+			state.tipHeight = header.height;
+		}
 		void handleNewBlock().catch((e) => log.error({ err: e }, 'new-block handler threw'));
 	};
 	electrum.on('scripthash', state.onScripthash);

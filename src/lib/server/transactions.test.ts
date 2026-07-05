@@ -88,6 +88,14 @@ async function signedPsbt(): Promise<string> {
 	return signedPsbtCache;
 }
 
+/** The true txid of the fully-signed PSBT — what an honest server echoes back on
+ *  broadcast (equals the locally-computed finalized.txid the code now verifies). */
+async function signedTxid(): Promise<string> {
+	const tx = Transaction.fromPSBT(base64.decode(await signedPsbt()));
+	tx.finalize();
+	return tx.id;
+}
+
 function seedWallet(userEmail: string): { userId: number; walletId: number } {
 	const user = registerUser({ email: userEmail, password: 'correct horse battery', displayName: 'u' });
 	const res = db
@@ -177,16 +185,37 @@ describe('transaction lifecycle', () => {
 		});
 	});
 
-	it('broadcasts a fully signed transaction and records the txid', async () => {
+	it('broadcasts a fully signed transaction and records the LOCALLY-computed txid', async () => {
 		const { userId, walletId } = seedWallet('a@example.com');
-		const txId = seedTx(walletId, 'awaiting_signature', null, await signedPsbt());
-		broadcastMock.mockResolvedValueOnce('cc'.repeat(32));
+		const signed = await signedPsbt();
+		const txId = seedTx(walletId, 'awaiting_signature', null, signed);
+		// An honest server echoes back the real txid (the double-SHA256 of the tx
+		// we sent). Recompute it here the same way finalizePsbt does.
+		const expectedTxid = Transaction.fromPSBT(base64.decode(signed));
+		expectedTxid.finalize();
+		broadcastMock.mockResolvedValueOnce(expectedTxid.id);
 
 		const { txid, transaction } = await broadcastTransaction(userId, walletId, txId);
-		expect(txid).toBe('cc'.repeat(32));
+		expect(txid).toBe(expectedTxid.id);
 		expect(transaction.status).toBe('completed');
-		expect(transaction.txid).toBe('cc'.repeat(32));
+		expect(transaction.txid).toBe(expectedTxid.id);
 		expect(broadcastMock).toHaveBeenCalledTimes(1);
+	});
+
+	it('refuses to record a broadcast whose server-reported txid differs from ours (cairn-ziwm)', async () => {
+		const { userId, walletId } = seedWallet('a@example.com');
+		const txId = seedTx(walletId, 'awaiting_signature', null, await signedPsbt());
+		// A malicious/misbehaving server claims success with a txid it invented for a
+		// broadcast it never performed.
+		broadcastMock.mockResolvedValueOnce('cc'.repeat(32));
+
+		await expect(broadcastTransaction(userId, walletId, txId)).rejects.toMatchObject({
+			code: 'rejected'
+		});
+		// Nothing was recorded, and the claim was released so a retry is possible.
+		const tx = getTransaction(userId, walletId, txId);
+		expect(tx?.txid ?? null).toBeNull();
+		expect(tx?.status).not.toBe('completed');
 	});
 
 	it('lets exactly one of two concurrent broadcasts through (atomic claim)', async () => {
@@ -196,6 +225,7 @@ describe('transaction lifecycle', () => {
 		// First call claims the row and parks on the (unresolved) network send;
 		// the second must lose the claim and get the friendly already-sent error
 		// even though no txid has been written yet.
+		const want = await signedTxid(); // the honest txid the server echoes back
 		let resolveBroadcast!: (txid: string) => void;
 		broadcastMock.mockImplementationOnce(
 			() => new Promise<string>((res) => (resolveBroadcast = res))
@@ -204,9 +234,9 @@ describe('transaction lifecycle', () => {
 		const second = broadcastTransaction(userId, walletId, txId);
 		await expect(second).rejects.toMatchObject({ code: 'already_sent' });
 
-		resolveBroadcast('dd'.repeat(32));
+		resolveBroadcast(want);
 		const winner = await first;
-		expect(winner.txid).toBe('dd'.repeat(32));
+		expect(winner.txid).toBe(want);
 		expect(broadcastMock).toHaveBeenCalledTimes(1);
 		expect(getTransaction(userId, walletId, txId)?.status).toBe('completed');
 	});
@@ -224,9 +254,10 @@ describe('transaction lifecycle', () => {
 		expect(afterFailure?.status).not.toBe('completed');
 
 		// The row is NOT wedged: an immediate retry succeeds.
-		broadcastMock.mockResolvedValueOnce('ee'.repeat(32));
+		const want = await signedTxid();
+		broadcastMock.mockResolvedValueOnce(want);
 		const retry = await broadcastTransaction(userId, walletId, txId);
-		expect(retry.txid).toBe('ee'.repeat(32));
+		expect(retry.txid).toBe(want);
 	});
 
 	it('rejects a corrupt signed PSBT with a plain corruption message, not the substitution guard', async () => {
@@ -563,15 +594,19 @@ describe('bumpTransaction (RBF fee bumping)', () => {
 			tx.signIdx(account.deriveChild(path[3]).deriveChild(path[4]).privateKey!, i);
 		}
 
-		broadcastMock.mockResolvedValueOnce('ee'.repeat(32));
+		const signedReplacement = base64.encode(tx.toPSBT());
+		// Honest server echoes back the real txid of the replacement we broadcast.
+		const wantReplaced = Transaction.fromPSBT(base64.decode(signedReplacement));
+		wantReplaced.finalize();
+		broadcastMock.mockResolvedValueOnce(wantReplaced.id);
 		const { transaction } = await broadcastTransaction(
 			userId,
 			walletId,
 			draft.id,
-			base64.encode(tx.toPSBT())
+			signedReplacement
 		);
 		expect(transaction.status).toBe('completed');
-		expect(transaction.txid).toBe('ee'.repeat(32));
+		expect(transaction.txid).toBe(wantReplaced.id);
 		// The replaced original leaves the 'completed' pool but stays on record.
 		expect(getTransaction(userId, walletId, orig.txId)?.status).toBe('superseded');
 		expect(deleteTransaction(userId, walletId, orig.txId)).toBe(false);

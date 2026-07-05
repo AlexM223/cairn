@@ -19,6 +19,7 @@ export const NOTIFICATION_EVENT_TYPES = [
 	'sign_session_waiting', // a multisig transaction is awaiting_signature and has sat for a while
 	'admin_new_signup', // a new user account was created
 	'admin_invite_used', // an invite code was redeemed
+	'admin_restore', // an encrypted instance backup was restored (may import accounts)
 	'admin_server_health', // node connection down, Electrum reconnect looping, disk space, etc.
 	'security_failed_login', // N failed login attempts against one account (ties into rateLimit.ts)
 	'security_new_passkey' // a new passkey (or recovery credential) was added to an account

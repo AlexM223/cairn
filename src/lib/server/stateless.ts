@@ -287,8 +287,19 @@ export async function broadcastStatelessPsbt(
 	}
 
 	const finalized = finalizeMultisigPsbt(normalized);
-	const txid = await getChain().electrum.broadcast(finalized.rawHex);
-	return { txid };
+	const reportedTxid = await getChain().electrum.broadcast(finalized.rawHex);
+
+	// The real txid is the double-SHA256 of the exact bytes we broadcast
+	// (finalized.txid) — recomputed locally, it can't be forged. If a malicious or
+	// misbehaving Electrum server reports a different txid for a broadcast it never
+	// performed, refuse to hand that bogus txid back to the caller (cairn-ziwm).
+	if (reportedTxid.trim().toLowerCase() !== finalized.txid.toLowerCase()) {
+		throw new MultisigPsbtError(
+			'The server acknowledged the broadcast with a different transaction id than the one we signed — refusing to trust it. Check your Electrum server and try again.',
+			'combine_failed'
+		);
+	}
+	return { txid: finalized.txid };
 }
 
 /** Map the errors this module (and the layers under it) throws onto the JSON

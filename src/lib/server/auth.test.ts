@@ -288,15 +288,26 @@ describe('passkey credentials', () => {
 		expect(getCredentialForAuth('cred-a')).toBeNull();
 	});
 
-	it('reclaim: only a credential-less account can be reclaimed', () => {
-		const admin = registerAdmin(); // no passkey yet (restored-account shape)
-		expect(hasNoCredentials(admin.id)).toBe(true);
-		expect(reclaimableUserId('admin@example.com')).toBe(admin.id);
+	it('reclaim: only a credential-less NON-ADMIN account can be reclaimed', () => {
+		const admin = registerAdmin();
+		addCredential(admin.id, makeCred()); // admin has a passkey — not the reclaim shape
+		// A normal, credential-less account — the shape a backup restore produces.
+		setSetting('registration_mode', 'open');
+		const bob = registerUser({ email: 'bob@example.com', displayName: 'Bob' });
+		expect(bob.isAdmin).toBe(false);
+		expect(hasNoCredentials(bob.id)).toBe(true);
+		expect(reclaimableUserId('bob@example.com')).toBe(bob.id);
 		expect(reclaimableUserId('ghost@example.com')).toBeNull();
 
-		addCredential(admin.id, makeCred());
-		// Once it has a passkey it can never be reclaimed (taken over).
-		expect(reclaimableUserId('admin@example.com')).toBeNull();
+		// A credential-less ADMIN account is NEVER reclaimable (cairn-cpb5): reclaim
+		// bypasses the registration gate, so it must not be a path to admin.
+		db.prepare('UPDATE users SET is_admin = 1 WHERE id = ?').run(bob.id);
+		expect(reclaimableUserId('bob@example.com')).toBeNull();
+		db.prepare('UPDATE users SET is_admin = 0 WHERE id = ?').run(bob.id);
+
+		addCredential(bob.id, makeCred({ credentialId: 'cred-bob' }));
+		// Once a normal account has a passkey it can never be reclaimed (taken over).
+		expect(reclaimableUserId('bob@example.com')).toBeNull();
 	});
 });
 
