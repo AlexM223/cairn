@@ -105,6 +105,6 @@ export const actions: Actions = {
 		const multisig = getMultisig(locals.user!.id, id);
 		if (!multisig || !deleteMultisig(locals.user!.id, id)) error(404, 'Multisig not found');
 		invalidateMultisigCache(multisig);
-		redirect(303, '/wallets/multisig');
+		redirect(303, '/wallets');
 	}
 };

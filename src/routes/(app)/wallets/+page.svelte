@@ -4,6 +4,38 @@
 	import { SCRIPT_TYPE_LABELS, walletTypeLabel } from './labels';
 
 	let { data } = $props();
+
+	// One list, two flavors. Single-sig wallets and multisig wallets are merged
+	// into a single grid — the card head tells them apart (a script-type badge and
+	// device kind for single-sig, a quorum badge for multisig).
+	const items = $derived([
+		...data.wallets.map((w) => ({
+			kind: 'single' as const,
+			id: w.id,
+			href: `/wallets/${w.id}`,
+			name: w.name,
+			scriptType: w.scriptType,
+			deviceType: w.deviceType,
+			balance: w.balance,
+			unconfirmed: w.unconfirmed,
+			lastActivity: w.lastActivity,
+			unreachable: data.errors[w.id] !== undefined,
+			error: data.errors[w.id]
+		})),
+		...data.multisigs.map((m) => ({
+			kind: 'multisig' as const,
+			id: m.id,
+			href: `/wallets/multisig/${m.id}`,
+			name: m.name,
+			threshold: m.threshold,
+			totalKeys: m.totalKeys,
+			balance: m.balance,
+			unconfirmed: m.unconfirmed,
+			lastActivity: m.lastActivity,
+			unreachable: data.multisigErrors[m.id] !== undefined,
+			error: data.multisigErrors[m.id]
+		}))
+	]);
 </script>
 
 <svelte:head>
@@ -12,7 +44,7 @@
 
 <div class="head row">
 	<h1 class="page-title grow">Wallets</h1>
-	{#if data.wallets.length > 0}
+	{#if items.length > 0}
 		<a href="/wallets/new" class="btn btn-primary">
 			<Icon name="plus" size={15} />
 			Add wallet
@@ -20,132 +52,66 @@
 	{/if}
 </div>
 
-{#if data.wallets.length === 0 && data.multisigs.length === 0}
+{#if items.length === 0}
 	<div class="card onboard fade-in">
 		<div class="onboard-icon">
 			<Icon name="wallet" size={26} />
 		</div>
 		<h2 class="onboard-title">Bring your first wallet</h2>
 		<p class="onboard-copy">
-			Cairn watches your wallet from the outside. Paste an extended <em>public</em> key — an
-			xpub, ypub or zpub — and it derives your addresses, finds your history and keeps your
-			balance in view. No private keys, no seed words, nothing that can spend.
+			Add a wallet with a single key, or a multisig wallet that needs several keys to spend. Cairn
+			only ever sees <em>public</em> keys — it tracks your balance and history, and you sign every
+			spend on your own device. Nothing here can move your bitcoin on its own.
 		</p>
 		<a href="/wallets/new" class="btn btn-primary">
 			<Icon name="plus" size={15} />
-			Import a wallet
-		</a>
-		<a href="/wallets/multisig/new" class="onboard-alt">
-			Or protect savings with several keys — create a multisig
-			<Icon name="arrow-right" size={13} />
-		</a>
-	</div>
-{:else if data.wallets.length === 0}
-	<div class="card onboard fade-in" style="margin-bottom: 24px">
-		<div class="onboard-icon">
-			<Icon name="wallet" size={26} />
-		</div>
-		<h2 class="onboard-title">Bring your first wallet</h2>
-		<p class="onboard-copy">
-			Cairn watches your wallet from the outside. Paste an extended <em>public</em> key and it
-			keeps balances and history in view — nothing that can spend.
-		</p>
-		<a href="/wallets/new" class="btn btn-primary">
-			<Icon name="plus" size={15} />
-			Import a wallet
+			Add your first wallet
 		</a>
 	</div>
 {:else}
 	<div class="grid fade-in">
-		{#each data.wallets as wallet (wallet.id)}
-			{@const unreachable = data.errors[wallet.id] !== undefined}
-			<a href="/wallets/{wallet.id}" class="card card-pad wallet-card">
+		{#each items as item (item.kind + '-' + item.id)}
+			<a
+				href={item.href}
+				class="card card-pad wallet-card"
+				class:multisig-card={item.kind === 'multisig'}
+			>
 				<div class="row" style="gap: 10px">
-					<span class="wallet-name grow truncate">{wallet.name}</span>
-					<span class="badge badge-neutral">{SCRIPT_TYPE_LABELS[wallet.scriptType]}</span>
-				</div>
-				<span class="wallet-kind">{walletTypeLabel(wallet.deviceType)}</span>
-
-				{#if unreachable}
-					<div class="balance">
-						<span class="hero-number wallet-btc muted-balance">—</span>
-					</div>
-					<div class="row" style="gap: 8px; flex-wrap: wrap">
-						<span class="badge badge-warning" title={data.errors[wallet.id]}>
-							<Icon name="alert-triangle" size={12} />
-							unreachable
-						</span>
-					</div>
-				{:else}
-					<div class="balance">
-						<span class="hero-number wallet-btc" title="{formatSats(wallet.balance)} sats">
-							{formatBtc(wallet.balance)}
-						</span>
-						<span class="unit">BTC</span>
-					</div>
-					{#if wallet.unconfirmed !== 0}
-						<div class="row" style="gap: 8px; flex-wrap: wrap">
-							<span class="badge badge-warning">
-								{wallet.unconfirmed > 0 ? '+' : ''}{formatSats(wallet.unconfirmed)} sats pending
-							</span>
-						</div>
+					{#if item.kind === 'multisig'}
+						<span class="multisig-icon"><Icon name="shield" size={13} /></span>
 					{/if}
-				{/if}
-
-				<span class="hint activity">
-					<Icon name="clock" size={12} />
-					{#if unreachable}
-						balance unavailable — check connection
-					{:else if wallet.lastActivity}
-						last activity {timeAgo(wallet.lastActivity)}
+					<span class="wallet-name grow truncate">{item.name}</span>
+					{#if item.kind === 'multisig'}
+						<span class="badge badge-accent">{item.threshold} of {item.totalKeys}</span>
 					{:else}
-						no activity
+						<span class="badge badge-neutral">{SCRIPT_TYPE_LABELS[item.scriptType]}</span>
 					{/if}
-				</span>
-			</a>
-		{/each}
-	</div>
-{/if}
-
-{#if data.multisigs.length > 0}
-	<div class="head row multisig-head">
-		<h2 class="section-title grow">Multisigs</h2>
-		<a href="/wallets/multisig/new" class="btn btn-secondary btn-sm">
-			<Icon name="plus" size={14} />
-			New multisig
-		</a>
-	</div>
-	<div class="grid fade-in">
-		{#each data.multisigs as multisig (multisig.id)}
-			{@const unreachable = data.multisigErrors[multisig.id] !== undefined}
-			<a href="/wallets/multisig/{multisig.id}" class="card card-pad wallet-card multisig-card">
-				<div class="row" style="gap: 10px">
-					<span class="multisig-icon"><Icon name="shield" size={13} /></span>
-					<span class="wallet-name grow truncate">{multisig.name}</span>
-					<span class="badge badge-accent">{multisig.threshold} of {multisig.totalKeys}</span>
 				</div>
+				<span class="wallet-kind">
+					{item.kind === 'multisig' ? 'Multisig wallet' : walletTypeLabel(item.deviceType)}
+				</span>
 
-				{#if unreachable}
+				{#if item.unreachable}
 					<div class="balance">
 						<span class="hero-number wallet-btc muted-balance">—</span>
 					</div>
 					<div class="row" style="gap: 8px; flex-wrap: wrap">
-						<span class="badge badge-warning" title={data.multisigErrors[multisig.id]}>
+						<span class="badge badge-warning" title={item.error}>
 							<Icon name="alert-triangle" size={12} />
 							unreachable
 						</span>
 					</div>
 				{:else}
 					<div class="balance">
-						<span class="hero-number wallet-btc" title="{formatSats(multisig.balance)} sats">
-							{formatBtc(multisig.balance)}
+						<span class="hero-number wallet-btc" title="{formatSats(item.balance)} sats">
+							{formatBtc(item.balance)}
 						</span>
 						<span class="unit">BTC</span>
 					</div>
-					{#if multisig.unconfirmed !== 0}
+					{#if item.unconfirmed !== 0}
 						<div class="row" style="gap: 8px; flex-wrap: wrap">
 							<span class="badge badge-warning">
-								{multisig.unconfirmed > 0 ? '+' : ''}{formatSats(multisig.unconfirmed)} sats pending
+								{item.unconfirmed > 0 ? '+' : ''}{formatSats(item.unconfirmed)} sats pending
 							</span>
 						</div>
 					{/if}
@@ -153,10 +119,10 @@
 
 				<span class="hint activity">
 					<Icon name="clock" size={12} />
-					{#if unreachable}
+					{#if item.unreachable}
 						balance unavailable — check connection
-					{:else if multisig.lastActivity}
-						last activity {timeAgo(multisig.lastActivity)}
+					{:else if item.lastActivity}
+						last activity {timeAgo(item.lastActivity)}
 					{:else}
 						no activity
 					{/if}
@@ -188,6 +154,22 @@
 
 	.wallet-card:hover {
 		border-color: var(--border);
+	}
+
+	.multisig-card {
+		border-color: rgba(232, 147, 90, 0.25);
+	}
+
+	.multisig-icon {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 24px;
+		height: 24px;
+		border-radius: 50%;
+		background: var(--accent-muted);
+		color: var(--accent);
+		flex-shrink: 0;
 	}
 
 	.wallet-name {
@@ -263,52 +245,12 @@
 		color: var(--text-secondary);
 		font-size: 13.5px;
 		line-height: 1.65;
-		max-width: 400px;
+		max-width: 420px;
 	}
 
 	.onboard-copy em {
 		font-style: normal;
 		color: var(--text);
 		font-weight: 500;
-	}
-
-	.onboard-alt {
-		display: inline-flex;
-		align-items: center;
-		gap: 5px;
-		font-size: 12.5px;
-		color: var(--text-secondary);
-	}
-
-	.onboard-alt:hover {
-		color: var(--accent);
-	}
-
-	/* --- multisigs section --- */
-
-	.multisig-head {
-		margin-top: 26px;
-	}
-
-	.section-title {
-		font-family: var(--font-serif);
-		font-size: 18px;
-		font-weight: 600;
-	}
-
-	.multisig-card {
-		border-color: rgba(232, 147, 90, 0.25);
-	}
-
-	.multisig-icon {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 24px;
-		height: 24px;
-		border-radius: 50%;
-		background: var(--accent-muted);
-		color: var(--accent);
-		flex-shrink: 0;
 	}
 </style>

@@ -156,7 +156,7 @@
 </svelte:head>
 
 <div class="detail fade-in">
-	<a href="/wallets/multisig" class="back-link">
+	<a href="/wallets" class="back-link">
 		<Icon name="chevron-left" size={14} />
 		Multisigs
 	</a>

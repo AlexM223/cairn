@@ -410,7 +410,7 @@
 
 <div class="stateless-page">
 	<header class="page-head">
-		<a class="back" href="/wallets/multisig">
+		<a class="back" href="/wallets">
 			<Icon name="chevron-left" size={15} />
 			<span>Multisigs</span>
 		</a>
@@ -835,7 +835,7 @@
 						</p>
 						<div class="row" style="justify-content: center; gap: 10px">
 							<button class="btn btn-secondary" onclick={startOver}>Start over</button>
-							<a class="btn btn-primary" href="/wallets/multisig">Back to multisigs</a>
+							<a class="btn btn-primary" href="/wallets">Back to multisigs</a>
 						</div>
 					</div>
 				{:else}

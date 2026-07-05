@@ -555,7 +555,7 @@
 </svelte:head>
 
 <div class="wizard fade-in" bind:this={pageEl}>
-	<a href="/wallets/multisig" class="back-link">
+	<a href="/wallets" class="back-link">
 		<Icon name="chevron-left" size={14} />
 		Multisigs
 	</a>
@@ -840,7 +840,7 @@
 			{/if}
 
 			<div class="pane-actions">
-				<a href="/wallets/multisig" class="btn btn-ghost">Cancel</a>
+				<a href="/wallets" class="btn btn-ghost">Cancel</a>
 				<button
 					type="button"
 					class="btn btn-primary"

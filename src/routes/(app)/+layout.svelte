@@ -9,7 +9,6 @@
 		{ href: '/', label: 'Dashboard', icon: 'dashboard' },
 		{ href: '/explorer', label: 'Explorer', icon: 'blocks' },
 		{ href: '/wallets', label: 'Wallets', icon: 'wallet' },
-		{ href: '/wallets/multisig', label: 'Multisigs', icon: 'shield' },
 		{ href: '/activity', label: 'Activity', icon: 'activity' },
 		{ href: '/settings', label: 'Settings', icon: 'settings' },
 		...(data.user.isAdmin ? [{ href: '/admin', label: 'Admin', icon: 'shield' }] : [])
