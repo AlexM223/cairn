@@ -7,7 +7,8 @@
 		{ href: '/admin', label: 'Overview' },
 		{ href: '/admin/users', label: 'Users' },
 		{ href: '/admin/invites', label: 'Invites' },
-		{ href: '/admin/settings', label: 'Settings' }
+		{ href: '/admin/settings', label: 'Settings' },
+		{ href: '/admin/logs', label: 'Logs' }
 	];
 
 	function isActive(href: string): boolean {
