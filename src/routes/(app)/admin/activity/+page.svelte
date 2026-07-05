@@ -32,6 +32,7 @@
 	let fUser = $state(''); // '' = any, 'instance' = instance-wide, or a user id
 	let search = $state('');
 	let loading = $state(false);
+	let loadError = $state<string | null>(null);
 
 	const PAGE = 200;
 	let offset = $state(0);
@@ -49,13 +50,19 @@
 
 	async function load(off = 0, append = false) {
 		loading = true;
+		loadError = null;
 		try {
 			const res = await fetch(`/api/admin/activity?${query(off)}`);
-			if (!res.ok) return;
+			if (!res.ok) {
+				loadError = `Could not load the activity log (${res.status}). Try again.`;
+				return;
+			}
 			const body = (await res.json()) as { events: AdminEvent[]; total: number };
 			offset = off;
 			total = body.total;
 			events = append ? [...events, ...body.events] : body.events;
+		} catch {
+			loadError = 'Could not reach the server. Check your connection and try again.';
 		} finally {
 			loading = false;
 		}
@@ -148,6 +155,9 @@
 		<button class="btn btn-ghost btn-sm" onclick={resetFilters} disabled={loading}>Reset</button>
 		<span class="count">{events.length} of {total}</span>
 	</div>
+	{#if loadError}
+		<div class="form-error" role="alert" style="margin-top: 10px">{loadError}</div>
+	{/if}
 </div>
 
 <div class="card">

@@ -3,37 +3,21 @@
 // Mirrors src/routes/api/events/+server.ts exactly (ReadableStream + 25s
 // heartbeat + cleanup on cancel/abort), but subscribes to the in-process
 // notifyBus (notifyBus.ts) instead of the Electrum client. Whenever notify()
-// records a row destined for this connected user (or an instance-wide row every
-// user sees), we push an `event: notification` frame carrying the current
-// unread count, so the browser can update the badge without polling. One
-// connection per open tab; listener cleanup on disconnect is mandatory.
+// records one of THIS user's own feed-relevant rows, we push an
+// `event: notification` frame carrying the current unread count, so the browser
+// can update the badge without polling. The count and the trigger both use the
+// simplified user-feed scoping (see unreadUserFeedCount) — instance-wide and
+// operational events must never bump a regular user's badge, matching what the
+// bell actually shows (GET /api/notifications). One connection per open tab;
+// listener cleanup on disconnect is mandatory.
 
 import { requireUser } from '$lib/server/api';
-import { db } from '$lib/server/db';
+import { unreadUserFeedCount } from '$lib/server/activity';
 import { notifyBus, type NotifyBusEvent } from '$lib/server/notifyBus';
-import { childLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
 
 const HEARTBEAT_MS = 25_000;
 const encoder = new TextEncoder();
-const log = childLogger('notify:inapp');
-
-function unreadCount(userId: number): number {
-	try {
-		const row = db
-			.prepare(
-				`SELECT COUNT(*) AS n
-				   FROM events
-				  WHERE (user_id = ? OR user_id IS NULL)
-				    AND read_at IS NULL`
-			)
-			.get(userId) as { n: number };
-		return row.n;
-	} catch (e) {
-		log.error({ err: e, userId }, 'unread count query failed');
-		return 0;
-	}
-}
 
 export const GET: RequestHandler = async (event) => {
 	const user = requireUser(event);
@@ -69,16 +53,21 @@ export const GET: RequestHandler = async (event) => {
 				}
 			};
 			const sendUnread = () => {
-				send(`event: notification\ndata: ${JSON.stringify({ unread: unreadCount(userId) })}\n\n`);
+				send(
+					`event: notification\ndata: ${JSON.stringify({ unread: unreadUserFeedCount(userId) })}\n\n`
+				);
 			};
 
 			// Prime the client with the current count immediately on connect.
 			sendUnread();
 
 			onEvent = (e) => {
-				// An instance-wide event (userId null) is seen by everyone; a scoped
-				// event only matters to its own recipient.
-				if (e.userId === null || e.userId === userId) sendUnread();
+				// Only THIS user's own rows bump their badge. Instance-wide events
+				// (userId null — new signups, invites, node up/down) are operational
+				// and deliberately excluded from the user feed, so they must not
+				// trigger a badge refresh either (they'd leak the event's timing and
+				// disagree with what the bell actually lists).
+				if (e.userId === userId) sendUnread();
 			};
 			notifyBus.on('event', onEvent);
 
