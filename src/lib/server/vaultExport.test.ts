@@ -13,6 +13,12 @@ import {
 	descriptorBackup,
 	parseCaravanImport
 } from './vaultExport';
+// Verbatim golden configs from caravan-bitcoin/caravan
+// apps/coordinator/fixtures/caravan/bitcoin-2-of-2-P2WSH_{MAINNET,TESTNET}.json.
+// Their keys derive from Caravan's published test mnemonic (root xfp f57ec65d)
+// — public test fixtures, never a real wallet.
+import caravanMainnetFixture from './__fixtures__/caravan-2-of-2-P2WSH_MAINNET.json';
+import caravanTestnetFixture from './__fixtures__/caravan-2-of-2-P2WSH_TESTNET.json';
 
 // The first two keys are BIP32 spec test-vector masters — stable, public,
 // never a real wallet. The third is derived deterministically from a fixed
@@ -327,6 +333,103 @@ describe('parseCaravanImport', () => {
 		expect(() =>
 			parseCaravanImport(JSON.stringify({ addressType: 'P2TR', quorum: { requiredSigners: 1 }, extendedPublicKeys: [{ xpub: TV1 }] }))
 		).toThrow(/address type/i);
+	});
+});
+
+describe('Caravan interop (real caravan-bitcoin golden fixtures)', () => {
+	// The mainnet fixture ships with client:{type:"public"} and
+	// startingAddressIndex — fields Cairn ignores on import. Nothing in the
+	// fixture is modified; both files are byte-for-byte from the Caravan repo.
+	const EXPECTED_MAINNET_KEYS = [
+		{
+			name: 'six',
+			xpub: 'xpub6EwJjKaiocGvqSuM2jRZSuQ9HEddiFUFu9RdjE47zG7kXVNDQpJ3GyvskwYiLmvU4SBTNZyv8UH53QcmFEE23YwozE61V3dwzZJEFQr6H2b',
+			fingerprint: '00000006',
+			path: "m/48'/0'/100'/2'"
+		},
+		{
+			name: 'osw',
+			xpub: 'xpub6DcqYQxnbefzFkaRBK63FSE2GzNuNnNhFGw1xV9RioVG7av6r3JDf1aELqBSq5gt5487CtNxvVtaiJjQU2HQWzgG5NzLyTPbYav6otW8qEc',
+			fingerprint: 'f57ec65d',
+			path: "m/48'/0'/100'/2'"
+		}
+	];
+
+	/** Build a VaultRow the way the import wizard would, from a parsed config. */
+	function vaultFromImport(imported: ReturnType<typeof parseCaravanImport>): VaultRow {
+		return makeVault({
+			name: imported.name,
+			threshold: imported.threshold,
+			scriptType: imported.scriptType,
+			keys: imported.keys.map((k, i) => ({
+				...keyRow(i, k.xpub, k.fingerprint, k.path),
+				name: k.name
+			}))
+		});
+	}
+
+	it('imports the real Caravan mainnet P2WSH export faithfully', () => {
+		const imported = parseCaravanImport(JSON.stringify(caravanMainnetFixture));
+		expect(imported.name).toBe('P2WSH-M');
+		expect(imported.scriptType).toBe('p2wsh');
+		expect(imported.threshold).toBe(2);
+		expect(imported.totalKeys).toBe(2);
+		expect(imported.keys).toEqual(EXPECTED_MAINNET_KEYS);
+	});
+
+	it('tolerates Caravan metadata Cairn does not use (uuid, client, ledgerPolicyHmacs, method, startingAddressIndex)', () => {
+		const decorated = JSON.parse(JSON.stringify(caravanMainnetFixture));
+		decorated.uuid = 'q8w0julw';
+		decorated.ledgerPolicyHmacs = [{ xfp: 'f57ec65d', policyHmac: 'ab'.repeat(32) }];
+		decorated.extendedPublicKeys = decorated.extendedPublicKeys.map(
+			(k: Record<string, unknown>) => ({ ...k, method: 'text' })
+		);
+		// client + startingAddressIndex are already present in the real fixture.
+		expect(decorated.client).toEqual({ type: 'public' });
+		expect(decorated.startingAddressIndex).toBe(0);
+		expect(parseCaravanImport(JSON.stringify(decorated))).toEqual(
+			parseCaravanImport(JSON.stringify(caravanMainnetFixture))
+		);
+	});
+
+	it('round-trips the Caravan fixture: import → export → import is semantically identical', () => {
+		// Byte identity with Caravan's file is not the contract (field order and
+		// uuid differ); the parsed vault config must be identical.
+		const imported = parseCaravanImport(JSON.stringify(caravanMainnetFixture));
+		const reimported = parseCaravanImport(caravanExport(vaultFromImport(imported)));
+		expect(reimported).toEqual(imported);
+	});
+
+	it('exports a fixture-derived vault meeting the studied Caravan import contract', () => {
+		const vault = vaultFromImport(parseCaravanImport(JSON.stringify(caravanMainnetFixture)));
+		const parsed = JSON.parse(caravanExport(vault));
+
+		// Both quorum fields — Caravan's coordinator requires totalSigners.
+		expect(parsed.quorum).toEqual({ requiredSigners: 2, totalSigners: 2 });
+		// No client field: Caravan's own unknown-client shape fails its re-import.
+		expect('client' in parsed).toBe(false);
+		// uuid present (Caravan sets it to the descriptor checksum; so do we).
+		const receiveDescriptor = vaultToDescriptor(toVaultConfig(vault));
+		expect(parsed.uuid).toBe(receiveDescriptor.slice(receiveDescriptor.lastIndexOf('#') + 1));
+		expect(parsed.network).toBe('mainnet');
+		for (const key of parsed.extendedPublicKeys as Record<string, unknown>[]) {
+			// No per-key method — unknown values fail Caravan's import.
+			expect('method' in key).toBe(false);
+			// Canonical xpub prefix (SLIP-132 zpub/ypub rejected by Caravan).
+			expect(key.xpub).toMatch(/^xpub/);
+			// Apostrophe hardening only — Caravan rejects h-notation.
+			expect(key.bip32Path).toMatch(/^m(\/\d+'?)*$/);
+			expect(key.bip32Path).not.toMatch(/\d[hH]/);
+			// xfp lowercase 8-hex (or Caravan's 00000000 placeholder).
+			expect(key.xfp).toMatch(/^[0-9a-f]{8}$/);
+		}
+	});
+
+	it('rejects the real Caravan testnet fixture with a clear network-mismatch message', () => {
+		const raw = JSON.stringify(caravanTestnetFixture);
+		expect(() => parseCaravanImport(raw)).toThrow(VaultError);
+		expect(() => parseCaravanImport(raw)).toThrow(/built for testnet/);
+		expect(() => parseCaravanImport(raw)).toThrow(/mainnet/);
 	});
 });
 
