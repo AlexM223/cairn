@@ -215,6 +215,17 @@ a:hover {
 	cursor: not-allowed;
 }
 
+/* Decorative button contents (icon, loading spinner) must never be the pointer
+   target. A submit button that swaps its icon for a spinner mid-request can
+   otherwise eat a rapid follow-up click: the pointerdown lands on the spinner,
+   the response swaps it back before pointerup, and with no matching target the
+   browser fires no click at all — the submit silently never happens. Routing
+   all clicks to the button itself makes it immune to that child swap. */
+.btn > svg,
+.btn > .spinner {
+	pointer-events: none;
+}
+
 .btn-primary {
 	background: var(--accent);
 	color: var(--on-accent);

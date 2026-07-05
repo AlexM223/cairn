@@ -68,7 +68,7 @@
 			<label class="label" for="expiresDays">Expires in days <span class="opt">0 = never</span></label>
 			<input class="input" id="expiresDays" name="expiresDays" type="number" min="0" value="30" />
 		</div>
-		<button class="btn btn-primary" disabled={creating}>
+		<button type="submit" class="btn btn-primary" disabled={creating}>
 			{#if creating}<span class="spinner"></span>{:else}<Icon name="plus" size={15} />{/if}
 			Create
 		</button>
