@@ -10,6 +10,12 @@
 	import { formatBtc, formatSats, formatFeeRate, truncateMiddle } from '$lib/format';
 	import { isWebHidAvailable } from '$lib/hw/ledger';
 	import { isTrezorConnectAvailable } from '$lib/hw/trezor';
+	import {
+		isWebHidAvailable as isBitboxWebHidAvailable,
+		bitbox02SupportsScriptType
+	} from '$lib/hw/bitbox02';
+	import { isWebSerialAvailable } from '$lib/hw/jade';
+	import type { ScriptType } from '$lib/types';
 	import type { ConstructedPsbt } from '$lib/server/bitcoin/psbt';
 	import type { SavedTransaction } from '$lib/server/transactions';
 	import type { SavedAddress } from '$lib/server/addressBook';
@@ -20,6 +26,8 @@
 	import LedgerSigner from './_components/LedgerSigner.svelte';
 	import QrSigner from './_components/QrSigner.svelte';
 	import TrezorSigner from './_components/TrezorSigner.svelte';
+	import BitboxSigner from './_components/BitboxSigner.svelte';
+	import JadeUsbSigner from './_components/JadeUsbSigner.svelte';
 	import type { DeviceMethod, SignerContext } from './_components/signerContract';
 	import {
 		formatSigningRange,
@@ -564,23 +572,23 @@
 	// The SignMethod set is exactly WalletDeviceType, so the device on record
 	// (if any) both pre-selects a method and drives the "Sign with your <device>"
 	// heading — a single-key wallet lands on one signing screen, not a menu.
-	type SignMethod = 'file' | 'trezor' | 'ledger' | 'coldcard' | 'qr';
+	type SignMethod = 'file' | 'trezor' | 'ledger' | 'coldcard' | 'bitbox02' | 'jade' | 'qr';
 
-	// BitBox02/Jade have dedicated USB signers pending (hardware plan Unit F).
-	// Until those land, a wallet imported with one of them opens the method
-	// picker (where file/QR export still works) rather than pre-selecting a
-	// signer that doesn't exist yet.
-	function toSignMethod(d: WalletDeviceType | null): SignMethod | null {
-		return d === 'bitbox02' || d === 'jade' ? null : d;
-	}
+	// The wallet's script type — the BitBox02 tile is greyed out for legacy
+	// (p2pkh) wallets it can't sign (the device firmware has no legacy config).
+	const walletScriptType = data.wallet.scriptType as ScriptType;
 
 	// The device associated with this wallet, tracked locally so associating one
 	// mid-send (below) updates the heading immediately.
 	// svelte-ignore state_referenced_locally — intentional per-load seed
 	let walletDevice = $state<WalletDeviceType | null>(data.wallet.deviceType);
 	// Pre-select the known device (file included) so Sign opens straight on it.
+	// SignMethod === WalletDeviceType, so the device on record IS the method:
+	// a BitBox02/Jade wallet now opens straight on its dedicated USB signer (a
+	// p2pkh BitBox02 wallet lands on the signer's own "can't sign here" state,
+	// which offers the file method — clearer than never pre-selecting).
 	// svelte-ignore state_referenced_locally — intentional per-load seed
-	let activeMethod = $state<SignMethod | null>(toSignMethod(data.wallet.deviceType));
+	let activeMethod = $state<SignMethod | null>(data.wallet.deviceType);
 	// Set briefly after a first-send device association so the user sees it stuck.
 	let deviceJustSaved = $state<WalletDeviceType | null>(null);
 	// Bumped to remount the active signer from scratch — a clean retry after the
@@ -647,6 +655,26 @@
 				'Needs WebHID, which is only in Chromium desktop browsers (Chrome, Edge, Brave) over HTTPS or localhost.'
 		},
 		{
+			key: 'bitbox02',
+			name: 'BitBox02',
+			blurb: 'Sign on-device over USB (WebHID) — nothing leaves the device but signatures',
+			icon: 'shield',
+			// Needs WebHID AND a script type the device supports (no legacy p2pkh).
+			available: () => isBitboxWebHidAvailable() && bitbox02SupportsScriptType(walletScriptType),
+			unavailableReason: !bitbox02SupportsScriptType(walletScriptType)
+				? "The BitBox02 doesn't support legacy (P2PKH) single-sig wallets — use the file method."
+				: 'Needs WebHID, which is only in Chromium desktop browsers (Chrome, Edge, Brave) over HTTPS or localhost.'
+		},
+		{
+			key: 'jade',
+			name: 'Jade (USB)',
+			blurb: 'Sign on-device over USB (Web Serial) — nothing leaves the device but signatures',
+			icon: 'shield',
+			available: () => isWebSerialAvailable(),
+			unavailableReason:
+				'Needs Web Serial, which is only in Chromium desktop browsers (Chrome, Edge, Brave) over HTTPS or localhost.'
+		},
+		{
 			key: 'coldcard',
 			name: 'ColdCard (microSD)',
 			blurb: 'Air-gapped signing over a microSD card — no cable, no connection',
@@ -672,6 +700,8 @@
 		trezor: TrezorSigner,
 		ledger: LedgerSigner,
 		coldcard: ColdCardSigner,
+		bitbox02: BitboxSigner,
+		jade: JadeUsbSigner,
 		qr: QrSigner
 	} as const;
 

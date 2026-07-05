@@ -22,6 +22,8 @@
 	import MultisigFileSigner from './_components/MultisigFileSigner.svelte';
 	import MultisigTrezorSigner from './_components/MultisigTrezorSigner.svelte';
 	import MultisigLedgerSigner from './_components/MultisigLedgerSigner.svelte';
+	import MultisigBitboxSigner from './_components/MultisigBitboxSigner.svelte';
+	import MultisigJadeUsbSigner from './_components/MultisigJadeUsbSigner.svelte';
 
 	let { data } = $props();
 
@@ -468,6 +470,11 @@
 		fingerprint: k.fingerprint,
 		path: k.path
 	}));
+
+	// The active key's position in the roster — the BitBox02 driver's ourXpubIndex
+	// (which cosigner in the ordered set is the connected device). -1 when no key
+	// is active; the signer only mounts when activeKey exists, so it never sees -1.
+	const activeKeyIndex = $derived(activeKey ? keys.findIndex((k) => k.id === activeKey.id) : -1);
 
 	let attaching = $state(false);
 	let signError = $state<string | null>(null);
@@ -1189,6 +1196,40 @@
 							unsignedPsbt={draft.psbt}
 							keyName={activeKey.name}
 							keyFingerprint={activeKey.fingerprint}
+							multisigName={data.multisig.name}
+							threshold={required}
+							totalKeys={keys.length}
+							scriptType={data.multisig.scriptType}
+							multisigKeys={signKeys}
+							destinationAddress={signerContext.destinationAddress}
+							amountSats={signerContext.amountSats}
+							feeSats={signerContext.feeSats}
+							changeSats={signerContext.changeSats}
+							onsigned={handleSigned}
+							onusefile={overrideToFile}
+						/>
+					{:else if effectiveDevice === 'bitbox02'}
+						<MultisigBitboxSigner
+							unsignedPsbt={draft.psbt}
+							keyName={activeKey.name}
+							keyFingerprint={activeKey.fingerprint}
+							ourKeyIndex={activeKeyIndex}
+							multisigName={data.multisig.name}
+							threshold={required}
+							totalKeys={keys.length}
+							scriptType={data.multisig.scriptType}
+							multisigKeys={signKeys}
+							destinationAddress={signerContext.destinationAddress}
+							amountSats={signerContext.amountSats}
+							feeSats={signerContext.feeSats}
+							changeSats={signerContext.changeSats}
+							onsigned={handleSigned}
+							onusefile={overrideToFile}
+						/>
+					{:else if effectiveDevice === 'jade'}
+						<MultisigJadeUsbSigner
+							unsignedPsbt={draft.psbt}
+							keyName={activeKey.name}
 							multisigName={data.multisig.name}
 							threshold={required}
 							totalKeys={keys.length}

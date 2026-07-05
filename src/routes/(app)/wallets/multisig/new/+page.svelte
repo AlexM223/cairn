@@ -10,7 +10,13 @@
 	import type { MultisigDeviceType, MultisigKeyCategory, MultisigScriptType } from '$lib/server/wallets/multisig';
 	import KeyCategoryIcon from '../_components/KeyCategoryIcon.svelte';
 	import { KEY_CATEGORY_LABELS, DEVICE_LABELS, MULTISIG_SCRIPT_LABELS } from '../labels';
-	import { readKeyFromTrezor, readKeyFromLedger, DeviceReadUnavailable } from './_components/deviceRead';
+	import {
+		readKeyFromTrezor,
+		readKeyFromLedger,
+		readKeyFromBitbox02,
+		readKeyFromJade,
+		DeviceReadUnavailable
+	} from './_components/deviceRead';
 	import { parseColdcardExport } from './_components/coldcardImport';
 
 	let { data } = $props();
@@ -134,8 +140,10 @@
 
 	let keys = $state<WizardKey[]>([]);
 
-	// Five first-class ways a key arrives — none of them "advanced".
-	type Method = 'trezor' | 'ledger' | 'coldcard' | 'qr' | 'paste';
+	// The first-class ways a key arrives — none of them "advanced".
+	type Method = 'trezor' | 'ledger' | 'bitbox02' | 'jade' | 'coldcard' | 'qr' | 'paste';
+	// Which methods read the key straight off a plugged-in device (one-click connect).
+	type ConnectMethod = 'trezor' | 'ledger' | 'bitbox02' | 'jade';
 	let method = $state<Method | null>(null);
 	let keyName = $state('');
 	let keyCategory = $state<MultisigKeyCategory>('hardware');
@@ -153,10 +161,18 @@
 	const METHOD_CARDS: { key: Method; title: string; desc: string }[] = [
 		{ key: 'trezor', title: 'Trezor', desc: 'Plug it in and connect with one click.' },
 		{ key: 'ledger', title: 'Ledger', desc: 'Plug it in and connect with one click.' },
+		{ key: 'bitbox02', title: 'BitBox02', desc: 'Plug it in and connect with one click.' },
+		{ key: 'jade', title: 'Jade (USB)', desc: 'Plug it in and connect with one click.' },
 		{ key: 'coldcard', title: 'ColdCard', desc: "Import the file from its microSD card." },
 		{ key: 'qr', title: 'Air-gapped QR', desc: "Scan the key's QR code off the device screen." },
 		{ key: 'paste', title: 'Paste public key', desc: 'From any wallet app, or a key someone sent you.' }
 	];
+
+	// The BitBox02 firmware has no legacy (plain P2SH) multisig script config, so
+	// it can't hold a key for a P2SH multisig wallet — grey the tile out for that
+	// wallet type with copy explaining why (hardware plan §2.1), rather than
+	// letting the user pick it and hit a confusing failure at connect time.
+	const bitboxUnsupported = $derived(scriptType === 'p2sh');
 
 	function pickMethod(m: Method) {
 		method = m;
@@ -174,9 +190,13 @@
 						? 'My ColdCard'
 						: m === 'ledger'
 							? 'My Ledger'
-							: m === 'qr'
-								? 'My air-gapped signer'
-								: 'My Trezor';
+							: m === 'bitbox02'
+								? 'My BitBox02'
+								: m === 'jade'
+									? 'My Jade'
+									: m === 'qr'
+										? 'My air-gapped signer'
+										: 'My Trezor';
 			}
 		}
 	}
@@ -310,22 +330,35 @@
 		}
 	}
 
-	async function connectDevice(kind: 'trezor' | 'ledger') {
+	// Display names for the one-click-connect devices (used in copy + errors).
+	const CONNECT_LABELS: Record<ConnectMethod, string> = {
+		trezor: 'Trezor',
+		ledger: 'Ledger',
+		bitbox02: 'BitBox02',
+		jade: 'Jade'
+	};
+
+	async function connectDevice(kind: ConnectMethod) {
 		if (deviceBusy) return;
 		deviceBusy = true;
 		addError = null;
 		try {
-			const key =
+			const reader =
 				kind === 'trezor'
-					? await readKeyFromTrezor(scriptType)
-					: await readKeyFromLedger(scriptType);
+					? readKeyFromTrezor
+					: kind === 'ledger'
+						? readKeyFromLedger
+						: kind === 'bitbox02'
+							? readKeyFromBitbox02
+							: readKeyFromJade;
+			const key = await reader(scriptType);
 			pasteValue = key.xpub;
 			fpValue = key.fingerprint;
 			pathValue = key.path;
 			await submitKey();
 		} catch (e) {
 			if (e instanceof DeviceReadUnavailable) {
-				addError = `Direct ${kind === 'trezor' ? 'Trezor' : 'Ledger'} connection isn't available in this browser — paste the key instead. "Where do I find this key?" below has the steps.`;
+				addError = `Direct ${CONNECT_LABELS[kind]} connection isn't available in this browser — paste the key instead. "Where do I find this key?" below has the steps.`;
 				method = 'paste';
 				keyDevice = kind;
 				showWhereFind = true;
@@ -990,10 +1023,21 @@
 						<p class="hint">Where does this key live?</p>
 						<div class="method-grid">
 							{#each METHOD_CARDS as m (m.key)}
-								<button type="button" class="method-card" onclick={() => pickMethod(m.key)}>
-									<span class="method-title">{m.title}</span>
-									<span class="method-desc">{m.desc}</span>
-								</button>
+								{#if m.key === 'bitbox02' && bitboxUnsupported}
+									<!-- The BitBox02 can't do plain-P2SH multisig — greyed out here. -->
+									<div class="method-card disabled" aria-disabled="true">
+										<span class="method-title">{m.title}</span>
+										<span class="method-desc">
+											Not available for a legacy (P2SH) multisig — the BitBox02 supports only
+											Native and Nested SegWit multisig.
+										</span>
+									</div>
+								{:else}
+									<button type="button" class="method-card" onclick={() => pickMethod(m.key)}>
+										<span class="method-title">{m.title}</span>
+										<span class="method-desc">{m.desc}</span>
+									</button>
+								{/if}
 							{/each}
 						</div>
 					{:else}
@@ -1020,21 +1064,26 @@
 								/>
 							</div>
 
-							{#if method === 'trezor' || method === 'ledger'}
+							{#if method === 'trezor' || method === 'ledger' || method === 'bitbox02' || method === 'jade'}
 								<div class="connect-box">
 									<p class="connect-copy">
-										Plug in your {method === 'trezor' ? 'Trezor' : 'Ledger'} and unlock it.
+										Plug in your {CONNECT_LABELS[method]} and unlock it.
 										Cairn reads the multisig key straight from the device — the key it reads can
 										<strong>watch, never spend</strong>.
+										{#if method === 'jade'}
+											Pick the Jade from your browser's serial-port prompt.
+										{:else if method === 'bitbox02'}
+											On a first connection, confirm the pairing code on the BitBox02.
+										{/if}
 									</p>
 									<button
 										type="button"
 										class="btn btn-primary"
 										disabled={deviceBusy || adding}
-										onclick={() => connectDevice(method as 'trezor' | 'ledger')}
+										onclick={() => connectDevice(method as ConnectMethod)}
 									>
 										{#if deviceBusy || adding}<span class="spinner"></span>{/if}
-										Connect {method === 'trezor' ? 'Trezor' : 'Ledger'}
+										Connect {CONNECT_LABELS[method]}
 									</button>
 								</div>
 							{:else if method === 'coldcard'}
@@ -2076,6 +2125,18 @@
 
 	.method-card:hover {
 		border-color: var(--accent);
+	}
+
+	/* Greyed-out tile (e.g. BitBox02 for a plain-P2SH multisig): muted with color
+	   tokens, not a blanket opacity, so the explanatory copy stays readable. */
+	.method-card.disabled {
+		background: transparent;
+		border-style: dashed;
+		cursor: not-allowed;
+	}
+
+	.method-card.disabled .method-title {
+		color: var(--text-secondary);
 	}
 
 	.method-title {
