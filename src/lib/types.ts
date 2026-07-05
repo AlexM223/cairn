@@ -277,6 +277,55 @@ export interface PortfolioSummary {
 	unconfirmed: number; // sats
 }
 
+/** Which kind of wallet a portfolio row refers to (ids don't share a space). */
+export type WalletKind = 'wallet' | 'multisig';
+
+/** One wallet's slice of the portfolio, for the allocation breakdown. */
+export interface AllocationSlice {
+	/** Stable key for coloring/keying: `${kind}-${id}`. */
+	key: string;
+	kind: WalletKind;
+	id: number;
+	name: string;
+	/** Link to this wallet's detail page. */
+	href: string;
+	balance: number; // confirmed sats
+}
+
+/** One transaction in the cross-wallet recent-activity feed. */
+export interface PortfolioActivity {
+	key: string; // `${kind}-${id}-${txid}`
+	walletName: string;
+	walletHref: string;
+	txid: string;
+	direction: 'in' | 'out';
+	sats: number; // absolute value of the net delta
+	time: number | null; // unix seconds, null if unconfirmed
+	confirmations: number;
+}
+
+/** One point on the portfolio balance-over-time chart. */
+export interface BalancePoint {
+	t: number; // unix seconds
+	sats: number; // total confirmed sats at that time
+}
+
+/** The full dashboard portfolio payload (served by /api/portfolio). */
+export interface PortfolioDetail {
+	walletCount: number;
+	scannedCount: number;
+	confirmed: number; // sats
+	unconfirmed: number; // sats
+	allocation: AllocationSlice[];
+	recentActivity: PortfolioActivity[];
+	/** Total value over time, oldest first (from accumulated snapshots). */
+	balanceSeries: BalancePoint[];
+	/** Per-wallet balance history, keyed by AllocationSlice.key; oldest first. */
+	sparklines: Record<string, number[]>;
+	/** Net sats change vs the snapshot nearest 1d / 7d / 30d ago; null if none. */
+	change: { d1: number | null; d7: number | null; d30: number | null };
+}
+
 export interface InstanceSettings {
 	registrationMode: RegistrationMode;
 	connectionMode: 'public' | 'custom';

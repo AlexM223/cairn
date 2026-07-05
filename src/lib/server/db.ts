@@ -320,6 +320,28 @@ db.exec(`
 	CREATE INDEX IF NOT EXISTS idx_multisig_transactions_multisig ON multisig_transactions(multisig_id);
 `);
 
+// Portfolio balance snapshots: one row per wallet per sampling tick, so the
+// dashboard can chart total value over time and draw per-wallet sparklines.
+// A tick samples EVERY wallet at the same `taken_at`, so the total series is
+// SUM(balance_sats) GROUP BY taken_at and a wallet's sparkline is its own rows
+// ordered by time. Sampling is lazy + throttled (see recordSnapshot in
+// src/lib/server/portfolio.ts) — reusing the balances a portfolio fetch already
+// computed, so no extra chain load. wallet_kind tells single-sig ('wallet')
+// from multisig ('multisig') since their ids share no space.
+db.exec(`
+	CREATE TABLE IF NOT EXISTS balance_snapshots (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		wallet_kind  TEXT NOT NULL,                 -- 'wallet' | 'multisig'
+		wallet_id    INTEGER NOT NULL,              -- id within its kind's table
+		taken_at     TEXT NOT NULL,                 -- ISO 8601; shared across a tick
+		balance_sats INTEGER NOT NULL               -- confirmed sats at that moment
+	);
+	CREATE INDEX IF NOT EXISTS idx_balance_snapshots_user ON balance_snapshots(user_id, taken_at);
+	CREATE INDEX IF NOT EXISTS idx_balance_snapshots_wallet
+		ON balance_snapshots(user_id, wallet_kind, wallet_id, taken_at);
+`);
+
 // User-facing activity feed (adapted from Bastion's audit_log, but for
 // friendly "here's what your instance is doing" events rather than a security
 // trail). One row per notable happening. user_id is NULL for instance-wide
