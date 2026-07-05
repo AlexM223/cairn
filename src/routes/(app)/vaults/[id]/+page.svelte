@@ -248,9 +248,9 @@
 		{/if}
 	</div>
 	<p class="hint watch-note">
-		<Icon name="eye" size={12} />
-		Watch-only vault · <Term
-			tip="Spending needs signatures from that many of your keys. Cairn tracks the balance and builds transactions, but only your keys can approve them."
+		<Icon name="shield" size={12} />
+		<Term
+			tip="Spending needs signatures from that many of your keys. Cairn tracks the balance and builds transactions, but only your keys can approve them — your private keys never leave your devices."
 			>{data.vault.threshold} of {data.vault.keys.length} keys required to spend</Term
 		>
 	</p>
