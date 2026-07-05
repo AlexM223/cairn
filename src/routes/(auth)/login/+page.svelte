@@ -108,6 +108,8 @@
 		</button>
 	{/if}
 
+	<p class="alt"><a href="/recover">Lost your passkey?</a></p>
+
 	<p class="alt">No account? <a href="/signup">Create one</a></p>
 </form>
 
