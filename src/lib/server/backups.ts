@@ -17,11 +17,13 @@ export interface UnbackedWallet {
 	href: string;
 }
 
-/** Record that a wallet's config backup has been downloaded (idempotent). */
+/** Record that a wallet's config backup has been downloaded. Re-downloading
+ *  refreshes the timestamp (excluded.downloaded_at) so the 90-day periodic
+ *  reminder resets whenever the user grabs a fresh copy. */
 export function markBackedUp(userId: number, kind: WalletKind, id: number): void {
 	db.prepare(
 		`INSERT INTO wallet_backups (user_id, wallet_kind, wallet_id) VALUES (?, ?, ?)
-		 ON CONFLICT (wallet_kind, wallet_id) DO NOTHING`
+		 ON CONFLICT (wallet_kind, wallet_id) DO UPDATE SET downloaded_at = excluded.downloaded_at`
 	).run(userId, kind, id);
 }
 
@@ -73,4 +75,60 @@ export function listUnbackedWallets(userId: number): UnbackedWallet[] {
 			href: `/wallets/multisig/${m.id}`
 		}))
 	];
+}
+
+// -------------------------------------------------- 90-day periodic reminder
+
+/** Backups aren't a one-time chore: keys can be added, wallets renamed, and a
+ *  backup from a year ago may no longer match the setup. This window is how
+ *  stale a backup can get (and how long a dismissal lasts) before we gently
+ *  nudge for fresh copies. */
+const REMINDER_DAYS = 90;
+
+/** The most recent moment this user downloaded ANY of their wallet backups, as
+ *  an ISO string — or null if they have never downloaded one. */
+function lastBackupAt(userId: number): string | null {
+	const row = db
+		.prepare('SELECT MAX(downloaded_at) AS latest FROM wallet_backups WHERE user_id = ?')
+		.get(userId) as { latest: string | null } | undefined;
+	return row?.latest ?? null;
+}
+
+/** Whether an ISO timestamp is older than REMINDER_DAYS ago (null = never, so
+ *  treated as stale). */
+function olderThanWindow(iso: string | null): boolean {
+	if (!iso) return true;
+	const then = Date.parse(iso);
+	if (Number.isNaN(then)) return true;
+	return Date.now() - then > REMINDER_DAYS * 24 * 60 * 60 * 1000;
+}
+
+/**
+ * Whether to show the gentle "download fresh backups" reminder. True only when
+ * the user HAS at least one backed-up wallet whose most-recent download is
+ * older than 90 days AND they haven't dismissed the reminder within the last 90
+ * days. A user with no backups at all is handled by the separate unbacked
+ * banner (listUnbackedWallets), so this stays quiet for them.
+ */
+export function shouldShowBackupReminder(userId: number): boolean {
+	const latest = lastBackupAt(userId);
+	// No backups on record → the unbacked banner owns that case; don't double up.
+	if (!latest) return false;
+	if (!olderThanWindow(latest)) return false;
+
+	const row = db
+		.prepare('SELECT dismissed_at FROM backup_reminders WHERE user_id = ?')
+		.get(userId) as { dismissed_at: string | null } | undefined;
+	// A recent dismissal silences the reminder for another full window.
+	return olderThanWindow(row?.dismissed_at ?? null);
+}
+
+/** Record that the user dismissed the periodic reminder now, silencing it for
+ *  another REMINDER_DAYS. Idempotent per user. */
+export function dismissBackupReminder(userId: number): void {
+	db.prepare(
+		`INSERT INTO backup_reminders (user_id, dismissed_at)
+		 VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		 ON CONFLICT (user_id) DO UPDATE SET dismissed_at = excluded.dismissed_at`
+	).run(userId);
 }

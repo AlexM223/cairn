@@ -4,7 +4,7 @@ import {
 	hasAcceptedCurrentAgreement
 } from '$lib/server/disclosures';
 import { hasRecoverySetup } from '$lib/server/recovery';
-import { listUnbackedWallets } from '$lib/server/backups';
+import { listUnbackedWallets, shouldShowBackupReminder } from '$lib/server/backups';
 import type { LayoutServerLoad } from './$types';
 
 export const load: LayoutServerLoad = async ({ locals, url }) => {
@@ -37,8 +37,15 @@ export const load: LayoutServerLoad = async ({ locals, url }) => {
 		if (!recoveryComplete) redirect(302, '/recovery-setup');
 	}
 
-	// Wallets whose config backup hasn't been downloaded — drives the persistent
-	// "back up your wallet" banner (a lost config can mean permanently lost
-	// funds, so this stays until resolved). Cheap anti-join query.
-	return { user: locals.user, unbackedWallets: listUnbackedWallets(locals.user.id) };
+	// Two separate backup nudges:
+	//  • unbackedWallets — wallets whose config has NEVER been downloaded (a lost
+	//    config can mean permanently lost funds, so this stays until resolved).
+	//  • showBackupReminder — a gentle, dismissable 90-day periodic reminder for
+	//    users who HAVE backups but haven't refreshed them in a while.
+	// Both are cheap local SQLite reads.
+	return {
+		user: locals.user,
+		unbackedWallets: listUnbackedWallets(locals.user.id),
+		showBackupReminder: shouldShowBackupReminder(locals.user.id)
+	};
 };

@@ -43,11 +43,12 @@ export const GET: RequestHandler = async (event) => {
 
 	// Downloading the config is what "backed up" means for a single-sig wallet.
 	markBackedUp(user.id, 'wallet', id);
+	const date = new Date().toISOString().slice(0, 10);
 
 	return new Response(JSON.stringify(config, null, 2), {
 		headers: {
 			'content-type': 'application/json; charset=utf-8',
-			'content-disposition': `attachment; filename="cairn-${slug(wallet.name)}-config.json"`,
+			'content-disposition': `attachment; filename="cairn-${slug(wallet.name)}-backup-${date}.json"`,
 			'cache-control': 'no-store'
 		}
 	});

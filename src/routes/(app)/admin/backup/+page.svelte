@@ -1,5 +1,8 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
+	import { timeAgo, formatDateTime } from '$lib/format';
+
+	let { data } = $props();
 
 	type Summary = {
 		usersAdded: number;
@@ -10,6 +13,23 @@
 		labels: number;
 		settings: number;
 	};
+
+	// How stale before we warn: 30 days without a fresh instance backup. Also
+	// treats "never backed up" as stale.
+	const STALE_DAYS = 30;
+
+	// The last instance backup, as unix seconds (or null when never done).
+	// Seeded from the server load and refreshed optimistically after a successful
+	// download (via `justBackedUpUnix`) so the banner clears without a reload.
+	let justBackedUpUnix = $state<number | null>(null);
+	const lastBackupUnix = $derived<number | null>(
+		justBackedUpUnix ??
+			(data.lastInstanceBackupAt ? Math.floor(Date.parse(data.lastInstanceBackupAt) / 1000) : null)
+	);
+	const backupStale = $derived(
+		lastBackupUnix === null ||
+			Date.now() / 1000 - lastBackupUnix > STALE_DAYS * 24 * 60 * 60
+	);
 
 	// --- Backup ---
 	let passphrase = $state('');
@@ -49,6 +69,9 @@
 			URL.revokeObjectURL(url);
 			passphrase = '';
 			confirm = '';
+			// The server just recorded last_instance_backup_at — reflect it now so
+			// the staleness warning clears without a page reload.
+			justBackedUpUnix = Math.floor(Date.now() / 1000);
 		} catch (e) {
 			backupError = e instanceof Error ? e.message : 'Backup failed.';
 		} finally {
@@ -116,8 +139,41 @@
 		</p>
 	</div>
 
-	<section class="card card-pad section">
-		<span class="card-title">Download backup</span>
+	<section class="card card-pad section download-section" class:stale={backupStale}>
+		<div class="section-head">
+			<span class="card-title">Download backup</span>
+			{#if backupStale}
+				<span class="badge badge-warning">
+					<Icon name="alert-triangle" size={11} />
+					{lastBackupUnix === null ? 'Never backed up' : 'Backup is out of date'}
+				</span>
+			{:else}
+				<span class="badge badge-neutral">
+					<Icon name="check" size={11} />
+					Backed up {timeAgo(lastBackupUnix)}
+				</span>
+			{/if}
+		</div>
+
+		{#if backupStale}
+			<div class="stale-note" role="status">
+				<Icon name="alert-triangle" size={16} />
+				<div>
+					<strong>Regular backups protect your users' wallet configurations.</strong>
+					{#if lastBackupUnix === null}
+						This instance has never been backed up — download one now and keep it somewhere safe.
+					{:else}
+						The last backup was {timeAgo(lastBackupUnix)} ({formatDateTime(lastBackupUnix)}). Download a
+						fresh one to stay current.
+					{/if}
+				</div>
+			</div>
+		{:else}
+			<p class="hint">
+				Last backup: {formatDateTime(lastBackupUnix)} ({timeAgo(lastBackupUnix)}).
+			</p>
+		{/if}
+
 		<p class="hint">
 			Encrypted with a passphrase you choose (AES-256-GCM). Store the passphrase safely — without it
 			the backup can't be restored.
@@ -200,6 +256,46 @@
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
+	}
+
+	/* The primary maintenance action: give the download section a touch more
+	   presence, and a warning ring when a backup is overdue. */
+	.download-section {
+		border-color: var(--accent-muted);
+	}
+
+	.download-section.stale {
+		border-color: var(--warning-border-strong);
+	}
+
+	.section-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 10px;
+	}
+
+	.stale-note {
+		display: flex;
+		align-items: flex-start;
+		gap: 10px;
+		padding: 10px 12px;
+		font-size: 13px;
+		line-height: 1.55;
+		color: var(--text-secondary);
+		background: var(--warning-muted);
+		border: 1px solid var(--warning-border);
+		border-radius: var(--radius-control);
+	}
+
+	.stale-note :global(svg) {
+		color: var(--warning);
+		flex-shrink: 0;
+		margin-top: 1px;
+	}
+
+	.stale-note strong {
+		color: var(--text);
 	}
 
 	.two-col {

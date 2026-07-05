@@ -31,6 +31,22 @@
 		backupDismissed = true;
 		sessionStorage.setItem('cairn.backup.banner.dismissed', '1');
 	}
+
+	// Separate, gentler 90-day periodic reminder for users whose backups have
+	// gone stale. Dismissal is SERVER-side (persists across browsers, lapses
+	// after another 90 days), so it hits a small POST endpoint rather than
+	// sessionStorage. Hidden optimistically the moment the user dismisses.
+	const showReminder = $derived(data.showBackupReminder ?? false);
+	let reminderDismissed = $state(false);
+	async function dismissBackupReminder() {
+		reminderDismissed = true;
+		try {
+			await fetch('/api/backup-reminder/dismiss', { method: 'POST' });
+		} catch {
+			// Best-effort: it's just a nudge. It'll reappear next load if this
+			// failed, which is the safe direction for a backup reminder.
+		}
+	}
 </script>
 
 <div class="shell">
@@ -85,6 +101,23 @@
 					class="backup-banner-dismiss"
 					aria-label="Dismiss for now"
 					onclick={dismissBackupBanner}
+				>
+					<Icon name="x" size={14} />
+				</button>
+			</div>
+		{/if}
+		{#if showReminder && !reminderDismissed && !(unbacked.length > 0 && !backupDismissed)}
+			<div class="reminder-banner" role="status">
+				<Icon name="clock" size={16} />
+				<span class="grow">
+					It's been a while since you downloaded your wallet backups.
+					<a href="/wallets">Want updated copies?</a>
+				</span>
+				<button
+					type="button"
+					class="backup-banner-dismiss"
+					aria-label="Dismiss"
+					onclick={dismissBackupReminder}
 				>
 					<Icon name="x" size={14} />
 				</button>
@@ -255,6 +288,32 @@
 	}
 
 	.backup-banner a {
+		color: var(--accent);
+		font-weight: 500;
+	}
+
+	/* Gentler than the (warning-tinted) unbacked banner: a soft surface fill,
+	   since backups here already exist and just want refreshing. */
+	.reminder-banner {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		margin-bottom: 20px;
+		padding: 10px 14px;
+		font-size: 13px;
+		line-height: 1.5;
+		color: var(--text-secondary);
+		background: var(--surface);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-control);
+	}
+
+	.reminder-banner :global(svg) {
+		color: var(--text-muted);
+		flex-shrink: 0;
+	}
+
+	.reminder-banner a {
 		color: var(--accent);
 		font-weight: 500;
 	}

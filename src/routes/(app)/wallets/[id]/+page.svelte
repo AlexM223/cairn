@@ -140,6 +140,18 @@
 
 	const receive = $derived(form?.receive ?? data.receive);
 
+	// Backup nudge: gentle reminder until the first download happens (matches
+	// the multisig detail page). Optimistic until localStorage is checked so the
+	// badge doesn't flash on a wallet that's already backed up.
+	let backupDone = $state(true);
+	$effect(() => {
+		backupDone = localStorage.getItem(`cairn.wallet.backup.${data.wallet.id}`) === 'done';
+	});
+	function markBackupDownloaded() {
+		localStorage.setItem(`cairn.wallet.backup.${data.wallet.id}`, 'done');
+		backupDone = true;
+	}
+
 	// --- tx labels ---
 	// Server-loaded labels plus optimistic local edits layered on top; an
 	// override of '' hides a label that was just cleared.
@@ -434,6 +446,54 @@
 				{/if}
 			</section>
 		</div>
+
+		<!-- ------------------------------------------- backup / export -->
+		<section class="card card-pad backup-card" id="backup">
+			<div class="row" style="gap: 8px">
+				<Icon name="arrow-down-left" size={15} />
+				<span class="card-title grow">
+					<Term
+						tip="Save this file somewhere safe. It's how you recover this wallet in another wallet app if needed."
+						>Download backup</Term
+					>
+				</span>
+				{#if !backupDone}
+					<span class="badge badge-warning">
+						<Icon name="alert-triangle" size={11} />
+						not downloaded yet
+					</span>
+				{/if}
+			</div>
+			<p class="backup-copy">
+				The backup describes the wallet — its public key and settings — so any wallet app can find
+				your money again if Cairn's data is ever lost. It <strong>can't spend</strong>; spending
+				always needs your signing device. Store it with your seed backup.
+			</p>
+			<div class="row" style="gap: 8px; flex-wrap: wrap">
+				<a
+					href="/api/wallets/{data.wallet.id}/config"
+					class="btn btn-primary btn-sm"
+					download
+					onclick={markBackupDownloaded}
+				>
+					Wallet config (JSON)
+				</a>
+				<a
+					href="/api/wallets/{data.wallet.id}/descriptor"
+					class="btn btn-ghost btn-sm"
+					download
+					onclick={markBackupDownloaded}
+				>
+					Descriptor (.txt)
+				</a>
+			</div>
+			<div class="backup-notes">
+				<span class="hint">
+					<strong>Wallet config</strong> — re-import the key into Cairn, Sparrow or Electrum. ·
+					<strong>Descriptor</strong> — the raw text form, for Bitcoin Core and power users.
+				</span>
+			</div>
+		</section>
 
 		<!-- Consolidation suggestion: appears only when the wallet holds coins
 		     from huge batch payouts (slow to sign on hardware wallets). Fetches
@@ -950,6 +1010,38 @@
 		flex-direction: column;
 		gap: 10px;
 		align-items: flex-start;
+	}
+
+	.backup-card {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		margin-bottom: 18px;
+	}
+
+	.backup-copy {
+		font-size: 13px;
+		line-height: 1.65;
+		color: var(--text-secondary);
+		margin: 0;
+	}
+
+	.backup-copy strong {
+		color: var(--text);
+	}
+
+	.backup-notes {
+		border-top: 1px solid var(--border-subtle);
+		padding-top: 10px;
+	}
+
+	.backup-notes .hint {
+		line-height: 1.6;
+	}
+
+	.backup-notes strong {
+		color: var(--text-secondary);
+		font-weight: 500;
 	}
 
 	.delete-backup-warning {

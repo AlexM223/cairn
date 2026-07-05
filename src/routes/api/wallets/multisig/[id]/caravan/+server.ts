@@ -31,10 +31,11 @@ export const GET: RequestHandler = async (event) => {
 	try {
 		const body = caravanExport(multisig);
 		markBackedUp(user.id, 'multisig', id);
+		const date = new Date().toISOString().slice(0, 10);
 		return new Response(body, {
 			headers: {
 				'content-type': 'application/json; charset=utf-8',
-				'content-disposition': `attachment; filename="cairn-multisig-${safeFilename(multisig.name)}.json"`
+				'content-disposition': `attachment; filename="cairn-${safeFilename(multisig.name)}-backup-${date}.json"`
 			}
 		});
 	} catch (e) {
