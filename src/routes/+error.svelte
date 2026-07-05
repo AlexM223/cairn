@@ -7,6 +7,10 @@
 			? "This path doesn't lead anywhere."
 			: (page.error?.message ?? 'Something went wrong.')
 	);
+
+	// Present on unexpected server errors (set by handleError) — lets a user
+	// quote the exact failure to their operator, who can grep it in the logs.
+	const errorId = $derived(page.error?.errorId ?? null);
 </script>
 
 <svelte:head>
@@ -18,6 +22,9 @@
 		<Logo size={30} />
 		<div class="status hero-number">{page.status}</div>
 		<p class="message">{message}</p>
+		{#if errorId}
+			<p class="error-id">error ID: <span class="mono">{errorId}</span></p>
+		{/if}
 		<div class="actions">
 			<a href="/" class="btn btn-primary">Back to dashboard</a>
 			<a href="/explorer" class="btn btn-ghost">Open the explorer</a>
@@ -53,6 +60,15 @@
 		color: var(--text-secondary);
 		font-size: 14.5px;
 		line-height: 1.6;
+	}
+
+	.error-id {
+		font-size: 12.5px;
+		color: var(--text-muted);
+		background: var(--surface);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-chip);
+		padding: 4px 10px;
 	}
 
 	.actions {
