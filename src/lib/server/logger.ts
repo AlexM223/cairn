@@ -19,7 +19,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Writable } from 'node:stream';
-import { dev } from '$app/environment';
 import { env } from '$env/dynamic/private';
 import pino from 'pino';
 import pretty from 'pino-pretty';
@@ -28,8 +27,17 @@ export type LogLevel = 'error' | 'warn' | 'info' | 'debug';
 
 // --------------------------------------------------------------- configuration
 
-/** LOG_LEVEL env overrides the default (debug in dev, info in prod). */
-const LEVEL: string = (env.LOG_LEVEL ?? (dev ? 'debug' : 'info')).toLowerCase();
+// Dev/test detection via Vite's compile-time env — resolved statically in the
+// SvelteKit build and available under Vitest, unlike $app/environment (which
+// the test runner can't resolve, and this module is imported deep in the server
+// graph). dev → pretty stdout; test → silent, no file writes.
+const dev = import.meta.env.DEV;
+const isTest = import.meta.env.MODE === 'test';
+
+/** LOG_LEVEL env overrides the default (debug in dev, info in prod, off in test). */
+const LEVEL: string = (
+	env.LOG_LEVEL ?? (isTest ? 'silent' : dev ? 'debug' : 'info')
+).toLowerCase();
 
 /**
  * Where the rotating log file lives. Defaults under data/ (which is gitignored
@@ -40,7 +48,7 @@ const LEVEL: string = (env.LOG_LEVEL ?? (dev ? 'debug' : 'info')).toLowerCase();
 export const LOG_FILE: string =
 	env.CAIRN_LOG_FILE ?? path.join(process.cwd(), 'data', 'logs', 'cairn.log');
 
-const FILE_ENABLED = env.CAIRN_LOG_TO_FILE !== 'false';
+const FILE_ENABLED = !isTest && env.CAIRN_LOG_TO_FILE !== 'false';
 
 /** Rotate when the active file passes this size, keeping this many old files. */
 const MAX_FILE_BYTES = numberFromEnv(env.CAIRN_LOG_MAX_SIZE, 10 * 1024 * 1024);
