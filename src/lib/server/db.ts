@@ -180,6 +180,30 @@ db.exec(`
 			}[]
 		).map((t) => t.name)
 	);
+	const rowCount = (t: string) =>
+		tableNames.has(t) ? (db.prepare(`SELECT count(*) AS c FROM ${t}`).get() as { c: number }).c : 0;
+
+	// Empty-shell recovery: if a prior partial run (e.g. two dev servers on one
+	// DB, or an app start between the rename landing in code and this migration
+	// shipping) created EMPTY new tables alongside the still-populated old ones,
+	// the plain rename below would skip (target exists) and orphan the real data.
+	// Detect that exact case — old `vaults` has rows, new `multisigs` is empty —
+	// and drop the empty shells (children before parent) so the rename can move
+	// the real data across. Only ever discards provably-empty tables.
+	if (tableNames.has('vaults') && rowCount('vaults') > 0 && rowCount('multisigs') === 0) {
+		for (const t of [
+			'multisig_keys',
+			'multisig_transactions',
+			'ledger_multisig_registrations',
+			'multisigs'
+		]) {
+			if (tableNames.has(t)) {
+				db.exec(`DROP TABLE ${t}`);
+				tableNames.delete(t);
+			}
+		}
+	}
+
 	const renameTable = (from: string, to: string) => {
 		if (tableNames.has(from) && !tableNames.has(to)) {
 			db.exec(`ALTER TABLE ${from} RENAME TO ${to}`);
