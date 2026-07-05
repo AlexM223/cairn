@@ -41,6 +41,10 @@ function all(sql: string): Row[] {
 	return db.prepare(sql).all() as Row[];
 }
 
+// Setting keys that hold a secret (e.g. the Bitcoin Core RPC password) are
+// excluded from backups — the operator re-enters them after a restore.
+const SENSITIVE_SETTING = /pass|secret|token|pin|key/i;
+
 /** Snapshot the instance's durable config (no credentials/tokens/keys). */
 export function buildBackup(exportedAt: string): BackupData {
 	return {
@@ -57,7 +61,9 @@ export function buildBackup(exportedAt: string): BackupData {
 		ledger_multisig_registrations: all('SELECT * FROM ledger_multisig_registrations'),
 		saved_addresses: all('SELECT * FROM saved_addresses'),
 		tx_labels: all('SELECT * FROM tx_labels'),
-		settings: all('SELECT key, value FROM settings')
+		settings: all('SELECT key, value FROM settings').filter(
+			(r) => !SENSITIVE_SETTING.test(String(r.key))
+		)
 	};
 }
 

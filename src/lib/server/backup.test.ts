@@ -59,6 +59,14 @@ describe('encrypt / decrypt', () => {
 		expect(text).not.toContain('password');
 		expect(text).not.toContain('token');
 	});
+
+	it('excludes secret settings like the Bitcoin Core RPC password', () => {
+		registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+		db.prepare("INSERT INTO settings (key, value) VALUES ('core_rpc_pass', 'supersecret')").run();
+		const data = buildBackup('t');
+		expect(data.settings.some((s) => s.key === 'core_rpc_pass')).toBe(false);
+		expect(JSON.stringify(data)).not.toContain('supersecret');
+	});
 });
 
 describe('restore', () => {
