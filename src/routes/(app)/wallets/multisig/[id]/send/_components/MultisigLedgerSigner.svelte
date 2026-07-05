@@ -262,8 +262,13 @@
 		<div class="unavailable" role="note">
 			<span class="unavailable-icon"><Icon name="alert-triangle" size={18} /></span>
 			<div>
-				<p class="unavailable-title">Ledger signing isn't available in this browser</p>
-				<p class="hint">
+				<p class="unavailable-title" id="ledger-unavailable-title">
+					Ledger signing isn't available in this browser
+				</p>
+				<!-- The id ties this reason to the fallback control below: screen
+				     reader users landing on the button by control navigation hear
+				     WHY the device path is unavailable, not just the workaround. -->
+				<p class="hint" id="ledger-unavailable-reason">
 					It needs
 					<Term tip="A browser API for talking to USB devices directly.">WebHID</Term>, which is
 					only in Chromium-based desktop browsers — Chrome, Edge, or Brave — served over HTTPS or
@@ -273,12 +278,16 @@
 			</div>
 		</div>
 		{#if onusefile}
-			<button class="btn btn-secondary" onclick={onusefile}>
+			<button
+				class="btn btn-secondary"
+				onclick={onusefile}
+				aria-describedby="ledger-unavailable-title ledger-unavailable-reason"
+			>
 				Use the file method for this key
 			</button>
 		{/if}
 	{:else if done}
-		<div class="signed-ok" role="status">
+		<div class="signed-ok" role="status" aria-live="polite">
 			<span class="ok-icon"><Icon name="check" size={18} /></span>
 			<div>
 				<p class="ok-title">Signed on your Ledger</p>
@@ -349,7 +358,7 @@
 		</div>
 
 		{#if saveWarning}
-			<div class="save-warning" role="status">
+			<div class="save-warning" role="status" aria-live="polite">
 				<Icon name="alert-triangle" size={14} />
 				<span>
 					The Ledger approved the wallet, but Cairn couldn't save the registration — signing still

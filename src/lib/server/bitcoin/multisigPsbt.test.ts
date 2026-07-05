@@ -47,6 +47,20 @@ function makeSigner(seedByte: number): TestSigner {
 
 const SIGNERS = [1, 2, 3, 4, 5].map(makeSigner);
 
+/** A signer at an arbitrary account path — for the shared-seed fixtures where
+ *  several cosigner keys carry the SAME master fingerprint (cairn-x54). */
+function makeAccountSigner(seedByte: number, accountPath: string): TestSigner {
+	const master = HDKey.fromMasterSeed(new Uint8Array(32).fill(seedByte));
+	const account = master.derive(accountPath);
+	const fingerprint = (master.fingerprint >>> 0).toString(16).padStart(8, '0');
+	return {
+		master,
+		account,
+		fingerprint,
+		descriptor: { xpub: account.publicExtendedKey, fingerprint, path: accountPath }
+	};
+}
+
 type TestConfig = MultisigConfig & { scriptType: MultisigScriptType };
 function config(threshold: number, count: number, scriptType: MultisigScriptType = 'p2wsh'): TestConfig {
 	return { threshold, keys: SIGNERS.slice(0, count).map((s) => s.descriptor), scriptType };
@@ -289,6 +303,11 @@ describe('multisig signing lifecycle (2-of-3 p2wsh)', () => {
 		expect(p1.signedFingerprints).toEqual([SIGNERS[0].fingerprint]);
 		expect(p1.remainingFingerprints).toContain(SIGNERS[1].fingerprint);
 		expect(p1.remainingFingerprints).toContain(SIGNERS[2].fingerprint);
+		// Per-key attribution by pubkey: exactly key 1's origin is signed.
+		expect(p1.keys).toHaveLength(3);
+		expect(p1.keys.filter((k) => k.signed)).toEqual([
+			{ fingerprint: SIGNERS[0].fingerprint, path: BIP48_PATH, signed: true }
+		]);
 
 		// 1-of-2 does NOT finalize (quorum enforcement).
 		expect(() => finalizeMultisigPsbt(combined1)).toThrow(MultisigPsbtError);
@@ -388,6 +407,111 @@ describe('multisig signing lifecycle (2-of-3 p2wsh)', () => {
 		expect(p.remainingFingerprints.sort()).toEqual(
 			[SIGNERS[0].fingerprint, SIGNERS[2].fingerprint].sort()
 		);
+		// The per-key view CAN attribute it — the pubkey match is exact, and the
+		// placeholder key's origin path still identifies it.
+		expect(p.keys.filter((k) => k.signed)).toEqual([
+			{ fingerprint: '00000000', path: BIP48_PATH, signed: true }
+		]);
+	});
+});
+
+// ── per-key attribution when fingerprints collide (cairn-x54) ────────────────
+//
+// Three cosigner keys derived from ONE master seed at different BIP-48
+// accounts: all share the master fingerprint, so fingerprint-based attribution
+// is inherently blind here — after ONE signature it marks every key signed,
+// which is exactly the bug that wedged the signing stepper. Only the
+// per-pubkey `keys` attribution can say who actually signed.
+
+describe('per-key attribution with a shared master fingerprint (cairn-x54)', () => {
+	const ACCOUNT_PATHS = ["m/48'/0'/0'/2'", "m/48'/0'/1'/2'", "m/48'/0'/2'/2'"];
+	const SHARED = ACCOUNT_PATHS.map((p) => makeAccountSigner(7, p));
+	const CFG: TestConfig = {
+		threshold: 2,
+		scriptType: 'p2wsh',
+		keys: SHARED.map((s) => s.descriptor)
+	};
+
+	async function buildShared() {
+		return constructMultisigPsbt({
+			config: CFG,
+			utxos: [multisigUtxo(CFG, 200_000)],
+			recipients: [{ address: RECIPIENT, amount: 50_000 }],
+			feeRate: FEE_RATE,
+			changeIndex: 0
+		});
+	}
+
+	it('attributes a signature to exactly the key that made it — not every key sharing the fingerprint', async () => {
+		expect(new Set(SHARED.map((s) => s.fingerprint)).size).toBe(1); // the collision is real
+
+		const draft = await buildShared();
+		const combined = combineMultisigPsbts(draft.psbtBase64, signWith(draft.psbtBase64, SHARED[0]));
+		const p = multisigPsbtProgress(combined, 2);
+
+		// The counts were never wrong — 1 of 2 — and still aren't.
+		expect(p.collected).toBe(1);
+		expect(p.complete).toBe(false);
+
+		// The legacy fingerprint view is blind here (kept for aggregate/legacy
+		// consumers): one shared fingerprint, reported wholesale as signed.
+		expect(p.signedFingerprints).toEqual([SHARED[0].fingerprint]);
+		expect(p.remainingFingerprints).toEqual([]);
+
+		// The per-key view is not: exactly key 1's origin signed, keys 2/3 not.
+		expect(p.keys).toHaveLength(3);
+		expect(p.keys.filter((k) => k.signed)).toEqual([
+			{ fingerprint: SHARED[0].fingerprint, path: ACCOUNT_PATHS[0], signed: true }
+		]);
+		expect(
+			p.keys
+				.filter((k) => !k.signed)
+				.map((k) => k.path)
+				.sort()
+		).toEqual([ACCOUNT_PATHS[1], ACCOUNT_PATHS[2]].sort());
+
+		// Next-signer math — what the UI stepper derives its queue from: mapping
+		// the roster against the signed (fingerprint, path) identities leaves
+		// keys 2 and 3 unsigned, so a REAL next key exists and the "sign with
+		// key 2" panel has something to render.
+		const signedIds = new Set(
+			p.keys.filter((k) => k.signed).map((k) => `${k.fingerprint}|${k.path}`)
+		);
+		const nextSigners = CFG.keys.filter(
+			(k) => !signedIds.has(`${k.fingerprint.toLowerCase()}|${k.path}`)
+		);
+		expect(nextSigners).toHaveLength(2);
+		expect(nextSigners[0].path).toBe(ACCOUNT_PATHS[1]);
+	});
+
+	it('completes the quorum through key 2 and attributes both signers', async () => {
+		const draft = await buildShared();
+		let combined = combineMultisigPsbts(draft.psbtBase64, signWith(draft.psbtBase64, SHARED[0]));
+		combined = combineMultisigPsbts(combined, signWith(combined, SHARED[1]));
+		const p = multisigPsbtProgress(combined, 2);
+		expect(p.collected).toBe(2);
+		expect(p.complete).toBe(true);
+		expect(
+			p.keys
+				.filter((k) => k.signed)
+				.map((k) => k.path)
+				.sort()
+		).toEqual([ACCOUNT_PATHS[0], ACCOUNT_PATHS[1]].sort());
+		expect(() => finalizeMultisigPsbt(combined)).not.toThrow();
+	});
+
+	it('never fabricates attribution once finalization strips per-input data', async () => {
+		const draft = await buildShared();
+		let combined = combineMultisigPsbts(draft.psbtBase64, signWith(draft.psbtBase64, SHARED[0]));
+		combined = combineMultisigPsbts(combined, signWith(combined, SHARED[1]));
+		const tx = Transaction.fromPSBT(base64.decode(combined));
+		tx.finalize();
+		const p = multisigPsbtProgress(base64.encode(tx.toPSBT()), 2);
+		expect(p.complete).toBe(true);
+		expect(p.collected).toBeGreaterThanOrEqual(2);
+		// Attribution is unknowable now — no key may be (falsely) marked signed.
+		// The UI renders the quorum-met state from `complete` instead.
+		expect(p.keys.every((k) => !k.signed)).toBe(true);
 	});
 });
 

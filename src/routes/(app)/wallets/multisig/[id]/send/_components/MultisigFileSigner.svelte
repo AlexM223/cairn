@@ -153,7 +153,14 @@
 				skip it, the ColdCard will report an unknown or unenrolled wallet instead of signing:
 				expected, not a bug — register and retry.
 				<div class="register-actions">
-					<a class="btn btn-secondary btn-sm" href={registrationUrl} download>
+					<!-- aria-label carries the surrounding paragraph's context so the
+					     control makes sense when reached on its own. -->
+					<a
+						class="btn btn-secondary btn-sm"
+						href={registrationUrl}
+						download
+						aria-label={`Download the registration file that teaches your ColdCard the “${multisigName}” multisig wallet — a one-time import before it will sign`}
+					>
 						<Icon name="arrow-down-left" size={14} /> Download registration file
 					</a>
 				</div>
@@ -197,7 +204,12 @@
 						It already carries every signature collected so far — your signer adds one more.
 					</span>
 				{/if}
-				<a class="btn btn-secondary btn-sm" href={fileUrl} download>
+				<a
+					class="btn btn-secondary btn-sm"
+					href={fileUrl}
+					download
+					aria-label={`Download the unsigned transaction file (.psbt) to sign with ${keyName}`}
+				>
 					<Icon name="arrow-down-left" size={14} /> Download .psbt
 				</a>
 			</div>
@@ -224,11 +236,15 @@
 			<div class="sign-step-body">
 				<span class="sign-step-title">Bring the signed PSBT back</span>
 				<label class="file-drop" class:busy={reading}>
+					<!-- Explicit aria-label: the wrapping label's visible text mutates
+					     through Reading…/Loaded states — the input's accessible name
+					     stays stable and carries the key context. -->
 					<input
 						type="file"
 						accept=".psbt,.txt,text/plain,application/octet-stream"
 						onchange={onSignedFile}
 						disabled={reading}
+						aria-label={`Upload the transaction file (.psbt) signed with ${keyName}`}
 					/>
 					{#if reading}
 						<span class="spinner"></span>
@@ -243,7 +259,12 @@
 				</label>
 				{#if flavor === 'generic'}
 					<div class="or-divider"><span>or paste base64 / hex</span></div>
-					<textarea class="input mono" rows="3" placeholder="cHNidP8BA…" bind:value={pastedPsbt}
+					<textarea
+						class="input mono"
+						rows="3"
+						placeholder="cHNidP8BA…"
+						aria-label={`Paste the transaction signed with ${keyName}, as base64 or hex`}
+						bind:value={pastedPsbt}
 					></textarea>
 					<button
 						class="btn btn-primary btn-sm"

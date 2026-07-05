@@ -141,20 +141,29 @@
 		<div class="unavailable" role="note">
 			<span class="unavailable-icon"><Icon name="alert-triangle" size={18} /></span>
 			<div>
-				<p class="unavailable-title">Trezor signing isn't available here</p>
-				<p class="hint">
+				<p class="unavailable-title" id="trezor-unavailable-title">
+					Trezor signing isn't available here
+				</p>
+				<!-- The id ties this reason to the fallback control below: screen
+				     reader users landing on the button by control navigation hear
+				     WHY the device path is unavailable, not just the workaround. -->
+				<p class="hint" id="trezor-unavailable-reason">
 					The Trezor Connect popup needs a secure page — HTTPS or localhost. Open Cairn over one of
 					those, or sign this key with the file method instead.
 				</p>
 			</div>
 		</div>
 		{#if onusefile}
-			<button class="btn btn-secondary" onclick={onusefile}>
+			<button
+				class="btn btn-secondary"
+				onclick={onusefile}
+				aria-describedby="trezor-unavailable-title trezor-unavailable-reason"
+			>
 				Use the file method for this key
 			</button>
 		{/if}
 	{:else if done}
-		<div class="signed-ok" role="status">
+		<div class="signed-ok" role="status" aria-live="polite">
 			<span class="ok-icon"><Icon name="check" size={18} /></span>
 			<div>
 				<p class="ok-title">Signed on your Trezor</p>

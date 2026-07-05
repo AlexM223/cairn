@@ -360,12 +360,19 @@
 	// -------------------------------------------------- SIGN: per-key stepper
 	//
 	// The server's progress object is the only authority: `collected` (min
-	// signatures across inputs), `complete`, and which FINGERPRINTS have
-	// signed. The client maps fingerprints onto the multisig's key roster to
-	// paint chips, pick the next key, and let the user reorder ("use this key
-	// instead" — the signer-cursor pattern). Keys carrying the 00000000
-	// placeholder can never be individually attributed; the counts stay right
-	// regardless because they come from the PSBT, not the chips.
+	// signatures across inputs), `complete`, and per-key attribution in
+	// `progress.keys` — each entry a (fingerprint, account path) key origin
+	// whose own derived PUBKEY was matched against the PSBT's partial
+	// signatures. The client maps those identities onto the multisig's key
+	// roster to paint chips, pick the next key, and let the user reorder ("use
+	// this key instead" — the signer-cursor pattern). NEVER match by
+	// fingerprint alone: two keys derived from the same seed at different
+	// BIP-48 accounts share one fingerprint, and fingerprint matching used to
+	// mark them ALL signed after a single signature — hiding the next-signer
+	// panel and wedging the spend entirely (cairn-x54). A key whose
+	// (fingerprint, path) identity is duplicated in the roster can never be
+	// individually attributed; the counts stay right regardless because they
+	// come from the PSBT, not the chips.
 
 	type MultisigKey = (typeof keys)[number];
 
@@ -377,12 +384,46 @@
 	let signerEpoch = $state(0);
 	let signFlash = $state<string | null>(null);
 
-	const signedFps = $derived(new Set(progress?.signedFingerprints ?? []));
+	/** Roster path → the canonical form progress.keys carries ("m/48'/0'/0'/2'"). */
+	function normalizePath(p: string): string {
+		const s = p
+			.trim()
+			.replace(/^m\/?/i, '')
+			.replace(/[hH’]/g, "'");
+		return s === '' ? 'm' : `m/${s}`;
+	}
+	function keyIdentity(fingerprint: string, path: string): string {
+		return `${fingerprint.toLowerCase()}|${normalizePath(path)}`;
+	}
+	// Duplicate identities (same fingerprint AND same account path — e.g. two
+	// origin-less keys both recorded as 00000000/m) are indistinguishable:
+	// never tick either off a single signature.
+	const identityCounts = new Map<string, number>();
+	for (const k of keys) {
+		const id = keyIdentity(k.fingerprint, k.path);
+		identityCounts.set(id, (identityCounts.get(id) ?? 0) + 1);
+	}
+	const hasUnattributableKey = keys.some(
+		(k) => (identityCounts.get(keyIdentity(k.fingerprint, k.path)) ?? 0) > 1
+	);
+
+	const signedIdentities = $derived(
+		new Set(
+			(progress?.keys ?? [])
+				.filter((k) => k.signed)
+				.map((k) => keyIdentity(k.fingerprint, k.path))
+		)
+	);
 	const collected = $derived(progress?.collected ?? 0);
 	const remainingNeeded = $derived(Math.max(0, required - collected));
+	// Once the PSBT is finalizable, per-key attribution may be unknowable
+	// (finalization strips per-input data) — the Sign step then shows the
+	// quorum-met state instead of claiming any particular key signed or not.
+	const quorumMet = $derived(progress?.complete ?? false);
 
 	function isSigned(key: MultisigKey): boolean {
-		return key.fingerprint !== '00000000' && signedFps.has(key.fingerprint);
+		const id = keyIdentity(key.fingerprint, key.path);
+		return identityCounts.get(id) === 1 && signedIdentities.has(id);
 	}
 
 	const unsignedKeys = $derived(keys.filter((k) => !isSigned(k)));
@@ -431,8 +472,6 @@
 		return activeKey.deviceType;
 	});
 
-	const hasPlaceholderFp = $derived(keys.some((k) => k.fingerprint === '00000000'));
-
 	// The cosigner roster in the shape the USB drivers take (MultisigSignKey) —
 	// position order, public key material only. Device availability probing
 	// happens inside each signer component, client-side (like the wallets flow).
@@ -454,7 +493,7 @@
 		if (!psbt || attaching || !draft) return;
 		attaching = true;
 		signError = null;
-		const before = new Set(progress?.signedFingerprints ?? []);
+		const before = new Set(signedIdentities);
 		try {
 			const res = await fetch(`/api/wallets/multisig/${multisigId}/transactions/${draft.id}`, {
 				method: 'PATCH',
@@ -480,9 +519,16 @@
 				return;
 			}
 			if (fresh.collected > prevCollected) {
-				// Attribute the new signature for the flash message when possible.
-				const newFp = fresh.signedFingerprints.find((fp) => !before.has(fp));
-				const who = newFp ? keys.find((k) => k.fingerprint === newFp)?.name : undefined;
+				// Attribute the new signature for the flash message when possible —
+				// by (fingerprint, path) identity, never by bare fingerprint.
+				const newId = (fresh.keys ?? [])
+					.filter((k) => k.signed)
+					.map((k) => keyIdentity(k.fingerprint, k.path))
+					.find((id) => !before.has(id));
+				const who =
+					newId && identityCounts.get(newId) === 1
+						? keys.find((k) => keyIdentity(k.fingerprint, k.path) === newId)?.name
+						: undefined;
 				const more = fresh.required - fresh.collected;
 				signFlash = `${who ? `Signature from ${who}` : 'Signature'} added — ${more} more ${
 					more === 1 ? 'signature' : 'signatures'
@@ -985,9 +1031,12 @@
 				{@render massPanel(signingMass)}
 			{/if}
 
-			<!-- Live quorum progress, straight from the server's PSBT inspection. -->
+			<!-- Live quorum progress, straight from the server's PSBT inspection.
+			     role="status" + explicit aria-live: screen-reader users collecting
+			     signatures over time must HEAR each quorum change, and the implicit
+			     politeness of role="status" alone is inconsistently honored. -->
 			<div class="card card-pad quorum-card">
-				<div class="quorum-head">
+				<div class="quorum-head" role="status" aria-live="polite">
 					<span class="quorum-count tabular"
 						>{collected} of {required} signatures collected</span
 					>
@@ -1007,13 +1056,23 @@
 				<div class="key-chips">
 					{#each keys as key (key.id)}
 						{@const signed = isSigned(key)}
-						{@const active = activeKey?.id === key.id}
+						{@const active = !quorumMet && activeKey?.id === key.id}
 						{@const spare = !signed && !active && isSpare(key)}
 						{#if signed}
 							<div class="key-chip signed">
 								<Icon name="check" size={13} strokeWidth={2.5} />
 								<span class="chip-name">{key.name}</span>
 								<span class="chip-meta">{KEY_CATEGORY_LABELS[key.category]} · <span class="mono">{key.fingerprint}</span></span>
+							</div>
+						{:else if quorumMet}
+							<!-- Quorum met, but this key's attribution is unknown (a
+							     finalized PSBT strips per-input data) — a neutral chip,
+							     never a false "signed" or a next-signer CTA. -->
+							<div class="key-chip">
+								<span class="chip-dot" aria-hidden="true"></span>
+								<span class="chip-name">{key.name}</span>
+								<span class="chip-meta">{KEY_CATEGORY_LABELS[key.category]} · <span class="mono">{key.fingerprint}</span></span>
+								<span class="chip-badge">Not needed — quorum met</span>
 							</div>
 						{:else}
 							{@const chipEstimate = deviceEstimate(key)}
@@ -1044,22 +1103,33 @@
 						{/if}
 					{/each}
 				</div>
-				{#if hasPlaceholderFp}
+				{#if hasUnattributableKey}
 					<p class="hint">
-						Keys without a recorded master fingerprint (00000000) can't be individually ticked off
-						— the signature count above is still exact, straight from the transaction itself.
+						Keys that share both a master fingerprint and a derivation path can't be individually
+						ticked off — the signature count above is still exact, straight from the transaction
+						itself.
 					</p>
 				{/if}
 			</div>
 
 			{#if signFlash}
-				<div class="sign-flash" role="status">
+				<div class="sign-flash" role="status" aria-live="polite">
 					<Icon name="check" size={15} />
 					<span>{signFlash}</span>
 				</div>
 			{/if}
 
-			{#if activeKey && signerContext && draft}
+			{#if quorumMet}
+				<!-- Reached via "Back" from Confirm (attach jumps there directly).
+				     Never offer another signing panel on a complete transaction. -->
+				<div class="quorum-done" role="status" aria-live="polite">
+					<Icon name="check" size={16} strokeWidth={2.5} />
+					<span>
+						<strong>All {required} required signatures are in.</strong>
+						The quorum is met — no more keys need to sign this transaction.
+					</span>
+				</div>
+			{:else if activeKey && signerContext && draft}
 				{#key `${activeKey.id}-${signerEpoch}`}
 					{#if effectiveDevice === 'qr'}
 						<!-- Hard prerequisite, not optional education: camera signers refuse
@@ -1078,7 +1148,12 @@
 								device. If the device warns about an unknown wallet or declines the PSBT, that's
 								expected, not a bug: register the wallet and scan again.
 								<div class="register-actions">
-									<a class="btn btn-secondary btn-sm" href={registrationUrl} download>
+									<a
+										class="btn btn-secondary btn-sm"
+										href={registrationUrl}
+										download
+										aria-label={`Download the registration file that teaches your signing device the “${data.multisig.name}” multisig wallet — a one-time import before it will sign`}
+									>
 										<Icon name="arrow-down-left" size={14} /> Download registration file
 									</a>
 								</div>
@@ -1158,7 +1233,7 @@
 			{/if}
 
 			{#if attaching}
-				<div class="attach-status" role="status">
+				<div class="attach-status" role="status" aria-live="polite">
 					<span class="spinner"></span> Merging the signature and re-checking it against the
 					transaction you reviewed…
 				</div>
@@ -1177,16 +1252,22 @@
 				<button class="btn btn-secondary" onclick={() => (step = 'review')}>
 					<Icon name="chevron-left" size={15} /> Back to review
 				</button>
-				<span class="hint resume-hint">
-					You can leave anytime — signatures are saved, and this page resumes where you left off.
-				</span>
+				{#if quorumMet}
+					<button class="btn btn-primary" onclick={() => (step = 'confirm')}>
+						Continue to broadcast <Icon name="arrow-right" size={15} />
+					</button>
+				{:else}
+					<span class="hint resume-hint">
+						You can leave anytime — signatures are saved, and this page resumes where you left off.
+					</span>
+				{/if}
 			</div>
 		</section>
 
 	<!-- =========================================================== CONFIRM -->
 	{:else if step === 'confirm' && review}
 		<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
-			<div class="quorum-done" role="status">
+			<div class="quorum-done" role="status" aria-live="polite">
 				<Icon name="check" size={16} strokeWidth={2.5} />
 				<span>
 					<strong>{collected >= required ? `${required} of ${required}` : quorum} signatures collected.</strong>

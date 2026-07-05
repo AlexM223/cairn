@@ -630,6 +630,27 @@ export function combineMultisigPsbts(basePsbt: string, incomingPsbt: string): st
 
 // ------------------------------------------------------------------ progress
 
+/**
+ * Per-key signature attribution. A key is identified by its ORIGIN — master
+ * fingerprint plus account-level path — because that pair is what tells two
+ * cosigner keys apart even when they were derived from the SAME seed at
+ * different BIP-48 accounts and therefore share a fingerprint (cairn-x54).
+ * The `signed` flag itself is computed by exact PUBKEY match: a key is signed
+ * only when its own bip32Derivation-derived pubkey at an input's chain/index
+ * appears in that input's partialSig list.
+ */
+export interface MultisigKeyAttribution {
+	/** Master fingerprint, 8-hex lowercase (the '00000000' placeholder included
+	 *  — the path can still disambiguate such keys). */
+	fingerprint: string;
+	/** Account-level origin path — the bip32Derivation path minus its trailing
+	 *  <chain>/<index>, formatted "m/48'/0'/0'/2'"; "m" for origin-less keys. */
+	path: string;
+	/** True when this key's own derived pubkey has a partial signature on at
+	 *  least one not-yet-finalized input. */
+	signed: boolean;
+}
+
 export interface MultisigSigningProgress {
 	/** Quorum M — signatures needed to spend. */
 	required: number;
@@ -642,10 +663,23 @@ export interface MultisigSigningProgress {
 	 *  throwaway parse — the same authority broadcast uses, so UI and server
 	 *  can never disagree). */
 	complete: boolean;
+	/**
+	 * Per-key attribution by pubkey — one entry per distinct key origin
+	 * (fingerprint + account path) found in the PSBT's bip32Derivation entries.
+	 * THIS is what per-key UI must render from: unlike `signedFingerprints`, it
+	 * never conflates two keys that share a master fingerprint. May be empty
+	 * (or all-unsigned) on a finalized PSBT — finalization strips per-input
+	 * data, so once `complete` is true attribution can be unknowable and
+	 * callers must trust `complete`/`collected` instead of these flags.
+	 */
+	keys: MultisigKeyAttribution[];
 	/** Master fingerprints (8-hex lowercase) whose signatures are present,
 	 *  attributed via each input's bip32Derivation. The '00000000' placeholder
 	 *  is excluded, and a finalized PSBT may legitimately return [] here —
-	 *  per-key data is stripped at finalization. */
+	 *  per-key data is stripped at finalization. NOTE: fingerprints do NOT
+	 *  identify keys — two keys from the same seed at different accounts share
+	 *  one fingerprint. Kept for aggregate/back-compat consumers; per-key UI
+	 *  must use `keys`. */
 	signedFingerprints: string[];
 	/** Multisig-key fingerprints with no signature yet (placeholder excluded). */
 	remainingFingerprints: string[];
@@ -654,6 +688,19 @@ export interface MultisigSigningProgress {
 
 function fingerprintHex(fp: number): string {
 	return (fp >>> 0).toString(16).padStart(8, '0');
+}
+
+const HARDENED_OFFSET = 0x80000000;
+
+/** Account-level origin of a bip32Derivation path: everything before the
+ *  trailing <chain>/<index>, formatted the way MultisigKeyDescriptor.path is
+ *  ("m/48'/0'/0'/2'"); "m" when the key carries no origin. */
+function originPathString(path: number[]): string {
+	const origin = path.slice(0, -2);
+	if (origin.length === 0) return 'm';
+	return `m/${origin
+		.map((n) => (n >= HARDENED_OFFSET ? `${n - HARDENED_OFFSET}'` : String(n)))
+		.join('/')}`;
 }
 
 function inputFinalized(inp: {
@@ -689,14 +736,20 @@ export function multisigPsbtProgress(psbtBase64: string, threshold: number): Mul
 
 	const allFingerprints = new Set<string>();
 	const signedFingerprints = new Set<string>();
+	// Per-key states keyed by origin identity (fingerprint + account path) —
+	// the pair that stays distinct when several keys share one fingerprint.
+	const keyStates = new Map<string, MultisigKeyAttribution>();
 	let minSigs = Infinity;
 
 	for (let i = 0; i < inputCount; i++) {
 		const inp = tx.getInput(i);
-		const byPubkey = new Map<string, string>();
+		const byPubkey = new Map<string, { fp: string; keyId: string }>();
 		for (const [pubkey, der] of inp.bip32Derivation ?? []) {
 			const fp = fingerprintHex(der.fingerprint);
-			byPubkey.set(bytesToHex(pubkey), fp);
+			const path = originPathString(der.path);
+			const keyId = `${fp}/${path}`;
+			byPubkey.set(bytesToHex(pubkey), { fp, keyId });
+			if (!keyStates.has(keyId)) keyStates.set(keyId, { fingerprint: fp, path, signed: false });
 			if (fp !== '00000000') allFingerprints.add(fp);
 		}
 
@@ -710,10 +763,14 @@ export function multisigPsbtProgress(psbtBase64: string, threshold: number): Mul
 
 		let count = 0;
 		for (const [pubkey] of inp.partialSig ?? []) {
-			const fp = byPubkey.get(bytesToHex(pubkey));
-			if (fp === undefined) continue; // foreign sig — combine refuses these; don't count
+			const hit = byPubkey.get(bytesToHex(pubkey));
+			if (hit === undefined) continue; // foreign sig — combine refuses these; don't count
 			count++;
-			if (fp !== '00000000') signedFingerprints.add(fp);
+			// Attribute by exact pubkey → key origin, NEVER by bare fingerprint:
+			// keys from the same seed at different accounts share a fingerprint,
+			// and only this per-pubkey match tells them apart (cairn-x54).
+			keyStates.get(hit.keyId)!.signed = true;
+			if (hit.fp !== '00000000') signedFingerprints.add(hit.fp);
 		}
 		minSigs = Math.min(minSigs, count);
 	}
@@ -729,6 +786,9 @@ export function multisigPsbtProgress(psbtBase64: string, threshold: number): Mul
 		required: threshold,
 		collected,
 		complete,
+		keys: [...keyStates.values()].sort(
+			(a, b) => a.path.localeCompare(b.path) || a.fingerprint.localeCompare(b.fingerprint)
+		),
 		signedFingerprints: [...signedFingerprints].sort(),
 		remainingFingerprints: [...allFingerprints].filter((fp) => !signedFingerprints.has(fp)).sort(),
 		inputCount
