@@ -4,7 +4,12 @@
 // no clock — so exports are byte-deterministic and testable exactly.
 
 import { HDKey } from '@scure/bip32';
-import { parseDescriptor, multisigToDescriptor, MultisigError } from './bitcoin/multisig';
+import {
+	parseDescriptor,
+	multisigToDescriptor,
+	MultisigError,
+	MAX_MULTISIG_KEYS
+} from './bitcoin/multisig';
 import { toMultisigConfig, type MultisigRow, type MultisigScriptType } from './wallets/multisig';
 
 /** ColdCard `Format:` values per script type. */
@@ -222,6 +227,15 @@ export function parseCaravanImport(text: string): CaravanImport {
 	if (!Array.isArray(rawKeys) || rawKeys.length === 0) {
 		throw new MultisigError(
 			'The wallet file lists no extended public keys.',
+			'invalid_descriptor'
+		);
+	}
+	// Bound the key count BEFORE any per-key work: a malformed/malicious file
+	// with thousands of entries must be rejected up front, not after mapping
+	// them all (the same MAX_MULTISIG_KEYS limit is enforced again at creation).
+	if (rawKeys.length > MAX_MULTISIG_KEYS) {
+		throw new MultisigError(
+			`The wallet file lists ${rawKeys.length} keys — a multisig supports at most ${MAX_MULTISIG_KEYS}.`,
 			'invalid_descriptor'
 		);
 	}

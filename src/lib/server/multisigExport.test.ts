@@ -334,6 +334,30 @@ describe('parseCaravanImport', () => {
 			parseCaravanImport(JSON.stringify({ addressType: 'P2TR', quorum: { requiredSigners: 1 }, extendedPublicKeys: [{ xpub: TV1 }] }))
 		).toThrow(/address type/i);
 	});
+
+	it('rejects an oversized key array up front, before any per-key parsing', () => {
+		// Entries are deliberately junk (no xpub): the bound check must fire
+		// before the per-key mapping ever looks at them.
+		const oversized = JSON.stringify({
+			addressType: 'P2WSH',
+			network: 'mainnet',
+			quorum: { requiredSigners: 2, totalSigners: 5000 },
+			extendedPublicKeys: Array.from({ length: 5000 }, () => ({}))
+		});
+		expect(() => parseCaravanImport(oversized)).toThrow(MultisigError);
+		expect(() => parseCaravanImport(oversized)).toThrow(/at most 15/);
+		expect(() => parseCaravanImport(oversized)).toThrow(/5000 keys/);
+
+		// Exactly the limit is still allowed through the bound check (it fails
+		// later, on the junk keys themselves — proving the bound is not off by one).
+		const atLimit = JSON.stringify({
+			addressType: 'P2WSH',
+			network: 'mainnet',
+			quorum: { requiredSigners: 2, totalSigners: 15 },
+			extendedPublicKeys: Array.from({ length: 15 }, () => ({}))
+		});
+		expect(() => parseCaravanImport(atLimit)).toThrow(/has no xpub/);
+	});
 });
 
 describe('Caravan interop (real caravan-bitcoin golden fixtures)', () => {

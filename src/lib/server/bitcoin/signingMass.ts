@@ -157,10 +157,10 @@ export function tierForVsize(totalVsize: number): MassTier {
 // ingests the whole PSBT (SD/USB) and hashes at MCU speed. The lo bound uses
 // the optimistic rate, the hi bound the pessimistic one.
 //
-// TODO(cairn-194): calibrate against real hardware — the multisig-e2e harness
-// (scripts/multisig-e2e) drives a Trezor emulator end-to-end and can measure
-// actual signing times for synthetic pool-sized parents; replace these
-// constants with measured curves once that run exists.
+// TODO: calibrate against real hardware — the e2e harness (scripts/vault-e2e)
+// drives a Trezor emulator end-to-end and can measure actual signing times
+// for synthetic pool-sized parents; replace these constants with measured
+// curves once that run exists.
 export const DEVICE_PROFILES: Record<
 	SignerDevice,
 	{

@@ -2,6 +2,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import { DEVICE_LABELS } from '../labels';
+	import { accountFromPath } from './keyHealth';
 
 	// One key's health check (cairn-hvp), Casa-style: prove now and then that
 	// each key still exists and still derives this multisig. Trezor/Ledger keys are
@@ -46,7 +47,13 @@
 
 	const SIX_MONTHS_MS = 183 * 24 * 60 * 60 * 1000;
 	const stale = $derived(!verifiedAt || Date.now() - Date.parse(verifiedAt) > SIX_MONTHS_MS);
-	const isDeviceCheck = $derived(keyInfo.deviceType === 'trezor' || keyInfo.deviceType === 'ledger');
+	const isDeviceKey = $derived(keyInfo.deviceType === 'trezor' || keyInfo.deviceType === 'ledger');
+	// The account the device would be asked to re-derive — null when the stored
+	// path isn't the standard BIP-48 layout for this script type. A null account
+	// means a live re-read would probe the WRONG derivation (it used to silently
+	// assume account 0), so such keys fall back to the manual address check.
+	const deviceAccount = $derived(isDeviceKey ? accountFromPath(keyInfo.path, scriptType) : null);
+	const isDeviceCheck = $derived(isDeviceKey && deviceAccount !== null);
 	const deviceLabel = $derived(keyInfo.deviceType ? DEVICE_LABELS[keyInfo.deviceType] : 'this key');
 
 	function lastVerifiedLabel(ts: string | null): string {
@@ -56,12 +63,6 @@
 		if (days === 1) return 'Checked yesterday';
 		if (days < 60) return `Checked ${days} days ago`;
 		return `Checked ${Math.floor(days / 30)} months ago`;
-	}
-
-	/** BIP-48 account index from the stored path; 0 when the path is nonstandard. */
-	function accountFromPath(path: string): number {
-		const m = /^m\/48['’hH]\/0['’hH]\/(\d+)['’hH]\/(?:1|2)['’hH]$/.exec(path.trim());
-		return m ? Number(m[1]) : 0;
 	}
 
 	async function postVerified(body: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -91,7 +92,14 @@
 		busy = true;
 		result = null;
 		try {
-			const account = accountFromPath(keyInfo.path);
+			const account = deviceAccount;
+			if (account === null) {
+				// Guard: the UI only offers the device check when the account was
+				// inferred, but never probe a guessed derivation.
+				throw new Error(
+					`This key's stored derivation path (${keyInfo.path}) isn't the standard BIP-48 layout, so Cairn can't re-read it from the device — verify it manually against the receive address instead.`
+				);
+			}
 			let reading: { xpub: string; fingerprint: string };
 			if (keyInfo.deviceType === 'trezor') {
 				const mod = await import('$lib/hw/trezor');
@@ -175,10 +183,19 @@
 					Read key from {deviceLabel}
 				</button>
 			{:else}
-				<p class="khr-copy">
-					Cairn can't talk to this key directly, so verify it by hand against the wallet's current
-					receive address:
-				</p>
+				{#if isDeviceKey}
+					<p class="khr-copy">
+						This {deviceLabel} key was stored with a non-standard derivation path
+						(<span class="mono">{keyInfo.path}</span>), so Cairn can't ask the device for it
+						directly — a live re-read would look at the wrong derivation. Verify it by hand
+						against the wallet's current receive address instead:
+					</p>
+				{:else}
+					<p class="khr-copy">
+						Cairn can't talk to this key directly, so verify it by hand against the wallet's current
+						receive address:
+					</p>
+				{/if}
 				{#if receiveAddress}
 					<div class="khr-addr"><CopyText value={receiveAddress} truncate={14} /></div>
 				{:else}

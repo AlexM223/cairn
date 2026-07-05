@@ -40,9 +40,33 @@
 	action="?/save"
 	class="stack settings-form fade-in"
 	use:enhance={({ action }) => {
-		const which = action.search;
-		if (which.includes('save')) saving = true;
+		// Pending state is set HERE, on the actual submit, never in the buttons'
+		// click handlers: disabling a submit button from its own click handler
+		// cancels the browser's default submission before it starts, so the
+		// request never fires and the spinner sticks forever (cairn-unp).
+		const which = action.search.includes('testElectrum')
+			? ('electrum' as const)
+			: action.search.includes('testEsplora')
+				? ('esplora' as const)
+				: null;
+		if (which) testing = which;
+		else saving = true;
+
+		// Safety net: the server-side tests carry their own ~8s timeouts, but if
+		// the response itself never arrives the UI must not hang with a disabled
+		// button — surface a timeout error and re-enable after 20s.
+		const watchdog = setTimeout(() => {
+			if (which && testing === which) {
+				const timedOut = { ok: false, error: 'Timed out — no response from the server.' };
+				if (which === 'electrum') electrumResult = timedOut;
+				else esploraResult = timedOut;
+			}
+			testing = null;
+			saving = false;
+		}, 20_000);
+
 		return async ({ update }) => {
+			clearTimeout(watchdog);
 			saving = false;
 			testing = null;
 			await update({ reset: false });
@@ -133,10 +157,10 @@
 					</div>
 					<div class="test-row">
 						<button
+							type="submit"
 							class="btn btn-secondary btn-sm"
 							formaction="?/testElectrum"
-							onclick={() => (testing = 'electrum')}
-							disabled={testing !== null}
+							disabled={testing !== null || saving}
 						>
 							{#if testing === 'electrum'}<span class="spinner"></span>{/if}
 							Test connection
@@ -173,10 +197,10 @@
 					</div>
 					<div class="test-row">
 						<button
+							type="submit"
 							class="btn btn-secondary btn-sm"
 							formaction="?/testEsplora"
-							onclick={() => (testing = 'esplora')}
-							disabled={testing !== null}
+							disabled={testing !== null || saving}
 						>
 							{#if testing === 'esplora'}<span class="spinner"></span>{/if}
 							Test connection
@@ -241,7 +265,7 @@
 	</section>
 
 	<div class="save-row">
-		<button class="btn btn-primary" disabled={saving}>
+		<button class="btn btn-primary" disabled={saving || testing !== null}>
 			{#if saving}<span class="spinner"></span>{/if}
 			Save settings
 		</button>
