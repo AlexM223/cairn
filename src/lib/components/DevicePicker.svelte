@@ -20,10 +20,12 @@
 		{ key: 'trezor', title: 'Trezor', desc: 'Plug in over USB — sign with one click.', icon: 'shield' },
 		{ key: 'ledger', title: 'Ledger', desc: 'Plug in over USB — sign with one click.', icon: 'shield' },
 		{ key: 'coldcard', title: 'ColdCard', desc: 'Air-gapped over a microSD card.', icon: 'shield' },
+		{ key: 'bitbox02', title: 'BitBox02', desc: 'Plug in over USB — confirm on the device.', icon: 'shield' },
+		{ key: 'jade', title: 'Jade', desc: 'Plug in over USB (Chrome/Edge).', icon: 'shield' },
 		{
 			key: 'qr',
 			title: 'Air-gapped QR',
-			desc: 'Camera QR — SeedSigner, Passport, Jade.',
+			desc: 'Camera QR — SeedSigner, Passport, Keystone.',
 			icon: 'qr'
 		},
 		{

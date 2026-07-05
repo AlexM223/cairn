@@ -27,7 +27,15 @@ export type MultisigKeyCategory = 'hardware' | 'mobile' | 'recovery';
 export const MULTISIG_KEY_CATEGORIES: MultisigKeyCategory[] = ['hardware', 'mobile', 'recovery'];
 
 /** Device routing for the signing stepper; null = generic file signing. */
-export type MultisigDeviceType = 'trezor' | 'ledger' | 'coldcard' | 'qr' | 'file' | null;
+export type MultisigDeviceType =
+	| 'trezor'
+	| 'ledger'
+	| 'coldcard'
+	| 'bitbox02'
+	| 'jade'
+	| 'qr'
+	| 'file'
+	| null;
 
 export interface MultisigKeyRow {
 	id: number;

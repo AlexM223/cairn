@@ -13,6 +13,8 @@ export const WALLET_DEVICE_LABELS: Record<WalletDeviceType, string> = {
 	trezor: 'Trezor',
 	ledger: 'Ledger',
 	coldcard: 'ColdCard',
+	bitbox02: 'BitBox02',
+	jade: 'Jade',
 	qr: 'Air-gapped signer',
 	file: 'File / SD card'
 };
@@ -31,6 +33,10 @@ export function walletTypeLabel(deviceType: WalletDeviceType | null): string {
 			return 'Ledger wallet';
 		case 'coldcard':
 			return 'ColdCard wallet';
+		case 'bitbox02':
+			return 'BitBox02 wallet';
+		case 'jade':
+			return 'Jade wallet';
 		case 'qr':
 			return 'Air-gapped wallet';
 		default:

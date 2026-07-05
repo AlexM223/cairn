@@ -27,7 +27,14 @@ export type ScriptType = 'p2pkh' | 'p2sh-p2wpkh' | 'p2wpkh' | 'p2tr';
  * user hasn't told us yet; treated as file-based signing (the universal
  * fallback), so a wallet is never a dead-end "watch-only" viewer.
  */
-export type WalletDeviceType = 'trezor' | 'ledger' | 'coldcard' | 'qr' | 'file';
+export type WalletDeviceType =
+	| 'trezor'
+	| 'ledger'
+	| 'coldcard'
+	| 'bitbox02'
+	| 'jade'
+	| 'qr'
+	| 'file';
 
 export interface WalletSummary {
 	id: number;

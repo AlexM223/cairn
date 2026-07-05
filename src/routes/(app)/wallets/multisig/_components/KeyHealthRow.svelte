@@ -9,7 +9,7 @@
 	// re-read live over USB/Connect and compared server-side; ColdCard/QR/file
 	// keys get a guided manual check against the multisig's receive address.
 	type ScriptType = 'p2wsh' | 'p2sh-p2wsh' | 'p2sh';
-	type DeviceType = 'trezor' | 'ledger' | 'coldcard' | 'qr' | 'file' | null;
+	type DeviceType = 'trezor' | 'ledger' | 'coldcard' | 'bitbox02' | 'jade' | 'qr' | 'file' | null;
 	interface KeyInfo {
 		id: number;
 		name: string;

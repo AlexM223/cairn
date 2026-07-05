@@ -18,6 +18,8 @@ export const DEVICE_LABELS: Record<Exclude<MultisigDeviceType, null>, string> = 
 	trezor: 'Trezor',
 	ledger: 'Ledger',
 	coldcard: 'ColdCard',
+	bitbox02: 'BitBox02',
+	jade: 'Jade',
 	qr: 'QR signer',
 	file: 'File / SD card'
 };

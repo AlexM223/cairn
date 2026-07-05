@@ -566,13 +566,21 @@
 	// heading — a single-key wallet lands on one signing screen, not a menu.
 	type SignMethod = 'file' | 'trezor' | 'ledger' | 'coldcard' | 'qr';
 
+	// BitBox02/Jade have dedicated USB signers pending (hardware plan Unit F).
+	// Until those land, a wallet imported with one of them opens the method
+	// picker (where file/QR export still works) rather than pre-selecting a
+	// signer that doesn't exist yet.
+	function toSignMethod(d: WalletDeviceType | null): SignMethod | null {
+		return d === 'bitbox02' || d === 'jade' ? null : d;
+	}
+
 	// The device associated with this wallet, tracked locally so associating one
 	// mid-send (below) updates the heading immediately.
 	// svelte-ignore state_referenced_locally — intentional per-load seed
 	let walletDevice = $state<WalletDeviceType | null>(data.wallet.deviceType);
 	// Pre-select the known device (file included) so Sign opens straight on it.
 	// svelte-ignore state_referenced_locally — intentional per-load seed
-	let activeMethod = $state<SignMethod | null>(data.wallet.deviceType);
+	let activeMethod = $state<SignMethod | null>(toSignMethod(data.wallet.deviceType));
 	// Set briefly after a first-send device association so the user sees it stuck.
 	let deviceJustSaved = $state<WalletDeviceType | null>(null);
 	// Bumped to remount the active signer from scratch — a clean retry after the
