@@ -23,6 +23,12 @@ let lastBlockHeight = 0;
 export function wireChainEvents(electrum: ElectrumClient): void {
 	const server = electrum.server;
 
+	// The SSE endpoint attaches a 'header' listener per open tab on top of ours.
+	// Lift Node's default 10-listener cap so a few open tabs don't emit a
+	// spurious MaxListenersExceeded warning — bounded, not a leak (SSE removes
+	// its listener on disconnect).
+	electrum.setMaxListeners(64);
+
 	electrum.on('connect', () => {
 		if (connected === true) return;
 		connected = true;
