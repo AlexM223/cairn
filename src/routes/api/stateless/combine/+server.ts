@@ -10,7 +10,7 @@ const log = childLogger('stateless');
  * Merge one signer's output (`incoming` — base64/hex/text, anything a signer
  * hands back) into the client-held `base` PSBT. Returns the combined PSBT
  * plus fresh quorum progress. Same guards as the persistent attach path
- * (same-transaction check, vault-key membership, idempotent re-submission);
+ * (same-transaction check, multisig-key membership, idempotent re-submission);
  * the client holds ALL state between calls — nothing is stored.
  */
 export const POST: RequestHandler = async (event) => {

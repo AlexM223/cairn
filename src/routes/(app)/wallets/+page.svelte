@@ -20,7 +20,7 @@
 	{/if}
 </div>
 
-{#if data.wallets.length === 0 && data.vaults.length === 0}
+{#if data.wallets.length === 0 && data.multisigs.length === 0}
 	<div class="card onboard fade-in">
 		<div class="onboard-icon">
 			<Icon name="wallet" size={26} />
@@ -35,8 +35,8 @@
 			<Icon name="plus" size={15} />
 			Import a wallet
 		</a>
-		<a href="/vaults/new" class="onboard-alt">
-			Or protect savings with several keys — create a vault
+		<a href="/wallets/multisig/new" class="onboard-alt">
+			Or protect savings with several keys — create a multisig
 			<Icon name="arrow-right" size={13} />
 		</a>
 	</div>
@@ -107,22 +107,22 @@
 	</div>
 {/if}
 
-{#if data.vaults.length > 0}
-	<div class="head row vault-head">
-		<h2 class="section-title grow">Vaults</h2>
-		<a href="/vaults/new" class="btn btn-secondary btn-sm">
+{#if data.multisigs.length > 0}
+	<div class="head row multisig-head">
+		<h2 class="section-title grow">Multisigs</h2>
+		<a href="/wallets/multisig/new" class="btn btn-secondary btn-sm">
 			<Icon name="plus" size={14} />
-			New vault
+			New multisig
 		</a>
 	</div>
 	<div class="grid fade-in">
-		{#each data.vaults as vault (vault.id)}
-			{@const unreachable = data.vaultErrors[vault.id] !== undefined}
-			<a href="/vaults/{vault.id}" class="card card-pad wallet-card vault-card">
+		{#each data.multisigs as multisig (multisig.id)}
+			{@const unreachable = data.multisigErrors[multisig.id] !== undefined}
+			<a href="/wallets/multisig/{multisig.id}" class="card card-pad wallet-card multisig-card">
 				<div class="row" style="gap: 10px">
-					<span class="vault-icon"><Icon name="shield" size={13} /></span>
-					<span class="wallet-name grow truncate">{vault.name}</span>
-					<span class="badge badge-accent">{vault.threshold} of {vault.totalKeys}</span>
+					<span class="multisig-icon"><Icon name="shield" size={13} /></span>
+					<span class="wallet-name grow truncate">{multisig.name}</span>
+					<span class="badge badge-accent">{multisig.threshold} of {multisig.totalKeys}</span>
 				</div>
 
 				{#if unreachable}
@@ -130,22 +130,22 @@
 						<span class="hero-number wallet-btc muted-balance">—</span>
 					</div>
 					<div class="row" style="gap: 8px; flex-wrap: wrap">
-						<span class="badge badge-warning" title={data.vaultErrors[vault.id]}>
+						<span class="badge badge-warning" title={data.multisigErrors[multisig.id]}>
 							<Icon name="alert-triangle" size={12} />
 							unreachable
 						</span>
 					</div>
 				{:else}
 					<div class="balance">
-						<span class="hero-number wallet-btc" title="{formatSats(vault.balance)} sats">
-							{formatBtc(vault.balance)}
+						<span class="hero-number wallet-btc" title="{formatSats(multisig.balance)} sats">
+							{formatBtc(multisig.balance)}
 						</span>
 						<span class="unit">BTC</span>
 					</div>
-					{#if vault.unconfirmed !== 0}
+					{#if multisig.unconfirmed !== 0}
 						<div class="row" style="gap: 8px; flex-wrap: wrap">
 							<span class="badge badge-warning">
-								{vault.unconfirmed > 0 ? '+' : ''}{formatSats(vault.unconfirmed)} sats pending
+								{multisig.unconfirmed > 0 ? '+' : ''}{formatSats(multisig.unconfirmed)} sats pending
 							</span>
 						</div>
 					{/if}
@@ -155,8 +155,8 @@
 					<Icon name="clock" size={12} />
 					{#if unreachable}
 						balance unavailable — check connection
-					{:else if vault.lastActivity}
-						last activity {timeAgo(vault.lastActivity)}
+					{:else if multisig.lastActivity}
+						last activity {timeAgo(multisig.lastActivity)}
 					{:else}
 						no activity
 					{/if}
@@ -284,9 +284,9 @@
 		color: var(--accent);
 	}
 
-	/* --- vaults section --- */
+	/* --- multisigs section --- */
 
-	.vault-head {
+	.multisig-head {
 		margin-top: 26px;
 	}
 
@@ -296,11 +296,11 @@
 		font-weight: 600;
 	}
 
-	.vault-card {
+	.multisig-card {
 		border-color: rgba(232, 147, 90, 0.25);
 	}
 
-	.vault-icon {
+	.multisig-icon {
 		display: flex;
 		align-items: center;
 		justify-content: center;

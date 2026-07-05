@@ -18,7 +18,7 @@ interface CoinBody {
 /**
  * POST /api/stateless/psbt { source, recipients, feeRate, onlyUtxos? }
  * Construct an unsigned multisig PSBT from the pasted config's live UTXOs.
- * Mirrors /api/vaults/[id]/psbt — including the `details.signingMass` block
+ * Mirrors /api/wallets/multisig/[id]/psbt — including the `details.signingMass` block
  * and the quorum `progress` object (0 of M here) — but persists nothing: the
  * response PSBT is the client's to keep and walk through the signers.
  */

@@ -1,0 +1,44 @@
+import { json, requireUser } from '$lib/server/api';
+import { getMultisig } from '$lib/server/wallets/multisig';
+import { caravanExport } from '$lib/server/multisigExport';
+import { MultisigError } from '$lib/server/bitcoin/multisig';
+import { childLogger } from '$lib/server/logger';
+import type { RequestHandler } from './$types';
+
+const log = childLogger('wallet');
+
+function safeFilename(name: string): string {
+	const slug = name
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, '-')
+		.replace(/^-+|-+$/g, '')
+		.slice(0, 40);
+	return slug || 'multisig';
+}
+
+/**
+ * GET /api/wallets/multisig/:id/caravan — Caravan-compatible JSON wallet config.
+ * Sparrow (and Caravan) import this file directly, making it the simplest
+ * "see my multisig in another app" backup.
+ */
+export const GET: RequestHandler = async (event) => {
+	const user = requireUser(event);
+	const id = Number(event.params.id);
+	const multisig = Number.isInteger(id) && id > 0 ? getMultisig(user.id, id) : null;
+	if (!multisig) return json({ error: 'Multisig not found' }, { status: 404 });
+
+	try {
+		return new Response(caravanExport(multisig), {
+			headers: {
+				'content-type': 'application/json; charset=utf-8',
+				'content-disposition': `attachment; filename="cairn-multisig-${safeFilename(multisig.name)}.json"`
+			}
+		});
+	} catch (e) {
+		const message = e instanceof MultisigError ? e.message : 'Could not build the wallet config file.';
+		if (!(e instanceof MultisigError)) {
+			log.error({ err: e, multisigId: Number(event.params.id) }, 'wallet caravan export failed');
+		}
+		return json({ error: message }, { status: 500 });
+	}
+};

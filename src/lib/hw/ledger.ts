@@ -36,8 +36,8 @@ export type LedgerErrorCode =
 	| 'rejected' // user declined on-device
 	| 'no_device' // no device chosen from the browser picker / disconnected
 	| 'bad_psbt' // the PSBT lacks the key-origin data Ledger needs
-	| 'wrong_device' // the connected Ledger holds none of the vault's keys
-	| 'policy_unregistered' // vault signing attempted before on-device policy registration
+	| 'wrong_device' // the connected Ledger holds none of the multisig's keys
+	| 'policy_unregistered' // multisig signing attempted before on-device policy registration
 	| 'unexpected'; // anything else
 
 export class LedgerError extends Error {
@@ -381,9 +381,9 @@ function bytesToFpHex(b: Uint8Array): string {
 	return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 }
 
-// ------------------------------------------------------------------- vaults
+// ------------------------------------------------------------------- multisigs
 //
-// MULTISIG ("vault") signing via BIP-388 wallet policies. Unlike single-sig
+// MULTISIG ("multisig") signing via BIP-388 wallet policies. Unlike single-sig
 // (default, unnamed policies the app accepts without registration), a
 // multisig policy is NAMED and must be REGISTERED once per device: the app
 // walks the user through the policy on-screen (name, quorum, every cosigner
@@ -406,12 +406,12 @@ function bytesToFpHex(b: Uint8Array): string {
 // are unaffected — but the SAME order must be produced at registration and at
 // signing or the device rejects the HMAC. Never normalize xpub case.
 
-/** The three vault script forms — mirrors multisig.ts's VaultScriptType
+/** The three multisig script forms — mirrors multisig.ts's MultisigScriptType
  *  (duplicated here so this browser driver never imports server code). */
-export type VaultScriptType = 'p2wsh' | 'p2sh-p2wsh' | 'p2sh';
+export type MultisigScriptType = 'p2wsh' | 'p2sh-p2wsh' | 'p2sh';
 
-/** One cosigner key, exactly as the vault stores it (VaultKeyRow shape). */
-export interface VaultSignKey {
+/** One cosigner key, exactly as the multisig stores it (MultisigKeyRow shape). */
+export interface MultisigSignKey {
 	/** Account xpub (SLIP-132 ypub/zpub/Ypub/Zpub accepted, normalized internally). */
 	xpub: string;
 	/** Master fingerprint, 8 hex chars ("00000000" when unknown). */
@@ -420,33 +420,33 @@ export interface VaultSignKey {
 	path: string;
 }
 
-/** Everything vault signing needs. Framework-agnostic plain values the UI
- *  passes straight from the vault row + the sign session's combined PSBT. */
-export interface VaultSignParams {
+/** Everything multisig signing needs. Framework-agnostic plain values the UI
+ *  passes straight from the multisig row + the sign session's combined PSBT. */
+export interface MultisigSignParams {
 	/** Base64 PSBT — the CURRENT combined PSBT (other cosigners' partialSigs kept). */
 	unsignedPsbt: string;
 	threshold: number;
-	keys: VaultSignKey[];
-	scriptType: VaultScriptType;
+	keys: MultisigSignKey[];
+	scriptType: MultisigScriptType;
 }
 
-/** What buildVaultPolicy needs — the vault's quorum/keys plus a display name. */
-export interface VaultPolicyParams {
-	/** Vault name; sanitized to ≤64 printable ASCII for the device. */
+/** What buildMultisigPolicy needs — the multisig's quorum/keys plus a display name. */
+export interface MultisigPolicyParams {
+	/** Multisig name; sanitized to ≤64 printable ASCII for the device. */
 	policyName: string;
 	threshold: number;
-	keys: VaultSignKey[];
-	scriptType: VaultScriptType;
+	keys: MultisigSignKey[];
+	scriptType: MultisigScriptType;
 }
 
 /** A BIP-388 wallet policy in string form (what the device registers/signs). */
-export interface VaultWalletPolicy {
+export interface MultisigWalletPolicy {
 	name: string;
 	template: string;
 	keys: string[];
 }
 
-const HW_HARDENED = HARDENED; // alias for readability in vault-path helpers
+const HW_HARDENED = HARDENED; // alias for readability in multisig-path helpers
 
 // SLIP-132 public-key version bytes, rewritten to standard xpub before use.
 const XPUB_VERSION = 0x0488b21e;
@@ -460,7 +460,7 @@ const b58check = /* @__PURE__ */ createBase58check(sha256);
 
 /** Rewrite a SLIP-132 prefix to standard xpub bytes; anything else (including
  *  invalid input) passes through unchanged so later parsing shows a real error. */
-function normalizeVaultXpub(input: string): string {
+function normalizeMultisigXpub(input: string): string {
 	const trimmed = input.trim();
 	let raw: Uint8Array;
 	try {
@@ -481,7 +481,7 @@ function normalizeVaultXpub(input: string): string {
 
 /** "m/48'/0'/0'/2'" (h/H/' markers, leading m/ optional) → hardened-offset
  *  index array; "m"/"" → []. */
-function parseVaultKeyPath(path: string, label: string): number[] {
+function parseMultisigKeyPath(path: string, label: string): number[] {
 	const stripped = path.trim().replace(/^m\/?/i, '');
 	if (stripped === '') return [];
 	return stripped.split('/').map((p) => {
@@ -499,14 +499,14 @@ function parseVaultKeyPath(path: string, label: string): number[] {
 }
 
 /**
- * The BIP-48 account path for a vault cosigner key: m/48'/0'/{account}'/{script}'
+ * The BIP-48 account path for a multisig cosigner key: m/48'/0'/{account}'/{script}'
  * where the script suffix is 2' for p2wsh and 1' for BOTH p2sh forms (BIP-48
  * gives p2sh and p2sh-p2wsh the same 1' — only native p2wsh gets 2'). Mainnet
  * only, matching the rest of Cairn. Exported for unit testing.
  */
-export function vaultAccountPath(scriptType: VaultScriptType, account = 0): string {
+export function multisigAccountPath(scriptType: MultisigScriptType, account = 0): string {
 	if (scriptType !== 'p2wsh' && scriptType !== 'p2sh-p2wsh' && scriptType !== 'p2sh') {
-		throw new LedgerError(`Unsupported vault script type "${scriptType}".`, 'unexpected');
+		throw new LedgerError(`Unsupported multisig script type "${scriptType}".`, 'unexpected');
 	}
 	if (!Number.isInteger(account) || account < 0 || account >= HW_HARDENED) {
 		throw new LedgerError(`Invalid account index ${account}.`, 'unexpected');
@@ -516,16 +516,16 @@ export function vaultAccountPath(scriptType: VaultScriptType, account = 0): stri
 }
 
 /**
- * Sanitize a vault name into a Ledger policy name: printable ASCII only,
+ * Sanitize a multisig name into a Ledger policy name: printable ASCII only,
  * trimmed, at most 64 characters (the app's limit), with an ASCII "..."
  * truncation marker (a Unicode ellipsis would re-introduce the very byte the
- * filter just removed). Empty input falls back to "Cairn vault".
+ * filter just removed). Empty input falls back to "Cairn multisig".
  *
  * Exported for unit testing.
  */
-export function sanitizeVaultPolicyName(raw: string): string {
+export function sanitizeMultisigPolicyName(raw: string): string {
 	// eslint-disable-next-line no-control-regex
-	const ascii = (raw || '').replace(/[^\x20-\x7e]/g, '').trim() || 'Cairn vault';
+	const ascii = (raw || '').replace(/[^\x20-\x7e]/g, '').trim() || 'Cairn multisig';
 	return ascii.length > 64 ? `${ascii.slice(0, 61).trim()}...` : ascii;
 }
 
@@ -536,27 +536,27 @@ export function sanitizeVaultPolicyName(raw: string): string {
  * here would silently change the HMAC preimage and break every existing
  * device registration. Exported for unit testing.
  */
-export function compareVaultPolicyKeys(a: string, b: string): number {
+export function compareMultisigPolicyKeys(a: string, b: string): number {
 	const ax = a.slice(a.indexOf(']') + 1);
 	const bx = b.slice(b.indexOf(']') + 1);
 	return ax < bx ? -1 : ax > bx ? 1 : 0;
 }
 
 /**
- * Build the BIP-388 wallet policy for a vault: the descriptor template
+ * Build the BIP-388 wallet policy for a multisig: the descriptor template
  * (`wsh(sortedmulti(M,@0/**,@1/**,…))`, sh()/sh(wsh()) wrapped for the p2sh
  * forms) plus the key-origin strings `[xfp/48'/0'/0'/2']xpub` — apostrophe
  * hardening markers, NO /branch/* suffix (the template's `@i/**` supplies
- * receive/change), sorted case-sensitively by xpub (see compareVaultPolicyKeys).
+ * receive/change), sorted case-sensitively by xpub (see compareMultisigPolicyKeys).
  * A key with an unknown origin ("m") is emitted as `[xfp]xpub`.
  *
  * Used for BOTH registration and signing so the two are always byte-identical.
  * Exported for unit testing.
  */
-export function buildVaultPolicy(params: VaultPolicyParams): VaultWalletPolicy {
+export function buildMultisigPolicy(params: MultisigPolicyParams): MultisigWalletPolicy {
 	const keys = params.keys ?? [];
 	if (keys.length === 0) {
-		throw new LedgerError('This vault has no keys.', 'unexpected');
+		throw new LedgerError('This multisig has no keys.', 'unexpected');
 	}
 	if (
 		!Number.isInteger(params.threshold) ||
@@ -564,24 +564,24 @@ export function buildVaultPolicy(params: VaultPolicyParams): VaultWalletPolicy {
 		params.threshold > keys.length
 	) {
 		throw new LedgerError(
-			`Invalid vault threshold ${params.threshold} for ${keys.length} keys.`,
+			`Invalid multisig threshold ${params.threshold} for ${keys.length} keys.`,
 			'unexpected'
 		);
 	}
 	const keyStrs = keys
 		.map((key, i) => {
-			const label = `vault key ${i + 1}`;
+			const label = `multisig key ${i + 1}`;
 			if (!/^[0-9a-fA-F]{8}$/.test(key.fingerprint)) {
 				throw new LedgerError(`${label}: malformed fingerprint "${key.fingerprint}".`, 'unexpected');
 			}
-			const xpub = normalizeVaultXpub(key.xpub);
-			const origin = parseVaultKeyPath(key.path, label);
+			const xpub = normalizeMultisigXpub(key.xpub);
+			const origin = parseMultisigKeyPath(key.path, label);
 			const originStr = origin.length
 				? `/${origin.map((n) => (n >= HW_HARDENED ? `${n - HW_HARDENED}'` : `${n}`)).join('/')}`
 				: '';
 			return `[${key.fingerprint.toLowerCase()}${originStr}]${xpub}`;
 		})
-		.sort(compareVaultPolicyKeys);
+		.sort(compareMultisigPolicyKeys);
 	const signers = keyStrs.map((_, i) => `@${i}/**`).join(',');
 	const inner = `sortedmulti(${params.threshold},${signers})`;
 	const template =
@@ -593,9 +593,9 @@ export function buildVaultPolicy(params: VaultPolicyParams): VaultWalletPolicy {
 					? `sh(wsh(${inner}))`
 					: null;
 	if (!template) {
-		throw new LedgerError(`Unsupported vault script type "${params.scriptType}".`, 'unexpected');
+		throw new LedgerError(`Unsupported multisig script type "${params.scriptType}".`, 'unexpected');
 	}
-	return { name: sanitizeVaultPolicyName(params.policyName), template, keys: keyStrs };
+	return { name: sanitizeMultisigPolicyName(params.policyName), template, keys: keyStrs };
 }
 
 /**
@@ -605,11 +605,11 @@ export function buildVaultPolicy(params: VaultPolicyParams): VaultWalletPolicy {
  * client library drops the echoed pubkey), so this is what the merge step
  * attributes signatures to. Every derived pubkey must itself be declared in
  * the input's bip32Derivation — a mismatch means the PSBT wasn't built for
- * this vault (or this key isn't part of it) and is rejected before signing.
+ * this multisig (or this key isn't part of it) and is rejected before signing.
  *
  * Exported for unit testing.
  */
-export function vaultDevicePubkeys(unsignedPsbtBase64: string, key: VaultSignKey): Uint8Array[] {
+export function multisigDevicePubkeys(unsignedPsbtBase64: string, key: MultisigSignKey): Uint8Array[] {
 	let tx: Transaction;
 	try {
 		tx = Transaction.fromPSBT(base64.decode(unsignedPsbtBase64.trim()));
@@ -623,9 +623,9 @@ export function vaultDevicePubkeys(unsignedPsbtBase64: string, key: VaultSignKey
 	}
 	let hdkey: HDKey;
 	try {
-		hdkey = HDKey.fromExtendedKey(normalizeVaultXpub(key.xpub));
+		hdkey = HDKey.fromExtendedKey(normalizeMultisigXpub(key.xpub));
 	} catch (err) {
-		throw new LedgerError('Unreadable vault key (extended public key).', 'unexpected', {
+		throw new LedgerError('Unreadable multisig key (extended public key).', 'unexpected', {
 			cause: err
 		});
 	}
@@ -635,7 +635,7 @@ export function vaultDevicePubkeys(unsignedPsbtBase64: string, key: VaultSignKey
 		const derivations = tx.getInput(i).bip32Derivation;
 		if (!derivations || derivations.length === 0) {
 			throw new LedgerError(
-				`Input ${i} is missing the key-origin information the Ledger needs. Re-create the draft from this vault.`,
+				`Input ${i} is missing the key-origin information the Ledger needs. Re-create the draft from this multisig.`,
 				'bad_psbt'
 			);
 		}
@@ -669,7 +669,7 @@ export function vaultDevicePubkeys(unsignedPsbtBase64: string, key: VaultSignKey
 		const declared = pubkey;
 		if (!derivations.some(([pk]) => buffersEqual(Uint8Array.from(pk), declared))) {
 			throw new LedgerError(
-				`Input ${i} does not include this device's key — the transaction wasn't built for this vault.`,
+				`Input ${i} does not include this device's key — the transaction wasn't built for this multisig.`,
 				'bad_psbt'
 			);
 		}
@@ -679,17 +679,17 @@ export function vaultDevicePubkeys(unsignedPsbtBase64: string, key: VaultSignKey
 }
 
 /**
- * Merge the device's per-input vault signatures into the source PSBT as
+ * Merge the device's per-input multisig signatures into the source PSBT as
  * partialSig entries. `sigs` is signPsbt's Map<inputIndex, signature>
  * (signature WITH its sighash byte, as the app emits it); each is attributed
  * to `devicePubkeys[index]` — this device's derived key for that input,
- * pre-validated against the input's bip32Derivation by vaultDevicePubkeys and
+ * pre-validated against the input's bip32Derivation by multisigDevicePubkeys and
  * re-checked here. Existing partialSig entries from other cosigners are
  * preserved (btc-signer merges keyed PSBT fields).
  *
  * Exported for unit testing.
  */
-export function mergeVaultSignatures(
+export function mergeMultisigSignatures(
 	tx: Transaction,
 	sigs: Map<number, Buffer>,
 	devicePubkeys: Uint8Array[]
@@ -701,7 +701,7 @@ export function mergeVaultSignatures(
 		);
 	}
 	if (sigs.size === 0) {
-		throw new LedgerError('The Ledger returned no signatures for this vault.', 'unexpected');
+		throw new LedgerError('The Ledger returned no signatures for this multisig.', 'unexpected');
 	}
 	sigs.forEach((sig, index) => {
 		if (!Number.isInteger(index) || index < 0 || index >= tx.inputsLength) {
@@ -718,7 +718,7 @@ export function mergeVaultSignatures(
 		const derivations = tx.getInput(index).bip32Derivation;
 		if (!derivations || !derivations.some(([pk]) => buffersEqual(Uint8Array.from(pk), pubkey))) {
 			throw new LedgerError(
-				`The signature for input ${index} is from a key that isn't part of this vault.`,
+				`The signature for input ${index} is from a key that isn't part of this multisig.`,
 				'unexpected'
 			);
 		}
@@ -770,7 +770,7 @@ async function loadPolicyDeps(): Promise<PolicyDeps> {
  * (hw-app-btc's own WalletPolicy hardcodes an empty name, which is why this
  * driver serializes the named form itself.)
  */
-function serializeVaultPolicy(policy: VaultWalletPolicy, deps: PolicyDeps): Buffer {
+function serializeMultisigPolicy(policy: MultisigWalletPolicy, deps: PolicyDeps): Buffer {
 	const nameBytes = Buffer.from(policy.name, 'ascii');
 	const templateBytes = Buffer.from(policy.template, 'ascii');
 	const keysRoot = new deps.Merkle(
@@ -795,8 +795,8 @@ interface DeviceWalletPolicy {
 	getWalletId(): Buffer;
 }
 
-function makeDeviceWalletPolicy(policy: VaultWalletPolicy, deps: PolicyDeps): DeviceWalletPolicy {
-	const serialized = serializeVaultPolicy(policy, deps);
+function makeDeviceWalletPolicy(policy: MultisigWalletPolicy, deps: PolicyDeps): DeviceWalletPolicy {
+	const serialized = serializeMultisigPolicy(policy, deps);
 	return {
 		descriptorTemplate: policy.template,
 		keys: policy.keys,
@@ -838,7 +838,7 @@ async function exchangeInterruptible(
  *  template preimage) — mirrors ledger-bitcoin's addKnownWalletPolicy. */
 function primeInterpreterWithPolicy(
 	interpreter: { addKnownPreimage(p: Buffer): void; addKnownList(l: Buffer[]): void },
-	policy: VaultWalletPolicy,
+	policy: MultisigWalletPolicy,
 	device: DeviceWalletPolicy
 ): void {
 	interpreter.addKnownPreimage(device.serialize());
@@ -847,18 +847,18 @@ function primeInterpreterWithPolicy(
 }
 
 /**
- * Register a vault's BIP-388 policy on a connected Ledger — the one-time,
+ * Register a multisig's BIP-388 policy on a connected Ledger — the one-time,
  * per-device on-device approval multisig signing requires. The device walks
  * the user through the policy name, quorum and every cosigner key on its own
  * screen, then returns { policyId, policyHmac }. The caller persists the HMAC
  * (it is not a secret — it only suppresses re-approval) and passes it to
- * every later signVaultPsbtWithLedger call.
+ * every later signMultisigPsbtWithLedger call.
  *
  * Throws a LedgerError on every failure, including `wrong_device` when the
- * connected Ledger's master fingerprint matches none of the vault's keys.
+ * connected Ledger's master fingerprint matches none of the multisig's keys.
  */
-export async function registerVaultPolicy(
-	params: VaultPolicyParams
+export async function registerMultisigPolicy(
+	params: MultisigPolicyParams
 ): Promise<{ masterFp: string; policyHmac: string; policyId: string }> {
 	if (!isWebHidAvailable()) {
 		throw new LedgerError(
@@ -868,7 +868,7 @@ export async function registerVaultPolicy(
 	}
 
 	// Build (and validate) the policy before touching the device.
-	const policy = buildVaultPolicy(params);
+	const policy = buildMultisigPolicy(params);
 
 	const [transportMod, appClientMod, deps] = await Promise.all([
 		import('@ledgerhq/hw-transport-webhid'),
@@ -895,7 +895,7 @@ export async function registerVaultPolicy(
 			throw toLedgerError(err);
 		}
 		const fpHex = bytesToFpHex(masterFp);
-		assertDeviceIsVaultCosigner(fpHex, params.keys);
+		assertDeviceIsMultisigCosigner(fpHex, params.keys);
 
 		const device = makeDeviceWalletPolicy(policy, deps);
 		const interpreter = new deps.ClientCommandInterpreter(() => {});
@@ -938,11 +938,11 @@ export async function registerVaultPolicy(
 }
 
 /**
- * Sign a vault (M-of-N multisig) PSBT with a Ledger and return the PSBT with
+ * Sign a multisig (M-of-N multisig) PSBT with a Ledger and return the PSBT with
  * this device's signatures merged in (other cosigners' partialSigs preserved).
  *
- * Requires the vault's policy to be REGISTERED on this device first
- * (registerVaultPolicy): the app refuses named policies without a valid HMAC,
+ * Requires the multisig's policy to be REGISTERED on this device first
+ * (registerMultisigPolicy): the app refuses named policies without a valid HMAC,
  * so a missing HMAC is rejected up-front with code `policy_unregistered` —
  * the UI should route the user through registration and retry. `policyName`
  * must be the exact name the policy was registered under (the HMAC covers it).
@@ -950,19 +950,19 @@ export async function registerVaultPolicy(
  * Flow:
  *   1. Rebuild the wallet policy (byte-identical to registration — same
  *      case-sensitive key sort) and this device's per-input pubkeys.
- *   2. Verify the connected device's master fingerprint is one of the vault's
+ *   2. Verify the connected device's master fingerprint is one of the multisig's
  *      keys (`wrong_device` otherwise).
  *   3. Convert the PSBT to PsbtV2 and signPsbt with the policy + HMAC; the
  *      device shows the outputs and blocks on physical approval.
  *   4. Merge the returned [inputIndex → signature] entries back into the
  *      ORIGINAL PSBT as partialSig entries with pubkey validation.
  */
-export async function signVaultPsbtWithLedger(
-	params: VaultSignParams & { policyName: string; policyHmac: string | null }
+export async function signMultisigPsbtWithLedger(
+	params: MultisigSignParams & { policyName: string; policyHmac: string | null }
 ): Promise<string> {
 	if (params.policyHmac == null || params.policyHmac === '') {
 		throw new LedgerError(
-			"This vault isn't registered on this Ledger yet. Register it first (a one-time on-device review of the vault's keys), then sign.",
+			"This multisig isn't registered on this Ledger yet. Register it first (a one-time on-device review of the multisig's keys), then sign.",
 			'policy_unregistered'
 		);
 	}
@@ -976,14 +976,14 @@ export async function signVaultPsbtWithLedger(
 	try {
 		hmac = Buffer.from(hexToBytes(params.policyHmac.trim()));
 	} catch (err) {
-		throw new LedgerError('The stored vault registration is unreadable — register this vault on the Ledger again.', 'unexpected', { cause: err });
+		throw new LedgerError('The stored multisig registration is unreadable — register this multisig on the Ledger again.', 'unexpected', { cause: err });
 	}
 	if (hmac.length !== 32) {
-		throw new LedgerError('The stored vault registration is unreadable — register this vault on the Ledger again.', 'unexpected');
+		throw new LedgerError('The stored multisig registration is unreadable — register this multisig on the Ledger again.', 'unexpected');
 	}
 
 	// Build everything the device flow needs BEFORE the first device prompt.
-	const policy = buildVaultPolicy(params);
+	const policy = buildMultisigPolicy(params);
 	let sourceTx: Transaction;
 	try {
 		sourceTx = Transaction.fromPSBT(base64.decode(params.unsignedPsbt.trim()));
@@ -1020,8 +1020,8 @@ export async function signVaultPsbtWithLedger(
 			throw toLedgerError(err);
 		}
 		const fpHex = bytesToFpHex(masterFp);
-		const deviceKeyIndex = assertDeviceIsVaultCosigner(fpHex, params.keys);
-		const devicePubkeys = vaultDevicePubkeys(params.unsignedPsbt, params.keys[deviceKeyIndex]);
+		const deviceKeyIndex = assertDeviceIsMultisigCosigner(fpHex, params.keys);
+		const devicePubkeys = multisigDevicePubkeys(params.unsignedPsbt, params.keys[deviceKeyIndex]);
 
 		// Convert Cairn's BIP174 (v0) PSBT to the PsbtV2 the app client wants.
 		let psbtV2: InstanceType<typeof PsbtV2>;
@@ -1059,7 +1059,7 @@ export async function signVaultPsbtWithLedger(
 			throw toLedgerError(err);
 		}
 
-		mergeVaultSignatures(sourceTx, sigs, devicePubkeys);
+		mergeMultisigSignatures(sourceTx, sigs, devicePubkeys);
 
 		return base64.encode(sourceTx.toPSBT());
 	} finally {
@@ -1074,15 +1074,15 @@ export async function signVaultPsbtWithLedger(
 }
 
 /** Wrong-device guard shared by registration and signing: the connected
- *  Ledger's master fingerprint must be one of the vault's keys. Returns the
+ *  Ledger's master fingerprint must be one of the multisig's keys. Returns the
  *  matching key index. */
-function assertDeviceIsVaultCosigner(deviceFpHex: string, keys: VaultSignKey[]): number {
+function assertDeviceIsMultisigCosigner(deviceFpHex: string, keys: MultisigSignKey[]): number {
 	const index = keys.findIndex((k) => k.fingerprint.toLowerCase() === deviceFpHex);
 	if (index < 0) {
 		throw new LedgerError(
-			`This Ledger isn't one of this vault's keys — its fingerprint is ${deviceFpHex}, and the vault expects ${keys
+			`This Ledger isn't one of this multisig's keys — its fingerprint is ${deviceFpHex}, and the multisig expects ${keys
 				.map((k) => k.fingerprint.toLowerCase())
-				.join(', ')}. Connect one of the vault's devices.`,
+				.join(', ')}. Connect one of the multisig's devices.`,
 			'wrong_device'
 		);
 	}
@@ -1090,17 +1090,17 @@ function assertDeviceIsVaultCosigner(deviceFpHex: string, keys: VaultSignKey[]):
 }
 
 /**
- * Read a vault cosigner key straight from a connected Ledger for the vault
+ * Read a multisig cosigner key straight from a connected Ledger for the multisig
  * creation wizard: the BIP-48 account xpub at m/48'/0'/{account}'/{script}'
  * plus the device's master fingerprint (which the Ledger app reports
  * directly, unlike Trezor Connect). Silent reads — the wizard's on-screen
- * vault test address is the cross-check.
+ * multisig test address is the cross-check.
  *
- * Returns exactly the { xpub, fingerprint, path } shape vault keys store
+ * Returns exactly the { xpub, fingerprint, path } shape multisig keys store
  * (standard xpub form, apostrophe path notation).
  */
-export async function readVaultKeyFromLedger(
-	scriptType: VaultScriptType,
+export async function readMultisigKeyFromLedger(
+	scriptType: MultisigScriptType,
 	account = 0
 ): Promise<{ xpub: string; fingerprint: string; path: string }> {
 	if (!isWebHidAvailable()) {
@@ -1109,8 +1109,8 @@ export async function readVaultKeyFromLedger(
 			'unavailable'
 		);
 	}
-	const path = vaultAccountPath(scriptType, account);
-	const pathElements = parseVaultKeyPath(path, 'vault account path');
+	const path = multisigAccountPath(scriptType, account);
+	const pathElements = parseMultisigKeyPath(path, 'multisig account path');
 
 	const [transportMod, appClientMod] = await Promise.all([
 		import('@ledgerhq/hw-transport-webhid'),

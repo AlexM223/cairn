@@ -7,11 +7,11 @@ const log = childLogger('stateless');
 
 /**
  * POST /api/stateless/scan { source }
- * Parse a pasted vault config (output descriptor or Caravan/Unchained JSON),
+ * Parse a pasted multisig config (output descriptor or Caravan/Unchained JSON),
  * scan it over Electrum, and return balance + coins + a receive-address
  * preview + the 0/0 test address. Nothing is stored — this is the entry point
  * of the stateless (Caravan-parity) flow. Auth required: stateless means "no
- * vault row", not "no login".
+ * multisig row", not "no login".
  */
 export const POST: RequestHandler = async (event) => {
 	requireUser(event);

@@ -16,7 +16,7 @@
 // is the most affected: it streams and hashes every referenced transaction
 // chunk-by-chunk over USB. This "mass" affects SIGNING TIME ONLY — never
 // network fees, which depend on the size of the transaction being BUILT, not
-// of its parents. And it matters per-signer: in an M-of-N vault, each of the
+// of its parents. And it matters per-signer: in an M-of-N multisig, each of the
 // M signing devices independently processes the full mass.
 //
 // This module is pure/chain-free (like the rest of bitcoin/): parsing,
@@ -47,7 +47,7 @@ export interface SigningMass {
 	splitSuggested: boolean;
 	/**
 	 * Whole-ceremony estimate: per-signer time × the quorum M (M = 1 for
-	 * single-sig wallets). The device mix in a vault is unknown, so this
+	 * single-sig wallets). The device mix in a multisig is unknown, so this
 	 * brackets with the fastest device's low bound and the slowest device's
 	 * high bound.
 	 */
@@ -157,8 +157,8 @@ export function tierForVsize(totalVsize: number): MassTier {
 // ingests the whole PSBT (SD/USB) and hashes at MCU speed. The lo bound uses
 // the optimistic rate, the hi bound the pessimistic one.
 //
-// TODO(cairn-194): calibrate against real hardware — the vault-e2e harness
-// (scripts/vault-e2e) drives a Trezor emulator end-to-end and can measure
+// TODO(cairn-194): calibrate against real hardware — the multisig-e2e harness
+// (scripts/multisig-e2e) drives a Trezor emulator end-to-end and can measure
 // actual signing times for synthetic pool-sized parents; replace these
 // constants with measured curves once that run exists.
 export const DEVICE_PROFILES: Record<
@@ -221,7 +221,7 @@ function roundSeconds(x: number): number {
  * PURE whole-ceremony estimate for one device kind: per-signer seconds × the
  * quorum M (every one of the M signers independently streams and hashes the
  * full parent mass — the work is not shared). threshold/totalKeys absent
- * means single-sig. This is the function the vault surfaces (send flow,
+ * means single-sig. This is the function the multisig surfaces (send flow,
  * creation wizard) call directly.
  */
 export function estimateSigningSeconds(params: SigningSecondsParams): {
@@ -461,7 +461,7 @@ export function preferLowMassOrder<T extends { txid: string }>(utxos: T[]): T[] 
 
 // ------------------------------------------- wallet mass profiles (preview)
 //
-// The vault-creation wizard's signing-time preview compares quorums against
+// The multisig-creation wizard's signing-time preview compares quorums against
 // the user's ACTUAL coins when possible. Whenever the utxo-mass endpoint
 // classifies a wallet's coins it remembers a tiny (value, parentVsize)
 // profile here; the preview aggregates those profiles instead of touching

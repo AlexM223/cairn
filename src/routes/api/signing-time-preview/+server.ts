@@ -7,7 +7,7 @@ import {
 } from '$lib/server/bitcoin/signingMass';
 import type { RequestHandler } from './$types';
 
-/** Standard quorum presets the vault-creation wizard always compares against. */
+/** Standard quorum presets the multisig-creation wizard always compares against. */
 const PRESETS: [number, number][] = [
 	[2, 3],
 	[3, 5]
@@ -17,7 +17,7 @@ const MAX_KEYS = 15; // consensus CHECKMULTISIG limit
 
 /**
  * GET /api/signing-time-preview?m=2&n=3 — quorum-comparison signing-time
- * estimates for the vault-creation wizard: the requested (m, n) plus the
+ * estimates for the multisig-creation wizard: the requested (m, n) plus the
  * standard presets (2-of-3, 3-of-5), deduplicated.
  *
  * Basis (documented tradeoff — this preview must be INSTANT, so it never

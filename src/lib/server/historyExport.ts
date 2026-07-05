@@ -1,4 +1,4 @@
-// Transaction-history CSV export, shared by single-sig wallets and vaults.
+// Transaction-history CSV export, shared by single-sig wallets and multisigs.
 //
 // Both scanners produce the same row shape ({ txid, height, time, delta, fee })
 // and an owned-address list, so one builder serves both. Counterparty
@@ -9,7 +9,7 @@
 
 import type { TxDetail } from '$lib/types';
 
-/** One history row, as produced by wallet and vault scans alike. */
+/** One history row, as produced by wallet and multisig scans alike. */
 export interface HistoryRow {
 	txid: string;
 	height: number; // <= 0 = unconfirmed

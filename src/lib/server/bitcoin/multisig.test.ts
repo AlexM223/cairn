@@ -7,24 +7,24 @@ import { ripemd160 } from '@noble/hashes/legacy.js';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
 import { parseXpub, addressToScriptPubKey } from './xpub';
 import {
-	deriveVaultAddress,
-	vaultKeyDerivations,
-	vaultTestAddress,
-	vaultToDescriptor,
+	deriveMultisigAddress,
+	multisigKeyDerivations,
+	multisigTestAddress,
+	multisigToDescriptor,
 	parseDescriptor,
 	descriptorChecksum,
-	VaultError,
-	MAX_VAULT_KEYS,
-	type VaultConfig,
-	type VaultKeyDescriptor,
-	type VaultScriptType
+	MultisigError,
+	MAX_MULTISIG_KEYS,
+	type MultisigConfig,
+	type MultisigKeyDescriptor,
+	type MultisigScriptType
 } from './multisig';
 
 // Deterministic cosigner fixtures: master seeds 0x01…, accounts at the BIP-48
 // wsh path. Test-only keys, never a real wallet.
 const BIP48_PATH = "m/48'/0'/0'/2'";
 
-function makeKey(seedByte: number, name?: string): VaultKeyDescriptor {
+function makeKey(seedByte: number, name?: string): MultisigKeyDescriptor {
 	const master = HDKey.fromMasterSeed(new Uint8Array(32).fill(seedByte));
 	const account = master.derive(BIP48_PATH);
 	return {
@@ -36,8 +36,8 @@ function makeKey(seedByte: number, name?: string): VaultKeyDescriptor {
 }
 
 const KEYS = [1, 2, 3, 4, 5].map((n) => makeKey(n));
-const VAULT_2OF3: VaultConfig = { threshold: 2, keys: KEYS.slice(0, 3) };
-const VAULT_3OF5: VaultConfig = { threshold: 3, keys: KEYS.slice(0, 5) };
+const MULTISIG_2OF3: MultisigConfig = { threshold: 2, keys: KEYS.slice(0, 3) };
+const MULTISIG_3OF5: MultisigConfig = { threshold: 3, keys: KEYS.slice(0, 5) };
 
 /** Re-encode a standard xpub with the SLIP-132 Zpub (p2wsh multisig) prefix. */
 function toZpub(xpub: string): string {
@@ -65,15 +65,15 @@ describe('descriptorChecksum', () => {
 	});
 
 	it('rejects characters outside the descriptor charset', () => {
-		expect(() => descriptorChecksum('raw(💥)')).toThrow(VaultError);
+		expect(() => descriptorChecksum('raw(💥)')).toThrow(MultisigError);
 	});
 });
 
 // ── Address derivation ───────────────────────────────────────────────────────
 
-describe('deriveVaultAddress', () => {
+describe('deriveMultisigAddress', () => {
 	it('2-of-3: p2wsh address whose program is sha256(witnessScript)', () => {
-		const { address, witnessScript, sortedPubkeys } = deriveVaultAddress(VAULT_2OF3, 0, 0);
+		const { address, witnessScript, sortedPubkeys } = deriveMultisigAddress(MULTISIG_2OF3, 0, 0);
 		expect(address.startsWith('bc1q')).toBe(true);
 		expect(address.length).toBe(62); // 32-byte program → long bech32
 
@@ -92,7 +92,7 @@ describe('deriveVaultAddress', () => {
 	});
 
 	it('3-of-5: OP_3 … OP_5 OP_CHECKMULTISIG', () => {
-		const { witnessScript, sortedPubkeys } = deriveVaultAddress(VAULT_3OF5, 0, 0);
+		const { witnessScript, sortedPubkeys } = deriveMultisigAddress(MULTISIG_3OF5, 0, 0);
 		expect(witnessScript![0]).toBe(0x53);
 		expect(witnessScript![witnessScript!.length - 2]).toBe(0x55);
 		expect(witnessScript![witnessScript!.length - 1]).toBe(0xae);
@@ -100,13 +100,13 @@ describe('deriveVaultAddress', () => {
 	});
 
 	it('BIP-67: key input order never changes the address (that is the point)', () => {
-		const shuffled: VaultConfig = {
+		const shuffled: MultisigConfig = {
 			threshold: 3,
 			keys: [KEYS[4], KEYS[1], KEYS[3], KEYS[0], KEYS[2]]
 		};
 		for (const index of [0, 1, 7]) {
-			const a = deriveVaultAddress(VAULT_3OF5, 0, index);
-			const b = deriveVaultAddress(shuffled, 0, index);
+			const a = deriveMultisigAddress(MULTISIG_3OF5, 0, index);
+			const b = deriveMultisigAddress(shuffled, 0, index);
 			expect(b.address).toBe(a.address);
 			expect(bytesToHex(b.witnessScript!)).toBe(bytesToHex(a.witnessScript!));
 		}
@@ -115,13 +115,13 @@ describe('deriveVaultAddress', () => {
 	it('BIP-67: pubkeys are lexicographically sorted, and sorting genuinely reorders', () => {
 		// Config-order child pubkeys, derived independently via parseXpub.
 		const configOrder = (index: number): string[] =>
-			VAULT_3OF5.keys.map((k) =>
+			MULTISIG_3OF5.keys.map((k) =>
 				bytesToHex(parseXpub(k.xpub).hdkey.deriveChild(0).deriveChild(index).publicKey!)
 			);
 
 		let reorderSeen = false;
 		for (let index = 0; index < 20; index++) {
-			const { sortedPubkeys } = deriveVaultAddress(VAULT_3OF5, 0, index);
+			const { sortedPubkeys } = deriveMultisigAddress(MULTISIG_3OF5, 0, index);
 			const sortedHex = sortedPubkeys.map(bytesToHex);
 			// Equal-length lowercase hex: string order === byte order.
 			expect([...sortedHex].sort()).toEqual(sortedHex);
@@ -145,56 +145,56 @@ describe('deriveVaultAddress', () => {
 	});
 
 	it('receive and change chains differ; consecutive indexes differ', () => {
-		const r0 = deriveVaultAddress(VAULT_2OF3, 0, 0).address;
-		const r1 = deriveVaultAddress(VAULT_2OF3, 0, 1).address;
-		const c0 = deriveVaultAddress(VAULT_2OF3, 1, 0).address;
+		const r0 = deriveMultisigAddress(MULTISIG_2OF3, 0, 0).address;
+		const r1 = deriveMultisigAddress(MULTISIG_2OF3, 0, 1).address;
+		const c0 = deriveMultisigAddress(MULTISIG_2OF3, 1, 0).address;
 		expect(r0).not.toBe(r1);
 		expect(r0).not.toBe(c0);
 		expect(r1).not.toBe(c0);
 	});
 
 	it('is deterministic across calls', () => {
-		const a = deriveVaultAddress(VAULT_3OF5, 0, 42);
-		const b = deriveVaultAddress(VAULT_3OF5, 0, 42);
+		const a = deriveMultisigAddress(MULTISIG_3OF5, 0, 42);
+		const b = deriveMultisigAddress(MULTISIG_3OF5, 0, 42);
 		expect(b.address).toBe(a.address);
 		expect(bytesToHex(b.witnessScript!)).toBe(bytesToHex(a.witnessScript!));
-		expect(vaultToDescriptor(VAULT_3OF5)).toBe(vaultToDescriptor(VAULT_3OF5));
+		expect(multisigToDescriptor(MULTISIG_3OF5)).toBe(multisigToDescriptor(MULTISIG_3OF5));
 	});
 
 	it('rejects an invalid index', () => {
-		expect(() => deriveVaultAddress(VAULT_2OF3, 0, -1)).toThrow(VaultError);
-		expect(() => deriveVaultAddress(VAULT_2OF3, 0, 1.5)).toThrow(VaultError);
-		expect(() => deriveVaultAddress(VAULT_2OF3, 0, 0x80000000)).toThrow(VaultError);
+		expect(() => deriveMultisigAddress(MULTISIG_2OF3, 0, -1)).toThrow(MultisigError);
+		expect(() => deriveMultisigAddress(MULTISIG_2OF3, 0, 1.5)).toThrow(MultisigError);
+		expect(() => deriveMultisigAddress(MULTISIG_2OF3, 0, 0x80000000)).toThrow(MultisigError);
 	});
 
 	it('accepts SLIP-132 Zpub cosigner keys, deriving the same address', () => {
-		const viaZpub: VaultConfig = {
+		const viaZpub: MultisigConfig = {
 			threshold: 2,
-			keys: VAULT_2OF3.keys.map((k) => ({ ...k, xpub: toZpub(k.xpub) }))
+			keys: MULTISIG_2OF3.keys.map((k) => ({ ...k, xpub: toZpub(k.xpub) }))
 		};
-		expect(deriveVaultAddress(viaZpub, 0, 0).address).toBe(
-			deriveVaultAddress(VAULT_2OF3, 0, 0).address
+		expect(deriveMultisigAddress(viaZpub, 0, 0).address).toBe(
+			deriveMultisigAddress(MULTISIG_2OF3, 0, 0).address
 		);
 	});
 });
 
 // ── Script types (p2wsh / p2sh-p2wsh / p2sh) ─────────────────────────────────
 
-describe('deriveVaultAddress script types', () => {
+describe('deriveMultisigAddress script types', () => {
 	const hash160 = (b: Uint8Array) => ripemd160(sha256(b));
-	const withType = (scriptType: VaultScriptType): VaultConfig => ({
-		...VAULT_2OF3,
+	const withType = (scriptType: MultisigScriptType): MultisigConfig => ({
+		...MULTISIG_2OF3,
 		scriptType
 	});
 
 	it('absent scriptType means p2wsh (identical address)', () => {
-		expect(deriveVaultAddress(withType('p2wsh'), 0, 0).address).toBe(
-			deriveVaultAddress(VAULT_2OF3, 0, 0).address
+		expect(deriveMultisigAddress(withType('p2wsh'), 0, 0).address).toBe(
+			deriveMultisigAddress(MULTISIG_2OF3, 0, 0).address
 		);
 	});
 
 	it('p2wsh: bc1q… address, witnessScript only', () => {
-		const a = deriveVaultAddress(withType('p2wsh'), 0, 0);
+		const a = deriveMultisigAddress(withType('p2wsh'), 0, 0);
 		expect(a.address.startsWith('bc1q')).toBe(true);
 		expect(a.address.length).toBe(62); // 32-byte program
 		expect(a.witnessScript).toBeDefined();
@@ -202,7 +202,7 @@ describe('deriveVaultAddress script types', () => {
 	});
 
 	it('p2sh: base58 3… address; redeemScript IS the p2ms script; no witness data', () => {
-		const a = deriveVaultAddress(withType('p2sh'), 0, 0);
+		const a = deriveMultisigAddress(withType('p2sh'), 0, 0);
 		expect(a.address.startsWith('3')).toBe(true);
 		expect(a.address.length).toBe(34);
 		expect(a.witnessScript).toBeUndefined();
@@ -217,7 +217,7 @@ describe('deriveVaultAddress script types', () => {
 	});
 
 	it('p2sh-p2wsh: 3… address; redeemScript = OP_0 <sha256(witnessScript)>; witnessScript = p2ms', () => {
-		const a = deriveVaultAddress(withType('p2sh-p2wsh'), 0, 0);
+		const a = deriveMultisigAddress(withType('p2sh-p2wsh'), 0, 0);
 		expect(a.address.startsWith('3')).toBe(true);
 		expect(a.address.length).toBe(34);
 		expect(a.witnessScript).toBeDefined();
@@ -231,15 +231,15 @@ describe('deriveVaultAddress script types', () => {
 
 	it('the three script types derive three DISTINCT addresses from one key set', () => {
 		const addrs = (['p2wsh', 'p2sh-p2wsh', 'p2sh'] as const).map(
-			(t) => deriveVaultAddress(withType(t), 0, 0).address
+			(t) => deriveMultisigAddress(withType(t), 0, 0).address
 		);
 		expect(new Set(addrs).size).toBe(3);
 	});
 
 	it('BIP-67 sorting is identical across all three script types', () => {
-		const wsh = deriveVaultAddress(withType('p2wsh'), 0, 5);
-		const shwsh = deriveVaultAddress(withType('p2sh-p2wsh'), 0, 5);
-		const sh = deriveVaultAddress(withType('p2sh'), 0, 5);
+		const wsh = deriveMultisigAddress(withType('p2wsh'), 0, 5);
+		const shwsh = deriveMultisigAddress(withType('p2sh-p2wsh'), 0, 5);
+		const sh = deriveMultisigAddress(withType('p2sh'), 0, 5);
 		const hex = (pks: Uint8Array[]) => pks.map(bytesToHex);
 		expect(hex(shwsh.sortedPubkeys)).toEqual(hex(wsh.sortedPubkeys));
 		expect(hex(sh.sortedPubkeys)).toEqual(hex(wsh.sortedPubkeys));
@@ -250,61 +250,61 @@ describe('deriveVaultAddress script types', () => {
 	});
 
 	it('rejects an unknown script type (taproot multisig included) by name', () => {
-		const bad = { ...VAULT_2OF3, scriptType: 'p2tr' as VaultScriptType };
-		expect(() => deriveVaultAddress(bad, 0, 0)).toThrow(/not supported/);
-		expect(() => vaultToDescriptor(bad)).toThrow(/not supported/);
+		const bad = { ...MULTISIG_2OF3, scriptType: 'p2tr' as MultisigScriptType };
+		expect(() => deriveMultisigAddress(bad, 0, 0)).toThrow(/not supported/);
+		expect(() => multisigToDescriptor(bad)).toThrow(/not supported/);
 	});
 });
 
 // ── Config validation ────────────────────────────────────────────────────────
 
-describe('vault config validation', () => {
+describe('multisig config validation', () => {
 	const expectCode = (fn: () => unknown, code: string, msgPattern?: RegExp) => {
 		try {
 			fn();
 		} catch (e) {
-			expect(e).toBeInstanceOf(VaultError);
-			expect((e as VaultError).code).toBe(code);
-			if (msgPattern) expect((e as VaultError).message).toMatch(msgPattern);
+			expect(e).toBeInstanceOf(MultisigError);
+			expect((e as MultisigError).code).toBe(code);
+			if (msgPattern) expect((e as MultisigError).message).toMatch(msgPattern);
 			return;
 		}
-		throw new Error('expected a VaultError');
+		throw new Error('expected a MultisigError');
 	};
 
 	it('rejects threshold 0 and threshold > key count', () => {
-		expectCode(() => deriveVaultAddress({ ...VAULT_2OF3, threshold: 0 }, 0, 0), 'invalid_config');
-		expectCode(() => deriveVaultAddress({ ...VAULT_2OF3, threshold: 4 }, 0, 0), 'invalid_config');
-		expectCode(() => deriveVaultAddress({ ...VAULT_2OF3, threshold: 1.5 }, 0, 0), 'invalid_config');
+		expectCode(() => deriveMultisigAddress({ ...MULTISIG_2OF3, threshold: 0 }, 0, 0), 'invalid_config');
+		expectCode(() => deriveMultisigAddress({ ...MULTISIG_2OF3, threshold: 4 }, 0, 0), 'invalid_config');
+		expectCode(() => deriveMultisigAddress({ ...MULTISIG_2OF3, threshold: 1.5 }, 0, 0), 'invalid_config');
 	});
 
-	it('rejects an empty key set and more than MAX_VAULT_KEYS keys', () => {
-		expectCode(() => deriveVaultAddress({ threshold: 1, keys: [] }, 0, 0), 'invalid_config');
-		const many = Array.from({ length: MAX_VAULT_KEYS + 1 }, (_, i) => makeKey(i + 1));
-		expectCode(() => deriveVaultAddress({ threshold: 2, keys: many }, 0, 0), 'invalid_config');
+	it('rejects an empty key set and more than MAX_MULTISIG_KEYS keys', () => {
+		expectCode(() => deriveMultisigAddress({ threshold: 1, keys: [] }, 0, 0), 'invalid_config');
+		const many = Array.from({ length: MAX_MULTISIG_KEYS + 1 }, (_, i) => makeKey(i + 1));
+		expectCode(() => deriveMultisigAddress({ threshold: 2, keys: many }, 0, 0), 'invalid_config');
 	});
 
 	it('rejects duplicate xpubs — including a Zpub alias of a listed xpub', () => {
-		const dup: VaultConfig = { threshold: 2, keys: [KEYS[0], KEYS[1], KEYS[0]] };
-		expectCode(() => deriveVaultAddress(dup, 0, 0), 'invalid_config', /distinct/);
-		const aliased: VaultConfig = {
+		const dup: MultisigConfig = { threshold: 2, keys: [KEYS[0], KEYS[1], KEYS[0]] };
+		expectCode(() => deriveMultisigAddress(dup, 0, 0), 'invalid_config', /distinct/);
+		const aliased: MultisigConfig = {
 			threshold: 2,
 			keys: [KEYS[0], KEYS[1], { ...KEYS[0], xpub: toZpub(KEYS[0].xpub) }]
 		};
-		expectCode(() => deriveVaultAddress(aliased, 0, 0), 'invalid_config', /distinct/);
+		expectCode(() => deriveMultisigAddress(aliased, 0, 0), 'invalid_config', /distinct/);
 	});
 
 	it('rejects a garbage xpub, naming the key', () => {
-		const bad: VaultConfig = {
+		const bad: MultisigConfig = {
 			threshold: 2,
 			keys: [KEYS[0], KEYS[1], { ...KEYS[2], xpub: 'xpub-not-a-key', name: 'Coldcard' }]
 		};
-		expectCode(() => deriveVaultAddress(bad, 0, 0), 'invalid_key', /Coldcard/);
+		expectCode(() => deriveMultisigAddress(bad, 0, 0), 'invalid_key', /Coldcard/);
 	});
 
 	it('rejects a malformed fingerprint or path', () => {
 		expectCode(
 			() =>
-				deriveVaultAddress(
+				deriveMultisigAddress(
 					{ threshold: 1, keys: [{ ...KEYS[0], fingerprint: 'xyz' }] },
 					0,
 					0
@@ -314,7 +314,7 @@ describe('vault config validation', () => {
 		);
 		expectCode(
 			() =>
-				deriveVaultAddress({ threshold: 1, keys: [{ ...KEYS[0], path: 'm/48q/nope' }] }, 0, 0),
+				deriveMultisigAddress({ threshold: 1, keys: [{ ...KEYS[0], path: 'm/48q/nope' }] }, 0, 0),
 			'invalid_key'
 		);
 	});
@@ -331,7 +331,7 @@ const TV1_MASTER =
 	'xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8';
 const TV2_MASTER =
 	'xpub661MyMwAqRbcFW31YEwpkMuc5THy2PSt5bDMsktWQcFF8syAmRUapSCGu8ED9W6oDMSgv6Zz8idoc4a6mr8BDzTJY47LJhkJ8UB7WEGuduB';
-const BASTION_CFG: VaultConfig = {
+const BASTION_CFG: MultisigConfig = {
 	threshold: 2,
 	keys: [
 		{ xpub: TV1_MASTER, fingerprint: '3442193e', path: BIP48_PATH },
@@ -341,63 +341,63 @@ const BASTION_CFG: VaultConfig = {
 const BASTION_RECEIVE = `wsh(sortedmulti(2,[3442193e/48h/0h/0h/2h]${TV1_MASTER}/0/*,[deadbeef/48h/0h/0h/2h]${TV2_MASTER}/0/*))`;
 const BASTION_CHANGE = `wsh(sortedmulti(2,[3442193e/48h/0h/0h/2h]${TV1_MASTER}/1/*,[deadbeef/48h/0h/0h/2h]${TV2_MASTER}/1/*))`;
 
-describe('vaultToDescriptor', () => {
+describe('multisigToDescriptor', () => {
 	it('emits the exact Bastion/Core-verified format, checksum included', () => {
-		expect(vaultToDescriptor(BASTION_CFG)).toBe(`${BASTION_RECEIVE}#e2frtjsz`);
-		expect(vaultToDescriptor(BASTION_CFG, { chain: 1 })).toBe(
+		expect(multisigToDescriptor(BASTION_CFG)).toBe(`${BASTION_RECEIVE}#e2frtjsz`);
+		expect(multisigToDescriptor(BASTION_CFG, { chain: 1 })).toBe(
 			`${BASTION_CHANGE}#${descriptorChecksum(BASTION_CHANGE)}`
 		);
 	});
 
 	it('normalizes an uppercase fingerprint and a Zpub key to canonical form', () => {
-		const cfg: VaultConfig = {
+		const cfg: MultisigConfig = {
 			threshold: 2,
 			keys: [
 				{ xpub: toZpub(TV1_MASTER), fingerprint: '3442193E', path: BIP48_PATH },
 				{ xpub: TV2_MASTER, fingerprint: 'deadbeef', path: BIP48_PATH }
 			]
 		};
-		expect(vaultToDescriptor(cfg)).toBe(`${BASTION_RECEIVE}#e2frtjsz`);
+		expect(multisigToDescriptor(cfg)).toBe(`${BASTION_RECEIVE}#e2frtjsz`);
 	});
 });
 
 // parseDescriptor always reports the script form it recognized.
-const BASTION_PARSED: VaultConfig = { ...BASTION_CFG, scriptType: 'p2wsh' };
+const BASTION_PARSED: MultisigConfig = { ...BASTION_CFG, scriptType: 'p2wsh' };
 
 describe('parseDescriptor', () => {
 	it('round-trips: config → descriptor → identical config', () => {
-		const noNames: VaultConfig = {
-			threshold: VAULT_2OF3.threshold,
-			keys: VAULT_2OF3.keys.map(({ xpub, fingerprint, path }) => ({ xpub, fingerprint, path }))
+		const noNames: MultisigConfig = {
+			threshold: MULTISIG_2OF3.threshold,
+			keys: MULTISIG_2OF3.keys.map(({ xpub, fingerprint, path }) => ({ xpub, fingerprint, path }))
 		};
-		const desc = vaultToDescriptor(noNames);
+		const desc = multisigToDescriptor(noNames);
 		expect(parseDescriptor(desc)).toEqual({ ...noNames, scriptType: 'p2wsh' });
 		// And the re-export is byte-identical.
-		expect(vaultToDescriptor(parseDescriptor(desc))).toBe(desc);
+		expect(multisigToDescriptor(parseDescriptor(desc))).toBe(desc);
 	});
 
 	it('round-trips every script type, with the matching wrapper and checksum', () => {
-		const wrappers: Record<VaultScriptType, RegExp> = {
+		const wrappers: Record<MultisigScriptType, RegExp> = {
 			p2wsh: /^wsh\(sortedmulti\(2,/,
 			'p2sh-p2wsh': /^sh\(wsh\(sortedmulti\(2,/,
 			p2sh: /^sh\(sortedmulti\(2,/
 		};
 		for (const scriptType of ['p2wsh', 'p2sh-p2wsh', 'p2sh'] as const) {
-			const cfg: VaultConfig = { ...BASTION_CFG, scriptType };
-			const desc = vaultToDescriptor(cfg);
+			const cfg: MultisigConfig = { ...BASTION_CFG, scriptType };
+			const desc = multisigToDescriptor(cfg);
 			expect(desc).toMatch(wrappers[scriptType]);
 			expect(desc).toMatch(/#[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{8}$/);
 			const parsed = parseDescriptor(desc);
 			expect(parsed).toEqual(cfg);
-			expect(vaultToDescriptor(parsed)).toBe(desc);
+			expect(multisigToDescriptor(parsed)).toBe(desc);
 			// The parsed config derives the same first address as the original.
-			expect(vaultTestAddress(parsed)).toBe(vaultTestAddress(cfg));
+			expect(multisigTestAddress(parsed)).toBe(multisigTestAddress(cfg));
 		}
 	});
 
 	it('parses a config that derives the same addresses as the original', () => {
-		const parsed = parseDescriptor(vaultToDescriptor(VAULT_3OF5));
-		expect(vaultTestAddress(parsed)).toBe(vaultTestAddress(VAULT_3OF5));
+		const parsed = parseDescriptor(multisigToDescriptor(MULTISIG_3OF5));
+		expect(multisigTestAddress(parsed)).toBe(multisigTestAddress(MULTISIG_3OF5));
 	});
 
 	it('accepts a checksum-less descriptor and apostrophe hardened markers', () => {
@@ -406,7 +406,7 @@ describe('parseDescriptor', () => {
 		expect(parseDescriptor(apostrophes)).toEqual(BASTION_PARSED);
 	});
 
-	it('accepts /1/* (change) and <0;1> multipath variants as the same vault', () => {
+	it('accepts /1/* (change) and <0;1> multipath variants as the same multisig', () => {
 		expect(parseDescriptor(`${BASTION_CHANGE}#${descriptorChecksum(BASTION_CHANGE)}`)).toEqual(
 			BASTION_PARSED
 		);
@@ -422,7 +422,7 @@ describe('parseDescriptor', () => {
 			['00000000', 'm']
 		]);
 		// Round-trips: origin-less keys are re-emitted bare.
-		expect(vaultToDescriptor(cfg)).toBe(`${desc}#${descriptorChecksum(desc)}`);
+		expect(multisigToDescriptor(cfg)).toBe(`${desc}#${descriptorChecksum(desc)}`);
 	});
 
 	it('rejects a wrong checksum, naming the expected one', () => {
@@ -436,7 +436,7 @@ describe('parseDescriptor', () => {
 		try {
 			parseDescriptor(desc);
 		} catch (e) {
-			expect((e as VaultError).code).toBe('unsupported_descriptor');
+			expect((e as MultisigError).code).toBe('unsupported_descriptor');
 		}
 	});
 
@@ -446,12 +446,12 @@ describe('parseDescriptor', () => {
 		try {
 			parseDescriptor(desc);
 		} catch (e) {
-			expect((e as VaultError).code).toBe('unsupported_descriptor');
+			expect((e as MultisigError).code).toBe('unsupported_descriptor');
 		}
 	});
 
 	it('rejects non-multisig descriptors and malformed bodies', () => {
-		expect(() => parseDescriptor(`wpkh(${TV1_MASTER}/0/*)`)).toThrow(VaultError);
+		expect(() => parseDescriptor(`wpkh(${TV1_MASTER}/0/*)`)).toThrow(MultisigError);
 		expect(() => parseDescriptor('wsh(sortedmulti(2))')).toThrow(/at least one key/);
 		expect(() => parseDescriptor(`wsh(sortedmulti(x,${TV1_MASTER}/0/*))`)).toThrow(
 			/not a whole number/
@@ -466,7 +466,7 @@ describe('parseDescriptor', () => {
 	});
 
 	it('rejects a garbage key and a bad derivation suffix', () => {
-		expect(() => parseDescriptor('wsh(sortedmulti(1,notakey/0/*))')).toThrow(VaultError);
+		expect(() => parseDescriptor('wsh(sortedmulti(1,notakey/0/*))')).toThrow(MultisigError);
 		expect(() => parseDescriptor(`wsh(sortedmulti(1,${TV1_MASTER}/5/*))`)).toThrow(/suffix/);
 		expect(() => parseDescriptor(`wsh(sortedmulti(1,[3442193e/48h${TV1_MASTER}/0/*))`)).toThrow(
 			/unterminated/
@@ -476,23 +476,23 @@ describe('parseDescriptor', () => {
 
 // ── Wizard helpers ───────────────────────────────────────────────────────────
 
-describe('vaultTestAddress', () => {
+describe('multisigTestAddress', () => {
 	it('is the first receive address', () => {
-		expect(vaultTestAddress(VAULT_2OF3)).toBe(deriveVaultAddress(VAULT_2OF3, 0, 0).address);
+		expect(multisigTestAddress(MULTISIG_2OF3)).toBe(deriveMultisigAddress(MULTISIG_2OF3, 0, 0).address);
 	});
 });
 
-describe('vaultKeyDerivations', () => {
+describe('multisigKeyDerivations', () => {
 	it('returns one entry per key, in witness-script (BIP-67) order', () => {
-		const { sortedPubkeys } = deriveVaultAddress(VAULT_3OF5, 0, 7);
-		const derivations = vaultKeyDerivations(VAULT_3OF5, 0, 7);
+		const { sortedPubkeys } = deriveMultisigAddress(MULTISIG_3OF5, 0, 7);
+		const derivations = multisigKeyDerivations(MULTISIG_3OF5, 0, 7);
 		expect(derivations).toHaveLength(5);
 		expect(derivations.map((d) => bytesToHex(d.pubkey))).toEqual(sortedPubkeys.map(bytesToHex));
 	});
 
 	it('carries numeric fingerprints and full origin+chain+index paths', () => {
-		const derivations = vaultKeyDerivations(VAULT_2OF3, 1, 3);
-		const expectedFps = new Set(VAULT_2OF3.keys.map((k) => parseInt(k.fingerprint, 16) >>> 0));
+		const derivations = multisigKeyDerivations(MULTISIG_2OF3, 1, 3);
+		const expectedFps = new Set(MULTISIG_2OF3.keys.map((k) => parseInt(k.fingerprint, 16) >>> 0));
 		const H = 0x80000000;
 		for (const d of derivations) {
 			expect(expectedFps.has(d.fingerprint)).toBe(true);

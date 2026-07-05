@@ -76,7 +76,7 @@ export const GET: RequestHandler = async (event) => {
 			];
 		});
 
-		// Remember this wallet's (value, parent-mass) profile so the vault
+		// Remember this wallet's (value, parent-mass) profile so the multisig
 		// wizard's signing-time preview can estimate from the user's real coins
 		// without ever fetching (see /api/signing-time-preview).
 		rememberWalletMassProfile(

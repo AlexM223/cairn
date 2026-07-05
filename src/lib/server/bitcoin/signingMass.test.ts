@@ -189,12 +189,12 @@ describe('computeSigningMass', () => {
 
 	it('applies the quorum to totalSeconds', () => {
 		const single = computeSigningMass({ parentVsizes: [10_000], inputCount: 1 });
-		const vault = computeSigningMass({ parentVsizes: [10_000], inputCount: 1, threshold: 3, totalKeys: 5 });
-		expect(vault.totalSeconds.hi).toBeGreaterThanOrEqual(single.totalSeconds.hi * 3);
+		const multisig = computeSigningMass({ parentVsizes: [10_000], inputCount: 1, threshold: 3, totalKeys: 5 });
+		expect(multisig.totalSeconds.hi).toBeGreaterThanOrEqual(single.totalSeconds.hi * 3);
 		// Per-device stays per-signer: quorum must NOT be baked into it.
 		const singleTrezor = single.perDevice.find((d) => d.device === 'trezor')!;
-		const vaultTrezor = vault.perDevice.find((d) => d.device === 'trezor')!;
-		expect(vaultTrezor.secondsHi).toBeLessThan(singleTrezor.secondsHi * 3);
+		const multisigTrezor = multisig.perDevice.find((d) => d.device === 'trezor')!;
+		expect(multisigTrezor.secondsHi).toBeLessThan(singleTrezor.secondsHi * 3);
 	});
 });
 
@@ -256,13 +256,13 @@ describe('signingMassFromFetchedParents', () => {
 		expect(signingMassFromFetchedParents([{ txid: P2P_LIKE.txid }], corrupt)).toBeUndefined();
 	});
 
-	it('applies vault quorum parameters', () => {
+	it('applies multisig quorum parameters', () => {
 		const single = signingMassFromFetchedParents([{ txid: F2POOL_LIKE.txid }], parents)!;
-		const vault = signingMassFromFetchedParents([{ txid: F2POOL_LIKE.txid }], parents, {
+		const multisig = signingMassFromFetchedParents([{ txid: F2POOL_LIKE.txid }], parents, {
 			threshold: 2,
 			totalKeys: 3
 		})!;
-		expect(vault.totalSeconds.hi).toBeGreaterThanOrEqual(single.totalSeconds.hi * 2);
+		expect(multisig.totalSeconds.hi).toBeGreaterThanOrEqual(single.totalSeconds.hi * 2);
 	});
 });
 

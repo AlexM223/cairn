@@ -12,12 +12,12 @@ import {
 	toTrezorError,
 	TrezorError,
 	multisigScriptPubkeys,
-	trezorVaultSignRequest,
-	mergeTrezorVaultSignatures,
-	selectVaultKeyForDevice,
+	trezorMultisigSignRequest,
+	mergeTrezorMultisigSignatures,
+	selectMultisigKeyForDevice,
 	xfpFromXpub,
-	vaultAccountPath,
-	type VaultSignParams
+	multisigAccountPath,
+	type MultisigSignParams
 } from './trezor';
 
 // A deterministic compressed pubkey (secp256k1 generator, X-only prefixed 0x02).
@@ -335,50 +335,50 @@ describe('toTrezorError', () => {
 	});
 });
 
-// ------------------------------------------------------------------- vaults
+// ------------------------------------------------------------------- multisigs
 
 // Three deterministic cosigners at the BIP-48 p2wsh account path, exactly the
-// { xpub, fingerprint, path } shape vault keys store.
-const VAULT_PATH = "m/48'/0'/0'/2'";
-const VAULT_ORIGIN = [48 + HARDENED, 0 + HARDENED, 0 + HARDENED, 2 + HARDENED];
-const VAULT_MASTERS = [1, 2, 3].map((fill) =>
+// { xpub, fingerprint, path } shape multisig keys store.
+const MULTISIG_PATH = "m/48'/0'/0'/2'";
+const MULTISIG_ORIGIN = [48 + HARDENED, 0 + HARDENED, 0 + HARDENED, 2 + HARDENED];
+const MULTISIG_MASTERS = [1, 2, 3].map((fill) =>
 	HDKey.fromMasterSeed(new Uint8Array(32).fill(fill))
 );
-const VAULT_ACCOUNTS = VAULT_MASTERS.map((m) => m.derive(VAULT_PATH));
-const VAULT_KEYS = VAULT_MASTERS.map((m, i) => ({
-	xpub: VAULT_ACCOUNTS[i].publicExtendedKey,
+const MULTISIG_ACCOUNTS = MULTISIG_MASTERS.map((m) => m.derive(MULTISIG_PATH));
+const MULTISIG_KEYS = MULTISIG_MASTERS.map((m, i) => ({
+	xpub: MULTISIG_ACCOUNTS[i].publicExtendedKey,
 	fingerprint: (m.fingerprint >>> 0).toString(16).padStart(8, '0'),
-	path: VAULT_PATH
+	path: MULTISIG_PATH
 }));
 
 /** Cosigner k's child pubkey at chain/index. */
-function vaultChild(k: number, chain: number, index: number): Uint8Array {
-	return VAULT_ACCOUNTS[k].deriveChild(chain).deriveChild(index).publicKey!;
+function multisigChild(k: number, chain: number, index: number): Uint8Array {
+	return MULTISIG_ACCOUNTS[k].deriveChild(chain).deriveChild(index).publicKey!;
 }
 
 /** Cosigner indexes in BIP-67 (lexicographic pubkey) order at chain/index. */
 function bip67Order(chain: number, index: number): number[] {
 	return [0, 1, 2].sort((a, b) =>
-		bytesToHex(vaultChild(a, chain, index)) < bytesToHex(vaultChild(b, chain, index)) ? -1 : 1
+		bytesToHex(multisigChild(a, chain, index)) < bytesToHex(multisigChild(b, chain, index)) ? -1 : 1
 	);
 }
 
-function vaultDerivations(
+function multisigDerivations(
 	chain: number,
 	index: number
 ): [Uint8Array, { fingerprint: number; path: number[] }][] {
 	return [0, 1, 2].map((k) => [
-		vaultChild(k, chain, index),
+		multisigChild(k, chain, index),
 		{
-			fingerprint: parseInt(VAULT_KEYS[k].fingerprint, 16) >>> 0,
-			path: [...VAULT_ORIGIN, chain, index]
+			fingerprint: parseInt(MULTISIG_KEYS[k].fingerprint, 16) >>> 0,
+			path: [...MULTISIG_ORIGIN, chain, index]
 		}
 	]);
 }
 
-/** A 2-of-3 p2wsh vault PSBT spending one input at 0/<index>, paying DEST,
- *  optionally with a vault change output at 1/<changeIndex>. */
-function makeVaultPsbt({
+/** A 2-of-3 p2wsh multisig PSBT spending one input at 0/<index>, paying DEST,
+ *  optionally with a multisig change output at 1/<changeIndex>. */
+function makeMultisigPsbt({
 	index = 5,
 	changeIndex,
 	changeScript = true,
@@ -389,7 +389,7 @@ function makeVaultPsbt({
 	changeScript?: boolean;
 	threshold?: number;
 } = {}): string {
-	const sorted = bip67Order(0, index).map((k) => vaultChild(k, 0, index));
+	const sorted = bip67Order(0, index).map((k) => multisigChild(k, 0, index));
 	const payment = p2wsh(p2ms(threshold, sorted), NETWORK);
 	const tx = new Transaction();
 	tx.addInput({
@@ -397,40 +397,40 @@ function makeVaultPsbt({
 		index: 0,
 		witnessUtxo: { script: payment.script, amount: 100_000n },
 		witnessScript: payment.witnessScript,
-		bip32Derivation: vaultDerivations(0, index)
+		bip32Derivation: multisigDerivations(0, index)
 	});
 	tx.addOutputAddress(DEST, 60_000n, NETWORK);
 	if (changeIndex !== undefined) {
-		const changeSorted = bip67Order(1, changeIndex).map((k) => vaultChild(k, 1, changeIndex));
+		const changeSorted = bip67Order(1, changeIndex).map((k) => multisigChild(k, 1, changeIndex));
 		const changePayment = p2wsh(p2ms(threshold, changeSorted), NETWORK);
 		tx.addOutput({
 			script: changePayment.script,
 			amount: 30_000n,
 			...(changeScript ? { witnessScript: changePayment.witnessScript } : {}),
-			bip32Derivation: vaultDerivations(1, changeIndex)
+			bip32Derivation: multisigDerivations(1, changeIndex)
 		});
 	}
 	return base64.encode(tx.toPSBT());
 }
 
-function vaultParams(unsignedPsbt: string, overrides: Partial<VaultSignParams> = {}): VaultSignParams {
+function multisigParams(unsignedPsbt: string, overrides: Partial<MultisigSignParams> = {}): MultisigSignParams {
 	return {
 		unsignedPsbt,
 		threshold: 2,
-		keys: VAULT_KEYS,
+		keys: MULTISIG_KEYS,
 		scriptType: 'p2wsh',
 		...overrides
 	};
 }
 
 // A structurally plausible DER signature (0x30 sequence, two 0x20-byte ints).
-const VAULT_DER_SIG = new Uint8Array([
+const MULTISIG_DER_SIG = new Uint8Array([
 	0x30, 0x44, 0x02, 0x20, ...new Array(32).fill(0x11), 0x02, 0x20, ...new Array(32).fill(0x22)
 ]);
 
 describe('multisigScriptPubkeys', () => {
 	it('recovers pubkeys in SCRIPT order, not sorted order, from a deliberately unsorted script', () => {
-		const sorted = bip67Order(0, 5).map((k) => vaultChild(k, 0, 5));
+		const sorted = bip67Order(0, 5).map((k) => multisigChild(k, 0, 5));
 		const scrambled = [...sorted].reverse(); // guaranteed ≠ BIP-67 order for 3 distinct keys
 		const { m, pubkeys } = multisigScriptPubkeys(p2ms(2, scrambled).script);
 		expect(m).toBe(2);
@@ -448,9 +448,9 @@ describe('multisigScriptPubkeys', () => {
 	});
 });
 
-describe('trezorVaultSignRequest', () => {
+describe('trezorMultisigSignRequest', () => {
 	it('builds a 2-of-3 p2wsh input with cosigner nodes in the script order', () => {
-		const { request, devicePubkeys } = trezorVaultSignRequest(vaultParams(makeVaultPsbt()), 0);
+		const { request, devicePubkeys } = trezorMultisigSignRequest(multisigParams(makeMultisigPsbt()), 0);
 
 		expect(request.coin).toBe('btc');
 		expect(request.inputs).toHaveLength(1);
@@ -460,19 +460,19 @@ describe('trezorVaultSignRequest', () => {
 		expect(input.prev_index).toBe(0);
 		expect(input.amount).toBe('100000');
 		// This DEVICE's full path (cosigner 0's origin + chain/index).
-		expect(input.address_n).toEqual([...VAULT_ORIGIN, 0, 5]);
+		expect(input.address_n).toEqual([...MULTISIG_ORIGIN, 0, 5]);
 
 		// Cosigner nodes: BIP-67 order as recovered from the witnessScript, each
 		// as the account xpub + the non-hardened [chain, index] suffix.
 		const order = bip67Order(0, 5);
 		expect(input.multisig.m).toBe(2);
-		expect(input.multisig.pubkeys.map((p) => p.node)).toEqual(order.map((k) => VAULT_KEYS[k].xpub));
+		expect(input.multisig.pubkeys.map((p) => p.node)).toEqual(order.map((k) => MULTISIG_KEYS[k].xpub));
 		for (const p of input.multisig.pubkeys) expect(p.address_n).toEqual([0, 5]);
 		expect(input.multisig.signatures).toEqual(['', '', '']);
 
 		// The signMap: this device signs with cosigner 0's derived child.
 		expect(devicePubkeys).toHaveLength(1);
-		expect(bytesToHex(devicePubkeys[0])).toBe(bytesToHex(vaultChild(0, 0, 5)));
+		expect(bytesToHex(devicePubkeys[0])).toBe(bytesToHex(multisigChild(0, 0, 5)));
 
 		// Destination is a plain address output the device displays.
 		expect(request.outputs).toEqual([
@@ -484,7 +484,7 @@ describe('trezorVaultSignRequest', () => {
 		// Hand-build a PSBT whose witnessScript lists the keys in reversed order —
 		// the driver must mirror the script, never re-sort (Bastion RISK #2).
 		const scrambled = bip67Order(0, 5)
-			.map((k) => vaultChild(k, 0, 5))
+			.map((k) => multisigChild(k, 0, 5))
 			.reverse();
 		const payment = p2wsh(p2ms(2, scrambled), NETWORK);
 		const tx = new Transaction();
@@ -493,30 +493,30 @@ describe('trezorVaultSignRequest', () => {
 			index: 0,
 			witnessUtxo: { script: payment.script, amount: 100_000n },
 			witnessScript: payment.witnessScript,
-			bip32Derivation: vaultDerivations(0, 5)
+			bip32Derivation: multisigDerivations(0, 5)
 		});
 		tx.addOutputAddress(DEST, 60_000n, NETWORK);
 
-		const { request } = trezorVaultSignRequest(vaultParams(base64.encode(tx.toPSBT())), 0);
+		const { request } = trezorMultisigSignRequest(multisigParams(base64.encode(tx.toPSBT())), 0);
 		const scriptOrder = bip67Order(0, 5).reverse();
 		expect(request.inputs[0].multisig.pubkeys.map((p) => p.node)).toEqual(
-			scriptOrder.map((k) => VAULT_KEYS[k].xpub)
+			scriptOrder.map((k) => MULTISIG_KEYS[k].xpub)
 		);
 	});
 
 	it('uses each cosigner as the device key: address_n and signMap follow deviceKeyIndex', () => {
 		for (const device of [0, 1, 2]) {
-			const { request, devicePubkeys } = trezorVaultSignRequest(
-				vaultParams(makeVaultPsbt()),
+			const { request, devicePubkeys } = trezorMultisigSignRequest(
+				multisigParams(makeMultisigPsbt()),
 				device
 			);
-			expect(request.inputs[0].address_n).toEqual([...VAULT_ORIGIN, 0, 5]);
-			expect(bytesToHex(devicePubkeys[0])).toBe(bytesToHex(vaultChild(device, 0, 5)));
+			expect(request.inputs[0].address_n).toEqual([...MULTISIG_ORIGIN, 0, 5]);
+			expect(bytesToHex(devicePubkeys[0])).toBe(bytesToHex(multisigChild(device, 0, 5)));
 		}
 	});
 
 	it('maps p2sh-p2wsh to SPENDP2SHWITNESS', () => {
-		const sorted = bip67Order(0, 5).map((k) => vaultChild(k, 0, 5));
+		const sorted = bip67Order(0, 5).map((k) => multisigChild(k, 0, 5));
 		const payment = p2sh(p2wsh(p2ms(2, sorted), NETWORK), NETWORK);
 		const tx = new Transaction();
 		tx.addInput({
@@ -525,12 +525,12 @@ describe('trezorVaultSignRequest', () => {
 			witnessUtxo: { script: payment.script, amount: 100_000n },
 			redeemScript: payment.redeemScript,
 			witnessScript: payment.witnessScript,
-			bip32Derivation: vaultDerivations(0, 5)
+			bip32Derivation: multisigDerivations(0, 5)
 		});
 		tx.addOutputAddress(DEST, 60_000n, NETWORK);
 
-		const { request } = trezorVaultSignRequest(
-			vaultParams(base64.encode(tx.toPSBT()), { scriptType: 'p2sh-p2wsh' }),
+		const { request } = trezorMultisigSignRequest(
+			multisigParams(base64.encode(tx.toPSBT()), { scriptType: 'p2sh-p2wsh' }),
 			0
 		);
 		expect(request.inputs[0].script_type).toBe('SPENDP2SHWITNESS');
@@ -538,7 +538,7 @@ describe('trezorVaultSignRequest', () => {
 	});
 
 	it('maps legacy p2sh to SPENDMULTISIG with a refTx from nonWitnessUtxo', () => {
-		const sorted = bip67Order(0, 5).map((k) => vaultChild(k, 0, 5));
+		const sorted = bip67Order(0, 5).map((k) => multisigChild(k, 0, 5));
 		const ms = p2ms(2, sorted);
 		const payment = p2sh(ms, NETWORK);
 		const prev = new Transaction();
@@ -551,12 +551,12 @@ describe('trezorVaultSignRequest', () => {
 			index: 0,
 			nonWitnessUtxo: prev.toBytes(true),
 			redeemScript: payment.redeemScript,
-			bip32Derivation: vaultDerivations(0, 5)
+			bip32Derivation: multisigDerivations(0, 5)
 		});
 		tx.addOutputAddress(DEST, 60_000n, NETWORK);
 
-		const { request } = trezorVaultSignRequest(
-			vaultParams(base64.encode(tx.toPSBT()), { scriptType: 'p2sh' }),
+		const { request } = trezorMultisigSignRequest(
+			multisigParams(base64.encode(tx.toPSBT()), { scriptType: 'p2sh' }),
 			0
 		);
 		expect(request.inputs[0].script_type).toBe('SPENDMULTISIG');
@@ -565,52 +565,52 @@ describe('trezorVaultSignRequest', () => {
 		expect(request.refTxs![0].hash).toBe(prev.id);
 	});
 
-	it('sends a vault change output as address_n + multisig so the device verifies ownership', () => {
-		const { request } = trezorVaultSignRequest(
-			vaultParams(makeVaultPsbt({ changeIndex: 2 })),
+	it('sends a multisig change output as address_n + multisig so the device verifies ownership', () => {
+		const { request } = trezorMultisigSignRequest(
+			multisigParams(makeMultisigPsbt({ changeIndex: 2 })),
 			1
 		);
 		expect(request.outputs).toHaveLength(2);
 		const change = request.outputs[1];
 		expect(change.script_type).toBe('PAYTOWITNESS');
 		if (change.script_type !== 'PAYTOWITNESS') throw new Error('unreachable');
-		expect(change.address_n).toEqual([...VAULT_ORIGIN, 1, 2]);
+		expect(change.address_n).toEqual([...MULTISIG_ORIGIN, 1, 2]);
 		expect(change.amount).toBe('30000');
 		const order = bip67Order(1, 2);
-		expect(change.multisig.pubkeys.map((p) => p.node)).toEqual(order.map((k) => VAULT_KEYS[k].xpub));
+		expect(change.multisig.pubkeys.map((p) => p.node)).toEqual(order.map((k) => MULTISIG_KEYS[k].xpub));
 	});
 
 	it('still builds change (BIP-67 sorted) when the change witnessScript is absent', () => {
-		const { request } = trezorVaultSignRequest(
-			vaultParams(makeVaultPsbt({ changeIndex: 2, changeScript: false })),
+		const { request } = trezorMultisigSignRequest(
+			multisigParams(makeMultisigPsbt({ changeIndex: 2, changeScript: false })),
 			0
 		);
 		const change = request.outputs[1];
 		expect(change.script_type).toBe('PAYTOWITNESS');
 		if (change.script_type !== 'PAYTOWITNESS') throw new Error('unreachable');
 		const order = bip67Order(1, 2);
-		expect(change.multisig.pubkeys.map((p) => p.node)).toEqual(order.map((k) => VAULT_KEYS[k].xpub));
+		expect(change.multisig.pubkeys.map((p) => p.node)).toEqual(order.map((k) => MULTISIG_KEYS[k].xpub));
 	});
 
 	it('rejects a threshold that disagrees with the script', () => {
-		expect(() => trezorVaultSignRequest(vaultParams(makeVaultPsbt(), { threshold: 3 }), 0)).toThrow(
+		expect(() => trezorMultisigSignRequest(multisigParams(makeMultisigPsbt(), { threshold: 3 }), 0)).toThrow(
 			/threshold/
 		);
 	});
 
 	it('rejects an input missing its witnessScript', () => {
-		const sorted = bip67Order(0, 5).map((k) => vaultChild(k, 0, 5));
+		const sorted = bip67Order(0, 5).map((k) => multisigChild(k, 0, 5));
 		const payment = p2wsh(p2ms(2, sorted), NETWORK);
 		const tx = new Transaction();
 		tx.addInput({
 			txid: hexToBytes('a'.repeat(64)),
 			index: 0,
 			witnessUtxo: { script: payment.script, amount: 100_000n },
-			bip32Derivation: vaultDerivations(0, 5)
+			bip32Derivation: multisigDerivations(0, 5)
 		});
 		tx.addOutputAddress(DEST, 60_000n, NETWORK);
 		try {
-			trezorVaultSignRequest(vaultParams(base64.encode(tx.toPSBT())), 0);
+			trezorMultisigSignRequest(multisigParams(base64.encode(tx.toPSBT())), 0);
 			expect.unreachable('expected a missing-witnessScript error');
 		} catch (e) {
 			expect(e).toBeInstanceOf(TrezorError);
@@ -619,7 +619,7 @@ describe('trezorVaultSignRequest', () => {
 		}
 	});
 
-	it('rejects a script whose keys are not this vault\'s cosigners', () => {
+	it('rejects a script whose keys are not this multisig\'s cosigners', () => {
 		const strangers = [0, 1, 2].map(
 			(i) =>
 				HDKey.fromMasterSeed(new Uint8Array(32).fill(40 + i))
@@ -633,95 +633,95 @@ describe('trezorVaultSignRequest', () => {
 			index: 0,
 			witnessUtxo: { script: payment.script, amount: 100_000n },
 			witnessScript: payment.witnessScript,
-			bip32Derivation: vaultDerivations(0, 5)
+			bip32Derivation: multisigDerivations(0, 5)
 		});
 		tx.addOutputAddress(DEST, 60_000n, NETWORK);
-		expect(() => trezorVaultSignRequest(vaultParams(base64.encode(tx.toPSBT())), 0)).toThrow(
-			/isn't derived from this vault/
+		expect(() => trezorMultisigSignRequest(multisigParams(base64.encode(tx.toPSBT())), 0)).toThrow(
+			/isn't derived from this multisig/
 		);
 	});
 
 	it('rejects an out-of-range device key index', () => {
-		expect(() => trezorVaultSignRequest(vaultParams(makeVaultPsbt()), 3)).toThrow(TrezorError);
+		expect(() => trezorMultisigSignRequest(multisigParams(makeMultisigPsbt()), 3)).toThrow(TrezorError);
 	});
 });
 
-describe('mergeTrezorVaultSignatures', () => {
+describe('mergeTrezorMultisigSignatures', () => {
 	it('appends SIGHASH_ALL and attributes the signature to the device pubkey', () => {
-		const psbt = makeVaultPsbt();
+		const psbt = makeMultisigPsbt();
 		const tx = Transaction.fromPSBT(base64.decode(psbt));
-		const { devicePubkeys } = trezorVaultSignRequest(vaultParams(psbt), 1);
+		const { devicePubkeys } = trezorMultisigSignRequest(multisigParams(psbt), 1);
 
-		mergeTrezorVaultSignatures(tx, [bytesToHex(VAULT_DER_SIG)], devicePubkeys);
+		mergeTrezorMultisigSignatures(tx, [bytesToHex(MULTISIG_DER_SIG)], devicePubkeys);
 
 		const input = tx.getInput(0);
 		expect(input.partialSig).toHaveLength(1);
 		const [pk, s] = input.partialSig![0];
-		expect(bytesToHex(Uint8Array.from(pk))).toBe(bytesToHex(vaultChild(1, 0, 5)));
-		expect(Array.from(s)).toEqual([...VAULT_DER_SIG, 0x01]);
+		expect(bytesToHex(Uint8Array.from(pk))).toBe(bytesToHex(multisigChild(1, 0, 5)));
+		expect(Array.from(s)).toEqual([...MULTISIG_DER_SIG, 0x01]);
 	});
 
 	it('preserves another cosigner\'s existing partialSig (combined-PSBT merge)', () => {
-		const tx = Transaction.fromPSBT(base64.decode(makeVaultPsbt()));
-		const otherSig = new Uint8Array([...VAULT_DER_SIG, 0x01]);
-		tx.updateInput(0, { partialSig: [[vaultChild(2, 0, 5), otherSig]] });
+		const tx = Transaction.fromPSBT(base64.decode(makeMultisigPsbt()));
+		const otherSig = new Uint8Array([...MULTISIG_DER_SIG, 0x01]);
+		tx.updateInput(0, { partialSig: [[multisigChild(2, 0, 5), otherSig]] });
 
-		mergeTrezorVaultSignatures(tx, [bytesToHex(VAULT_DER_SIG)], [vaultChild(0, 0, 5)]);
+		mergeTrezorMultisigSignatures(tx, [bytesToHex(MULTISIG_DER_SIG)], [multisigChild(0, 0, 5)]);
 
 		const sigs = tx.getInput(0).partialSig!;
 		expect(sigs).toHaveLength(2);
 		const byPk = new Map(sigs.map(([pk, s]) => [bytesToHex(Uint8Array.from(pk)), s]));
-		expect(byPk.has(bytesToHex(vaultChild(0, 0, 5)))).toBe(true);
-		expect(byPk.has(bytesToHex(vaultChild(2, 0, 5)))).toBe(true);
+		expect(byPk.has(bytesToHex(multisigChild(0, 0, 5)))).toBe(true);
+		expect(byPk.has(bytesToHex(multisigChild(2, 0, 5)))).toBe(true);
 	});
 
 	it('rejects a signature whose pubkey is not declared in the input derivations', () => {
-		const tx = Transaction.fromPSBT(base64.decode(makeVaultPsbt()));
+		const tx = Transaction.fromPSBT(base64.decode(makeMultisigPsbt()));
 		expect(() =>
-			mergeTrezorVaultSignatures(tx, [bytesToHex(VAULT_DER_SIG)], [PUBKEY])
-		).toThrow(/isn't part of this vault/);
+			mergeTrezorMultisigSignatures(tx, [bytesToHex(MULTISIG_DER_SIG)], [PUBKEY])
+		).toThrow(/isn't part of this multisig/);
 	});
 
 	it('skips empty per-input entries but requires at least one signature', () => {
-		const tx = Transaction.fromPSBT(base64.decode(makeVaultPsbt()));
-		expect(() => mergeTrezorVaultSignatures(tx, [''], [vaultChild(0, 0, 5)])).toThrow(
+		const tx = Transaction.fromPSBT(base64.decode(makeMultisigPsbt()));
+		expect(() => mergeTrezorMultisigSignatures(tx, [''], [multisigChild(0, 0, 5)])).toThrow(
 			/no signatures/
 		);
 	});
 
 	it('rejects a count mismatch', () => {
-		const tx = Transaction.fromPSBT(base64.decode(makeVaultPsbt()));
-		expect(() => mergeTrezorVaultSignatures(tx, [], [vaultChild(0, 0, 5)])).toThrow(
+		const tx = Transaction.fromPSBT(base64.decode(makeMultisigPsbt()));
+		expect(() => mergeTrezorMultisigSignatures(tx, [], [multisigChild(0, 0, 5)])).toThrow(
 			/0 signatures for 1 inputs/
 		);
 	});
 });
 
-describe('selectVaultKeyForDevice', () => {
+describe('selectMultisigKeyForDevice', () => {
 	it('matches the device by account xpub key material', () => {
-		expect(selectVaultKeyForDevice(VAULT_KEYS, [{ xpub: VAULT_KEYS[1].xpub }], null)).toBe(1);
+		expect(selectMultisigKeyForDevice(MULTISIG_KEYS, [{ xpub: MULTISIG_KEYS[1].xpub }], null)).toBe(1);
 	});
 
 	it('falls back to the master fingerprint when no account xpub matches', () => {
-		expect(selectVaultKeyForDevice(VAULT_KEYS, [], VAULT_KEYS[2].fingerprint)).toBe(2);
+		expect(selectMultisigKeyForDevice(MULTISIG_KEYS, [], MULTISIG_KEYS[2].fingerprint)).toBe(2);
 	});
 
 	it('never matches on the placeholder fingerprint', () => {
-		const keys = VAULT_KEYS.map((k) => ({ ...k, fingerprint: '00000000' }));
-		expect(() => selectVaultKeyForDevice(keys, [], '00000000')).toThrow(TrezorError);
+		const keys = MULTISIG_KEYS.map((k) => ({ ...k, fingerprint: '00000000' }));
+		expect(() => selectMultisigKeyForDevice(keys, [], '00000000')).toThrow(TrezorError);
 	});
 
-	it('rejects a device that holds none of the vault\'s keys, naming both sides', () => {
+	it('rejects a device that holds none of the multisig\'s keys, naming both sides', () => {
 		const stranger = HDKey.fromMasterSeed(new Uint8Array(32).fill(9));
-		const strangerXpub = stranger.derive(VAULT_PATH).publicExtendedKey;
+		const strangerXpub = stranger.derive(MULTISIG_PATH).publicExtendedKey;
 		try {
-			selectVaultKeyForDevice(VAULT_KEYS, [{ xpub: strangerXpub }], 'deadbeef');
+			selectMultisigKeyForDevice(MULTISIG_KEYS, [{ xpub: strangerXpub }], 'deadbeef');
 			expect.unreachable('expected a wrong_device error');
 		} catch (e) {
 			expect(e).toBeInstanceOf(TrezorError);
 			expect((e as TrezorError).code).toBe('wrong_device');
 			expect((e as TrezorError).message).toContain('deadbeef');
-			for (const k of VAULT_KEYS) expect((e as TrezorError).message).toContain(k.fingerprint);
+			for (const k of MULTISIG_KEYS) expect((e as TrezorError).message).toContain(k.fingerprint);
 		}
 	});
 });
@@ -736,25 +736,25 @@ describe('xfpFromXpub', () => {
 	});
 
 	it('matches the fixture masters', () => {
-		for (let i = 0; i < VAULT_MASTERS.length; i++) {
-			expect(xfpFromXpub(VAULT_MASTERS[i].publicExtendedKey)).toBe(VAULT_KEYS[i].fingerprint);
+		for (let i = 0; i < MULTISIG_MASTERS.length; i++) {
+			expect(xfpFromXpub(MULTISIG_MASTERS[i].publicExtendedKey)).toBe(MULTISIG_KEYS[i].fingerprint);
 		}
 	});
 });
 
-describe('vaultAccountPath (Trezor)', () => {
+describe('multisigAccountPath (Trezor)', () => {
 	it("maps p2wsh to the BIP-48 2' suffix and both p2sh forms to 1'", () => {
-		expect(vaultAccountPath('p2wsh')).toBe("m/48'/0'/0'/2'");
-		expect(vaultAccountPath('p2sh-p2wsh')).toBe("m/48'/0'/0'/1'");
-		expect(vaultAccountPath('p2sh')).toBe("m/48'/0'/0'/1'");
+		expect(multisigAccountPath('p2wsh')).toBe("m/48'/0'/0'/2'");
+		expect(multisigAccountPath('p2sh-p2wsh')).toBe("m/48'/0'/0'/1'");
+		expect(multisigAccountPath('p2sh')).toBe("m/48'/0'/0'/1'");
 	});
 
 	it('honours a non-default account index', () => {
-		expect(vaultAccountPath('p2wsh', 3)).toBe("m/48'/0'/3'/2'");
+		expect(multisigAccountPath('p2wsh', 3)).toBe("m/48'/0'/3'/2'");
 	});
 
 	it('rejects a bogus account index', () => {
-		expect(() => vaultAccountPath('p2wsh', -1)).toThrow(TrezorError);
-		expect(() => vaultAccountPath('p2wsh', 1.5)).toThrow(TrezorError);
+		expect(() => multisigAccountPath('p2wsh', -1)).toThrow(TrezorError);
+		expect(() => multisigAccountPath('p2wsh', 1.5)).toThrow(TrezorError);
 	});
 });

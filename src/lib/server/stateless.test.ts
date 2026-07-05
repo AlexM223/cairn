@@ -9,15 +9,15 @@ import {
 	broadcastStatelessPsbt,
 	statelessErrorInfo
 } from './stateless';
-import { PRIVATE_KEY_REFUSAL } from './vaultExport';
-import { deriveVaultAddress } from './bitcoin/multisig';
+import { PRIVATE_KEY_REFUSAL } from './multisigExport';
+import { deriveMultisigAddress } from './bitcoin/multisig';
 import { addressToScripthash } from './bitcoin/xpub';
-import { toVaultConfig } from './vaults';
-import { invalidateVaultCache } from './vaultScan';
+import { toMultisigConfig } from './wallets/multisig';
+import { invalidateMultisigCache } from './multisigScan';
 
 // The stateless flow exercises the real scan/psbt path up to the network
 // edge; only the chain source itself is faked (same idiom as
-// transactions.test.ts). vaultScan imports './chain/index' and stateless.ts
+// transactions.test.ts). multisigScan imports './chain/index' and stateless.ts
 // imports './chain' — both specifiers resolve to the same module, but both
 // are mocked explicitly so the coverage doesn't hinge on resolver behavior.
 const { batchRequestMock, listUnspentMock, broadcastMock, getTxMock, getTxHexMock } = vi.hoisted(
@@ -54,7 +54,7 @@ vi.mock('./chain/index', () => ({
 
 // ── deterministic cosigner fixtures ──────────────────────────────────────────
 // Master seeds 0x01…0x03 at the BIP-48 wsh path — the same test-only key
-// family multisig.test.ts / vaultPsbt.test.ts pin.
+// family multisig.test.ts / multisigPsbt.test.ts pin.
 const BIP48_PATH = "m/48'/0'/0'/2'";
 
 function makeSigner(seedByte: number) {
@@ -70,7 +70,7 @@ const SIGNERS = [1, 2, 3].map(makeSigner);
 
 /** A 2-of-3 Caravan wallet config over the fixture keys. */
 const CARAVAN_2OF3 = JSON.stringify({
-	name: 'Test vault',
+	name: 'Test multisig',
 	addressType: 'P2WSH',
 	network: 'mainnet',
 	quorum: { requiredSigners: 2, totalSigners: 3 },
@@ -86,15 +86,15 @@ const CARAVAN_2OF3 = JSON.stringify({
 /** The matching receive descriptor (built through the real library so the
  *  checksum is correct). */
 function descriptor2of3(): string {
-	const { vault } = parseStatelessSource(CARAVAN_2OF3);
-	return `wsh(sortedmulti(2,${vault.keys
+	const { multisig } = parseStatelessSource(CARAVAN_2OF3);
+	return `wsh(sortedmulti(2,${multisig.keys
 		.map((k) => `[${k.fingerprint}/48h/0h/0h/2h]${k.xpub}/0/*`)
 		.join(',')}))`;
 }
 
 const RECIPIENT = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4';
 
-/** A synthetic funding tx paying the vault's 0/0 address; real txid. */
+/** A synthetic funding tx paying the multisig's 0/0 address; real txid. */
 function fundingTx(address: string, value: number): { hex: string; txid: string } {
 	const tx = new Transaction({ allowUnknownInputs: true, disableScriptCheck: true });
 	tx.addInput({ txid: '00'.repeat(32), index: 0 });
@@ -102,10 +102,10 @@ function fundingTx(address: string, value: number): { hex: string; txid: string 
 	return { hex: tx.hex, txid: tx.id };
 }
 
-/** Wire the chain mocks so the vault has exactly one 150k-sat coin at 0/0. */
-function fundVaultAtZero(): { address: string; fund: { hex: string; txid: string } } {
-	const { vault } = parseStatelessSource(CARAVAN_2OF3);
-	const address = deriveVaultAddress(toVaultConfig(vault), 0, 0).address;
+/** Wire the chain mocks so the multisig has exactly one 150k-sat coin at 0/0. */
+function fundMultisigAtZero(): { address: string; fund: { hex: string; txid: string } } {
+	const { multisig } = parseStatelessSource(CARAVAN_2OF3);
+	const address = deriveMultisigAddress(toMultisigConfig(multisig), 0, 0).address;
 	const sh = addressToScripthash(address);
 	const fund = fundingTx(address, 150_000);
 
@@ -149,24 +149,24 @@ beforeEach(() => {
 	getTxHexMock.mockReset();
 	// The scan cache is keyed on the config's descriptor and lives 60s — every
 	// test starts from a cold cache so the mocks above are actually exercised.
-	invalidateVaultCache();
+	invalidateMultisigCache();
 });
 
 // ── parsing ──────────────────────────────────────────────────────────────────
 
 describe('parseStatelessSource', () => {
-	it('parses a Caravan JSON into an ephemeral, never-persisted VaultRow', () => {
-		const { config, vault } = parseStatelessSource(CARAVAN_2OF3);
+	it('parses a Caravan JSON into an ephemeral, never-persisted MultisigRow', () => {
+		const { config, multisig } = parseStatelessSource(CARAVAN_2OF3);
 		expect(config.threshold).toBe(2);
 		expect(config.totalKeys).toBe(3);
 		expect(config.scriptType).toBe('p2wsh');
-		expect(config.name).toBe('Test vault');
+		expect(config.name).toBe('Test multisig');
 		expect(config.keys.map((k) => k.fingerprint)).toEqual(SIGNERS.map((s) => s.fingerprint));
 
 		// The ephemeral marker: ids 0, nothing that could collide with a row.
-		expect(vault.id).toBe(0);
-		expect(vault.userId).toBe(0);
-		expect(vault.keys).toHaveLength(3);
+		expect(multisig.id).toBe(0);
+		expect(multisig.userId).toBe(0);
+		expect(multisig.keys).toHaveLength(3);
 	});
 
 	it('parses a descriptor and keeps its parsed script type', () => {
@@ -177,11 +177,11 @@ describe('parseStatelessSource', () => {
 		expect(config.keys[0].name).toBe('Key 1');
 	});
 
-	it('descriptor and Caravan JSON of the same vault derive the same 0/0 address', () => {
-		const a = parseStatelessSource(CARAVAN_2OF3).vault;
-		const b = parseStatelessSource(descriptor2of3()).vault;
-		expect(deriveVaultAddress(toVaultConfig(a), 0, 0).address).toBe(
-			deriveVaultAddress(toVaultConfig(b), 0, 0).address
+	it('descriptor and Caravan JSON of the same multisig derive the same 0/0 address', () => {
+		const a = parseStatelessSource(CARAVAN_2OF3).multisig;
+		const b = parseStatelessSource(descriptor2of3()).multisig;
+		expect(deriveMultisigAddress(toMultisigConfig(a), 0, 0).address).toBe(
+			deriveMultisigAddress(toMultisigConfig(b), 0, 0).address
 		);
 	});
 
@@ -193,7 +193,7 @@ describe('parseStatelessSource', () => {
 		}
 	});
 
-	it('rejects empty input and non-vault text with presentable messages', () => {
+	it('rejects empty input and non-multisig text with presentable messages', () => {
 		expect(() => parseStatelessSource('')).toThrow(/paste a descriptor/i);
 		expect(() => parseStatelessSource('not a descriptor')).toThrow();
 		expect(statelessErrorInfo(safeCatch(() => parseStatelessSource('nope'))).status).toBe(400);
@@ -212,8 +212,8 @@ function safeCatch(fn: () => unknown): unknown {
 // ── scan ─────────────────────────────────────────────────────────────────────
 
 describe('scanStatelessSource', () => {
-	it('scans an ephemeral vault over the mocked chain: balance, utxos, addresses, test address', async () => {
-		const { address, fund } = fundVaultAtZero();
+	it('scans an ephemeral multisig over the mocked chain: balance, utxos, addresses, test address', async () => {
+		const { address, fund } = fundMultisigAtZero();
 
 		const scan = await scanStatelessSource(CARAVAN_2OF3);
 
@@ -246,7 +246,7 @@ describe('scanStatelessSource', () => {
 
 describe('buildStatelessPsbt', () => {
 	it('builds a PSBT over the posted config with change and 0-of-M progress', async () => {
-		const { fund } = fundVaultAtZero();
+		const { fund } = fundMultisigAtZero();
 
 		const { details, progress } = await buildStatelessPsbt(CARAVAN_2OF3, {
 			recipients: [{ address: RECIPIENT, amount: 50_000 }],
@@ -269,7 +269,7 @@ describe('buildStatelessPsbt', () => {
 
 		// Same build from the equivalent descriptor — the source format never
 		// changes the transaction's structure.
-		invalidateVaultCache();
+		invalidateMultisigCache();
 		const viaDescriptor = await buildStatelessPsbt(descriptor2of3(), {
 			recipients: [{ address: RECIPIENT, amount: 50_000 }],
 			feeRate: 5
@@ -302,7 +302,7 @@ describe('buildStatelessPsbt', () => {
 
 describe('combineStatelessPsbts / broadcastStatelessPsbt', () => {
 	it('combining a PSBT with itself is idempotent and reports live progress', async () => {
-		fundVaultAtZero();
+		fundMultisigAtZero();
 		const { details } = await buildStatelessPsbt(CARAVAN_2OF3, {
 			recipients: [{ address: RECIPIENT, amount: 50_000 }],
 			feeRate: 5
@@ -318,7 +318,7 @@ describe('combineStatelessPsbts / broadcastStatelessPsbt', () => {
 	});
 
 	it('refuses to broadcast below quorum with an "X of M" message, before touching the network', async () => {
-		fundVaultAtZero();
+		fundMultisigAtZero();
 		const { details } = await buildStatelessPsbt(CARAVAN_2OF3, {
 			recipients: [{ address: RECIPIENT, amount: 50_000 }],
 			feeRate: 5

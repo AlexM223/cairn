@@ -88,9 +88,9 @@ describe('address book', () => {
 		expect(touched.entry.lastUsedAt).not.toBeNull();
 
 		// With a label: renames the entry.
-		const renamed = saveAddress(user.id, { address: ADDR_A, label: 'Vault' });
+		const renamed = saveAddress(user.id, { address: ADDR_A, label: 'Multisig' });
 		expect(renamed.created).toBe(false);
-		expect(renamed.entry.label).toBe('Vault');
+		expect(renamed.entry.label).toBe('Multisig');
 
 		const { n } = db
 			.prepare('SELECT COUNT(*) AS n FROM saved_addresses WHERE user_id = ?')

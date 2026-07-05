@@ -104,7 +104,7 @@ db.exec(`
 	}
 
 	// Which signing device holds this wallet's key — 'trezor'|'ledger'|
-	// 'coldcard'|'qr'|'file', mirroring vault_keys.device_type. Routes the send
+	// 'coldcard'|'qr'|'file', mirroring multisig_keys.device_type. Routes the send
 	// flow's Sign step to the right device and labels the wallet in the UI.
 	// NULL until the user says (import or first send); a null device signs via
 	// the universal file/PSBT fallback, so a wallet is always spendable.
@@ -161,14 +161,65 @@ db.exec(`
 	}
 }
 
-// Vaults: local M-of-N multisig where ONE user holds several keys — not
+// Terminology migration: "vault" → "multisig wallet". Databases created before
+// the rename hold vaults / vault_keys / vault_transactions /
+// ledger_vault_registrations with a vault_id foreign-key column. Rename them in
+// place (data preserved) BEFORE the CREATE TABLE IF NOT EXISTS blocks below —
+// otherwise those would create fresh empty tables and orphan the old data.
+// Guarded and idempotent: a fresh database (no old tables) skips straight to
+// the CREATEs; an already-migrated database is untouched. SQLite's RENAME TO
+// also rewrites the child tables' foreign-key references automatically.
+{
+	const tableNames = new Set(
+		(
+			db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
+				name: string;
+			}[]
+		).map((t) => t.name)
+	);
+	const renameTable = (from: string, to: string) => {
+		if (tableNames.has(from) && !tableNames.has(to)) {
+			db.exec(`ALTER TABLE ${from} RENAME TO ${to}`);
+			tableNames.delete(from);
+			tableNames.add(to);
+		}
+	};
+	renameTable('vaults', 'multisigs');
+	renameTable('vault_keys', 'multisig_keys');
+	renameTable('vault_transactions', 'multisig_transactions');
+	renameTable('ledger_vault_registrations', 'ledger_multisig_registrations');
+
+	// Rename the vault_id foreign-key column on the (now-renamed) child tables.
+	const renameCol = (table: string, from: string, to: string) => {
+		if (!tableNames.has(table)) return;
+		const cols = (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(
+			(c) => c.name
+		);
+		if (cols.includes(from) && !cols.includes(to)) {
+			db.exec(`ALTER TABLE ${table} RENAME COLUMN ${from} TO ${to}`);
+		}
+	};
+	renameCol('multisig_keys', 'vault_id', 'multisig_id');
+	renameCol('multisig_transactions', 'vault_id', 'multisig_id');
+	renameCol('ledger_multisig_registrations', 'vault_id', 'multisig_id');
+
+	// Drop the old-named indexes; the CREATE INDEX IF NOT EXISTS below re-adds
+	// them under the new names.
+	db.exec(`
+		DROP INDEX IF EXISTS idx_vaults_user;
+		DROP INDEX IF EXISTS idx_vault_keys_vault;
+		DROP INDEX IF EXISTS idx_vault_transactions_vault;
+	`);
+}
+
+// Multisigs: local M-of-N multisig where ONE user holds several keys — not
 // collaborative custody, so there is no roster/session machinery; signing
-// progress lives in the PSBT itself (see src/lib/server/bitcoin/vaultPsbt.ts)
+// progress lives in the PSBT itself (see src/lib/server/bitcoin/multisigPsbt.ts)
 // and quorum is threshold-of-keys. Key metadata is relational rather than a
 // config JSON blob so the wizard can edit keys one at a time; the descriptor
-// (the portable artifact) is derived on demand by src/lib/server/vaults.ts.
+// (the portable artifact) is derived on demand by src/lib/server/wallets/multisig.ts.
 db.exec(`
-	CREATE TABLE IF NOT EXISTS vaults (
+	CREATE TABLE IF NOT EXISTS multisigs (
 		id             INTEGER PRIMARY KEY AUTOINCREMENT,
 		user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 		name           TEXT NOT NULL,
@@ -177,11 +228,11 @@ db.exec(`
 		receive_cursor INTEGER NOT NULL DEFAULT 0,
 		created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 	);
-	CREATE INDEX IF NOT EXISTS idx_vaults_user ON vaults(user_id);
+	CREATE INDEX IF NOT EXISTS idx_multisigs_user ON multisigs(user_id);
 
-	CREATE TABLE IF NOT EXISTS vault_keys (
+	CREATE TABLE IF NOT EXISTS multisig_keys (
 		id          INTEGER PRIMARY KEY AUTOINCREMENT,
-		vault_id    INTEGER NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
+		multisig_id    INTEGER NOT NULL REFERENCES multisigs(id) ON DELETE CASCADE,
 		position    INTEGER NOT NULL,          -- stable display/signing order
 		name        TEXT NOT NULL,             -- "My Trezor", "Steel backup"
 		category    TEXT NOT NULL,             -- 'hardware' | 'mobile' | 'recovery'
@@ -189,43 +240,43 @@ db.exec(`
 		xpub        TEXT NOT NULL,
 		fingerprint TEXT NOT NULL,             -- 8 lowercase hex; '00000000' when unknown
 		path        TEXT NOT NULL,             -- "m/48'/0'/0'/2'" (BIP-48)
-		UNIQUE (vault_id, position),
-		UNIQUE (vault_id, xpub)
+		UNIQUE (multisig_id, position),
+		UNIQUE (multisig_id, xpub)
 	);
-	CREATE INDEX IF NOT EXISTS idx_vault_keys_vault ON vault_keys(vault_id);
+	CREATE INDEX IF NOT EXISTS idx_multisig_keys_multisig ON multisig_keys(multisig_id);
 
 	-- Ledger requires a BIP-388 wallet-policy registration (an on-device
 	-- approval yielding an HMAC) before it will sign for a multisig policy.
 	-- The HMAC is not a secret — storing it only spares the user re-approving
-	-- the same vault on-device every session. One registration per device
-	-- (master fingerprint) per vault.
-	CREATE TABLE IF NOT EXISTS ledger_vault_registrations (
+	-- the same multisig on-device every session. One registration per device
+	-- (master fingerprint) per multisig.
+	CREATE TABLE IF NOT EXISTS ledger_multisig_registrations (
 		id          INTEGER PRIMARY KEY AUTOINCREMENT,
-		vault_id    INTEGER NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
+		multisig_id    INTEGER NOT NULL REFERENCES multisigs(id) ON DELETE CASCADE,
 		master_fp   TEXT NOT NULL,             -- 8 lowercase hex
 		policy_name TEXT NOT NULL,             -- <=64 ASCII, shown on-device
 		policy_hmac TEXT NOT NULL,             -- 64 hex chars (32 bytes)
 		policy_id   TEXT,
 		created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-		UNIQUE (vault_id, master_fp)
+		UNIQUE (multisig_id, master_fp)
 	);
 `);
 
-// Vault spends: DELIBERATELY a parallel table to `transactions` rather than a
-// nullable wallet_id/vault_id merge — wallet queries (and their indexes,
+// Multisig spends: DELIBERATELY a parallel table to `transactions` rather than a
+// nullable wallet_id/multisig_id merge — wallet queries (and their indexes,
 // cascades, and status vocabulary) stay untouched, and the two lifecycles can
-// diverge freely (vaults collect M signatures per spend and have no RBF bump
+// diverge freely (multisigs collect M signatures per spend and have no RBF bump
 // lineage yet; wallets have replaces_txid/superseded). Columns mirror
 // `transactions` where the meaning is identical: `psbt` holds the CURRENT
 // combined PSBT and is replaced as each key's signature merges in; quorum
-// progress is never stored — it is derived from the PSBT by vaultPsbtProgress
-// (src/lib/server/bitcoin/vaultPsbt.ts), which cannot disagree with reality.
+// progress is never stored — it is derived from the PSBT by multisigPsbtProgress
+// (src/lib/server/bitcoin/multisigPsbt.ts), which cannot disagree with reality.
 // broadcast_started_at is the same atomic broadcast-claim marker transactions
-// uses. See src/lib/server/vaultTransactions.ts.
+// uses. See src/lib/server/multisigTransactions.ts.
 db.exec(`
-	CREATE TABLE IF NOT EXISTS vault_transactions (
+	CREATE TABLE IF NOT EXISTS multisig_transactions (
 		id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-		vault_id             INTEGER NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
+		multisig_id             INTEGER NOT NULL REFERENCES multisigs(id) ON DELETE CASCADE,
 		status               TEXT NOT NULL DEFAULT 'draft', -- draft | awaiting_signature | completed
 		psbt                 TEXT NOT NULL,                 -- base64, the working combined PSBT
 		txid                 TEXT,                          -- set once broadcast
@@ -234,12 +285,12 @@ db.exec(`
 		recipients           TEXT,                          -- JSON breakdown for batch sends, NULL for single
 		fee                  INTEGER NOT NULL,              -- sats
 		fee_rate             REAL NOT NULL,                 -- sat/vB at construction time
-		change_index         INTEGER,                       -- vault change-chain index, NULL when changeless
+		change_index         INTEGER,                       -- multisig change-chain index, NULL when changeless
 		broadcast_started_at TEXT,                          -- in-flight broadcast claim (see transactions)
 		created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
 		updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 	);
-	CREATE INDEX IF NOT EXISTS idx_vault_transactions_vault ON vault_transactions(vault_id);
+	CREATE INDEX IF NOT EXISTS idx_multisig_transactions_multisig ON multisig_transactions(multisig_id);
 `);
 
 // User-facing activity feed (adapted from Bastion's audit_log, but for
@@ -267,18 +318,18 @@ db.exec(`
 // Key health checks (Casa's periodic-verification pattern): a multisig key you
 // haven't recently proven you still control is a silent liability — devices
 // die, PINs get forgotten, a device restored from the wrong seed keeps working
-// for everything except THIS vault. Casa's answer is a per-key "last verified"
+// for everything except THIS multisig. Casa's answer is a per-key "last verified"
 // timestamp plus a periodic nudge when any key goes unchecked too long
 // (~6 months); we store exactly that. Only the timestamp is recorded — HOW the
 // key was verified (device re-read vs guided manual check) is deliberately not,
 // because either proof is only as fresh as the moment it happened. NULL means
 // never verified. Guarded and additive like the migrations above; see
-// markKeyVerified in src/lib/server/vaults.ts.
+// markKeyVerified in src/lib/server/wallets/multisig.ts.
 {
-	const keyCols = (db.prepare('PRAGMA table_info(vault_keys)').all() as { name: string }[]).map(
+	const keyCols = (db.prepare('PRAGMA table_info(multisig_keys)').all() as { name: string }[]).map(
 		(c) => c.name
 	);
 	if (!keyCols.includes('last_verified_at')) {
-		db.exec('ALTER TABLE vault_keys ADD COLUMN last_verified_at TEXT');
+		db.exec('ALTER TABLE multisig_keys ADD COLUMN last_verified_at TEXT');
 	}
 }
