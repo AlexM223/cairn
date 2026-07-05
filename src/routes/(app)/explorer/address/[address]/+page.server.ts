@@ -1,14 +1,14 @@
 import { error } from '@sveltejs/kit';
 import QRCode from 'qrcode';
 import { getChain } from '$lib/server/chain';
-import { isValidAddress } from '$lib/server/bitcoin/xpub';
+import { isExplorerAddress } from '$lib/server/bitcoin/xpub';
 import { isNotFoundError, chainErrorMessage } from '$lib/server/search';
 import type { PageServerLoad } from './$types';
 import type { AddressInfo, AddressTx } from '$lib/types';
 
 export const load: PageServerLoad = async ({ params }) => {
 	const address = params.address.trim();
-	if (!isValidAddress(address)) error(404, 'Not a valid Bitcoin address');
+	if (!isExplorerAddress(address)) error(404, 'Not a valid Bitcoin address');
 
 	const chain = getChain();
 	let info: AddressInfo;

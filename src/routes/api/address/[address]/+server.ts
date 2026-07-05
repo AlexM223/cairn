@@ -1,6 +1,6 @@
 import { json, requireUser } from '$lib/server/api';
 import { getChain } from '$lib/server/chain';
-import { isValidAddress } from '$lib/server/bitcoin/xpub';
+import { isExplorerAddress } from '$lib/server/bitcoin/xpub';
 import { isNotFoundError, chainErrorMessage } from '$lib/server/search';
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
@@ -16,7 +16,7 @@ export const GET: RequestHandler = async (event) => {
 	requireUser(event);
 
 	const addr = event.params.address.trim();
-	if (!isValidAddress(addr)) {
+	if (!isExplorerAddress(addr)) {
 		return json({ error: 'Not a valid Bitcoin address' }, { status: 404 });
 	}
 

@@ -8,6 +8,7 @@ import {
 	addressToScriptPubKey,
 	addressToScripthash,
 	isValidAddress,
+	isExplorerAddress,
 	isValidXpub
 } from './xpub';
 
@@ -267,6 +268,112 @@ describe('isValidAddress', () => {
 		['not an address', false]
 	])('%j -> %s', (input, expected) => {
 		expect(isValidAddress(input)).toBe(expected);
+	});
+});
+
+describe('isExplorerAddress', () => {
+	// Build checksum-valid segwit addresses for any network/program so the test
+	// vectors are unambiguous and don't depend on external fixtures.
+	const seg = (hrp: string, version: number, len: number): string => {
+		const program = Uint8Array.from({ length: len }, (_, i) => i + 1);
+		const enc = version === 0 ? bech32 : bech32m;
+		return enc.encode(hrp, [version, ...enc.toWords(program)]);
+	};
+	const base58 = (version: number): string => {
+		const payload = new Uint8Array(21);
+		payload[0] = version;
+		payload.set(Uint8Array.from({ length: 20 }, (_, i) => i + 1), 1);
+		return b58check.encode(payload);
+	};
+
+	// A real regtest P2WPKH (bcrt1q, 42 chars) and P2WSH (bcrt1, 62 chars).
+	const bcrt1q = seg('bcrt', 0, 20);
+	const bcrt1wsh = seg('bcrt', 0, 32);
+
+	it('accepts a real regtest bcrt1q P2WPKH', () => {
+		// bcrt HRP (4 chars) makes a P2WPKH 44 chars vs 42 for the 2-char bc/tb.
+		expect(bcrt1q.length).toBe(44);
+		expect(bcrt1q.startsWith('bcrt1q')).toBe(true);
+		expect(isExplorerAddress(bcrt1q)).toBe(true);
+	});
+
+	it('accepts a real regtest bcrt1 P2WSH', () => {
+		expect(bcrt1wsh.length).toBe(64); // 62 for bc/tb, +2 for the bcrt HRP
+		expect(isExplorerAddress(bcrt1wsh)).toBe(true);
+	});
+
+	it('accepts mainnet, testnet and regtest bech32/bech32m across witness versions', () => {
+		// v0 P2WPKH / P2WSH on each network
+		for (const hrp of ['bc', 'tb', 'bcrt']) {
+			expect(isExplorerAddress(seg(hrp, 0, 20))).toBe(true);
+			expect(isExplorerAddress(seg(hrp, 0, 32))).toBe(true);
+			expect(isExplorerAddress(seg(hrp, 1, 32))).toBe(true); // taproot
+			expect(isExplorerAddress(seg(hrp, 2, 2))).toBe(true); // future v2
+			expect(isExplorerAddress(seg(hrp, 16, 40))).toBe(true); // future v16
+		}
+	});
+
+	it('accepts a known mainnet bc1q and testnet tb1q from BIP-173/vectors', () => {
+		expect(isExplorerAddress('bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4')).toBe(true);
+		expect(isExplorerAddress('tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx')).toBe(true);
+	});
+
+	it('accepts uppercase (QR) bech32', () => {
+		expect(isExplorerAddress(bcrt1q.toUpperCase())).toBe(true);
+	});
+
+	it('accepts base58 P2PKH/P2SH on mainnet and testnet+regtest', () => {
+		expect(isExplorerAddress(base58(0x00))).toBe(true); // mainnet P2PKH
+		expect(isExplorerAddress(base58(0x05))).toBe(true); // mainnet P2SH
+		expect(isExplorerAddress(base58(0x6f))).toBe(true); // testnet/regtest P2PKH
+		expect(isExplorerAddress(base58(0xc4))).toBe(true); // testnet/regtest P2SH
+	});
+
+	it('rejects BIP-350 encoding mixups', () => {
+		const program20 = Uint8Array.from({ length: 20 }, (_, i) => i + 1);
+		const program32 = Uint8Array.from({ length: 32 }, (_, i) => i + 1);
+		// v0 encoded as bech32m — invalid
+		const v0asM = bech32m.encode('bcrt', [0, ...bech32m.toWords(program20)]);
+		expect(isExplorerAddress(v0asM)).toBe(false);
+		// v1 encoded as plain bech32 — invalid
+		const v1asBech32 = bech32.encode('bcrt', [1, ...bech32.toWords(program32)]);
+		expect(isExplorerAddress(v1asBech32)).toBe(false);
+	});
+
+	it('rejects bad witness program lengths', () => {
+		expect(isExplorerAddress(seg('bcrt', 0, 21))).toBe(false); // v0 must be 20/32
+		expect(isExplorerAddress(seg('bcrt', 1, 20))).toBe(false); // taproot must be 32
+		expect(isExplorerAddress(seg('bcrt', 2, 1))).toBe(false); // v2 min 2
+		expect(isExplorerAddress(seg('bcrt', 2, 41))).toBe(false); // v2 max 40
+	});
+
+	it('rejects unknown HRPs and base58 versions', () => {
+		expect(isExplorerAddress(seg('ltc', 0, 20))).toBe(false); // wrong HRP
+		expect(isExplorerAddress(base58(0x30))).toBe(false); // litecoin P2PKH version
+	});
+
+	it('rejects garbage, empty and wrong-checksum addresses', () => {
+		expect(isExplorerAddress('')).toBe(false);
+		expect(isExplorerAddress('   ')).toBe(false);
+		expect(isExplorerAddress('not an address')).toBe(false);
+		// flip a char in a valid bcrt1q to break the checksum
+		const bad = bcrt1q.slice(0, -1) + (bcrt1q.slice(-1) === 'q' ? 'p' : 'q');
+		expect(isExplorerAddress(bad)).toBe(false);
+		// wrong base58 checksum
+		const wrongB58 = base58(0x6f);
+		expect(isExplorerAddress(wrongB58.slice(0, -1) + (wrongB58.slice(-1) === 'A' ? 'B' : 'A'))).toBe(
+			false
+		);
+	});
+
+	it('leaves the mainnet-only isValidAddress unchanged (still rejects bcrt1/tb1)', () => {
+		// The wallet-facing gate must remain strictly mainnet.
+		expect(isValidAddress(bcrt1q)).toBe(false);
+		expect(isValidAddress(bcrt1wsh)).toBe(false);
+		expect(isValidAddress('tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx')).toBe(false);
+		expect(isValidAddress(base58(0x6f))).toBe(false); // testnet P2PKH
+		// but still accepts mainnet
+		expect(isValidAddress('bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4')).toBe(true);
 	});
 });
 

@@ -233,6 +233,80 @@ export function addressToScriptPubKey(address: string): Uint8Array {
 	throw new Error('Unknown address version byte (mainnet only)');
 }
 
+/** Human-readable bech32 prefixes the explorer accepts, across every network. */
+const EXPLORER_BECH32_PREFIXES = new Set(['bc', 'tb', 'bcrt']);
+
+/** base58check version bytes the explorer accepts (P2PKH / P2SH, all networks). */
+const EXPLORER_BASE58_VERSIONS = new Set([
+	0x00, // mainnet P2PKH
+	0x05, // mainnet P2SH
+	0x6f, // testnet/regtest P2PKH
+	0xc4 // testnet/regtest P2SH
+]);
+
+/**
+ * Network-agnostic structural validity check for the block explorer.
+ *
+ * Unlike {@link addressToScriptPubKey}/{@link isValidAddress} (mainnet only, by
+ * design — wallet code relies on that strictness), this accepts addresses on
+ * mainnet, testnet/signet AND regtest. The explorer only ever forwards the
+ * address string to the configured Esplora backend, so a checksum-validated,
+ * network-agnostic gate is all that's needed to unblock bcrt1/tb1 lookups.
+ *
+ * Accepts:
+ *   - bech32/bech32m with HRP 'bc' | 'tb' | 'bcrt'; witness v0 program of 20 or
+ *     32 bytes, v1 of exactly 32 bytes (taproot), v2..v16 of 2-40 bytes. Rejects
+ *     v0 encoded as bech32m and v1+ encoded as bech32 (BIP-350 mixing), and
+ *     mixed-case (the @scure decoder enforces the latter).
+ *   - base58check P2PKH/P2SH with a 21-byte payload and a version byte of
+ *     0x00/0x05 (mainnet) or 0x6f/0xc4 (testnet+regtest).
+ */
+export function isExplorerAddress(s: string): boolean {
+	const addr = s.trim();
+	if (!addr) return false;
+
+	if (/^(bc|tb|bcrt)1/i.test(addr)) {
+		let version: number;
+		let program: Uint8Array;
+		try {
+			const dec = bech32.decode(addr as `${string}1${string}`);
+			if (!EXPLORER_BECH32_PREFIXES.has(dec.prefix)) return false;
+			version = dec.words[0];
+			if (version !== 0) return false; // v1+ must use bech32m
+			program = bech32.fromWords(dec.words.slice(1));
+		} catch {
+			// Not valid plain bech32 (or not v0) — try bech32m for segwit v1+.
+			let dec;
+			try {
+				dec = bech32m.decode(addr as `${string}1${string}`);
+			} catch {
+				return false;
+			}
+			if (!EXPLORER_BECH32_PREFIXES.has(dec.prefix)) return false;
+			version = dec.words[0];
+			if (version < 1 || version > 16) return false;
+			program = bech32m.fromWords(dec.words.slice(1));
+		}
+
+		if (version === 0) {
+			return program.length === 20 || program.length === 32;
+		}
+		if (version === 1) {
+			return program.length === 32; // taproot
+		}
+		return program.length >= 2 && program.length <= 40;
+	}
+
+	let payload: Uint8Array;
+	try {
+		payload = b58check.decode(addr);
+	} catch {
+		return false;
+	}
+	if (payload.length !== 21) return false;
+	return EXPLORER_BASE58_VERSIONS.has(payload[0]);
+}
+
 /**
  * Electrum scripthash: sha256(scriptPubKey) with the byte order reversed, hex-encoded.
  */
