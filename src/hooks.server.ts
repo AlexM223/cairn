@@ -3,6 +3,7 @@ import type { Handle, HandleServerError } from '@sveltejs/kit';
 import { randomBytes } from 'node:crypto';
 import { getSessionUser, SESSION_COOKIE, bootstrapAdminFromEnv } from '$lib/server/auth';
 import { childLogger } from '$lib/server/logger';
+import { startNotificationQueueWorker } from '$lib/server/notificationQueue';
 
 const httpLog = childLogger('http');
 const errLog = childLogger('error');
@@ -13,6 +14,15 @@ try {
 	bootstrapAdminFromEnv();
 } catch (e) {
 	errLog.error({ err: e }, 'admin bootstrap from env failed');
+}
+
+// Start the outbound notification delivery worker (idempotent, unref'd — it
+// drains notification_queue for every non-inapp channel). See §1.4 of
+// docs/NOTIFICATION-PLAN.md.
+try {
+	startNotificationQueueWorker();
+} catch (e) {
+	errLog.error({ err: e }, 'notification queue worker start failed');
 }
 
 // Static assets and build output aren't worth a log line each (and the SPA
