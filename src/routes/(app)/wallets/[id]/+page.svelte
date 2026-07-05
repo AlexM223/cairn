@@ -4,6 +4,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import TxStatusBadge from '$lib/components/TxStatusBadge.svelte';
+	import ConsolidationCard from './_components/ConsolidationCard.svelte';
 	import { formatBtc, formatFeeRate, formatSats, timeAgo, truncateMiddle } from '$lib/format';
 	import { SCRIPT_TYPE_LABELS } from '../labels';
 
@@ -393,6 +394,15 @@
 				{/if}
 			</section>
 		</div>
+
+		<!-- Consolidation suggestion: appears only when the wallet holds coins
+		     from huge batch payouts (slow to sign on hardware wallets). Fetches
+		     its own data lazily and renders nothing when there's nothing to say. -->
+		<ConsolidationCard
+			walletId={data.wallet.id}
+			scriptType={data.wallet.scriptType}
+			receiveAddress={receive?.address ?? null}
+		/>
 
 		<!-- ------------------------------------------- tabs -->
 		<div class="tabs" role="tablist">

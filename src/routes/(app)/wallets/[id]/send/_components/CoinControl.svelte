@@ -7,7 +7,15 @@
 -->
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
+	import Term from '$lib/components/Term.svelte';
 	import { formatSats, truncateMiddle } from '$lib/format';
+	import {
+		fetchUtxoMass,
+		massChip,
+		MASS_LEGEND,
+		MASS_WHY_TIP,
+		type UtxoMass
+	} from '../../_components/signingMass';
 
 	export interface CoinOption {
 		txid: string;
@@ -16,18 +24,48 @@
 	}
 
 	let {
+		walletId,
 		utxos,
-		selected = $bindable()
+		selected = $bindable(),
+		initialOpen = false
 	}: {
+		/** Wallet id — the per-coin signing-mass lookup is scoped to it. */
+		walletId: number;
 		/** Confirmed spendable coins, sorted by value descending. */
 		utxos: CoinOption[];
 		/** Selected coin keys, "txid:vout". Empty = automatic selection. */
 		selected: string[];
+		/** Start disclosed — used by the consolidation handoff so preselected coins are visible. */
+		initialOpen?: boolean;
 	} = $props();
 
 	const keyOf = (u: CoinOption) => `${u.txid}:${u.vout}`;
 
-	let open = $state(false);
+	// svelte-ignore state_referenced_locally — intentional per-mount seed
+	let open = $state(initialOpen);
+
+	// --- per-coin signing mass -------------------------------------------
+	// Fetched lazily on the first disclosure open, once per mount. Failure or
+	// an absent endpoint degrades to no chips — coin control works unchanged.
+	let masses = $state<UtxoMass[] | null>(null);
+	let massLoading = $state(false);
+	let massRequested = false;
+
+	// $effect is client-only, so this covers both the toggle and initialOpen
+	// without ever fetching during SSR.
+	$effect(() => {
+		if (!open || massRequested) return;
+		massRequested = true;
+		massLoading = true;
+		void fetchUtxoMass(walletId)
+			.then((m) => (masses = m))
+			.finally(() => (massLoading = false));
+	});
+
+	const massByKey = $derived(
+		masses ? new Map(masses.map((m) => [`${m.txid}:${m.vout}`, m])) : null
+	);
+	const anyHighMass = $derived(masses?.some((m) => m.tier === 'high') ?? false);
 
 	const selectedTotal = $derived.by(() => {
 		const chosen = new Set(selected);
@@ -67,7 +105,19 @@
 				Leave everything unchecked and Cairn picks coins automatically. Check specific coins to
 				spend only those.
 			</p>
+			{#if massLoading}
+				<p class="hint mass-loading" role="status">
+					<span class="spinner"></span> Checking where these coins came from…
+				</p>
+			{:else if anyHighMass}
+				<!-- Plain-language legend — only when there is actually something to explain. -->
+				<p class="mass-legend">
+					{MASS_LEGEND}
+					<Term tip={MASS_WHY_TIP}>Why?</Term>
+				</p>
+			{/if}
 			{#each utxos as u (keyOf(u))}
+				{@const mass = massByKey?.get(keyOf(u))}
 				<label class="coin-row">
 					<input
 						type="checkbox"
@@ -75,6 +125,10 @@
 						onchange={() => toggleCoin(u)}
 					/>
 					<span class="mono coin-ref">{truncateMiddle(u.txid, 10, 8)}:{u.vout}</span>
+					{#if mass}
+						{@const chip = massChip(mass)}
+						<span class="mass-chip {chip.tone}" title={chip.title}>{chip.label}</span>
+					{/if}
 					<span class="tabular coin-value">{formatSats(u.value)} sats</span>
 				</label>
 			{/each}
@@ -159,6 +213,56 @@
 	.coin-value {
 		margin-left: auto;
 		color: var(--text);
+		flex-shrink: 0;
+	}
+
+	/* --- signing-mass chips ---
+	   Same chip vocabulary as the app's badges. High mass stays in the warning
+	   palette (never error-red): these coins are safe to spend — the only cost
+	   is signing time. */
+	.mass-chip {
+		font-size: 11px;
+		font-weight: 500;
+		line-height: 1.6;
+		padding: 1px 7px;
+		border-radius: 99px;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		min-width: 0;
+	}
+
+	.mass-chip.low {
+		background: var(--surface-elevated);
+		color: var(--text-muted);
+	}
+
+	.mass-chip.medium {
+		background: var(--warning-muted);
+		color: var(--warning);
+	}
+
+	.mass-chip.high {
+		background: var(--warning-muted);
+		color: var(--warning);
+		border: 1px solid rgba(232, 201, 90, 0.45);
+		font-weight: 600;
+	}
+
+	.mass-loading {
+		display: flex;
+		align-items: center;
+		gap: 7px;
+	}
+
+	.mass-legend {
+		font-size: 12.5px;
+		line-height: 1.55;
+		color: var(--text-secondary);
+		background: var(--warning-muted);
+		border: 1px solid rgba(232, 201, 90, 0.25);
+		border-radius: var(--radius-control);
+		padding: 9px 12px;
 	}
 
 	.coin-foot {

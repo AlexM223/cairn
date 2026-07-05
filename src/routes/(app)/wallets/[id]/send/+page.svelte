@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
 	import { replaceState } from '$app/navigation';
+	import { page } from '$app/state';
 	import Icon from '$lib/components/Icon.svelte';
 	import Stepper from '$lib/components/Stepper.svelte';
 	import Term from '$lib/components/Term.svelte';
@@ -20,6 +21,12 @@
 	import QrSigner from './_components/QrSigner.svelte';
 	import TrezorSigner from './_components/TrezorSigner.svelte';
 	import type { DeviceMethod, SignerContext } from './_components/signerContract';
+	import {
+		formatSigningRange,
+		perDeviceLine,
+		MASS_WHY_TIP,
+		type SigningMass
+	} from '../_components/signingMass';
 
 	let { data } = $props();
 
@@ -51,6 +58,8 @@
 		complete: boolean;
 		inputs?: { txid: string; vout: number; value: number | null }[];
 		change?: { vout: number; value: number } | null;
+		/** Signing-mass summary — optional/absent = unknown, show nothing. */
+		signingMass?: SigningMass;
 	};
 	// svelte-ignore state_referenced_locally — per-navigation constant
 	const resumeSummary = (data.resume?.summary ?? null) as ResumeSummaryDetail | null;
@@ -148,6 +157,32 @@
 	}
 
 	// ------------------------------------------------------------- CREATE step
+	// Basic client-side shape check — the server does authoritative validation.
+	// BC1 alternative: bech32/bech32m addresses are valid in all-uppercase too
+	// (the QR-code form); mixed case slips this pre-check but the server rejects it.
+	const looksLikeAddress = (a: string) => /^(bc1|BC1|[13])[a-zA-HJ-NP-Z0-9]{6,90}$/.test(a.trim());
+
+	// --------------------------------------------------- consolidation handoff
+	// The wallet detail page's "Consolidate now" button lands here with
+	// ?consolidate=txid:vout,txid:vout[&to=address]: the listed coins are
+	// preselected in coin control, the amount is set to Max (sweep exactly those
+	// coins), and the recipient is prefilled with the wallet's own next receive
+	// address. Advisory seeding only — everything stays editable, nothing is
+	// blocked, and unknown/spent coins are silently dropped. Ignored on resume
+	// (?tx= wins: the draft already fixed its inputs).
+	function seedConsolidate(): { coins: string[]; to: string | null } | null {
+		if (resumeTx) return null;
+		const raw = page.url.searchParams.get('consolidate');
+		if (!raw) return null;
+		const valid = new Set(data.utxos.map((u) => `${u.txid}:${u.vout}`));
+		const coins = [...new Set(raw.split(',').map((s) => s.trim()))].filter((k) => valid.has(k));
+		if (coins.length === 0) return null;
+		const to = page.url.searchParams.get('to')?.trim() ?? null;
+		return { coins, to: to && looksLikeAddress(to) ? to : null };
+	}
+	// svelte-ignore state_referenced_locally — per-navigation constant
+	const consolidate = seedConsolidate();
+
 	// One row per output. A single row is the classic send; adding rows makes
 	// a batch payment — one transaction, several recipients, one fee.
 	type RecipientRow = { key: number; address: string; amountBtc: string };
@@ -160,11 +195,15 @@
 				amountBtc: r.amount > 0 ? formatBtc(r.amount, { trim: true }) : ''
 			}));
 		}
+		if (consolidate?.to) {
+			return [{ key: rowKey++, address: consolidate.to, amountBtc: '' }];
+		}
 		return [{ key: rowKey++, address: '', amountBtc: '' }];
 	}
 	// svelte-ignore state_referenced_locally — intentional per-load seed
 	let rows = $state<RecipientRow[]>(seedRows());
-	let amountMode = $state<'btc' | 'max'>('btc');
+	// Consolidation is a self-sweep of the selected coins — Max is the point.
+	let amountMode = $state<'btc' | 'max'>(consolidate ? 'max' : 'btc');
 
 	function addRow() {
 		rows = [...rows, { key: rowKey++, address: '', amountBtc: '' }];
@@ -178,7 +217,9 @@
 
 	// ----------------------------------------------------- manual coin control
 	// Keys are "txid:vout". Empty = automatic selection (the default flow).
-	let selectedCoins = $state<string[]>([]);
+	// A consolidation handoff seeds the coins it wants swept.
+	// svelte-ignore state_referenced_locally — intentional per-load seed
+	let selectedCoins = $state<string[]>(consolidate?.coins ?? []);
 
 	type FeeChoice = 'fast' | 'normal' | 'economy' | 'custom';
 	let feeChoice = $state<FeeChoice>('normal');
@@ -209,10 +250,6 @@
 		};
 	});
 
-	// Basic client-side shape check — the server does authoritative validation.
-	// BC1 alternative: bech32/bech32m addresses are valid in all-uppercase too
-	// (the QR-code form); mixed case slips this pre-check but the server rejects it.
-	const looksLikeAddress = (a: string) => /^(bc1|BC1|[13])[a-zA-HJ-NP-Z0-9]{6,90}$/.test(a.trim());
 	const isMax = $derived(amountMode === 'max' && rows.length === 1);
 	const rowsValid = $derived(
 		rows.every((r) => {
@@ -282,6 +319,25 @@
 	const feePctOfAmount = $derived.by(() => {
 		if (!review || review.amount <= 0) return null;
 		return (review.fee / review.amount) * 100;
+	});
+
+	// Signing-mass summary for the Review panel: a fresh build carries it on
+	// the build response; a resume may carry it on the PSBT summary. Absent =
+	// unknown = no panel. Mass affects signing time ONLY — never the fee — so
+	// this panel is advisory and never blocks the flow.
+	const signingMass = $derived<SigningMass | null>(
+		details?.signingMass ?? resumeSummary?.signingMass ?? null
+	);
+
+	// Panel tone. The server's warnLevel drives it (amber = >10 min total,
+	// red = >30 min or device-timeout risk); a medium-tier build below the
+	// amber threshold still gets a quiet informational panel. Defensive
+	// fallback: an older response without warnLevel maps high tier → amber.
+	const massLevel = $derived.by<'none' | 'info' | 'amber' | 'red'>(() => {
+		if (!signingMass) return 'none';
+		const lvl = signingMass.warnLevel ?? (signingMass.tier === 'high' ? 'amber' : 'none');
+		if (lvl === 'amber' || lvl === 'red') return lvl;
+		return signingMass.tier === 'medium' ? 'info' : 'none';
 	});
 
 	// ------------------------------------------------------------- SIGN step
@@ -636,6 +692,19 @@
 			{/if}
 
 			<div class="card card-pad stack" style="gap: 18px">
+				{#if consolidate}
+					<div class="max-note">
+						<Icon name="zap" size={15} />
+						<span>
+							Consolidating {consolidate.coins.length}
+							{consolidate.coins.length === 1 ? 'coin' : 'coins'} — they're preselected under
+							“Choose which coins to spend”, and Max sweeps them into one new coin (minus the
+							network fee).
+							{#if consolidate.to}The recipient is your own next receive address.{:else}Enter one
+								of your own receive addresses as the recipient.{/if}
+						</span>
+					</div>
+				{/if}
 				{#each rows as row, i (row.key)}
 					<div class="recipient-block" class:multi={rows.length > 1}>
 						{#if rows.length > 1}
@@ -789,7 +858,12 @@
 				{#if data.utxos.length > 0}
 					<!-- Optional manual coin control — collapsed so the default flow stays clean. -->
 					<div class="field">
-						<CoinControl utxos={data.utxos} bind:selected={selectedCoins} />
+						<CoinControl
+							{walletId}
+							utxos={data.utxos}
+							bind:selected={selectedCoins}
+							initialOpen={consolidate !== null}
+						/>
 					</div>
 				{/if}
 
@@ -910,6 +984,51 @@
 					</p>
 				{/if}
 			</div>
+
+			<!-- Signing-mass panel: advisory only, never blocks. Signing time is a
+			     property of where the coins came from — the network fee is untouched. -->
+			{#if signingMass && massLevel !== 'none'}
+				<div
+					class="mass-panel {massLevel}"
+					role={massLevel === 'red' ? 'alert' : 'status'}
+				>
+					<Icon name={massLevel === 'info' ? 'clock' : 'alert-triangle'} size={16} />
+					<div class="mass-body">
+						{#if massLevel === 'info'}
+							<strong>
+								This transaction includes coins from batch payouts. Signing may take a little
+								longer than usual on your hardware wallet.
+							</strong>
+						{:else}
+							<strong>
+								This transaction includes coins from large batch payouts (mining pools). Signing
+								may take several minutes on your hardware wallet.
+							</strong>
+						{/if}
+						{#if signingMass.totalSeconds}
+							<p class="mass-headline">
+								Estimated signing time: {formatSigningRange(
+									signingMass.totalSeconds.lo,
+									signingMass.totalSeconds.hi,
+									'long'
+								)}
+							</p>
+						{/if}
+						{#if signingMass.perDevice?.length}
+							<p class="mass-devices tabular">{perDeviceLine(signingMass.perDevice)}</p>
+						{/if}
+						{#if massLevel === 'red' || signingMass.splitSuggested}
+							<p class="mass-split">
+								This may cause your device to time out. Consider sending as two separate
+								transactions.
+							</p>
+						{/if}
+						<p class="mass-why">
+							<Term tip={MASS_WHY_TIP}>Why does this take longer?</Term>
+						</p>
+					</div>
+				</div>
+			{/if}
 
 			<div class="row step-actions">
 				<button class="btn btn-secondary" onclick={goCreate}>
@@ -1770,6 +1889,78 @@
 		display: flex;
 		justify-content: flex-end;
 		margin-top: 16px;
+	}
+
+	/* ---- Review: signing-mass panel ----
+	   info = quiet FYI, amber = warning palette, red = strong (timeout risk).
+	   Red borrows the error palette for urgency but the copy stays about time,
+	   never safety — the coins are fine, the wait is the issue. */
+	.mass-panel {
+		display: flex;
+		gap: 10px;
+		align-items: flex-start;
+		border-radius: var(--radius-control);
+		padding: 12px 14px;
+		font-size: 13px;
+		line-height: 1.55;
+		color: var(--text);
+	}
+
+	.mass-panel :global(svg) {
+		flex-shrink: 0;
+		margin-top: 1px;
+	}
+
+	.mass-panel.info {
+		background: var(--surface-elevated);
+		border: 1px solid var(--border-subtle);
+	}
+
+	.mass-panel.info :global(svg) {
+		color: var(--text-secondary);
+	}
+
+	.mass-panel.amber {
+		background: var(--warning-muted);
+		border: 1px solid rgba(232, 201, 90, 0.3);
+	}
+
+	.mass-panel.amber :global(svg) {
+		color: var(--warning);
+	}
+
+	.mass-panel.red {
+		background: var(--error-muted);
+		border: 1px solid rgba(232, 90, 90, 0.3);
+	}
+
+	.mass-panel.red :global(svg) {
+		color: var(--error);
+	}
+
+	.mass-body {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		min-width: 0;
+	}
+
+	.mass-headline {
+		font-weight: 500;
+	}
+
+	.mass-devices {
+		font-size: 12.5px;
+		color: var(--text-secondary);
+	}
+
+	.mass-split {
+		font-weight: 500;
+	}
+
+	.mass-why {
+		font-size: 12px;
+		color: var(--text-muted);
 	}
 
 	.attach-status {
