@@ -9,6 +9,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import { formatSats, truncateMiddle } from '$lib/format';
+	import { coinbaseMaturity } from '$lib/shared/coinbase';
 	import {
 		fetchUtxoMass,
 		massChip,
@@ -21,12 +22,17 @@
 		txid: string;
 		vout: number;
 		value: number; // sats
+		/** True when this coin is a coinbase (mining reward) output. */
+		coinbase?: boolean;
+		/** Block height the coin confirmed at — used for coinbase maturity. */
+		height?: number;
 	}
 
 	let {
 		walletId,
 		utxos,
 		selected = $bindable(),
+		tipHeight,
 		initialOpen = false
 	}: {
 		/** Wallet id — the per-coin signing-mass lookup is scoped to it. */
@@ -35,11 +41,43 @@
 		utxos: CoinOption[];
 		/** Selected coin keys, "txid:vout". Empty = automatic selection. */
 		selected: string[];
+		/** Live block tip — coinbase coins are maturity-checked against it. */
+		tipHeight: number;
 		/** Start disclosed — used by the consolidation handoff so preselected coins are visible. */
 		initialOpen?: boolean;
 	} = $props();
 
 	const keyOf = (u: CoinOption) => `${u.txid}:${u.vout}`;
+
+	// --- coinbase maturity -------------------------------------------------
+	// A coinbase (mining reward) output needs 100 confirmations before consensus
+	// allows it to be spent. We compute maturity live against `tipHeight` (kept
+	// fresh by the send page via onNewBlock), so rows update the moment a block
+	// arrives. Non-coinbase coins are always mature. Missing height (shouldn't
+	// happen for confirmed coins) is treated as immature — the safe default.
+	const maturityOf = (u: CoinOption) =>
+		u.coinbase === true ? coinbaseMaturity(u.height ?? 0, tipHeight) : null;
+	const isImmature = (u: CoinOption) => {
+		const m = maturityOf(u);
+		return m !== null && !m.mature;
+	};
+	const anyCoinbase = $derived(utxos.some((u) => u.coinbase === true));
+
+	// Keep an immature coinbase out of the selection. This runs whenever the set
+	// of immature coins changes — e.g. a coin selected while mature that somehow
+	// still reads immature, or a preseeded selection that included one. As blocks
+	// arrive a maturing coin simply becomes selectable; nothing is auto-added.
+	$effect(() => {
+		const immatureKeys = new Set(utxos.filter(isImmature).map(keyOf));
+		if (immatureKeys.size === 0) return;
+		if (selected.some((k) => immatureKeys.has(k))) {
+			selected = selected.filter((k) => !immatureKeys.has(k));
+		}
+	});
+
+	/** Educational copy for the "Coinbase reward" badge. */
+	const COINBASE_TIP =
+		'This bitcoin was earned by mining a block. Coinbase rewards must wait 100 confirmations (~16 hours) before they can be spent — this protects against loss if the block is reorganized.';
 
 	// svelte-ignore state_referenced_locally — intentional per-mount seed
 	let open = $state(initialOpen);
@@ -73,6 +111,7 @@
 	});
 
 	function toggleCoin(u: CoinOption) {
+		if (isImmature(u)) return; // immature coinbase can't be spent — never select it
 		const key = keyOf(u);
 		selected = selected.includes(key) ? selected.filter((k) => k !== key) : [...selected, key];
 	}
@@ -116,18 +155,51 @@
 					<Term tip={MASS_WHY_TIP}>Why?</Term>
 				</p>
 			{/if}
+			{#if anyCoinbase}
+				<!-- One-line explainer whenever a mining reward is present in the list. -->
+				<p class="coinbase-legend">
+					Some coins are mining rewards, which must reach 100 confirmations before they can be
+					spent. <Term tip={COINBASE_TIP}>Why?</Term>
+				</p>
+			{/if}
 			{#each utxos as u (keyOf(u))}
 				{@const mass = massByKey?.get(keyOf(u))}
-				<label class="coin-row">
+				{@const maturity = maturityOf(u)}
+				{@const immature = maturity !== null && !maturity.mature}
+				<label class="coin-row" class:immature>
 					<input
 						type="checkbox"
 						checked={selected.includes(keyOf(u))}
+						disabled={immature}
 						onchange={() => toggleCoin(u)}
 					/>
 					<span class="mono coin-ref">{truncateMiddle(u.txid, 10, 8)}:{u.vout}</span>
+					{#if u.coinbase}
+						{#if immature && maturity}
+							<Term
+								tip={`This mining reward needs ${maturity.blocksRemaining} more confirmation${
+									maturity.blocksRemaining === 1 ? '' : 's'
+								} before it can be spent (~${maturity.etaHours} hour${
+									maturity.etaHours === 1 ? '' : 's'
+								}).`}
+							>
+								<span class="coinbase-badge immature">Coinbase reward · maturing</span>
+							</Term>
+						{:else}
+							<Term tip={COINBASE_TIP}>
+								<span class="coinbase-badge">Coinbase reward</span>
+							</Term>
+						{/if}
+					{/if}
 					{#if mass}
 						{@const chip = massChip(mass)}
-						<span class="mass-chip {chip.tone}" title={chip.title}>{chip.label}</span>
+						{@const poolPayout = u.coinbase && mass.tier === 'high' && mass.source === 'pool-batch'}
+						<span
+							class="mass-chip {chip.tone}"
+							title={poolPayout
+								? 'Mining-pool payout — many outputs, slower to sign. The network fee is not affected.'
+								: chip.title}>{poolPayout ? 'Mining-pool payout — slow to sign' : chip.label}</span
+						>
 					{/if}
 					<span class="tabular coin-value">{formatSats(u.value)} sats</span>
 				</label>
@@ -201,13 +273,52 @@
 		outline: 1px solid var(--border);
 	}
 
+	/* Immature coinbase: grayed out and non-interactive — the disabled checkbox
+	   already blocks selection; this makes the state legible at a glance. The
+	   "Coinbase reward · maturing" badge stays legible (its own opacity is 1). */
+	.coin-row.immature {
+		opacity: 0.55;
+		cursor: not-allowed;
+	}
+
+	.coin-row.immature:hover {
+		outline: none;
+	}
+
 	.coin-row input {
 		accent-color: var(--accent);
 		flex-shrink: 0;
 	}
 
+	.coin-row input:disabled {
+		cursor: not-allowed;
+	}
+
 	.coin-ref {
 		color: var(--text-muted);
+	}
+
+	/* --- coinbase (mining reward) badge --- */
+	.coinbase-legend {
+		font-size: 12.5px;
+		line-height: 1.55;
+		color: var(--text-secondary);
+	}
+
+	.coinbase-badge {
+		font-size: 11px;
+		font-weight: 500;
+		line-height: 1.6;
+		padding: 1px 7px;
+		border-radius: 99px;
+		white-space: nowrap;
+		background: var(--surface-elevated);
+		color: var(--text-secondary);
+	}
+
+	.coinbase-badge.immature {
+		background: var(--warning-muted);
+		color: var(--warning);
 	}
 
 	.coin-value {

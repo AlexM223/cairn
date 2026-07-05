@@ -1566,6 +1566,14 @@
 					>
 						Descriptor (.txt)
 					</a>
+					<a
+						href="/api/wallets/multisig/{createdId}/backup-pdf"
+						class="btn btn-secondary btn-sm"
+						download
+						onclick={markBackupDownloaded}
+					>
+						Printable backup (PDF)
+					</a>
 				</div>
 			</div>
 			{/if}

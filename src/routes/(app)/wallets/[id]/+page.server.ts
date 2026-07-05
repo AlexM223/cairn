@@ -8,8 +8,8 @@ import {
 	nextReceiveAddress,
 	peekReceiveAddress
 } from '$lib/server/wallets';
-import { listTransactions } from '$lib/server/transactions';
-import { isBackedUp } from '$lib/server/backups';
+import { listTransactions, getWalletUtxos } from '$lib/server/transactions';
+import { getChain } from '$lib/server/chain';
 import type { Actions, PageServerLoad } from './$types';
 
 const QR_OPTS = {
@@ -39,9 +39,6 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 			createdAt: row.created_at
 		},
 		imported: url.searchParams.get('imported') === '1',
-		// Server-tracked backup status (wallet_backups) — the single source of
-		// truth the wizard's download step and the persistent banner both use.
-		backedUp: isBackedUp('wallet', id),
 		// Tx labels are local bookkeeping — one cheap SQLite read, no network.
 		labels: getLabels(locals.user!.id, id) ?? {},
 		// Saved transactions in the draft → awaiting-signature → broadcast
@@ -54,6 +51,27 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 		if (!detail) error(404, 'Wallet not found');
 		const receive = await peekReceiveAddress(row);
 		const qr = await QRCode.toDataURL(receive.address, QR_OPTS);
+
+		// Mining rewards (coinbase UTXOs) get their own "cooling off" section. A
+		// normal wallet has none, so this is empty for almost everyone. Tolerate a
+		// scanner/chain hiccup here without failing the whole page — the balance
+		// and receive cards above are what matter most.
+		let coinbaseUtxos: { txid: string; vout: number; value: number; height: number }[] = [];
+		let tipHeight = 0;
+		try {
+			const [utxos, tip] = await Promise.all([
+				getWalletUtxos(row.xpub),
+				getChain().getTip()
+			]);
+			tipHeight = tip.height;
+			coinbaseUtxos = utxos
+				.filter((u) => u.coinbase)
+				.map((u) => ({ txid: u.txid, vout: u.vout, value: u.value, height: u.height }));
+		} catch {
+			coinbaseUtxos = [];
+			tipHeight = 0;
+		}
+
 		return {
 			...base,
 			scan: {
@@ -63,6 +81,8 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 				unconfirmed: detail.scan.unconfirmed
 			},
 			receive: { ...receive, qr },
+			coinbaseUtxos,
+			tipHeight,
 			scanError: null as string | null
 		};
 	} catch (e) {

@@ -22,14 +22,23 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 	// from is exactly what the server will select from.
 	let confirmed: number | null = null;
 	let scanError: string | null = null;
-	let utxos: { txid: string; vout: number; value: number }[] = [];
+	let utxos: { txid: string; vout: number; value: number; height: number; coinbase: boolean }[] =
+		[];
 	try {
 		const detail = await getWalletDetail(locals.user!.id, id);
 		if (!detail) error(404, 'Wallet not found');
 		confirmed = detail.scan.confirmed;
 		utxos = (await getWalletUtxos(row.xpub))
 			.filter((u) => u.height > 0) // the builder only ever spends confirmed coins
-			.map((u) => ({ txid: u.txid, vout: u.vout, value: u.value }))
+			// height + coinbase ride along so coin control can maturity-check mining
+			// rewards live against the block tip (see below) and badge/disable them.
+			.map((u) => ({
+				txid: u.txid,
+				vout: u.vout,
+				value: u.value,
+				height: u.height,
+				coinbase: u.coinbase === true
+			}))
 			.sort((a, b) => b.value - a.value);
 	} catch (e) {
 		if (e instanceof Error && e.cause === 'unreachable') {
@@ -49,6 +58,17 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 		fees = await getChain().getFeeEstimates();
 	} catch {
 		fees = null;
+	}
+
+	// Block tip seeds coin control's coinbase-maturity check. The client keeps it
+	// fresh live via onNewBlock; a failed lookup falls back to 0, which just means
+	// coinbase coins read as immature until the first live block arrives (safe:
+	// the server construction guard rejects immature coinbase regardless).
+	let tipHeight = 0;
+	try {
+		tipHeight = (await getChain().getTip()).height;
+	} catch {
+		tipHeight = 0;
 	}
 
 	// ?tx=N resumes a saved transaction at the step its status implies.
@@ -82,6 +102,9 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 		// Confirmed spendable coins for the optional coin-control picker,
 		// largest first. Empty when the scan failed or the wallet is empty.
 		utxos,
+		// Current block tip — coin control maturity-checks coinbase coins against
+		// it, and the send page keeps it live via onNewBlock.
+		tipHeight,
 		// The user's address book seeds the recipient autocomplete. User-scoped,
 		// small, and cheap to load alongside the page.
 		savedAddresses: listSavedAddresses(locals.user!.id)

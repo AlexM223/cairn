@@ -3,12 +3,14 @@ import QRCode from 'qrcode';
 import { getMultisig, deleteMultisig, toMultisigConfig } from '$lib/server/wallets/multisig';
 import {
 	getMultisigDetail,
+	getMultisigUtxos,
 	invalidateMultisigCache,
 	nextMultisigReceiveAddress,
 	peekMultisigReceiveAddress
 } from '$lib/server/multisigScan';
 import { multisigToDescriptor } from '$lib/server/bitcoin/multisig';
 import { isBackedUp } from '$lib/server/backups';
+import { getChain } from '$lib/server/chain';
 import type { Actions, PageServerLoad } from './$types';
 
 const QR_OPTS = {
@@ -57,6 +59,27 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 		const detail = await getMultisigDetail(multisig);
 		const receive = await peekMultisigReceiveAddress(multisig);
 		const qr = await QRCode.toDataURL(receive.address, QR_OPTS);
+
+		// Mining rewards (coinbase UTXOs) get their own "cooling off" section —
+		// empty for almost every multisig. The scan above already ran, so
+		// getMultisigUtxos hits the cache; guard the chain tip separately so a tip
+		// hiccup just hides the section rather than failing the page.
+		let coinbaseUtxos: { txid: string; vout: number; value: number; height: number }[] = [];
+		let tipHeight = 0;
+		try {
+			const [utxos, tip] = await Promise.all([
+				getMultisigUtxos(multisig),
+				getChain().getTip()
+			]);
+			tipHeight = tip.height;
+			coinbaseUtxos = utxos
+				.filter((u) => u.coinbase)
+				.map((u) => ({ txid: u.txid, vout: u.vout, value: u.value, height: u.height }));
+		} catch {
+			coinbaseUtxos = [];
+			tipHeight = 0;
+		}
+
 		return {
 			...base,
 			detail: {
@@ -66,6 +89,8 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 				utxoCount: detail.utxos.length
 			},
 			receive: { ...receive, qr },
+			coinbaseUtxos,
+			tipHeight,
 			scanError: null as string | null
 		};
 	} catch (e) {

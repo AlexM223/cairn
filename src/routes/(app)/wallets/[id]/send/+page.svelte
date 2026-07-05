@@ -2,6 +2,7 @@
 	import { onMount, tick } from 'svelte';
 	import { replaceState } from '$app/navigation';
 	import { page } from '$app/state';
+	import { onNewBlock } from '$lib/liveBlocks';
 	import Icon from '$lib/components/Icon.svelte';
 	import Stepper from '$lib/components/Stepper.svelte';
 	import Term from '$lib/components/Term.svelte';
@@ -230,6 +231,12 @@
 	// A consolidation handoff seeds the coins it wants swept.
 	// svelte-ignore state_referenced_locally — intentional per-load seed
 	let selectedCoins = $state<string[]>(consolidate?.coins ?? []);
+
+	// Live block tip, seeded from the load and kept fresh by onNewBlock (below).
+	// Coin control maturity-checks coinbase (mining reward) coins against it, so
+	// an immature reward becomes selectable the moment its 100th block arrives.
+	// svelte-ignore state_referenced_locally — intentional per-load seed
+	let tipHeight = $state<number>(data.tipHeight);
 
 	type FeeChoice = 'fast' | 'normal' | 'economy' | 'custom';
 	let feeChoice = $state<FeeChoice>('normal');
@@ -627,6 +634,13 @@
 	let mounted = $state(false);
 	onMount(() => {
 		mounted = true;
+		// Keep the block tip live so coinbase-maturity in coin control updates as
+		// blocks arrive (an immature reward becomes selectable on its 100th block).
+		// onNewBlock is SSR-safe and self-throttling; unsubscribe on destroy.
+		const unsubscribe = onNewBlock((height) => {
+			if (height > tipHeight) tipHeight = height;
+		});
+		return unsubscribe;
 	});
 
 	// The device signer methods, gated per the DeviceMethod contract. The generic
@@ -983,6 +997,7 @@
 							{walletId}
 							utxos={data.utxos}
 							bind:selected={selectedCoins}
+							{tipHeight}
 							initialOpen={consolidate !== null}
 						/>
 					</div>

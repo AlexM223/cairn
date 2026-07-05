@@ -6,6 +6,7 @@
 	import Term from '$lib/components/Term.svelte';
 	import TxStatusBadge from '$lib/components/TxStatusBadge.svelte';
 	import ConsolidationCard from './_components/ConsolidationCard.svelte';
+	import MiningRewards from '$lib/components/MiningRewards.svelte';
 	import { formatBtc, formatFeeRate, formatSats, timeAgo, truncateMiddle } from '$lib/format';
 	import { SCRIPT_TYPE_LABELS, WALLET_DEVICE_LABELS, walletTypeLabel } from '../labels';
 
@@ -139,17 +140,6 @@
 	}
 
 	const receive = $derived(form?.receive ?? data.receive);
-
-	// Backup nudge: gentle reminder until the config has been downloaded. Source
-	// of truth is the server-tracked wallet_backups table (data.backedUp) — the
-	// same value the creation wizard and the persistent banner use, so a download
-	// from anywhere (wizard, another browser) reflects here. The local flag is a
-	// purely-optimistic overlay for instant feedback on this page's own button.
-	let downloadedNow = $state(false);
-	const backupDone = $derived(data.backedUp || downloadedNow);
-	function markBackupDownloaded() {
-		downloadedNow = true;
-	}
 
 	// --- tx labels ---
 	// Server-loaded labels plus optimistic local edits layered on top; an
@@ -446,6 +436,13 @@
 			</section>
 		</div>
 
+		<!-- ------------------------------------------- mining rewards -->
+		<!-- Coinbase (mining reward) UTXOs only — empty for a normal wallet, so
+		     the whole section is absent unless the wallet actually mined. -->
+		{#if data.coinbaseUtxos.length > 0}
+			<MiningRewards utxos={data.coinbaseUtxos} tipHeight={data.tipHeight} />
+		{/if}
+
 		<!-- ------------------------------------------- backup / export -->
 		<section class="card card-pad backup-card" id="backup">
 			<div class="row" style="gap: 8px">
@@ -463,7 +460,6 @@
 					href="/api/wallets/{data.wallet.id}/config"
 					class="btn btn-primary btn-sm"
 					download
-					onclick={markBackupDownloaded}
 				>
 					Wallet config (JSON)
 				</a>
@@ -471,7 +467,6 @@
 					href="/api/wallets/{data.wallet.id}/descriptor"
 					class="btn btn-ghost btn-sm"
 					download
-					onclick={markBackupDownloaded}
 				>
 					Descriptor (.txt)
 				</a>

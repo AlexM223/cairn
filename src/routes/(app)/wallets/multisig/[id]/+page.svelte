@@ -4,6 +4,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import Term from '$lib/components/Term.svelte';
+	import MiningRewards from '$lib/components/MiningRewards.svelte';
 	import { formatBtc, formatSats, timeAgo, truncateMiddle } from '$lib/format';
 	import KeyCategoryIcon from '../_components/KeyCategoryIcon.svelte';
 	import KeyHealthRow from '../_components/KeyHealthRow.svelte';
@@ -479,6 +480,13 @@
 			</section>
 		</div>
 
+		<!-- ------------------------------------------- mining rewards -->
+		<!-- Coinbase (mining reward) UTXOs only — empty for a normal multisig, so
+		     the whole section is absent unless the wallet actually mined. -->
+		{#if data.coinbaseUtxos.length > 0}
+			<MiningRewards utxos={data.coinbaseUtxos} tipHeight={data.tipHeight} />
+		{/if}
+
 		<!-- ------------------------------------------- backup / export -->
 		<section class="card card-pad backup-card" id="backup">
 			<div class="row" style="gap: 8px">
@@ -525,6 +533,14 @@
 					onclick={markBackupDownloaded}
 				>
 					Descriptor (.txt)
+				</a>
+				<a
+					href="/api/wallets/multisig/{data.multisig.id}/backup-pdf"
+					class="btn btn-secondary btn-sm"
+					download
+					onclick={markBackupDownloaded}
+				>
+					<Icon name="shield" size={13} /> Printable backup (PDF)
 				</a>
 			</div>
 			<div class="backup-notes">
