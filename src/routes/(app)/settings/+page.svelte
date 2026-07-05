@@ -373,6 +373,19 @@
 	</section>
 
 	<section class="card card-pad section">
+		<span class="card-title">Notifications</span>
+		<p class="hint" style="margin: 4px 0 10px">
+			How Cairn reaches you — in-app alerts plus optional email, Telegram, ntfy push, Nostr, and
+			webhooks. Choose which events notify you and where. Everything is opt-in.
+		</p>
+		<div class="row">
+			<a href="/settings/notifications" class="btn btn-secondary btn-sm">
+				<Icon name="activity" size={14} /> Manage notifications
+			</a>
+		</div>
+	</section>
+
+	<section class="card card-pad section">
 		<span class="card-title">Terms &amp; agreement</span>
 		<p class="hint" style="margin: 4px 0 10px">
 			Review the agreement you accepted for this instance, along with Cairn's software disclaimer

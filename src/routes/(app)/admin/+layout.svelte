@@ -8,6 +8,7 @@
 		{ href: '/admin/users', label: 'Users' },
 		{ href: '/admin/invites', label: 'Invites' },
 		{ href: '/admin/settings', label: 'Settings' },
+		{ href: '/admin/notifications', label: 'Notifications' },
 		{ href: '/admin/logs', label: 'Logs' },
 		{ href: '/admin/backup', label: 'Backup' }
 	];
