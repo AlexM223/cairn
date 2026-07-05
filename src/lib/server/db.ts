@@ -2,6 +2,9 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { env } from '$env/dynamic/private';
+import { childLogger } from './logger';
+
+const log = childLogger('db');
 
 const DB_PATH = env.CAIRN_DB ?? path.join(process.cwd(), 'data', 'cairn.db');
 
@@ -207,7 +210,8 @@ db.exec(`
 		];
 		const nonEmptyShells = shellTables.filter((t) => rowCount(t) > 0);
 		if (nonEmptyShells.length > 0) {
-			console.warn(
+			log.warn(
+				{ nonEmptyShells },
 				`[db migration] Skipping empty-shell recovery: 'multisigs' is empty but ` +
 					`shell table(s) ${nonEmptyShells.join(', ')} hold rows. Leaving all tables ` +
 					`intact to avoid data loss; manual reconciliation required.`
