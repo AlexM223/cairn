@@ -15,8 +15,9 @@ export const actions: Actions = {
 		if (!locals.user?.isAdmin) return fail(403, { error: 'Admin access required.' });
 		const form = await request.formData();
 		const text = String(form.get('agreementText') ?? '');
-		const operator = String(form.get('operatorName') ?? '');
-		const saved = setUserAgreement({ text, operator });
+		// The operator name is edited (and saved) in the main settings form; keep
+		// the current one here so this button only touches the agreement text.
+		const saved = setUserAgreement({ text, operator: getUserAgreement().operator });
 		// Report whether this bumped the version (so existing users re-accept).
 		return { agreementSaved: true, agreementVersion: saved.version };
 	},
@@ -34,6 +35,15 @@ export const actions: Actions = {
 
 		setSetting('registration_mode', registrationMode);
 		setSetting('connection_mode', connectionMode);
+
+		// Operator name is part of the user agreement (shown on /terms and the
+		// acceptance screen). It lives in this main form so the primary "Save
+		// settings" button persists it — the previous separate-form-only field was
+		// easy to miss (cairn-kc4e). Bumps the agreement version if it changed.
+		const operatorName = form.get('operatorName');
+		if (operatorName !== null) {
+			setUserAgreement({ text: getUserAgreement().text, operator: String(operatorName) });
+		}
 
 		if (connectionMode === 'custom') {
 			const host = String(form.get('electrumHost') ?? '').trim();

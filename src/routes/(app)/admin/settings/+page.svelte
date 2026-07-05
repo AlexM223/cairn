@@ -106,6 +106,21 @@
 				</label>
 			{/each}
 		</div>
+
+		<div class="field" style="margin-top: 16px; max-width: 420px">
+			<label class="label" for="operatorName">Operator name</label>
+			<input
+				class="input"
+				id="operatorName"
+				name="operatorName"
+				placeholder="e.g. Acme Bitcoin Services, or your name"
+				bind:value={operatorName}
+			/>
+			<span class="hint">
+				Shown to users as “This instance is operated by …” on the terms they accept. Saved with
+				this button; changing it re-prompts users to accept.
+			</span>
+		</div>
 	</section>
 
 	<section class="card card-pad section">
@@ -306,18 +321,6 @@
 			Saved — the agreement is now version {form.agreementVersion}.
 		</div>
 	{/if}
-
-	<div class="field">
-		<label class="label" for="operatorName">Operator name</label>
-		<input
-			class="input"
-			id="operatorName"
-			name="operatorName"
-			placeholder="e.g. Acme Bitcoin Services, or your name"
-			bind:value={operatorName}
-		/>
-		<span class="hint">Shown to users as “This instance is operated by …”.</span>
-	</div>
 
 	<div class="field">
 		<label class="label" for="agreementText">Agreement text</label>
