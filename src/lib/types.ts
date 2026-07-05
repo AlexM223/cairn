@@ -280,7 +280,7 @@ export interface PortfolioSummary {
 /** Which kind of wallet a portfolio row refers to (ids don't share a space). */
 export type WalletKind = 'wallet' | 'multisig';
 
-/** One wallet's slice of the portfolio, for the allocation breakdown. */
+/** One wallet's slice of the portfolio, for the allocation breakdown + cards. */
 export interface AllocationSlice {
 	/** Stable key for coloring/keying: `${kind}-${id}`. */
 	key: string;
@@ -290,6 +290,8 @@ export interface AllocationSlice {
 	/** Link to this wallet's detail page. */
 	href: string;
 	balance: number; // confirmed sats
+	/** Newest activity, unix seconds (null if none) — for the wallet cards. */
+	lastActivity: number | null;
 }
 
 /** One transaction in the cross-wallet recent-activity feed. */

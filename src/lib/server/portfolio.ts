@@ -35,6 +35,18 @@ function confirmationsOf(height: number, tipHeight: number): number {
 	return height > 0 ? Math.max(0, tipHeight - height + 1) : 0;
 }
 
+/** Newest activity: latest confirmed tx time, or "now" if anything is pending. */
+function lastActivityOf(scan: WalletScanResult | MultisigScanResult): number | null {
+	let latest: number | null = null;
+	let pending = false;
+	for (const tx of scan.txs) {
+		if (tx.height <= 0) pending = true;
+		else if (tx.time != null) latest = Math.max(latest ?? 0, tx.time);
+	}
+	if (pending) return Math.floor(Date.now() / 1000);
+	return latest;
+}
+
 // ------------------------------------------------------------------ snapshots
 
 /**
@@ -187,7 +199,8 @@ export async function getPortfolioDetail(userId: number): Promise<PortfolioDetai
 			id: w.id,
 			name: w.name,
 			href: w.href,
-			balance: w.scan.confirmed
+			balance: w.scan.confirmed,
+			lastActivity: lastActivityOf(w.scan)
 		});
 		snapshotEntries.push({ kind: w.kind, id: w.id, balance: w.scan.confirmed });
 		for (const tx of w.scan.txs) {

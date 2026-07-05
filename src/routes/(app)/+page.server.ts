@@ -50,10 +50,17 @@ export const load: PageServerLoad = async ({ locals, depends }) => {
 	// every block (see the portfolio endpoint).
 	depends('cairn:chain');
 
+	// Either flavor counts — a multisig-only user still has a portfolio.
 	const hasWallets =
-		(db.prepare('SELECT COUNT(*) AS n FROM wallets WHERE user_id = ?').get(locals.user!.id) as {
-			n: number;
-		}).n > 0;
+		((
+			db
+				.prepare(
+					`SELECT
+						(SELECT COUNT(*) FROM wallets WHERE user_id = ?) +
+						(SELECT COUNT(*) FROM multisigs WHERE user_id = ?) AS n`
+				)
+				.get(locals.user!.id, locals.user!.id) as { n: number }
+		).n) > 0;
 
 	return {
 		chain: await loadChainSnapshot(),
