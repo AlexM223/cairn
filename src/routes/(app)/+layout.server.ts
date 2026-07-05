@@ -3,6 +3,7 @@ import {
 	hasAcceptedAdminDisclosure,
 	hasAcceptedCurrentAgreement
 } from '$lib/server/disclosures';
+import { hasRecoverySetup } from '$lib/server/recovery';
 import type { LayoutServerLoad } from './$types';
 
 export const load: LayoutServerLoad = async ({ locals, url }) => {
@@ -21,6 +22,18 @@ export const load: LayoutServerLoad = async ({ locals, url }) => {
 		if (!hasAcceptedAdminDisclosure(locals.user.id)) redirect(302, '/disclosure');
 	} else if (!hasAcceptedCurrentAgreement(locals.user.id)) {
 		redirect(302, '/agreement');
+	}
+
+	// Recovery gate. Account recovery is MANDATORY for the admin (the instance
+	// operator must stay recoverable), so an admin with incomplete recovery is
+	// forced back to the setup wizard from any other app route. The wizard itself
+	// lives under this layout at /recovery-setup, so skip the gate there to avoid
+	// a redirect loop. Runs AFTER the disclosure gate so the admin accepts the
+	// disclosure first, then lands on recovery-setup on the next request.
+	if (locals.user.isAdmin && url.pathname !== '/recovery-setup') {
+		const status = hasRecoverySetup(locals.user.id);
+		const recoveryComplete = status.phrase && status.codesRemaining > 0;
+		if (!recoveryComplete) redirect(302, '/recovery-setup');
 	}
 
 	return { user: locals.user };
