@@ -749,6 +749,14 @@
 				</p>
 			</HowItWorks>
 
+			<div class="fee-warning" role="note">
+				<Icon name="alert-triangle" size={16} />
+				<div>
+					This transaction is irreversible. You'll verify the address and amount on your hardware
+					wallet before anything is signed — but once it's sent, it can't be undone.
+				</div>
+			</div>
+
 			{#if data.scanError}
 				<div class="form-error" role="alert">
 					Couldn't reach your node to load spendable coins: {data.scanError}

@@ -1410,6 +1410,17 @@
 				</div>
 			</div>
 
+			<div class="seed-warning" role="note">
+				<Icon name="alert-triangle" size={16} />
+				<div class="seed-warning-body">
+					<p>
+						A multisig wallet needs <strong>ALL</strong> of its public keys to reconstruct.
+						Download your wallet backup right after creating it, and before you fund it —
+						without the backup and your signing devices, recovery is much harder.
+					</p>
+				</div>
+			</div>
+
 			<label class="verify-gate">
 				<input type="checkbox" bind:checked={verified} />
 				<span>

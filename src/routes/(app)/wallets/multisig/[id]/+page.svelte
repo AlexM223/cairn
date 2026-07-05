@@ -221,8 +221,7 @@
 			<form
 				method="POST"
 				action="?/delete"
-				class="row"
-				style="gap: 8px"
+				class="delete-confirm"
 				use:enhance={() => {
 					deleting = true;
 					return async ({ update }) => {
@@ -231,19 +230,28 @@
 					};
 				}}
 			>
-				<span class="confirm-text">Really delete? Your keys keep the money — but Cairn stops watching it.</span>
-				<button class="btn btn-danger btn-sm" disabled={deleting}>
-					{#if deleting}<span class="spinner"></span>{/if}
-					Delete wallet
-				</button>
-				<button
-					type="button"
-					class="btn btn-ghost btn-sm"
-					onclick={() => (confirmDelete = false)}
-					disabled={deleting}
-				>
-					Cancel
-				</button>
+				<div class="row" style="gap: 8px">
+					<span class="confirm-text">Really delete? Your keys keep the money — but Cairn stops watching it.</span>
+					<button class="btn btn-danger btn-sm" disabled={deleting}>
+						{#if deleting}<span class="spinner"></span>{/if}
+						Delete wallet
+					</button>
+					<button
+						type="button"
+						class="btn btn-ghost btn-sm"
+						onclick={() => (confirmDelete = false)}
+						disabled={deleting}
+					>
+						Cancel
+					</button>
+				</div>
+				<p class="delete-backup-warning">
+					<Icon name="alert-triangle" size={16} />
+					<span>
+						This removes the multisig wallet from Cairn. Make sure you have your backup file (every
+						public key and the descriptor) and your signing devices — Cairn can't recover it for you.
+					</span>
+				</p>
 			</form>
 		{/if}
 	</div>
@@ -847,6 +855,31 @@
 	.confirm-text {
 		font-size: 12.5px;
 		color: var(--error);
+	}
+
+	.delete-confirm {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+
+	.delete-backup-warning {
+		display: flex;
+		align-items: flex-start;
+		gap: 8px;
+		max-width: 460px;
+		padding: 9px 12px;
+		font-size: 12.5px;
+		line-height: 1.55;
+		color: var(--warning);
+		background: var(--warning-muted, rgba(230, 180, 80, 0.1));
+		border: 1px solid rgba(230, 180, 80, 0.35);
+		border-radius: var(--radius-control);
+	}
+
+	.delete-backup-warning :global(svg) {
+		flex-shrink: 0;
+		margin-top: 1px;
 	}
 
 	.scan-error {

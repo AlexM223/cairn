@@ -285,8 +285,7 @@
 			<form
 				method="POST"
 				action="?/delete"
-				class="row"
-				style="gap: 8px"
+				class="delete-confirm"
 				use:enhance={() => {
 					deleting = true;
 					return async ({ update }) => {
@@ -295,19 +294,28 @@
 					};
 				}}
 			>
-				<span class="confirm-text">Really delete?</span>
-				<button class="btn btn-danger btn-sm" disabled={deleting}>
-					{#if deleting}<span class="spinner"></span>{/if}
-					Delete wallet
-				</button>
-				<button
-					type="button"
-					class="btn btn-ghost btn-sm"
-					onclick={() => (confirmDelete = false)}
-					disabled={deleting}
-				>
-					Cancel
-				</button>
+				<p class="delete-backup-warning">
+					<Icon name="alert-triangle" size={16} />
+					<span>
+						This removes the wallet from Cairn. Make sure you have your backup and your signing
+						device — Cairn can't recover it for you.
+					</span>
+				</p>
+				<div class="row" style="gap: 8px">
+					<span class="confirm-text">Really delete?</span>
+					<button class="btn btn-danger btn-sm" disabled={deleting}>
+						{#if deleting}<span class="spinner"></span>{/if}
+						Delete wallet
+					</button>
+					<button
+						type="button"
+						class="btn btn-ghost btn-sm"
+						onclick={() => (confirmDelete = false)}
+						disabled={deleting}
+					>
+						Cancel
+					</button>
+				</div>
 			</form>
 		{/if}
 	</div>
@@ -935,6 +943,33 @@
 		font-size: 12.5px;
 		color: var(--error);
 		white-space: nowrap;
+	}
+
+	.delete-confirm {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		align-items: flex-start;
+	}
+
+	.delete-backup-warning {
+		display: flex;
+		align-items: flex-start;
+		gap: 8px;
+		max-width: 420px;
+		margin: 0;
+		padding: 8px 12px;
+		font-size: 12.5px;
+		line-height: 1.45;
+		color: var(--warning);
+		background: var(--warning-muted);
+		border: 1px solid var(--warning);
+		border-radius: var(--radius-control);
+	}
+
+	.delete-backup-warning :global(svg) {
+		flex-shrink: 0;
+		margin-top: 1px;
 	}
 
 	.scan-error {
