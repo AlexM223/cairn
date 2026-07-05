@@ -21,16 +21,27 @@
 	let query = $state('');
 	let auto = $state(false);
 	let refreshing = $state(false);
-	let expanded = $state<Set<string>>(new Set());
+	// Keyed by each entry's position in `entries`: log lines can be byte-for-byte
+	// identical (e.g. a duplicate "new block" emit on an electrum reconnect), so
+	// the line text is NOT a unique key — position is.
+	let expanded = $state<Set<number>>(new Set());
 
 	const LEVEL_MIN: Record<string, number> = { all: 0, debug: 20, info: 30, warn: 40, error: 50 };
 
 	const shown = $derived.by(() => {
 		const min = LEVEL_MIN[level];
 		const q = query.trim().toLowerCase();
-		return entries.filter(
-			(e) => e.level >= min && (q === '' || e.raw.toLowerCase().includes(q))
-		);
+		// Carry each entry's index in the full list so the keyed {#each} has a
+		// stable unique key even when two lines are textually identical — keying
+		// by the line itself throws Svelte's each_key_duplicate and crashes the
+		// whole app shell. Filtering never reorders `entries`, so the id is stable.
+		const out: { e: LogEntry; id: number }[] = [];
+		entries.forEach((e, id) => {
+			if (e.level >= min && (q === '' || e.raw.toLowerCase().includes(q))) {
+				out.push({ e, id });
+			}
+		});
+		return out;
 	});
 
 	async function refresh() {
@@ -57,10 +68,10 @@
 		return () => clearInterval(t);
 	});
 
-	function toggle(key: string) {
+	function toggle(id: number) {
 		const next = new Set(expanded);
-		if (next.has(key)) next.delete(key);
-		else next.add(key);
+		if (next.has(id)) next.delete(id);
+		else next.add(id);
 		expanded = next;
 	}
 
@@ -129,13 +140,13 @@
 		</div>
 	{:else}
 		<ul class="log">
-			{#each shown as e (e.raw)}
-				{@const open = expanded.has(e.raw)}
+			{#each shown as { e, id } (id)}
+				{@const open = expanded.has(id)}
 				<li class="line lvl-{e.levelName}">
 					<button
 						class="row"
 						class:has-fields={!!e.fields}
-						onclick={() => e.fields && toggle(e.raw)}
+						onclick={() => e.fields && toggle(id)}
 						type="button"
 					>
 						<time class="t" title={fullTs(e.time)}>{ts(e.time)}</time>
