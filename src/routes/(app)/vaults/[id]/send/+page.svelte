@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, tick } from 'svelte';
+	import { tick } from 'svelte';
 	import { replaceState } from '$app/navigation';
 	import Icon from '$lib/components/Icon.svelte';
 	import Stepper from '$lib/components/Stepper.svelte';
@@ -15,6 +15,8 @@
 	import QrSigner from '../../../wallets/[id]/send/_components/QrSigner.svelte';
 	import type { SignerContext } from '../../../wallets/[id]/send/_components/signerContract';
 	import VaultFileSigner from './_components/VaultFileSigner.svelte';
+	import VaultTrezorSigner from './_components/VaultTrezorSigner.svelte';
+	import VaultLedgerSigner from './_components/VaultLedgerSigner.svelte';
 
 	let { data } = $props();
 
@@ -264,11 +266,14 @@
 
 	const hasPlaceholderFp = $derived(keys.some((k) => k.fingerprint === '00000000'));
 
-	// Availability probing happens client-side only (like the wallets flow).
-	let mounted = $state(false);
-	onMount(() => {
-		mounted = true;
-	});
+	// The cosigner roster in the shape the USB drivers take (VaultSignKey) —
+	// position order, public key material only. Device availability probing
+	// happens inside each signer component, client-side (like the wallets flow).
+	const signKeys = keys.map((k) => ({
+		xpub: k.xpub,
+		fingerprint: k.fingerprint,
+		path: k.path
+	}));
 
 	let attaching = $state(false);
 	let signError = $state<string | null>(null);
@@ -826,30 +831,40 @@
 							feeSats={signerContext.feeSats}
 							onsigned={handleSigned}
 						/>
-					{:else if effectiveDevice === 'trezor' || effectiveDevice === 'ledger'}
-						{@const deviceName = effectiveDevice === 'trezor' ? 'Trezor' : 'Ledger'}
-						<div class="card card-pad device-pending" aria-disabled="true">
-							<div class="pending-head">
-								<span class="pending-icon"><Icon name="shield" size={18} /></span>
-								<div class="grow">
-									<h3 class="method-title">Sign with {activeKey.name} — {deviceName}</h3>
-									<p class="method-sub">Direct USB vault signing for {deviceName} arrives in the next
-										update.</p>
-								</div>
-								<span class="badge badge-neutral">Coming soon</span>
-							</div>
-							<p class="pending-body">
-								Meanwhile this key can still sign today: use the <strong>file method</strong> with
-								{deviceName === 'Trezor' ? 'Trezor Suite or Sparrow' : 'Sparrow or Ledger Live + Sparrow'}
-								— download the PSBT, sign it there with the {deviceName} connected, and upload it
-								back. The signature is identical either way.
-							</p>
-							<div class="row" style="gap: 8px">
-								<button class="btn btn-primary btn-sm" onclick={overrideToFile}>
-									Use the file method for this key
-								</button>
-							</div>
-						</div>
+					{:else if effectiveDevice === 'trezor'}
+						<VaultTrezorSigner
+							unsignedPsbt={draft.psbt}
+							keyName={activeKey.name}
+							vaultName={data.vault.name}
+							threshold={required}
+							totalKeys={keys.length}
+							scriptType={data.vault.scriptType}
+							vaultKeys={signKeys}
+							destinationAddress={signerContext.destinationAddress}
+							amountSats={signerContext.amountSats}
+							feeSats={signerContext.feeSats}
+							changeSats={signerContext.changeSats}
+							onsigned={handleSigned}
+							onusefile={overrideToFile}
+						/>
+					{:else if effectiveDevice === 'ledger'}
+						<VaultLedgerSigner
+							{vaultId}
+							unsignedPsbt={draft.psbt}
+							keyName={activeKey.name}
+							keyFingerprint={activeKey.fingerprint}
+							vaultName={data.vault.name}
+							threshold={required}
+							totalKeys={keys.length}
+							scriptType={data.vault.scriptType}
+							vaultKeys={signKeys}
+							destinationAddress={signerContext.destinationAddress}
+							amountSats={signerContext.amountSats}
+							feeSats={signerContext.feeSats}
+							changeSats={signerContext.changeSats}
+							onsigned={handleSigned}
+							onusefile={overrideToFile}
+						/>
 					{:else}
 						<VaultFileSigner
 							flavor="generic"
@@ -1568,53 +1583,6 @@
 
 	.register-actions {
 		margin-top: 8px;
-	}
-
-	/* ---- Trezor/Ledger coming-soon card ---- */
-	.device-pending {
-		display: flex;
-		flex-direction: column;
-		gap: 12px;
-	}
-
-	.pending-head {
-		display: flex;
-		align-items: flex-start;
-		gap: 12px;
-	}
-
-	.pending-icon {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 36px;
-		height: 36px;
-		flex-shrink: 0;
-		border-radius: var(--radius-control);
-		background: var(--surface-elevated);
-		color: var(--text-faint);
-	}
-
-	.grow {
-		flex: 1;
-		min-width: 0;
-	}
-
-	.method-title {
-		font-size: 15px;
-		font-weight: 600;
-	}
-
-	.method-sub {
-		font-size: 12.5px;
-		color: var(--text-muted);
-		margin-top: 2px;
-	}
-
-	.pending-body {
-		font-size: 13px;
-		color: var(--text-secondary);
-		line-height: 1.55;
 	}
 
 	.attach-status {

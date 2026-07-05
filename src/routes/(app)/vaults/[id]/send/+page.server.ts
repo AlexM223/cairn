@@ -58,14 +58,19 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 			scriptType: vault.scriptType,
 			totalKeys: vault.keys.length,
 			// The signing stepper's roster: stable position order, with the device
-			// routing and fingerprint each key signs under.
+			// routing and fingerprint each key signs under. xpub + path are public
+			// key material the USB signers (Trezor/Ledger drivers) need to build
+			// the multisig request client-side — the same data the registration
+			// file download already exposes.
 			keys: vault.keys.map((k) => ({
 				id: k.id,
 				position: k.position,
 				name: k.name,
 				category: k.category,
 				deviceType: k.deviceType,
-				fingerprint: k.fingerprint
+				xpub: k.xpub,
+				fingerprint: k.fingerprint,
+				path: k.path
 			}))
 		},
 		fees,
