@@ -255,7 +255,10 @@
 			</span>
 		</div>
 	{/if}
-{:else if recent.length > 0}
+{:else if recent.length > 0 && !liveLoading && !liveResult}
+	<!-- Recent is the empty-box history shortcut; once the user is typing, the
+	     live-suggestion dropdown takes over the same space, so hide Recent to
+	     avoid the two overlapping. -->
 	<div class="recent fade-in">
 		<span class="hint">Recent:</span>
 		{#each recent as r (r.q)}
