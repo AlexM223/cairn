@@ -8,7 +8,8 @@ export function listUsers(): AdminUserInfo[] {
 	const rows = db
 		.prepare(
 			`SELECT u.id, u.email, u.display_name, u.is_admin, u.disabled, u.created_at, u.last_login,
-			        (SELECT COUNT(*) FROM wallets w WHERE w.user_id = u.id) AS wallet_count
+			        (SELECT COUNT(*) FROM wallets w WHERE w.user_id = u.id)
+			          + (SELECT COUNT(*) FROM multisigs m WHERE m.user_id = u.id) AS wallet_count
 			 FROM users u ORDER BY u.created_at ASC`
 		)
 		.all() as {
