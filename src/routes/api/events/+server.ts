@@ -3,11 +3,13 @@
 
 import { requireUser } from '$lib/server/api';
 import { getChain } from '$lib/server/chain';
+import { childLogger } from '$lib/server/logger';
 import type { ElectrumHeader } from '$lib/server/electrum/client';
 import type { RequestHandler } from './$types';
 
 const HEARTBEAT_MS = 25_000;
 const encoder = new TextEncoder();
+const log = childLogger('events');
 
 export const GET: RequestHandler = async (event) => {
 	requireUser(event);
@@ -68,6 +70,7 @@ export const GET: RequestHandler = async (event) => {
 				sendBlock(tip.height);
 			} catch (e) {
 				const message = e instanceof Error ? e.message : String(e);
+				log.warn({ err: e }, 'sse header subscription failed');
 				send(`event: error\ndata: ${JSON.stringify({ message })}\n\n`);
 				endStream();
 				return;

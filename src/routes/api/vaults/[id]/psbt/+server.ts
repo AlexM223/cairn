@@ -3,7 +3,11 @@ import { requireUser, readJson } from '$lib/server/api';
 import { buildVaultDraft, vaultTransactionProgress } from '$lib/server/vaultTransactions';
 import { getVault } from '$lib/server/vaults';
 import { PsbtError } from '$lib/server/bitcoin/psbt';
+import { childLogger } from '$lib/server/logger';
+import { recordActivity } from '$lib/server/activity';
 import type { RequestHandler } from './$types';
+
+const log = childLogger('vault');
 
 interface RecipientBody {
 	address?: unknown;
@@ -68,12 +72,20 @@ export const POST: RequestHandler = async (event) => {
 			onlyUtxos: onlyUtxos && onlyUtxos.length > 0 ? onlyUtxos : undefined
 		});
 		const vault = getVault(user.id, vaultId)!;
+		recordActivity({
+			userId: user.id,
+			type: 'signing_started',
+			message: `Signing session started for vault “${vault.name}”`,
+			detail: { vaultId, threshold: vault.threshold, keys: vault.keys.length }
+		});
 		return json({ draft, details, progress: vaultTransactionProgress(vault, draft) }, { status: 201 });
 	} catch (e) {
 		if (e instanceof PsbtError) {
 			const status = e.code === 'construction_failed' ? 404 : 400;
 			return json({ error: e.message, code: e.code }, { status });
 		}
+		// Unexpected construction failure — not a known PsbtError.
+		log.error({ err: e, vaultId }, 'vault psbt build failed');
 		return json(
 			{ error: e instanceof Error ? e.message : 'Could not build the transaction' },
 			{ status: 502 }

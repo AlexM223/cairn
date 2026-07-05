@@ -1,6 +1,9 @@
 import { json } from '$lib/server/api';
 import { db } from '$lib/server/db';
+import { childLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
+
+const log = childLogger('health');
 
 /**
  * GET /api/health → { status: "ok" } | 503 { status: "degraded" }
@@ -13,7 +16,8 @@ export const GET: RequestHandler = async () => {
 	try {
 		db.prepare('SELECT 1').get();
 		return json({ status: 'ok' });
-	} catch {
+	} catch (e) {
+		log.warn({ err: e }, 'health check failed');
 		return json({ status: 'degraded' }, { status: 503 });
 	}
 };

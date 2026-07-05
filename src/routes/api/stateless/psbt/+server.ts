@@ -1,6 +1,9 @@
 import { json, requireUser, readJson } from '$lib/server/api';
 import { buildStatelessPsbt, statelessErrorInfo } from '$lib/server/stateless';
 import type { RequestHandler } from './$types';
+import { childLogger } from '$lib/server/logger';
+
+const log = childLogger('stateless');
 
 interface RecipientBody {
 	address?: unknown;
@@ -55,6 +58,9 @@ export const POST: RequestHandler = async (event) => {
 		return json(result, { status: 201 });
 	} catch (e) {
 		const { status, message, code } = statelessErrorInfo(e);
+		if (status >= 500) {
+			log.error({ err: e, code, message }, 'stateless psbt build failed');
+		}
 		return json({ error: message, code }, { status });
 	}
 };

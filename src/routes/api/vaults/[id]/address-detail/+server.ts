@@ -3,6 +3,9 @@ import { getVault } from '$lib/server/vaults';
 import { vaultAddressDetailAt } from '$lib/server/vaultScan';
 import { VaultError } from '$lib/server/bitcoin/multisig';
 import type { RequestHandler } from './$types';
+import { childLogger } from '$lib/server/logger';
+
+const log = childLogger('vault');
 
 /**
  * GET /api/vaults/:id/address-detail?chain=0|1&index=N — the verification
@@ -30,6 +33,9 @@ export const GET: RequestHandler = async (event) => {
 		return json(vaultAddressDetailAt(vault, chain as 0 | 1, index));
 	} catch (e) {
 		const status = e instanceof VaultError ? 400 : 500;
+		if (!(e instanceof VaultError)) {
+			log.error({ err: e, id, chain, index }, 'vault address-detail failed');
+		}
 		return json(
 			{ error: e instanceof Error ? e.message : 'Address derivation failed' },
 			{ status }

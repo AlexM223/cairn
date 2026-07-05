@@ -3,6 +3,9 @@ import { getChain } from '$lib/server/chain';
 import { isValidAddress } from '$lib/server/bitcoin/xpub';
 import { isNotFoundError, chainErrorMessage } from '$lib/server/search';
 import type { RequestHandler } from './$types';
+import { childLogger } from '$lib/server/logger';
+
+const log = childLogger('chain');
 
 /**
  * GET /api/address/[address] → { address: AddressInfo, txs: AddressTx[] }
@@ -35,6 +38,7 @@ export const GET: RequestHandler = async (event) => {
 		return json({ address, txs });
 	} catch (e) {
 		if (isNotFoundError(e)) return json({ error: 'Address not found' }, { status: 404 });
+		log.error({ err: e }, 'address lookup failed');
 		return json({ error: chainErrorMessage(e) }, { status: 502 });
 	}
 };

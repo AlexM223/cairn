@@ -6,6 +6,9 @@ import {
 	VaultRegistrationError
 } from '$lib/server/vaultRegistrations';
 import type { RequestHandler } from './$types';
+import { childLogger } from '$lib/server/logger';
+
+const log = childLogger('vault');
 
 /**
  * GET /api/vaults/:id/ledger-registration            → { registrations: [...] }
@@ -68,6 +71,7 @@ export const POST: RequestHandler = async (event) => {
 				{ status: e.code === 'vault_not_found' ? 404 : 400 }
 			);
 		}
+		log.error({ err: e, vaultId }, 'vault ledger-registration failed');
 		return json({ error: 'Could not save the Ledger registration.' }, { status: 500 });
 	}
 };

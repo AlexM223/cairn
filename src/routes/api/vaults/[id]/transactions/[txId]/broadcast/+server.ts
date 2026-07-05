@@ -2,7 +2,11 @@ import { json } from '@sveltejs/kit';
 import { requireUser, readJson } from '$lib/server/api';
 import { broadcastVaultTransaction } from '$lib/server/vaultTransactions';
 import { BroadcastError } from '$lib/server/transactions';
+import { childLogger } from '$lib/server/logger';
+import { recordActivity } from '$lib/server/activity';
 import type { RequestHandler } from './$types';
+
+const log = childLogger('vault');
 
 /**
  * Finalize and broadcast a quorum-complete vault transaction. Optionally
@@ -25,12 +29,21 @@ export const POST: RequestHandler = async (event) => {
 			txId,
 			typeof body.psbt === 'string' ? body.psbt : undefined
 		);
+		recordActivity({
+			userId: user.id,
+			type: 'broadcast',
+			level: 'success',
+			message: `Transaction broadcast successfully: ${txid.slice(0, 12)}…`,
+			detail: { scope: 'vault', vaultId, txId, txid }
+		});
 		return json({ txid, transaction });
 	} catch (e) {
 		if (e instanceof BroadcastError) {
 			const status = e.code === 'not_found' ? 404 : e.code === 'already_sent' ? 409 : 400;
 			return json({ error: e.message, code: e.code }, { status });
 		}
+		// Unexpected: the broadcast reached neither a known error nor success.
+		log.error({ err: e, vaultId, txId }, 'vault broadcast failed');
 		return json({ error: e instanceof Error ? e.message : 'Broadcast failed' }, { status: 502 });
 	}
 };

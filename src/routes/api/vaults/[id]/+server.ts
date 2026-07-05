@@ -2,6 +2,9 @@ import { json, requireUser } from '$lib/server/api';
 import { getVault, deleteVault } from '$lib/server/vaults';
 import { getVaultDetail, invalidateVaultCache, toVaultSummary } from '$lib/server/vaultScan';
 import type { RequestHandler } from './$types';
+import { childLogger } from '$lib/server/logger';
+
+const log = childLogger('vault');
 
 function parseId(param: string): number | null {
 	const id = Number(param);
@@ -28,6 +31,7 @@ export const GET: RequestHandler = async (event) => {
 			...detail
 		});
 	} catch (e) {
+		log.error({ err: e, vaultId: Number(event.params.id) }, 'vault scan failed');
 		return json({ error: e instanceof Error ? e.message : 'Vault scan failed' }, { status: 502 });
 	}
 };

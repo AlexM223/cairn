@@ -1,6 +1,9 @@
 import { json, requireUser, readJson } from '$lib/server/api';
 import { combineStatelessPsbts, statelessErrorInfo } from '$lib/server/stateless';
 import type { RequestHandler } from './$types';
+import { childLogger } from '$lib/server/logger';
+
+const log = childLogger('stateless');
 
 /**
  * POST /api/stateless/combine { source, base, incoming }
@@ -23,6 +26,9 @@ export const POST: RequestHandler = async (event) => {
 		);
 	} catch (e) {
 		const { status, message, code } = statelessErrorInfo(e);
+		if (status >= 500) {
+			log.error({ err: e, code }, 'stateless combine failed');
+		}
 		return json({ error: message, code }, { status });
 	}
 };

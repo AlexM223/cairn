@@ -2,6 +2,9 @@ import { json, requireUser } from '$lib/server/api';
 import { getChain } from '$lib/server/chain';
 import { isNotFoundError, chainErrorMessage } from '$lib/server/search';
 import type { RequestHandler } from './$types';
+import { childLogger } from '$lib/server/logger';
+
+const log = childLogger('chain');
 
 /** GET /api/tx/[txid] → { tx: TxDetail } */
 export const GET: RequestHandler = async (event) => {
@@ -17,6 +20,7 @@ export const GET: RequestHandler = async (event) => {
 		return json({ tx });
 	} catch (e) {
 		if (isNotFoundError(e)) return json({ error: 'Transaction not found' }, { status: 404 });
+		log.error({ err: e, txid }, 'tx lookup failed');
 		return json({ error: chainErrorMessage(e) }, { status: 502 });
 	}
 };

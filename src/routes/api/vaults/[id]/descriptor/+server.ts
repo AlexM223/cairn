@@ -3,6 +3,9 @@ import { getVault, toVaultConfig } from '$lib/server/vaults';
 import { vaultToDescriptor, VaultError } from '$lib/server/bitcoin/multisig';
 import { descriptorBackup } from '$lib/server/vaultExport';
 import type { RequestHandler } from './$types';
+import { childLogger } from '$lib/server/logger';
+
+const log = childLogger('vault');
 
 function safeFilename(name: string): string {
 	const slug = name
@@ -39,6 +42,9 @@ export const GET: RequestHandler = async (event) => {
 			change: vaultToDescriptor(config, { chain: 1 })
 		});
 	} catch (e) {
+		if (!(e instanceof VaultError)) {
+			log.error({ err: e, vaultId: id }, 'vault descriptor export failed');
+		}
 		const message =
 			e instanceof VaultError ? e.message : 'Could not export the vault descriptor.';
 		return json({ error: message }, { status: 500 });

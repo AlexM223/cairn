@@ -8,7 +8,10 @@ import {
 } from '$lib/server/vaults';
 import { VaultError } from '$lib/server/bitcoin/multisig';
 import { listVaultSummaries } from '$lib/server/vaultScan';
+import { childLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
+
+const log = childLogger('vault');
 
 /** GET /api/vaults — all of the user's vaults with (cached) live balances. */
 export const GET: RequestHandler = async (event) => {
@@ -64,6 +67,7 @@ export const POST: RequestHandler = async (event) => {
 		return json({ vault }, { status: 201 });
 	} catch (e) {
 		if (e instanceof VaultError) return json({ error: e.message }, { status: 400 });
+		log.error({ err: e }, 'vault create failed');
 		return json(
 			{ error: e instanceof Error ? e.message : 'Could not create that vault.' },
 			{ status: 400 }

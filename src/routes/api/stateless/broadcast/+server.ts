@@ -1,6 +1,9 @@
 import { json, requireUser, readJson } from '$lib/server/api';
 import { broadcastStatelessPsbt, statelessErrorInfo } from '$lib/server/stateless';
 import type { RequestHandler } from './$types';
+import { childLogger } from '$lib/server/logger';
+
+const log = childLogger('stateless');
 
 /**
  * POST /api/stateless/broadcast { source, psbt }
@@ -20,6 +23,9 @@ export const POST: RequestHandler = async (event) => {
 		return json(await broadcastStatelessPsbt(String(body.source ?? ''), String(body.psbt ?? '')));
 	} catch (e) {
 		const { status, message, code } = statelessErrorInfo(e);
+		if (status >= 500) {
+			log.error({ err: e, code, message }, 'stateless broadcast failed');
+		}
 		return json({ error: message, code }, { status });
 	}
 };

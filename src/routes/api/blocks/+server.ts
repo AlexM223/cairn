@@ -2,6 +2,9 @@ import { json, requireUser } from '$lib/server/api';
 import { getChain } from '$lib/server/chain';
 import { chainErrorMessage } from '$lib/server/search';
 import type { RequestHandler } from './$types';
+import { childLogger } from '$lib/server/logger';
+
+const log = childLogger('chain');
 
 /** GET /api/blocks?limit=&before= → { blocks: BlockSummary[] } */
 export const GET: RequestHandler = async (event) => {
@@ -23,6 +26,7 @@ export const GET: RequestHandler = async (event) => {
 		const blocks = await getChain().getRecentBlocks(limit, fromHeight);
 		return json({ blocks });
 	} catch (e) {
+		log.error({ err: e }, 'blocks list failed');
 		return json({ error: chainErrorMessage(e) }, { status: 502 });
 	}
 };

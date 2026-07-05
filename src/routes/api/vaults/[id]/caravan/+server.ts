@@ -2,7 +2,10 @@ import { json, requireUser } from '$lib/server/api';
 import { getVault } from '$lib/server/vaults';
 import { caravanExport } from '$lib/server/vaultExport';
 import { VaultError } from '$lib/server/bitcoin/multisig';
+import { childLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
+
+const log = childLogger('vault');
 
 function safeFilename(name: string): string {
 	const slug = name
@@ -33,6 +36,9 @@ export const GET: RequestHandler = async (event) => {
 		});
 	} catch (e) {
 		const message = e instanceof VaultError ? e.message : 'Could not build the wallet config file.';
+		if (!(e instanceof VaultError)) {
+			log.error({ err: e, vaultId: Number(event.params.id) }, 'vault caravan export failed');
+		}
 		return json({ error: message }, { status: 500 });
 	}
 };

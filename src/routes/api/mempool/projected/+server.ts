@@ -2,6 +2,9 @@ import { json } from '@sveltejs/kit';
 import { requireUser } from '$lib/server/api';
 import { getChain } from '$lib/server/chain';
 import type { RequestHandler } from './$types';
+import { childLogger } from '$lib/server/logger';
+
+const log = childLogger('chain');
 
 /**
  * Data feed for the mempool block visualizer: projected next blocks plus the
@@ -18,6 +21,7 @@ export const GET: RequestHandler = async (event) => {
 		]);
 		return json({ projected, histogram, tipHeight: tip?.height ?? null });
 	} catch (e) {
+		log.error({ err: e }, 'mempool projection failed');
 		return json(
 			{ error: e instanceof Error ? e.message : 'Chain data unavailable' },
 			{ status: 502 }
