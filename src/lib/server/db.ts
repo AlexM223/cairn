@@ -603,3 +603,80 @@ db.exec(`
 		dismissed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 	);
 `);
+
+// Collaborative custody (see docs/COLLABORATIVE-CUSTODY-PLAN.md). Single-instance
+// only — several accounts on ONE Cairn instance sharing one multisig wallet. NO
+// federation/cross-instance concept exists or is planned. These tables extend the
+// EXISTING multisig system (multisigs/multisig_keys/multisig_transactions) rather
+// than building a parallel one: there is exactly one multisig-transaction
+// lifecycle, usable by one owner or several cosigners.
+db.exec(`
+	-- Friends-only social graph. A wallet can only be shared with an ACCEPTED
+	-- contact (a cheap guard against social-engineering a share via a leaked
+	-- user id). Anti-enumeration: requestContact returns the same success shape
+	-- whether or not the target email exists (see contacts.ts).
+	CREATE TABLE IF NOT EXISTS contacts (
+		id              INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, -- requester
+		contact_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, -- target
+		status          TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'accepted'
+		created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		UNIQUE (user_id, contact_user_id),
+		CHECK (user_id <> contact_user_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_contacts_contact_user ON contacts(contact_user_id);
+
+	-- Share a multisig wallet with another user on this SAME instance. wallet_kind
+	-- is future-proofing only ('multisig' for every v1 row). Key-to-user
+	-- assignment lives on multisig_keys.assigned_user_id (below), NOT here, so a
+	-- user holding two keys is simply two key rows with the same assigned_user_id.
+	CREATE TABLE IF NOT EXISTS multisig_shares (
+		id              INTEGER PRIMARY KEY AUTOINCREMENT,
+		wallet_kind     TEXT NOT NULL DEFAULT 'multisig',
+		multisig_id     INTEGER NOT NULL REFERENCES multisigs(id) ON DELETE CASCADE,
+		owner_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		shared_with_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		role            TEXT NOT NULL DEFAULT 'viewer', -- 'viewer' | 'cosigner'
+		created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		UNIQUE (multisig_id, shared_with_id),
+		CHECK (owner_id <> shared_with_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_multisig_shares_shared_with ON multisig_shares(shared_with_id);
+	CREATE INDEX IF NOT EXISTS idx_multisig_shares_multisig ON multisig_shares(multisig_id);
+
+	-- Roster for one multisig_transactions row: which users are expected to
+	-- contribute a signature, and whether they have. FROZEN at transaction-
+	-- creation time — later share changes don't touch an in-flight roster.
+	-- assigned_key_ids is a denormalized JSON snapshot (NOT a live join) so a
+	-- later key reassignment can't rewrite history. has_signed is advisory/UI
+	-- only; the authoritative signature state always comes from
+	-- multisigPsbtProgress() reading the actual PSBT bytes.
+	CREATE TABLE IF NOT EXISTS multisig_transaction_signers (
+		id               INTEGER PRIMARY KEY AUTOINCREMENT,
+		transaction_id   INTEGER NOT NULL REFERENCES multisig_transactions(id) ON DELETE CASCADE,
+		user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		assigned_key_ids TEXT NOT NULL,   -- JSON array of multisig_keys.id
+		has_signed       INTEGER NOT NULL DEFAULT 0,
+		signed_at        TEXT,
+		created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		UNIQUE (transaction_id, user_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_multisig_tx_signers_tx ON multisig_transaction_signers(transaction_id);
+	CREATE INDEX IF NOT EXISTS idx_multisig_tx_signers_user ON multisig_transaction_signers(user_id);
+`);
+// Assign a quorum key to a specific collaborator. NULL = unassigned (every key
+// of a solo multisig, the common/default case, costs nothing). Guarded ALTER.
+{
+	const keyCols = (db.prepare('PRAGMA table_info(multisig_keys)').all() as { name: string }[]).map(
+		(c) => c.name
+	);
+	if (!keyCols.includes('assigned_user_id')) {
+		db.exec(
+			'ALTER TABLE multisig_keys ADD COLUMN assigned_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL'
+		);
+	}
+	db.exec(
+		'CREATE INDEX IF NOT EXISTS idx_multisig_keys_assigned_user ON multisig_keys(assigned_user_id)'
+	);
+}

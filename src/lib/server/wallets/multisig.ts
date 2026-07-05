@@ -45,6 +45,12 @@ export interface MultisigKeyRow {
 	 * rows read from the database always carry it. See markKeyVerified.
 	 */
 	lastVerifiedAt?: string | null;
+	/**
+	 * The collaborator this key is assigned to (collaborative custody), or null
+	 * when unassigned — which is every key of a solo multisig, the common case.
+	 * See docs/COLLABORATIVE-CUSTODY-PLAN.md and multisigShares.ts.
+	 */
+	assignedUserId?: number | null;
 }
 
 export interface MultisigRow {
@@ -78,7 +84,8 @@ function mapKey(r: Record<string, unknown>): MultisigKeyRow {
 		xpub: r.xpub as string,
 		fingerprint: r.fingerprint as string,
 		path: r.path as string,
-		lastVerifiedAt: (r.last_verified_at ?? null) as string | null
+		lastVerifiedAt: (r.last_verified_at ?? null) as string | null,
+		assignedUserId: (r.assigned_user_id ?? null) as number | null
 	};
 }
 
@@ -107,6 +114,47 @@ export function getMultisig(userId: number, id: number): MultisigRow | null {
 	const row = db
 		.prepare('SELECT * FROM multisigs WHERE id = ? AND user_id = ?')
 		.get(id, userId) as Record<string, unknown> | undefined;
+	if (!row) return null;
+	return mapMultisig(row, keysFor(row.id as number));
+}
+
+/**
+ * Owner OR any accepted share (viewer or cosigner) — the read-only surface
+ * (balance, addresses, history, labels). Returns null for a non-participant
+ * exactly like a non-existent id, so callers throw a uniform 404 and never leak
+ * a wallet's existence with a 403. See docs/COLLABORATIVE-CUSTODY-PLAN.md §3.
+ */
+export function getViewableMultisig(userId: number, id: number): MultisigRow | null {
+	const row = db
+		.prepare(
+			`SELECT m.* FROM multisigs m
+			 WHERE m.id = ?
+			   AND (m.user_id = ?
+			        OR EXISTS (SELECT 1 FROM multisig_shares s
+			                   WHERE s.multisig_id = m.id AND s.shared_with_id = ?))`
+		)
+		.get(id, userId, userId) as Record<string, unknown> | undefined;
+	if (!row) return null;
+	return mapMultisig(row, keysFor(row.id as number));
+}
+
+/**
+ * Owner OR a share with role='cosigner' — the signing surface. Being a
+ * wallet-level cosigner is necessary but not alone sufficient to sign a given
+ * transaction: the per-transaction roster (multisig_transaction_signers) is the
+ * actual per-transaction gate. Null for everyone else (uniform 404).
+ */
+export function getSignableMultisig(userId: number, id: number): MultisigRow | null {
+	const row = db
+		.prepare(
+			`SELECT m.* FROM multisigs m
+			 WHERE m.id = ?
+			   AND (m.user_id = ?
+			        OR EXISTS (SELECT 1 FROM multisig_shares s
+			                   WHERE s.multisig_id = m.id AND s.shared_with_id = ?
+			                     AND s.role = 'cosigner'))`
+		)
+		.get(id, userId, userId) as Record<string, unknown> | undefined;
 	if (!row) return null;
 	return mapMultisig(row, keysFor(row.id as number));
 }

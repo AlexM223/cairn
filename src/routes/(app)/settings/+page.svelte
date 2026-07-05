@@ -360,6 +360,19 @@
 	</section>
 
 	<section class="card card-pad section">
+		<span class="card-title">Contacts</span>
+		<p class="hint" style="margin: 4px 0 10px">
+			The people you can share a multisig wallet with. Add someone by email, then
+			invite them to co-sign a wallet you own.
+		</p>
+		<div class="row">
+			<a href="/settings/contacts" class="btn btn-secondary btn-sm">
+				<Icon name="users" size={14} /> Manage contacts
+			</a>
+		</div>
+	</section>
+
+	<section class="card card-pad section">
 		<span class="card-title">Terms &amp; agreement</span>
 		<p class="hint" style="margin: 4px 0 10px">
 			Review the agreement you accepted for this instance, along with Cairn's software disclaimer
