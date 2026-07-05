@@ -413,6 +413,28 @@
 		lastAdded = null;
 	}
 
+	// --- same-seed detection (cairn-h4l) ---
+	// Keys sharing a master fingerprint almost certainly come from the same
+	// seed, which quietly defeats the point of a multisig. Warn prominently but
+	// never block — one seed carrying several accounts is technically valid.
+	// '00000000' is the "no fingerprint on record" placeholder, so it's exempt.
+	const sharedFingerprintGroups = $derived.by(() => {
+		const byFp = new Map<string, string[]>();
+		for (const k of keys) {
+			if (k.fingerprint === '00000000') continue;
+			byFp.set(k.fingerprint, [...(byFp.get(k.fingerprint) ?? []), k.name]);
+		}
+		return [...byFp.entries()]
+			.filter(([, names]) => names.length > 1)
+			.map(([fingerprint, names]) => ({ fingerprint, names }));
+	});
+	const sharedFingerprints = $derived(new Set(sharedFingerprintGroups.map((g) => g.fingerprint)));
+
+	function listNames(names: string[]): string {
+		if (names.length <= 2) return names.join(' and ');
+		return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+	}
+
 	// --- import an existing multisig (descriptor or Caravan/Unchained JSON) ---
 	interface ImportedMultisig {
 		name: string;
@@ -527,6 +549,15 @@
 		void loadPreview();
 	}
 
+	// Entering the Keys step — first time or via any Back control — always
+	// lands on the method picker with no stale device/error state left over
+	// from a previous visit (e.g. a failed Ledger connect). Reuses the same
+	// reset as the in-form "Different source" button; added keys are kept.
+	function goToKeys() {
+		resetKeyForm();
+		step = 'keys';
+	}
+
 	// Every step change — button, back, or programmatic — moves focus to the
 	// new step's section so screen readers announce the step and keyboard users
 	// aren't stranded on a button that just unmounted. (Same pattern as the
@@ -567,6 +598,29 @@
 	<div class="stepper-wrap card card-pad">
 		<Stepper steps={STEPS} current={step} />
 	</div>
+
+	<!-- Same-seed warning (cairn-h4l) — shown on the Keys step and repeated on Review. -->
+	{#snippet seedWarning()}
+		{#if sharedFingerprintGroups.length > 0}
+			<div class="seed-warning" role="alert">
+				<Icon name="alert-triangle" size={16} />
+				<div class="seed-warning-body">
+					{#each sharedFingerprintGroups as g (g.fingerprint)}
+						<p>
+							<strong>{listNames(g.names)}</strong> come from the same seed — they share the
+							master fingerprint <span class="mono">{g.fingerprint}</span>. That means one
+							backup controls {g.names.length === 2 ? 'both' : `all ${g.names.length}`} — you
+							don't get the protection of separate keys.
+						</p>
+					{/each}
+					<p class="seed-note">
+						You can continue if this is deliberate (one seed can hold several accounts), but
+						for real protection each key should come from a different device or seed.
+					</p>
+				</div>
+			</div>
+		{/if}
+	{/snippet}
 
 	{#if step === 'why'}
 		<!-- ============================================= Step 1: why a multisig -->
@@ -845,7 +899,7 @@
 					type="button"
 					class="btn btn-primary"
 					disabled={!quorumValid}
-					onclick={() => (step = 'keys')}
+					onclick={goToKeys}
 				>
 					Continue
 					<Icon name="chevron-right" size={14} />
@@ -903,6 +957,8 @@
 					{/if}
 				{/each}
 			</div>
+
+			{@render seedWarning()}
 
 			{#if lastAdded}
 				<div class="imported-note" role="status">
@@ -1008,8 +1064,13 @@
 										<strong>watch, never spend</strong>.
 									</p>
 									{#if scanning}
-										<!-- svelte-ignore a11y_media_has_caption — live camera feed -->
+										<!-- svelte-ignore a11y_media_has_caption — live camera feed; the sr-only status below announces it -->
 										<video bind:this={videoEl} class="qr-video"></video>
+										<p class="sr-only" role="status">
+											Camera scanning in progress. Hold the device's QR code up to the camera —
+											the key is read automatically. Use the Stop scanning button to turn the
+											camera off.
+										</p>
 										<button type="button" class="btn btn-secondary btn-sm" onclick={stopQrScan}>
 											Stop scanning
 										</button>
@@ -1240,12 +1301,14 @@
 									: ''}
 							</span>
 						</span>
-						<span class="mono review-fp">
+						<span class="mono review-fp" class:review-fp-dup={sharedFingerprints.has(key.fingerprint)}>
 							{key.fingerprint !== '00000000' ? key.fingerprint : '—'}
 						</span>
 					</div>
 				{/each}
 			</div>
+
+			{@render seedWarning()}
 
 			<div class="test-address">
 				<span class="test-title">
@@ -1294,7 +1357,7 @@
 			</div>
 
 			<div class="pane-actions">
-				<button type="button" class="btn btn-ghost" onclick={() => (step = 'keys')}>
+				<button type="button" class="btn btn-ghost" onclick={goToKeys}>
 					<Icon name="chevron-left" size={14} />
 					Back
 				</button>
@@ -1706,6 +1769,23 @@
 		font-size: 13px;
 	}
 
+	/* Narrow screens: stack the M-of-N fields instead of overflowing. */
+	@media (max-width: 480px) {
+		.custom-inputs {
+			flex-direction: column;
+			align-items: stretch;
+			gap: 8px;
+		}
+
+		.custom-of {
+			padding-bottom: 0;
+		}
+
+		.custom-inputs .custom-field .input {
+			width: 100%;
+		}
+	}
+
 	.quorum-note {
 		font-size: 12.5px;
 		line-height: 1.6;
@@ -1888,8 +1968,9 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		width: 26px;
-		height: 26px;
+		width: 34px;
+		height: 34px;
+		flex-shrink: 0;
 		background: none;
 		border: none;
 		border-radius: var(--radius-chip);
@@ -1900,6 +1981,14 @@
 	.slot-remove:hover {
 		color: var(--error);
 		background: var(--error-muted);
+	}
+
+	/* Touch-target bump: ~44px on touch screens and small viewports. */
+	@media (pointer: coarse), (max-width: 480px) {
+		.slot-remove {
+			width: 44px;
+			height: 44px;
+		}
 	}
 
 	/* --- step 2: add-key --- */
@@ -1924,6 +2013,14 @@
 		display: grid;
 		grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 		gap: 10px;
+	}
+
+	/* Narrow screens: one full-width card per row keeps labels readable. */
+	@media (max-width: 480px) {
+		.method-grid,
+		.cat-grid {
+			grid-template-columns: 1fr;
+		}
 	}
 
 	.method-card {
@@ -1994,6 +2091,19 @@
 		opacity: 0;
 		overflow: hidden;
 		pointer-events: none;
+	}
+
+	/* Visually hidden but announced — same idiom as the send flow's QR signer. */
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
 	}
 
 	.cat-grid {
@@ -2115,6 +2225,46 @@
 		border-radius: var(--radius-control);
 	}
 
+	/* --- same-seed warning (keys + review steps) --- */
+
+	.seed-warning {
+		display: flex;
+		align-items: flex-start;
+		gap: 10px;
+		padding: 12px 14px;
+		background: var(--warning-muted);
+		border: 1px solid rgba(232, 201, 90, 0.45);
+		border-radius: var(--radius-control);
+		color: var(--warning);
+	}
+
+	.seed-warning > :global(svg) {
+		flex-shrink: 0;
+		margin-top: 2px;
+	}
+
+	.seed-warning-body {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	.seed-warning-body p {
+		margin: 0;
+		font-size: 13px;
+		line-height: 1.6;
+		color: var(--text-secondary);
+	}
+
+	.seed-warning-body p strong {
+		color: var(--text);
+	}
+
+	.seed-warning-body p.seed-note {
+		font-size: 12px;
+		color: var(--text-muted);
+	}
+
 	/* --- step 3: review --- */
 
 	.review-keys {
@@ -2136,6 +2286,11 @@
 	.review-fp {
 		font-size: 12px;
 		color: var(--text-muted);
+	}
+
+	.review-fp-dup {
+		color: var(--warning);
+		font-weight: 600;
 	}
 
 	.test-address {
