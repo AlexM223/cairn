@@ -184,4 +184,20 @@ db.exec(`
 		UNIQUE (vault_id, xpub)
 	);
 	CREATE INDEX IF NOT EXISTS idx_vault_keys_vault ON vault_keys(vault_id);
+
+	-- Ledger requires a BIP-388 wallet-policy registration (an on-device
+	-- approval yielding an HMAC) before it will sign for a multisig policy.
+	-- The HMAC is not a secret — storing it only spares the user re-approving
+	-- the same vault on-device every session. One registration per device
+	-- (master fingerprint) per vault.
+	CREATE TABLE IF NOT EXISTS ledger_vault_registrations (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		vault_id    INTEGER NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
+		master_fp   TEXT NOT NULL,             -- 8 lowercase hex
+		policy_name TEXT NOT NULL,             -- <=64 ASCII, shown on-device
+		policy_hmac TEXT NOT NULL,             -- 64 hex chars (32 bytes)
+		policy_id   TEXT,
+		created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		UNIQUE (vault_id, master_fp)
+	);
 `);
