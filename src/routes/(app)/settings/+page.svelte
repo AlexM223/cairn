@@ -79,6 +79,11 @@
 		if (!iso) return 'never';
 		return timeAgo(Math.floor(new Date(iso).getTime() / 1000));
 	}
+
+	// --- Account recovery (login recovery — NOT bitcoin) ---------------------
+	// The banner is dismissible ONLY by completing setup: there is no "x" — the
+	// only way it goes away is finishing the recovery-setup wizard.
+	const recovery = $derived(data.recovery);
 </script>
 
 <svelte:head>
@@ -86,6 +91,21 @@
 </svelte:head>
 
 <h1 class="page-title" style="margin-bottom: 24px">Settings</h1>
+
+{#if !recovery.complete}
+	<div class="recovery-banner fade-in" role="status">
+		<span class="rb-icon"><Icon name="alert-triangle" size={18} /></span>
+		<div class="rb-body">
+			<div class="rb-title">Finish setting up account recovery</div>
+			<p class="rb-text">
+				If you lose all your passkeys, a recovery phrase or code is the only way back into Cairn.
+				This recovers your <strong>login only</strong> — it never touches your bitcoin, which stays
+				on your hardware wallet.
+			</p>
+		</div>
+		<a class="btn btn-primary btn-sm rb-cta" href="/recovery-setup">Set up recovery</a>
+	</div>
+{/if}
 
 <div class="stack settings fade-in">
 	<section class="card card-pad section">
@@ -279,6 +299,55 @@
 	</section>
 
 	<section class="card card-pad section">
+		<span class="card-title">Account recovery</span>
+
+		<p class="hint">
+			A way back into Cairn if you lose every passkey. This recovers your <strong>login only</strong>
+			— a Cairn recovery phrase or code can never move or access your bitcoin. Your bitcoin keys live
+			on your hardware wallet regardless. Store your Cairn recovery secrets separately from your
+			hardware-wallet backup; they protect different things.
+		</p>
+
+		<ul class="rec-status">
+			<li class="rec-row">
+				<span class="rec-icon" class:on={recovery.phrase}>
+					<Icon name={recovery.phrase ? 'check' : 'x'} size={14} strokeWidth={2.25} />
+				</span>
+				<div class="rec-meta">
+					<div class="rec-name">Recovery phrase</div>
+					<div class="rec-sub">
+						{recovery.phrase ? 'Set — 12-word phrase stored.' : 'Not set up yet.'}
+					</div>
+				</div>
+			</li>
+			<li class="rec-row">
+				<span class="rec-icon" class:on={recovery.codesRemaining > 0}>
+					<Icon name={recovery.codesRemaining > 0 ? 'check' : 'x'} size={14} strokeWidth={2.25} />
+				</span>
+				<div class="rec-meta">
+					<div class="rec-name">Recovery codes</div>
+					<div class="rec-sub">
+						{#if recovery.codesRemaining > 0}
+							{recovery.codesRemaining} of 8 single-use codes remaining.
+						{:else}
+							Not set up yet.
+						{/if}
+					</div>
+				</div>
+			</li>
+		</ul>
+
+		<div class="rec-actions">
+			{#if recovery.complete}
+				<a class="btn btn-secondary btn-sm" href="/recovery-setup?force=1">Regenerate recovery</a>
+				<span class="hint rec-warn">Regenerating replaces your current phrase and codes.</span>
+			{:else}
+				<a class="btn btn-primary btn-sm" href="/recovery-setup">Set up recovery</a>
+			{/if}
+		</div>
+	</section>
+
+	<section class="card card-pad section">
 		<span class="card-title">Appearance</span>
 		<div class="field" style="max-width: 240px">
 			<label class="label" for="theme">Theme</label>
@@ -287,6 +356,22 @@
 				<option>Light — coming soon</option>
 			</select>
 			<span class="hint">One theme for now. The toggle lights up in a future release.</span>
+		</div>
+	</section>
+
+	<section class="card card-pad section">
+		<span class="card-title">Terms &amp; agreement</span>
+		<p class="hint" style="margin: 4px 0 10px">
+			Review the agreement you accepted for this instance, along with Cairn's software disclaimer
+			and privacy model — what's stored here and what leaves this server.
+		</p>
+		<div class="row" style="gap: 10px; flex-wrap: wrap">
+			<a href="/agreement" class="btn btn-secondary btn-sm">
+				<Icon name="shield" size={14} /> Review the agreement
+			</a>
+			<a href="/terms" class="btn btn-ghost btn-sm">
+				<Icon name="info" size={14} /> Terms &amp; privacy
+			</a>
 		</div>
 	</section>
 </div>
@@ -414,5 +499,132 @@
 
 	.danger:hover:not(:disabled) {
 		color: var(--error);
+	}
+
+	/* Persistent recovery warning — dismissible only by completing setup. */
+	.recovery-banner {
+		display: flex;
+		align-items: flex-start;
+		gap: 12px;
+		max-width: 640px;
+		margin-bottom: 14px;
+		padding: 14px 16px;
+		background: var(--warning-muted);
+		border: 1px solid var(--warning-border-strong);
+		border-radius: var(--radius-card);
+	}
+
+	.rb-icon {
+		display: flex;
+		color: var(--warning);
+		flex-shrink: 0;
+		margin-top: 1px;
+	}
+
+	.rb-body {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.rb-title {
+		font-size: 14px;
+		font-weight: 600;
+		color: var(--text);
+	}
+
+	.rb-text {
+		font-size: 12.5px;
+		line-height: 1.55;
+		color: var(--text-secondary);
+		margin-top: 3px;
+	}
+
+	.rb-text strong {
+		color: var(--text);
+		font-weight: 600;
+	}
+
+	.rb-cta {
+		flex-shrink: 0;
+		align-self: center;
+	}
+
+	.hint strong {
+		color: var(--text-secondary);
+		font-weight: 600;
+	}
+
+	.rec-status {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.rec-row {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 11px 12px;
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-control);
+		background: var(--bg);
+	}
+
+	.rec-icon {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 26px;
+		height: 26px;
+		flex-shrink: 0;
+		border-radius: 50%;
+		background: var(--surface-elevated);
+		color: var(--text-muted);
+	}
+
+	.rec-icon.on {
+		background: var(--success-muted);
+		color: var(--success);
+	}
+
+	.rec-meta {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.rec-name {
+		font-size: 13.5px;
+		font-weight: 500;
+	}
+
+	.rec-sub {
+		font-size: 12px;
+		color: var(--text-muted);
+		margin-top: 1px;
+	}
+
+	.rec-actions {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		flex-wrap: wrap;
+	}
+
+	.rec-warn {
+		margin: 0;
+	}
+
+	@media (max-width: 560px) {
+		.recovery-banner {
+			flex-wrap: wrap;
+		}
+
+		.rb-cta {
+			align-self: stretch;
+			width: 100%;
+		}
 	}
 </style>

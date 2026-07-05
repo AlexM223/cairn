@@ -101,5 +101,9 @@ export const POST: RequestHandler = async (event) => {
 	clearRegChallenge(event);
 	const { token, expiresAt } = createSession(user.id);
 	setSessionCookie(event.cookies, token, expiresAt, event.url);
-	return json({ user }, { status: 201 });
+	// A brand-new account has exactly one passkey and no account-recovery set up.
+	// Signal the UI to send them straight into the mandatory recovery-setup wizard
+	// (getting back INTO Cairn if that one passkey is lost — NOT bitcoin recovery).
+	// The client redirects here instead of the dashboard on a fresh signup.
+	return json({ user, next: '/recovery-setup' }, { status: 201 });
 };

@@ -11,6 +11,7 @@ import {
 	getAuthMode,
 	MIN_PASSWORD_LENGTH
 } from '$lib/server/auth';
+import { hasRecoverySetup } from '$lib/server/recovery';
 import type { Actions, PageServerLoad } from './$types';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -19,10 +20,18 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const uid = locals.user!.id;
 	// Passkeys are managed client-side against /api/auth/passkeys; the first
 	// paint ships the current list.
+	// Account-recovery (login recovery) status — drives the "Recovery" section
+	// and the persistent warning banner until it's set up.
+	const recovery = hasRecoverySetup(uid);
 	return {
 		passkeys: listCredentials(uid),
 		hasPassword: hasPassword(uid),
-		authMode: getAuthMode()
+		authMode: getAuthMode(),
+		recovery: {
+			phrase: recovery.phrase,
+			codesRemaining: recovery.codesRemaining,
+			complete: recovery.phrase && recovery.codesRemaining > 0
+		}
 	};
 };
 
