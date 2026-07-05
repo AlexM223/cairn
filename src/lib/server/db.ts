@@ -520,3 +520,86 @@ db.exec(`
 		db.exec('ALTER TABLE multisig_keys ADD COLUMN last_verified_at TEXT');
 	}
 }
+
+// Notification system (see docs/NOTIFICATION-PLAN.md). An in-app notification IS
+// an `events` row (activity.ts) — `read_at` adds per-view read tracking to that
+// existing table rather than a parallel one. The four tables below hold routing
+// preferences, per-channel connection config, optional PGP keys for the email
+// channel, and the outbound delivery queue for every non-inapp channel.
+{
+	const evCols = (db.prepare('PRAGMA table_info(events)').all() as { name: string }[]).map(
+		(c) => c.name
+	);
+	if (!evCols.includes('read_at')) {
+		db.exec('ALTER TABLE events ADD COLUMN read_at TEXT');
+	}
+	db.exec('CREATE INDEX IF NOT EXISTS idx_events_user_unread ON events(user_id, read_at)');
+}
+db.exec(`
+	-- Per-user, per-event-type channel routing. A row's ABSENCE means "use the
+	-- default for this event type" (DEFAULT_PREFERENCES in notifications.ts).
+	CREATE TABLE IF NOT EXISTS notification_preferences (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		event_type TEXT NOT NULL,
+		channel    TEXT NOT NULL,   -- one of NOTIFICATION_CHANNELS
+		enabled    INTEGER NOT NULL DEFAULT 1,
+		config     TEXT,            -- per-event-type tunables (thresholds), JSON
+		UNIQUE (user_id, event_type, channel)
+	);
+	CREATE INDEX IF NOT EXISTS idx_notification_prefs_user ON notification_preferences(user_id);
+
+	-- Per-user, per-channel CONNECTION config. One row per (user, channel).
+	-- Never returned to the client verbatim (see getPublicChannelConfig).
+	CREATE TABLE IF NOT EXISTS notification_channel_config (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		channel     TEXT NOT NULL,
+		config      TEXT NOT NULL,   -- JSON blob, shape is per-channel
+		verified_at TEXT,            -- last successful test()/send; NULL = never confirmed
+		created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		UNIQUE (user_id, channel)
+	);
+	CREATE INDEX IF NOT EXISTS idx_notification_channel_config_user ON notification_channel_config(user_id);
+
+	-- PGP public keys for the email channel's optional encryption. Distinct
+	-- lifecycle from whether email is even on, hence its own table.
+	CREATE TABLE IF NOT EXISTS user_pgp_keys (
+		user_id     INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+		public_key  TEXT NOT NULL,   -- ASCII-armored public key block
+		fingerprint TEXT NOT NULL,   -- computed at upload, shown for cross-check
+		created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+	);
+
+	-- Outbound delivery queue for every NON-inapp channel (in-app delivery is
+	-- the events row itself). Retry with backoff; dead after max attempts. The
+	-- payload is a serialized NotificationPayload and NEVER carries secrets.
+	CREATE TABLE IF NOT EXISTS notification_queue (
+		id              INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		channel         TEXT NOT NULL,
+		event_type      TEXT NOT NULL,
+		payload         TEXT NOT NULL,                    -- JSON NotificationPayload
+		status          TEXT NOT NULL DEFAULT 'pending',  -- 'pending'|'sent'|'failed'|'dead'
+		attempts        INTEGER NOT NULL DEFAULT 0,
+		last_error      TEXT,
+		next_attempt_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		sent_at         TEXT
+	);
+	CREATE INDEX IF NOT EXISTS idx_notification_queue_pending ON notification_queue(status, next_attempt_at);
+	CREATE INDEX IF NOT EXISTS idx_notification_queue_user ON notification_queue(user_id, id DESC);
+`);
+
+// Periodic wallet-config backup reminders (cairn-2xhw). Per-user dismissal
+// timestamp for the "it's been a while since you downloaded your wallet
+// backups" nudge; the nudge re-appears once it's older than the reminder
+// interval. "Last backup" itself is derived from wallet_backups.downloaded_at
+// (see src/lib/server/backups.ts), so only the dismissal needs storing here.
+db.exec(`
+	CREATE TABLE IF NOT EXISTS backup_reminders (
+		user_id      INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+		dismissed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+	);
+`);

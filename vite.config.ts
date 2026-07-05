@@ -1,6 +1,8 @@
 import adapter from '@sveltejs/adapter-node';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
+import wasm from 'vite-plugin-wasm';
+import topLevelAwait from 'vite-plugin-top-level-await';
 
 export default defineConfig({
 	server: {
@@ -33,9 +35,17 @@ export default defineConfig({
 			// Trezor Connect is loaded through the same lazy-import pattern and
 			// would hit the identical first-click re-optimization otherwise.
 			'@trezor/connect-web'
-		]
+		],
+		// bitbox-api is a Rust core compiled to WASM with generated TS bindings
+		// (src/lib/hw/bitbox02.ts loads it lazily). WASM packages must NOT be
+		// esbuild-prebundled — vite-plugin-wasm handles the .wasm asset itself.
+		exclude: ['bitbox-api']
 	},
 	plugins: [
+		// Required by bitbox-api's WASM bindings (see its README-npm.md): the
+		// glue module uses top-level await around the wasm instantiation.
+		wasm(),
+		topLevelAwait(),
 		sveltekit({
 			compilerOptions: {
 				// Force runes mode for the project, except for libraries. Can be removed in svelte 6.
