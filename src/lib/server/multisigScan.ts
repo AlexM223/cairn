@@ -13,7 +13,7 @@
 
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { deriveMultisigAddress, multisigToDescriptor } from './bitcoin/multisig';
-import { addressToScripthash } from './bitcoin/xpub';
+import { addressToScripthash, scriptPubKeyHex } from './bitcoin/xpub';
 import { getChain } from './chain/index';
 import type { ElectrumBalance, ElectrumHistoryItem } from './electrum/client';
 import type { SpendableUtxo } from './bitcoin/psbt';
@@ -191,7 +191,17 @@ async function scanChainOf(multisig: MultisigRow, chain: 0 | 1): Promise<Scanned
 
 async function collectMultisigTxs(scanned: ScannedAddress[]): Promise<MultisigTx[]> {
 	const chainSvc = getChain();
-	const multisigAddresses = new Set(scanned.map((a) => a.address));
+	// Match by scriptPubKey, not address string — network-independent, so it
+	// works even when the explorer reports a different network's encoding than
+	// Cairn's mainnet-only derivation. See scriptPubKeyHex / walletScan.ts.
+	const multisigScripts = new Set<string>();
+	for (const a of scanned) {
+		try {
+			multisigScripts.add(scriptPubKeyHex(a.address).toLowerCase());
+		} catch {
+			/* skip an address we can't decode */
+		}
+	}
 
 	// Merge + dedupe histories; prefer a confirmed height over a mempool one.
 	const heights = new Map<string, number>();
@@ -221,10 +231,16 @@ async function collectMultisigTxs(scanned: ScannedAddress[]): Promise<MultisigTx
 					const tx = await chainSvc.getTx(txid);
 					let delta = 0;
 					for (const out of tx.vout) {
-						if (out.address && multisigAddresses.has(out.address)) delta += out.value;
+						if (out.scriptPubKey && multisigScripts.has(out.scriptPubKey.toLowerCase())) {
+							delta += out.value;
+						}
 					}
 					for (const vin of tx.vin) {
-						if (!vin.coinbase && vin.address && multisigAddresses.has(vin.address)) {
+						if (
+							!vin.coinbase &&
+							vin.prevScriptPubKey &&
+							multisigScripts.has(vin.prevScriptPubKey.toLowerCase())
+						) {
 							delta -= vin.value ?? 0;
 						}
 					}

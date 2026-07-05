@@ -148,6 +148,7 @@ function vinFrom(address: string | null): TxDetail['vin'][number] {
 		vout: 0,
 		address,
 		value: 0,
+		prevScriptPubKey: null,
 		coinbase: false,
 		scriptSig: null,
 		witness: null

@@ -2,7 +2,7 @@
 // with tx details filled in from the esplora backend via ChainService.
 
 import type { WalletAddress, WalletTx } from '$lib/types';
-import { parseXpub, deriveAddress, addressToScripthash } from './xpub';
+import { parseXpub, deriveAddress, addressToScripthash, scriptPubKeyHex } from './xpub';
 import type { ParsedXpub } from './xpub';
 import { getChain } from '../chain/index';
 import type { ElectrumBalance, ElectrumHistoryItem } from '../electrum/client';
@@ -84,7 +84,19 @@ async function scanChain(parsed: ParsedXpub, change: 0 | 1): Promise<ScannedAddr
 
 async function collectWalletTxs(scanned: ScannedAddress[]): Promise<WalletTx[]> {
 	const chain = getChain();
-	const walletAddresses = new Set(scanned.map((a) => a.address));
+	// Attribute a tx to this wallet by scriptPubKey, NOT by address string. The
+	// script is network-independent, so this is correct even when the explorer
+	// reports a different network's address encoding (e.g. regtest bcrt1…) than
+	// Cairn's mainnet-only derivation (bc1…) — an address-string match would miss
+	// every output and report delta 0. See scriptPubKeyHex in xpub.ts.
+	const walletScripts = new Set<string>();
+	for (const a of scanned) {
+		try {
+			walletScripts.add(scriptPubKeyHex(a.address).toLowerCase());
+		} catch {
+			/* skip an address we can't decode (shouldn't happen for derived ones) */
+		}
+	}
 
 	// Merge + dedupe histories; prefer a confirmed height over a mempool one.
 	const heights = new Map<string, number>();
@@ -114,10 +126,16 @@ async function collectWalletTxs(scanned: ScannedAddress[]): Promise<WalletTx[]> 
 					const tx = await chain.getTx(txid);
 					let delta = 0;
 					for (const out of tx.vout) {
-						if (out.address && walletAddresses.has(out.address)) delta += out.value;
+						if (out.scriptPubKey && walletScripts.has(out.scriptPubKey.toLowerCase())) {
+							delta += out.value;
+						}
 					}
 					for (const vin of tx.vin) {
-						if (!vin.coinbase && vin.address && walletAddresses.has(vin.address)) {
+						if (
+							!vin.coinbase &&
+							vin.prevScriptPubKey &&
+							walletScripts.has(vin.prevScriptPubKey.toLowerCase())
+						) {
 							delta -= vin.value ?? 0;
 						}
 					}

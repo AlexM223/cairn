@@ -122,6 +122,7 @@ function toTxDetail(tx: EsploraTx, tipHeight: number, outspends?: (boolean | nul
 					vout: null,
 					address: null,
 					value: null,
+					prevScriptPubKey: null,
 					coinbase: true,
 					scriptSig: v.scriptsig || null,
 					witness: v.witness?.length ? v.witness : null
@@ -131,6 +132,7 @@ function toTxDetail(tx: EsploraTx, tipHeight: number, outspends?: (boolean | nul
 					vout: v.vout,
 					address: v.prevout?.scriptpubkey_address ?? null,
 					value: v.prevout?.value ?? null,
+					prevScriptPubKey: v.prevout?.scriptpubkey ?? null,
 					coinbase: false,
 					scriptSig: v.scriptsig || null,
 					witness: v.witness?.length ? v.witness : null

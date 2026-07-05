@@ -308,6 +308,21 @@ export function isExplorerAddress(s: string): boolean {
 }
 
 /**
+ * The scriptPubKey of an address, as lowercase hex.
+ *
+ * Used to attribute on-chain transaction outputs/inputs to a wallet by SCRIPT
+ * rather than by address string. The script is network-independent (a P2WPKH is
+ * `0014<hash>` whether the address reads `bc1…` or `bcrt1…`), so this matches
+ * correctly even when the explorer reports a different network's encoding than
+ * Cairn's mainnet-only derivation produces — which is why the balance (computed
+ * from the same script via the scripthash) is right while a naive address-string
+ * comparison would miss every match.
+ */
+export function scriptPubKeyHex(address: string): string {
+	return bytesToHex(addressToScriptPubKey(address));
+}
+
+/**
  * Electrum scripthash: sha256(scriptPubKey) with the byte order reversed, hex-encoded.
  */
 export function addressToScripthash(address: string): string {

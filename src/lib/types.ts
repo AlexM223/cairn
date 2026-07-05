@@ -92,6 +92,8 @@ export interface TxVin {
 	vout: number | null;
 	address: string | null;
 	value: number | null; // sats
+	/** scriptPubKey of the spent output, hex; null for coinbase or when unknown. */
+	prevScriptPubKey: string | null;
 	coinbase: boolean;
 	scriptSig: string | null; // hex, null when empty/absent
 	witness: string[] | null; // hex items, null when non-segwit input
