@@ -18,6 +18,7 @@ import {
 	generateAuthenticationOptions,
 	verifyAuthenticationResponse
 } from '@simplewebauthn/server';
+import { notify } from './notifications';
 import type {
 	AuthenticatorTransportFuture,
 	AuthenticationResponseJSON,
@@ -180,4 +181,38 @@ function parseCookie<T>(raw: string | undefined): T | null {
 	} catch {
 		return null;
 	}
+}
+
+// ---------------------------------------------------------------- notifications
+
+/**
+ * security_new_passkey (Unit 8, docs/NOTIFICATION-PLAN.md §3): fire a "was this
+ * you?" alert when a passkey is added to an existing account — both the normal
+ * "add a passkey in Settings" flow AND the account-recovery register-verify
+ * flow, which is exactly the case an attacker with a stolen recovery phrase
+ * would exercise. Deliberately NOT called for the first passkey created at
+ * signup (that's expected, and there is no prior owner to warn). Scoped to the
+ * affected user so it can reach them via channels that don't require being
+ * logged in (email/Telegram). Best-effort: notify() never throws.
+ *
+ * `viaRecovery` distinguishes the higher-signal recovery path from a routine
+ * add, and bumps the level accordingly.
+ */
+export function notifyNewPasskey(
+	userId: number,
+	opts: { name?: string | null; viaRecovery?: boolean } = {}
+): void {
+	const name = opts.name?.trim();
+	const label = name ? `"${name}"` : 'A new passkey';
+	notify({
+		type: 'security_new_passkey',
+		userId,
+		level: opts.viaRecovery ? 'warn' : 'info',
+		title: opts.viaRecovery ? 'Account recovered with a new passkey' : 'New passkey added',
+		body: opts.viaRecovery
+			? `${label} was registered to your account during account recovery. If this wasn't you, secure your account immediately.`
+			: `${label} was added to your account. If this wasn't you, review your passkeys.`,
+		detail: { viaRecovery: opts.viaRecovery === true },
+		link: '/settings'
+	});
 }

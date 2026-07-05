@@ -4,6 +4,8 @@ import { randomBytes } from 'node:crypto';
 import { getSessionUser, SESSION_COOKIE, bootstrapAdminFromEnv } from '$lib/server/auth';
 import { childLogger } from '$lib/server/logger';
 import { startNotificationQueueWorker } from '$lib/server/notificationQueue';
+import { startAddressWatcher } from '$lib/server/addressWatcher';
+import { startKeyHealthWatcher } from '$lib/server/keyHealth';
 
 const httpLog = childLogger('http');
 const errLog = childLogger('error');
@@ -23,6 +25,21 @@ try {
 	startNotificationQueueWorker();
 } catch (e) {
 	errLog.error({ err: e }, 'notification queue worker start failed');
+}
+
+// Event hooks (Unit 8, docs/NOTIFICATION-PLAN.md §3). The address watcher drives
+// per-address Electrum subscriptions for tx_received/tx_confirmed/tx_large; the
+// key-health watcher runs a daily scan for stale multisig keys (key_health_due).
+// Both are idempotent, unref'd, and self-contained (they never throw here).
+try {
+	startAddressWatcher();
+} catch (e) {
+	errLog.error({ err: e }, 'address watcher start failed');
+}
+try {
+	startKeyHealthWatcher();
+} catch (e) {
+	errLog.error({ err: e }, 'key health watcher start failed');
 }
 
 // Static assets and build output aren't worth a log line each (and the SPA

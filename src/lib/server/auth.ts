@@ -3,6 +3,7 @@ import type { Cookies } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { db } from './db';
 import { getInstanceSettings, getSetting } from './settings';
+import { notify } from './notifications';
 import type { CredentialInfo, SessionUser } from '$lib/types';
 import type { WebAuthnCredential } from '@simplewebauthn/server';
 
@@ -312,8 +313,26 @@ export function registerUser(input: RegisterInput): SessionUser {
 		.prepare('INSERT INTO users (email, password_hash, display_name, is_admin) VALUES (?, ?, ?, ?)')
 		.run(email, password ? hashPassword(password) : null, displayName, isFirstUser ? 1 : 0);
 
+	const newUserId = Number(result.lastInsertRowid);
+
+	// admin_new_signup (Unit 8): a new account was created — broadcast to admins.
+	// Skip the very first account: it IS the first admin creating the instance,
+	// there's no one to notify and no adminUserIds() to fan out to yet. notify()
+	// is best-effort (never throws), so a failure can't abort the registration.
+	if (!isFirstUser) {
+		notify({
+			type: 'admin_new_signup',
+			userId: null,
+			level: 'info',
+			title: 'New account created',
+			body: `${displayName} (${email}) just signed up.`,
+			detail: { newUserId, email, displayName },
+			link: '/admin/users'
+		});
+	}
+
 	return {
-		id: Number(result.lastInsertRowid),
+		id: newUserId,
 		email,
 		displayName,
 		isAdmin: isFirstUser
@@ -545,6 +564,19 @@ function redeemInvite(code: string): void {
 	assertInviteRedeemable(code);
 	const invite = findInvite(code)!;
 	db.prepare('UPDATE invites SET used_count = used_count + 1 WHERE id = ?').run(invite.id);
+
+	// admin_invite_used (Unit 8): an invite was just redeemed — broadcast to
+	// admins so they can see their invites being consumed. userId null = admin
+	// fan-out. Best-effort; never blocks redemption.
+	notify({
+		type: 'admin_invite_used',
+		userId: null,
+		level: 'info',
+		title: 'Invite code redeemed',
+		body: `An invite code was just used to register a new account.`,
+		detail: { inviteId: invite.id, usedCount: invite.used_count + 1, maxUses: invite.max_uses },
+		link: '/admin/invites'
+	});
 }
 
 export function generateInviteCode(): string {

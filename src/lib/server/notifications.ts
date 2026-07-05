@@ -7,6 +7,7 @@
 
 import { db } from './db';
 import { recordActivity } from './activity';
+import { notifyBus } from './notifyBus';
 import { childLogger } from './logger';
 import {
 	NOTIFICATION_CHANNELS,
@@ -177,6 +178,15 @@ export function notify(payload: NotificationPayload): void {
 			userId: payload.userId,
 			detail: payload.detail ?? null
 		});
+
+		// Live-push nudge for the in-app bell: the SSE stream endpoint subscribes
+		// to this and forwards a "your unread count may have changed" event to the
+		// connected user. Best-effort — emit failures must never break notify().
+		try {
+			notifyBus.emit('event', { userId: payload.userId });
+		} catch (e) {
+			log.error({ err: e, type: payload.type }, 'notifyBus emit failed');
+		}
 
 		// 2. Resolve which users + external channels apply, then enqueue. The
 		//    queued payload is a serialized NotificationPayload and by contract

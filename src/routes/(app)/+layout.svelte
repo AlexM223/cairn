@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import Logo from '$lib/components/Logo.svelte';
 	import Icon from '$lib/components/Icon.svelte';
+	import NotificationPanel from '$lib/components/NotificationPanel.svelte';
 
 	let { data, children } = $props();
 
@@ -72,6 +73,7 @@
 					<div class="user-name truncate">{data.user.displayName}</div>
 					<div class="user-email truncate">{data.user.email}</div>
 				</div>
+				<NotificationPanel />
 				<form method="POST" action="/logout">
 					<button class="logout-btn" title="Sign out" aria-label="Sign out">
 						<Icon name="logout" size={15} />
@@ -202,7 +204,7 @@
 	.user-chip {
 		display: flex;
 		align-items: center;
-		gap: 9px;
+		gap: 6px;
 		padding: 6px 8px;
 		border-radius: var(--radius-control);
 	}

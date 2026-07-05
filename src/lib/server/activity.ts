@@ -35,6 +35,11 @@ export interface ActivityEvent {
 	createdAt: string;
 	/** 'you' for a user-scoped event, 'instance' for an instance-wide one. */
 	scope: 'you' | 'instance';
+	/** ISO timestamp this event was marked read, or null when still unread.
+	 *  Read state is instance-wide (a single column on the row, shared across
+	 *  users) — the simpler model documented in NOTIFICATION-PLAN §2.1, matching
+	 *  how /activity already treats instance-wide events as stateless rows. */
+	readAt: string | null;
 }
 
 interface EventRow {
@@ -45,6 +50,7 @@ interface EventRow {
 	message: string;
 	detail: string | null;
 	created_at: string;
+	read_at: string | null;
 }
 
 /** Retained rows per user (and per the instance-wide NULL bucket). */
@@ -66,7 +72,8 @@ function mapRow(row: EventRow): ActivityEvent {
 		message: row.message,
 		detail,
 		createdAt: row.created_at,
-		scope: row.user_id === null ? 'instance' : 'you'
+		scope: row.user_id === null ? 'instance' : 'you',
+		readAt: row.read_at ?? null
 	};
 }
 
@@ -120,7 +127,7 @@ export function listActivity(userId: number, limit = 100): ActivityEvent[] {
 	const capped = Math.min(Math.max(1, Math.floor(limit) || 0), EVENTS_PER_BUCKET);
 	const rows = db
 		.prepare(
-			`SELECT id, user_id, type, level, message, detail, created_at
+			`SELECT id, user_id, type, level, message, detail, created_at, read_at
 			   FROM events
 			  WHERE user_id = ? OR user_id IS NULL
 			  ORDER BY id DESC

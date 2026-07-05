@@ -17,7 +17,12 @@ import {
 	consumeRecoveryGrant,
 	RECOVERY_GRANT_COOKIE
 } from '$lib/server/recovery';
-import { verifyRegistration, readRegChallenge, clearRegChallenge } from '$lib/server/webauthn';
+import {
+	verifyRegistration,
+	readRegChallenge,
+	clearRegChallenge,
+	notifyNewPasskey
+} from '$lib/server/webauthn';
 import { recordActivity } from '$lib/server/activity';
 import { childLogger } from '$lib/server/logger';
 import type { RegistrationResponseJSON } from '@simplewebauthn/server';
@@ -97,6 +102,11 @@ export const POST: RequestHandler = async (event) => {
 		userId: user.id,
 		message: 'Account recovery completed — a new passkey was registered and login restored.'
 	});
+	// security_new_passkey (Unit 8): the higher-signal recovery variant — this is
+	// exactly the event a stolen-recovery-phrase attack would trigger, so it must
+	// reach the real owner via out-of-band channels (email/Telegram), not just the
+	// in-app feed the attacker now controls.
+	notifyNewPasskey(user.id, { name: body.name ?? null, viaRecovery: true });
 
 	// Establish the REAL session.
 	const { token, expiresAt } = createSession(user.id);

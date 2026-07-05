@@ -3,7 +3,12 @@
 
 import { json, requireUser, readJson } from '$lib/server/api';
 import { listCredentials, addCredential, credentialExists } from '$lib/server/auth';
-import { verifyRegistration, readRegChallenge, clearRegChallenge } from '$lib/server/webauthn';
+import {
+	verifyRegistration,
+	readRegChallenge,
+	clearRegChallenge,
+	notifyNewPasskey
+} from '$lib/server/webauthn';
 import { childLogger } from '$lib/server/logger';
 import type { RegistrationResponseJSON } from '@simplewebauthn/server';
 import type { RequestHandler } from './$types';
@@ -63,5 +68,7 @@ export const POST: RequestHandler = async (event) => {
 	}
 
 	clearRegChallenge(event);
+	// "Was this you?" alert — the passkey is now stored on an existing account.
+	notifyNewPasskey(user.id, { name: body.name ?? null });
 	return json({ passkeys: listCredentials(user.id) }, { status: 201 });
 };

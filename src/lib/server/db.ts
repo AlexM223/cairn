@@ -592,6 +592,43 @@ db.exec(`
 	CREATE INDEX IF NOT EXISTS idx_notification_queue_user ON notification_queue(user_id, id DESC);
 `);
 
+// Notification event hooks (Unit 8, docs/NOTIFICATION-PLAN.md §3). The address
+// watcher (src/lib/server/addressWatcher.ts) subscribes each wallet/multisig
+// address in its gap window over Electrum and, on a change, diffs the address's
+// tx history against what it has already alerted on — this table is that memory.
+// Without it, a server restart would re-notify for every historical transaction
+// that predates this feature. wallet_kind ('wallet'|'multisig') disambiguates
+// the two id spaces, exactly like balance_snapshots. One row per (kind, wallet,
+// txid) the user has been notified about; the `confirmed` flag lets the
+// block-tip pass fire a single tx_confirmed once a previously-mempool tx
+// crosses into a block.
+db.exec(`
+	CREATE TABLE IF NOT EXISTS notified_txids (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		wallet_kind  TEXT NOT NULL,                  -- 'wallet' | 'multisig'
+		wallet_id    INTEGER NOT NULL,               -- id within its kind's table
+		user_id      INTEGER NOT NULL,               -- owner (who gets the notification)
+		txid         TEXT NOT NULL,
+		confirmed    INTEGER NOT NULL DEFAULT 0,     -- 1 once a tx_confirmed has fired
+		created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		UNIQUE (wallet_kind, wallet_id, txid)
+	);
+	CREATE INDEX IF NOT EXISTS idx_notified_txids_wallet ON notified_txids(wallet_kind, wallet_id);
+`);
+
+// Key-health nudge throttle. key_health_due fires when a multisig key hasn't
+// been verified in ~180 days; this column records the last time we notified for
+// THAT key so we don't nag more than once per 30 days. Guarded/idempotent ALTER,
+// same convention as last_verified_at above. NULL = never notified.
+{
+	const keyCols = (db.prepare('PRAGMA table_info(multisig_keys)').all() as { name: string }[]).map(
+		(c) => c.name
+	);
+	if (!keyCols.includes('last_notified_at')) {
+		db.exec('ALTER TABLE multisig_keys ADD COLUMN last_notified_at TEXT');
+	}
+}
+
 // Periodic wallet-config backup reminders (cairn-2xhw). Per-user dismissal
 // timestamp for the "it's been a while since you downloaded your wallet
 // backups" nudge; the nudge re-appears once it's older than the reminder

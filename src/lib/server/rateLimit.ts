@@ -9,6 +9,9 @@
 // unless the adapter is told which header carries the client IP (adapter-node:
 // ADDRESS_HEADER=x-forwarded-for). Per-email limits still apply either way.
 
+import { getUserByEmail } from './auth';
+import { notify } from './notifications';
+
 interface FailureWindow {
 	count: number;
 	windowStart: number;
@@ -71,8 +74,46 @@ export function loginRetryAfter(ip: string, email: string): number | null {
 	return retryAfter(emailKey, LIMITS.loginEmail) ?? retryAfter(ipKey, LIMITS.loginIp);
 }
 
+// Remembers the windowStart of the email bucket we last fired a
+// security_failed_login alert for, so a burst past the threshold produces
+// exactly ONE notification per window (not one per attempt over the line).
+const failedLoginNotified = new Map<string, number>();
+
 export function noteLoginFailure(ip: string, email: string): void {
 	for (const key of loginKeys(ip, email)) recordFailure(key);
+
+	// security_failed_login (Unit 8, §3): fire once when THIS account crosses the
+	// per-email failed-attempt threshold within the rate-limit window. Reuses the
+	// limiter's own counter rather than adding a second one. Scoped to the matched
+	// userId — if the email doesn't match a real account there is no one to notify,
+	// so we skip (also avoids leaking which emails exist). Best-effort.
+	const emailKey = `login:email:${email.trim().toLowerCase()}`;
+	const b = bucket(emailKey);
+	if (!b || b.count < LIMITS.loginEmail) return;
+
+	// One alert per window: only fire the first time the count reaches the limit.
+	if (failedLoginNotified.get(emailKey) === b.windowStart) return;
+	failedLoginNotified.set(emailKey, b.windowStart);
+	// Opportunistic cleanup so this map can't grow unbounded.
+	if (failedLoginNotified.size > 10_000) {
+		const now = Date.now();
+		for (const [k, start] of failedLoginNotified) {
+			if (now - start > WINDOW_MS) failedLoginNotified.delete(k);
+		}
+	}
+
+	const user = getUserByEmail(email);
+	if (!user) return; // no real account — nothing (and no one) to notify
+
+	notify({
+		type: 'security_failed_login',
+		userId: user.id,
+		level: 'warn',
+		title: 'Repeated failed sign-in attempts',
+		body: `There have been ${b.count} failed sign-in attempts on your account in the last 15 minutes. If this wasn't you, your password may be under attack.`,
+		detail: { attempts: b.count },
+		link: '/settings'
+	});
 }
 
 export function noteLoginSuccess(ip: string, email: string): void {

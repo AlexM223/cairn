@@ -8,6 +8,7 @@
 
 import type { ElectrumClient, ElectrumHeader } from './electrum/client';
 import { recordActivity } from './activity';
+import { notify } from './notifications';
 import { childLogger } from './logger';
 import { formatNumber } from '$lib/format';
 
@@ -18,6 +19,23 @@ const log = childLogger('electrum');
 // still reported.
 let connected: boolean | null = null;
 let lastBlockHeight = 0;
+
+// admin_server_health debounce (§3): the Electrum client flaps and retries with
+// backoff, so a bare 'disconnect' listener would spam. Instead, when the
+// connection goes down we arm a timer; only if it's STILL down after the grace
+// window do we fire ONE admin notification for the outage. A reconnect within
+// the window cancels the pending alert. `healthAlerted` latches so we don't
+// re-alert until the connection has recovered at least once.
+const OUTAGE_GRACE_MS = 60_000;
+let outageTimer: ReturnType<typeof setTimeout> | null = null;
+let healthAlerted = false;
+
+function clearOutageTimer(): void {
+	if (outageTimer !== null) {
+		clearTimeout(outageTimer);
+		outageTimer = null;
+	}
+}
 
 /** Attach activity/logging listeners to a freshly built Electrum client. */
 export function wireChainEvents(electrum: ElectrumClient): void {
@@ -30,6 +48,22 @@ export function wireChainEvents(electrum: ElectrumClient): void {
 	electrum.setMaxListeners(64);
 
 	electrum.on('connect', () => {
+		// A successful connect ends any outage: cancel a pending alert and, if we
+		// had already alerted, send a single "recovered" note and re-arm for the
+		// next outage.
+		clearOutageTimer();
+		if (healthAlerted) {
+			healthAlerted = false;
+			notify({
+				type: 'admin_server_health',
+				userId: null,
+				level: 'success',
+				title: 'Bitcoin node connection restored',
+				body: `Cairn reconnected to its Bitcoin backend (${server}).`,
+				detail: { server },
+				link: '/admin/settings'
+			});
+		}
 		if (connected === true) return;
 		connected = true;
 		log.info({ server }, 'connected');
@@ -42,6 +76,25 @@ export function wireChainEvents(electrum: ElectrumClient): void {
 	});
 
 	electrum.on('disconnect', () => {
+		// Arm the debounced outage alert (only if not already armed/alerted). The
+		// client keeps retrying in the background; we only bother an admin once the
+		// outage has clearly persisted past the grace window.
+		if (!healthAlerted && outageTimer === null) {
+			outageTimer = setTimeout(() => {
+				outageTimer = null;
+				healthAlerted = true;
+				notify({
+					type: 'admin_server_health',
+					userId: null,
+					level: 'error',
+					title: 'Bitcoin node connection down',
+					body: `Cairn has been unable to reach its Bitcoin backend (${server}) for over a minute. Wallet balances and sends may be stale until it reconnects.`,
+					detail: { server },
+					link: '/admin/settings'
+				});
+			}, OUTAGE_GRACE_MS);
+			outageTimer.unref?.();
+		}
 		if (connected === false) return;
 		connected = false;
 		log.warn({ server }, 'connection lost');
@@ -75,4 +128,8 @@ export function wireChainEvents(electrum: ElectrumClient): void {
  */
 export function resetConnectionState(): void {
 	connected = null;
+	// The old client is being torn down without a 'disconnect'; drop any pending
+	// outage alert and latch so the fresh client starts from a clean slate.
+	clearOutageTimer();
+	healthAlerted = false;
 }
