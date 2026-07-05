@@ -360,6 +360,33 @@ db.exec(`
 		ON balance_snapshots(user_id, wallet_kind, wallet_id, taken_at);
 `);
 
+// Legal disclosure acceptances (see src/lib/server/disclosures.ts). Two records:
+//  • admin_disclosure_acceptances — the operator's one-time acknowledgement,
+//    during first-run, that they run infrastructure (not custody). One row per
+//    admin who accepted.
+//  • user_agreement_acceptances — a clickwrap record per user per agreement
+//    version: which version they accepted, when, and from which IP (kept for the
+//    operator's legal record). A version bump (admin edits the terms) means the
+//    user's latest accepted version < current, and they must accept again.
+// The agreement TEXT, operator name, and current version live in `settings`.
+db.exec(`
+	CREATE TABLE IF NOT EXISTS admin_disclosure_acceptances (
+		user_id     INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+		accepted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+	);
+
+	CREATE TABLE IF NOT EXISTS user_agreement_acceptances (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		version     INTEGER NOT NULL,   -- the user_agreement_version accepted
+		accepted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		ip          TEXT,               -- best-effort client IP at acceptance
+		UNIQUE (user_id, version)
+	);
+	CREATE INDEX IF NOT EXISTS idx_user_agreement_acceptances_user
+		ON user_agreement_acceptances(user_id);
+`);
+
 // User-facing activity feed (adapted from Bastion's audit_log, but for
 // friendly "here's what your instance is doing" events rather than a security
 // trail). One row per notable happening. user_id is NULL for instance-wide
@@ -413,6 +440,45 @@ db.exec(`
 		db.exec('ALTER TABLE users ADD COLUMN password_hash TEXT');
 	}
 }
+
+// Account recovery secrets — how a user gets back INTO Cairn (their LOGIN) after
+// losing every passkey, NOT how they recover bitcoin. These secrets restore the
+// login only; they can never move or reveal bitcoin, whose keys live entirely on
+// the hardware wallet. Two independent mechanisms, both stored ONLY as salted
+// scrypt hashes (never plaintext), mirroring password_hash's format:
+//   • account_recovery_phrases — a 12-word phrase, one per user, reusable.
+//   • account_recovery_codes   — 8 single-use codes; used_at marks a spent code.
+// Regeneration replaces the prior secret(s) (see src/lib/server/recovery.ts).
+// A separate short-TTL recovery_grants table authorizes ONLY the "register a new
+// passkey" step after a successful recovery verify — it is NOT a full session;
+// it mirrors the sessions table (opaque token, hash stored) so it survives a
+// restart without any new signing secret. See recovery.ts + the recover routes.
+db.exec(`
+	CREATE TABLE IF NOT EXISTS account_recovery_phrases (
+		user_id    INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+		phrase_hash TEXT NOT NULL,          -- salted scrypt hash (auth.ts format)
+		created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+	);
+
+	CREATE TABLE IF NOT EXISTS account_recovery_codes (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		code_hash  TEXT NOT NULL,           -- salted scrypt hash (auth.ts format)
+		used_at    TEXT,                    -- NULL = unused; set atomically on spend
+		created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+	);
+	CREATE INDEX IF NOT EXISTS idx_account_recovery_codes_user ON account_recovery_codes(user_id);
+
+	CREATE TABLE IF NOT EXISTS recovery_grants (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		token_hash TEXT NOT NULL UNIQUE,    -- sha256 of the opaque grant token
+		user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		purpose    TEXT NOT NULL DEFAULT 'register_passkey',
+		created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		expires_at TEXT NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_recovery_grants_user ON recovery_grants(user_id);
+`);
 
 // Key health checks (Casa's periodic-verification pattern): a multisig key you
 // haven't recently proven you still control is a silent liability — devices
