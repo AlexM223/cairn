@@ -641,7 +641,7 @@
 			<Icon name="chevron-left" size={15} />
 			<span>{data.multisig.name}</span>
 		</a>
-		<h1 class="page-title">Send from multisig</h1>
+		<h1 class="page-title">Send from your wallet</h1>
 		<p class="quorum-line text-secondary">
 			{quorum} multisig — this spend needs signatures from {required}
 			{required === 1 ? 'key' : 'different keys'}.
@@ -660,12 +660,12 @@
 					Cairn builds an <Term
 						tip="A Partially Signed Bitcoin Transaction — an unsigned proposal each of your signing devices reviews and signs in turn. Private keys never touch Cairn's server."
 						>unsigned transaction (a PSBT)</Term
-					> describing exactly what will be sent. Because this multisig is {quorum} multisig, no single
+					> describing exactly what will be sent. Because this wallet is {quorum} multisig, no single
 					device can authorize it — you'll walk the same PSBT through {required} of your keys, one at
 					a time, and Cairn merges the signatures.
 				</p>
 				<p>
-					<strong>That's the point of a multisig:</strong> a thief (or a bug) with one key gets nothing.
+					<strong>That's the point of a multisig wallet:</strong> a thief (or a bug) with one key gets nothing.
 					Verify the destination and amount on each device's own screen as you go.
 				</p>
 			</HowItWorks>
@@ -745,7 +745,7 @@
 							{:else}
 								<div class="max-note">
 									<Icon name="zap" size={15} />
-									<span>Sweeps the multisig's entire spendable balance to this address, minus the fee.</span>
+									<span>Sweeps the wallet's entire spendable balance to this address, minus the fee.</span>
 								</div>
 							{/if}
 						</div>
@@ -875,7 +875,7 @@
 				</div>
 				{#if review.change}
 					<div class="detail-row">
-						<span class="text-secondary">Change back to the multisig</span>
+						<span class="text-secondary">Change back to the wallet</span>
 						<span class="detail-val tabular">{formatSats(review.change.value)} sats</span>
 					</div>
 				{/if}
@@ -977,7 +977,7 @@
 			<div class="key-frame">
 				<span class="badge badge-accent">Key {Math.min(collected + 1, required)} of {required}</span>
 				<span class="text-secondary">
-					Each signature comes from a different device — that's what makes it a multisig.
+					Each signature comes from a different device — that's what makes it a multisig wallet.
 				</span>
 			</div>
 
@@ -1070,13 +1070,13 @@
 							<Icon name="alert-triangle" size={15} />
 							<div>
 								<strong>First time signing with “{data.multisig.name}” on this device? Register the
-									multisig on it first.</strong>
-								SeedSigner, Passport, and Keystone <em>refuse to sign</em> for a multisig multisig
+									wallet on it first.</strong>
+								SeedSigner, Passport, and Keystone <em>refuse to sign</em> for a multisig wallet
 								they don't know — that's the device protecting you. Download the registration
 								file and import it before scanning the transaction (SeedSigner: load it from SD
 								or scan it as a QR; Passport/Keystone: import from microSD) — a one-time step per
 								device. If the device warns about an unknown wallet or declines the PSBT, that's
-								expected, not a bug: register the multisig and scan again.
+								expected, not a bug: register the wallet and scan again.
 								<div class="register-actions">
 									<a class="btn btn-secondary btn-sm" href={registrationUrl} download>
 										<Icon name="arrow-down-left" size={14} /> Download registration file
@@ -1313,7 +1313,7 @@
 			{/if}
 
 			<div class="row step-actions" style="justify-content: center">
-				<a class="btn btn-secondary" href={`/wallets/multisig/${multisigId}`}>Back to multisig</a>
+				<a class="btn btn-secondary" href={`/wallets/multisig/${multisigId}`}>Back to wallet</a>
 				<a class="btn btn-primary" href={`/wallets/multisig/${multisigId}/send`} data-sveltekit-reload
 					>Send another</a
 				>

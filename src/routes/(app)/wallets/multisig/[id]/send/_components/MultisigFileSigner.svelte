@@ -144,9 +144,9 @@
 		<div class="register-callout" role="note">
 			<Icon name="alert-triangle" size={15} />
 			<div>
-				<strong>First time signing with “{multisigName}” on this ColdCard? Register the multisig on the
+				<strong>First time signing with “{multisigName}” on this ColdCard? Register the multisig wallet on the
 					device first.</strong>
-				A ColdCard <em>refuses to sign</em> multisig transactions for a multisig it doesn't know —
+				A ColdCard <em>refuses to sign</em> multisig transactions for a multisig wallet it doesn't know —
 				that's the device protecting you. Download the registration file, copy it to the microSD
 				card alongside the transaction, and import it on the ColdCard under
 				<em>Settings → Multisig Wallets → Import from SD</em> — a one-time step per device. If you

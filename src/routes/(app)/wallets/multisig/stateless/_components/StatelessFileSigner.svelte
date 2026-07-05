@@ -128,7 +128,7 @@
 	<div class="register-callout" role="note">
 		<Icon name="alert-triangle" size={15} />
 		<div>
-			<strong>First time signing for “{multisigLabel}” on this device? It may need the multisig
+			<strong>First time signing for “{multisigLabel}” on this device? It may need the wallet
 				registered first.</strong>
 			ColdCard (and other air-gapped signers) <em>refuse to sign</em> multisig transactions for a
 			{threshold}-of-{totalKeys} setup they don't know — that's the device protecting you. If your

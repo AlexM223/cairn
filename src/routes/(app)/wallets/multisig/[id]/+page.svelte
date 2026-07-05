@@ -158,14 +158,14 @@
 <div class="detail fade-in">
 	<a href="/wallets" class="back-link">
 		<Icon name="chevron-left" size={14} />
-		Multisigs
+		Wallets
 	</a>
 
 	{#if data.created && !createdDismissed}
 		<div class="created-banner" role="status">
 			<Icon name="check" size={15} />
 			<span class="grow">
-				Multisig created — fund it with a small test amount first, and keep your backup file safe.
+				Wallet created — fund it with a small test amount first, and keep your backup file safe.
 			</span>
 			<button
 				type="button"
@@ -203,7 +203,7 @@
 			href="/api/wallets/multisig/{data.multisig.id}/history.csv"
 			class="btn btn-ghost btn-sm"
 			download
-			title="Download this multisig's transaction history as a CSV file"
+			title="Download this wallet's transaction history as a CSV file"
 		>
 			<Icon name="arrow-down-left" size={14} />
 			Export history
@@ -234,7 +234,7 @@
 				<span class="confirm-text">Really delete? Your keys keep the money — but Cairn stops watching it.</span>
 				<button class="btn btn-danger btn-sm" disabled={deleting}>
 					{#if deleting}<span class="spinner"></span>{/if}
-					Delete multisig
+					Delete wallet
 				</button>
 				<button
 					type="button"
@@ -303,7 +303,7 @@
 						</span>
 					{/if}
 					{#if needsRegistration(key.deviceType) && !registeredAcks[key.id]}
-						<span class="key-chip-flag" title="This device refuses to sign for multisigs it hasn't registered — see below.">
+						<span class="key-chip-flag" title="This device refuses to sign for multisig wallets it hasn't registered — see below.">
 							Registered?
 						</span>
 					{/if}
@@ -315,7 +315,7 @@
 			<div class="key-health-head">
 				<span class="key-health-title">
 					<Term
-						tip="Devices die, PINs get forgotten, and a device restored from the wrong seed keeps working for everything except this multisig. A quick check proves each key still derives this multisig — before you need it to."
+						tip="Devices die, PINs get forgotten, and a device restored from the wrong seed keeps working for everything except this wallet. A quick check proves each key still derives this wallet — before you need it to."
 						>Key checks</Term
 					>
 				</span>
@@ -345,13 +345,13 @@
 					<Icon name="alert-triangle" size={14} />
 					One-time step: teach {unregisteredKeys.length === 1
 						? `"${unregisteredKeys[0].name}"`
-						: 'these devices'} this multisig
+						: 'these devices'} this wallet
 				</span>
 				<p class="register-copy">
-					A ColdCard (and SeedSigner/Passport) <strong>only signs for multisigs it knows</strong>
+					A ColdCard (and SeedSigner/Passport) <strong>only signs for multisig wallets it knows</strong>
 					— it will refuse this one until registered. Download the registration file, copy it
 					to the microSD card, then on the ColdCard: <strong>Settings → Multisig Wallets →
-					Import from SD</strong>. The device shows this multisig's {data.multisig.threshold}-of-{data.multisig.keys.length}
+					Import from SD</strong>. The device shows this wallet's {data.multisig.threshold}-of-{data.multisig.keys.length}
 					quorum and keys — confirm, and it's done.
 				</p>
 				<div class="row" style="gap: 8px; flex-wrap: wrap">
@@ -378,7 +378,7 @@
 		<div class="card card-pad scan-error">
 			<Icon name="alert-triangle" size={18} />
 			<div class="grow">
-				<div style="font-weight: 500">Can't reach the multisig scanner</div>
+				<div style="font-weight: 500">Can't reach the wallet scanner</div>
 				<div class="hint">{data.scanError}</div>
 			</div>
 			<button type="button" class="btn btn-secondary btn-sm" onclick={retry} disabled={retrying}>
@@ -435,7 +435,7 @@
 							</div>
 							<span class="hint">
 								Before a large deposit, cross-check this address in another tool (Sparrow can
-								open your backup file) — two tools agreeing proves the multisig is built from
+								open your backup file) — two tools agreeing proves the wallet is built from
 								your keys alone.
 							</span>
 							{#if form?.receiveError}
@@ -473,7 +473,7 @@
 				<Icon name="arrow-down-left" size={15} />
 				<span class="card-title grow">
 					<Term
-						tip="Save this file somewhere safe. It's how you recover this multisig in another wallet app if needed."
+						tip="Save this file somewhere safe. It's how you recover this wallet in another wallet app if needed."
 						>Download backup</Term
 					>
 				</span>
@@ -485,7 +485,7 @@
 				{/if}
 			</div>
 			<p class="backup-copy">
-				The backup describes the multisig — quorum and public keys — so any descriptor wallet can
+				The backup describes the wallet — quorum and public keys — so any descriptor wallet can
 				find your money again. It <strong>can't spend</strong>; spending always needs
 				{data.multisig.threshold} of your keys. Store it with your seed backups.
 			</p>
@@ -519,7 +519,7 @@
 				<span class="hint">
 					<strong>Wallet config</strong> — opens directly in Sparrow, Caravan and Unchained.
 					· <strong>ColdCard file</strong> — put it on the microSD so the ColdCard (or
-					Passport/Keystone/SeedSigner) recognizes the multisig before co-signing.
+					Passport/Keystone/SeedSigner) recognizes the wallet before co-signing.
 					· <strong>Descriptor</strong> — the raw text form, for Bitcoin Core and power users.
 				</span>
 				<div class="descriptor-line">
@@ -681,7 +681,7 @@
 												</span>
 											{:else}
 												<Term
-													tip="Each of this multisig's keys uses its own base path, so only this receive/change suffix is shared — open Details for every key's full path."
+													tip="Each of this wallet's keys uses its own base path, so only this receive/change suffix is shared — open Details for every key's full path."
 												>
 													<span class="mono text-muted path-text">/{addr.chain}/{addr.index}</span>
 												</Term>
@@ -737,11 +737,11 @@
 						<p class="change-note">
 							<Icon name="info" size={13} />
 							<span>
-								Rows marked <span class="chg-chip">change</span> are this multisig's internal
+								Rows marked <span class="chg-chip">change</span> are this wallet's internal
 								addresses. When you spend, whatever isn't sent to the recipient comes back to
 								one of these — same keys, same {data.multisig.threshold}-of-{data.multisig.keys.length}
 								quorum, just a separate branch so payments you receive stay apart from your own
-								leftovers. Seeing them here is normal; that money never left the multisig.
+								leftovers. Seeing them here is normal; that money never left the wallet.
 							</span>
 						</p>
 					{/if}

@@ -205,7 +205,7 @@
 		if (!m) return null;
 		const prefix = m[1];
 		const multisigLabel = MULTISIG_SCRIPT_LABELS[scriptType];
-		const governs = `the multisig's ${multisigLabel} setting governs the addresses either way — the prefix is just a labeling convention`;
+		const governs = `the wallet's ${multisigLabel} setting governs the addresses either way — the prefix is just a labeling convention`;
 		switch (prefix) {
 			case 'xpub':
 				return {
@@ -217,16 +217,16 @@
 					label: 'Zpub',
 					desc:
 						scriptType === 'p2wsh'
-							? 'a key labeled for Native SegWit multisig (SLIP-132) — matches this multisig.'
-							: `a key labeled for Native SegWit multisig (SLIP-132); this multisig uses ${multisigLabel}, which is fine — ${governs}.`
+							? 'a key labeled for Native SegWit multisig (SLIP-132) — matches this wallet.'
+							: `a key labeled for Native SegWit multisig (SLIP-132); this wallet uses ${multisigLabel}, which is fine — ${governs}.`
 				};
 			case 'Ypub':
 				return {
 					label: 'Ypub',
 					desc:
 						scriptType === 'p2sh-p2wsh'
-							? 'a key labeled for Nested SegWit multisig (SLIP-132) — matches this multisig.'
-							: `a key labeled for Nested SegWit multisig (SLIP-132); this multisig uses ${multisigLabel}, which is fine — ${governs}.`
+							? 'a key labeled for Nested SegWit multisig (SLIP-132) — matches this wallet.'
+							: `a key labeled for Nested SegWit multisig (SLIP-132); this wallet uses ${multisigLabel}, which is fine — ${governs}.`
 				};
 			case 'zpub':
 				return {
@@ -241,7 +241,7 @@
 			case 'tpub':
 				return {
 					label: 'tpub',
-					desc: 'a TESTNET key. This multisig tracks real (mainnet) bitcoin, so this key will be rejected.'
+					desc: 'a TESTNET key. This wallet tracks real (mainnet) bitcoin, so this key will be rejected.'
 				};
 			default:
 				return null;
@@ -445,7 +445,7 @@
 				deviceType: 'file' as MultisigDeviceType,
 				...k
 			}));
-			importedNote = `Read an existing ${imported.threshold}-of-${imported.totalKeys} multisig${imported.name ? ` ("${imported.name}")` : ''} — its keys are filled in on the next step.`;
+			importedNote = `Read an existing ${imported.threshold}-of-${imported.totalKeys} multisig wallet${imported.name ? ` ("${imported.name}")` : ''} — its keys are filled in on the next step.`;
 			showImport = false;
 			importText = '';
 		} finally {
@@ -551,15 +551,15 @@
 </script>
 
 <svelte:head>
-	<title>New multisig — Cairn</title>
+	<title>New multisig wallet — Cairn</title>
 </svelte:head>
 
 <div class="wizard fade-in" bind:this={pageEl}>
 	<a href="/wallets" class="back-link">
 		<Icon name="chevron-left" size={14} />
-		Multisigs
+		Wallets
 	</a>
-	<h1 class="page-title" style="margin-bottom: 4px">Create a multisig</h1>
+	<h1 class="page-title" style="margin-bottom: 4px">Create a multisig wallet</h1>
 	<p class="hint" style="margin-bottom: 20px">
 		Money that needs several of your keys to move — no single point of failure.
 	</p>
@@ -575,10 +575,10 @@
 
 			{#if data.hasMultisigs}
 				<!-- Repeat users get the education collapsed out of the way. -->
-				<HowItWorks id="multisig-why" title="Why a multisig?">
+				<HowItWorks id="multisig-why" title="Why a multisig wallet?">
 					<p>
-						A single key that's lost means the funds are gone. A multisig
-						<strong>splits control</strong> across several keys — like a bank multisig requiring
+						A single key that's lost means the funds are gone. A multisig wallet
+						<strong>splits control</strong> across several keys — like a bank vault requiring
 						two keys turned at the same time.
 					</p>
 					<p>
@@ -589,12 +589,12 @@
 			{:else}
 				<div class="why-panel">
 					<p>
-						<strong>A single key that's lost means funds are gone.</strong> A multisig splits
-						control across several keys — like a bank multisig requiring two keys turned at the
+						<strong>A single key that's lost means funds are gone.</strong> A multisig wallet splits
+						control across several keys — like a bank vault requiring two keys turned at the
 						same time.
 					</p>
 					<p>
-						<strong>Losing one key doesn't lose your funds.</strong> With a 2-of-3 multisig, any
+						<strong>Losing one key doesn't lose your funds.</strong> With a 2-of-3 multisig wallet, any
 						two keys can spend, so one lost or stolen key changes nothing: a thief with one
 						key gets nothing, and you still spend with the other two.
 					</p>
@@ -745,7 +745,7 @@
 							<span class="radio-text">
 								<span class="radio-name">Nested SegWit (P2SH-P2WSH)</span>
 								<span class="radio-desc">
-									Only if you must match an older multisig built this way. Addresses start with 3.
+									Only if you must match an older multisig wallet built this way. Addresses start with 3.
 								</span>
 							</span>
 						</label>
@@ -770,14 +770,14 @@
 					aria-expanded={showImport}
 				>
 					<Icon name="arrow-down-left" size={14} />
-					Already have this multisig in another app? Import it
+					Already have this wallet in another app? Import it
 					<span class="chev" class:open={showImport}><Icon name="chevron-down" size={14} /></span>
 				</button>
 				{#if showImport}
 					<div class="disclosure-body fade-in">
 						<p class="hint" style="margin-bottom: 8px">
-							Paste the multisig's <Term
-								tip="A descriptor is a single line of text that describes a multisig completely — the quorum and every public key. Wallets like Sparrow export it under Settings."
+							Paste the wallet's <Term
+								tip="A descriptor is a single line of text that describes a multisig wallet completely — the quorum and every public key. Wallets like Sparrow export it under Settings."
 								>descriptor</Term
 							>, or a Caravan / Unchained wallet file (JSON) — Cairn fills in the quorum and
 							keys for you.
@@ -913,7 +913,7 @@
 
 			{#if keys.length > totalKeys}
 				<div class="form-error" role="alert">
-					You've added {keys.length} keys but the multisig only holds {totalKeys} — remove
+					You've added {keys.length} keys but the wallet only holds {totalKeys} — remove
 					{keys.length - totalKeys} or go back and raise the total.
 				</div>
 			{:else if keys.length < totalKeys}
@@ -1118,7 +1118,7 @@
 									</label>
 								</div>
 								<span class="hint">
-									You'll see the multisig's shared addresses to double-check at the Review step.
+									You'll see the wallet's shared addresses to double-check at the Review step.
 								</span>
 
 								<div class="disclosure">
@@ -1225,7 +1225,7 @@
 			<span class="overline">Step 3 · Review</span>
 			<p class="step-lead">
 				<strong>{threshold} of your {totalKeys} keys</strong> will be required to spend from
-				this multisig.
+				this wallet.
 			</p>
 
 			<div class="review-keys">
@@ -1250,7 +1250,7 @@
 			<div class="test-address">
 				<span class="test-title">
 					<Icon name="eye" size={15} />
-					Check these addresses before you fund the multisig
+					Check these addresses before you fund the wallet
 				</span>
 				{#if previewLoading}
 					<div class="row" style="gap: 8px"><span class="spinner"></span><span class="hint">Deriving addresses…</span></div>
@@ -1279,7 +1279,7 @@
 				<p class="test-why">
 					<strong>Why check?</strong> If another tool — Sparrow, or the display on your
 					hardware device — derives these <em>exact</em> addresses from the same keys, it
-					proves every key was entered correctly. Money sent to a multisig built from a mistyped
+					proves every key was entered correctly. Money sent to a wallet built from a mistyped
 					key can be lost for good, so one minute of cross-checking is the best insurance
 					there is.
 				</p>
@@ -1289,7 +1289,7 @@
 				<span class="need-title">If you lose a key</span>
 				<p class="need-copy">
 					Your money stays safe and spendable while you still have {threshold} of {totalKeys}.
-					Replace the multisig promptly — create a new one with a fresh key and move the funds.
+					Replace the wallet promptly — create a new one with a fresh key and move the funds.
 				</p>
 			</div>
 
@@ -1315,7 +1315,7 @@
 			<span class="overline">Step 4 · Confirm</span>
 
 			<div class="field">
-				<label class="label" for="multisig-name">Name your multisig</label>
+				<label class="label" for="multisig-name">Name your wallet</label>
 				<input
 					id="multisig-name"
 					class="input"
@@ -1373,7 +1373,7 @@
 				>
 					{#if creating}<span class="spinner"></span>{/if}
 					<Icon name="shield" size={14} />
-					Create multisig
+					Create multisig wallet
 				</button>
 			</div>
 		</section>
@@ -1382,7 +1382,7 @@
 		<section class="step-body card card-pad pane done-pane" tabindex="-1" aria-label={stepAriaLabel}>
 			<div class="done-hero">
 				<span class="done-icon"><Icon name="shield" size={24} /></span>
-				<h2 class="done-title">Your multisig is ready</h2>
+				<h2 class="done-title">Your multisig wallet is ready</h2>
 				<p class="done-sub">
 					{threshold} of {totalKeys} keys now guard anything you send to it.
 				</p>
@@ -1394,10 +1394,10 @@
 					First: download your backup
 				</span>
 				<p class="next-copy">
-					Save this file somewhere safe — it's how you see and recover this multisig in another
+					Save this file somewhere safe — it's how you see and recover this wallet in another
 					wallet app if this one is ever unavailable. It contains only <strong>public</strong>
 					keys: it can't spend, but without it (or the original keys' details) rebuilding the
-					multisig is much harder.
+					wallet is much harder.
 				</p>
 				<div class="row" style="gap: 8px; flex-wrap: wrap">
 					<a
@@ -1431,15 +1431,15 @@
 				<div class="next-card register-card">
 					<span class="next-title">
 						<Icon name="alert-triangle" size={15} />
-						{hasColdcardKey ? 'Register this multisig on your ColdCard' : 'Register this multisig on your air-gapped signer'}
+						{hasColdcardKey ? 'Register this wallet on your ColdCard' : 'Register this wallet on your air-gapped signer'}
 					</span>
 					<p class="next-copy">
 						{#if hasColdcardKey}
-							Your ColdCard <strong>only signs for multisigs it knows</strong> — it will refuse
+							Your ColdCard <strong>only signs for multisig wallets it knows</strong> — it will refuse
 							this one until you teach it, once:
 						{:else}
-							Air-gapped signers like SeedSigner and Passport <strong>only sign for multisigs
-							they know</strong> — teach yours, once:
+							Air-gapped signers like SeedSigner and Passport <strong>only sign for multisig
+							wallets they know</strong> — teach yours, once:
 						{/if}
 					</p>
 					<ol class="register-steps">
@@ -1477,14 +1477,14 @@
 					Then: fund it
 				</span>
 				<p class="next-copy">
-					Grab a receive address from the multisig page. Start with a small test amount, watch it
+					Grab a receive address from the wallet page. Start with a small test amount, watch it
 					arrive, and spend it once — then move real savings in.
 				</p>
 			</div>
 
 			<div class="pane-actions" style="justify-content: center">
 				<a href="/wallets/multisig/{createdId}?created=1" class="btn btn-primary">
-					Go to your multisig
+					Go to your multisig wallet
 					<Icon name="arrow-right" size={14} />
 				</a>
 			</div>

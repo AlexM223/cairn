@@ -127,7 +127,7 @@
 			merges into the transaction.
 		</p>
 		<p>
-			No registration step is needed: unlike some devices, a Trezor doesn't store the multisig — it
+			No registration step is needed: unlike some devices, a Trezor doesn't store the wallet — it
 			re-checks the complete {threshold}-of-{totalKeys} cosigner set with every signature, every
 			time. That re-check is the reassurance, not a hurdle.
 		</p>
@@ -196,7 +196,7 @@
 				</div>
 				{#if changeSats > 0}
 					<div class="fact">
-						<dt>Change back to the multisig</dt>
+						<dt>Change back to the wallet</dt>
 						<dd class="num">{formatSats(changeSats)} sats</dd>
 					</div>
 				{/if}

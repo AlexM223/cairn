@@ -412,11 +412,11 @@
 	<header class="page-head">
 		<a class="back" href="/wallets">
 			<Icon name="chevron-left" size={15} />
-			<span>Multisigs</span>
+			<span>Wallets</span>
 		</a>
 		<h1 class="page-title">Stateless signer</h1>
 		<p class="lead text-secondary">
-			Work a multisig multisig straight from its config file — balance, spend, sign, broadcast —
+			Work a multisig wallet straight from its config file — balance, spend, sign, broadcast —
 			without saving anything to Cairn.
 		</p>
 	</header>
@@ -445,14 +445,14 @@
 				<HowItWorks id="stateless-multisig">
 					<p>
 						Paste an <Term
-							tip="A single line of text (wsh(sortedmulti(…))) that describes every address a multisig multisig can ever derive — using only PUBLIC keys."
+							tip="A single line of text (wsh(sortedmulti(…))) that describes every address a multisig wallet can ever derive — using only PUBLIC keys."
 							>output descriptor</Term
-						> or a Caravan/Unchained wallet JSON. Cairn derives the multisig's addresses, checks their
+						> or a Caravan/Unchained wallet JSON. Cairn derives the wallet's addresses, checks their
 						balance over Electrum, and lets you build and sign a spend — the same
 						<Term
 							tip="A Partially Signed Bitcoin Transaction — an unsigned proposal each signing device reviews and signs in turn."
 							>PSBT</Term
-						> ceremony as a saved multisig, minus the saving.
+						> ceremony as a saved wallet, minus the saving.
 					</p>
 				</HowItWorks>
 
@@ -517,7 +517,7 @@
 						<p class="hint">
 							{scan.utxos.length}
 							{scan.utxos.length === 1 ? 'spendable coin' : 'spendable coins'} found across the
-							multisig's addresses.
+							wallet's addresses.
 						</p>
 
 						<div class="test-address">
@@ -544,7 +544,7 @@
 
 						<p class="import-hint hint">
 							Want history, labels, and health checks?
-							<a href="/wallets/multisig/new">Import it as a multisig instead</a> — same config, one wizard step.
+							<a href="/wallets/multisig/new">Import it as a multisig wallet instead</a> — same config, one wizard step.
 						</p>
 
 						<div class="row" style="justify-content: flex-end">
@@ -634,7 +634,7 @@
 							{:else}
 								<div class="max-note">
 									<Icon name="zap" size={15} />
-									<span>Sweeps the multisig's entire spendable balance to this address, minus the fee.</span>
+									<span>Sweeps the wallet's entire spendable balance to this address, minus the fee.</span>
 								</div>
 							{/if}
 						</div>
@@ -755,7 +755,7 @@
 							</div>
 							{#if details.change}
 								<div class="detail-row">
-									<span class="text-secondary">Change back to the multisig</span>
+									<span class="text-secondary">Change back to the wallet</span>
 									<span class="detail-val tabular">{formatSats(details.change.value)} sats</span>
 								</div>
 							{/if}
@@ -830,12 +830,12 @@
 							<CopyText value={sentTxid} display="Copy transaction ID" mono={false} />
 						</div>
 						<p class="hint">
-							Remember: nothing was saved. To track this multisig over time,
-							<a href="/wallets/multisig/new">import the config as a multisig</a>.
+							Remember: nothing was saved. To track this wallet over time,
+							<a href="/wallets/multisig/new">import the config as a multisig wallet</a>.
 						</p>
 						<div class="row" style="justify-content: center; gap: 10px">
 							<button class="btn btn-secondary" onclick={startOver}>Start over</button>
-							<a class="btn btn-primary" href="/wallets">Back to multisigs</a>
+							<a class="btn btn-primary" href="/wallets">Back to wallets</a>
 						</div>
 					</div>
 				{:else}
@@ -929,8 +929,8 @@
 									<Icon name="alert-triangle" size={15} />
 									<div>
 										<strong>First time signing for “{multisigLabel}” on this device? Register the
-											multisig on it first.</strong>
-										SeedSigner, Passport, and Keystone <em>refuse to sign</em> for a multisig they
+											multisig wallet on it first.</strong>
+										SeedSigner, Passport, and Keystone <em>refuse to sign</em> for a multisig wallet they
 										don't know. Grab the registration file from the “File / SD card” method and
 										import it on the device once, then scan the transaction.
 									</div>

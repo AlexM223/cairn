@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { enhance, applyAction } from '$app/forms';
+	import { goto } from '$app/navigation';
 	import Icon from '$lib/components/Icon.svelte';
 	import DevicePicker from '$lib/components/DevicePicker.svelte';
 	import Term from '$lib/components/Term.svelte';
@@ -7,6 +8,10 @@
 	import { SCRIPT_TYPE_LABELS } from '../labels';
 
 	const STEPS = ['Type', 'Key', 'Preview', 'Name', 'Done'];
+
+	// Step 1 asks the single question that splits the two flavors. "Single key"
+	// stays in this wizard; "Multiple keys" hands off to the multisig builder.
+	let walletType = $state<'single' | 'multisig'>('single');
 
 	let step = $state(0);
 	let xpubInput = $state('');
@@ -37,7 +42,7 @@
 		<Icon name="chevron-left" size={14} />
 		Wallets
 	</a>
-	<h1 class="page-title" style="margin-bottom: 4px">Import a wallet</h1>
+	<h1 class="page-title" style="margin-bottom: 4px">Add a wallet</h1>
 	<p class="hint" style="margin-bottom: 24px">
 		A short guided setup — Cairn only ever sees public keys.
 	</p>
@@ -61,25 +66,49 @@
 	{#if step === 0}
 		<!-- ------------------------------------------------ Step 1: type -->
 		<div class="card card-pad pane fade-in">
-			<span class="overline">Step 1 · Wallet type</span>
-			<button type="button" class="type-card selected" aria-pressed="true">
+			<span class="overline">Step 1 · What kind of wallet?</span>
+			<button
+				type="button"
+				class="type-card"
+				class:selected={walletType === 'single'}
+				aria-pressed={walletType === 'single'}
+				onclick={() => (walletType = 'single')}
+			>
 				<span class="type-icon"><Icon name="wallet" size={20} /></span>
 				<span class="type-body">
-					<span class="type-name">
-						Single-key wallet (xpub)
-						<span class="badge badge-accent">selected</span>
-					</span>
+					<span class="type-name">Single key</span>
 					<span class="type-desc">
-						A full wallet backed by one key. Cairn tracks your balance and history from the
-						extended <strong>public</strong> key, and you spend by signing on your own device —
+						A full wallet backed by one key (an xpub). Cairn tracks your balance and history from
+						the extended <strong>public</strong> key, and you spend by signing on your own device —
 						your private key never leaves it.
+					</span>
+				</span>
+				<Icon name="check" size={17} />
+			</button>
+			<button
+				type="button"
+				class="type-card"
+				class:selected={walletType === 'multisig'}
+				aria-pressed={walletType === 'multisig'}
+				onclick={() => (walletType = 'multisig')}
+			>
+				<span class="type-icon"><Icon name="shield" size={20} /></span>
+				<span class="type-body">
+					<span class="type-name">Multiple keys (multisig)</span>
+					<span class="type-desc">
+						Several keys guard one wallet, and spending needs a quorum — e.g. any 2 of 3. No single
+						lost or stolen key can move the funds. Best for savings.
 					</span>
 				</span>
 				<Icon name="check" size={17} />
 			</button>
 			<div class="pane-actions">
 				<span></span>
-				<button type="button" class="btn btn-primary" onclick={() => (step = 1)}>
+				<button
+					type="button"
+					class="btn btn-primary"
+					onclick={() => (walletType === 'multisig' ? goto('/wallets/multisig/new') : (step = 1))}
+				>
 					Continue
 					<Icon name="chevron-right" size={14} />
 				</button>
@@ -432,7 +461,21 @@
 		border-radius: var(--radius-control);
 		color: inherit;
 		font: inherit;
-		cursor: default;
+		cursor: pointer;
+		transition:
+			border-color 120ms var(--ease),
+			background 120ms var(--ease);
+	}
+
+	.type-card:hover {
+		border-color: var(--text-muted);
+	}
+
+	/* The trailing check only reads as "selected"; hide it on the resting card. */
+	.type-card > :global(svg) {
+		opacity: 0;
+		color: var(--accent);
+		margin-top: 3px;
 	}
 
 	.type-card.selected {
@@ -441,8 +484,7 @@
 	}
 
 	.type-card.selected > :global(svg) {
-		color: var(--accent);
-		margin-top: 3px;
+		opacity: 1;
 	}
 
 	.type-icon {

@@ -157,14 +157,14 @@
 		<p>
 			Your <strong>private keys never leave the Ledger</strong>. It shows the destination and
 			amount on its own screen for a spend from this
-			<strong>{threshold}-of-{totalKeys} multisig</strong> and returns one more signature.
+			<strong>{threshold}-of-{totalKeys} wallet</strong> and returns one more signature.
 		</p>
 		<p>
-			A Ledger co-signs only for multisigs it has <strong>registered</strong> — an on-device review of
-			the quorum and every cosigner key. Because this page saves
+			A Ledger co-signs only for multisig wallets it has <strong>registered</strong> — an on-device
+			review of the quorum and every cosigner key. Because this page saves
 			<strong>nothing</strong>, that approval can't be remembered between sessions: the Ledger will
 			walk you through the registration again each time you come back. (Import the config as a
-			persistent multisig if you want one-time registration.)
+			persistent multisig wallet if you want one-time registration.)
 		</p>
 	</HowItWorks>
 
@@ -239,7 +239,7 @@
 				</div>
 				{#if changeSats > 0}
 					<div class="fact">
-						<dt>Change back to the multisig</dt>
+						<dt>Change back to the wallet</dt>
 						<dd class="num">{formatSats(changeSats)} sats</dd>
 					</div>
 				{/if}
@@ -266,7 +266,7 @@
 		<div class="actions">
 			<button class="btn btn-primary" onclick={connectAndSign} disabled={busy}>
 				{#if phase === 'registering'}
-					<span class="spinner"></span> Approve the multisig on your Ledger…
+					<span class="spinner"></span> Approve the multisig wallet on your Ledger…
 				{:else if phase === 'signing'}
 					<span class="spinner"></span> Approve on your Ledger…
 				{:else if error}

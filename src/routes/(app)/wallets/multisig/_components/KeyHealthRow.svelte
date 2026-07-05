@@ -166,9 +166,9 @@
 		<div class="khr-panel fade-in">
 			{#if isDeviceCheck}
 				<p class="khr-copy">
-					Cairn asks the {deviceLabel} for its public key and compares it with what this multisig
+					Cairn asks the {deviceLabel} for its public key and compares it with what this wallet
 					stores. Nothing is signed, and nothing secret ever leaves the device — a match proves
-					it still holds the exact key this multisig expects.
+					it still holds the exact key this wallet expects.
 				</p>
 				<button type="button" class="btn btn-secondary btn-sm" onclick={runDeviceCheck} disabled={busy}>
 					{#if busy}<span class="spinner"></span>{:else}<Icon name="refresh" size={13} />{/if}
@@ -176,24 +176,24 @@
 				</button>
 			{:else}
 				<p class="khr-copy">
-					Cairn can't talk to this key directly, so verify it by hand against the multisig's current
+					Cairn can't talk to this key directly, so verify it by hand against the wallet's current
 					receive address:
 				</p>
 				{#if receiveAddress}
 					<div class="khr-addr"><CopyText value={receiveAddress} truncate={14} /></div>
 				{:else}
 					<p class="khr-copy khr-warn-text">
-						The receive address isn't available right now (the multisig scan failed) — retry the
+						The receive address isn't available right now (the wallet scan failed) — retry the
 						scan first.
 					</p>
 				{/if}
 				<p class="khr-copy">
 					{#if keyInfo.deviceType === 'coldcard'}
-						On the ColdCard: <strong>Settings → Multisig Wallets → (this multisig) → Address
-						Explorer</strong> and confirm this address appears. If the multisig isn't listed,
+						On the ColdCard: <strong>Settings → Multisig Wallets → (this wallet) → Address
+						Explorer</strong> and confirm this address appears. If the wallet isn't listed,
 						re-import the registration file from the backup card above.
 					{:else if keyInfo.deviceType === 'qr'}
-						On the device (SeedSigner, Passport, Keystone…): load this multisig's registration,
+						On the device (SeedSigner, Passport, Keystone…): load this wallet's registration,
 						open its address explorer or verify-address feature, and confirm it shows this
 						exact address.
 					{:else}
@@ -202,7 +202,7 @@
 					{/if}
 				</p>
 				<p class="khr-copy khr-honest">
-					Honest caveat: this proves the key still <strong>derives this multisig's addresses</strong>.
+					Honest caveat: this proves the key still <strong>derives this wallet's addresses</strong>.
 					It doesn't prove the device can still sign — for full confidence, send yourself a small
 					test amount and sign with this key once in a while.
 				</p>
@@ -223,7 +223,7 @@
 					<Icon name="check" size={14} />
 					<span>
 						<strong>{keyInfo.name}</strong> checked out — it still holds the exact key this
-						multisig expects. Recorded; you're covered for another while.
+						wallet expects. Recorded; you're covered for another while.
 					</span>
 				</div>
 			{:else if result?.kind === 'mismatch'}
@@ -235,7 +235,7 @@
 							<span class="mono">{result.deviceFingerprint}</span>, but this multisig key was
 							created with <span class="mono">{keyInfo.fingerprint}</span>. If the device was
 							reset or restored from a different seed phrase, it can no longer sign for this
-							multisig — treat this key as lost, and consider moving funds while your remaining
+							wallet — treat this key as lost, and consider moving funds while your remaining
 							keys still meet the quorum.
 						</span>
 					{:else}

@@ -244,12 +244,12 @@
 			Your <strong>private keys never leave the Ledger</strong>. Cairn hands the device the current
 			transaction — including every signature already collected — and the Ledger shows the
 			destination and amount on its own screen for a spend from this
-			<strong>{threshold}-of-{totalKeys} multisig</strong>. It returns one more signature, which Cairn
+			<strong>{threshold}-of-{totalKeys} multisig wallet</strong>. It returns one more signature, which Cairn
 			merges into the transaction.
 		</p>
 		<p>
-			A Ledger co-signs only for multisigs it has <strong>registered</strong>: a one-time on-device
-			review of the multisig's name, its {threshold}-of-{totalKeys} quorum, and every cosigner key.
+			A Ledger co-signs only for multisig wallets it has <strong>registered</strong>: a one-time on-device
+			review of the wallet's name, its {threshold}-of-{totalKeys} quorum, and every cosigner key.
 			Cairn remembers that approval, so you do it once per device — not per transaction.
 		</p>
 	</HowItWorks>
@@ -296,10 +296,10 @@
 				<div>
 					<strong>First time signing with “{multisigName}” on a Ledger? A one-time registration comes
 						first.</strong>
-					Your Ledger reviews and stores this multisig's details — the name, the
+					Your Ledger reviews and stores this wallet's details — the name, the
 					{threshold}-of-{totalKeys} quorum, and every cosigner key — and asks you to approve them
 					on the device. That's the Ledger protecting you: it will never quietly co-sign for a
-					multisig setup you haven't personally vetted on its screen. Cairn saves the approval, so
+					wallet you haven't personally vetted on its screen. Cairn saves the approval, so
 					this happens once per device. Signing continues right after.
 				</div>
 			</div>
@@ -313,7 +313,7 @@
 			</div>
 			<p class="verify-body">
 				The Ledger will present this as a spend from the registered
-				<strong>{threshold}-of-{totalKeys} multisig</strong> and walk through each output. Check the
+				<strong>{threshold}-of-{totalKeys} multisig wallet</strong> and walk through each output. Check the
 				address <strong>on the Ledger's screen</strong> — not just here — matches:
 			</p>
 			<dl class="verify-facts">
@@ -336,7 +336,7 @@
 				</div>
 				{#if changeSats > 0}
 					<div class="fact">
-						<dt>Change back to the multisig</dt>
+						<dt>Change back to the wallet</dt>
 						<dd class="num">{formatSats(changeSats)} sats</dd>
 					</div>
 				{/if}
@@ -352,7 +352,7 @@
 			<div class="save-warning" role="status">
 				<Icon name="alert-triangle" size={14} />
 				<span>
-					The Ledger approved the multisig, but Cairn couldn't save the registration — signing still
+					The Ledger approved the wallet, but Cairn couldn't save the registration — signing still
 					works now, but the device may ask you to register again next time.
 				</span>
 			</div>
@@ -369,7 +369,7 @@
 				{:else if offerReregister}
 					<div class="reregister-actions">
 						<button class="btn btn-secondary btn-sm" onclick={() => connectAndSign(true)}>
-							<Icon name="refresh" size={14} /> Multisig not recognized on the device? Register it
+							<Icon name="refresh" size={14} /> Wallet not recognized on the device? Register it
 							again
 						</button>
 					</div>
@@ -380,7 +380,7 @@
 		<div class="actions">
 			<button class="btn btn-primary" onclick={() => connectAndSign()} disabled={busy}>
 				{#if phase === 'registering'}
-					<span class="spinner"></span> Approve the multisig on your Ledger…
+					<span class="spinner"></span> Approve the wallet on your Ledger…
 				{:else if phase === 'saving'}
 					<span class="spinner"></span> Saving the registration…
 				{:else if phase === 'signing'}
@@ -394,7 +394,7 @@
 				{/if}
 			</button>
 			{#if registrations === null}
-				<span class="hint">Checking this multisig's Ledger registrations…</span>
+				<span class="hint">Checking this wallet's Ledger registrations…</span>
 			{/if}
 		</div>
 
