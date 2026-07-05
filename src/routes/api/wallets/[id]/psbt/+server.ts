@@ -23,6 +23,11 @@ interface CoinBody {
  * }
  * The pre-batch single-recipient shape { recipient, amount, feeRate } is still
  * accepted and treated as a length-1 recipients array.
+ *
+ * Response `details` carries the full ConstructedPsbt, including the optional
+ * `signingMass` block (parent-transaction mass, tier, per-device signing-time
+ * estimates, totalSeconds, warnLevel, splitSuggested — see signingMass.ts);
+ * absent when the chosen inputs' parents weren't all available.
  */
 export const POST: RequestHandler = async (event) => {
 	const user = requireUser(event);

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { HDKey } from '@scure/bip32';
 import { base64 } from '@scure/base';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
@@ -14,6 +14,11 @@ import {
 	VaultPsbtError,
 	type VaultScriptType
 } from './vaultPsbt';
+import {
+	computeSigningMass,
+	parentVsizeFromRawTx,
+	clearParentMassCache
+} from './signingMass';
 
 // ── deterministic cosigner fixtures ─────────────────────────────────────────
 // Master seeds 0x01…0x05, accounts at the BIP-48 wsh path. Test-only keys —
@@ -572,5 +577,93 @@ describe.runIf(scriptTypeReady('p2sh'))('legacy p2sh vaults', () => {
 		expect(vaultPsbtProgress(psbt, 2)).toMatchObject({ collected: 2, complete: true });
 		const { txid } = finalizeVaultPsbt(psbt);
 		expect(txid).toMatch(/^[0-9a-f]{64}$/);
+	});
+});
+
+// ── signingMass parity with the single-sig builder (cairn-194) ───────────────
+
+describe('vault signingMass', () => {
+	beforeEach(() => clearParentMassCache());
+
+	function fundedUtxo(cfg: TestConfig, value = 200_000) {
+		const address = deriveVaultAddress(cfg, 0, 0).address;
+		const fund = fundingTx([{ address, value }]);
+		const utxo: SpendableUtxo = {
+			txid: fund.txid,
+			vout: 0,
+			value,
+			height: 800_000,
+			address,
+			chain: 0,
+			index: 0
+		};
+		return { fund, utxo };
+	}
+
+	it('carries quorum-scaled signingMass when parents are fetched', async () => {
+		const { fund, utxo } = fundedUtxo(VAULT_2OF3);
+		const draft = await constructVaultPsbt({
+			config: VAULT_2OF3,
+			utxos: [utxo],
+			recipients: [{ address: RECIPIENT, amount: 50_000 }],
+			feeRate: FEE_RATE,
+			changeIndex: 0,
+			fetchRawTx: async () => fund.hex
+		});
+		expect(draft.signingMass).toBeDefined();
+		// Exactly what the pure assembler produces for M=2, N=3 over this parent.
+		expect(draft.signingMass).toEqual(
+			computeSigningMass({
+				parentVsizes: [parentVsizeFromRawTx(fund.hex)],
+				inputCount: 1,
+				threshold: 2,
+				totalKeys: 3
+			})
+		);
+		// The quorum multiplies the ceremony total: 2 signers each stream the mass.
+		const singleSig = computeSigningMass({
+			parentVsizes: [parentVsizeFromRawTx(fund.hex)],
+			inputCount: 1
+		});
+		expect(draft.signingMass!.totalSeconds.hi).toBeGreaterThanOrEqual(
+			singleSig.totalSeconds.hi * 2
+		);
+	});
+
+	it('a bigger quorum estimates a longer ceremony on the same coins', async () => {
+		const a = fundedUtxo(VAULT_2OF3);
+		const b = fundedUtxo(VAULT_3OF5);
+		const build = (cfg: TestConfig, f: { fund: { hex: string }; utxo: SpendableUtxo }) =>
+			constructVaultPsbt({
+				config: cfg,
+				utxos: [f.utxo],
+				recipients: [{ address: RECIPIENT, amount: 50_000 }],
+				feeRate: FEE_RATE,
+				changeIndex: 0,
+				fetchRawTx: async () => f.fund.hex
+			});
+		const m2 = await build(VAULT_2OF3, a);
+		const m3 = await build(VAULT_3OF5, b);
+		expect(m3.signingMass!.totalSeconds.hi).toBeGreaterThan(m2.signingMass!.totalSeconds.hi);
+	});
+
+	it('omits signingMass without fetchRawTx (segwit vault) — construction still succeeds', async () => {
+		const draft = await build2of3();
+		expect(draft.psbtBase64.length).toBeGreaterThan(0);
+		expect(draft.signingMass).toBeUndefined();
+	});
+
+	it('carries signingMass on the vault send-max path', async () => {
+		const { fund, utxo } = fundedUtxo(VAULT_2OF3);
+		const draft = await constructVaultPsbt({
+			config: VAULT_2OF3,
+			utxos: [utxo],
+			recipients: [{ address: RECIPIENT, amount: 'max' }],
+			feeRate: FEE_RATE,
+			changeIndex: 0,
+			fetchRawTx: async () => fund.hex
+		});
+		expect(draft.signingMass).toBeDefined();
+		expect(draft.signingMass!.totalParentVsize).toBe(parentVsizeFromRawTx(fund.hex));
 	});
 });

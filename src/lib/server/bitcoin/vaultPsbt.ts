@@ -26,6 +26,7 @@ import {
 	type RecipientSpec
 } from './psbt';
 import { addressToScriptPubKey, isValidAddress } from './xpub';
+import { signingMassFromFetchedParents, type SigningMass } from './signingMass';
 
 /** Script wrapping for the vault's multisig — mirrors vaults.ts's type without
  *  importing the DB layer (this module stays pure/chain-free for tests). */
@@ -164,6 +165,15 @@ export interface ConstructedVaultPsbt {
 	recipients: { address: string; amount: number }[];
 	change: { address: string; value: number; index: number } | null;
 	inputs: { txid: string; vout: number; value: number; address: string }[];
+	/**
+	 * Signing-mass estimate over the chosen inputs' parent transactions,
+	 * scaled by this vault's quorum — every one of the M signers processes the
+	 * full mass (see signingMass.ts). OPTIONAL by design: computed only from
+	 * parents already fetched for nonWitnessUtxo; when any parent wasn't
+	 * fetched (no fetchRawTx for a segwit vault) the block is omitted rather
+	 * than understated, and mass computation can never fail construction.
+	 */
+	signingMass?: SigningMass;
 }
 
 function toBigInt(sats: number): bigint {
@@ -406,7 +416,11 @@ export async function constructVaultPsbt(params: VaultConstructParams): Promise<
 				vout: u.vout,
 				value: u.value,
 				address: u.address
-			}))
+			})),
+			signingMass: signingMassFromFetchedParents(spendable, prevTxCache, {
+				threshold,
+				totalKeys: keyCount
+			})
 		};
 	}
 
@@ -525,7 +539,11 @@ export async function constructVaultPsbt(params: VaultConstructParams): Promise<
 			vout: u.vout,
 			value: u.value,
 			address: u.address
-		}))
+		})),
+		signingMass: signingMassFromFetchedParents(chosen, prevTxCache, {
+			threshold,
+			totalKeys: keyCount
+		})
 	};
 }
 

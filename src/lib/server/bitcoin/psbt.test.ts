@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { HDKey } from '@scure/bip32';
 import { base64, base58check } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha2.js';
@@ -16,6 +16,11 @@ import {
 	PsbtMismatchError,
 	type SpendableUtxo
 } from './psbt';
+import {
+	parentVsizeFromRawTx,
+	classifyAndCacheParent,
+	clearParentMassCache
+} from './signingMass';
 
 // BIP84 documentation vectors ("abandon … about" mnemonic) — public test
 // keys, never a real wallet.
@@ -737,5 +742,112 @@ describe('parseOriginPath', () => {
 
 	it('throws on garbage', () => {
 		expect(() => parseOriginPath('m/x/y')).toThrow();
+	});
+});
+
+describe('signingMass on construction (cairn-194)', () => {
+	beforeEach(() => clearParentMassCache());
+
+	it('carries the mass block computed from the fetched parents', async () => {
+		const draft = await constructPsbt({
+			...COMMON,
+			utxos: REAL_UTXOS,
+			fetchRawTx,
+			recipients: [{ address: RECIPIENT, amount: 80_000 }], // forces both inputs
+			feeRate: 10
+		});
+		expect(draft.inputs).toHaveLength(2);
+		expect(draft.signingMass).toBeDefined();
+		const mass = draft.signingMass!;
+		expect(mass.totalParentVsize).toBe(
+			parentVsizeFromRawTx(FUND_A.hex) + parentVsizeFromRawTx(FUND_B.hex)
+		);
+		expect(mass.tier).toBe('low'); // two tiny synthetic parents
+		expect(mass.splitSuggested).toBe(false);
+		expect(mass.warnLevel).toBe('none');
+		expect(mass.perDevice.map((d) => d.device).sort()).toEqual(['coldcard', 'ledger', 'trezor']);
+		// Single-sig wallet: totals are per-signer brackets (quorum 1).
+		expect(mass.totalSeconds.lo).toBeLessThanOrEqual(mass.totalSeconds.hi);
+	});
+
+	it('carries the mass block on the send-max sweep path too', async () => {
+		const draft = await constructPsbt({
+			...COMMON,
+			utxos: REAL_UTXOS,
+			fetchRawTx,
+			recipients: [{ address: RECIPIENT, amount: 'max' }],
+			feeRate: 5
+		});
+		expect(draft.signingMass).toBeDefined();
+		expect(draft.signingMass!.totalParentVsize).toBe(
+			parentVsizeFromRawTx(FUND_A.hex) + parentVsizeFromRawTx(FUND_B.hex)
+		);
+	});
+
+	it('omits signingMass entirely when parents were not fetched — construction still succeeds', async () => {
+		// witnessUtxo-only build (no fetchRawTx): mass over unknown parents would
+		// be false confidence, so the field is absent rather than understated.
+		const draft = await constructPsbt({
+			...COMMON,
+			recipients: [{ address: RECIPIENT, amount: 30_000 }],
+			feeRate: 10
+		});
+		expect(draft.psbtBase64.length).toBeGreaterThan(0);
+		expect(draft.signingMass).toBeUndefined();
+	});
+
+	// ---- low-mass selection bias (best-effort, fee-neutral) -----------------
+	// Two coins of EQUAL value, one funded by a pool-sized parent, one by a
+	// tiny P2P parent. btc-signer's selector orders by value, so equal values
+	// tie-break on candidate order — which preferLowMassOrder biases when (and
+	// only when) mass data is already cached.
+	const HUGE_FUND = fundingTx([
+		{ address: RECEIVE_0, value: 60_000 },
+		...Array.from({ length: 2_999 }, () => ({ address: RECIPIENT, value: 1_000 }))
+	]);
+	const SMALL_FUND = fundingTx([{ address: RECEIVE_1, value: 60_000 }]);
+	const EQUAL_UTXOS: SpendableUtxo[] = [
+		{ txid: HUGE_FUND.txid, vout: 0, value: 60_000, height: 800_000, address: RECEIVE_0, chain: 0, index: 0 },
+		{ txid: SMALL_FUND.txid, vout: 0, value: 60_000, height: 800_001, address: RECEIVE_1, chain: 0, index: 1 }
+	];
+	const fetchBias = async (txid: string) => {
+		if (txid === HUGE_FUND.txid) return HUGE_FUND.hex;
+		if (txid === SMALL_FUND.txid) return SMALL_FUND.hex;
+		throw new Error(`no such tx ${txid}`);
+	};
+	const biasParams = {
+		...COMMON,
+		utxos: EQUAL_UTXOS,
+		fetchRawTx: fetchBias,
+		recipients: [{ address: RECIPIENT, amount: 30_000 }],
+		feeRate: 10
+	};
+
+	it('without cached mass data, candidate order stands (heavy-parent coin wins the tie)', async () => {
+		const draft = await constructPsbt(biasParams);
+		expect(draft.inputs).toHaveLength(1);
+		expect(draft.inputs[0].txid).toBe(HUGE_FUND.txid);
+	});
+
+	it('cached mass data reorders selection toward the light parent — same fee, same amount', async () => {
+		const control = await constructPsbt(biasParams);
+		clearParentMassCache();
+		classifyAndCacheParent(HUGE_FUND.txid, HUGE_FUND.hex);
+		classifyAndCacheParent(SMALL_FUND.txid, SMALL_FUND.hex);
+		const biased = await constructPsbt(biasParams);
+		expect(biased.inputs).toHaveLength(1);
+		expect(biased.inputs[0].txid).toBe(SMALL_FUND.txid);
+		// Never increases fees or changes amounts: same-size inputs, same tx shape.
+		expect(biased.fee).toBe(control.fee);
+		expect(biased.amount).toBe(control.amount);
+		expect(biased.signingMass!.totalParentVsize).toBeLessThan(control.signingMass!.totalParentVsize);
+	});
+
+	it('exact-inputs (RBF) never reorders — it must spend what it is given', async () => {
+		classifyAndCacheParent(HUGE_FUND.txid, HUGE_FUND.hex);
+		classifyAndCacheParent(SMALL_FUND.txid, SMALL_FUND.hex);
+		const draft = await constructPsbt({ ...biasParams, exactInputs: true });
+		expect(draft.inputs.map((i) => i.txid)).toEqual([HUGE_FUND.txid, SMALL_FUND.txid]);
+		expect(draft.signingMass).toBeDefined(); // both parents fetched → mass present
 	});
 });

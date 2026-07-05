@@ -25,6 +25,12 @@ interface CoinBody {
  * Mirrors /api/wallets/[id]/psbt; the response additionally carries the
  * quorum `progress` object (0 of M at this point) that the signing stepper
  * tracks through every subsequent attach.
+ *
+ * Response `details` carries the full ConstructedVaultPsbt, including the
+ * optional `signingMass` block — per-signer device estimates plus
+ * `totalSeconds` scaled by this vault's quorum M (every signer processes the
+ * full parent mass; see signingMass.ts). Absent when the chosen inputs'
+ * parents weren't all available.
  */
 export const POST: RequestHandler = async (event) => {
 	const user = requireUser(event);

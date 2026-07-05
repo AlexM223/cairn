@@ -10,6 +10,11 @@ import { Transaction, selectUTXO, p2wpkh, Address, OutScript, NETWORK } from '@s
 import { base64 } from '@scure/base';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
 import { parseXpub, addressToScriptPubKey, isValidAddress } from './xpub';
+import {
+	signingMassFromFetchedParents,
+	preferLowMassOrder,
+	type SigningMass
+} from './signingMass';
 import type { ScriptType } from '$lib/types';
 
 /** A spendable output attributed to a wallet-derived address. */
@@ -82,6 +87,14 @@ export interface ConstructedPsbt {
 	recipients: { address: string; amount: number }[];
 	change: { address: string; value: number; index: number } | null;
 	inputs: { txid: string; vout: number; value: number; address: string }[];
+	/**
+	 * Signing-mass estimate over the chosen inputs' parent transactions (see
+	 * signingMass.ts). OPTIONAL by design: computed only from parents already
+	 * fetched for nonWitnessUtxo — when any chosen input's parent wasn't
+	 * fetched (no fetchRawTx provided), the whole block is omitted rather than
+	 * understated, and mass computation can never fail construction.
+	 */
+	signingMass?: SigningMass;
 }
 
 export class PsbtError extends Error {
@@ -241,6 +254,18 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		}
 	}
 
+	// Low-mass selection bias (normal selection only — exact-inputs must spend
+	// what it's given, and send-max spends every candidate anyway): stable
+	// re-sort by CACHED parent mass so equal-value ties resolve toward coins
+	// with light parents. Best-effort by construction — it never fetches a
+	// parent (no added latency) and, because selectUTXO's 'default' strategy
+	// re-sorts by value internally, it can never change fees or amounts; see
+	// preferLowMassOrder. Verified by test: cached mass data reorders which of
+	// two equal-value coins is selected.
+	if (!params.exactInputs && !sendMax) {
+		spendable = preferLowMassOrder(spendable);
+	}
+
 	const originPath = params.origin ? parseOriginPath(params.origin.path) : null;
 	const fingerprint = params.origin
 		? parseInt(params.origin.fingerprint, 16) >>> 0
@@ -363,7 +388,8 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 				vout: u.vout,
 				value: u.value,
 				address: u.address
-			}))
+			})),
+			signingMass: signingMassFromFetchedParents(spendable, prevTxCache)
 		};
 	}
 
@@ -510,7 +536,8 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 			vout: u.vout,
 			value: u.value,
 			address: u.address
-		}))
+		})),
+		signingMass: signingMassFromFetchedParents(chosen, prevTxCache)
 	};
 }
 
