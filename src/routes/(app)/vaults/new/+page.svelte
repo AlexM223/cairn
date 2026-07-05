@@ -244,7 +244,10 @@
 		deviceBusy = true;
 		addError = null;
 		try {
-			const key = kind === 'trezor' ? await readKeyFromTrezor() : await readKeyFromLedger();
+			const key =
+				kind === 'trezor'
+					? await readKeyFromTrezor(scriptType)
+					: await readKeyFromLedger(scriptType);
 			pasteValue = key.xpub;
 			fpValue = key.fingerprint;
 			pathValue = key.path;
