@@ -11,6 +11,7 @@
 //                                 history }
 //   nextVaultChangeIndex(vault) → first unused change index
 
+import { bytesToHex } from '@noble/hashes/utils.js';
 import { deriveVaultAddress, vaultToDescriptor } from './bitcoin/multisig';
 import { addressToScripthash } from './bitcoin/xpub';
 import { getChain } from './chain/index';
@@ -76,6 +77,65 @@ interface ScannedAddress extends VaultScanAddress {
  */
 export function vaultAddressAt(vault: VaultRow, chain: 0 | 1, index: number): string {
 	return deriveVaultAddress(toVaultConfig(vault), chain, index).address;
+}
+
+// ------------------------------------------------- address transparency detail
+
+/** One cosigner's derivation path for a specific address. */
+export interface VaultAddressKeyPath {
+	id: number;
+	name: string;
+	fingerprint: string;
+	/** The key's stored account-level origin path ("m" when unknown). */
+	basePath: string;
+	/** Full path from the master to this address's child key: basePath + /chain/index. */
+	fullPath: string;
+}
+
+/**
+ * Everything needed to independently verify one vault address in another
+ * wallet tool (Caravan's "address details" view): the scripts the address
+ * commits to, the BIP-67 sorted child pubkeys, and each key's full derivation
+ * path. Derived on demand — never persisted, never shipped in bulk.
+ */
+export interface VaultAddressDetail {
+	address: string;
+	chain: 0 | 1;
+	index: number;
+	scriptType: VaultRow['scriptType'];
+	/** p2ms script hex for the wsh forms; null for legacy p2sh. */
+	witnessScript: string | null;
+	/** Script hex for the sh forms (p2ms itself for p2sh, wsh program for p2sh-p2wsh); null for native p2wsh. */
+	redeemScript: string | null;
+	/** Child pubkeys in BIP-67 (script) order, hex. */
+	sortedPubkeys: string[];
+	keys: VaultAddressKeyPath[];
+}
+
+/** Derive the full verification detail for the vault's address at <chain>/<index>.
+ *  Pure derivation (no network); throws VaultError on invalid chain/index. */
+export function vaultAddressDetailAt(
+	vault: VaultRow,
+	chain: 0 | 1,
+	index: number
+): VaultAddressDetail {
+	const derived = deriveVaultAddress(toVaultConfig(vault), chain, index);
+	return {
+		address: derived.address,
+		chain,
+		index,
+		scriptType: vault.scriptType,
+		witnessScript: derived.witnessScript ? bytesToHex(derived.witnessScript) : null,
+		redeemScript: derived.redeemScript ? bytesToHex(derived.redeemScript) : null,
+		sortedPubkeys: derived.sortedPubkeys.map(bytesToHex),
+		keys: vault.keys.map((k) => ({
+			id: k.id,
+			name: k.name,
+			fingerprint: k.fingerprint,
+			basePath: k.path,
+			fullPath: k.path === 'm' ? `m/${chain}/${index}` : `${k.path}/${chain}/${index}`
+		}))
+	};
 }
 
 // ------------------------------------------------------------------- scanning

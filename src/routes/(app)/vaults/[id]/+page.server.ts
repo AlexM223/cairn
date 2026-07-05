@@ -40,7 +40,8 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 				category: k.category,
 				deviceType: k.deviceType,
 				fingerprint: k.fingerprint,
-				path: k.path
+				path: k.path,
+				lastVerifiedAt: k.lastVerifiedAt ?? null
 			}))
 		},
 		created: url.searchParams.get('created') === '1',

@@ -6,6 +6,8 @@
 	import Term from '$lib/components/Term.svelte';
 	import { formatBtc, formatSats, timeAgo, truncateMiddle } from '$lib/format';
 	import KeyCategoryIcon from '../_components/KeyCategoryIcon.svelte';
+	import KeyHealthRow from '../_components/KeyHealthRow.svelte';
+	import AddressScriptDetails from '../_components/AddressScriptDetails.svelte';
 	import { KEY_CATEGORY_LABELS, DEVICE_LABELS, VAULT_SCRIPT_LABELS } from '../labels';
 
 	let { data, form } = $props();
@@ -77,6 +79,67 @@
 		(data.detail?.addresses ?? []).filter((a) => !a.used && a.chain === 0)
 	);
 	const shownAddrs = $derived(addrFilter === 'used' ? usedAddrs : unusedAddrs);
+
+	// --- address transparency (cairn-h73) ---
+	// When every key was created at the same account path, each address has ONE
+	// unambiguous full path to show. When key paths differ (mixed devices),
+	// Caravan's convention applies: show the shared /chain/index suffix (the
+	// "braid" path) and list each key's full path in the details disclosure.
+	const sharedBasePath = $derived(
+		data.vault.keys.length > 0 &&
+			data.vault.keys[0].path !== 'm' &&
+			data.vault.keys.every((k) => k.path === data.vault.keys[0].path)
+			? data.vault.keys[0].path
+			: null
+	);
+	let openAddrKey = $state<string | null>(null);
+	function toggleAddrDetail(chain: number, index: number) {
+		const key = `${chain}/${index}`;
+		openAddrKey = openAddrKey === key ? null : key;
+	}
+
+	// --- key health checks (cairn-hvp) ---
+	// Freshly verified keys update in place (no reload); the nudge below reads
+	// through these overrides so it clears as soon as the last stale key passes.
+	let verifiedOverrides = $state<Record<number, string>>({});
+	function keyVerifiedAt(k: { id: number; lastVerifiedAt: string | null }): string | null {
+		return verifiedOverrides[k.id] ?? k.lastVerifiedAt;
+	}
+	const SIX_MONTHS_MS = 183 * 24 * 60 * 60 * 1000;
+	// A key is stale when unchecked for ~6 months. Never-checked keys count too
+	// (that's the Casa pattern) — but not during a vault's first week, when the
+	// wizard's own cross-checks are still fresh and a nag would just be noise.
+	const vaultAgeMs = $derived(Date.now() - Date.parse(data.vault.createdAt));
+	const staleKeys = $derived(
+		data.vault.keys.filter((k) => {
+			const ts = keyVerifiedAt(k);
+			if (!ts) return vaultAgeMs > 7 * 24 * 60 * 60 * 1000;
+			return Date.now() - Date.parse(ts) > SIX_MONTHS_MS;
+		})
+	);
+
+	// The reminder is dismissible per vault per half-year window: dismissing it
+	// in 2026H1 brings it back in 2026H2 — periodic by construction.
+	function checkWindowStamp(): string {
+		const now = new Date();
+		return `${now.getFullYear()}H${now.getMonth() < 6 ? 1 : 2}`;
+	}
+	let nudgeDismissed = $state(true); // optimistic until localStorage is checked
+	$effect(() => {
+		nudgeDismissed =
+			localStorage.getItem(`cairn.vault.keycheck.${data.vault.id}.${checkWindowStamp()}`) ===
+			'dismissed';
+	});
+	function dismissNudge() {
+		localStorage.setItem(
+			`cairn.vault.keycheck.${data.vault.id}.${checkWindowStamp()}`,
+			'dismissed'
+		);
+		nudgeDismissed = true;
+	}
+	function handleKeyVerified(keyId: number, ts: string) {
+		verifiedOverrides = { ...verifiedOverrides, [keyId]: ts };
+	}
 
 	async function retry() {
 		retrying = true;
@@ -183,6 +246,29 @@
 		>
 	</p>
 
+	{#if staleKeys.length > 0 && !nudgeDismissed}
+		<div class="keycheck-nudge" role="status">
+			<Icon name="clock" size={16} />
+			<div class="grow">
+				<div class="nudge-title">When did you last check your keys?</div>
+				<p class="nudge-copy">
+					A key you can't access is a key you don't have. Check each one now and then —
+					especially before you need them. {staleKeys.length === 1
+						? `"${staleKeys[0].name}" hasn't`
+						: `${staleKeys.length} of your keys haven't`} been checked in over six months.
+				</p>
+			</div>
+			<button
+				type="button"
+				class="banner-dismiss"
+				aria-label="Dismiss reminder"
+				onclick={dismissNudge}
+			>
+				<Icon name="x" size={14} />
+			</button>
+		</div>
+	{/if}
+
 	<!-- Keys -->
 	<section class="card card-pad keys-card">
 		<div class="row" style="gap: 8px">
@@ -213,6 +299,34 @@
 						</span>
 					{/if}
 				</span>
+			{/each}
+		</div>
+
+		<div class="key-health">
+			<div class="key-health-head">
+				<span class="key-health-title">
+					<Term
+						tip="Devices die, PINs get forgotten, and a device restored from the wrong seed keeps working for everything except this vault. A quick check proves each key still derives this vault — before you need it to."
+						>Key checks</Term
+					>
+				</span>
+				<span class="hint">Confirm each key still works now and then.</span>
+			</div>
+			{#each data.vault.keys as key (key.id)}
+				<KeyHealthRow
+					vaultId={data.vault.id}
+					keyInfo={{
+						id: key.id,
+						name: key.name,
+						deviceType: key.deviceType,
+						fingerprint: key.fingerprint,
+						path: key.path,
+						lastVerifiedAt: keyVerifiedAt(key)
+					}}
+					scriptType={data.vault.scriptType}
+					receiveAddress={receive?.address ?? null}
+					onVerified={handleKeyVerified}
+				/>
 			{/each}
 		</div>
 
@@ -529,6 +643,11 @@
 						</span>
 					</div>
 				{:else}
+					<p class="addr-verify-hint">
+						Every address here is built from your {data.vault.keys.length} public keys alone —
+						open <strong>Details</strong> on any row for the exact script and derivation paths,
+						so you can verify this address on any other wallet tool.
+					</p>
 					<div class="table-wrap">
 						<table class="table">
 							<thead>
@@ -537,12 +656,35 @@
 									<th>Address</th>
 									<th class="num">Balance</th>
 									<th class="num">Txs</th>
+									<th></th>
 								</tr>
 							</thead>
 							<tbody>
 								{#each shownAddrs as addr (addr.address)}
 									<tr>
-										<td class="mono text-muted">{addr.chain}/{addr.index}</td>
+										<td class="path-cell">
+											{#if sharedBasePath}
+												<span class="mono text-muted path-text">
+													<CopyText
+														value={`${sharedBasePath}/${addr.chain}/${addr.index}`}
+														display={`…/${addr.chain}/${addr.index}`}
+													/>
+												</span>
+											{:else}
+												<Term
+													tip="Each of this vault's keys uses its own base path, so only this receive/change suffix is shared — open Details for every key's full path."
+												>
+													<span class="mono text-muted path-text">/{addr.chain}/{addr.index}</span>
+												</Term>
+											{/if}
+											{#if addr.chain === 1}
+												<span
+													class="chg-chip"
+													title="An internal address — leftovers from your own spends land here."
+													>change</span
+												>
+											{/if}
+										</td>
 										<td class="addr-cell">
 											<CopyText value={addr.address} truncate={12} />
 										</td>
@@ -554,11 +696,46 @@
 											{/if}
 										</td>
 										<td class="num text-muted">{addr.txCount}</td>
+										<td class="num">
+											<button
+												type="button"
+												class="detail-toggle"
+												class:open={openAddrKey === `${addr.chain}/${addr.index}`}
+												aria-expanded={openAddrKey === `${addr.chain}/${addr.index}`}
+												onclick={() => toggleAddrDetail(addr.chain, addr.index)}
+											>
+												Details
+												<Icon name="chevron-down" size={12} />
+											</button>
+										</td>
 									</tr>
+									{#if openAddrKey === `${addr.chain}/${addr.index}`}
+										<tr class="addr-detail-row">
+											<td colspan="5">
+												<AddressScriptDetails
+													vaultId={data.vault.id}
+													chain={addr.chain}
+													index={addr.index}
+												/>
+											</td>
+										</tr>
+									{/if}
 								{/each}
 							</tbody>
 						</table>
 					</div>
+					{#if shownAddrs.some((a) => a.chain === 1)}
+						<p class="change-note">
+							<Icon name="info" size={13} />
+							<span>
+								Rows marked <span class="chg-chip">change</span> are this vault's internal
+								addresses. When you spend, whatever isn't sent to the recipient comes back to
+								one of these — same keys, same {data.vault.threshold}-of-{data.vault.keys.length}
+								quorum, just a separate branch so payments you receive stay apart from your own
+								leftovers. Seeing them here is normal; that money never left the vault.
+							</span>
+						</p>
+					{/if}
 				{/if}
 			</section>
 		{/if}
@@ -982,5 +1159,143 @@
 
 	.addr-cell {
 		max-width: 320px;
+	}
+
+	/* --- address transparency (cairn-h73) --- */
+
+	.addr-verify-hint {
+		padding: 10px 14px 0;
+		font-size: 12.5px;
+		line-height: 1.6;
+		color: var(--text-muted);
+	}
+
+	.addr-verify-hint strong {
+		color: var(--text-secondary);
+		font-weight: 500;
+	}
+
+	.path-cell {
+		white-space: nowrap;
+	}
+
+	.path-text {
+		font-size: 12px;
+	}
+
+	.chg-chip {
+		display: inline-block;
+		font-size: 10.5px;
+		font-weight: 500;
+		color: var(--text-muted);
+		border: 1px solid var(--border);
+		border-radius: 99px;
+		padding: 1px 7px;
+		margin-left: 6px;
+		vertical-align: middle;
+	}
+
+	.detail-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		background: none;
+		border: 1px solid var(--border);
+		border-radius: 99px;
+		padding: 3px 10px;
+		color: var(--text-secondary);
+		font: inherit;
+		font-size: 11.5px;
+		cursor: pointer;
+		transition:
+			color 120ms var(--ease),
+			border-color 120ms var(--ease);
+	}
+
+	.detail-toggle :global(svg) {
+		transition: transform 150ms var(--ease);
+	}
+
+	.detail-toggle.open :global(svg) {
+		transform: rotate(180deg);
+	}
+
+	.detail-toggle:hover,
+	.detail-toggle.open {
+		color: var(--accent);
+		border-color: var(--accent);
+	}
+
+	.addr-detail-row td {
+		padding: 6px 14px 14px;
+	}
+
+	.change-note {
+		display: flex;
+		align-items: flex-start;
+		gap: 8px;
+		padding: 12px 14px;
+		border-top: 1px solid var(--border-subtle);
+		font-size: 12.5px;
+		line-height: 1.65;
+		color: var(--text-muted);
+	}
+
+	.change-note :global(svg) {
+		margin-top: 3px;
+	}
+
+	.change-note .chg-chip {
+		margin-left: 0;
+	}
+
+	/* --- key health (cairn-hvp) --- */
+
+	.keycheck-nudge {
+		display: flex;
+		align-items: flex-start;
+		gap: 12px;
+		padding: 12px 14px;
+		margin-bottom: 14px;
+		background: var(--warning-muted, rgba(230, 180, 80, 0.1));
+		border: 1px solid rgba(230, 180, 80, 0.35);
+		border-radius: var(--radius-control);
+		color: var(--warning);
+	}
+
+	.keycheck-nudge :global(svg) {
+		margin-top: 2px;
+	}
+
+	.nudge-title {
+		font-size: 13px;
+		font-weight: 600;
+	}
+
+	.nudge-copy {
+		margin-top: 3px;
+		font-size: 12.5px;
+		line-height: 1.6;
+		color: var(--text-secondary);
+	}
+
+	.key-health {
+		display: flex;
+		flex-direction: column;
+	}
+
+	.key-health-head {
+		display: flex;
+		align-items: baseline;
+		gap: 10px;
+		padding-bottom: 8px;
+	}
+
+	.key-health-title {
+		font-size: 12px;
+		font-weight: 600;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		color: var(--text-secondary);
 	}
 </style>

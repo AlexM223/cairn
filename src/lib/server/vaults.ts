@@ -8,6 +8,8 @@
 // keys. Quorum progress is never stored: it is derived from the PSBT itself,
 // which cannot disagree with reality (a stored counter can).
 
+import { sha256 } from '@noble/hashes/sha2.js';
+import { createBase58check } from '@scure/base';
 import { db } from './db';
 import {
 	VaultError,
@@ -16,6 +18,7 @@ import {
 	type VaultKeyDescriptor,
 	MAX_VAULT_KEYS
 } from './bitcoin/multisig';
+import { parseXpub } from './bitcoin/xpub';
 
 export type VaultScriptType = 'p2wsh' | 'p2sh-p2wsh' | 'p2sh';
 export const VAULT_SCRIPT_TYPES: VaultScriptType[] = ['p2wsh', 'p2sh-p2wsh', 'p2sh'];
@@ -36,6 +39,12 @@ export interface VaultKeyRow {
 	xpub: string;
 	fingerprint: string;
 	path: string;
+	/**
+	 * When this key last passed a health check (ISO 8601), null = never.
+	 * Optional so existing literal constructions (tests, fixtures) stay valid;
+	 * rows read from the database always carry it. See markKeyVerified.
+	 */
+	lastVerifiedAt?: string | null;
 }
 
 export interface VaultRow {
@@ -68,7 +77,8 @@ function mapKey(r: Record<string, unknown>): VaultKeyRow {
 		deviceType: (r.device_type ?? null) as VaultDeviceType,
 		xpub: r.xpub as string,
 		fingerprint: r.fingerprint as string,
-		path: r.path as string
+		path: r.path as string,
+		lastVerifiedAt: (r.last_verified_at ?? null) as string | null
 	};
 }
 
@@ -200,4 +210,97 @@ export function bumpReceiveCursor(userId: number, id: number, toIndex: number): 
 	db.prepare(
 		'UPDATE vaults SET receive_cursor = MAX(receive_cursor, ?) WHERE id = ? AND user_id = ?'
 	).run(toIndex + 1, id, userId);
+}
+
+// ------------------------------------------------------------- key health checks
+//
+// Casa-style periodic verification: each key carries a last_verified_at
+// timestamp, refreshed whenever the user proves the key still exists — either
+// a live device re-read (fingerprint + xpub compared against the stored row)
+// or a guided manual check. The UI nudges when any key goes unchecked for
+// ~6 months, because a key you can't access is a key you don't have.
+
+/**
+ * Record a successful key health check: stamp last_verified_at = now.
+ * Ownership-checked end to end (key ∈ vault ∈ user); returns the refreshed
+ * key row, or null when the key/vault isn't the user's.
+ */
+export function markKeyVerified(userId: number, vaultId: number, keyId: number): VaultKeyRow | null {
+	const info = db
+		.prepare(
+			`UPDATE vault_keys
+			 SET last_verified_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			 WHERE id = ? AND vault_id = ?
+			   AND EXISTS (SELECT 1 FROM vaults WHERE id = ? AND user_id = ?)`
+		)
+		.run(keyId, vaultId, vaultId, userId);
+	if (info.changes === 0) return null;
+	const row = db.prepare('SELECT * FROM vault_keys WHERE id = ?').get(keyId) as
+		| Record<string, unknown>
+		| undefined;
+	return row ? mapKey(row) : null;
+}
+
+// SLIP-132 multisig public prefixes (Ypub / Zpub) rewritten to standard xpub
+// bytes before comparison — same normalization multisig.ts applies internally
+// (its toStandardXpub is private; the rewrite is 4 version bytes, duplicated
+// here rather than widening that module's API). Device readers always return
+// standard xpubs, but a STORED key may have been pasted in SLIP-132 form.
+const SLIP132_MULTISIG_VERSIONS = new Set([
+	0x0295b43f, // Ypub (p2sh-p2wsh multisig)
+	0x02aa7ed3 // Zpub (p2wsh multisig)
+]);
+const XPUB_VERSION = 0x0488b21e;
+const b58check = createBase58check(sha256);
+
+/** Canonical xpub string for equality comparison, or null when unparseable. */
+function canonicalXpub(input: string): string | null {
+	let s = input.trim();
+	try {
+		const raw = b58check.decode(s);
+		if (raw.length === 78) {
+			const version = ((raw[0] << 24) | (raw[1] << 16) | (raw[2] << 8) | raw[3]) >>> 0;
+			if (SLIP132_MULTISIG_VERSIONS.has(version)) {
+				const out = new Uint8Array(raw);
+				out[0] = (XPUB_VERSION >>> 24) & 0xff;
+				out[1] = (XPUB_VERSION >>> 16) & 0xff;
+				out[2] = (XPUB_VERSION >>> 8) & 0xff;
+				out[3] = XPUB_VERSION & 0xff;
+				s = b58check.encode(out);
+			}
+		}
+	} catch {
+		// Not base58 at all — let parseXpub fail below.
+	}
+	try {
+		return parseXpub(s).hdkey.publicExtendedKey;
+	} catch {
+		return null;
+	}
+}
+
+export interface VaultKeyComparison {
+	/** Master fingerprints agree (case-insensitive). */
+	fingerprintMatch: boolean;
+	/** Extended keys agree after canonicalization (SLIP-132 aliases equal). */
+	xpubMatch: boolean;
+}
+
+/**
+ * Compare a live device reading against a stored vault key. Both checks are
+ * reported separately: fingerprint-mismatch means a different seed entirely
+ * ("this device holds a different key"), while fingerprint-match with
+ * xpub-mismatch usually means the right device read at a different account
+ * path than the key was created with.
+ */
+export function compareVaultKey(
+	stored: Pick<VaultKeyRow, 'xpub' | 'fingerprint'>,
+	reading: { xpub: string; fingerprint: string }
+): VaultKeyComparison {
+	const canonStored = canonicalXpub(stored.xpub);
+	const canonReading = canonicalXpub(reading.xpub);
+	return {
+		fingerprintMatch: stored.fingerprint.toLowerCase() === reading.fingerprint.trim().toLowerCase(),
+		xpubMatch: canonStored !== null && canonStored === canonReading
+	};
 }

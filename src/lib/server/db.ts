@@ -232,3 +232,22 @@ db.exec(`
 	);
 	CREATE INDEX IF NOT EXISTS idx_vault_transactions_vault ON vault_transactions(vault_id);
 `);
+
+// Key health checks (Casa's periodic-verification pattern): a multisig key you
+// haven't recently proven you still control is a silent liability — devices
+// die, PINs get forgotten, a device restored from the wrong seed keeps working
+// for everything except THIS vault. Casa's answer is a per-key "last verified"
+// timestamp plus a periodic nudge when any key goes unchecked too long
+// (~6 months); we store exactly that. Only the timestamp is recorded — HOW the
+// key was verified (device re-read vs guided manual check) is deliberately not,
+// because either proof is only as fresh as the moment it happened. NULL means
+// never verified. Guarded and additive like the migrations above; see
+// markKeyVerified in src/lib/server/vaults.ts.
+{
+	const keyCols = (db.prepare('PRAGMA table_info(vault_keys)').all() as { name: string }[]).map(
+		(c) => c.name
+	);
+	if (!keyCols.includes('last_verified_at')) {
+		db.exec('ALTER TABLE vault_keys ADD COLUMN last_verified_at TEXT');
+	}
+}
