@@ -1,5 +1,5 @@
-import { json, requireUser } from '$lib/server/api';
-import { getWalletDetail, deleteWallet, toWalletSummary } from '$lib/server/wallets';
+import { json, requireUser, readJson } from '$lib/server/api';
+import { getWalletDetail, deleteWallet, toWalletSummary, setWalletDevice } from '$lib/server/wallets';
 import type { RequestHandler } from './$types';
 
 function parseId(param: string): number | null {
@@ -31,6 +31,22 @@ export const GET: RequestHandler = async (event) => {
 			{ status: 502 }
 		);
 	}
+};
+
+/**
+ * PATCH /api/wallets/:id { deviceType } — record which signing device holds
+ * this wallet's key (used when associating a device on first send). An empty
+ * or unrecognized value clears it back to the file-based fallback.
+ */
+export const PATCH: RequestHandler = async (event) => {
+	const user = requireUser(event);
+	const id = parseId(event.params.id);
+	if (id === null) return notFound();
+
+	const body = await readJson<{ deviceType?: unknown }>(event);
+	const wallet = setWalletDevice(user.id, id, body.deviceType);
+	if (!wallet) return notFound();
+	return json({ wallet });
 };
 
 /** DELETE /api/wallets/:id */

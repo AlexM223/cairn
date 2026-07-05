@@ -254,7 +254,7 @@
 		<p class="hint">
 			Reset this instance: deletes all users, sessions, wallets, and invites, and returns Cairn to
 			first-run setup. Settings and node configuration are wiped too — a full factory reset.
-			Wallets here are watch-only, so no funds are at risk, but nothing else survives.
+			Cairn only ever holds public keys, so no funds are at risk, but nothing else survives.
 		</p>
 	</div>
 

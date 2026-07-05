@@ -1,4 +1,4 @@
-// Unsigned-transaction construction (BIP174 PSBTs) for watch-only wallets.
+// Unsigned-transaction construction (BIP174 PSBTs) for single-sig wallets.
 //
 // Cairn never holds private keys: this module builds and serializes PSBTs
 // from Electrum UTXO data; signing happens elsewhere (hardware device, or

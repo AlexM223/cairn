@@ -9,7 +9,7 @@ export const GET: RequestHandler = async (event) => {
 	return json({ wallets, errors });
 };
 
-/** POST /api/wallets { name?, xpub } — import a watch-only wallet. */
+/** POST /api/wallets { name?, xpub } — import a single-sig wallet from an xpub. */
 export const POST: RequestHandler = async (event) => {
 	const user = requireUser(event);
 	const body = await readJson<{ name?: string; xpub?: string }>(event);

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
 	import { formatBtc, formatSats, timeAgo } from '$lib/format';
-	import { SCRIPT_TYPE_LABELS } from './labels';
+	import { SCRIPT_TYPE_LABELS, walletTypeLabel } from './labels';
 
 	let { data } = $props();
 </script>
@@ -64,6 +64,7 @@
 					<span class="wallet-name grow truncate">{wallet.name}</span>
 					<span class="badge badge-neutral">{SCRIPT_TYPE_LABELS[wallet.scriptType]}</span>
 				</div>
+				<span class="wallet-kind">{walletTypeLabel(wallet.deviceType)}</span>
 
 				{#if unreachable}
 					<div class="balance">
@@ -192,6 +193,12 @@
 	.wallet-name {
 		font-size: 14.5px;
 		font-weight: 600;
+	}
+
+	.wallet-kind {
+		font-size: 11.5px;
+		color: var(--text-muted);
+		margin-top: -4px;
 	}
 
 	.balance {

@@ -1,4 +1,4 @@
-// Watch-only wallet scanning: BIP44-style gap-limit discovery over Electrum,
+// Wallet scanning from an xpub: BIP44-style gap-limit discovery over Electrum,
 // with tx details filled in from the esplora backend via ChainService.
 
 import type { WalletAddress, WalletTx } from '$lib/types';
@@ -158,7 +158,7 @@ async function doScan(xpub: string): Promise<WalletScanResult> {
 const scanCache = new Map<string, { expires: number; promise: Promise<WalletScanResult> }>();
 
 /**
- * Scan a watch-only wallet (xpub/ypub/zpub) over Electrum.
+ * Scan a wallet (xpub/ypub/zpub) over Electrum.
  * Results are cached in-process for 60s per xpub.
  */
 export function scanWallet(xpub: string): Promise<WalletScanResult> {

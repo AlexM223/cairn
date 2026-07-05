@@ -27,6 +27,8 @@
 		MASS_WHY_TIP,
 		type SigningMass
 	} from '../_components/signingMass';
+	import { WALLET_DEVICE_LABELS } from '../../labels';
+	import type { WalletDeviceType } from '$lib/types';
 
 	let { data } = $props();
 
@@ -537,11 +539,49 @@
 	// ---------------------------------------------------- Sign: method selection
 	// One signing method is active (expanded) at a time; the rest collapse to
 	// selectable tiles. `null` = nothing chosen yet (pure method selection).
+	// The SignMethod set is exactly WalletDeviceType, so the device on record
+	// (if any) both pre-selects a method and drives the "Sign with your <device>"
+	// heading — a single-key wallet lands on one signing screen, not a menu.
 	type SignMethod = 'file' | 'trezor' | 'ledger' | 'coldcard' | 'qr';
-	let activeMethod = $state<SignMethod | null>(null);
+
+	// The device associated with this wallet, tracked locally so associating one
+	// mid-send (below) updates the heading immediately.
+	// svelte-ignore state_referenced_locally — intentional per-load seed
+	let walletDevice = $state<WalletDeviceType | null>(data.wallet.deviceType);
+	// Pre-select the known device (file included) so Sign opens straight on it.
+	// svelte-ignore state_referenced_locally — intentional per-load seed
+	let activeMethod = $state<SignMethod | null>(data.wallet.deviceType);
+	// Set briefly after a first-send device association so the user sees it stuck.
+	let deviceJustSaved = $state<WalletDeviceType | null>(null);
 	// Bumped to remount the active signer from scratch — a clean retry after the
 	// server-side guard rejects what a device returned.
 	let signerEpoch = $state(0);
+
+	// The device signer heading: names the wallet's device once one is known.
+	const signHeading = $derived(
+		walletDevice && walletDevice !== 'file'
+			? `Sign with your ${WALLET_DEVICE_LABELS[walletDevice]}`
+			: 'Sign this transaction with your wallet'
+	);
+
+	// Persist which device the user signs with the first time they pick one, so
+	// future sends skip straight to it. Fire-and-forget: a failed save just means
+	// they'll pick again next time. 'file' is generic and never recorded; picking
+	// it (or skipping) leaves the wallet on the universal fallback.
+	async function rememberDevice(m: SignMethod) {
+		if (m === 'file' || m === walletDevice) return;
+		walletDevice = m;
+		deviceJustSaved = m;
+		try {
+			await fetch(`/api/wallets/${walletId}`, {
+				method: 'PATCH',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ deviceType: m })
+			});
+		} catch {
+			/* best-effort — the send itself is unaffected */
+		}
+	}
 
 	// Availability is probed client-side only (navigator.* does not exist during
 	// SSR) — start pessimistic and re-check after mount, like the signers do.
@@ -609,6 +649,8 @@
 		activeMethod = m;
 		signError = null;
 		signerEpoch += 1;
+		// First send from a wallet with no device on record: remember the choice.
+		void rememberDevice(m);
 	}
 
 	function collapseMethod() {
@@ -680,8 +722,8 @@
 					wallet or signing app, which reviews it and adds your signature.
 				</p>
 				<p>
-					<strong>Your keys never touch Cairn.</strong> Cairn is watch-only: it can build and
-					broadcast, but only your device can authorize the spend.
+					<strong>Your keys never touch Cairn.</strong> Cairn only holds your public key — it can
+					build and broadcast, but only your device can authorize the spend.
 				</p>
 			</HowItWorks>
 
@@ -1045,16 +1087,31 @@
 		<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
 			<div class="key-frame">
 				<span class="badge badge-accent">Key 1 of 1</span>
-				<span class="text-secondary">Sign this transaction with your wallet</span>
+				<span class="text-secondary">{signHeading}</span>
 			</div>
+
+			{#if deviceJustSaved && deviceJustSaved !== 'file'}
+				<p class="device-saved-note" role="status">
+					<Icon name="check" size={13} />
+					Saved — future sends from this wallet will go straight to your
+					{WALLET_DEVICE_LABELS[deviceJustSaved]}.
+				</p>
+			{/if}
 
 			<HowItWorks id="send-sign">
 				<p>
-					Signing happens <strong>on your device</strong>, never here. Pick how your signer receives
-					the unsigned transaction — USB, a microSD card, QR codes, or a plain file — then review
-					the amount and address <em>on the device screen</em> and approve. Cairn verifies that
-					every returned signature commits to the exact transaction you reviewed before it can be
-					broadcast.
+					Signing happens <strong>on your device</strong>, never here.
+					{#if walletDevice && walletDevice !== 'file'}
+						Your wallet signs with a {WALLET_DEVICE_LABELS[walletDevice]} — follow its steps below,
+						review the amount and address <em>on the device screen</em>, and approve. Prefer a
+						different method this once? Choose “Use a different method”.
+					{:else}
+						Pick how your signer receives the unsigned transaction — USB, a microSD card, QR codes,
+						or a plain file — then review the amount and address <em>on the device screen</em> and
+						approve.
+					{/if}
+					Cairn verifies that every returned signature commits to the exact transaction you reviewed
+					before it can be broadcast.
 				</p>
 			</HowItWorks>
 
@@ -1755,6 +1812,14 @@
 		align-items: center;
 		gap: 10px;
 		font-size: 13.5px;
+	}
+
+	.device-saved-note {
+		display: flex;
+		align-items: center;
+		gap: 7px;
+		font-size: 12.5px;
+		color: var(--success);
 	}
 
 	.method-grid {

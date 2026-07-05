@@ -72,7 +72,8 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 		wallet: {
 			id: row.id,
 			name: row.name,
-			scriptType: row.script_type
+			scriptType: row.script_type,
+			deviceType: row.device_type ?? null
 		},
 		confirmed,
 		scanError,

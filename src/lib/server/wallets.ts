@@ -1,4 +1,6 @@
-// Watch-only wallet service layer. Every function is scoped by userId —
+// Single-sig wallet service layer. A wallet is one xpub: Cairn holds only the
+// public key (it can never spend on its own), but the wallet is a full wallet —
+// the user signs on their own device. Every function is scoped by userId —
 // callers pass locals.user.id and never see another user's rows.
 
 import { db } from './db';
