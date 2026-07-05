@@ -2,20 +2,10 @@
 	import { enhance } from '$app/forms';
 	import { page } from '$app/state';
 	import { timeAgo } from '$lib/format';
-	import CopyText from '$lib/components/CopyText.svelte';
 
 	let { data, form } = $props();
 
 	const me = $derived(page.data.user);
-
-	// The temp password arrives once via form data; copy it into local state so
-	// it survives later actions on the page and can be dismissed explicitly.
-	let tempReveal = $state<{ password: string; email: string } | null>(null);
-
-	$effect(() => {
-		if (form?.tempPassword)
-			tempReveal = { password: form.tempPassword, email: form.tempPasswordFor ?? '' };
-	});
 
 	function since(iso: string | null): string {
 		if (!iso) return 'never';
@@ -29,29 +19,6 @@
 
 {#if form?.error}
 	<div class="form-error" role="alert" style="margin-bottom: 14px">{form.error}</div>
-{/if}
-
-{#if tempReveal}
-	<div class="temp-panel fade-in" role="status">
-		<div class="temp-head">
-			<span class="temp-title">Temporary password for {tempReveal.email}</span>
-			<button
-				class="btn btn-ghost btn-sm"
-				type="button"
-				onclick={() => (tempReveal = null)}
-				aria-label="Dismiss temporary password"
-			>
-				Dismiss
-			</button>
-		</div>
-		<div class="temp-value">
-			<CopyText value={tempReveal.password} />
-		</div>
-		<p class="temp-warning">
-			This is the only time it will be shown — copy it now and pass it on securely. They should
-			change it after signing in.
-		</p>
-	</div>
 {/if}
 
 <div class="card fade-in">
@@ -105,12 +72,6 @@
 										{user.isAdmin ? 'Demote' : 'Make admin'}
 									</button>
 								</form>
-								{#if user.id !== me?.id}
-									<form method="POST" action="?/resetPassword" use:enhance>
-										<input type="hidden" name="id" value={user.id} />
-										<button class="btn btn-ghost btn-sm">Reset password</button>
-									</form>
-								{/if}
 								<form method="POST" action={user.disabled ? '?/enable' : '?/disable'} use:enhance>
 									<input type="hidden" name="id" value={user.id} />
 									{#if user.disabled}
@@ -166,39 +127,5 @@
 
 	.danger:hover:not(:disabled) {
 		color: var(--error);
-	}
-
-	.temp-panel {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-		background: var(--warning-muted);
-		border: 1px solid rgba(232, 201, 90, 0.35);
-		border-radius: var(--radius-control);
-		padding: 12px 14px;
-		margin-bottom: 14px;
-	}
-
-	.temp-head {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 10px;
-	}
-
-	.temp-title {
-		font-size: 13px;
-		font-weight: 600;
-	}
-
-	.temp-value {
-		font-size: 15px;
-		font-weight: 500;
-	}
-
-	.temp-warning {
-		font-size: 12px;
-		color: var(--text-muted);
-		line-height: 1.5;
 	}
 </style>

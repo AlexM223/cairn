@@ -7,6 +7,18 @@ export interface SessionUser {
 	isAdmin: boolean;
 }
 
+/** Metadata about one registered passkey (WebAuthn credential), safe for the client. */
+export interface CredentialInfo {
+	id: number;
+	name: string | null;
+	/** 'singleDevice' | 'multiDevice' — a multiDevice passkey syncs (iCloud/Google). */
+	deviceType: string | null;
+	backedUp: boolean;
+	transports: string[];
+	createdAt: string;
+	lastUsedAt: string | null;
+}
+
 export type ScriptType = 'p2pkh' | 'p2sh-p2wpkh' | 'p2wpkh' | 'p2tr';
 
 /**

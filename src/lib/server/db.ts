@@ -14,10 +14,11 @@ db.exec(`
 	PRAGMA foreign_keys = ON;
 	PRAGMA busy_timeout = 5000;
 
+	-- Authentication is passkey-only (WebAuthn); there is no password column.
+	-- Credentials live in user_credentials (below). See src/lib/server/webauthn.ts.
 	CREATE TABLE IF NOT EXISTS users (
 		id            INTEGER PRIMARY KEY AUTOINCREMENT,
 		email         TEXT NOT NULL UNIQUE COLLATE NOCASE,
-		password_hash TEXT NOT NULL,
 		display_name  TEXT NOT NULL,
 		is_admin      INTEGER NOT NULL DEFAULT 0,
 		disabled      INTEGER NOT NULL DEFAULT 0,
@@ -314,6 +315,39 @@ db.exec(`
 	);
 	CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, id DESC);
 `);
+
+// Passkey (WebAuthn) credentials — auth is passkey-only, no passwords. Each
+// user can register several (phone + laptop + security key), so an account never
+// depends on a single device. See src/lib/server/webauthn.ts.
+db.exec(`
+	CREATE TABLE IF NOT EXISTS user_credentials (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		credential_id TEXT NOT NULL UNIQUE,   -- base64url credential id
+		public_key    TEXT NOT NULL,          -- base64url COSE public key
+		counter       INTEGER NOT NULL DEFAULT 0,
+		transports    TEXT,                   -- JSON array of transport hints
+		device_type   TEXT,                   -- 'singleDevice' | 'multiDevice'
+		backed_up     INTEGER NOT NULL DEFAULT 0,
+		name          TEXT,                   -- user-friendly label ("iPhone", "YubiKey")
+		created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		last_used_at  TEXT
+	);
+	CREATE INDEX IF NOT EXISTS idx_user_credentials_user ON user_credentials(user_id);
+`);
+
+// Passkey migration: databases created before passkey-only auth still carry a
+// NOT NULL password_hash column on users. Drop it — passwords are gone. Guarded
+// so it runs once; a fresh database never had the column. (node:sqlite supports
+// ALTER TABLE DROP COLUMN.)
+{
+	const userCols = (db.prepare('PRAGMA table_info(users)').all() as { name: string }[]).map(
+		(c) => c.name
+	);
+	if (userCols.includes('password_hash')) {
+		db.exec('ALTER TABLE users DROP COLUMN password_hash');
+	}
+}
 
 // Key health checks (Casa's periodic-verification pattern): a multisig key you
 // haven't recently proven you still control is a silent liability — devices

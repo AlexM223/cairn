@@ -1,27 +1,50 @@
 <script lang="ts">
-	import { enhance } from '$app/forms';
+	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
+	import { signInWithPasskey, browserSupportsWebAuthn } from '$lib/passkey';
 
-	let { form } = $props();
+	let email = $state('');
 	let submitting = $state(false);
+	let error = $state<string | null>(null);
+	let supported = $state(true);
+
+	onMount(() => {
+		supported = browserSupportsWebAuthn();
+	});
+
+	async function signIn(e: SubmitEvent) {
+		e.preventDefault();
+		error = null;
+		if (!email.trim()) {
+			error = 'Enter your email address.';
+			return;
+		}
+		submitting = true;
+		try {
+			await signInWithPasskey(email.trim());
+			const next = page.url.searchParams.get('next');
+			await goto(next && next.startsWith('/') ? next : '/', { invalidateAll: true });
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Could not sign in.';
+		} finally {
+			submitting = false;
+		}
+	}
 </script>
 
 <svelte:head>
 	<title>Sign in — Cairn</title>
 </svelte:head>
 
-<form
-	method="POST"
-	class="stack"
-	use:enhance={() => {
-		submitting = true;
-		return async ({ update }) => {
-			submitting = false;
-			await update();
-		};
-	}}
->
-	{#if form?.error}
-		<div class="form-error" role="alert">{form.error}</div>
+<form class="stack" onsubmit={signIn}>
+	{#if !supported}
+		<div class="form-error" role="alert">
+			This browser doesn't support passkeys. Use a recent version of Chrome, Safari, Edge or
+			Firefox.
+		</div>
+	{:else if error}
+		<div class="form-error" role="alert">{error}</div>
 	{/if}
 
 	<div class="field">
@@ -31,32 +54,23 @@
 			id="email"
 			name="email"
 			type="email"
-			autocomplete="email"
+			autocomplete="email webauthn"
 			required
-			value={form?.email ?? ''}
+			bind:value={email}
 		/>
 	</div>
 
-	<div class="field">
-		<label class="label" for="password">Password</label>
-		<input
-			class="input"
-			id="password"
-			name="password"
-			type="password"
-			autocomplete="current-password"
-			required
-		/>
-	</div>
-
-	<button class="btn btn-primary" disabled={submitting}>
+	<button class="btn btn-primary" disabled={submitting || !supported}>
 		{#if submitting}<span class="spinner"></span>{/if}
-		Sign in
+		Sign in with passkey
 	</button>
 
-	<p class="alt">
-		No account? <a href="/signup">Create one</a>
+	<p class="hint passkey-note">
+		Your device will ask for Touch&nbsp;ID, Face&nbsp;ID, Windows&nbsp;Hello, or your security key —
+		no password needed.
 	</p>
+
+	<p class="alt">No account? <a href="/signup">Create one</a></p>
 </form>
 
 <style>
@@ -67,6 +81,11 @@
 	.btn {
 		width: 100%;
 		margin-top: 4px;
+	}
+
+	.passkey-note {
+		text-align: center;
+		line-height: 1.5;
 	}
 
 	.alt {

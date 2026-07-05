@@ -1,24 +1,47 @@
 <script lang="ts">
-	import { enhance } from '$app/forms';
+	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
+	import { signUpWithPasskey, browserSupportsWebAuthn } from '$lib/passkey';
 
-	let { data, form } = $props();
+	let { data } = $props();
+
+	let displayName = $state('');
+	let email = $state('');
+	let inviteCode = $state('');
 	let submitting = $state(false);
-	let clientError = $state<string | null>(null);
+	let error = $state<string | null>(null);
+	let supported = $state(true);
 
-	// Validation runs here (not via native bubbles) so failures render in
-	// Cairn's own error style instead of the browser default tooltip.
-	function validate(el: HTMLFormElement): string | null {
-		const value = (name: string) =>
-			(el.elements.namedItem(name) as HTMLInputElement | null)?.value.trim() ?? '';
-		if (!value('displayName')) return 'Enter a display name.';
-		const email = value('email');
-		if (!email) return 'Enter your email address.';
-		if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return 'Enter a valid email address.';
-		if ((el.elements.namedItem('password') as HTMLInputElement).value.length < 8)
-			return 'Password must be at least 8 characters.';
-		if (el.elements.namedItem('inviteCode') && !value('inviteCode'))
+	onMount(() => {
+		supported = browserSupportsWebAuthn();
+	});
+
+	function validate(): string | null {
+		if (!displayName.trim()) return 'Enter a display name.';
+		if (!email.trim()) return 'Enter your email address.';
+		if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return 'Enter a valid email address.';
+		if (data.needsInvite && !inviteCode.trim())
 			return 'This instance requires an invite code to join.';
 		return null;
+	}
+
+	async function createAccount(e: SubmitEvent) {
+		e.preventDefault();
+		error = validate();
+		if (error) return;
+		submitting = true;
+		try {
+			await signUpWithPasskey({
+				email: email.trim(),
+				displayName: displayName.trim(),
+				inviteCode: inviteCode.trim() || undefined
+			});
+			await goto('/', { invalidateAll: true });
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Could not create the account.';
+		} finally {
+			submitting = false;
+		}
 	}
 </script>
 
@@ -39,27 +62,14 @@
 		</div>
 	{/if}
 
-	<form
-		method="POST"
-		class="stack"
-		novalidate
-		use:enhance={({ formElement, cancel }) => {
-			clientError = validate(formElement);
-			if (clientError) {
-				cancel();
-				return;
-			}
-			submitting = true;
-			return async ({ update }) => {
-				submitting = false;
-				await update();
-			};
-		}}
-	>
-		{#if clientError}
-			<div class="form-error" role="alert">{clientError}</div>
-		{:else if form?.error}
-			<div class="form-error" role="alert">{form.error}</div>
+	<form class="stack" onsubmit={createAccount}>
+		{#if !supported}
+			<div class="form-error" role="alert">
+				This browser doesn't support passkeys. Use a recent version of Chrome, Safari, Edge or
+				Firefox.
+			</div>
+		{:else if error}
+			<div class="form-error" role="alert">{error}</div>
 		{/if}
 
 		<div class="field">
@@ -70,7 +80,7 @@
 				name="displayName"
 				autocomplete="name"
 				required
-				value={form?.displayName ?? ''}
+				bind:value={displayName}
 			/>
 		</div>
 
@@ -83,22 +93,8 @@
 				type="email"
 				autocomplete="email"
 				required
-				value={form?.email ?? ''}
+				bind:value={email}
 			/>
-		</div>
-
-		<div class="field">
-			<label class="label" for="password">Password</label>
-			<input
-				class="input"
-				id="password"
-				name="password"
-				type="password"
-				autocomplete="new-password"
-				minlength="8"
-				required
-			/>
-			<span class="hint">At least 8 characters.</span>
 		</div>
 
 		{#if data.needsInvite}
@@ -110,7 +106,7 @@
 					name="inviteCode"
 					placeholder="CAIRN-XXXX-XXXX"
 					required
-					value={form?.inviteCode ?? ''}
+					bind:value={inviteCode}
 				/>
 				<span class="hint">
 					Invites come from whoever runs this Cairn instance — ask them for a code.
@@ -118,14 +114,19 @@
 			</div>
 		{/if}
 
-		<button class="btn btn-primary" disabled={submitting}>
+		<div class="passkey-explainer">
+			<strong>You'll create a passkey next.</strong>
+			A passkey is like a digital key stored on your device (or synced through iCloud / Google Password
+			Manager). It's more secure than a password — it can't be phished, leaked, or guessed. Your browser
+			will prompt for Touch&nbsp;ID, Face&nbsp;ID, Windows&nbsp;Hello, or a security key.
+		</div>
+
+		<button class="btn btn-primary" disabled={submitting || !supported}>
 			{#if submitting}<span class="spinner"></span>{/if}
-			{data.firstUser ? 'Set up Cairn' : 'Create account'}
+			{data.firstUser ? 'Set up Cairn with a passkey' : 'Create account with a passkey'}
 		</button>
 
-		<p class="alt">
-			Already have an account? <a href="/login">Sign in</a>
-		</p>
+		<p class="alt">Already have an account? <a href="/login">Sign in</a></p>
 	</form>
 {/if}
 
@@ -142,6 +143,22 @@
 		padding: 9px 12px;
 		margin-bottom: 16px;
 		line-height: 1.5;
+	}
+
+	.passkey-explainer {
+		font-size: 12.5px;
+		color: var(--text-secondary);
+		background: var(--surface-elevated);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-control);
+		padding: 11px 13px;
+		line-height: 1.55;
+	}
+
+	.passkey-explainer strong {
+		color: var(--text);
+		display: block;
+		margin-bottom: 3px;
 	}
 
 	.btn {

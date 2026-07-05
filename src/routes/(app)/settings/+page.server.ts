@@ -1,18 +1,14 @@
 import { fail } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { hashPassword, verifyPassword, destroyUserSessions, createSession, SESSION_COOKIE } from '$lib/server/auth';
-import {
-	passwordChangeRetryAfter,
-	notePasswordChangeFailure,
-	notePasswordChangeSuccess,
-	tooManyAttemptsMessage
-} from '$lib/server/rateLimit';
+import { listCredentials } from '$lib/server/auth';
 import type { Actions, PageServerLoad } from './$types';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-export const load: PageServerLoad = async () => {
-	return {};
+export const load: PageServerLoad = async ({ locals }) => {
+	// Passkeys are managed client-side against /api/auth/passkeys; the first
+	// paint ships the current list.
+	return { passkeys: listCredentials(locals.user!.id) };
 };
 
 export const actions: Actions = {
@@ -35,45 +31,5 @@ export const actions: Actions = {
 			locals.user!.id
 		);
 		return { profileSaved: true };
-	},
-
-	password: async ({ request, locals, cookies }) => {
-		const form = await request.formData();
-		const current = String(form.get('currentPassword') ?? '');
-		const next = String(form.get('newPassword') ?? '');
-		const confirm = String(form.get('confirmPassword') ?? '');
-
-		if (next.length < 8)
-			return fail(400, { passwordError: 'New password must be at least 8 characters.' });
-		if (next !== confirm) return fail(400, { passwordError: 'New passwords do not match.' });
-
-		const wait = passwordChangeRetryAfter(locals.user!.id);
-		if (wait !== null) return fail(429, { passwordError: tooManyAttemptsMessage(wait) });
-
-		const row = db
-			.prepare('SELECT password_hash FROM users WHERE id = ?')
-			.get(locals.user!.id) as { password_hash: string } | undefined;
-		if (!row || !verifyPassword(current, row.password_hash)) {
-			notePasswordChangeFailure(locals.user!.id);
-			return fail(400, { passwordError: 'Current password is incorrect.' });
-		}
-		notePasswordChangeSuccess(locals.user!.id);
-
-		db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(
-			hashPassword(next),
-			locals.user!.id
-		);
-
-		// Rotate all sessions: sign everything out, then start a fresh one here.
-		destroyUserSessions(locals.user!.id);
-		const { token, expiresAt } = createSession(locals.user!.id);
-		cookies.set(SESSION_COOKIE, token, {
-			path: '/',
-			httpOnly: true,
-			sameSite: 'lax',
-			expires: expiresAt
-		});
-
-		return { passwordSaved: true };
 	}
 };

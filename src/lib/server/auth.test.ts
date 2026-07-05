@@ -2,62 +2,39 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { createHash } from 'node:crypto';
 import { db } from './db';
 import {
-	hashPassword,
-	verifyPassword,
 	registerUser,
-	loginUser,
 	createSession,
 	getSessionUser,
 	destroySession,
 	destroyUserSessions,
 	userCount,
+	getUserByEmail,
+	getUserById,
+	addCredential,
+	listCredentials,
+	credentialDescriptors,
+	credentialExists,
+	getCredentialForAuth,
+	updateCredentialCounter,
+	renameCredential,
+	deleteCredential,
 	AuthError
 } from './auth';
 import { createInvites, revokeInvite } from './admin';
 import { setSetting } from './settings';
 
 function wipe(): void {
-	// Order matters: invites reference users without ON DELETE CASCADE.
+	// user_credentials cascade when users are deleted (foreign_keys are ON).
 	db.exec('DELETE FROM sessions; DELETE FROM wallets; DELETE FROM invites; DELETE FROM users; DELETE FROM settings;');
 }
 
 beforeEach(wipe);
 
-const PASSWORD = 'correct horse battery';
-
 function registerAdmin() {
-	// First user always becomes admin, no invite needed.
-	return registerUser({ email: 'admin@example.com', password: PASSWORD, displayName: 'Admin' });
+	// First user always becomes admin, no invite needed. Auth is passkey-only —
+	// registerUser creates the account; a passkey is attached separately.
+	return registerUser({ email: 'admin@example.com', displayName: 'Admin' });
 }
-
-describe('hashPassword / verifyPassword', () => {
-	it('round-trips a password', () => {
-		const stored = hashPassword(PASSWORD);
-		expect(verifyPassword(PASSWORD, stored)).toBe(true);
-	});
-
-	it('rejects a wrong password', () => {
-		const stored = hashPassword(PASSWORD);
-		expect(verifyPassword('wrong password', stored)).toBe(false);
-	});
-
-	it('rejects a tampered stored string', () => {
-		const stored = hashPassword(PASSWORD);
-		const parts = stored.split(':');
-		// Corrupt the hash portion (flip its first character).
-		parts[5] = (parts[5][0] === 'A' ? 'B' : 'A') + parts[5].slice(1);
-		expect(verifyPassword(PASSWORD, parts.join(':'))).toBe(false);
-		expect(verifyPassword(PASSWORD, 'not-a-hash')).toBe(false);
-	});
-
-	it('stores scrypt params in the prefix', () => {
-		expect(hashPassword(PASSWORD)).toMatch(/^scrypt:16384:8:1:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/);
-	});
-
-	it('salts: two hashes of the same password differ', () => {
-		expect(hashPassword(PASSWORD)).not.toBe(hashPassword(PASSWORD));
-	});
-});
 
 describe('registerUser', () => {
 	it('makes the first user an admin with no invite required', () => {
@@ -69,20 +46,15 @@ describe('registerUser', () => {
 
 	it('requires an invite code for the second user in default invite mode', () => {
 		registerAdmin();
-		expect(() =>
-			registerUser({ email: 'b@example.com', password: PASSWORD, displayName: 'B' })
-		).toThrowError(expect.objectContaining({ code: 'invite_required' }));
+		expect(() => registerUser({ email: 'b@example.com', displayName: 'B' })).toThrowError(
+			expect.objectContaining({ code: 'invite_required' })
+		);
 	});
 
 	it('accepts a valid invite and increments used_count', () => {
 		const admin = registerAdmin();
 		const [invite] = createInvites({ createdBy: admin.id, count: 1 });
-		const user = registerUser({
-			email: 'b@example.com',
-			password: PASSWORD,
-			displayName: 'B',
-			inviteCode: invite.code
-		});
+		const user = registerUser({ email: 'b@example.com', displayName: 'B', inviteCode: invite.code });
 		expect(user.isAdmin).toBe(false);
 
 		const row = db.prepare('SELECT used_count FROM invites WHERE id = ?').get(invite.id) as {
@@ -94,19 +66,9 @@ describe('registerUser', () => {
 	it('rejects an exhausted invite', () => {
 		const admin = registerAdmin();
 		const [invite] = createInvites({ createdBy: admin.id, count: 1, maxUses: 1 });
-		registerUser({
-			email: 'b@example.com',
-			password: PASSWORD,
-			displayName: 'B',
-			inviteCode: invite.code
-		});
+		registerUser({ email: 'b@example.com', displayName: 'B', inviteCode: invite.code });
 		expect(() =>
-			registerUser({
-				email: 'c@example.com',
-				password: PASSWORD,
-				displayName: 'C',
-				inviteCode: invite.code
-			})
+			registerUser({ email: 'c@example.com', displayName: 'C', inviteCode: invite.code })
 		).toThrowError(expect.objectContaining({ code: 'bad_invite' }));
 	});
 
@@ -115,56 +77,22 @@ describe('registerUser', () => {
 		const [invite] = createInvites({ createdBy: admin.id, count: 1 });
 		revokeInvite(invite.id);
 		expect(() =>
-			registerUser({
-				email: 'b@example.com',
-				password: PASSWORD,
-				displayName: 'B',
-				inviteCode: invite.code
-			})
-		).toThrowError(expect.objectContaining({ code: 'bad_invite' }));
-	});
-
-	it('rejects an expired invite', () => {
-		const admin = registerAdmin();
-		const [invite] = createInvites({ createdBy: admin.id, count: 1 });
-		db.prepare('UPDATE invites SET expires_at = ? WHERE id = ?').run(
-			new Date(Date.now() - 60_000).toISOString(),
-			invite.id
-		);
-		expect(() =>
-			registerUser({
-				email: 'b@example.com',
-				password: PASSWORD,
-				displayName: 'B',
-				inviteCode: invite.code
-			})
-		).toThrowError(expect.objectContaining({ code: 'bad_invite' }));
-	});
-
-	it('rejects an unknown invite code', () => {
-		registerAdmin();
-		expect(() =>
-			registerUser({
-				email: 'b@example.com',
-				password: PASSWORD,
-				displayName: 'B',
-				inviteCode: 'CAIRN-XXXX-XXXX'
-			})
+			registerUser({ email: 'b@example.com', displayName: 'B', inviteCode: invite.code })
 		).toThrowError(expect.objectContaining({ code: 'bad_invite' }));
 	});
 
 	it('rejects everyone after the first user in closed mode', () => {
 		registerAdmin();
 		setSetting('registration_mode', 'closed');
-		expect(() =>
-			registerUser({ email: 'b@example.com', password: PASSWORD, displayName: 'B' })
-		).toThrowError(expect.objectContaining({ code: 'closed' }));
+		expect(() => registerUser({ email: 'b@example.com', displayName: 'B' })).toThrowError(
+			expect.objectContaining({ code: 'closed' })
+		);
 	});
 
 	it('needs no invite in open mode', () => {
 		registerAdmin();
 		setSetting('registration_mode', 'open');
-		const user = registerUser({ email: 'b@example.com', password: PASSWORD, displayName: 'B' });
+		const user = registerUser({ email: 'b@example.com', displayName: 'B' });
 		expect(user.isAdmin).toBe(false);
 		expect(userCount()).toBe(2);
 	});
@@ -172,73 +100,127 @@ describe('registerUser', () => {
 	it('rejects a duplicate email (case-insensitively)', () => {
 		registerAdmin();
 		setSetting('registration_mode', 'open');
-		expect(() =>
-			registerUser({ email: 'ADMIN@example.com', password: PASSWORD, displayName: 'Dup' })
-		).toThrowError(expect.objectContaining({ code: 'email_taken' }));
-	});
-
-	it('rejects a weak password', () => {
-		expect(() =>
-			registerUser({ email: 'a@example.com', password: 'short', displayName: 'A' })
-		).toThrowError(expect.objectContaining({ code: 'weak_password' }));
+		expect(() => registerUser({ email: 'ADMIN@example.com', displayName: 'Dup' })).toThrowError(
+			expect.objectContaining({ code: 'email_taken' })
+		);
 	});
 
 	it('rejects an invalid email', () => {
-		expect(() =>
-			registerUser({ email: 'not-an-email', password: PASSWORD, displayName: 'A' })
-		).toThrowError(expect.objectContaining({ code: 'invalid_email' }));
+		expect(() => registerUser({ email: 'not-an-email', displayName: 'A' })).toThrowError(
+			expect.objectContaining({ code: 'invalid_email' })
+		);
 	});
 
 	it('rejects an empty display name', () => {
-		expect(() =>
-			registerUser({ email: 'a@example.com', password: PASSWORD, displayName: '   ' })
-		).toThrowError(expect.objectContaining({ code: 'invalid_name' }));
+		expect(() => registerUser({ email: 'a@example.com', displayName: '   ' })).toThrowError(
+			expect.objectContaining({ code: 'invalid_name' })
+		);
+	});
+
+	it('does not store the ignored legacy password field', () => {
+		const user = registerUser({ email: 'a@example.com', displayName: 'A', password: 'ignored' });
+		const cols = (db.prepare('PRAGMA table_info(users)').all() as { name: string }[]).map(
+			(c) => c.name
+		);
+		expect(cols).not.toContain('password_hash');
+		expect(getUserById(user.id)?.email).toBe('a@example.com');
 	});
 });
 
-describe('loginUser', () => {
-	it('logs in with correct credentials', () => {
-		const created = registerAdmin();
-		const user = loginUser('admin@example.com', PASSWORD);
-		expect(user.id).toBe(created.id);
-		expect(user.isAdmin).toBe(true);
-	});
-
-	it('normalizes email case and whitespace', () => {
-		registerAdmin();
-		expect(loginUser('  ADMIN@Example.com ', PASSWORD).email).toBe('admin@example.com');
-	});
-
-	it('rejects a wrong password', () => {
-		registerAdmin();
-		expect(() => loginUser('admin@example.com', 'nope nope nope')).toThrow(AuthError);
-	});
-
-	it('uses the same error for unknown email and wrong password (no user enumeration)', () => {
-		registerAdmin();
-		let wrongPassword: AuthError | undefined;
-		let unknownEmail: AuthError | undefined;
-		try {
-			loginUser('admin@example.com', 'nope nope nope');
-		} catch (e) {
-			wrongPassword = e as AuthError;
-		}
-		try {
-			loginUser('ghost@example.com', PASSWORD);
-		} catch (e) {
-			unknownEmail = e as AuthError;
-		}
-		expect(wrongPassword?.message).toBe(unknownEmail?.message);
-		expect(wrongPassword?.code).toBe('bad_credentials');
-		expect(unknownEmail?.code).toBe('bad_credentials');
-	});
-
-	it('rejects a disabled user even with the right password', () => {
+describe('lookups', () => {
+	it('getUserByEmail normalizes case and skips disabled users', () => {
 		const admin = registerAdmin();
+		expect(getUserByEmail('  ADMIN@Example.com ')?.id).toBe(admin.id);
 		db.prepare('UPDATE users SET disabled = 1 WHERE id = ?').run(admin.id);
-		expect(() => loginUser('admin@example.com', PASSWORD)).toThrowError(
-			expect.objectContaining({ code: 'disabled' })
+		expect(getUserByEmail('admin@example.com')).toBeNull();
+	});
+
+	it('getUserById returns null for unknown/disabled', () => {
+		const admin = registerAdmin();
+		expect(getUserById(admin.id)?.email).toBe('admin@example.com');
+		expect(getUserById(9999)).toBeNull();
+	});
+});
+
+describe('passkey credentials', () => {
+	function makeCred(overrides: Partial<Parameters<typeof addCredential>[1]> = {}) {
+		return {
+			credentialId: 'cred-a',
+			publicKey: new Uint8Array([1, 2, 3, 4]),
+			counter: 0,
+			transports: ['internal', 'hybrid'],
+			deviceType: 'multiDevice',
+			backedUp: true,
+			name: 'Phone',
+			...overrides
+		};
+	}
+
+	it('adds and lists a credential (metadata only)', () => {
+		const admin = registerAdmin();
+		addCredential(admin.id, makeCred());
+		const list = listCredentials(admin.id);
+		expect(list).toHaveLength(1);
+		expect(list[0]).toMatchObject({ name: 'Phone', backedUp: true, deviceType: 'multiDevice' });
+		expect(list[0].transports).toEqual(['internal', 'hybrid']);
+	});
+
+	it('round-trips the public key and reports it for auth', () => {
+		const admin = registerAdmin();
+		addCredential(admin.id, makeCred());
+		const rec = getCredentialForAuth('cred-a');
+		expect(rec?.userId).toBe(admin.id);
+		expect(rec?.disabled).toBe(false);
+		expect(Array.from(rec!.credential.publicKey)).toEqual([1, 2, 3, 4]);
+		expect(rec!.credential.id).toBe('cred-a');
+		expect(getCredentialForAuth('nope')).toBeNull();
+	});
+
+	it('credentialExists and descriptors reflect stored credentials', () => {
+		const admin = registerAdmin();
+		addCredential(admin.id, makeCred());
+		expect(credentialExists('cred-a')).toBe(true);
+		expect(credentialExists('cred-x')).toBe(false);
+		expect(credentialDescriptors(admin.id)).toEqual([
+			{ id: 'cred-a', transports: ['internal', 'hybrid'] }
+		]);
+	});
+
+	it('updates the replay counter and last_used', () => {
+		const admin = registerAdmin();
+		addCredential(admin.id, makeCred());
+		updateCredentialCounter('cred-a', 42);
+		expect(getCredentialForAuth('cred-a')!.credential.counter).toBe(42);
+		expect(listCredentials(admin.id)[0].lastUsedAt).not.toBeNull();
+	});
+
+	it('renames a credential (only the owner)', () => {
+		const admin = registerAdmin();
+		addCredential(admin.id, makeCred());
+		const id = listCredentials(admin.id)[0].id;
+		expect(renameCredential(admin.id, id, 'My iPhone')).toBe(true);
+		expect(listCredentials(admin.id)[0].name).toBe('My iPhone');
+		expect(renameCredential(admin.id, 99999, 'x')).toBe(false);
+	});
+
+	it('refuses to remove the last passkey but allows removing others', () => {
+		const admin = registerAdmin();
+		addCredential(admin.id, makeCred({ credentialId: 'cred-a', name: 'Phone' }));
+		const firstId = listCredentials(admin.id)[0].id;
+		expect(() => deleteCredential(admin.id, firstId)).toThrowError(
+			expect.objectContaining({ code: 'last_passkey' })
 		);
+
+		addCredential(admin.id, makeCred({ credentialId: 'cred-b', name: 'Laptop' }));
+		expect(deleteCredential(admin.id, firstId)).toBe(true);
+		expect(listCredentials(admin.id)).toHaveLength(1);
+	});
+
+	it('credentials cascade-delete with the user', () => {
+		const admin = registerAdmin();
+		addCredential(admin.id, makeCred());
+		db.prepare('DELETE FROM users WHERE id = ?').run(admin.id);
+		expect(getCredentialForAuth('cred-a')).toBeNull();
 	});
 });
 

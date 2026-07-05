@@ -1,18 +1,6 @@
-import { fail, redirect } from '@sveltejs/kit';
-import {
-	registerUser,
-	createSession,
-	AuthError,
-	SESSION_COOKIE,
-	userCount
-} from '$lib/server/auth';
-import {
-	inviteRetryAfter,
-	noteInviteFailure,
-	tooManyAttemptsMessage
-} from '$lib/server/rateLimit';
+import { userCount } from '$lib/server/auth';
 import { getInstanceSettings } from '$lib/server/settings';
-import type { Actions, PageServerLoad } from './$types';
+import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async () => {
 	const firstUser = userCount() === 0;
@@ -25,43 +13,5 @@ export const load: PageServerLoad = async () => {
 	};
 };
 
-export const actions: Actions = {
-	default: async (event) => {
-		const { request, cookies } = event;
-		const form = await request.formData();
-		const email = String(form.get('email') ?? '');
-		const displayName = String(form.get('displayName') ?? '');
-		const password = String(form.get('password') ?? '');
-		const inviteCode = String(form.get('inviteCode') ?? '') || undefined;
-		const ip = event.getClientAddress();
-
-		// Throttle invite-code guessing before touching the database.
-		const wait = inviteRetryAfter(ip);
-		if (wait !== null)
-			return fail(429, { error: tooManyAttemptsMessage(wait), email, displayName, inviteCode });
-
-		try {
-			const user = registerUser({ email, password, displayName, inviteCode });
-			const { token, expiresAt } = createSession(user.id);
-			cookies.set(SESSION_COOKIE, token, {
-				path: '/',
-				httpOnly: true,
-				sameSite: 'lax',
-				expires: expiresAt
-			});
-		} catch (e) {
-			if (e instanceof AuthError) {
-				if (e.code === 'bad_invite') noteInviteFailure(ip);
-				// Invite dead-ends get a pointer to the human who can fix them.
-				const error =
-					e.code === 'invite_required' || e.code === 'bad_invite'
-						? `${e.message} Invites come from whoever runs this Cairn instance — ask them for a code.`
-						: e.message;
-				return fail(400, { error, email, displayName, inviteCode });
-			}
-			throw e;
-		}
-
-		redirect(302, '/');
-	}
-};
+// Registration is a passkey ceremony driven client-side against
+// /api/auth/register/{options,verify} — there is no form action here.

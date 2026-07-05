@@ -49,6 +49,8 @@
 		"@scure/base": "^2.2.0",
 		"@scure/bip32": "^2.2.0",
 		"@scure/btc-signer": "^2.2.0",
+		"@simplewebauthn/browser": "^13.3.0",
+		"@simplewebauthn/server": "^13.3.2",
 		"@trezor/connect-web": "^9.7.3",
 		"bbqr": "^1.2.0",
 		"pino": "^9.14.0",

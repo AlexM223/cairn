@@ -1,6 +1,5 @@
-import { randomBytes } from 'node:crypto';
 import { db } from './db';
-import { destroyUserSessions, generateInviteCode, hashPassword, AuthError } from './auth';
+import { destroyUserSessions, generateInviteCode, AuthError } from './auth';
 import type { AdminUserInfo, InviteInfo } from '$lib/types';
 
 // ---------- Users ----------
@@ -74,23 +73,6 @@ export function deleteUser(id: number): void {
 		throw new AuthError('Cannot delete the only administrator.', 'last_admin');
 
 	db.prepare('DELETE FROM users WHERE id = ?').run(id); // sessions + wallets cascade
-}
-
-/**
- * Set a fresh random temporary password for a user and kill their sessions.
- * The caller shows the returned password ONCE — it is never stored in plain text.
- * Resetting an admin's password is fine: it doesn't demote or disable anyone,
- * so the last-admin guards don't apply here.
- */
-export function resetUserPassword(id: number): { tempPassword: string } {
-	const user = getUserRow(id);
-	if (!user) throw new AuthError('User not found.', 'not_found');
-
-	const tempPassword = randomBytes(12).toString('base64url');
-	db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(tempPassword), id);
-	destroyUserSessions(id); // fresh login required with the new password
-
-	return { tempPassword };
 }
 
 /**

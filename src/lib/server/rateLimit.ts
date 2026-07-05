@@ -2,8 +2,8 @@
 //
 // Cairn is a single-process app (node:sqlite, adapter-node), so process
 // memory is an adequate store: a restart clearing the counters is fine.
-// scrypt already makes each guess expensive server-side; this cap stops
-// sustained online guessing outright.
+// Auth is passkey-only, so there is no password to guess — but the login
+// endpoint still gets throttled to blunt credential-stuffing and enumeration.
 //
 // Deployment note: getClientAddress() only sees the reverse proxy's address
 // unless the adapter is told which header carries the client IP (adapter-node:
@@ -17,14 +17,12 @@ interface FailureWindow {
 const WINDOW_MS = 15 * 60_000;
 
 const LIMITS = {
-	/** Failed logins per email — tight: targets credential guessing. */
+	/** Failed logins per email — tight: targets credential stuffing. */
 	loginEmail: 5,
 	/** Failed logins per IP — looser: tolerates a shared NAT, stops spraying. */
 	loginIp: 20,
 	/** Invalid invite codes per IP — stops invite-code enumeration. */
-	invitesIp: 10,
-	/** Wrong current-password attempts per user on password change. */
-	passwordChange: 5
+	invitesIp: 10
 } as const;
 
 const buckets = new Map<string, FailureWindow>();
@@ -89,20 +87,6 @@ export function inviteRetryAfter(ip: string): number | null {
 
 export function noteInviteFailure(ip: string): void {
 	recordFailure(`invite:ip:${ip}`);
-}
-
-// ---------------------------------------------------------- password change
-
-export function passwordChangeRetryAfter(userId: number): number | null {
-	return retryAfter(`pwchange:${userId}`, LIMITS.passwordChange);
-}
-
-export function notePasswordChangeFailure(userId: number): void {
-	recordFailure(`pwchange:${userId}`);
-}
-
-export function notePasswordChangeSuccess(userId: number): void {
-	clear(`pwchange:${userId}`);
 }
 
 /** Human phrasing shared by the endpoints. */
