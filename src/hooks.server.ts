@@ -1,3 +1,4 @@
+import { redirect } from '@sveltejs/kit';
 import type { Handle, HandleServerError } from '@sveltejs/kit';
 import { randomBytes } from 'node:crypto';
 import { getSessionUser, SESSION_COOKIE, bootstrapAdminFromEnv } from '$lib/server/auth';
@@ -43,6 +44,16 @@ export const handle: Handle = async ({ event, resolve }) => {
 
 	const { pathname } = event.url;
 	if (isAsset(pathname)) return resolve(event);
+
+	// The vault → multisig-wallet rename moved every /vaults route; old
+	// bookmarks and history entries should land on the equivalent page, not a
+	// 404. Permanent redirect so browsers update stored URLs; the query string
+	// is preserved so a /vaults/[id]/send?tx=N resume link still resumes.
+	if (pathname === '/vaults' || pathname.startsWith('/vaults/')) {
+		const rest = pathname.slice('/vaults'.length);
+		const target = rest === '' || rest === '/' ? '/wallets' : `/wallets/multisig${rest}`;
+		redirect(301, `${target}${event.url.search}`);
+	}
 
 	const method = event.request.method;
 	const path = redactPath(pathname);
