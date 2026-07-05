@@ -1,10 +1,18 @@
 import type { Handle, HandleServerError } from '@sveltejs/kit';
 import { randomBytes } from 'node:crypto';
-import { getSessionUser, SESSION_COOKIE } from '$lib/server/auth';
+import { getSessionUser, SESSION_COOKIE, bootstrapAdminFromEnv } from '$lib/server/auth';
 import { childLogger } from '$lib/server/logger';
 
 const httpLog = childLogger('http');
 const errLog = childLogger('error');
+
+// Non-interactive admin bootstrap for deployment tooling (Umbrel/Docker set
+// CAIRN_ADMIN_PASSWORD / APP_PASSWORD). Runs once at server start; never throws.
+try {
+	bootstrapAdminFromEnv();
+} catch (e) {
+	errLog.error({ err: e }, 'admin bootstrap from env failed');
+}
 
 // Static assets and build output aren't worth a log line each (and the SPA
 // fetches a lot of them). Everything else — pages, API, form actions — is.

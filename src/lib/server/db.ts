@@ -14,11 +14,13 @@ db.exec(`
 	PRAGMA foreign_keys = ON;
 	PRAGMA busy_timeout = 5000;
 
-	-- Authentication is passkey-only (WebAuthn); there is no password column.
-	-- Credentials live in user_credentials (below). See src/lib/server/webauthn.ts.
+	-- Auth supports BOTH email+password (scrypt — the default) and passkeys
+	-- (WebAuthn — optional/additive). password_hash is NULL for passkey-only
+	-- accounts; passkeys live in user_credentials (below).
 	CREATE TABLE IF NOT EXISTS users (
 		id            INTEGER PRIMARY KEY AUTOINCREMENT,
 		email         TEXT NOT NULL UNIQUE COLLATE NOCASE,
+		password_hash TEXT,
 		display_name  TEXT NOT NULL,
 		is_admin      INTEGER NOT NULL DEFAULT 0,
 		disabled      INTEGER NOT NULL DEFAULT 0,
@@ -336,16 +338,15 @@ db.exec(`
 	CREATE INDEX IF NOT EXISTS idx_user_credentials_user ON user_credentials(user_id);
 `);
 
-// Passkey migration: databases created before passkey-only auth still carry a
-// NOT NULL password_hash column on users. Drop it — passwords are gone. Guarded
-// so it runs once; a fresh database never had the column. (node:sqlite supports
-// ALTER TABLE DROP COLUMN.)
+// Password auth is the default; passkeys are additive. A database that briefly
+// ran the passkey-only build had password_hash dropped — add it back (nullable;
+// NULL just means a passkey-only account). Guarded and idempotent.
 {
 	const userCols = (db.prepare('PRAGMA table_info(users)').all() as { name: string }[]).map(
 		(c) => c.name
 	);
-	if (userCols.includes('password_hash')) {
-		db.exec('ALTER TABLE users DROP COLUMN password_hash');
+	if (!userCols.includes('password_hash')) {
+		db.exec('ALTER TABLE users ADD COLUMN password_hash TEXT');
 	}
 }
 

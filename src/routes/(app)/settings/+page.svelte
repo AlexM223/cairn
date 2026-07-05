@@ -10,6 +10,7 @@
 
 	const user = $derived(page.data.user);
 	let savingProfile = $state(false);
+	let savingPassword = $state(false);
 
 	// Passkeys: first paint from the server load; mutations replace the list.
 	let override = $state<CredentialInfo[] | null>(null);
@@ -125,6 +126,81 @@
 	</section>
 
 	<section class="card card-pad section">
+		<span class="card-title">Password</span>
+		<form
+			method="POST"
+			action="?/password"
+			class="stack inner"
+			use:enhance={() => {
+				savingPassword = true;
+				return async ({ update }) => {
+					savingPassword = false;
+					await update();
+				};
+			}}
+		>
+			{#if form?.passwordError}
+				<div class="form-error" role="alert">{form.passwordError}</div>
+			{:else if form?.passwordSaved}
+				<div class="saved-note" role="status">
+					Password {data.hasPassword ? 'changed' : 'set'}. Other sessions were signed out.
+				</div>
+			{/if}
+
+			{#if data.hasPassword}
+				<div class="field">
+					<label class="label" for="currentPassword">Current password</label>
+					<input
+						class="input"
+						id="currentPassword"
+						name="currentPassword"
+						type="password"
+						autocomplete="current-password"
+						required
+					/>
+				</div>
+			{:else}
+				<p class="hint">
+					This account signs in with a passkey. Set a password to also sign in with email and
+					password.
+				</p>
+			{/if}
+			<div class="two-col">
+				<div class="field">
+					<label class="label" for="newPassword">New password</label>
+					<input
+						class="input"
+						id="newPassword"
+						name="newPassword"
+						type="password"
+						autocomplete="new-password"
+						minlength="8"
+						required
+					/>
+				</div>
+				<div class="field">
+					<label class="label" for="confirmPassword">Confirm new password</label>
+					<input
+						class="input"
+						id="confirmPassword"
+						name="confirmPassword"
+						type="password"
+						autocomplete="new-password"
+						minlength="8"
+						required
+					/>
+				</div>
+			</div>
+			<div class="actions">
+				<button class="btn btn-primary" disabled={savingPassword}>
+					{#if savingPassword}<span class="spinner"></span>{/if}
+					{data.hasPassword ? 'Change password' : 'Set password'}
+				</button>
+			</div>
+		</form>
+	</section>
+
+	<section class="card card-pad section">
 		<div class="row" style="gap: 10px">
 			<span class="card-title grow">Passkeys</span>
 			<button class="btn btn-secondary btn-sm" onclick={onAdd} disabled={busy}>
@@ -229,6 +305,18 @@
 
 	.inner {
 		gap: 14px;
+	}
+
+	.two-col {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 12px;
+	}
+
+	@media (max-width: 560px) {
+		.two-col {
+			grid-template-columns: 1fr;
+		}
 	}
 
 	.actions {

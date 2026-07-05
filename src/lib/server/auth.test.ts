@@ -20,6 +20,11 @@ import {
 	deleteCredential,
 	reclaimableUserId,
 	hasNoCredentials,
+	hashPassword,
+	verifyPassword,
+	loginWithPassword,
+	setUserPassword,
+	hasPassword,
 	AuthError
 } from './auth';
 import { createInvites, revokeInvite } from './admin';
@@ -33,8 +38,8 @@ function wipe(): void {
 beforeEach(wipe);
 
 function registerAdmin() {
-	// First user always becomes admin, no invite needed. Auth is passkey-only —
-	// registerUser creates the account; a passkey is attached separately.
+	// First user always becomes admin, no invite needed. Password is optional
+	// here (this account is passkey-eligible until one is added).
 	return registerUser({ email: 'admin@example.com', displayName: 'Admin' });
 }
 
@@ -119,13 +124,71 @@ describe('registerUser', () => {
 		);
 	});
 
-	it('does not store the ignored legacy password field', () => {
-		const user = registerUser({ email: 'a@example.com', displayName: 'A', password: 'ignored' });
-		const cols = (db.prepare('PRAGMA table_info(users)').all() as { name: string }[]).map(
-			(c) => c.name
+	it('rejects a weak password', () => {
+		expect(() =>
+			registerUser({ email: 'a@example.com', displayName: 'A', password: 'short' })
+		).toThrowError(expect.objectContaining({ code: 'weak_password' }));
+	});
+
+	it('stores a password hash only when a password is given', () => {
+		const withPw = registerUser({ email: 'p@example.com', displayName: 'P', password: 'longenough' });
+		expect(hasPassword(withPw.id)).toBe(true);
+		setSetting('registration_mode', 'open');
+		const noPw = registerUser({ email: 'n@example.com', displayName: 'N' });
+		expect(hasPassword(noPw.id)).toBe(false);
+	});
+});
+
+describe('passwords', () => {
+	it('hashPassword / verifyPassword round-trips and rejects wrong/tampered', () => {
+		const stored = hashPassword('correct horse battery');
+		expect(stored).toMatch(/^scrypt:16384:8:1:/);
+		expect(verifyPassword('correct horse battery', stored)).toBe(true);
+		expect(verifyPassword('wrong', stored)).toBe(false);
+		expect(verifyPassword('correct horse battery', 'not-a-hash')).toBe(false);
+		// Two hashes of the same password differ (salted).
+		expect(hashPassword('x-password')).not.toBe(hashPassword('x-password'));
+	});
+
+	it('loginWithPassword succeeds and normalizes email', () => {
+		const admin = registerUser({ email: 'admin@example.com', displayName: 'Admin', password: 'cairn2025x' });
+		expect(loginWithPassword('  ADMIN@Example.com ', 'cairn2025x').id).toBe(admin.id);
+	});
+
+	it('uses the same error for unknown email, no password, and wrong password', () => {
+		registerUser({ email: 'admin@example.com', displayName: 'Admin', password: 'cairn2025x' });
+		setSetting('registration_mode', 'open');
+		registerUser({ email: 'nopw@example.com', displayName: 'NoPw' }); // passkey-only, no password
+
+		const codes: string[] = [];
+		for (const [email, pw] of [
+			['admin@example.com', 'wrongpassword'],
+			['ghost@example.com', 'cairn2025x'],
+			['nopw@example.com', 'cairn2025x']
+		] as const) {
+			try {
+				loginWithPassword(email, pw);
+			} catch (e) {
+				codes.push((e as AuthError).code);
+			}
+		}
+		expect(codes).toEqual(['bad_credentials', 'bad_credentials', 'bad_credentials']);
+	});
+
+	it('rejects a disabled user even with the right password', () => {
+		const admin = registerUser({ email: 'admin@example.com', displayName: 'Admin', password: 'cairn2025x' });
+		db.prepare('UPDATE users SET disabled = 1 WHERE id = ?').run(admin.id);
+		expect(() => loginWithPassword('admin@example.com', 'cairn2025x')).toThrowError(
+			expect.objectContaining({ code: 'disabled' })
 		);
-		expect(cols).not.toContain('password_hash');
-		expect(getUserById(user.id)?.email).toBe('a@example.com');
+	});
+
+	it('setUserPassword sets a first password on a passkey-only account', () => {
+		const admin = registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+		expect(hasPassword(admin.id)).toBe(false);
+		setUserPassword(admin.id, 'brandnew-pass');
+		expect(hasPassword(admin.id)).toBe(true);
+		expect(loginWithPassword('admin@example.com', 'brandnew-pass').id).toBe(admin.id);
 	});
 });
 

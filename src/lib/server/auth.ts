@@ -1,16 +1,19 @@
-import { randomBytes, createHash } from 'node:crypto';
+import { randomBytes, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
 import type { Cookies } from '@sveltejs/kit';
+import { env } from '$env/dynamic/private';
 import { db } from './db';
-import { getInstanceSettings } from './settings';
+import { getInstanceSettings, getSetting } from './settings';
 import type { CredentialInfo, SessionUser } from '$lib/types';
 import type { WebAuthnCredential } from '@simplewebauthn/server';
 
 export type { CredentialInfo };
 
-// Authentication is passkey-only (WebAuthn). There are no passwords: nothing to
-// hash, phish, leak, or reset. A user proves who they are with a device-bound
-// credential; the credentials live in user_credentials. See webauthn.ts for the
-// ceremony wrappers and the /api/auth routes for the endpoints.
+// Authentication supports two methods that coexist:
+//   • email + password (scrypt) — the DEFAULT, and required for Umbrel/Docker
+//     deployments where a browser passkey ceremony isn't practical;
+//   • passkeys (WebAuthn) — an optional, additive login method a user can add
+//     in settings (credentials live in user_credentials; see webauthn.ts).
+// An account may have a password, one or more passkeys, or both.
 
 const SESSION_DAYS = 30;
 
@@ -88,6 +91,123 @@ export function setSessionCookie(cookies: Cookies, token: string, expiresAt: Dat
 	});
 }
 
+// ---------- Passwords (scrypt — no native deps) ----------
+
+const SCRYPT_N = 16384;
+const SCRYPT_R = 8;
+const SCRYPT_P = 1;
+const KEY_LEN = 32;
+
+/** Minimum acceptable password length. */
+export const MIN_PASSWORD_LENGTH = 8;
+
+export function hashPassword(password: string): string {
+	const salt = randomBytes(16);
+	const hash = scryptSync(password, salt, KEY_LEN, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P });
+	return `scrypt:${SCRYPT_N}:${SCRYPT_R}:${SCRYPT_P}:${salt.toString('base64')}:${hash.toString('base64')}`;
+}
+
+export function verifyPassword(password: string, stored: string): boolean {
+	const parts = stored.split(':');
+	if (parts.length !== 6 || parts[0] !== 'scrypt') return false;
+	const [, nStr, rStr, pStr, saltB64, hashB64] = parts;
+	const salt = Buffer.from(saltB64, 'base64');
+	const expected = Buffer.from(hashB64, 'base64');
+	const actual = scryptSync(password, salt, expected.length, {
+		N: parseInt(nStr, 10),
+		r: parseInt(rStr, 10),
+		p: parseInt(pStr, 10)
+	});
+	return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+/** Set (or replace) a user's password. */
+export function setUserPassword(userId: number, password: string): void {
+	db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(password), userId);
+}
+
+/** Whether a user currently has a password set (vs passkey-only). */
+export function hasPassword(userId: number): boolean {
+	const row = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(userId) as
+		| { password_hash: string | null }
+		| undefined;
+	return !!row?.password_hash;
+}
+
+/**
+ * Verify an email + password and return the user. Uses the SAME error for an
+ * unknown email, an account with no password, and a wrong password, so it never
+ * reveals which accounts exist or use passwords.
+ */
+export function loginWithPassword(email: string, password: string): SessionUser {
+	const row = db
+		.prepare(
+			'SELECT id, email, password_hash, display_name, is_admin, disabled FROM users WHERE email = ?'
+		)
+		.get(email.trim().toLowerCase()) as
+		| {
+				id: number;
+				email: string;
+				password_hash: string | null;
+				display_name: string;
+				is_admin: number;
+				disabled: number;
+		  }
+		| undefined;
+
+	if (!row || !row.password_hash || !verifyPassword(password, row.password_hash))
+		throw new AuthError('Invalid email or password.', 'bad_credentials');
+	if (row.disabled) throw new AuthError('This account has been disabled.', 'disabled');
+
+	return { id: row.id, email: row.email, displayName: row.display_name, isAdmin: row.is_admin === 1 };
+}
+
+// ---------- Auth mode + deployment bootstrap ----------
+
+export type AuthMode = 'password' | 'passkey';
+
+/**
+ * The primary sign-up method. Defaults to 'password'; an admin can switch it in
+ * settings (stored key `auth_mode`), and a deployment can force it with the
+ * CAIRN_AUTH_MODE env var (which wins — Umbrel/Docker pin 'password'). Passkeys
+ * remain available as an additive login method regardless of this.
+ */
+export function getAuthMode(): AuthMode {
+	const raw = (env.CAIRN_AUTH_MODE ?? getSetting('auth_mode') ?? 'password').toLowerCase();
+	return raw === 'passkey' ? 'passkey' : 'password';
+}
+
+export function setAuthMode(mode: AuthMode): void {
+	db.prepare(
+		"INSERT INTO settings (key, value) VALUES ('auth_mode', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+	).run(mode);
+}
+
+/**
+ * Non-interactive admin bootstrap for deployment tooling (Umbrel surfaces the
+ * password in its own UI). If CAIRN_ADMIN_PASSWORD (or APP_PASSWORD) is set:
+ * create the first admin with it, or give an existing passwordless first admin
+ * that password. Never clobbers a password the operator already chose. Runs
+ * once at server start (see hooks.server.ts).
+ */
+export function bootstrapAdminFromEnv(): void {
+	const pw = env.CAIRN_ADMIN_PASSWORD ?? env.APP_PASSWORD;
+	if (!pw || pw.length < MIN_PASSWORD_LENGTH) return;
+
+	const first = db.prepare('SELECT id, password_hash FROM users ORDER BY id ASC LIMIT 1').get() as
+		| { id: number; password_hash: string | null }
+		| undefined;
+
+	if (!first) {
+		const email = (env.CAIRN_ADMIN_EMAIL ?? 'admin@cairn.local').trim().toLowerCase();
+		db.prepare(
+			'INSERT INTO users (email, password_hash, display_name, is_admin) VALUES (?, ?, ?, 1)'
+		).run(email, hashPassword(pw), 'Admin');
+	} else if (!first.password_hash) {
+		setUserPassword(first.id, pw);
+	}
+}
+
 // ---------- Registration / users ----------
 
 export class AuthError extends Error {
@@ -110,7 +230,7 @@ export interface RegisterInput {
 	email: string;
 	displayName: string;
 	inviteCode?: string;
-	/** @deprecated Passwords were removed with the move to passkeys. Ignored. */
+	/** Optional password (scrypt-hashed). Omitted for a passkey-only account. */
 	password?: string;
 }
 
@@ -163,14 +283,23 @@ export function registerUser(input: RegisterInput): SessionUser {
 
 	const { isFirstUser } = assertCanRegister({ email, displayName, inviteCode });
 
+	// Password is optional (a passkey-only account leaves it null); when present
+	// it must be strong enough.
+	const password = input.password;
+	if (password != null && password.length < MIN_PASSWORD_LENGTH)
+		throw new AuthError(
+			`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
+			'weak_password'
+		);
+
 	// Consume the invite only now, on the real create.
 	if (!isFirstUser && getInstanceSettings().registrationMode === 'invite' && inviteCode) {
 		redeemInvite(inviteCode);
 	}
 
 	const result = db
-		.prepare('INSERT INTO users (email, display_name, is_admin) VALUES (?, ?, ?)')
-		.run(email, displayName, isFirstUser ? 1 : 0);
+		.prepare('INSERT INTO users (email, password_hash, display_name, is_admin) VALUES (?, ?, ?, ?)')
+		.run(email, password ? hashPassword(password) : null, displayName, isFirstUser ? 1 : 0);
 
 	return {
 		id: Number(result.lastInsertRowid),

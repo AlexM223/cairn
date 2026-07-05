@@ -1,14 +1,29 @@
 import { fail } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { listCredentials } from '$lib/server/auth';
+import {
+	listCredentials,
+	hasPassword,
+	verifyPassword,
+	setUserPassword,
+	destroyUserSessions,
+	createSession,
+	setSessionCookie,
+	getAuthMode,
+	MIN_PASSWORD_LENGTH
+} from '$lib/server/auth';
 import type { Actions, PageServerLoad } from './$types';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export const load: PageServerLoad = async ({ locals }) => {
+	const uid = locals.user!.id;
 	// Passkeys are managed client-side against /api/auth/passkeys; the first
 	// paint ships the current list.
-	return { passkeys: listCredentials(locals.user!.id) };
+	return {
+		passkeys: listCredentials(uid),
+		hasPassword: hasPassword(uid),
+		authMode: getAuthMode()
+	};
 };
 
 export const actions: Actions = {
@@ -31,5 +46,38 @@ export const actions: Actions = {
 			locals.user!.id
 		);
 		return { profileSaved: true };
+	},
+
+	password: async ({ request, locals, cookies }) => {
+		const form = await request.formData();
+		const current = String(form.get('currentPassword') ?? '');
+		const next = String(form.get('newPassword') ?? '');
+		const confirm = String(form.get('confirmPassword') ?? '');
+		const uid = locals.user!.id;
+
+		if (next.length < MIN_PASSWORD_LENGTH)
+			return fail(400, {
+				passwordError: `New password must be at least ${MIN_PASSWORD_LENGTH} characters.`
+			});
+		if (next !== confirm) return fail(400, { passwordError: 'New passwords do not match.' });
+
+		// Changing an existing password requires the current one; setting a first
+		// password (passkey-only account) does not.
+		if (hasPassword(uid)) {
+			const row = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(uid) as
+				| { password_hash: string | null }
+				| undefined;
+			if (!row?.password_hash || !verifyPassword(current, row.password_hash))
+				return fail(400, { passwordError: 'Current password is incorrect.' });
+		}
+
+		setUserPassword(uid, next);
+
+		// Rotate all sessions: sign everything out, then start a fresh one here.
+		destroyUserSessions(uid);
+		const { token, expiresAt } = createSession(uid);
+		setSessionCookie(cookies, token, expiresAt);
+
+		return { passwordSaved: true };
 	}
 };

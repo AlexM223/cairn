@@ -5,26 +5,54 @@
 	import { signInWithPasskey, browserSupportsWebAuthn } from '$lib/passkey';
 
 	let email = $state('');
+	let password = $state('');
 	let submitting = $state(false);
 	let error = $state<string | null>(null);
-	let supported = $state(true);
+	let passkeySupported = $state(false);
 
 	onMount(() => {
-		supported = browserSupportsWebAuthn();
+		passkeySupported = browserSupportsWebAuthn();
 	});
 
-	async function signIn(e: SubmitEvent) {
+	function nextUrl(): string {
+		const next = page.url.searchParams.get('next');
+		return next && next.startsWith('/') ? next : '/';
+	}
+
+	async function signInPassword(e: SubmitEvent) {
 		e.preventDefault();
 		error = null;
+		if (!email.trim() || !password) {
+			error = 'Enter your email and password.';
+			return;
+		}
+		submitting = true;
+		try {
+			const res = await fetch('/api/auth/login/password', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ email: email.trim(), password })
+			});
+			const body = await res.json().catch(() => null);
+			if (!res.ok) throw new Error(body?.error || 'Could not sign in.');
+			await goto(nextUrl(), { invalidateAll: true });
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Could not sign in.';
+		} finally {
+			submitting = false;
+		}
+	}
+
+	async function signInPasskey() {
+		error = null;
 		if (!email.trim()) {
-			error = 'Enter your email address.';
+			error = 'Enter your email, then use your passkey.';
 			return;
 		}
 		submitting = true;
 		try {
 			await signInWithPasskey(email.trim());
-			const next = page.url.searchParams.get('next');
-			await goto(next && next.startsWith('/') ? next : '/', { invalidateAll: true });
+			await goto(nextUrl(), { invalidateAll: true });
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Could not sign in.';
 		} finally {
@@ -37,13 +65,8 @@
 	<title>Sign in — Cairn</title>
 </svelte:head>
 
-<form class="stack" onsubmit={signIn}>
-	{#if !supported}
-		<div class="form-error" role="alert">
-			This browser doesn't support passkeys. Use a recent version of Chrome, Safari, Edge or
-			Firefox.
-		</div>
-	{:else if error}
+<form class="stack" onsubmit={signInPassword}>
+	{#if error}
 		<div class="form-error" role="alert">{error}</div>
 	{/if}
 
@@ -54,21 +77,36 @@
 			id="email"
 			name="email"
 			type="email"
-			autocomplete="email webauthn"
+			autocomplete="email"
 			required
 			bind:value={email}
 		/>
 	</div>
 
-	<button class="btn btn-primary" disabled={submitting || !supported}>
+	<div class="field">
+		<label class="label" for="password">Password</label>
+		<input
+			class="input"
+			id="password"
+			name="password"
+			type="password"
+			autocomplete="current-password"
+			required
+			bind:value={password}
+		/>
+	</div>
+
+	<button class="btn btn-primary" disabled={submitting}>
 		{#if submitting}<span class="spinner"></span>{/if}
-		Sign in with passkey
+		Sign in
 	</button>
 
-	<p class="hint passkey-note">
-		Your device will ask for Touch&nbsp;ID, Face&nbsp;ID, Windows&nbsp;Hello, or your security key —
-		no password needed.
-	</p>
+	{#if passkeySupported}
+		<div class="divider"><span>or</span></div>
+		<button type="button" class="btn btn-secondary" onclick={signInPasskey} disabled={submitting}>
+			Sign in with a passkey
+		</button>
+	{/if}
 
 	<p class="alt">No account? <a href="/signup">Create one</a></p>
 </form>
@@ -83,9 +121,21 @@
 		margin-top: 4px;
 	}
 
-	.passkey-note {
-		text-align: center;
-		line-height: 1.5;
+	.divider {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		color: var(--text-muted);
+		font-size: 12px;
+		margin: 2px 0;
+	}
+
+	.divider::before,
+	.divider::after {
+		content: '';
+		flex: 1;
+		height: 1px;
+		background: var(--border-subtle);
 	}
 
 	.alt {
