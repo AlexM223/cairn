@@ -782,7 +782,8 @@
 								(result.data as { error?: string } | undefined)?.error ??
 								'Could not import that wallet.';
 						} else if (result.type === 'success' && result.data) {
-							// Move to the mandatory backup step instead of leaving the wizard.
+							// Move to the Done step (backup is optional for single-sig — the
+							// wallet reconstructs from the hardware device).
 							createdId = (result.data as { id: number }).id;
 							step = 4;
 						} else {
@@ -861,51 +862,43 @@
 			</form>
 		</div>
 	{:else if step === 4 && createdId !== null}
-		<!-- ------------------------------------------- Step 5: back up (required) -->
+		<!-- ---------------------------------------------------------- Step 5: done -->
 		<div class="card card-pad pane fade-in">
-			<span class="overline">Step 5 · Back up your wallet</span>
-			<h2 class="done-title">Wallet imported — one important step left</h2>
+			<span class="overline">Step 5 · Done</span>
+			<h2 class="done-title">Your wallet is ready</h2>
 
-			<div class="backup-warning" role="alert">
-				<Icon name="alert-triangle" size={18} />
-				<div>
-					<strong>Download your wallet configuration now.</strong>
-					This file is the only way to rebuild this wallet if Cairn's data is ever lost. It holds
-					your <Term
-						tip="Your wallet configuration file contains the public keys and settings needed to find your bitcoin on the blockchain. It cannot spend — but without it, restoring the wallet elsewhere is much harder."
+			<p class="done-sub">
+				Nothing to back up here — a single-key wallet can always be rebuilt from your
+				hardware device. Just keep your device (and its seed backup) safe, and you can
+				re-add this wallet anytime.
+			</p>
+
+			<details class="config-optional">
+				<summary>Download the wallet config (optional)</summary>
+				<p class="hint">
+					For power users: a JSON file with this wallet's <Term
+						tip="The public keys and settings needed to find your bitcoin on the blockchain. It cannot spend."
 						>public keys and settings</Term
-					> — nothing that can spend — but without it you may permanently lose access to your bitcoin.
-				</div>
-			</div>
-
-			<a
-				class="btn btn-primary"
-				href="/api/wallets/{createdId}/config"
-				download
-				onclick={() => (backedUp = true)}
-			>
-				<Icon name="arrow-down-left" size={15} />
-				Download wallet config (JSON)
-			</a>
-
-			{#if backedUp}
-				<p class="backup-done" role="status">
-					<Icon name="check" size={14} />
-					Saved. Keep it somewhere safe — with your seed backup, not on this server.
+					> — handy for importing into Sparrow or Electrum. Not required.
 				</p>
-			{/if}
+				<a
+					class="btn btn-secondary btn-sm"
+					href="/api/wallets/{createdId}/config"
+					download
+					onclick={() => (backedUp = true)}
+				>
+					<Icon name="arrow-down-left" size={15} />
+					Download wallet config (JSON)
+				</a>
+				{#if backedUp}
+					<p class="backup-done" role="status">
+						<Icon name="check" size={14} /> Saved.
+					</p>
+				{/if}
+			</details>
 
 			<div class="pane-actions">
-				<span class="hint">
-					{#if !backedUp}Download the file to continue.{/if}
-				</span>
-				<a
-					class="btn btn-primary"
-					class:disabled-link={!backedUp}
-					href={backedUp ? `/wallets/${createdId}?imported=1` : undefined}
-					aria-disabled={!backedUp}
-					tabindex={backedUp ? undefined : -1}
-				>
+				<a class="btn btn-primary" href={`/wallets/${createdId}?imported=1`}>
 					Go to your wallet
 					<Icon name="arrow-right" size={14} />
 				</a>
@@ -926,27 +919,31 @@
 		letter-spacing: -0.01em;
 	}
 
-	.backup-warning {
-		display: flex;
-		gap: 12px;
-		align-items: flex-start;
-		background: var(--warning-muted);
-		border: 1px solid rgba(232, 201, 90, 0.3);
-		border-radius: var(--radius-control);
-		padding: 14px 16px;
-		font-size: 13px;
+	.done-sub {
+		color: var(--text-secondary);
 		line-height: 1.6;
+		margin: 6px 0 4px;
+	}
+
+	.config-optional {
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-control);
+		padding: 10px 14px;
+		margin: 6px 0 4px;
+	}
+
+	.config-optional summary {
+		cursor: pointer;
+		font-size: 13px;
 		color: var(--text-secondary);
 	}
 
-	.backup-warning :global(svg) {
-		color: var(--warning);
-		flex-shrink: 0;
-		margin-top: 1px;
+	.config-optional summary:hover {
+		color: var(--text);
 	}
 
-	.backup-warning strong {
-		color: var(--text);
+	.config-optional .btn {
+		margin-top: 10px;
 	}
 
 	.backup-done {
@@ -955,12 +952,6 @@
 		gap: 6px;
 		font-size: 12.5px;
 		color: var(--success);
-	}
-
-	.disabled-link {
-		opacity: 0.5;
-		pointer-events: none;
-		cursor: not-allowed;
 	}
 
 	.back-link {

@@ -61,6 +61,11 @@ export interface MultisigKeyRow {
 	assignedUserId?: number | null;
 }
 
+/** How a multisig came to exist. Backup safeguards apply only to 'created'
+ *  (built key-by-key; config exists nowhere else); 'imported' wallets came from
+ *  a config file the user already has. See db.ts (multisigs.source). */
+export type MultisigSource = 'created' | 'imported';
+
 export interface MultisigRow {
 	id: number;
 	userId: number;
@@ -69,6 +74,12 @@ export interface MultisigRow {
 	scriptType: MultisigScriptType;
 	receiveCursor: number;
 	createdAt: string;
+	/**
+	 * How the multisig came to exist. Optional so existing literal constructions
+	 * (tests, fixtures) stay valid; rows read from the database always carry it
+	 * (mapMultisig defaults it to 'created'). Backup safeguards key off this.
+	 */
+	source?: MultisigSource;
 	keys: MultisigKeyRow[];
 }
 
@@ -106,6 +117,7 @@ function mapMultisig(r: Record<string, unknown>, keys: MultisigKeyRow[]): Multis
 		scriptType: r.script_type as MultisigScriptType,
 		receiveCursor: r.receive_cursor as number,
 		createdAt: r.created_at as string,
+		source: ((r.source as string) ?? 'created') as MultisigSource,
 		keys
 	};
 }
@@ -202,6 +214,9 @@ export function createMultisig(
 		threshold: number;
 		scriptType?: MultisigScriptType;
 		keys: NewMultisigKey[];
+		/** 'created' (built key-by-key — the default, backup-critical) or
+		 *  'imported' (from a config the user already holds — no backup prompts). */
+		source?: MultisigSource;
 	}
 ): MultisigRow {
 	const name = params.name.trim();
@@ -231,9 +246,12 @@ export function createMultisig(
 		keys: params.keys.map((k) => ({ xpub: k.xpub, fingerprint: k.fingerprint, path: k.path }))
 	});
 
+	const source: MultisigSource = params.source === 'imported' ? 'imported' : 'created';
 	const info = db
-		.prepare('INSERT INTO multisigs (user_id, name, threshold, script_type) VALUES (?, ?, ?, ?)')
-		.run(userId, name, params.threshold, scriptType);
+		.prepare(
+			'INSERT INTO multisigs (user_id, name, threshold, script_type, source) VALUES (?, ?, ?, ?, ?)'
+		)
+		.run(userId, name, params.threshold, scriptType, source);
 	const multisigId = Number(info.lastInsertRowid);
 
 	const insertKey = db.prepare(

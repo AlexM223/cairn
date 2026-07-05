@@ -45,6 +45,9 @@
 	let importing = $state(false);
 	let importError = $state<string | null>(null);
 	let importedNote = $state<string | null>(null);
+	// True once a config has been imported — imports skip the mandatory-backup gate
+	// on the Done step (the user already has the file they uploaded).
+	let configImported = $state(false);
 	let importFileInput = $state<HTMLInputElement | null>(null);
 
 	const threshold = $derived(preset === '2of3' ? 2 : preset === '3of5' ? 3 : Number(customM));
@@ -501,6 +504,8 @@
 				...k
 			}));
 			importedNote = `Read an existing ${imported.threshold}-of-${imported.totalKeys} multisig wallet${imported.name ? ` ("${imported.name}")` : ''} — its keys are filled in on the next step.`;
+			// The user already holds this config — no mandatory backup on the Done step.
+			configImported = true;
 			showImport = false;
 			importText = '';
 		} finally {
@@ -553,7 +558,8 @@
 				name: multisigName.trim(),
 				threshold: String(threshold),
 				scriptType,
-				keys: JSON.stringify(keys)
+				keys: JSON.stringify(keys),
+				source: configImported ? 'imported' : 'created'
 			});
 			if (!res.ok) {
 				createError = res.error;
@@ -567,9 +573,10 @@
 	}
 
 	// -------------------------------------------------------------- step 5: done
-	// The wallet-config backup is MANDATORY for multisig: it's the only way to
-	// reconstruct the wallet if Cairn's data is lost, so the "Go to your wallet"
-	// CTA is gated on it. Any of the three download links flips this true.
+	// The wallet-config backup is MANDATORY for a multisig CREATED from scratch:
+	// its config exists nowhere else, so the "Go to your wallet" CTA is gated on a
+	// download. An IMPORTED multisig skips the gate entirely (configImported) —
+	// the user already has the file they uploaded. Any download link flips this true.
 	let backedUp = $state(false);
 	function markBackupDownloaded() {
 		backedUp = true;
@@ -1516,6 +1523,7 @@
 				</p>
 			</div>
 
+			{#if !configImported}
 			<div class="next-card backup-card">
 				<span class="next-title">
 					<Icon name="arrow-down-left" size={15} />
@@ -1554,6 +1562,7 @@
 					</a>
 				</div>
 			</div>
+			{/if}
 
 			{#if hasColdcardKey || hasQrKey}
 				<div class="next-card register-card">
@@ -1610,7 +1619,7 @@
 				</p>
 			</div>
 
-			{#if !backedUp}
+			{#if !backedUp && !configImported}
 				<p id="backup-gate-note" class="backup-gate-warning" role="alert">
 					<Icon name="alert-triangle" size={14} />
 					Download your backup above before continuing — it's the only way to reconstruct
@@ -1619,7 +1628,7 @@
 			{/if}
 
 			<div class="pane-actions" style="justify-content: center">
-				{#if backedUp}
+				{#if backedUp || configImported}
 					<a href="/wallets/multisig/{createdId}?created=1" class="btn btn-primary">
 						Go to your multisig wallet
 						<Icon name="arrow-right" size={14} />

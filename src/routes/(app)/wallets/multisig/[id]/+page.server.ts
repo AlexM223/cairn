@@ -35,6 +35,7 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 			threshold: multisig.threshold,
 			scriptType: multisig.scriptType,
 			createdAt: multisig.createdAt,
+			source: multisig.source,
 			keys: multisig.keys.map((k) => ({
 				id: k.id,
 				name: k.name,

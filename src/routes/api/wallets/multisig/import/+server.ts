@@ -79,7 +79,9 @@ export const POST: RequestHandler = async (event) => {
 			name: String(body.name ?? '').trim() || parsed.name,
 			threshold: parsed.threshold,
 			scriptType: parsed.scriptType,
-			keys
+			keys,
+			// Imported from a config the user already holds — no backup prompts.
+			source: 'imported'
 		});
 		return json({ multisig }, { status: 201 });
 	} catch (e) {

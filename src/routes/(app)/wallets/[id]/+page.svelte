@@ -450,23 +450,13 @@
 		<section class="card card-pad backup-card" id="backup">
 			<div class="row" style="gap: 8px">
 				<Icon name="arrow-down-left" size={15} />
-				<span class="card-title grow">
-					<Term
-						tip="Save this file somewhere safe. It's how you recover this wallet in another wallet app if needed."
-						>Download backup</Term
-					>
-				</span>
-				{#if !backupDone}
-					<span class="badge badge-warning">
-						<Icon name="alert-triangle" size={11} />
-						not downloaded yet
-					</span>
-				{/if}
+				<span class="card-title grow">Export wallet config <span class="optional-tag">optional</span></span>
 			</div>
 			<p class="backup-copy">
-				The backup describes the wallet — its public key and settings — so any wallet app can find
-				your money again if Cairn's data is ever lost. It <strong>can't spend</strong>; spending
-				always needs your signing device. Store it with your seed backup.
+				You don't need to back this up — a single-key wallet always rebuilds from your
+				hardware device (just re-import its key). If you'd like a copy anyway, the config
+				describes the wallet (public key and settings) for importing into Sparrow, Electrum,
+				or back into Cairn. It <strong>can't spend</strong>.
 			</p>
 			<div class="row" style="gap: 8px; flex-wrap: wrap">
 				<a
@@ -1016,6 +1006,19 @@
 		flex-direction: column;
 		gap: 12px;
 		margin-bottom: 18px;
+	}
+
+	.optional-tag {
+		font-size: 11px;
+		font-weight: 500;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-chip);
+		padding: 1px 6px;
+		margin-left: 6px;
+		vertical-align: middle;
 	}
 
 	.backup-copy {

@@ -717,3 +717,19 @@ db.exec(`
 		'CREATE INDEX IF NOT EXISTS idx_multisig_keys_assigned_user ON multisig_keys(assigned_user_id)'
 	);
 }
+
+// How a multisig came to exist: 'created' (built key-by-key in the wizard — the
+// config exists NOWHERE else, so a backup is critical) vs 'imported' (loaded from
+// a descriptor / Caravan config the user already holds — re-downloading what they
+// just uploaded is redundant). Backup safeguards (mandatory download, persistent
+// banner, 90-day reminder) apply ONLY to source='created'. Single-sig wallets are
+// never gated at all — they reconstruct from the hardware device. Guarded ALTER;
+// existing rows default to 'created' (the safe, backup-prompting side).
+{
+	const msCols = (db.prepare('PRAGMA table_info(multisigs)').all() as { name: string }[]).map(
+		(c) => c.name
+	);
+	if (!msCols.includes('source')) {
+		db.exec("ALTER TABLE multisigs ADD COLUMN source TEXT NOT NULL DEFAULT 'created'");
+	}
+}

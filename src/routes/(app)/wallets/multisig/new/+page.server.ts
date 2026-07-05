@@ -138,6 +138,9 @@ export const actions: Actions = {
 		const name = String(form.get('name') ?? '').trim();
 		const scriptTypeRaw = String(form.get('scriptType') ?? 'p2wsh') as MultisigScriptType;
 		const scriptType = MULTISIG_SCRIPT_TYPES.includes(scriptTypeRaw) ? scriptTypeRaw : 'p2wsh';
+		// 'imported' when the wizard was pre-filled from an uploaded config (the
+		// user already has that file); 'created' when built key-by-key.
+		const source = String(form.get('source') ?? '') === 'imported' ? 'imported' : 'created';
 
 		let keys: NewMultisigKey[];
 		let threshold: number;
@@ -157,7 +160,7 @@ export const actions: Actions = {
 		}
 
 		try {
-			const multisig = createMultisig(locals.user!.id, { name, threshold, scriptType, keys });
+			const multisig = createMultisig(locals.user!.id, { name, threshold, scriptType, keys, source });
 			return { multisigId: multisig.id };
 		} catch (e) {
 			return fail(400, {

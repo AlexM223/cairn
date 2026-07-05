@@ -51,29 +51,19 @@ export function isBackedUp(kind: WalletKind, id: number): boolean {
 }
 
 /**
- * Every wallet (single-sig and multisig) the user owns that has no backup on
- * record — powers the persistent "back up your wallets" banner. Cheap: two
- * anti-joins against the small wallet_backups table.
+ * Multisig wallets that STILL need a backup — powers the persistent "back up your
+ * wallet" banner. Scoped deliberately (see the module note): only multisigs
+ * CREATED from scratch (source='created'), because their config exists nowhere
+ * else. Single-sig wallets reconstruct from the hardware device, and imported
+ * multisigs came from a config file the user already holds — neither is ever
+ * nagged. One cheap anti-join.
  */
 export function listUnbackedWallets(userId: number): UnbackedWallet[] {
-	const singles = db
-		.prepare(
-			`SELECT w.id AS id, w.name AS name
-			 FROM wallets w
-			 WHERE w.user_id = ?
-			   AND NOT EXISTS (
-			     SELECT 1 FROM wallet_backups b
-			     WHERE b.wallet_kind = 'wallet' AND b.wallet_id = w.id
-			   )
-			 ORDER BY w.created_at ASC, w.id ASC`
-		)
-		.all(userId) as { id: number; name: string }[];
-
 	const multis = db
 		.prepare(
 			`SELECT m.id AS id, m.name AS name
 			 FROM multisigs m
-			 WHERE m.user_id = ?
+			 WHERE m.user_id = ? AND m.source = 'created'
 			   AND NOT EXISTS (
 			     SELECT 1 FROM wallet_backups b
 			     WHERE b.wallet_kind = 'multisig' AND b.wallet_id = m.id
@@ -82,15 +72,12 @@ export function listUnbackedWallets(userId: number): UnbackedWallet[] {
 		)
 		.all(userId) as { id: number; name: string }[];
 
-	return [
-		...singles.map((w): UnbackedWallet => ({ kind: 'wallet', id: w.id, name: w.name, href: `/wallets/${w.id}` })),
-		...multis.map((m): UnbackedWallet => ({
-			kind: 'multisig',
-			id: m.id,
-			name: m.name,
-			href: `/wallets/multisig/${m.id}`
-		}))
-	];
+	return multis.map((m): UnbackedWallet => ({
+		kind: 'multisig',
+		id: m.id,
+		name: m.name,
+		href: `/wallets/multisig/${m.id}`
+	}));
 }
 
 // -------------------------------------------------- 90-day periodic reminder
@@ -101,11 +88,17 @@ export function listUnbackedWallets(userId: number): UnbackedWallet[] {
  *  nudge for fresh copies. */
 const REMINDER_DAYS = 90;
 
-/** The most recent moment this user downloaded ANY of their wallet backups, as
- *  an ISO string — or null if they have never downloaded one. */
+/** The most recent moment this user downloaded a backup of a CREATED-from-scratch
+ *  multisig, as an ISO string — or null if never. Scoped like the banner: only
+ *  created multisigs are ever reminded, so single-sig and imported-multisig
+ *  downloads don't factor into the 90-day nudge. */
 function lastBackupAt(userId: number): string | null {
 	const row = db
-		.prepare('SELECT MAX(downloaded_at) AS latest FROM wallet_backups WHERE user_id = ?')
+		.prepare(
+			`SELECT MAX(b.downloaded_at) AS latest
+			 FROM wallet_backups b JOIN multisigs m ON m.id = b.wallet_id
+			 WHERE b.user_id = ? AND b.wallet_kind = 'multisig' AND m.source = 'created'`
+		)
 		.get(userId) as { latest: string | null } | undefined;
 	return row?.latest ?? null;
 }

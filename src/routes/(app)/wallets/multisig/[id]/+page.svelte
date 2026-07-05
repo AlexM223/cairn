@@ -47,6 +47,10 @@
 	function markBackupDownloaded() {
 		downloadedNow = true;
 	}
+	// Only multisigs CREATED from scratch need a backup nudge — their config exists
+	// nowhere else. An IMPORTED multisig came from a file the user already holds, so
+	// it never nags (the export section below stays available, just without the dot).
+	const needsBackup = $derived(data.multisig.source === 'created' && !backupDone);
 
 	// ColdCard-family devices refuse to sign for multisigs they haven't registered
 	// (via the setup file on microSD). Track a per-key "I've done this"
@@ -195,7 +199,7 @@
 		<a href="#backup" class="btn btn-secondary btn-sm backup-btn">
 			<Icon name="arrow-down-left" size={14} />
 			Download backup
-			{#if !backupDone}
+			{#if needsBackup}
 				<span class="backup-dot" title="No backup downloaded yet"></span>
 			{/if}
 		</a>
@@ -485,7 +489,7 @@
 						>Download backup</Term
 					>
 				</span>
-				{#if !backupDone}
+				{#if needsBackup}
 					<span class="badge badge-warning">
 						<Icon name="alert-triangle" size={11} />
 						not downloaded yet

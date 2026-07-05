@@ -30,42 +30,49 @@ function makeUser(email: string) {
 	return registerUser({ email, password: 'correct horse battery', displayName: email.split('@')[0] });
 }
 
-/** Insert a bare multisig row (bypasses crypto validation — we only test the
- *  backup-tracking layer, which reads the multisigs table directly). */
-function makeMultisig(userId: number, name: string): number {
+/** Insert a bare multisig row with a given source ('created' | 'imported'). */
+function makeMultisig(userId: number, name: string, source: 'created' | 'imported' = 'created'): number {
 	const info = db
-		.prepare('INSERT INTO multisigs (user_id, name, threshold, script_type) VALUES (?, ?, 2, ?)')
-		.run(userId, name, 'p2wsh');
+		.prepare(
+			'INSERT INTO multisigs (user_id, name, threshold, script_type, source) VALUES (?, ?, 2, ?, ?)'
+		)
+		.run(userId, name, 'p2wsh', source);
 	return Number(info.lastInsertRowid);
 }
 
 describe('wallet-config backup tracking', () => {
-	it('a fresh wallet is not backed up and shows in the unbacked list', () => {
+	it('only multisigs CREATED from scratch need a backup — single-sig never nags', () => {
 		const user = makeUser('a@example.com');
-		const wallet = createWallet(user.id, { name: 'Savings', xpub: XPUB });
+		createWallet(user.id, { name: 'Savings', xpub: XPUB }); // single-sig
+		const ms = makeMultisig(user.id, 'Family vault', 'created');
 
-		expect(isBackedUp('wallet', wallet.id)).toBe(false);
 		const unbacked = listUnbackedWallets(user.id);
 		expect(unbacked).toHaveLength(1);
-		expect(unbacked[0]).toMatchObject({ kind: 'wallet', id: wallet.id, name: 'Savings' });
+		expect(unbacked[0]).toMatchObject({ kind: 'multisig', id: ms, name: 'Family vault' });
 	});
 
-	it('markBackedUp records the backup and drops it from the unbacked list', () => {
+	it('an IMPORTED multisig never appears in the unbacked list', () => {
 		const user = makeUser('a@example.com');
-		const wallet = createWallet(user.id, { name: 'Savings', xpub: XPUB });
-
-		markBackedUp(user.id, 'wallet', wallet.id);
-
-		expect(isBackedUp('wallet', wallet.id)).toBe(true);
+		makeMultisig(user.id, 'Imported vault', 'imported');
 		expect(listUnbackedWallets(user.id)).toHaveLength(0);
 	});
 
-	it('markBackedUp is idempotent but refreshes downloaded_at on re-download', () => {
+	it('markBackedUp drops a created multisig from the unbacked list', () => {
+		const user = makeUser('a@example.com');
+		const ms = makeMultisig(user.id, 'Family vault', 'created');
+		expect(listUnbackedWallets(user.id)).toHaveLength(1);
+
+		markBackedUp(user.id, 'multisig', ms);
+
+		expect(isBackedUp('multisig', ms)).toBe(true);
+		expect(listUnbackedWallets(user.id)).toHaveLength(0);
+	});
+
+	it('markBackedUp is idempotent but refreshes downloaded_at (single-sig, table mechanics)', () => {
 		const user = makeUser('a@example.com');
 		const wallet = createWallet(user.id, { name: 'Savings', xpub: XPUB });
 
 		markBackedUp(user.id, 'wallet', wallet.id);
-		// Force the stored timestamp into the past, then re-download.
 		db.prepare(
 			"UPDATE wallet_backups SET downloaded_at = '2000-01-01T00:00:00.000Z' WHERE wallet_kind = 'wallet' AND wallet_id = ?"
 		).run(wallet.id);
@@ -74,63 +81,56 @@ describe('wallet-config backup tracking', () => {
 		const rows = db
 			.prepare("SELECT downloaded_at FROM wallet_backups WHERE wallet_kind = 'wallet' AND wallet_id = ?")
 			.all(wallet.id) as { downloaded_at: string }[];
-		expect(rows).toHaveLength(1); // still one row (idempotent)
+		expect(rows).toHaveLength(1); // idempotent — one row
 		expect(rows[0].downloaded_at).not.toBe('2000-01-01T00:00:00.000Z'); // refreshed
 	});
 
-	it('listUnbackedWallets covers both single-sig and multisig, scoped per user', () => {
+	it('unbacked list is scoped per user', () => {
 		const alice = makeUser('alice@example.com');
 		const bob = makeUser('bob@example.com');
-		const w = createWallet(alice.id, { name: 'Alice SS', xpub: XPUB });
-		const ms = makeMultisig(alice.id, 'Alice MS');
-		makeMultisig(bob.id, "Bob's own");
+		makeMultisig(alice.id, 'Alice vault', 'created');
+		makeMultisig(bob.id, "Bob's vault", 'created');
 
-		const aliceUnbacked = listUnbackedWallets(alice.id);
-		expect(aliceUnbacked.map((u) => u.kind).sort()).toEqual(['multisig', 'wallet']);
-
-		markBackedUp(alice.id, 'multisig', ms);
-		expect(listUnbackedWallets(alice.id).map((u) => u.id)).toEqual([w.id]); // only the single-sig left
-		// Bob's list is independent of Alice's backups.
+		expect(listUnbackedWallets(alice.id)).toHaveLength(1);
 		expect(listUnbackedWallets(bob.id)).toHaveLength(1);
+		expect(listUnbackedWallets(alice.id)[0].name).toBe('Alice vault');
 	});
 
-	describe('90-day reminder', () => {
-		it('stays quiet when the user has no backups at all (unbacked banner owns that)', () => {
+	describe('90-day reminder (created multisig only)', () => {
+		it('stays quiet when the user has no created-multisig backups', () => {
 			const user = makeUser('a@example.com');
-			createWallet(user.id, { name: 'Savings', xpub: XPUB });
-			expect(shouldShowBackupReminder(user.id)).toBe(false);
-		});
-
-		it('stays quiet when the most recent backup is recent', () => {
-			const user = makeUser('a@example.com');
-			const wallet = createWallet(user.id, { name: 'Savings', xpub: XPUB });
-			markBackedUp(user.id, 'wallet', wallet.id); // downloaded_at defaults to now
-			expect(shouldShowBackupReminder(user.id)).toBe(false);
-		});
-
-		it('fires when the newest backup is older than the window and undismissed', () => {
-			const user = makeUser('a@example.com');
+			// Single-sig + imported multisig backups do NOT drive the reminder.
 			const wallet = createWallet(user.id, { name: 'Savings', xpub: XPUB });
 			markBackedUp(user.id, 'wallet', wallet.id);
+			const imp = makeMultisig(user.id, 'Imported', 'imported');
+			markBackedUp(user.id, 'multisig', imp);
+			db.prepare("UPDATE wallet_backups SET downloaded_at = '2000-01-01T00:00:00.000Z'").run();
+
+			expect(shouldShowBackupReminder(user.id)).toBe(false);
+		});
+
+		it('fires when a created multisig backup is older than the window and undismissed', () => {
+			const user = makeUser('a@example.com');
+			const ms = makeMultisig(user.id, 'Family vault', 'created');
+			markBackedUp(user.id, 'multisig', ms);
 			db.prepare(
 				"UPDATE wallet_backups SET downloaded_at = '2000-01-01T00:00:00.000Z' WHERE wallet_id = ?"
-			).run(wallet.id);
+			).run(ms);
 
 			expect(shouldShowBackupReminder(user.id)).toBe(true);
 		});
 
-		it('is silenced by a recent dismissal, then returns once the dismissal is old', () => {
+		it('is silenced by a recent dismissal, then returns once the dismissal ages out', () => {
 			const user = makeUser('a@example.com');
-			const wallet = createWallet(user.id, { name: 'Savings', xpub: XPUB });
-			markBackedUp(user.id, 'wallet', wallet.id);
+			const ms = makeMultisig(user.id, 'Family vault', 'created');
+			markBackedUp(user.id, 'multisig', ms);
 			db.prepare(
 				"UPDATE wallet_backups SET downloaded_at = '2000-01-01T00:00:00.000Z' WHERE wallet_id = ?"
-			).run(wallet.id);
+			).run(ms);
 
 			dismissBackupReminder(user.id);
 			expect(shouldShowBackupReminder(user.id)).toBe(false);
 
-			// Age the dismissal past the window — the nudge should come back.
 			db.prepare(
 				"UPDATE backup_reminders SET dismissed_at = '2000-01-01T00:00:00.000Z' WHERE user_id = ?"
 			).run(user.id);
