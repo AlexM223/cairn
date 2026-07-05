@@ -43,6 +43,13 @@ export interface ConstructParams {
 	origin?: KeyOrigin | null;
 	/** Raw prev-tx fetch, required for legacy (p2pkh) inputs only. */
 	fetchRawTx?: (txid: string) => Promise<string>;
+	/**
+	 * Spend every provided UTXO exactly as given, skipping coin selection (and
+	 * the confirmed-only filter). Used for RBF replacements, which must spend
+	 * the same inputs as the transaction they replace so the two necessarily
+	 * conflict. Requires a numeric amount; change = inputs − amount − fee.
+	 */
+	exactInputs?: boolean;
 }
 
 export interface ConstructedPsbt {
@@ -93,6 +100,15 @@ const DUST_SATS = 546;
  */
 export const MAX_FEE_RATE = 1000;
 
+/**
+ * Input nSequence for every transaction Cairn builds. Any value below
+ * 0xfffffffe opts in to BIP-125 replace-by-fee, so a stuck transaction can be
+ * fee-bumped later; 0xfffffffd is the conventional choice — it signals RBF,
+ * keeps nLockTime enforceable, and (bit 31 set) leaves BIP-68 relative
+ * locktime disabled.
+ */
+export const RBF_SEQUENCE = 0xfffffffd;
+
 const HARDENED = 0x80000000;
 
 /** "m/84'/0'/0'" → [0x80000054, 0x80000000, 0x80000000]; throws on nonsense. */
@@ -142,7 +158,12 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 
 	// Confirmed coins only: unconfirmed inputs make the new tx's confirmation
 	// hostage to someone else's, and RBF could invalidate it entirely.
-	const spendable = params.utxos.filter((u) => u.height > 0);
+	// Exact-inputs mode (RBF replacement) skips the filter: the inputs are the
+	// original transaction's own, whose funding txs were already confirmed
+	// when the original was built.
+	const spendable = params.exactInputs
+		? params.utxos
+		: params.utxos.filter((u) => u.height > 0);
 	if (spendable.length === 0) {
 		throw new PsbtError('This wallet has no confirmed coins to spend.', 'no_utxos');
 	}
@@ -198,7 +219,9 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 
 		const input: Record<string, unknown> = {
 			txid: hexToBytes(utxo.txid),
-			index: utxo.vout
+			index: utxo.vout,
+			// Signal BIP-125 replaceability on every input (see RBF_SEQUENCE).
+			sequence: RBF_SEQUENCE
 		};
 
 		if (scriptType === 'p2pkh') {
@@ -265,46 +288,91 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		};
 	}
 
-	// ------------------------------------------------- normal coin selection
-	// NOTE: btc-signer's `dust` option is NOT a sats threshold — passing 546
-	// there silently burns any change below ~18k sats into the fee. The
-	// library's default dust handling is correct; do not "tune" it.
-	const selection = selectUTXO(
-		inputs as never,
-		[{ address: recipient, amount: toBigInt(params.amount) }],
-		'default',
-		{
-			changeAddress: params.changeAddress,
-			feePerByte: toBigInt(Math.ceil(feeRate)),
-			bip69: true,
-			createTx: true,
-			network: NETWORK,
-			allowLegacyWitnessUtxo: true
+	let tx: Transaction;
+	let fee: number;
+	let chosen: SpendableUtxo[];
+	let changeExpected: boolean;
+
+	if (params.exactInputs) {
+		// ------------------------------------- exact inputs (RBF replacement)
+		// Spend every provided coin exactly as given: an RBF replacement must
+		// conflict with the transaction it replaces, and spending the identical
+		// input set guarantees that. The recipient keeps the same output; the
+		// entire fee increase comes out of the change output. Adding extra
+		// inputs when change runs short would alter what the user originally
+		// reviewed, so that case is rejected instead (a possible future
+		// extension).
+		chosen = spendable;
+		const totalIn = chosen.reduce((s, u) => s + u.value, 0);
+		const vsizeEst =
+			TX_OVERHEAD_VSIZE + chosen.length * INPUT_VSIZE[scriptType] + 2 * OUTPUT_VSIZE;
+		fee = Math.ceil(vsizeEst * feeRate);
+		const change = totalIn - params.amount - fee;
+		if (change < DUST_SATS) {
+			throw new PsbtError(
+				'The change output is too small to absorb the higher fee at this rate.',
+				'insufficient_funds'
+			);
 		}
-	);
-
-	if (!selection || !selection.tx) {
-		throw new PsbtError(
-			'Not enough confirmed funds to cover that amount plus the network fee.',
-			'insufficient_funds'
+		tx = new Transaction();
+		for (const input of inputs) tx.addInput(input);
+		// Deterministic BIP69-style output order (value asc, script tiebreak),
+		// matching what the coin selector emits on the normal path.
+		const outs = [
+			{ address: recipient, value: params.amount },
+			{ address: params.changeAddress, value: change }
+		].sort(
+			(a, b) =>
+				a.value - b.value ||
+				bytesToHex(addressToScriptPubKey(a.address)).localeCompare(
+					bytesToHex(addressToScriptPubKey(b.address))
+				)
 		);
-	}
+		for (const o of outs) tx.addOutputAddress(o.address, toBigInt(o.value), NETWORK);
+		changeExpected = true;
+	} else {
+		// ----------------------------------------------- normal coin selection
+		// NOTE: btc-signer's `dust` option is NOT a sats threshold — passing 546
+		// there silently burns any change below ~18k sats into the fee. The
+		// library's default dust handling is correct; do not "tune" it.
+		const selection = selectUTXO(
+			inputs as never,
+			[{ address: recipient, amount: toBigInt(params.amount) }],
+			'default',
+			{
+				changeAddress: params.changeAddress,
+				feePerByte: toBigInt(Math.ceil(feeRate)),
+				bip69: true,
+				createTx: true,
+				network: NETWORK,
+				allowLegacyWitnessUtxo: true
+			}
+		);
 
-	const tx = selection.tx;
-	const fee = Number(selection.fee);
+		if (!selection || !selection.tx) {
+			throw new PsbtError(
+				'Not enough confirmed funds to cover that amount plus the network fee.',
+				'insufficient_funds'
+			);
+		}
 
-	// Recover which of our UTXOs the selector chose, by (txid, vout).
-	const chosen: SpendableUtxo[] = [];
-	for (let i = 0; i < tx.inputsLength; i++) {
-		const inp = tx.getInput(i);
-		const txidHex = inp.txid ? bytesToHex(inp.txid) : null;
-		const match = spendable.find((u) => u.txid === txidHex && u.vout === inp.index);
-		if (match) chosen.push(match);
+		tx = selection.tx;
+		fee = Number(selection.fee);
+
+		// Recover which of our UTXOs the selector chose, by (txid, vout).
+		chosen = [];
+		for (let i = 0; i < tx.inputsLength; i++) {
+			const inp = tx.getInput(i);
+			const txidHex = inp.txid ? bytesToHex(inp.txid) : null;
+			const match = spendable.find((u) => u.txid === txidHex && u.vout === inp.index);
+			if (match) chosen.push(match);
+		}
+		changeExpected = selection.change === true;
 	}
 
 	const totalIn = chosen.reduce((s, u) => s + u.value, 0);
 	const changeValue = totalIn - params.amount - fee;
-	const hasChange = selection.change === true && changeValue > 0;
+	const hasChange = changeExpected && changeValue > 0;
 
 	// Mark the change output with its BIP32 derivation when the key origin is
 	// known: hardware signers use it to verify change really pays back to the
@@ -372,7 +440,8 @@ export interface PsbtSummary {
 	complete: boolean;
 }
 
-function addressFromScript(script: Uint8Array): string | null {
+/** Best-effort address for a scriptPubKey; null for non-standard scripts. */
+export function addressFromScript(script: Uint8Array): string | null {
 	try {
 		// btc-signer's OutScript union and Address's expected input differ only
 		// in ArrayBuffer generics — safe to bridge.
