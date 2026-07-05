@@ -24,6 +24,7 @@ import {
 } from './bitcoin/multisigPsbt';
 import { PsbtError } from './bitcoin/psbt';
 import { normalizePsbt, InvalidPsbtError, BroadcastError } from './transactions';
+import { freezeRosterAndNotify, notifyRosterProgress } from './multisigRoster';
 
 export type MultisigTxStatus = 'draft' | 'awaiting_signature' | 'completed';
 
@@ -181,6 +182,13 @@ export async function buildMultisigDraft(
 
 	const draft = getMultisigTransaction(userId, multisigId, Number(res.lastInsertRowid));
 	if (!draft) throw new PsbtError('Draft could not be saved.', 'construction_failed');
+
+	// Freeze the signer roster and notify every member except the creator that
+	// their signature is wanted — immediately, at creation (not deferred until
+	// someone else signs). For a solo multisig the roster is just the owner, so
+	// this notifies no one and costs a single cheap insert.
+	freezeRosterAndNotify(multisig, draft, userId);
+
 	return { draft, details };
 }
 
@@ -247,6 +255,11 @@ export function attachMultisigSignature(
 		// a success shape without real progress data.
 		throw new MultisigPsbtError('The combined PSBT could not be re-read.', 'combine_failed');
 	}
+
+	// Reconcile the advisory roster against the real PSBT progress and notify any
+	// members still owed a signature. Best-effort — never breaks the attach.
+	notifyRosterProgress(multisig, updated, progress);
+
 	return { transaction: updated, progress };
 }
 
