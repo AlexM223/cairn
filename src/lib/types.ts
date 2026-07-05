@@ -9,12 +9,22 @@ export interface SessionUser {
 
 export type ScriptType = 'p2pkh' | 'p2sh-p2wpkh' | 'p2wpkh' | 'p2tr';
 
+/**
+ * Which signing device holds a single-sig wallet's key. Drives the send
+ * flow's Sign step and how the wallet is labelled in the UI. `null` = the
+ * user hasn't told us yet; treated as file-based signing (the universal
+ * fallback), so a wallet is never a dead-end "watch-only" viewer.
+ */
+export type WalletDeviceType = 'trezor' | 'ledger' | 'coldcard' | 'qr' | 'file';
+
 export interface WalletSummary {
 	id: number;
 	name: string;
 	type: 'xpub';
 	scriptType: ScriptType;
 	xpub: string;
+	/** Signing device on record, or null when unspecified (file-based fallback). */
+	deviceType: WalletDeviceType | null;
 	createdAt: string;
 	/** Confirmed balance in sats */
 	balance: number;

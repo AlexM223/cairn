@@ -9,9 +9,26 @@ import {
 	findNextUnusedIndex,
 	type WalletScanResult
 } from './bitcoin/walletScan';
-import type { ScriptType, WalletSummary } from '$lib/types';
+import type { ScriptType, WalletDeviceType, WalletSummary } from '$lib/types';
 
 const GAP_LIMIT = 20;
+
+/** Device types a wallet's key can be routed to when signing. */
+const WALLET_DEVICE_TYPES: readonly WalletDeviceType[] = [
+	'trezor',
+	'ledger',
+	'coldcard',
+	'qr',
+	'file'
+];
+
+/** Coerce arbitrary input to a known device type, or null when unrecognized. */
+export function normalizeDeviceType(input: unknown): WalletDeviceType | null {
+	const v = String(input ?? '').trim().toLowerCase();
+	return (WALLET_DEVICE_TYPES as readonly string[]).includes(v)
+		? (v as WalletDeviceType)
+		: null;
+}
 
 export interface WalletRow {
 	id: number;
@@ -20,6 +37,7 @@ export interface WalletRow {
 	type: 'xpub';
 	xpub: string;
 	script_type: ScriptType;
+	device_type: WalletDeviceType | null;
 	receive_cursor: number;
 	created_at: string;
 }
@@ -58,6 +76,7 @@ export function toWalletSummary(row: WalletRow, scan?: WalletScanResult): Wallet
 		type: 'xpub',
 		scriptType: row.script_type,
 		xpub: row.xpub,
+		deviceType: row.device_type ?? null,
 		createdAt: row.created_at,
 		balance: scan?.confirmed ?? 0,
 		unconfirmed: scan?.unconfirmed ?? 0,
@@ -103,7 +122,7 @@ export async function listWallets(
 
 export function createWallet(
 	userId: number,
-	input: { name?: string; xpub?: string }
+	input: { name?: string; xpub?: string; deviceType?: unknown }
 ): WalletSummary {
 	const xpub = String(input.xpub ?? '').trim();
 	let scriptType: ScriptType;
@@ -121,12 +140,15 @@ export function createWallet(
 		name = `Wallet ${n + 1}`;
 	}
 
+	// null (unspecified) is stored as-is — signing falls back to file/PSBT.
+	const deviceType = normalizeDeviceType(input.deviceType);
+
 	try {
 		const res = db
 			.prepare(
-				'INSERT INTO wallets (user_id, name, type, xpub, script_type) VALUES (?, ?, ?, ?, ?)'
+				'INSERT INTO wallets (user_id, name, type, xpub, script_type, device_type) VALUES (?, ?, ?, ?, ?, ?)'
 			)
-			.run(userId, name, 'xpub', xpub, scriptType);
+			.run(userId, name, 'xpub', xpub, scriptType, deviceType);
 		const row = getWallet(userId, Number(res.lastInsertRowid));
 		if (!row) throw new Error('Wallet insert failed');
 		return toWalletSummary(row);
@@ -136,6 +158,27 @@ export function createWallet(
 		}
 		throw e;
 	}
+}
+
+/**
+ * Record (or clear) which signing device holds this wallet's key. Used when
+ * the user associates a device during their first send. Returns the updated
+ * summary, or null when the wallet doesn't exist or isn't owned by userId.
+ */
+export function setWalletDevice(
+	userId: number,
+	id: number,
+	deviceType: unknown
+): WalletSummary | null {
+	const row = getWallet(userId, id);
+	if (!row) return null;
+	const normalized = normalizeDeviceType(deviceType);
+	db.prepare('UPDATE wallets SET device_type = ? WHERE id = ? AND user_id = ?').run(
+		normalized,
+		id,
+		userId
+	);
+	return toWalletSummary({ ...row, device_type: normalized });
 }
 
 export function deleteWallet(userId: number, id: number): boolean {

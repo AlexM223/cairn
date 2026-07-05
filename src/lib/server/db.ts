@@ -103,6 +103,15 @@ db.exec(`
 		db.exec('ALTER TABLE wallets ADD COLUMN derivation_path TEXT');
 	}
 
+	// Which signing device holds this wallet's key — 'trezor'|'ledger'|
+	// 'coldcard'|'qr'|'file', mirroring vault_keys.device_type. Routes the send
+	// flow's Sign step to the right device and labels the wallet in the UI.
+	// NULL until the user says (import or first send); a null device signs via
+	// the universal file/PSBT fallback, so a wallet is always spendable.
+	if (!walletCols.includes('device_type')) {
+		db.exec('ALTER TABLE wallets ADD COLUMN device_type TEXT');
+	}
+
 	// In-flight broadcast claim marker: set atomically before a broadcast goes
 	// out to the network so concurrent broadcast attempts cannot double-send;
 	// cleared again when a broadcast fails (successful ones set txid instead).
