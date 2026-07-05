@@ -242,6 +242,28 @@ db.exec(`
 	CREATE INDEX IF NOT EXISTS idx_vault_transactions_vault ON vault_transactions(vault_id);
 `);
 
+// User-facing activity feed (adapted from Bastion's audit_log, but for
+// friendly "here's what your instance is doing" events rather than a security
+// trail). One row per notable happening. user_id is NULL for instance-wide
+// events (network up/down, new block, electrum switch) that every user sees;
+// otherwise it scopes the event to one user (their broadcast, their scan, their
+// signing session). `detail` holds a small JSON blob of non-secret structured
+// fields (height, txid, counts, server names) — never PSBTs, keys, or tokens.
+// Pruned to the most recent EVENTS_PER_BUCKET rows per user (and per the NULL
+// bucket) by recordActivity in src/lib/server/activity.ts.
+db.exec(`
+	CREATE TABLE IF NOT EXISTS events (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id    INTEGER REFERENCES users(id) ON DELETE CASCADE, -- NULL = instance-wide
+		type       TEXT NOT NULL,                                  -- 'new_block' | 'broadcast' | ...
+		level      TEXT NOT NULL DEFAULT 'info',                   -- 'info'|'success'|'warn'|'error' (UI tone)
+		message    TEXT NOT NULL,                                  -- human-friendly, already formatted
+		detail     TEXT,                                           -- optional JSON of structured fields
+		created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+	);
+	CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, id DESC);
+`);
+
 // Key health checks (Casa's periodic-verification pattern): a multisig key you
 // haven't recently proven you still control is a silent liability — devices
 // die, PINs get forgotten, a device restored from the wrong seed keeps working

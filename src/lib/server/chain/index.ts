@@ -7,6 +7,8 @@ import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { getChainConfig } from '../settings';
 import { ElectrumClient } from '../electrum/client';
 import type { ElectrumBalance, ElectrumHistoryItem } from '../electrum/client';
+import { wireChainEvents, resetConnectionState } from '../chainEvents';
+import { recordActivity } from '../activity';
 import { EsploraApi } from './esplora';
 import type { EsploraBlock, EsploraTx } from './esplora';
 import type {
@@ -167,6 +169,8 @@ export class ChainService {
 			port: config.electrumPort,
 			tls: config.electrumTls
 		});
+		// Surface connect/disconnect/new-block on the user activity feed + server log.
+		wireChainEvents(this.electrum);
 		this.esplora = new EsploraApi(config.esploraUrl);
 	}
 
@@ -560,8 +564,23 @@ export function getChain(): ChainService {
  */
 export function reconfigureChain(): void {
 	const old = instance;
+	const oldServer = old?.electrum.server ?? null;
 	instance = null;
 	old?.close();
+
+	// Report the switch on the activity feed. close() tears the old client down
+	// without emitting 'disconnect', so reset the connection dedupe too — the
+	// next client's first connect should register as a fresh network_up.
+	const cfg = getChainConfig();
+	const newServer = `${cfg.electrumHost}:${cfg.electrumPort}`;
+	if (oldServer && oldServer !== newServer) {
+		recordActivity({
+			type: 'electrum_switched',
+			message: `Electrum server switched from ${oldServer} to ${newServer}`,
+			detail: { from: oldServer, to: newServer }
+		});
+	}
+	resetConnectionState();
 }
 
 // ---------------------------------------------------------------- test helpers
