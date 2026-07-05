@@ -153,7 +153,16 @@ export async function buildMultisigDraft(
 
 	const utxos = await getMultisigUtxos(multisig);
 	const changeIndex = await nextMultisigChangeIndex(multisig);
-	const tipHeight = (await getChain().getTip()).height;
+	// Only fetch the tip (for the coinbase-maturity guard) when a coinbase coin is
+	// present, and never let a transient tip failure block an ordinary send.
+	let tipHeight: number | undefined;
+	if (utxos.some((u) => u.coinbase)) {
+		try {
+			tipHeight = (await getChain().getTip()).height;
+		} catch {
+			tipHeight = undefined;
+		}
+	}
 
 	const details = await constructMultisigPsbt({
 		config: toMultisigConfig(multisig),

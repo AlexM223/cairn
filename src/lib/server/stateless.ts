@@ -210,6 +210,16 @@ export async function buildStatelessPsbt(
 
 	const utxos = await getMultisigUtxos(multisig);
 	const changeIndex = await nextMultisigChangeIndex(multisig);
+	// Coinbase-maturity guard for the stateless send path too — fetch the tip only
+	// when a coinbase coin is present, guarded so a tip hiccup never blocks a send.
+	let tipHeight: number | undefined;
+	if (utxos.some((u) => u.coinbase)) {
+		try {
+			tipHeight = (await getChain().getTip()).height;
+		} catch {
+			tipHeight = undefined;
+		}
+	}
 
 	const details = await constructMultisigPsbt({
 		config: toMultisigConfig(multisig),
@@ -218,7 +228,8 @@ export async function buildStatelessPsbt(
 		feeRate: input.feeRate,
 		changeIndex,
 		fetchRawTx: (txid) => getChain().getTxHex(txid),
-		onlyUtxos: input.onlyUtxos
+		onlyUtxos: input.onlyUtxos,
+		tipHeight
 	});
 
 	return { config, details, progress: multisigPsbtProgress(details.psbtBase64, config.threshold) };

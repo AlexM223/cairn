@@ -56,4 +56,24 @@ describe('buildMultisigBackupPdf', () => {
 		// empty/degenerate document.
 		expect(bytes.length).toBeGreaterThan(5000);
 	});
+
+	it('still builds for a large quorum whose config exceeds single-QR capacity', async () => {
+		// A 15-key p2wsh config is far too big for one QR (byte-mode tops out
+		// ~2.9 KB). The generator must degrade to a printed note, NOT throw — the
+		// keys table + descriptor still fully reconstruct the wallet.
+		const keys: MultisigKeyRow[] = Array.from({ length: 15 }, (_, i) => {
+			const xpub = HDKey.fromMasterSeed(new Uint8Array(32).fill(i + 10)).publicExtendedKey;
+			return keyRow(i, xpub, (i + 16).toString(16).padStart(2, '0').repeat(4));
+		});
+		const big: MultisigRow = {
+			...FIXTURE,
+			name: 'Fifteen-key institutional vault with a long name',
+			threshold: 8,
+			keys
+		};
+
+		const bytes = await buildMultisigBackupPdf(big);
+		expect(Array.from(bytes.slice(0, 4))).toEqual([0x25, 0x50, 0x44, 0x46]);
+		expect(bytes.length).toBeGreaterThan(2000);
+	});
 });

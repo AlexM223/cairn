@@ -192,26 +192,49 @@ export async function buildMultisigBackupPdf(multisig: MultisigRow): Promise<Uin
 	// -------------------------------------------------------------- QR code
 	// Keep the QR + its caption + the label together on one page.
 	ensure(QR_SIZE + 40);
-	doc.setFont('helvetica', 'bold');
-	doc.setFontSize(12);
-	doc.text('Scan to restore', MARGIN, y);
-	y += 14;
 
-	const qrDataUrl = await QRCode.toDataURL(configJson, {
-		errorCorrectionLevel: 'L',
-		margin: 2,
-		width: QR_PX,
-		color: { dark: '#000000', light: '#ffffff' }
-	});
-	// Centre the QR horizontally.
-	const qrX = MARGIN + (CONTENT_W - QR_SIZE) / 2;
-	doc.addImage(qrDataUrl, 'PNG', qrX, y, QR_SIZE, QR_SIZE);
-	y += QR_SIZE + 12;
+	// A very large quorum's Caravan JSON can exceed a single QR's byte capacity
+	// (~2.9 KB even at the lowest error correction). Rather than fail the whole
+	// PDF, fall back to a printed note — the per-key table and full descriptor
+	// above already reconstruct the wallet on their own.
+	let qrDataUrl: string | null = null;
+	try {
+		qrDataUrl = await QRCode.toDataURL(configJson, {
+			errorCorrectionLevel: 'L',
+			margin: 2,
+			width: QR_PX,
+			color: { dark: '#000000', light: '#ffffff' }
+		});
+	} catch {
+		qrDataUrl = null;
+	}
 
-	doc.setFont('helvetica', 'normal');
-	doc.setFontSize(9);
-	doc.text('Full wallet configuration (Caravan format)', PAGE_W / 2, y, { align: 'center' });
-	y += 20;
+	if (qrDataUrl) {
+		doc.setFont('helvetica', 'bold');
+		doc.setFontSize(12);
+		doc.text('Scan to restore', MARGIN, y);
+		y += 14;
+		// Centre the QR horizontally.
+		const qrX = MARGIN + (CONTENT_W - QR_SIZE) / 2;
+		doc.addImage(qrDataUrl, 'PNG', qrX, y, QR_SIZE, QR_SIZE);
+		y += QR_SIZE + 12;
+
+		doc.setFont('helvetica', 'normal');
+		doc.setFontSize(9);
+		doc.text('Full wallet configuration (Caravan format)', PAGE_W / 2, y, { align: 'center' });
+		y += 20;
+	} else {
+		doc.setFont('helvetica', 'normal');
+		doc.setFontSize(9);
+		const note = doc.splitTextToSize(
+			"This wallet's configuration is too large to fit in a single scannable QR code. " +
+				'Restore it from the descriptor above, or from the JSON backup file you can ' +
+				'download alongside this document.',
+			CONTENT_W
+		) as string[];
+		doc.text(note, MARGIN, y);
+		y += note.length * 12 + 12;
+	}
 
 	// -------------------------------------------------------------- footers
 	// Anchor the storage/restore notes to the bottom of the final page so they
@@ -221,8 +244,8 @@ export async function buildMultisigBackupPdf(multisig: MultisigRow): Promise<Uin
 		'this wallet. Anyone with this document can see your transaction history and ' +
 		'balances (but cannot spend funds without the signing keys).';
 	const footer2 =
-		'To restore: scan this QR code in Cairn, Sparrow, or any wallet that supports ' +
-		'Caravan-format configs.';
+		'To restore: scan the QR code above in Cairn, Sparrow, or any wallet that supports ' +
+		'Caravan-format configs — or re-import the descriptor listed above.';
 
 	doc.setFont('helvetica', 'normal');
 	doc.setFontSize(8);

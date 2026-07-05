@@ -128,8 +128,17 @@ export async function buildDraft(
 
 	const scriptType = wallet.script_type as ScriptType;
 	const utxos = await getWalletUtxos(wallet.xpub);
-	// Tip height enables the coinbase-maturity guard in constructPsbt.
-	const tipHeight = (await getChain().getTip()).height;
+	// Tip height enables the coinbase-maturity guard — but only fetch it when a
+	// coinbase coin is actually present (the vast majority of wallets have none),
+	// and never let a transient tip failure block an ordinary send.
+	let tipHeight: number | undefined;
+	if (utxos.some((u) => u.coinbase)) {
+		try {
+			tipHeight = (await getChain().getTip()).height;
+		} catch {
+			tipHeight = undefined; // tip unavailable — skip the guard, don't block
+		}
+	}
 
 	// Change goes to the wallet's own change chain, next unused index.
 	const parsed = parseXpub(wallet.xpub);
