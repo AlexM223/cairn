@@ -12,6 +12,7 @@
 	import type { ConstructedPsbt } from '$lib/server/bitcoin/psbt';
 	import type { SavedTransaction } from '$lib/server/transactions';
 	import type { SavedAddress } from '$lib/server/addressBook';
+	import CoinControl from './_components/CoinControl.svelte';
 	import DeviceCard from './_components/DeviceCard.svelte';
 	import RecipientCombobox from './_components/RecipientCombobox.svelte';
 	import ColdCardSigner from './_components/ColdCardSigner.svelte';
@@ -88,8 +89,10 @@
 	};
 
 	// Rebuild a review shape when resuming without a fresh build. The saved row
-	// carries recipient/amount/fee/feeRate; the PSBT summary carries the coins
-	// being spent and the change output, so Review renders identically.
+	// carries recipient(s)/amount/fee/feeRate; the PSBT summary carries the
+	// coins being spent and the change output, so Review renders identically —
+	// including every output of a batch draft (rows always materialize a full
+	// recipients array, single sends as a length-1 one).
 	const review = $derived.by<ReviewDisplay | null>(() => {
 		if (details) return details;
 		if (!draft) return null;
@@ -100,6 +103,7 @@
 			vsize: draft.fee && draft.feeRate ? Math.round(draft.fee / draft.feeRate) : 0,
 			amount: draft.amount,
 			recipient: draft.recipient,
+			recipients: draft.recipients,
 			change: resumeSummary?.change ?? null,
 			inputs: resumeSummary?.inputs ?? []
 		};
@@ -144,13 +148,37 @@
 	}
 
 	// ------------------------------------------------------------- CREATE step
+	// One row per output. A single row is the classic send; adding rows makes
+	// a batch payment — one transaction, several recipients, one fee.
+	type RecipientRow = { key: number; address: string; amountBtc: string };
+	let rowKey = 0;
+	function seedRows(): RecipientRow[] {
+		if (resumeTx && resumeTx.recipients.length > 0) {
+			return resumeTx.recipients.map((r) => ({
+				key: rowKey++,
+				address: r.address,
+				amountBtc: r.amount > 0 ? formatBtc(r.amount, { trim: true }) : ''
+			}));
+		}
+		return [{ key: rowKey++, address: '', amountBtc: '' }];
+	}
 	// svelte-ignore state_referenced_locally — intentional per-load seed
-	let recipient = $state(resumeTx?.recipient ?? '');
+	let rows = $state<RecipientRow[]>(seedRows());
 	let amountMode = $state<'btc' | 'max'>('btc');
-	// svelte-ignore state_referenced_locally — intentional per-load seed
-	let amountBtc = $state(
-		resumeTx && resumeTx.amount > 0 ? formatBtc(resumeTx.amount, { trim: true }) : ''
-	);
+
+	function addRow() {
+		rows = [...rows, { key: rowKey++, address: '', amountBtc: '' }];
+		amountMode = 'btc'; // send-max is single-recipient-only
+	}
+
+	function removeRow(key: number) {
+		if (rows.length <= 1) return; // a send needs at least one recipient
+		rows = rows.filter((r) => r.key !== key);
+	}
+
+	// ----------------------------------------------------- manual coin control
+	// Keys are "txid:vout". Empty = automatic selection (the default flow).
+	let selectedCoins = $state<string[]>([]);
 
 	type FeeChoice = 'fast' | 'normal' | 'economy' | 'custom';
 	let feeChoice = $state<FeeChoice>('normal');
@@ -182,14 +210,24 @@
 	});
 
 	// Basic client-side shape check — the server does authoritative validation.
-	const recipientLooksValid = $derived(
-		/^(bc1|[13])[a-zA-HJ-NP-Z0-9]{6,90}$/.test(recipient.trim())
+	const looksLikeAddress = (a: string) => /^(bc1|[13])[a-zA-HJ-NP-Z0-9]{6,90}$/.test(a.trim());
+	const isMax = $derived(amountMode === 'max' && rows.length === 1);
+	const rowsValid = $derived(
+		rows.every((r) => {
+			if (r.address.trim().length === 0 || !looksLikeAddress(r.address)) return false;
+			if (isMax) return true;
+			return Number(r.amountBtc) > 0 && Number.isFinite(Number(r.amountBtc));
+		})
 	);
-	const amountValid = $derived(
-		amountMode === 'max' || (Number(amountBtc) > 0 && Number.isFinite(Number(amountBtc)))
-	);
-	const canBuild = $derived(
-		recipient.trim().length > 0 && recipientLooksValid && amountValid && feeRate >= 1
+	const canBuild = $derived(rowsValid && feeRate >= 1);
+
+	// Running total across rows — shown on batch sends so the sum is visible
+	// before Review.
+	const createTotalSats = $derived(
+		rows.reduce((s, r) => {
+			const n = Number(r.amountBtc);
+			return s + (n > 0 && Number.isFinite(n) ? Math.round(n * SATS_PER_BTC) : 0);
+		}, 0)
 	);
 
 	let building = $state(false);
@@ -199,13 +237,24 @@
 		if (!canBuild || building) return;
 		building = true;
 		buildError = null;
-		const amount: number | 'max' =
-			amountMode === 'max' ? 'max' : Math.round(Number(amountBtc) * SATS_PER_BTC);
+		const recipients = rows.map((r) => ({
+			address: r.address.trim(),
+			amount: (isMax ? 'max' : Math.round(Number(r.amountBtc) * SATS_PER_BTC)) as number | 'max'
+		}));
+		// Manual coin control rides along only when coins are actually selected.
+		const onlyUtxos = selectedCoins.map((k) => {
+			const [txid, vout] = k.split(':');
+			return { txid, vout: Number(vout) };
+		});
 		try {
 			const res = await fetch(`/api/wallets/${walletId}/psbt`, {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ recipient: recipient.trim(), amount, feeRate })
+				body: JSON.stringify({
+					recipients,
+					feeRate,
+					...(onlyUtxos.length > 0 ? { onlyUtxos } : {})
+				})
 			});
 			const body = await res.json();
 			if (!res.ok) {
@@ -215,7 +264,7 @@
 			draft = body.draft as SavedTransaction;
 			details = body.details as ConstructedPsbt;
 			signedComplete = false;
-			touchSavedAddress(draft.recipient);
+			for (const r of recipients) touchSavedAddress(r.address);
 			syncTxParam(draft.id);
 			step = 'review';
 		} catch {
@@ -521,13 +570,22 @@
 
 	// Human-readable context so each signer can tell the user what to verify on
 	// the device screen. Null until a draft + review exist (i.e. before build).
+	// Batch sends: SignerContext carries a single destination/amount pair (the
+	// device components consuming it cannot be changed here), so we pass an
+	// aggregate — the FIRST recipient's address annotated with how many more
+	// there are, and the TOTAL amount across recipients. The device screen
+	// itself lists every output, which is what the user actually verifies.
 	const signerContext = $derived.by<SignerContext | null>(() => {
 		if (!draft || !review) return null;
+		const extra = review.recipients.length - 1;
 		return {
 			walletId,
 			draftId: draft.id,
 			scriptType: data.wallet.scriptType,
-			destinationAddress: review.recipient,
+			destinationAddress:
+				extra > 0
+					? `${review.recipients[0].address} (+${extra} more recipient${extra === 1 ? '' : 's'})`
+					: review.recipient,
 			amountSats: review.amount,
 			feeSats: review.fee,
 			changeSats: review.change?.value ?? 0
@@ -576,61 +634,95 @@
 			{/if}
 
 			<div class="card card-pad stack" style="gap: 18px">
-				<div class="field">
-					<label class="label" for="recipient">Recipient address</label>
-					<RecipientCombobox
-						bind:value={recipient}
-						saved={savedAddresses}
-						invalid={recipient.length > 0 && !recipientLooksValid}
-						ondelete={deleteSavedAddress}
-					/>
-					{#if recipient.length > 0 && !recipientLooksValid}
-						<p class="hint" style="color: var(--warning)">
-							That doesn't look like a Bitcoin address yet.
-						</p>
-					{/if}
-				</div>
+				{#each rows as row, i (row.key)}
+					<div class="recipient-block" class:multi={rows.length > 1}>
+						{#if rows.length > 1}
+							<div class="row recipient-block-head">
+								<span class="label">Recipient {i + 1}</span>
+								<button
+									type="button"
+									class="row-remove"
+									aria-label={`Remove recipient ${i + 1}`}
+									onclick={() => removeRow(row.key)}
+								>
+									<Icon name="x" size={14} />
+								</button>
+							</div>
+						{/if}
+						<div class="field">
+							{#if rows.length === 1}
+								<label class="label" for="recipient">Recipient address</label>
+							{/if}
+							<RecipientCombobox
+								bind:value={row.address}
+								saved={savedAddresses}
+								invalid={row.address.length > 0 && !looksLikeAddress(row.address)}
+								ondelete={deleteSavedAddress}
+							/>
+							{#if row.address.length > 0 && !looksLikeAddress(row.address)}
+								<p class="hint" style="color: var(--warning)">
+									That doesn't look like a Bitcoin address yet.
+								</p>
+							{/if}
+						</div>
 
-				<div class="field">
-					<div class="row amount-head">
-						<span class="label" id="amount-label">Amount</span>
-						<div class="seg" role="group" aria-label="Amount mode">
-							<button
-								type="button"
-								class="seg-btn"
-								class:active={amountMode === 'btc'}
-								onclick={() => (amountMode = 'btc')}>BTC</button
-							>
-							<button
-								type="button"
-								class="seg-btn"
-								class:active={amountMode === 'max'}
-								onclick={() => (amountMode = 'max')}
-								title="Sweep the whole spendable balance">Max</button
-							>
+						<div class="field">
+							<div class="row amount-head">
+								<span class="label" id={`amount-label-${row.key}`}>Amount</span>
+								{#if rows.length === 1}
+									<!-- Max sweeps everything to a single destination — the mode
+									     toggle disappears (and the mode resets) with a second row. -->
+									<div class="seg" role="group" aria-label="Amount mode">
+										<button
+											type="button"
+											class="seg-btn"
+											class:active={amountMode === 'btc'}
+											onclick={() => (amountMode = 'btc')}>BTC</button
+										>
+										<button
+											type="button"
+											class="seg-btn"
+											class:active={amountMode === 'max'}
+											onclick={() => (amountMode = 'max')}
+											title="Sweep the whole spendable balance">Max</button
+										>
+									</div>
+								{/if}
+							</div>
+							{#if !isMax}
+								<div class="amount-input">
+									<input
+										class="input tabular"
+										inputmode="decimal"
+										placeholder="0.00000000"
+										bind:value={row.amountBtc}
+										aria-labelledby={`amount-label-${row.key}`}
+									/>
+									<span class="unit">BTC</span>
+								</div>
+								{#if Number(row.amountBtc) > 0}
+									<p class="hint tabular">
+										{formatSats(Math.round(Number(row.amountBtc) * SATS_PER_BTC))} sats
+									</p>
+								{/if}
+							{:else}
+								<div class="max-note">
+									<Icon name="zap" size={15} />
+									<span>Sweeps the entire spendable balance to this address, minus the fee.</span>
+								</div>
+							{/if}
 						</div>
 					</div>
-					{#if amountMode === 'btc'}
-						<div class="amount-input">
-							<input
-								class="input tabular"
-								inputmode="decimal"
-								placeholder="0.00000000"
-								bind:value={amountBtc}
-								aria-labelledby="amount-label"
-							/>
-							<span class="unit">BTC</span>
-						</div>
-						{#if Number(amountBtc) > 0}
-							<p class="hint tabular">
-								{formatSats(Math.round(Number(amountBtc) * SATS_PER_BTC))} sats
-							</p>
-						{/if}
-					{:else}
-						<div class="max-note">
-							<Icon name="zap" size={15} />
-							<span>Sweeps the entire spendable balance to this address, minus the fee.</span>
-						</div>
+				{/each}
+
+				<div class="row batch-row">
+					<button type="button" class="btn btn-ghost btn-sm" onclick={addRow}>
+						<Icon name="plus" size={14} /> Add another recipient
+					</button>
+					{#if rows.length > 1 && createTotalSats > 0}
+						<span class="hint tabular batch-total">
+							Total: {formatBtc(createTotalSats)} BTC · {formatSats(createTotalSats)} sats
+						</span>
 					{/if}
 				</div>
 
@@ -691,6 +783,13 @@
 					{/if}
 				</div>
 
+				{#if data.utxos.length > 0}
+					<!-- Optional manual coin control — collapsed so the default flow stays clean. -->
+					<div class="field">
+						<CoinControl utxos={data.utxos} bind:selected={selectedCoins} />
+					</div>
+				{/if}
+
 				{#if buildError}
 					<div class="form-error" role="alert">{buildError}</div>
 				{/if}
@@ -716,16 +815,38 @@
 			</p>
 
 			<div class="card review-hero">
-				<div class="review-line">
-					<span class="overline">Sending</span>
-					<span class="hero-number send-amount">{formatBtc(review.amount)} <em>BTC</em></span>
-					<span class="text-muted tabular">{formatSats(review.amount)} sats</span>
-				</div>
-				<div class="review-arrow"><Icon name="arrow-down-left" size={20} /></div>
-				<div class="review-line">
-					<span class="overline">To recipient</span>
-					<span class="recipient mono">{review.recipient}</span>
-				</div>
+				{#if review.recipients.length === 1}
+					<div class="review-line">
+						<span class="overline">Sending</span>
+						<span class="hero-number send-amount">{formatBtc(review.amount)} <em>BTC</em></span>
+						<span class="text-muted tabular">{formatSats(review.amount)} sats</span>
+					</div>
+					<div class="review-arrow"><Icon name="arrow-down-left" size={20} /></div>
+					<div class="review-line">
+						<span class="overline">To recipient</span>
+						<span class="recipient mono">{review.recipient}</span>
+					</div>
+				{:else}
+					<div class="review-line">
+						<span class="overline">Sending total</span>
+						<span class="hero-number send-amount">{formatBtc(review.amount)} <em>BTC</em></span>
+						<span class="text-muted tabular"
+							>{formatSats(review.amount)} sats · {review.recipients.length} recipients</span
+						>
+					</div>
+					<div class="review-arrow"><Icon name="arrow-down-left" size={20} /></div>
+					<div class="review-line">
+						<span class="overline">To recipients</span>
+						<div class="review-recipients">
+							{#each review.recipients as r, i (i)}
+								<div class="review-recipient-row">
+									<span class="tabular batch-amt">{formatBtc(r.amount)} BTC</span>
+									<span class="recipient mono">{r.address}</span>
+								</div>
+							{/each}
+						</div>
+					</div>
+				{/if}
 			</div>
 
 			<div class="card card-pad detail-list">
@@ -962,10 +1083,23 @@
 					<span class="text-secondary">Sending</span>
 					<span class="detail-val tabular">{formatBtc(review.amount)} BTC</span>
 				</div>
-				<div class="confirm-row">
-					<span class="text-secondary">To</span>
-					<span class="mono confirm-recipient">{review.recipient}</span>
-				</div>
+				{#if review.recipients.length === 1}
+					<div class="confirm-row">
+						<span class="text-secondary">To</span>
+						<span class="mono confirm-recipient">{review.recipient}</span>
+					</div>
+				{:else}
+					<div class="confirm-row confirm-batch">
+						<span class="text-secondary">To {review.recipients.length} recipients</span>
+						<div class="confirm-batch-list">
+							{#each review.recipients as r, i (i)}
+								<span class="mono confirm-recipient tabular"
+									>{formatBtc(r.amount)} BTC → {truncateMiddle(r.address, 12, 10)}</span
+								>
+							{/each}
+						</div>
+					</div>
+				{/if}
 				<div class="confirm-row">
 					<span class="text-secondary">Fee</span>
 					<span class="detail-val tabular"
@@ -1026,10 +1160,23 @@
 						<span class="text-secondary">Sent</span>
 						<span class="detail-val tabular">{formatBtc(review.amount)} BTC</span>
 					</div>
-					<div class="confirm-row">
-						<span class="text-secondary">To</span>
-						<span class="mono confirm-recipient">{truncateMiddle(review.recipient, 14, 12)}</span>
-					</div>
+					{#if review.recipients.length === 1}
+						<div class="confirm-row">
+							<span class="text-secondary">To</span>
+							<span class="mono confirm-recipient">{truncateMiddle(review.recipient, 14, 12)}</span>
+						</div>
+					{:else}
+						<div class="confirm-row confirm-batch">
+							<span class="text-secondary">To {review.recipients.length} recipients</span>
+							<div class="confirm-batch-list">
+								{#each review.recipients as r, i (i)}
+									<span class="mono confirm-recipient tabular"
+										>{formatBtc(r.amount)} BTC → {truncateMiddle(r.address, 12, 10)}</span
+									>
+								{/each}
+							</div>
+						</div>
+					{/if}
 					<div class="confirm-row">
 						<span class="text-secondary">Fee</span>
 						<span class="detail-val tabular">{formatSats(review.fee)} sats</span>
@@ -1145,6 +1292,54 @@
 	.step-actions {
 		justify-content: space-between;
 		gap: 10px;
+	}
+
+	/* ---- Create: recipient rows (batch sending) ---- */
+	.recipient-block {
+		display: flex;
+		flex-direction: column;
+		gap: 18px;
+	}
+
+	/* With several rows, each gets a light frame so its address + amount read
+	   as one unit; a single row stays frameless — exactly the classic form. */
+	.recipient-block.multi {
+		gap: 14px;
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-control);
+		padding: 14px;
+	}
+
+	.recipient-block-head {
+		justify-content: space-between;
+	}
+
+	.row-remove {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 26px;
+		height: 26px;
+		flex-shrink: 0;
+		background: none;
+		border: none;
+		border-radius: var(--radius-chip);
+		color: var(--text-muted);
+		cursor: pointer;
+	}
+
+	.row-remove:hover {
+		color: var(--danger, var(--text));
+		background: var(--bg);
+	}
+
+	.batch-row {
+		justify-content: space-between;
+		gap: 10px;
+	}
+
+	.batch-total {
+		text-align: right;
 	}
 
 	/* ---- Create: amount + fee ---- */
@@ -1337,6 +1532,27 @@
 
 	.review-arrow {
 		color: var(--text-muted);
+	}
+
+	/* Batch review: one line per recipient (amount + full address). */
+	.review-recipients {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		width: 100%;
+	}
+
+	.review-recipient-row {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 4px;
+	}
+
+	.batch-amt {
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--text);
 	}
 
 	.recipient {
@@ -1608,6 +1824,22 @@
 		word-break: break-all;
 		text-align: right;
 		max-width: 70%;
+	}
+
+	/* Batch confirm/sent: the recipient cell becomes a right-aligned list. */
+	.confirm-batch {
+		align-items: flex-start;
+	}
+
+	.confirm-batch-list {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-end;
+		gap: 4px;
+	}
+
+	.confirm-batch-list .confirm-recipient {
+		max-width: 100%;
 	}
 
 	.reject-actions {

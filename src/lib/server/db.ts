@@ -141,4 +141,13 @@ db.exec(`
 	if (!txCols.includes('replaces_txid')) {
 		db.exec('ALTER TABLE transactions ADD COLUMN replaces_txid TEXT');
 	}
+
+	// Batch sends: a JSON array of { address, amount } covering EVERY output
+	// recipient. NULL for single-recipient rows — `recipient`/`amount` stay the
+	// canonical source there (and remain populated for batch rows too, holding
+	// the first recipient and the total, so old rows and old queries keep
+	// working). See mapRow in transactions.ts.
+	if (!txCols.includes('recipients')) {
+		db.exec('ALTER TABLE transactions ADD COLUMN recipients TEXT');
+	}
 }

@@ -37,7 +37,7 @@ const COMMON = {
 };
 
 async function realPsbtBase64(): Promise<string> {
-	const draft = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 30_000, feeRate: 10 });
+	const draft = await constructPsbt({ ...COMMON, recipients: [{ address: RECIPIENT, amount: 30_000 }], feeRate: 10 });
 	return draft.psbtBase64;
 }
 

@@ -69,8 +69,7 @@ async function signedPsbt(): Promise<string> {
 	const draft = await constructPsbt({
 		xpub: ZPUB,
 		utxos,
-		recipient: RECIPIENT,
-		amount: 30_000,
+		recipients: [{ address: RECIPIENT, amount: 30_000 }],
 		feeRate: 5,
 		changeAddress: CHANGE_0,
 		changeIndex: 0,
@@ -255,6 +254,49 @@ describe('transaction lifecycle', () => {
 	});
 });
 
+describe('batch row storage (recipients column)', () => {
+	it('round-trips a batch recipient breakdown through the recipients JSON column', () => {
+		const { userId, walletId } = seedWallet('batch@example.com');
+		const recipients = [
+			{ address: RECIPIENT, amount: 20_000 },
+			{ address: 'bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3', amount: 30_000 }
+		];
+		// Stored the way buildDraft stores batch rows: recipient = first address,
+		// amount = total, full breakdown in the JSON column.
+		const res = db
+			.prepare(
+				`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate, recipients)
+				 VALUES (?, 'draft', 'cHNidP8=', ?, ?, 500, 5, ?)`
+			)
+			.run(walletId, recipients[0].address, 50_000, JSON.stringify(recipients));
+
+		const tx = getTransaction(userId, walletId, Number(res.lastInsertRowid));
+		expect(tx).not.toBeNull();
+		expect(tx!.recipients).toEqual(recipients);
+		expect(tx!.recipient).toBe(recipients[0].address);
+		expect(tx!.amount).toBe(50_000);
+	});
+
+	it('derives a length-1 recipients array for single-recipient rows (NULL column)', () => {
+		const { userId, walletId } = seedWallet('single@example.com');
+		const txId = seedTx(walletId); // seedTx never touches the recipients column
+		const tx = getTransaction(userId, walletId, txId);
+		expect(tx!.recipients).toEqual([{ address: 'bc1qexample', amount: 1000 }]);
+	});
+
+	it('falls back to the single-recipient shape when the JSON column is garbage', () => {
+		const { userId, walletId } = seedWallet('garbage@example.com');
+		const res = db
+			.prepare(
+				`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate, recipients)
+				 VALUES (?, 'draft', 'cHNidP8=', 'bc1qexample', 1000, 200, 1.5, 'not json')`
+			)
+			.run(walletId);
+		const tx = getTransaction(userId, walletId, Number(res.lastInsertRowid));
+		expect(tx!.recipients).toEqual([{ address: 'bc1qexample', amount: 1000 }]);
+	});
+});
+
 describe('normalizePsbt', () => {
 	it('round-trips a valid PSBT in base64 and hex forms', async () => {
 		const valid = await signedPsbt();
@@ -318,8 +360,7 @@ describe('bumpTransaction (RBF fee bumping)', () => {
 			utxos: [
 				{ txid: FUND.txid, vout: 0, value: 100_000, height: 800_000, address: RECEIVE_0, chain: 0, index: 0 }
 			],
-			recipient: RECIPIENT,
-			amount: 30_000,
+			recipients: [{ address: RECIPIENT, amount: 30_000 }],
 			feeRate,
 			changeAddress: CHANGE_0,
 			changeIndex: 0,
@@ -366,6 +407,54 @@ describe('bumpTransaction (RBF fee bumping)', () => {
 		expect(orig.details.change!.value - details.change!.value).toBe(details.fee - orig.details.fee);
 		// And the replacement clears the BIP-125 rule-4 floor.
 		expect(details.fee).toBeGreaterThanOrEqual(orig.details.fee + details.vsize);
+	});
+
+	it('bumps a batch original preserving every recipient output', async () => {
+		const { userId, walletId } = seedRealWallet('rbf-batch@example.com');
+		const RECIPIENT_2 = 'bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3';
+		const recipients = [
+			{ address: RECIPIENT, amount: 20_000 },
+			{ address: RECIPIENT_2, amount: 10_000 }
+		];
+		const details = await constructPsbt({
+			xpub: ZPUB,
+			utxos: [
+				{ txid: FUND.txid, vout: 0, value: 100_000, height: 800_000, address: RECEIVE_0, chain: 0, index: 0 }
+			],
+			recipients,
+			feeRate: 5,
+			changeAddress: CHANGE_0,
+			changeIndex: 0,
+			origin: { fingerprint: '73c5da0a', path: "m/84'/0'/0'" },
+			fetchRawTx: async () => FUND.hex
+		});
+		const res = db
+			.prepare(
+				`INSERT INTO transactions (wallet_id, status, psbt, txid, recipient, amount, fee, fee_rate, change_index, recipients)
+				 VALUES (?, 'completed', ?, ?, ?, ?, ?, ?, 0, ?)`
+			)
+			.run(
+				walletId,
+				details.psbtBase64,
+				'ba'.repeat(32),
+				details.recipient,
+				details.amount,
+				details.fee,
+				details.feeRate,
+				JSON.stringify(details.recipients)
+			);
+		const txId = Number(res.lastInsertRowid);
+
+		const { draft, details: bumped } = await bumpTransaction(userId, walletId, txId, 25);
+		// The stored breakdown drives the replacement: both outputs survive intact.
+		expect(draft.recipients).toEqual(recipients);
+		expect(draft.amount).toBe(30_000);
+		const summary = summarizePsbt(bumped.psbtBase64);
+		expect(summary.outputs).toContainEqual({ address: RECIPIENT, value: 20_000 });
+		expect(summary.outputs).toContainEqual({ address: RECIPIENT_2, value: 10_000 });
+		// The fee delta comes out of change, as with single-recipient bumps.
+		expect(bumped.change).not.toBeNull();
+		expect(details.change!.value - bumped.change!.value).toBe(bumped.fee - details.fee);
 	});
 
 	it('rejects a fee rate at or below the original effective rate', async () => {

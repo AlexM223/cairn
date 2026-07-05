@@ -30,12 +30,22 @@ export interface KeyOrigin {
 	path: string;
 }
 
+/** One transaction output: where and how much. 'max' sweeps everything (sole recipient only). */
+export interface RecipientSpec {
+	address: string;
+	/** Amount in sats, or 'max' to sweep every provided UTXO (single recipient only). */
+	amount: number | 'max';
+}
+
 export interface ConstructParams {
 	xpub: string;
 	utxos: SpendableUtxo[];
-	recipient: string;
-	/** Amount in sats, or 'max' to sweep every provided UTXO. */
-	amount: number | 'max';
+	/**
+	 * One or more outputs to pay. A single-recipient send is a length-1 array.
+	 * 'max' is only valid when there is exactly one recipient — a sweep has no
+	 * well-defined split across several destinations.
+	 */
+	recipients: RecipientSpec[];
 	feeRate: number; // sat/vB
 	changeAddress: string;
 	changeIndex: number;
@@ -47,9 +57,17 @@ export interface ConstructParams {
 	 * Spend every provided UTXO exactly as given, skipping coin selection (and
 	 * the confirmed-only filter). Used for RBF replacements, which must spend
 	 * the same inputs as the transaction they replace so the two necessarily
-	 * conflict. Requires a numeric amount; change = inputs − amount − fee.
+	 * conflict. Requires numeric amounts; change = inputs − amounts − fee.
 	 */
 	exactInputs?: boolean;
+	/**
+	 * Manual coin control: an allowlist of (txid, vout) coins. When present,
+	 * coin selection runs over ONLY these UTXOs — still confirmed-filtered,
+	 * still normal selection semantics (change, send-max over the subset). This
+	 * restricts the candidate set; it does NOT force every listed coin to be
+	 * spent (that is exactInputs). Ignored when empty.
+	 */
+	onlyUtxos?: { txid: string; vout: number }[];
 }
 
 export interface ConstructedPsbt {
@@ -57,8 +75,11 @@ export interface ConstructedPsbt {
 	fee: number; // sats
 	feeRate: number; // sat/vB actually paid (fee / estimated vsize)
 	vsize: number; // estimate
-	amount: number; // sats to the recipient
+	amount: number; // total sats across all recipients
+	/** First recipient's address — the display/storage anchor for single sends. */
 	recipient: string;
+	/** Every recipient with its resolved amount ('max' resolved to real sats). */
+	recipients: { address: string; amount: number }[];
 	change: { address: string; value: number; index: number } | null;
 	inputs: { txid: string; vout: number; value: number; address: string }[];
 }
@@ -132,10 +153,20 @@ function toBigInt(sats: number): bigint {
  * deterministic and unit-testable.
  */
 export async function constructPsbt(params: ConstructParams): Promise<ConstructedPsbt> {
-	const { recipient, feeRate } = params;
+	const { feeRate } = params;
 
-	if (!isValidAddress(recipient)) {
-		throw new PsbtError('That does not look like a valid Bitcoin address.', 'invalid_recipient');
+	if (!Array.isArray(params.recipients) || params.recipients.length === 0) {
+		throw new PsbtError('At least one recipient is required.', 'invalid_recipient');
+	}
+	for (const r of params.recipients) {
+		if (!isValidAddress(r.address)) {
+			throw new PsbtError(
+				params.recipients.length === 1
+					? 'That does not look like a valid Bitcoin address.'
+					: `"${r.address}" does not look like a valid Bitcoin address.`,
+				'invalid_recipient'
+			);
+		}
 	}
 	if (!Number.isFinite(feeRate) || feeRate < 1) {
 		throw new PsbtError('Fee rate must be at least 1 sat/vB.', 'invalid_amount');
@@ -146,8 +177,24 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 			'invalid_amount'
 		);
 	}
-	if (params.amount !== 'max' && (!Number.isInteger(params.amount) || params.amount <= 0)) {
-		throw new PsbtError('Amount must be a positive number of sats.', 'invalid_amount');
+	// 'max' sweeps the whole (candidate) balance — meaningless alongside other
+	// recipients, so it is only accepted as the sole output.
+	const sendMax = params.recipients.some((r) => r.amount === 'max');
+	if (sendMax && params.recipients.length > 1) {
+		throw new PsbtError(
+			'Send-max only works with a single recipient — a sweep cannot be split across several destinations.',
+			'invalid_amount'
+		);
+	}
+	for (const r of params.recipients) {
+		if (r.amount !== 'max' && (!Number.isInteger(r.amount) || r.amount <= 0)) {
+			throw new PsbtError(
+				params.recipients.length === 1
+					? 'Amount must be a positive number of sats.'
+					: `The amount for ${r.address} must be a positive number of sats.`,
+				'invalid_amount'
+			);
+		}
 	}
 
 	const parsed = parseXpub(params.xpub);
@@ -161,11 +208,27 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 	// Exact-inputs mode (RBF replacement) skips the filter: the inputs are the
 	// original transaction's own, whose funding txs were already confirmed
 	// when the original was built.
-	const spendable = params.exactInputs
+	let spendable = params.exactInputs
 		? params.utxos
 		: params.utxos.filter((u) => u.height > 0);
 	if (spendable.length === 0) {
 		throw new PsbtError('This wallet has no confirmed coins to spend.', 'no_utxos');
+	}
+
+	// Manual coin control: restrict the candidate set to the allowlist. Coins
+	// that dropped out of the wallet (spent, reorged to unconfirmed) simply
+	// don't match — an empty result gets its own message rather than the
+	// generic no-coins one.
+	const coinControl = (params.onlyUtxos?.length ?? 0) > 0;
+	if (coinControl) {
+		const allow = new Set(params.onlyUtxos!.map((o) => `${o.txid}:${o.vout}`));
+		spendable = spendable.filter((u) => allow.has(`${u.txid}:${u.vout}`));
+		if (spendable.length === 0) {
+			throw new PsbtError(
+				'None of the selected coins are spendable right now — they may be unconfirmed or already spent.',
+				'no_utxos'
+			);
+		}
 	}
 
 	const originPath = params.origin ? parseOriginPath(params.origin.path) : null;
@@ -256,7 +319,10 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 	}
 
 	// ------------------------------------------------------------- send max
-	if (params.amount === 'max') {
+	// Sweeps every CANDIDATE coin — with a coin-control allowlist active that
+	// is the selected subset, so "max" means "everything I picked, minus fee".
+	if (sendMax) {
+		const recipient = params.recipients[0].address;
 		const totalIn = spendable.reduce((s, u) => s + u.value, 0);
 		const vsize =
 			TX_OVERHEAD_VSIZE + spendable.length * INPUT_VSIZE[scriptType] + OUTPUT_VSIZE;
@@ -264,7 +330,9 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		const amount = totalIn - fee;
 		if (amount <= DUST_SATS) {
 			throw new PsbtError(
-				'After fees there would be nothing left to send at this fee rate.',
+				coinControl
+					? "The selected coins don't cover the network fee at this rate — select more coins or lower the fee."
+					: 'After fees there would be nothing left to send at this fee rate.',
 				'insufficient_funds'
 			);
 		}
@@ -278,6 +346,7 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 			vsize,
 			amount,
 			recipient,
+			recipients: [{ address: recipient, amount }],
 			change: null,
 			inputs: spendable.map((u) => ({
 				txid: u.txid,
@@ -287,6 +356,13 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 			}))
 		};
 	}
+
+	// Past the send-max gate every amount is a real number.
+	const recipients = params.recipients.map((r) => ({
+		address: r.address,
+		amount: r.amount as number
+	}));
+	const totalAmount = recipients.reduce((s, r) => s + r.amount, 0);
 
 	let tx: Transaction;
 	let fee: number;
@@ -305,9 +381,11 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		chosen = spendable;
 		const totalIn = chosen.reduce((s, u) => s + u.value, 0);
 		const vsizeEst =
-			TX_OVERHEAD_VSIZE + chosen.length * INPUT_VSIZE[scriptType] + 2 * OUTPUT_VSIZE;
+			TX_OVERHEAD_VSIZE +
+			chosen.length * INPUT_VSIZE[scriptType] +
+			(recipients.length + 1) * OUTPUT_VSIZE;
 		fee = Math.ceil(vsizeEst * feeRate);
-		const change = totalIn - params.amount - fee;
+		const change = totalIn - totalAmount - fee;
 		if (change < DUST_SATS) {
 			throw new PsbtError(
 				'The change output is too small to absorb the higher fee at this rate.',
@@ -319,7 +397,7 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		// Deterministic BIP69-style output order (value asc, script tiebreak),
 		// matching what the coin selector emits on the normal path.
 		const outs = [
-			{ address: recipient, value: params.amount },
+			...recipients.map((r) => ({ address: r.address, value: r.amount })),
 			{ address: params.changeAddress, value: change }
 		].sort(
 			(a, b) =>
@@ -337,7 +415,7 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		// library's default dust handling is correct; do not "tune" it.
 		const selection = selectUTXO(
 			inputs as never,
-			[{ address: recipient, amount: toBigInt(params.amount) }],
+			recipients.map((r) => ({ address: r.address, amount: toBigInt(r.amount) })),
 			'default',
 			{
 				changeAddress: params.changeAddress,
@@ -351,7 +429,9 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 
 		if (!selection || !selection.tx) {
 			throw new PsbtError(
-				'Not enough confirmed funds to cover that amount plus the network fee.',
+				coinControl
+					? "The selected coins don't cover that amount plus the network fee — select more coins or lower the amount."
+					: 'Not enough confirmed funds to cover that amount plus the network fee.',
 				'insufficient_funds'
 			);
 		}
@@ -371,7 +451,7 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 	}
 
 	const totalIn = chosen.reduce((s, u) => s + u.value, 0);
-	const changeValue = totalIn - params.amount - fee;
+	const changeValue = totalIn - totalAmount - fee;
 	const hasChange = changeExpected && changeValue > 0;
 
 	// Mark the change output with its BIP32 derivation when the key origin is
@@ -399,7 +479,7 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		1,
 		TX_OVERHEAD_VSIZE +
 			chosen.length * INPUT_VSIZE[scriptType] +
-			(hasChange ? 2 : 1) * OUTPUT_VSIZE
+			(recipients.length + (hasChange ? 1 : 0)) * OUTPUT_VSIZE
 	);
 
 	return {
@@ -407,8 +487,9 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		fee,
 		feeRate: Math.round((fee / vsize) * 100) / 100,
 		vsize,
-		amount: params.amount,
-		recipient,
+		amount: totalAmount,
+		recipient: recipients[0].address,
+		recipients,
 		change: hasChange
 			? { address: params.changeAddress, value: changeValue, index: params.changeIndex }
 			: null,

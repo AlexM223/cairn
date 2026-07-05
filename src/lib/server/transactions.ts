@@ -29,8 +29,16 @@ export interface SavedTransaction {
 	status: TxStatus;
 	psbt: string;
 	txid: string | null;
+	/** First recipient's address (the only one for single-recipient sends). */
 	recipient: string;
+	/** Total sats across all recipients. */
 	amount: number;
+	/**
+	 * Every recipient with its amount. Always populated: batch rows store this
+	 * as JSON in the `recipients` column; single-recipient rows (including all
+	 * pre-batch rows) derive it from `recipient`/`amount`.
+	 */
+	recipients: { address: string; amount: number }[];
 	fee: number;
 	feeRate: number;
 	changeIndex: number | null;
@@ -83,9 +91,24 @@ export async function getWalletUtxos(xpub: string): Promise<SpendableUtxo[]> {
 }
 
 export interface BuildDraftInput {
-	recipient: string;
-	amount: number | 'max';
+	/** One or more outputs; 'max' only as the sole recipient's amount. */
+	recipients: { address: string; amount: number | 'max' }[];
 	feeRate: number;
+	/** Manual coin control: restrict selection to these coins (see ConstructParams.onlyUtxos). */
+	onlyUtxos?: { txid: string; vout: number }[];
+}
+
+/**
+ * How batch rows persist: `recipient` holds the FIRST address and `amount` the
+ * TOTAL sats (so every existing single-recipient consumer — wallet-page rows,
+ * explorer links, RBF checks — keeps reading something sensible), while the
+ * full per-recipient breakdown goes to the `recipients` JSON column, NULL for
+ * single sends. Reads always materialize `recipients` (deriving a length-1
+ * array from recipient/amount when the column is NULL), so the send flow's
+ * resume path renders every output either way.
+ */
+function recipientsJson(recipients: { address: string; amount: number }[]): string | null {
+	return recipients.length > 1 ? JSON.stringify(recipients) : null;
 }
 
 /**
@@ -121,19 +144,19 @@ export async function buildDraft(
 	const details = await constructPsbt({
 		xpub: wallet.xpub,
 		utxos,
-		recipient: input.recipient,
-		amount: input.amount,
+		recipients: input.recipients,
 		feeRate: input.feeRate,
 		changeAddress,
 		changeIndex,
 		origin,
-		fetchRawTx: (txid) => getChain().getTxHex(txid)
+		fetchRawTx: (txid) => getChain().getTxHex(txid),
+		onlyUtxos: input.onlyUtxos
 	});
 
 	const res = db
 		.prepare(
-			`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate, change_index)
-			 VALUES (?, 'draft', ?, ?, ?, ?, ?, ?)`
+			`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate, change_index, recipients)
+			 VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?)`
 		)
 		.run(
 			walletId,
@@ -142,12 +165,32 @@ export async function buildDraft(
 			details.amount,
 			details.fee,
 			details.feeRate,
-			details.change?.index ?? null
+			details.change?.index ?? null,
+			recipientsJson(details.recipients)
 		);
 
 	const draft = getTransaction(userId, walletId, Number(res.lastInsertRowid));
 	if (!draft) throw new PsbtError('Draft could not be saved.', 'construction_failed');
 	return { draft, details };
+}
+
+/** Parse the batch `recipients` JSON column; null/garbage falls back to single-recipient. */
+function parseRecipients(
+	raw: unknown,
+	recipient: string,
+	amount: number
+): { address: string; amount: number }[] {
+	if (typeof raw === 'string' && raw.length > 0) {
+		try {
+			const parsed = JSON.parse(raw);
+			if (Array.isArray(parsed) && parsed.length > 0) {
+				return parsed.map((p) => ({ address: String(p.address), amount: Number(p.amount) }));
+			}
+		} catch {
+			/* fall through to the single-recipient shape */
+		}
+	}
+	return [{ address: recipient, amount }];
 }
 
 function mapRow(r: Record<string, unknown>): SavedTransaction {
@@ -159,6 +202,7 @@ function mapRow(r: Record<string, unknown>): SavedTransaction {
 		txid: (r.txid as string | null) ?? null,
 		recipient: r.recipient as string,
 		amount: r.amount as number,
+		recipients: parseRecipients(r.recipients, r.recipient as string, r.amount as number),
 		fee: r.fee as number,
 		feeRate: r.fee_rate as number,
 		changeIndex: (r.change_index as number | null) ?? null,
@@ -612,11 +656,13 @@ export async function bumpTransaction(
 				}
 			: null;
 
+	// Every recipient output is reproduced exactly — for batch rows the stored
+	// per-recipient breakdown drives this, so a bumped batch keeps paying all N
+	// destinations; the fee increase still comes solely out of change.
 	const details = await constructPsbt({
 		xpub: wallet.xpub,
 		utxos,
-		recipient: tx.recipient,
-		amount: tx.amount,
+		recipients: tx.recipients,
 		feeRate: newFeeRate,
 		changeAddress,
 		changeIndex: tx.changeIndex,
@@ -641,8 +687,8 @@ export async function bumpTransaction(
 
 	const res = db
 		.prepare(
-			`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate, change_index, replaces_txid)
-			 VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?)`
+			`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate, change_index, replaces_txid, recipients)
+			 VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?)`
 		)
 		.run(
 			walletId,
@@ -652,7 +698,8 @@ export async function bumpTransaction(
 			details.fee,
 			details.feeRate,
 			details.change?.index ?? null,
-			tx.txid
+			tx.txid,
+			recipientsJson(details.recipients)
 		);
 
 	const draft = getTransaction(userId, walletId, Number(res.lastInsertRowid));

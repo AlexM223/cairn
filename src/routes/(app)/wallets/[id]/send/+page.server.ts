@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit';
 import { getWallet, getWalletDetail } from '$lib/server/wallets';
 import { listSavedAddresses } from '$lib/server/addressBook';
-import { getTransaction } from '$lib/server/transactions';
+import { getTransaction, getWalletUtxos } from '$lib/server/transactions';
 import { summarizePsbt, type PsbtSummary } from '$lib/server/bitcoin/psbt';
 import { getChain } from '$lib/server/chain';
 import type { FeeEstimates } from '$lib/types';
@@ -16,15 +16,28 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 
 	// Confirmed balance for the Create step; a scan failure disables building
 	// (no UTXO set to spend from) but the page still renders with an explanation.
+	// The spendable-coin list feeds the manual coin-control picker — it comes
+	// from the same (60s-cached) wallet scan the balance does, plus the same
+	// listUnspent lookups the build endpoint will run, so what the user picks
+	// from is exactly what the server will select from.
 	let confirmed: number | null = null;
 	let scanError: string | null = null;
+	let utxos: { txid: string; vout: number; value: number }[] = [];
 	try {
 		const detail = await getWalletDetail(locals.user!.id, id);
 		if (!detail) error(404, 'Wallet not found');
 		confirmed = detail.scan.confirmed;
+		utxos = (await getWalletUtxos(row.xpub))
+			.filter((u) => u.height > 0) // the builder only ever spends confirmed coins
+			.map((u) => ({ txid: u.txid, vout: u.vout, value: u.value }))
+			.sort((a, b) => b.value - a.value);
 	} catch (e) {
 		if (e instanceof Error && e.cause === 'unreachable') {
 			scanError = e.message;
+		} else if (scanError === null && confirmed !== null) {
+			// The scan worked but the UTXO listing failed — coin control simply
+			// isn't offered this load; the default (automatic) flow is unaffected.
+			utxos = [];
 		} else {
 			throw e;
 		}
@@ -65,6 +78,9 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 		scanError,
 		fees,
 		resume,
+		// Confirmed spendable coins for the optional coin-control picker,
+		// largest first. Empty when the scan failed or the wallet is empty.
+		utxos,
 		// The user's address book seeds the recipient autocomplete. User-scoped,
 		// small, and cheap to load alongside the page.
 		savedAddresses: listSavedAddresses(locals.user!.id)

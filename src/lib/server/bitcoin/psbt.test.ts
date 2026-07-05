@@ -79,7 +79,7 @@ async function fetchRawTx(txid: string): Promise<string> {
 
 describe('constructPsbt', () => {
 	it('builds a spend with change and conserves value', async () => {
-		const draft = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 30_000, feeRate: 10 });
+		const draft = await constructPsbt({ ...COMMON, recipients: [{ address: RECIPIENT, amount: 30_000 }], feeRate: 10 });
 		expect(draft.amount).toBe(30_000);
 		expect(draft.fee).toBeGreaterThan(0);
 		const totalIn = draft.inputs.reduce((s, u) => s + u.value, 0);
@@ -103,8 +103,7 @@ describe('constructPsbt', () => {
 		const draft = await constructPsbt({
 			...COMMON,
 			utxos: small,
-			recipient: RECIPIENT,
-			amount: 600,
+			recipients: [{ address: RECIPIENT, amount: 600 }],
 			feeRate: 1
 		});
 		expect(draft.change).not.toBeNull();
@@ -115,12 +114,12 @@ describe('constructPsbt', () => {
 	});
 
 	it('never selects unconfirmed coins', async () => {
-		const draft = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 30_000, feeRate: 10 });
+		const draft = await constructPsbt({ ...COMMON, recipients: [{ address: RECIPIENT, amount: 30_000 }], feeRate: 10 });
 		expect(draft.inputs.some((i) => i.txid === '33'.repeat(32))).toBe(false);
 	});
 
 	it('sweeps everything confirmed on send-max with a single output', async () => {
-		const draft = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 'max', feeRate: 5 });
+		const draft = await constructPsbt({ ...COMMON, recipients: [{ address: RECIPIENT, amount: 'max' }], feeRate: 5 });
 		expect(draft.inputs).toHaveLength(2);
 		expect(draft.change).toBeNull();
 		expect(draft.amount).toBe(100_000 - draft.fee);
@@ -131,22 +130,22 @@ describe('constructPsbt', () => {
 
 	it('rejects unaffordable amounts with a friendly error', async () => {
 		await expect(
-			constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 99_999_999, feeRate: 10 })
+			constructPsbt({ ...COMMON, recipients: [{ address: RECIPIENT, amount: 99_999_999 }], feeRate: 10 })
 		).rejects.toMatchObject({ code: 'insufficient_funds' });
 	});
 
 	it('rejects invalid recipients and fee rates', async () => {
 		await expect(
-			constructPsbt({ ...COMMON, recipient: 'garbage', amount: 1_000, feeRate: 5 })
+			constructPsbt({ ...COMMON, recipients: [{ address: 'garbage', amount: 1_000 }], feeRate: 5 })
 		).rejects.toMatchObject({ code: 'invalid_recipient' });
 		await expect(
-			constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 1_000, feeRate: 0 })
+			constructPsbt({ ...COMMON, recipients: [{ address: RECIPIENT, amount: 1_000 }], feeRate: 0 })
 		).rejects.toMatchObject({ code: 'invalid_amount' });
 		expect(PsbtError).toBeDefined();
 	});
 
 	it('produces PSBTs a signer can complete via embedded derivation paths', async () => {
-		const draft = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 70_000, feeRate: 12 });
+		const draft = await constructPsbt({ ...COMMON, recipients: [{ address: RECIPIENT, amount: 70_000 }], feeRate: 12 });
 		const account = accountKey();
 		const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
 
@@ -169,18 +168,199 @@ describe('constructPsbt', () => {
 	});
 
 	it('refuses to finalize an unsigned PSBT', async () => {
-		const draft = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 30_000, feeRate: 10 });
+		const draft = await constructPsbt({ ...COMMON, recipients: [{ address: RECIPIENT, amount: 30_000 }], feeRate: 10 });
 		expect(() => finalizePsbt(draft.psbtBase64)).toThrow();
+	});
+});
+
+describe('coin control (onlyUtxos allowlist)', () => {
+	const COIN_60K = { txid: '11'.repeat(32), vout: 0 };
+	const COIN_40K = { txid: '22'.repeat(32), vout: 1 };
+	const COIN_UNCONFIRMED = { txid: '33'.repeat(32), vout: 0 };
+
+	it('selects only from the allowlisted coins', async () => {
+		const draft = await constructPsbt({
+			...COMMON,
+			recipients: [{ address: RECIPIENT, amount: 10_000 }],
+			feeRate: 5,
+			onlyUtxos: [COIN_40K]
+		});
+		expect(draft.inputs).toHaveLength(1);
+		expect(draft.inputs[0]).toMatchObject({ txid: COIN_40K.txid, vout: COIN_40K.vout });
+		// Normal selection semantics still apply inside the subset: change exists.
+		expect(draft.change).not.toBeNull();
+		const totalIn = draft.inputs.reduce((s, u) => s + u.value, 0);
+		expect(totalIn).toBe(draft.amount + draft.fee + draft.change!.value);
+	});
+
+	it('is a restriction of the candidate set, never adding coins outside it', async () => {
+		const allow = new Set([`${COIN_60K.txid}:${COIN_60K.vout}`, `${COIN_40K.txid}:${COIN_40K.vout}`]);
+		const draft = await constructPsbt({
+			...COMMON,
+			recipients: [{ address: RECIPIENT, amount: 10_000 }],
+			feeRate: 5,
+			onlyUtxos: [COIN_60K, COIN_40K]
+		});
+		expect(draft.inputs.every((i) => allow.has(`${i.txid}:${i.vout}`))).toBe(true);
+	});
+
+	it('rejects when the selected coins cannot cover amount plus fee', async () => {
+		const params = {
+			...COMMON,
+			recipients: [{ address: RECIPIENT, amount: 50_000 }],
+			feeRate: 5,
+			onlyUtxos: [COIN_40K] // the 40k coin cannot pay 50k + fee
+		};
+		await expect(constructPsbt(params)).rejects.toMatchObject({ code: 'insufficient_funds' });
+		await expect(constructPsbt(params)).rejects.toThrow(/selected coins don't cover/);
+	});
+
+	it('still refuses unconfirmed coins even when explicitly allowlisted', async () => {
+		const params = {
+			...COMMON,
+			recipients: [{ address: RECIPIENT, amount: 1_000 }],
+			feeRate: 5,
+			onlyUtxos: [COIN_UNCONFIRMED]
+		};
+		await expect(constructPsbt(params)).rejects.toMatchObject({ code: 'no_utxos' });
+		await expect(constructPsbt(params)).rejects.toThrow(/unconfirmed or already spent/);
+	});
+
+	it('send-max over an allowlist sweeps exactly the selected coins minus fee', async () => {
+		const draft = await constructPsbt({
+			...COMMON,
+			recipients: [{ address: RECIPIENT, amount: 'max' }],
+			feeRate: 5,
+			onlyUtxos: [COIN_40K]
+		});
+		expect(draft.inputs).toHaveLength(1);
+		expect(draft.inputs[0]).toMatchObject({ txid: COIN_40K.txid, vout: COIN_40K.vout });
+		expect(draft.amount).toBe(40_000 - draft.fee);
+		expect(draft.change).toBeNull();
+		const summary = summarizePsbt(draft.psbtBase64);
+		expect(summary.outputCount).toBe(1);
+		expect(summary.outputs[0]).toEqual({ address: RECIPIENT, value: draft.amount });
+	});
+
+	it('an empty allowlist means automatic selection over everything', async () => {
+		const draft = await constructPsbt({
+			...COMMON,
+			recipients: [{ address: RECIPIENT, amount: 70_000 }],
+			feeRate: 5,
+			onlyUtxos: []
+		});
+		// 70k needs both confirmed coins — an empty list must not restrict.
+		expect(draft.inputs).toHaveLength(2);
+	});
+});
+
+describe('batch sending (multiple recipients)', () => {
+	const RECIPIENT_2 = 'bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3';
+
+	it('pays every recipient plus change and conserves value', async () => {
+		const draft = await constructPsbt({
+			...COMMON,
+			recipients: [
+				{ address: RECIPIENT, amount: 20_000 },
+				{ address: RECIPIENT_2, amount: 30_000 }
+			],
+			feeRate: 10
+		});
+		expect(draft.amount).toBe(50_000); // total across recipients
+		expect(draft.recipient).toBe(RECIPIENT); // first recipient anchors display
+		expect(draft.recipients).toEqual([
+			{ address: RECIPIENT, amount: 20_000 },
+			{ address: RECIPIENT_2, amount: 30_000 }
+		]);
+		const totalIn = draft.inputs.reduce((s, u) => s + u.value, 0);
+		expect(totalIn).toBe(draft.amount + draft.fee + (draft.change?.value ?? 0));
+
+		const summary = summarizePsbt(draft.psbtBase64);
+		expect(summary.outputs).toContainEqual({ address: RECIPIENT, value: 20_000 });
+		expect(summary.outputs).toContainEqual({ address: RECIPIENT_2, value: 30_000 });
+		expect(summary.outputCount).toBe(draft.change ? 3 : 2);
+	});
+
+	it('remains signable and finalizable with several outputs', async () => {
+		const draft = await constructPsbt({
+			...COMMON,
+			recipients: [
+				{ address: RECIPIENT, amount: 20_000 },
+				{ address: RECIPIENT_2, amount: 30_000 }
+			],
+			feeRate: 10
+		});
+		const account = accountKey();
+		const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
+		for (let i = 0; i < tx.inputsLength; i++) {
+			const path = tx.getInput(i).bip32Derivation![0][1].path;
+			tx.signIdx(account.deriveChild(path[3]).deriveChild(path[4]).privateKey!, i);
+		}
+		const { txid } = finalizePsbt(base64.encode(tx.toPSBT()));
+		expect(txid).toMatch(/^[0-9a-f]{64}$/);
+	});
+
+	it('validates each recipient address and amount individually', async () => {
+		await expect(
+			constructPsbt({
+				...COMMON,
+				recipients: [
+					{ address: RECIPIENT, amount: 10_000 },
+					{ address: 'garbage', amount: 10_000 }
+				],
+				feeRate: 5
+			})
+		).rejects.toMatchObject({ code: 'invalid_recipient' });
+		await expect(
+			constructPsbt({
+				...COMMON,
+				recipients: [
+					{ address: RECIPIENT, amount: 10_000 },
+					{ address: RECIPIENT_2, amount: 0 }
+				],
+				feeRate: 5
+			})
+		).rejects.toMatchObject({ code: 'invalid_amount' });
+		await expect(
+			constructPsbt({ ...COMMON, recipients: [], feeRate: 5 })
+		).rejects.toMatchObject({ code: 'invalid_recipient' });
+	});
+
+	it('measures insufficient funds against the recipients total', async () => {
+		// 60k + 40k confirmed: each recipient alone is affordable, the SUM is not.
+		await expect(
+			constructPsbt({
+				...COMMON,
+				recipients: [
+					{ address: RECIPIENT, amount: 60_000 },
+					{ address: RECIPIENT_2, amount: 60_000 }
+				],
+				feeRate: 5
+			})
+		).rejects.toMatchObject({ code: 'insufficient_funds' });
+	});
+
+	it('rejects send-max combined with multiple recipients', async () => {
+		const params = {
+			...COMMON,
+			recipients: [
+				{ address: RECIPIENT, amount: 'max' as const },
+				{ address: RECIPIENT_2, amount: 10_000 }
+			],
+			feeRate: 5
+		};
+		await expect(constructPsbt(params)).rejects.toMatchObject({ code: 'invalid_amount' });
+		await expect(constructPsbt(params)).rejects.toThrow(/single recipient/);
 	});
 });
 
 describe('fee-rate ceiling', () => {
 	it('rejects fee rates above 1000 sat/vB as a probable mistake', async () => {
 		await expect(
-			constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 1_000, feeRate: 1001 })
+			constructPsbt({ ...COMMON, recipients: [{ address: RECIPIENT, amount: 1_000 }], feeRate: 1001 })
 		).rejects.toMatchObject({ code: 'invalid_amount' });
 		await expect(
-			constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 1_000, feeRate: 5_000 })
+			constructPsbt({ ...COMMON, recipients: [{ address: RECIPIENT, amount: 1_000 }], feeRate: 5_000 })
 		).rejects.toThrow(/1000 sat\/vB/);
 	});
 
@@ -191,8 +371,7 @@ describe('fee-rate ceiling', () => {
 		const draft = await constructPsbt({
 			...COMMON,
 			utxos: whale,
-			recipient: RECIPIENT,
-			amount: 30_000,
+			recipients: [{ address: RECIPIENT, amount: 30_000 }],
 			feeRate: 1000
 		});
 		expect(draft.amount).toBe(30_000);
@@ -204,7 +383,7 @@ describe('segwit nonWitnessUtxo (fee-lying protection)', () => {
 	const WITH_RAW = { ...COMMON, utxos: REAL_UTXOS, fetchRawTx };
 
 	it('attaches the full previous tx ALONGSIDE witnessUtxo on every input', async () => {
-		const draft = await constructPsbt({ ...WITH_RAW, recipient: RECIPIENT, amount: 70_000, feeRate: 10 });
+		const draft = await constructPsbt({ ...WITH_RAW, recipients: [{ address: RECIPIENT, amount: 70_000 }], feeRate: 10 });
 		const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
 		expect(tx.inputsLength).toBeGreaterThan(0);
 		for (let i = 0; i < tx.inputsLength; i++) {
@@ -215,7 +394,7 @@ describe('segwit nonWitnessUtxo (fee-lying protection)', () => {
 	});
 
 	it('does the same on the send-max sweep path', async () => {
-		const draft = await constructPsbt({ ...WITH_RAW, recipient: RECIPIENT, amount: 'max', feeRate: 5 });
+		const draft = await constructPsbt({ ...WITH_RAW, recipients: [{ address: RECIPIENT, amount: 'max' }], feeRate: 5 });
 		expect(draft.amount).toBe(100_000 - draft.fee);
 		const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
 		expect(tx.inputsLength).toBe(2);
@@ -226,12 +405,11 @@ describe('segwit nonWitnessUtxo (fee-lying protection)', () => {
 	});
 
 	it('does not change fee estimation relative to witnessUtxo-only', async () => {
-		const withRaw = await constructPsbt({ ...WITH_RAW, recipient: RECIPIENT, amount: 30_000, feeRate: 10 });
+		const withRaw = await constructPsbt({ ...WITH_RAW, recipients: [{ address: RECIPIENT, amount: 30_000 }], feeRate: 10 });
 		const withoutRaw = await constructPsbt({
 			...COMMON,
 			utxos: REAL_UTXOS,
-			recipient: RECIPIENT,
-			amount: 30_000,
+			recipients: [{ address: RECIPIENT, amount: 30_000 }],
 			feeRate: 10
 		});
 		expect(withRaw.fee).toBe(withoutRaw.fee);
@@ -239,7 +417,7 @@ describe('segwit nonWitnessUtxo (fee-lying protection)', () => {
 	});
 
 	it('remains signable and finalizable with both fields present', async () => {
-		const draft = await constructPsbt({ ...WITH_RAW, recipient: RECIPIENT, amount: 70_000, feeRate: 12 });
+		const draft = await constructPsbt({ ...WITH_RAW, recipients: [{ address: RECIPIENT, amount: 70_000 }], feeRate: 12 });
 		const account = accountKey();
 		const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
 		for (let i = 0; i < tx.inputsLength; i++) {
@@ -257,8 +435,7 @@ describe('segwit nonWitnessUtxo (fee-lying protection)', () => {
 			...COMMON,
 			utxos: [REAL_UTXOS[0]],
 			fetchRawTx: lying,
-			recipient: RECIPIENT,
-			amount: 10_000,
+			recipients: [{ address: RECIPIENT, amount: 10_000 }],
 			feeRate: 5
 		});
 		await expect(p).rejects.toMatchObject({ code: 'construction_failed' });
@@ -267,8 +444,7 @@ describe('segwit nonWitnessUtxo (fee-lying protection)', () => {
 				...COMMON,
 				utxos: [REAL_UTXOS[0]],
 				fetchRawTx: lying,
-				recipient: RECIPIENT,
-				amount: 10_000,
+				recipients: [{ address: RECIPIENT, amount: 10_000 }],
 				feeRate: 5
 			})
 		).rejects.toThrow(/wrong previous transaction/);
@@ -280,8 +456,7 @@ describe('segwit nonWitnessUtxo (fee-lying protection)', () => {
 				...COMMON,
 				utxos: [REAL_UTXOS[0]],
 				fetchRawTx: async () => 'deadbeef',
-				recipient: RECIPIENT,
-				amount: 10_000,
+				recipients: [{ address: RECIPIENT, amount: 10_000 }],
 				feeRate: 5
 			})
 		).rejects.toThrow(/could not be parsed/);
@@ -290,7 +465,7 @@ describe('segwit nonWitnessUtxo (fee-lying protection)', () => {
 	it('stays witnessUtxo-only when no raw-tx source is provided', async () => {
 		// constructPsbt must remain usable without a chain hookup (pure tests,
 		// offline preview) — segwit inputs then carry witnessUtxo alone.
-		const draft = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 30_000, feeRate: 10 });
+		const draft = await constructPsbt({ ...COMMON, recipients: [{ address: RECIPIENT, amount: 30_000 }], feeRate: 10 });
 		const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
 		for (let i = 0; i < tx.inputsLength; i++) {
 			expect(tx.getInput(i).nonWitnessUtxo).toBeUndefined();
@@ -305,8 +480,7 @@ describe('summarizePsbt coin transparency', () => {
 			...COMMON,
 			utxos: REAL_UTXOS,
 			fetchRawTx,
-			recipient: RECIPIENT,
-			amount: 70_000,
+			recipients: [{ address: RECIPIENT, amount: 70_000 }],
 			feeRate: 10
 		});
 		const summary = summarizePsbt(draft.psbtBase64);
@@ -330,7 +504,7 @@ describe('summarizePsbt coin transparency', () => {
 	});
 
 	it('identifies the change output by its bip32Derivation', async () => {
-		const draft = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 30_000, feeRate: 10 });
+		const draft = await constructPsbt({ ...COMMON, recipients: [{ address: RECIPIENT, amount: 30_000 }], feeRate: 10 });
 		expect(draft.change).not.toBeNull();
 		const summary = summarizePsbt(draft.psbtBase64);
 		expect(summary.change).not.toBeNull();
@@ -346,8 +520,7 @@ describe('summarizePsbt coin transparency', () => {
 		const draft = await constructPsbt({
 			...COMMON,
 			origin: null,
-			recipient: RECIPIENT,
-			amount: 30_000,
+			recipients: [{ address: RECIPIENT, amount: 30_000 }],
 			feeRate: 10
 		});
 		expect(draft.change).not.toBeNull(); // change exists…
@@ -355,14 +528,14 @@ describe('summarizePsbt coin transparency', () => {
 	});
 
 	it('returns null change on a changeless sweep', async () => {
-		const draft = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 'max', feeRate: 5 });
+		const draft = await constructPsbt({ ...COMMON, recipients: [{ address: RECIPIENT, amount: 'max' }], feeRate: 5 });
 		expect(summarizePsbt(draft.psbtBase64).change).toBeNull();
 	});
 });
 
 describe('assertSameTransaction (signer-substitution guard)', () => {
 	it('accepts a signed PSBT with identical inputs and outputs', async () => {
-		const draft = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 70_000, feeRate: 12 });
+		const draft = await constructPsbt({ ...COMMON, recipients: [{ address: RECIPIENT, amount: 70_000 }], feeRate: 12 });
 		const account = accountKey();
 		const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
 		for (let i = 0; i < tx.inputsLength; i++) {
@@ -376,19 +549,18 @@ describe('assertSameTransaction (signer-substitution guard)', () => {
 	});
 
 	it('rejects a PSBT that pays a different recipient (the substitution attack)', async () => {
-		const a = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 30_000, feeRate: 10 });
+		const a = await constructPsbt({ ...COMMON, recipients: [{ address: RECIPIENT, amount: 30_000 }], feeRate: 10 });
 		const b = await constructPsbt({
 			...COMMON,
-			recipient: 'bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3',
-			amount: 30_000,
+			recipients: [{ address: 'bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3', amount: 30_000 }],
 			feeRate: 10
 		});
 		expect(() => assertSameTransaction(a.psbtBase64, b.psbtBase64)).toThrow(PsbtMismatchError);
 	});
 
 	it('rejects a PSBT that changes the amount', async () => {
-		const a = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 30_000, feeRate: 10 });
-		const b = await constructPsbt({ ...COMMON, recipient: RECIPIENT, amount: 31_000, feeRate: 10 });
+		const a = await constructPsbt({ ...COMMON, recipients: [{ address: RECIPIENT, amount: 30_000 }], feeRate: 10 });
+		const b = await constructPsbt({ ...COMMON, recipients: [{ address: RECIPIENT, amount: 31_000 }], feeRate: 10 });
 		expect(() => assertSameTransaction(a.psbtBase64, b.psbtBase64)).toThrow(PsbtMismatchError);
 	});
 });
