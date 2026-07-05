@@ -247,7 +247,7 @@
 
 	<!-- Header -->
 	<div class="head row">
-		<div class="row grow" style="gap: 12px; min-width: 0">
+		<div class="row grow head-title" style="gap: 12px; min-width: 0">
 			<h1 class="page-title truncate">{data.wallet.name}</h1>
 			{#if data.wallet.deviceType && data.wallet.deviceType !== 'file'}
 				<span class="badge badge-neutral">{walletKind}</span>
@@ -903,6 +903,15 @@
 	.head {
 		gap: 14px;
 		flex-wrap: wrap;
+	}
+
+	/* On narrow viewports the title owns the first row outright — otherwise
+	   the shrinkable title group absorbs all the squeeze from its rigid
+	   button siblings and the wallet name collapses to nothing. */
+	@media (max-width: 640px) {
+		.head .head-title {
+			flex-basis: 100%;
+		}
 	}
 
 	.watch-note {
