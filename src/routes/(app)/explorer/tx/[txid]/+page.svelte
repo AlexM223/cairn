@@ -377,7 +377,7 @@
 									{truncateMiddle(vout.address, 12, 10)}
 								</a>
 							{:else}
-								<span class="text-muted">{outputLabel(vout.scriptType)}</span>
+								<span class="text-muted truncate">{outputLabel(vout.scriptType)}</span>
 							{/if}
 						</span>
 						<span class="io-end">
