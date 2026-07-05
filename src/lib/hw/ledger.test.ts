@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Transaction, p2wpkh, p2ms, p2wsh, NETWORK } from '@scure/btc-signer';
 import { base64 } from '@scure/base';
 import { HDKey } from '@scure/bip32';
@@ -420,6 +420,80 @@ describe('mergeMultisigSignatures', () => {
 		expect(() => mergeMultisigSignatures(tx, new Map([[7, SIG]]), pubkeys)).toThrow(
 			/nonexistent input/
 		);
+	});
+});
+
+// ---------------------------------------------------------- browser realism
+//
+// Regression guard for the P1 "Buffer is not defined" crash (bead cairn-ivq):
+// ledger.ts runs in the browser, where Node's Buffer global does not exist.
+// Vitest runs under Node — where Buffer is always present — which is exactly
+// how the bug shipped. These tests delete globalThis.Buffer, re-import the
+// module from scratch, and exercise the pure logic, so any future module-scope
+// or pure-path Buffer usage fails CI instead of production. (The device flows
+// install the `buffer` polyfill themselves before loading the vendor modules.)
+describe('without a Node Buffer global (browser environment)', () => {
+	async function withoutBuffer<T>(fn: () => Promise<T>): Promise<T> {
+		const g = globalThis as { Buffer?: unknown };
+		const saved = g.Buffer;
+		delete g.Buffer;
+		try {
+			return await fn();
+		} finally {
+			g.Buffer = saved;
+			vi.resetModules();
+		}
+	}
+
+	it('the module itself evaluates without Buffer', async () => {
+		await withoutBuffer(async () => {
+			vi.resetModules();
+			const mod = await import('./ledger');
+			expect(typeof mod.signPsbtWithLedger).toBe('function');
+			expect((globalThis as { Buffer?: unknown }).Buffer).toBeUndefined();
+		});
+	});
+
+	it('the pure functions work end-to-end without Buffer', async () => {
+		await withoutBuffer(async () => {
+			vi.resetModules();
+			const mod = await import('./ledger');
+
+			// PSBT → account origin (the vault key-import path that crashed).
+			const origin = mod.accountOriginFromPsbt(makePsbt());
+			expect(origin.template).toBe('wpkh(@0/**)');
+			expect(Array.from(mod.fingerprintToBuffer(origin.fingerprint))).toEqual([
+				0x1a, 0x2b, 0x3c, 0x4d
+			]);
+
+			// Signature merge-back with plain Uint8Array signatures.
+			const tx = Transaction.fromPSBT(base64.decode(makePsbt()));
+			const sig = new Uint8Array([0x30, 0x44, ...new Array(68).fill(0x11)]);
+			mod.mergeSignatures(tx, new Map([[0, sig]]));
+			expect(tx.getInput(0).partialSig![0][1]).toEqual(sig);
+
+			// Multisig policy construction + per-input key derivation + merge.
+			const policy = mod.buildMultisigPolicy({
+				policyName: 'Family multisig',
+				threshold: 2,
+				keys: MULTISIG_KEYS,
+				scriptType: 'p2wsh'
+			});
+			expect(policy.template).toBe('wsh(sortedmulti(2,@0/**,@1/**,@2/**))');
+			const mtx = Transaction.fromPSBT(base64.decode(makeMultisigPsbt()));
+			const pubkeys = mod.multisigDevicePubkeys(makeMultisigPsbt(), MULTISIG_KEYS[0]);
+			// A DER-ish signature with its sighash byte, as the app emits it.
+			const msig = new Uint8Array([
+				0x30, 0x44, 0x02, 0x20, ...new Array(32).fill(0x11), 0x02, 0x20,
+				...new Array(32).fill(0x22), 0x01
+			]);
+			mod.mergeMultisigSignatures(mtx, new Map([[0, msig]]), pubkeys);
+			expect(mtx.getInput(0).partialSig).toHaveLength(1);
+
+			// Error mapping is Buffer-free too.
+			expect(mod.toLedgerError({ statusCode: 0x6e01 }).code).toBe('app_not_open');
+			expect((globalThis as { Buffer?: unknown }).Buffer).toBeUndefined();
+		});
 	});
 });
 

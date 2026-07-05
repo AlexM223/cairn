@@ -198,6 +198,40 @@ export function toLedgerError(err: unknown): LedgerError {
 }
 
 /**
+ * Install the Node globals the Ledger stack needs before any @ledgerhq module
+ * is evaluated. The vendor chain is written against Node:
+ *
+ * - `Buffer` — hw-transport-webhid's HID framing, hw-app-btc's app client,
+ *   psbtv2 and bitcoinjs-lib all use the bare global (hid-framing even calls
+ *   Buffer.alloc at module scope, so merely importing the transport crashes a
+ *   browser without it). Installed from the `buffer` npm polyfill.
+ * - `process` — hw-app-btc pulls in bip32 → ripemd160 → hash-base →
+ *   readable-stream@2, whose _stream_writable reads `process.browser` and
+ *   `process.version` at module scope, and whose process-nextick-args calls
+ *   `process.nextTick` at runtime. A minimal browser-flavoured stub suffices.
+ *
+ * Loaded lazily alongside the vendor modules, so non-Ledger users never
+ * download the polyfill; under Node/Vitest (real globals) and on repeat calls
+ * this is a no-op. Must FINISH before the vendor imports start.
+ */
+async function ensureNodeGlobals(): Promise<void> {
+	const g = globalThis as { Buffer?: unknown; process?: unknown };
+	if (typeof g.Buffer === 'undefined') {
+		const { Buffer } = await import('buffer');
+		g.Buffer = Buffer;
+	}
+	if (typeof g.process === 'undefined') {
+		g.process = {
+			browser: true,
+			env: {},
+			version: '',
+			nextTick: (fn: (...a: unknown[]) => void, ...args: unknown[]) =>
+				queueMicrotask(() => fn(...args))
+		};
+	}
+}
+
+/**
  * Sign a single-sig PSBT with a connected Ledger over WebHID and return the
  * signed PSBT as base64.
  *
@@ -241,6 +275,8 @@ export async function signPsbtWithLedger(unsignedPsbtBase64: string): Promise<st
 
 	// Lazy, browser-only imports. Kept inside the function so nothing Ledger- or
 	// WebHID-related is evaluated during SSR or for users who never click Connect.
+	// The Node globals (Buffer, process) must exist before these modules evaluate.
+	await ensureNodeGlobals();
 	const [transportMod, appClientMod, policyMod, psbtMod] = await Promise.all([
 		import('@ledgerhq/hw-transport-webhid'),
 		import('@ledgerhq/hw-app-btc/lib/newops/appClient'),
@@ -335,9 +371,12 @@ export async function signPsbtWithLedger(unsignedPsbtBase64: string): Promise<st
  * signature (tapKeySig, no pubkey pairing). Keyed by the device-reported index,
  * so an out-of-order or partial result still lands on the right input.
  *
+ * Typed against Uint8Array (which the device's Buffers satisfy), never Buffer:
+ * this pure logic must run — and be testable — without any Node Buffer global.
+ *
  * Exported for unit testing.
  */
-export function mergeSignatures(tx: Transaction, sigs: Map<number, Buffer>): void {
+export function mergeSignatures(tx: Transaction, sigs: Map<number, Uint8Array>): void {
 	sigs.forEach((sig, index) => {
 		const sigBytes = toU8(sig);
 		const input = tx.getInput(index);
@@ -361,11 +400,13 @@ export function mergeSignatures(tx: Transaction, sigs: Map<number, Buffer>): voi
 	});
 }
 
-/** Normalize a Buffer / Uint8Array / hex string to a plain Uint8Array. */
-function toU8(v: Uint8Array | Buffer | string): Uint8Array {
+/** Normalize a Uint8Array (incl. any Buffer subclass) / hex string to a plain
+ *  Uint8Array. */
+function toU8(v: Uint8Array | string): Uint8Array {
 	if (typeof v === 'string') return hexToBytes(v);
-	// Buffer IS a Uint8Array; copy into a plain one so btc-signer's coders see the
-	// exact byte view they expect regardless of the source's ArrayBuffer backing.
+	// A Buffer IS a Uint8Array; copy into a plain one so btc-signer's coders see
+	// the exact byte view they expect regardless of the source's ArrayBuffer
+	// backing.
 	return Uint8Array.from(v);
 }
 
@@ -691,7 +732,7 @@ export function multisigDevicePubkeys(unsignedPsbtBase64: string, key: MultisigS
  */
 export function mergeMultisigSignatures(
 	tx: Transaction,
-	sigs: Map<number, Buffer>,
+	sigs: Map<number, Uint8Array>,
 	devicePubkeys: Uint8Array[]
 ): void {
 	if (devicePubkeys.length !== tx.inputsLength) {
@@ -870,6 +911,8 @@ export async function registerMultisigPolicy(
 	// Build (and validate) the policy before touching the device.
 	const policy = buildMultisigPolicy(params);
 
+	// The Node globals (Buffer, process) must exist before the vendor modules evaluate.
+	await ensureNodeGlobals();
 	const [transportMod, appClientMod, deps] = await Promise.all([
 		import('@ledgerhq/hw-transport-webhid'),
 		import('@ledgerhq/hw-app-btc/lib/newops/appClient'),
@@ -972,6 +1015,9 @@ export async function signMultisigPsbtWithLedger(
 			'unavailable'
 		);
 	}
+	// The Node globals (Buffer, process) must exist before the vendor modules evaluate below —
+	// and before the polyfilled Buffer.from call right here.
+	await ensureNodeGlobals();
 	let hmac: Buffer;
 	try {
 		hmac = Buffer.from(hexToBytes(params.policyHmac.trim()));
@@ -1112,6 +1158,8 @@ export async function readMultisigKeyFromLedger(
 	const path = multisigAccountPath(scriptType, account);
 	const pathElements = parseMultisigKeyPath(path, 'multisig account path');
 
+	// The Node globals (Buffer, process) must exist before the vendor modules evaluate.
+	await ensureNodeGlobals();
 	const [transportMod, appClientMod] = await Promise.all([
 		import('@ledgerhq/hw-transport-webhid'),
 		import('@ledgerhq/hw-app-btc/lib/newops/appClient')
