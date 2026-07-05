@@ -106,7 +106,7 @@
 				spend only those.
 			</p>
 			{#if massLoading}
-				<p class="hint mass-loading" role="status">
+				<p class="hint mass-loading" role="status" aria-live="polite">
 					<span class="spinner"></span> Checking where these coins came from…
 				</p>
 			{:else if anyHighMass}

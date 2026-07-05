@@ -260,7 +260,20 @@
 			return Number(r.amountBtc) > 0 && Number.isFinite(Number(r.amountBtc));
 		})
 	);
-	const canBuild = $derived(rowsValid && feeRate >= 1);
+
+	// Inline amount validation — the same treatment the address field gets: a
+	// non-empty invalid amount explains itself right under the input instead of
+	// silently disabling the Review button. Client-side pre-check only; the
+	// server stays authoritative (and its errors surface via buildError without
+	// touching what the user typed).
+	function amountError(r: RecipientRow): string | null {
+		if (isMax || r.amountBtc.trim().length === 0) return null;
+		const n = Number(r.amountBtc);
+		if (!Number.isFinite(n) || n <= 0) return 'Amount must be a positive number.';
+		if (data.confirmed != null && Math.round(n * SATS_PER_BTC) > data.confirmed)
+			return "That's more than this wallet holds.";
+		return null;
+	}
 
 	// Running total across rows — shown on batch sends so the sum is visible
 	// before Review.
@@ -270,6 +283,15 @@
 			return s + (n > 0 && Number.isFinite(n) ? Math.round(n * SATS_PER_BTC) : 0);
 		}, 0)
 	);
+
+	// The send as a whole can't exceed the confirmed balance either (a batch's
+	// rows may each pass alone but overshoot together). Fee-exclusive on
+	// purpose — the server's coin selection has the final word; this only
+	// catches the obviously-impossible case before a build is attempted.
+	const exceedsBalance = $derived(
+		!isMax && data.confirmed != null && createTotalSats > data.confirmed
+	);
+	const canBuild = $derived(rowsValid && feeRate >= 1 && !exceedsBalance);
 
 	let building = $state(false);
 	let buildError = $state<string | null>(null);
@@ -811,10 +833,13 @@
 										placeholder="0.00000000"
 										bind:value={row.amountBtc}
 										aria-labelledby={`amount-label-${row.key}`}
+										aria-invalid={amountError(row) !== null}
 									/>
 									<span class="unit">BTC</span>
 								</div>
-								{#if Number(row.amountBtc) > 0}
+								{#if amountError(row)}
+									<p class="hint" style="color: var(--warning)">{amountError(row)}</p>
+								{:else if Number(row.amountBtc) > 0}
 									<p class="hint tabular">
 										{formatSats(Math.round(Number(row.amountBtc) * SATS_PER_BTC))} sats
 									</p>
@@ -839,6 +864,13 @@
 						</span>
 					{/if}
 				</div>
+				{#if rows.length > 1 && exceedsBalance && rows.every((r) => amountError(r) === null)}
+					<!-- Each amount passes alone but the batch overshoots together — say so
+					     once, by the total, instead of leaving the button silently disabled. -->
+					<p class="hint" style="color: var(--warning)">
+						Together these amounts are more than this wallet holds.
+					</p>
+				{/if}
 
 				<div class="field">
 					<span class="label">Fee rate</span>
@@ -1033,6 +1065,7 @@
 				<div
 					class="mass-panel {massLevel}"
 					role={massLevel === 'red' ? 'alert' : 'status'}
+					aria-live={massLevel === 'red' ? 'assertive' : 'polite'}
 				>
 					<Icon name={massLevel === 'info' ? 'clock' : 'alert-triangle'} size={16} />
 					<div class="mass-body">
@@ -1091,7 +1124,7 @@
 			</div>
 
 			{#if deviceJustSaved && deviceJustSaved !== 'file'}
-				<p class="device-saved-note" role="status">
+				<p class="device-saved-note" role="status" aria-live="polite">
 					<Icon name="check" size={13} />
 					Saved — future sends from this wallet will go straight to your
 					{WALLET_DEVICE_LABELS[deviceJustSaved]}.
@@ -1221,7 +1254,10 @@
 			     own device errors, but the substitution-guard verdict lives here. -->
 			{#if activeMethod !== null && activeMethod !== 'file'}
 				{#if attaching}
-					<div class="attach-status" role="status">
+					<!-- role="status" implies polite announcements, but the pairing is
+					     honored inconsistently across AT — the explicit aria-live makes
+					     sure the signature-progress update is actually spoken. -->
+					<div class="attach-status" role="status" aria-live="polite">
 						<span class="spinner"></span> Checking signatures against the transaction you reviewed…
 					</div>
 				{:else if signError}
@@ -1401,7 +1437,7 @@
 					{/if}
 				</div>
 			{:else if addressJustSaved}
-				<p class="hint saved-note" role="status">
+				<p class="hint saved-note" role="status" aria-live="polite">
 					<Icon name="check" size={13} /> Saved to your address book.
 				</p>
 			{/if}

@@ -91,7 +91,7 @@
 			<Icon name="shield" size={15} /> Connect Trezor
 		</button>
 	{:else if done}
-		<div class="signed-ok" role="status">
+		<div class="signed-ok" role="status" aria-live="polite">
 			<span class="ok-icon"><Icon name="check" size={18} /></span>
 			<div>
 				<p class="ok-title">Signed on your Trezor</p>
