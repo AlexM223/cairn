@@ -123,7 +123,22 @@ function mnemonicCosigner(): Cosigner {
 const expand = (tpl: string, branch: '0' | '1') => tpl.replaceAll('<0;1>', branch);
 const withChecksum = async (d: string) => `${d}#${(await rpc('getdescriptorinfo', [d])).checksum}`;
 
-describe.runIf(RUN)('vault 2-of-3 regtest E2E through Cairn multisig code (cairn-a4k)', () => {
+// cairn-3urk: this suite GENUINELY requires a live regtest stack, so it stays
+// gated — but the skip must be LOUD, not a silent trap door. When the gate is
+// closed, vitest reports the suite as skipped AND the warning below says
+// exactly how to run it. It executes only with:
+//   VAULT_E2E=1 npx vitest run src/lib/server/bitcoin/vaultRegtestE2E.test.ts
+// (bitcoind regtest on :18543 + funded miner wallet per scripts/vault-e2e/README.md)
+if (!RUN) {
+	// process.stderr directly: vitest swallows console.* emitted during test
+	// collection, and a silent skip is exactly the trap door this guards against.
+	process.stderr.write(
+		'\n[vaultRegtestE2E] SKIPPED: vault 2-of-3 regtest E2E (cairn-a4k) needs a live regtest stack. ' +
+			'Run with VAULT_E2E=1 and bitcoind regtest on :18543 — see scripts/vault-e2e/README.md.\n\n'
+	);
+}
+
+describe.skipIf(!RUN)('vault 2-of-3 regtest E2E through Cairn multisig code (cairn-a4k)', () => {
 	beforeAll(() => {
 		db.exec('DELETE FROM multisig_keys; DELETE FROM multisigs; DELETE FROM users; DELETE FROM settings;');
 		setSetting('registration_mode', 'open');

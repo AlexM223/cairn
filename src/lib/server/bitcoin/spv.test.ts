@@ -163,4 +163,32 @@ describe('verifyTxInclusion', () => {
 			reason: 'insufficient_pow'
 		});
 	});
+
+	// cairn-qowa: 'bad_header' and 'bad_proof' were the two of the six verdict
+	// branches with no test — a malformed header or branch from a hostile/buggy
+	// Electrum server must produce its own reason code, never a crash and never
+	// a pass. Every InclusionResult reason is now pinned.
+	it("rejects a header that isn't 80 bytes with reason 'bad_header'", () => {
+		expect(verifyTxInclusion({ ...good, headerHex: '00'.repeat(79) })).toMatchObject({
+			ok: false,
+			reason: 'bad_header'
+		});
+		// Garbage that isn't even hex is the same verdict, not a throw.
+		expect(verifyTxInclusion({ ...good, headerHex: 'not-hex-at-all' })).toMatchObject({
+			ok: false,
+			reason: 'bad_header'
+		});
+	});
+
+	it("rejects an unusable merkle branch with reason 'bad_proof'", () => {
+		// A negative position can never index a merkle tree — the proof itself is
+		// malformed, distinct from a well-formed proof that mismatches the root.
+		expect(
+			verifyTxInclusion({ ...good, proof: { merkle: [], pos: -1 } })
+		).toMatchObject({ ok: false, reason: 'bad_proof' });
+		// Non-hex sibling hashes are equally unusable.
+		expect(
+			verifyTxInclusion({ ...good, proof: { merkle: ['zz'.repeat(32)], pos: 0 } })
+		).toMatchObject({ ok: false, reason: 'bad_proof' });
+	});
 });

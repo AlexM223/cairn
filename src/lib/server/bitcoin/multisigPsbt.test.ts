@@ -677,6 +677,64 @@ describe('combineMultisigPsbts', () => {
 	});
 });
 
+// ── PSBT-substitution guard on the multisig combine path (cairn-sera) ────────
+//
+// Pins the cairn-973 fix (assertSameTransaction wired into combineMultisigPsbts):
+// a co-signer — or a compromised coordinator between two co-signers — must not
+// be able to swap in a signed PSBT for a DIFFERENT transaction built from the
+// same coins. psbt.test.ts covers the single-sig guard; this is the multisig
+// combine path, where the substituted PSBT arrives carrying a real cosigner
+// signature and would otherwise be merged toward quorum and broadcast.
+
+describe('multisig PSBT substitution guard (cairn-sera)', () => {
+	const OTHER_RECIPIENT = DEST_P2WSH;
+
+	it('rejects combining draft A with a co-signed PSBT that pays a DIFFERENT RECIPIENT from the same coins', async () => {
+		// Same UTXO set, same amount and fee — only the destination differs.
+		const a = await build2of3({ recipients: [{ address: RECIPIENT, amount: 50_000 }] });
+		const b = await build2of3({ recipients: [{ address: OTHER_RECIPIENT, amount: 50_000 }] });
+		expect(a.inputs).toEqual(b.inputs); // the substitution is input-identical
+
+		const signedB = signWith(b.psbtBase64, SIGNERS[0]);
+		expect(() => combineMultisigPsbts(a.psbtBase64, signedB)).toThrow(MultisigPsbtError);
+		try {
+			combineMultisigPsbts(a.psbtBase64, signedB);
+			expect.unreachable();
+		} catch (e) {
+			expect((e as MultisigPsbtError).code).toBe('different_transaction');
+			expect((e as MultisigPsbtError).message).toMatch(/different outputs/);
+		}
+	});
+
+	it('rejects combining draft A with a co-signed PSBT that pays a DIFFERENT AMOUNT to the same recipient', async () => {
+		const a = await build2of3({ recipients: [{ address: RECIPIENT, amount: 50_000 }] });
+		const b = await build2of3({ recipients: [{ address: RECIPIENT, amount: 150_000 }] });
+
+		const signedB = signWith(b.psbtBase64, SIGNERS[1]);
+		try {
+			combineMultisigPsbts(a.psbtBase64, signedB);
+			expect.unreachable();
+		} catch (e) {
+			expect(e).toBeInstanceOf(MultisigPsbtError);
+			expect((e as MultisigPsbtError).code).toBe('different_transaction');
+		}
+	});
+
+	it('does NOT trip on a properly co-signed copy of the SAME draft (signatures only)', async () => {
+		const draft = await build2of3({ recipients: [{ address: RECIPIENT, amount: 50_000 }] });
+		// Two cosigners sign the identical transaction independently — combining
+		// each back into the draft must succeed and reach quorum.
+		const signedA = signWith(draft.psbtBase64, SIGNERS[0]);
+		const signedB = signWith(draft.psbtBase64, SIGNERS[1]);
+		let combined!: string;
+		expect(() => {
+			combined = combineMultisigPsbts(draft.psbtBase64, signedA);
+			combined = combineMultisigPsbts(combined, signedB);
+		}).not.toThrow();
+		expect(multisigPsbtProgress(combined, 2)).toMatchObject({ collected: 2, complete: true });
+	});
+});
+
 // ── quorum matrix ────────────────────────────────────────────────────────────
 
 describe('quorum enforcement (3-of-5 p2wsh)', () => {
@@ -850,21 +908,15 @@ describe('quorum boundary: N-of-N (unanimous)', () => {
 });
 
 // ── wrapped-segwit and legacy script types ──────────────────────────────────
-// These run only once multisig.ts's script-type extension has landed (it is
-// being added concurrently). The probe checks whether deriveMultisigAddress
-// actually honors the requested wrapping.
+// cairn-3urk: these used to be gated behind describe.runIf(scriptTypeReady(...)),
+// a probe for multisig.ts's then-concurrent script-type extension. That support
+// has landed, so the precondition is always satisfiable — but the runIf gate
+// meant a future regression that made deriveMultisigAddress THROW for p2sh /
+// p2sh-p2wsh would silently flip these suites to "skipped" instead of failing.
+// They now run unconditionally so any wrapped-segwit/legacy regression fails
+// loudly.
 
-function scriptTypeReady(scriptType: MultisigScriptType): boolean {
-	try {
-		const cfg = config(2, 3, scriptType);
-		const { address } = deriveMultisigAddress(cfg, 0, 0);
-		return scriptType === 'p2wsh' ? address.startsWith('bc1q') : address.startsWith('3');
-	} catch {
-		return false;
-	}
-}
-
-describe.runIf(scriptTypeReady('p2sh-p2wsh'))('p2sh-p2wsh multisigs', () => {
+describe('p2sh-p2wsh multisigs', () => {
 	const CFG = config(2, 3, 'p2sh-p2wsh');
 
 	it('attaches redeemScript + witnessScript, signs, and finalizes', async () => {
@@ -890,7 +942,7 @@ describe.runIf(scriptTypeReady('p2sh-p2wsh'))('p2sh-p2wsh multisigs', () => {
 	});
 });
 
-describe.runIf(scriptTypeReady('p2sh'))('legacy p2sh multisigs', () => {
+describe('legacy p2sh multisigs', () => {
 	const CFG = config(2, 3, 'p2sh');
 
 	it('requires nonWitnessUtxo (fetchRawTx), signs, and finalizes', async () => {

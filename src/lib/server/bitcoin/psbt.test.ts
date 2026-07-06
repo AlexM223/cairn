@@ -3,8 +3,8 @@ import { HDKey } from '@scure/bip32';
 import { base64, base58check } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
-import { Transaction, NETWORK, Address, OutScript } from '@scure/btc-signer';
-import { addressToScriptPubKey } from './xpub';
+import { Transaction, NETWORK, Address, OutScript, p2wpkh } from '@scure/btc-signer';
+import { addressToScriptPubKey, parseXpub, deriveAddress } from './xpub';
 import {
 	constructPsbt,
 	summarizePsbt,
@@ -773,6 +773,144 @@ describe('summarizePsbt coin transparency', () => {
 	it('returns null change on a changeless sweep', async () => {
 		const draft = await constructPsbt({ ...COMMON, recipients: [{ address: RECIPIENT, amount: 'max' }], feeRate: 5 });
 		expect(summarizePsbt(draft.psbtBase64).change).toBeNull();
+	});
+});
+
+// ── legacy inputs as the SPENDING SOURCE (cairn-degh) ────────────────────────
+//
+// The destination-type matrix above pays TO p2pkh / p2sh addresses; these tests
+// spend FROM them. A p2pkh input must carry the full previous transaction
+// (nonWitnessUtxo — legacy sighash hashes it), and a p2sh-p2wpkh input must
+// carry the OP_0 PUSH20 redeemScript (without it no signer can satisfy the
+// script-hash). Both were previously untested as spending sources.
+
+describe('legacy spending sources (cairn-degh)', () => {
+	// Deterministic test master (never a real wallet). SLIP-132 re-encoding of
+	// the account key selects constructPsbt's script type, exactly as a user
+	// importing an xpub vs a ypub would.
+	const MASTER = HDKey.fromMasterSeed(new Uint8Array(32).fill(0x51));
+	const MASTER_FP = (MASTER.fingerprint >>> 0).toString(16).padStart(8, '0');
+
+	function slip132Pub(hdXpub: string, version: number): string {
+		const b58 = base58check(sha256);
+		const raw = b58.decode(hdXpub);
+		raw[0] = (version >>> 24) & 0xff;
+		raw[1] = (version >>> 16) & 0xff;
+		raw[2] = (version >>> 8) & 0xff;
+		raw[3] = version & 0xff;
+		return b58.encode(raw);
+	}
+
+	/** Account fixture for one script type: keys, addresses, a REAL funding tx. */
+	function account(originPath: string, version: number | null) {
+		const acct = MASTER.derive(originPath);
+		const pub = version === null ? acct.publicExtendedKey : slip132Pub(acct.publicExtendedKey, version);
+		const parsed = parseXpub(pub);
+		const receive = deriveAddress(parsed, 0, 0).address;
+		const change = deriveAddress(parsed, 1, 0).address;
+		const fund = fundingTx([{ address: receive, value: 60_000 }]);
+		const utxo: SpendableUtxo = {
+			txid: fund.txid, vout: 0, value: 60_000, height: 800_000, address: receive, chain: 0, index: 0
+		};
+		const params = {
+			xpub: pub,
+			utxos: [utxo],
+			changeAddress: change,
+			changeIndex: 0,
+			origin: { fingerprint: MASTER_FP, path: originPath },
+			recipients: [{ address: RECIPIENT, amount: 30_000 }],
+			feeRate: 10,
+			fetchRawTx: async (txid: string) => {
+				if (txid === fund.txid) return fund.hex;
+				throw new Error(`no such tx ${txid}`);
+			}
+		};
+		return { acct, parsed, fund, params };
+	}
+
+	function signAll(psbtBase64: string, acct: HDKey): string {
+		const tx = Transaction.fromPSBT(base64.decode(psbtBase64));
+		for (let i = 0; i < tx.inputsLength; i++) {
+			const path = tx.getInput(i).bip32Derivation![0][1].path;
+			tx.signIdx(acct.deriveChild(path[3]).deriveChild(path[4]).privateKey!, i);
+		}
+		return base64.encode(tx.toPSBT());
+	}
+
+	describe('spending FROM p2pkh (BIP44 xpub)', () => {
+		const P2PKH = () => account("m/44'/0'/0'", null);
+
+		it('attaches nonWitnessUtxo (and no witness fields) to the legacy input', async () => {
+			const { params } = P2PKH();
+			const draft = await constructPsbt(params);
+			const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
+			expect(tx.inputsLength).toBe(1);
+			const inp = tx.getInput(0);
+			expect(inp.nonWitnessUtxo, 'legacy input carries the full previous tx').toBeDefined();
+			expect(inp.witnessUtxo).toBeUndefined();
+			expect(inp.redeemScript).toBeUndefined();
+			// The embedded prev tx really is the funding tx (btc-signer verified its
+			// hash against the input txid on addInput; double-check the output too).
+			expect(Number(inp.nonWitnessUtxo!.outputs[0].amount)).toBe(60_000);
+		});
+
+		it('refuses to build a p2pkh spend without a raw-tx source', async () => {
+			const { params } = P2PKH();
+			await expect(
+				constructPsbt({ ...params, fetchRawTx: undefined })
+			).rejects.toMatchObject({ code: 'construction_failed' });
+			await expect(
+				constructPsbt({ ...params, fetchRawTx: undefined })
+			).rejects.toThrow(/raw previous transactions/);
+		});
+
+		it('remains signable and finalizable', async () => {
+			const { params, acct } = P2PKH();
+			const draft = await constructPsbt(params);
+			const { txid } = finalizePsbt(signAll(draft.psbtBase64, acct));
+			expect(txid).toMatch(/^[0-9a-f]{64}$/);
+		});
+	});
+
+	describe('spending FROM p2sh-p2wpkh (BIP49 ypub)', () => {
+		const YPUB_VERSION = 0x049d7cb2;
+		const P2SH_P2WPKH = () => account("m/49'/0'/0'", YPUB_VERSION);
+
+		it('attaches the OP_0 PUSH20 redeemScript alongside witnessUtxo', async () => {
+			const { params, parsed } = P2SH_P2WPKH();
+			expect(parsed.scriptType).toBe('p2sh-p2wpkh'); // the ypub selected the wrapper
+			// No fetchRawTx here: the wrapped-segwit input must stand on
+			// witnessUtxo + redeemScript alone.
+			const draft = await constructPsbt({ ...params, fetchRawTx: undefined });
+			const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
+			expect(tx.inputsLength).toBe(1);
+			const inp = tx.getInput(0);
+			expect(inp.witnessUtxo).toBeDefined();
+			expect(inp.redeemScript, 'wrapped-segwit input carries its redeemScript').toBeDefined();
+			// Byte-exact: the redeemScript IS the wrapped v0 keyhash program of the
+			// derived child key (OP_0 PUSH20 <hash160(pubkey)>).
+			const child = parsed.hdkey.deriveChild(0).deriveChild(0);
+			expect(bytesToHex(inp.redeemScript!)).toBe(bytesToHex(p2wpkh(child.publicKey!, NETWORK).script));
+			expect(inp.redeemScript![0]).toBe(0x00);
+			expect(inp.redeemScript![1]).toBe(0x14);
+			expect(inp.redeemScript!).toHaveLength(22);
+		});
+
+		it('also carries nonWitnessUtxo when a raw-tx source is available (fee-lying protection)', async () => {
+			const { params } = P2SH_P2WPKH();
+			const draft = await constructPsbt(params);
+			const inp = Transaction.fromPSBT(base64.decode(draft.psbtBase64)).getInput(0);
+			expect(inp.witnessUtxo).toBeDefined();
+			expect(inp.redeemScript).toBeDefined();
+			expect(inp.nonWitnessUtxo).toBeDefined();
+		});
+
+		it('remains signable and finalizable', async () => {
+			const { params, acct } = P2SH_P2WPKH();
+			const draft = await constructPsbt(params);
+			const { txid } = finalizePsbt(signAll(draft.psbtBase64, acct));
+			expect(txid).toMatch(/^[0-9a-f]{64}$/);
+		});
 	});
 });
 
