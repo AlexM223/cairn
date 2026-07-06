@@ -23,7 +23,7 @@
 	import TrezorSigner from '$lib/components/signing/TrezorSigner.svelte';
 	import LedgerSigner from '$lib/components/signing/LedgerSigner.svelte';
 	import BitboxSigner from '$lib/components/signing/BitboxSigner.svelte';
-	import MultisigJadeUsbSigner from './_components/MultisigJadeUsbSigner.svelte';
+	import JadeUsbSigner from '$lib/components/signing/JadeUsbSigner.svelte';
 	import CoinControl from '../../../[id]/send/_components/CoinControl.svelte';
 	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
 
@@ -1303,19 +1303,18 @@
 							onusefile={overrideToFile}
 						/>
 					{:else if effectiveDevice === 'jade'}
-						<MultisigJadeUsbSigner
+						<JadeUsbSigner
 							unsignedPsbt={draft.psbt}
-							keyName={activeKey.name}
-							ourKeyIndex={activeKeyIndex}
-							multisigName={data.multisig.name}
-							threshold={required}
-							totalKeys={keys.length}
-							scriptType={data.multisig.scriptType}
-							multisigKeys={signKeys}
-							destinationAddress={signerContext.destinationAddress}
-							amountSats={signerContext.amountSats}
-							feeSats={signerContext.feeSats}
-							changeSats={signerContext.changeSats}
+							context={signerContext}
+							multisig={{
+								keyName: activeKey.name,
+								ourKeyIndex: activeKeyIndex,
+								multisigName: data.multisig.name,
+								threshold: required,
+								totalKeys: keys.length,
+								scriptType: data.multisig.scriptType,
+								keys: signKeys
+							}}
 							onsigned={handleSigned}
 							onusefile={overrideToFile}
 						/>

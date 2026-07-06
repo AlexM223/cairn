@@ -14,34 +14,21 @@
 		type MultisigSignKey
 	} from '$lib/hw/jade';
 
-	// Live USB multisig signing for one multisig key. A multisig-local sibling of the
-	// wallets flow's JadeUsbSigner (same connect → verify-on-device → sign idiom),
-	// with the Jade-specific multisig prerequisite handled inline: Jade refuses to
-	// co-sign a multisig it has not REGISTERED — a one-time on-device review of the
-	// wallet's name, quorum and every cosigner key. Jade stores that registration
-	// itself (there is no Cairn-side record to keep, unlike Ledger's HMAC), and
-	// re-registering the same descriptor is idempotent, so this signer registers
-	// then signs each time; a device that already knows the wallet simply
-	// re-confirms and moves on. Jade speaks raw PSBT BYTES, so we base64-decode the
-	// PSBT before signing and re-encode the signed bytes for the parent's attach path.
-	let {
-		unsignedPsbt,
-		keyName,
-		ourKeyIndex,
-		multisigName,
-		threshold,
-		totalKeys,
-		scriptType,
-		multisigKeys,
-		destinationAddress,
-		amountSats,
-		feeSats,
-		changeSats = 0,
-		onsigned,
-		onusefile
-	}: {
-		/** The CURRENT combined PSBT (other cosigners' signatures included). */
-		unsignedPsbt: string;
+	// Live USB Jade signing for BOTH send flows — the single component the
+	// 2026-07-06 architecture review asked for instead of the former
+	// JadeUsbSigner / MultisigJadeUsbSigner fork. The connect → verify-on-device
+	// → sign idiom is identical for both wallet types; passing `multisig` selects
+	// the multisig flow, whose one prerequisite is Jade-specific: Jade refuses to
+	// co-sign a multisig it has not REGISTERED — a one-time on-device review of
+	// the wallet's name, quorum and every cosigner key. Jade stores that
+	// registration itself (there is no Cairn-side record to keep, unlike Ledger's
+	// HMAC), and re-registering the same descriptor is idempotent, so the
+	// multisig flow registers then signs each time; a device that already knows
+	// the wallet simply re-confirms and moves on. Jade speaks raw PSBT BYTES, so
+	// we base64-decode the PSBT before signing and re-encode the signed bytes for
+	// the parent's attach path.
+
+	interface MultisigContext {
 		/** Which multisig key this signature is being collected from. */
 		keyName: string;
 		/** Index of THIS key in the roster — used to verify the right Jade is plugged in. */
@@ -51,21 +38,47 @@
 		totalKeys: number;
 		scriptType: MultisigScriptType;
 		/** The multisig's full cosigner roster, in position order. */
-		multisigKeys: MultisigSignKey[];
-		destinationAddress: string;
-		amountSats: number;
-		feeSats: number;
-		changeSats?: number;
+		keys: MultisigSignKey[];
+	}
+
+	let {
+		unsignedPsbt,
+		context,
+		multisig,
+		onsigned,
+		oncancel,
+		onusefile
+	}: {
+		/** Unsigned tx, base64 PSBT. For a multisig this is the CURRENT combined
+		 *  PSBT (other cosigners' signatures included). */
+		unsignedPsbt: string;
+		/** What the user must verify on-device (SignerContext-compatible). */
+		context: {
+			destinationAddress: string;
+			amountSats: number;
+			feeSats: number;
+			changeSats: number;
+		};
+		/** Present → sign as one key of this multisig; absent → single-sig. */
+		multisig?: MultisigContext;
 		onsigned: (signedPsbtBase64: string) => void;
-		/** Route this key through the generic file method instead. */
+		/** Optional: surfaced when the user backs out (single-sig flow). */
+		oncancel?: () => void;
+		/** Optional: route this key through the generic file method instead
+		 *  (multisig flow). */
 		onusefile?: () => void;
 	} = $props();
 
 	// Web Serial must only be probed in the browser: navigator.serial does not
-	// exist during SSR. Start pessimistic and re-check after mount.
+	// exist during SSR. We start pessimistic (unavailable) and re-check after
+	// mount, so the server-rendered markup is the safe disabled state and never
+	// touches navigator. `mounted` gates the whole interactive UI on hydration.
 	let mounted = $state(false);
 	let available = $state(false);
 
+	// idle → (registering →) signing → done. Errors live alongside (not a state)
+	// so a failed attempt can show the retry button on the still-visible connect
+	// card. Only the multisig flow visits registering.
 	type Phase = 'idle' | 'registering' | 'signing';
 	let phase = $state<Phase>('idle');
 	let done = $state(false);
@@ -94,6 +107,8 @@
 	}
 
 	function fail(err: unknown) {
+		// signPsbtWithJade throws typed, plain-language JadeErrors; a base64
+		// decode failure (malformed PSBT) is unexpected but still surfaced.
 		if (err instanceof JadeError) {
 			error = err.message;
 			wrongDevice = err.code === 'wrong_device';
@@ -106,18 +121,20 @@
 		error = null;
 		wrongDevice = false;
 		try {
-			// One-time on-device registration first — idempotent, so it's safe to run
-			// every time; a Jade that already knows this wallet just re-confirms.
-			phase = 'registering';
-			await registerMultisigWithJade({
-				name: multisigName,
-				threshold,
-				keys: multisigKeys,
-				scriptType,
-				// Verify the connected Jade is actually this key before registering/signing,
-				// so a wrong device gets the early, clear wrong_device error (cairn-86n5).
-				expectedKey: multisigKeys[ourKeyIndex]
-			});
+			if (multisig) {
+				// One-time on-device registration first — idempotent, so it's safe to run
+				// every time; a Jade that already knows this wallet just re-confirms.
+				phase = 'registering';
+				await registerMultisigWithJade({
+					name: multisig.multisigName,
+					threshold: multisig.threshold,
+					keys: multisig.keys,
+					scriptType: multisig.scriptType,
+					// Verify the connected Jade is actually this key before registering/signing,
+					// so a wrong device gets the early, clear wrong_device error (cairn-86n5).
+					expectedKey: multisig.keys[multisig.ourKeyIndex]
+				});
+			}
 
 			phase = 'signing';
 			const psbtBytes = base64ToBytes(unsignedPsbt);
@@ -138,33 +155,50 @@
 	<div class="method-head">
 		<span class="method-icon"><Icon name="shield" size={18} /></span>
 		<div class="grow">
-			<h3 class="method-title">Sign with {keyName} — Jade (USB)</h3>
+			<h3 class="method-title">
+				{#if multisig}Sign with {multisig.keyName} — Jade (USB){:else}Jade (USB){/if}
+			</h3>
 			<p class="method-sub">
 				Sign on-device over
 				<Term
 					tip="Web Serial is a browser API that lets a web page talk to a USB serial device like a Blockstream Jade — no extra app or driver. It works in Chromium desktop browsers (Chrome, Edge, Brave) over HTTPS or localhost."
 				>
 					Web Serial
-				</Term>. Nothing leaves the device but this key's signature.
+				</Term>. Nothing leaves the device but {multisig ? "this key's signature" : 'signatures'}.
 			</p>
 		</div>
 	</div>
 
-	<HowItWorks id="multisig-jade-usb-sign">
-		<p>
-			Your <strong>private keys never leave the Jade</strong>. Cairn hands the device the current
-			transaction — including every signature already collected — and the Jade shows the
-			destination and amount on its own screen for a spend from this
-			<strong>{threshold}-of-{totalKeys} multisig wallet</strong>. It returns one more signature,
-			which Cairn merges into the transaction.
-		</p>
-		<p>
-			A Jade co-signs only for multisig wallets it has <strong>registered</strong>: a one-time
-			on-device review of the wallet's name, its {threshold}-of-{totalKeys} quorum, and every
-			cosigner key. Jade remembers that approval, so after the first time it goes straight to
-			signing.
-		</p>
-	</HowItWorks>
+	{#if multisig}
+		<HowItWorks id="multisig-jade-usb-sign">
+			<p>
+				Your <strong>private keys never leave the Jade</strong>. Cairn hands the device the current
+				transaction — including every signature already collected — and the Jade shows the
+				destination and amount on its own screen for a spend from this
+				<strong>{multisig.threshold}-of-{multisig.totalKeys} multisig wallet</strong>. It returns one more
+				signature, which Cairn merges into the transaction.
+			</p>
+			<p>
+				A Jade co-signs only for multisig wallets it has <strong>registered</strong>: a one-time
+				on-device review of the wallet's name, its {multisig.threshold}-of-{multisig.totalKeys} quorum,
+				and every cosigner key. Jade remembers that approval, so after the first time it goes straight to
+				signing.
+			</p>
+		</HowItWorks>
+	{:else}
+		<HowItWorks id="jade-usb-sign">
+			<p>
+				Your <strong>private keys never leave the Jade</strong>. Cairn sends the unsigned
+				transaction to the device; the Jade shows you the amount and destination on its own screen
+				and asks you to physically confirm. It returns the signed transaction, which Cairn
+				broadcasts.
+			</p>
+			<p>
+				The device is the source of truth — always confirm the address <strong>on the Jade's
+				screen</strong>, not just here, before approving.
+			</p>
+		</HowItWorks>
+	{/if}
 
 	{#if !mounted}
 		<!-- Server-rendered / pre-hydration placeholder. Never probes navigator. -->
@@ -181,18 +215,23 @@
 					It needs
 					<Term tip="A browser API for talking to USB serial devices directly.">Web Serial</Term>,
 					which is only in Chromium-based desktop browsers — Chrome, Edge, or Brave — served over
-					HTTPS or localhost. Open this page in one of those, or sign this key with the file method
-					instead.
+					HTTPS or localhost. Open this page in one of those, or {multisig
+						? 'sign this key with the file method instead'
+						: 'use the Animated QR / file method instead'}.
 				</p>
 			</div>
 		</div>
-		{#if onusefile}
+		{#if multisig && onusefile}
 			<button
 				class="btn btn-secondary"
 				onclick={onusefile}
 				aria-describedby="jade-unavailable-title jade-unavailable-reason"
 			>
 				Use the file method for this key
+			</button>
+		{:else if !multisig}
+			<button class="btn btn-secondary" disabled>
+				<Icon name="shield" size={15} /> Connect Jade
 			</button>
 		{/if}
 	{:else if done}
@@ -201,25 +240,31 @@
 			<div>
 				<p class="ok-title">Signed on your Jade</p>
 				<p class="hint">
-					{keyName}'s signature was merged into the transaction — the quorum tracker above shows
-					what's still needed.
+					{#if multisig}
+						{multisig.keyName}'s signature was merged into the transaction — the quorum tracker
+						above shows what's still needed.
+					{:else}
+						The signed transaction was handed back for the final review step.
+					{/if}
 				</p>
 			</div>
 		</div>
 	{:else}
-		<!-- One-time prerequisite, framed as the device protecting the user. -->
-		<div class="register-callout" role="note">
-			<Icon name="alert-triangle" size={15} />
-			<div>
-				<strong>First time signing with “{multisigName}” on a Jade? A one-time registration comes
-					first.</strong>
-				Your Jade reviews and stores this wallet's details — the name, the
-				{threshold}-of-{totalKeys} quorum, and every cosigner key — and asks you to approve them on
-				the device. That's the Jade protecting you: it will never quietly co-sign for a wallet you
-				haven't personally vetted on its screen. Jade remembers the approval, so this happens once
-				per device.
+		{#if multisig}
+			<!-- One-time prerequisite, framed as the device protecting the user. -->
+			<div class="register-callout" role="note">
+				<Icon name="alert-triangle" size={15} />
+				<div>
+					<strong>First time signing with “{multisig.multisigName}” on a Jade? A one-time registration comes
+						first.</strong>
+					Your Jade reviews and stores this wallet's details — the name, the
+					{multisig.threshold}-of-{multisig.totalKeys} quorum, and every cosigner key — and asks you to
+					approve them on the device. That's the Jade protecting you: it will never quietly co-sign for a
+					wallet you haven't personally vetted on its screen. Jade remembers the approval, so this happens
+					once per device.
+				</div>
 			</div>
-		</div>
+		{/if}
 
 		<!-- Verification callout: the user MUST check everything on-device. -->
 		<div class="verify-callout" role="note">
@@ -228,32 +273,37 @@
 				<span>Verify on your Jade before approving</span>
 			</div>
 			<p class="verify-body">
-				The Jade will present this as a spend from the registered
-				<strong>{threshold}-of-{totalKeys} multisig wallet</strong> and walk through each output.
-				Check the address <strong>on the Jade's screen</strong> — not just here — matches:
+				{#if multisig}
+					The Jade will present this as a spend from the registered
+					<strong>{multisig.threshold}-of-{multisig.totalKeys} multisig wallet</strong> and walk through
+					each output. Check the address <strong>on the Jade's screen</strong> — not just here — matches:
+				{:else}
+					Your device will ask you to confirm this transaction. Check the address
+					<strong>on the Jade's screen</strong> — not just here — matches:
+				{/if}
 			</p>
 			<dl class="verify-facts">
 				<div class="fact">
 					<dt>Sending</dt>
-					<dd class="num">{formatSats(amountSats)} sats</dd>
+					<dd class="num">{formatSats(context.amountSats)} sats</dd>
 				</div>
 				<div class="fact">
 					<dt>To</dt>
 					<dd>
 						<CopyText
-							value={destinationAddress}
-							display={truncateMiddle(destinationAddress, 14, 12)}
+							value={context.destinationAddress}
+							display={truncateMiddle(context.destinationAddress, 14, 12)}
 						/>
 					</dd>
 				</div>
 				<div class="fact">
 					<dt>Network fee</dt>
-					<dd class="num">{formatSats(feeSats)} sats</dd>
+					<dd class="num">{formatSats(context.feeSats)} sats</dd>
 				</div>
-				{#if changeSats > 0}
+				{#if context.changeSats > 0}
 					<div class="fact">
-						<dt>Change back to the wallet</dt>
-						<dd class="num">{formatSats(changeSats)} sats</dd>
+						<dt>{multisig ? 'Change back to the wallet' : 'Change back'}</dt>
+						<dd class="num">{formatSats(context.changeSats)} sats</dd>
 					</div>
 				{/if}
 			</dl>
@@ -267,10 +317,10 @@
 		{#if error}
 			<div class="form-error" role="alert">
 				{error}
-				{#if wrongDevice}
+				{#if multisig && wrongDevice}
 					<p class="hint" style="margin-top: 6px">
-						Plug in the Jade that holds <strong>{keyName}</strong>'s key — or pick a different key
-						chip above to sign with the device you have connected.
+						Plug in the Jade that holds <strong>{multisig.keyName}</strong>'s key — or pick a
+						different key chip above to sign with the device you have connected.
 					</p>
 				{/if}
 			</div>
@@ -281,29 +331,42 @@
 				{#if phase === 'registering'}
 					<span class="spinner"></span> Approve the wallet on your Jade…
 				{:else if phase === 'signing'}
-					<span class="spinner"></span> Approve on your Jade…
+					<span class="spinner"></span>
+					{multisig ? 'Approve on your Jade…' : 'Confirm on your Jade…'}
 				{:else if error}
 					<Icon name="refresh" size={15} /> Try again
-				{:else}
+				{:else if multisig}
 					<Icon name="shield" size={15} /> Connect Jade — register &amp; sign
+				{:else}
+					<Icon name="shield" size={15} /> Connect Jade &amp; sign
 				{/if}
 			</button>
+			{#if !multisig && oncancel && !busy}
+				<button class="btn btn-ghost" onclick={() => oncancel?.()}>Cancel</button>
+			{/if}
 		</div>
 
 		{#if phase === 'registering'}
 			<p class="hint signing-hint">
 				<Icon name="clock" size={13} /> Pick your Jade from the browser's serial-port prompt and
-				unlock it with your PIN. It shows “{multisigName}”, the {threshold}-of-{totalKeys} quorum,
-				and each cosigner key — approve each screen to register the wallet.
+				unlock it with your PIN. It shows “{multisig?.multisigName}”, the
+				{multisig?.threshold}-of-{multisig?.totalKeys} quorum, and each cosigner key — approve each
+				screen to register the wallet.
 			</p>
 		{:else if phase === 'signing'}
 			<p class="hint signing-hint">
-				<Icon name="clock" size={13} /> Waiting for you to confirm the transaction on the Jade.
-				Check the address on the Jade's screen first.
+				<Icon name="clock" size={13} />
+				{#if multisig}
+					Waiting for you to confirm the transaction on the Jade. Check the address on the Jade's
+					screen first.
+				{:else}
+					Pick your Jade from the browser's serial-port prompt, unlock it with your PIN, then
+					confirm the transaction on the device. Check the address on the Jade's screen first.
+				{/if}
 			</p>
 		{/if}
 
-		{#if onusefile && !busy}
+		{#if multisig && onusefile && !busy}
 			<p class="fallback-line">
 				or <button type="button" class="fallback-link" onclick={onusefile}>sign with the file
 					method instead</button>
