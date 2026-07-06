@@ -62,9 +62,10 @@ describe('warmPortfolioCache (cairn-fd56)', () => {
 
 		await expect(warmPortfolioCache()).resolves.toBeUndefined();
 
-		// Both wallets were attempted and the multisig pass still ran.
+		// Both wallets were attempted and the multisig pass still ran. The warm pass
+		// force-refreshes so it replaces any persisted seed with a live scan (cairn-er1k).
 		expect(mocks.scanWallet).toHaveBeenCalledTimes(2);
-		expect(mocks.scanMultisig).toHaveBeenCalledWith({ id: 42 });
+		expect(mocks.scanMultisig).toHaveBeenCalledWith({ id: 42 }, { forceRefresh: true });
 	});
 
 	it('keeps warming after listing one user’s multisigs throws', async () => {
