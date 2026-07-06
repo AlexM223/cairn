@@ -34,7 +34,9 @@ export const GET: RequestHandler = async (event) => {
 	try {
 		if (event.url.searchParams.get('download') === '1') {
 			const body = descriptorBackup(multisig);
-			markBackedUp(user.id, 'multisig', id);
+			// Owner-only backup credit (wallet_backups is wallet-level) — a cosigner's
+			// descriptor download must not clear the owner's backup reminder.
+			if (multisig.userId === user.id) markBackedUp(user.id, 'multisig', id);
 			return new Response(body, {
 				headers: {
 					'content-type': 'text/plain; charset=utf-8',

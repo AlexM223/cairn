@@ -32,7 +32,10 @@ export const GET: RequestHandler = async (event) => {
 
 	try {
 		const body = caravanExport(multisig);
-		markBackedUp(user.id, 'multisig', id);
+		// Only the OWNER's download counts as backing up the wallet — wallet_backups
+		// is wallet-level (no per-user scope), so a cosigner's export must not clear
+		// the owner's "back up your wallet" reminder.
+		if (multisig.userId === user.id) markBackedUp(user.id, 'multisig', id);
 		const date = new Date().toISOString().slice(0, 10);
 		return new Response(body, {
 			headers: {
