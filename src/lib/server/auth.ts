@@ -4,7 +4,12 @@ import { env } from '$env/dynamic/private';
 import { db } from './db';
 import { getInstanceSettings, getSetting } from './settings';
 import { notify } from './notifications';
+import { childLogger } from './logger';
 import type { CredentialInfo, SessionUser } from '$lib/types';
+
+// Security-event log — auth outcomes must be visible in /admin/logs (cairn-wbmu).
+// Emails are logged for triage; passwords, hashes, and session tokens never are.
+const log = childLogger('security');
 import type { WebAuthnCredential } from '@simplewebauthn/server';
 
 export type { CredentialInfo };
@@ -79,7 +84,11 @@ export function destroySession(token: string | undefined): void {
 }
 
 export function destroyUserSessions(userId: number): void {
-	db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+	const info = db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+	log.info(
+		{ event: 'sessions_revoked', userId, count: info.changes },
+		'all sessions revoked for user'
+	);
 }
 
 /**
@@ -167,10 +176,23 @@ export function loginWithPassword(email: string, password: string): SessionUser 
 		  }
 		| undefined;
 
-	if (!row || !row.password_hash || !verifyPassword(password, row.password_hash))
+	const normalizedEmail = email.trim().toLowerCase();
+	if (!row || !row.password_hash || !verifyPassword(password, row.password_hash)) {
+		log.warn({ event: 'password_login_failed', email: normalizedEmail }, 'password login failed: bad credentials');
 		throw new AuthError('Invalid email or password.', 'bad_credentials');
-	if (row.disabled) throw new AuthError('This account has been disabled.', 'disabled');
+	}
+	if (row.disabled) {
+		log.warn(
+			{ event: 'password_login_denied', email: normalizedEmail, userId: row.id },
+			'password login denied: account disabled'
+		);
+		throw new AuthError('This account has been disabled.', 'disabled');
+	}
 
+	log.info(
+		{ event: 'password_login_success', email: normalizedEmail, userId: row.id },
+		'password login succeeded'
+	);
 	return { id: row.id, email: row.email, displayName: row.display_name, isAdmin: row.is_admin === 1 };
 }
 
@@ -314,6 +336,11 @@ export function registerUser(input: RegisterInput): SessionUser {
 		.run(email, password ? hashPassword(password) : null, displayName, isFirstUser ? 1 : 0);
 
 	const newUserId = Number(result.lastInsertRowid);
+
+	log.info(
+		{ event: 'user_registered', userId: newUserId, email, isAdmin: isFirstUser, viaInvite: !!inviteCode },
+		isFirstUser ? 'first user registered (instance admin)' : 'new user registered'
+	);
 
 	// admin_new_signup (Unit 8): a new account was created — broadcast to admins.
 	// Skip the very first account: it IS the first admin creating the instance,

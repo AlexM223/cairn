@@ -19,6 +19,7 @@ import {
 	verifyAuthenticationResponse
 } from '@simplewebauthn/server';
 import { notify } from './notifications';
+import { childLogger } from './logger';
 import type {
 	AuthenticatorTransportFuture,
 	AuthenticationResponseJSON,
@@ -29,6 +30,10 @@ import type {
 	VerifiedRegistrationResponse,
 	WebAuthnCredential
 } from '@simplewebauthn/server';
+
+// Security-event log — passkey ceremonies must be visible in /admin/logs
+// (cairn-wbmu). Never logs the challenge, credential secrets, or signatures.
+const log = childLogger('security');
 
 const RP_NAME = 'Cairn';
 const REG_COOKIE = 'cairn_wa_reg';
@@ -76,20 +81,27 @@ export function buildRegistrationOptions(
 	});
 }
 
-export function verifyRegistration(
+export async function verifyRegistration(
 	event: RequestEvent,
 	response: RegistrationResponseJSON,
 	expectedChallenge: string
 ): Promise<VerifiedRegistrationResponse> {
 	const { rpID, origin } = getRp(event);
-	return verifyRegistrationResponse({
-		response,
-		expectedChallenge,
-		expectedOrigin: origin,
-		expectedRPID: rpID,
-		// Accept both biometric (UV) and possession-only security keys.
-		requireUserVerification: false
-	});
+	try {
+		const result = await verifyRegistrationResponse({
+			response,
+			expectedChallenge,
+			expectedOrigin: origin,
+			expectedRPID: rpID,
+			// Accept both biometric (UV) and possession-only security keys.
+			requireUserVerification: false
+		});
+		log.info({ event: 'passkey_registration', verified: result.verified, rpID }, 'passkey registration verified');
+		return result;
+	} catch (err) {
+		log.warn({ event: 'passkey_registration_error', rpID, err }, 'passkey registration verification threw');
+		throw err;
+	}
 }
 
 export function buildAuthenticationOptions(
@@ -104,21 +116,32 @@ export function buildAuthenticationOptions(
 	});
 }
 
-export function verifyAuthentication(
+export async function verifyAuthentication(
 	event: RequestEvent,
 	response: AuthenticationResponseJSON,
 	expectedChallenge: string,
 	credential: WebAuthnCredential
 ): Promise<VerifiedAuthenticationResponse> {
 	const { rpID, origin } = getRp(event);
-	return verifyAuthenticationResponse({
-		response,
-		expectedChallenge,
-		expectedOrigin: origin,
-		expectedRPID: rpID,
-		credential,
-		requireUserVerification: false
-	});
+	try {
+		const result = await verifyAuthenticationResponse({
+			response,
+			expectedChallenge,
+			expectedOrigin: origin,
+			expectedRPID: rpID,
+			credential,
+			requireUserVerification: false
+		});
+		if (result.verified) {
+			log.info({ event: 'passkey_login_success', rpID, credentialId: response.id }, 'passkey authentication verified');
+		} else {
+			log.warn({ event: 'passkey_login_failed', rpID, credentialId: response.id }, 'passkey authentication not verified');
+		}
+		return result;
+	} catch (err) {
+		log.warn({ event: 'passkey_login_error', rpID, credentialId: response.id, err }, 'passkey authentication verification threw');
+		throw err;
+	}
 }
 
 // ------------------------------------------------------------ challenge cookies

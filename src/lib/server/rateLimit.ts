@@ -11,6 +11,12 @@
 
 import { getUserByEmail } from './auth';
 import { notify } from './notifications';
+import { childLogger } from './logger';
+
+// Security-event log so throttling/abuse is visible in /admin/logs (cairn-wbmu).
+// We log normalized emails for auth events an admin must triage, but never
+// passwords, tokens, or credentials.
+const log = childLogger('security');
 
 interface FailureWindow {
 	count: number;
@@ -71,7 +77,14 @@ const loginKeys = (ip: string, email: string) => [
 /** Seconds the caller must wait before another login attempt, or null. */
 export function loginRetryAfter(ip: string, email: string): number | null {
 	const [ipKey, emailKey] = loginKeys(ip, email);
-	return retryAfter(emailKey, LIMITS.loginEmail) ?? retryAfter(ipKey, LIMITS.loginIp);
+	const wait = retryAfter(emailKey, LIMITS.loginEmail) ?? retryAfter(ipKey, LIMITS.loginIp);
+	if (wait !== null) {
+		log.warn(
+			{ event: 'login_throttled', ip, email: email.trim().toLowerCase(), retryAfter: wait },
+			'login attempt throttled by rate limiter'
+		);
+	}
+	return wait;
 }
 
 // Remembers the windowStart of the email bucket we last fired a
@@ -81,6 +94,10 @@ const failedLoginNotified = new Map<string, number>();
 
 export function noteLoginFailure(ip: string, email: string): void {
 	for (const key of loginKeys(ip, email)) recordFailure(key);
+	log.warn(
+		{ event: 'login_failed', ip, email: email.trim().toLowerCase() },
+		'failed sign-in attempt'
+	);
 
 	// security_failed_login (Unit 8, §3): fire once when THIS account crosses the
 	// per-email failed-attempt threshold within the rate-limit window. Reuses the
@@ -94,6 +111,10 @@ export function noteLoginFailure(ip: string, email: string): void {
 	// One alert per window: only fire the first time the count reaches the limit.
 	if (failedLoginNotified.get(emailKey) === b.windowStart) return;
 	failedLoginNotified.set(emailKey, b.windowStart);
+	log.error(
+		{ event: 'login_threshold_crossed', ip, email: email.trim().toLowerCase(), attempts: b.count },
+		'per-email failed-login threshold crossed — possible credential stuffing'
+	);
 	// Opportunistic cleanup so this map can't grow unbounded.
 	if (failedLoginNotified.size > 10_000) {
 		const now = Date.now();
@@ -148,7 +169,12 @@ export function recoveryRetryAfter(ip: string, email: string): number | null {
 			continue;
 		}
 		if (b && b.count >= RECOVERY_MAX) {
-			return Math.max(1, Math.ceil((b.windowStart + RECOVERY_WINDOW_MS - Date.now()) / 1000));
+			const wait = Math.max(1, Math.ceil((b.windowStart + RECOVERY_WINDOW_MS - Date.now()) / 1000));
+			log.warn(
+				{ event: 'recovery_throttled', ip, email: email.trim().toLowerCase(), retryAfter: wait },
+				'account-recovery attempt throttled by rate limiter'
+			);
+			return wait;
 		}
 	}
 	return null;
@@ -190,6 +216,7 @@ export function inviteRetryAfter(ip: string): number | null {
 
 export function noteInviteFailure(ip: string): void {
 	recordFailure(`invite:ip:${ip}`);
+	log.warn({ event: 'invite_failed', ip }, 'invalid invite code submitted');
 }
 
 /** Human phrasing shared by the endpoints. */
