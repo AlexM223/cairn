@@ -76,7 +76,7 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 		// viewer never signs, so they don't get it (plan §6).
 		descriptor: role === 'viewer' ? null : multisigToDescriptor(toMultisigConfig(multisig)),
 		// Address labels (cairn-nbsx) — shared annotations for this vault; local read.
-		addressLabels: getAddressLabels('multisig', id)
+		addressLabels: getAddressLabels(locals.user!.id, 'multisig', id)
 	};
 
 	try {

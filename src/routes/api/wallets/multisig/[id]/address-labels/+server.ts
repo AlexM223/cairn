@@ -21,7 +21,7 @@ export const GET: RequestHandler = async (event) => {
 	if (id === null) return notFound();
 	// Any participant (owner, cosigner, viewer) can read the shared annotations.
 	if (!getViewableMultisig(user.id, id)) return notFound();
-	return json({ labels: getAddressLabels('multisig', id) });
+	return json({ labels: getAddressLabels(user.id, 'multisig', id) });
 };
 
 /**
@@ -54,5 +54,5 @@ export const PUT: RequestHandler = async (event) => {
 		return json({ error: `label must be at most ${ADDRESS_LABEL_MAX} characters` }, { status: 400 });
 	}
 
-	return json(setAddressLabel('multisig', id, body.address.trim(), body.label));
+	return json(setAddressLabel(user.id, 'multisig', id, body.address.trim(), body.label));
 };

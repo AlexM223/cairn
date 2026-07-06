@@ -51,7 +51,7 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 		// Tx labels are local bookkeeping — one cheap SQLite read, no network.
 		labels: getLabels(locals.user!.id, id) ?? {},
 		// Address labels (cairn-nbsx) — annotate why an address exists; local read.
-		addressLabels: getAddressLabels('wallet', id),
+		addressLabels: getAddressLabels(locals.user!.id, 'wallet', id),
 		// Saved transactions in the draft → awaiting-signature → broadcast
 		// lifecycle. Cheap local SQLite read, newest first.
 		transactions: listTransactions(locals.user!.id, id) ?? []

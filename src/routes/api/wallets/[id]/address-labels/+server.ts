@@ -20,7 +20,7 @@ export const GET: RequestHandler = async (event) => {
 	const id = parseId(event.params.id);
 	if (id === null) return notFound();
 	if (!getWallet(user.id, id)) return notFound();
-	return json({ labels: getAddressLabels('wallet', id) });
+	return json({ labels: getAddressLabels(user.id, 'wallet', id) });
 };
 
 /**
@@ -44,5 +44,5 @@ export const PUT: RequestHandler = async (event) => {
 		return json({ error: `label must be at most ${ADDRESS_LABEL_MAX} characters` }, { status: 400 });
 	}
 
-	return json(setAddressLabel('wallet', id, body.address.trim(), body.label));
+	return json(setAddressLabel(user.id, 'wallet', id, body.address.trim(), body.label));
 };
