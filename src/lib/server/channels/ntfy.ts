@@ -21,6 +21,7 @@
 import { db } from '../db';
 import { childLogger } from '../logger';
 import { getSetting } from '../settings';
+import { decryptSecret } from '../secretKey';
 import { safeFetch, type SafeResponse } from './ssrf';
 import type {
 	ChannelSendResult,
@@ -38,7 +39,11 @@ interface NtfyChannelConfig {
 	server?: string;
 	/** Topic (URL path segment) to publish to. Required. */
 	topic?: string;
-	/** Optional bearer token for an access-controlled topic. */
+	/** Optional bearer token for an access-controlled topic, encrypted at rest
+	 *  (secretKey.ts envelope). */
+	accessTokenEnc?: string;
+	/** Legacy plaintext token from pre-encryption rows — re-encrypted by the
+	 *  startup migration; honored here so an unmigrated row keeps working. */
 	accessToken?: string;
 }
 
@@ -77,7 +82,17 @@ function resolveConfig(userId: number): ResolvedNtfyConfig | null {
 	const server = (cfg.server?.trim() || getSetting('ntfy_default_server') || '').trim();
 	if (!server) return null;
 
-	const accessToken = cfg.accessToken?.trim();
+	let accessToken = cfg.accessToken?.trim();
+	if (cfg.accessTokenEnc) {
+		try {
+			accessToken = decryptSecret(cfg.accessTokenEnc).trim();
+		} catch (e) {
+			// Fail closed: posting to an access-controlled topic without its token
+			// would just 403 — surface "not configured" instead of a half-send.
+			log.error({ err: e, userId }, 'failed to decrypt ntfy access token');
+			return null;
+		}
+	}
 	return { server, topic, accessToken: accessToken || undefined };
 }
 

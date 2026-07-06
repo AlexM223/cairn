@@ -211,13 +211,16 @@ function buildConfig(
 			if (!topic) throw new Error('Enter an ntfy topic.');
 			const server = str(body.server);
 			if (server && !HTTP_RE.test(server)) throw new Error('ntfy server must start with http:// or https://.');
-			// accessToken: blank means keep the stored one.
-			const accessToken = body.accessToken == null || str(body.accessToken) === ''
-				? prev.accessToken
-				: str(body.accessToken);
+			// accessToken: blank means keep the stored one. Stored ENCRYPTED
+			// (accessTokenEnc, same envelope as the personal-SMTP password below); a
+			// legacy plaintext prev.accessToken is upgraded on the way through.
+			const accessTokenEnc =
+				body.accessToken == null || str(body.accessToken) === ''
+					? (prev.accessTokenEnc ?? (str(prev.accessToken) ? encryptSecret(str(prev.accessToken)) : undefined))
+					: encryptSecret(str(body.accessToken));
 			const cfg: Record<string, unknown> = { topic };
 			if (server) cfg.server = server;
-			if (accessToken) cfg.accessToken = accessToken;
+			if (accessTokenEnc) cfg.accessTokenEnc = accessTokenEnc;
 			return cfg;
 		}
 		case 'nostr': {

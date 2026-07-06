@@ -11,6 +11,7 @@ vi.mock('node:dns/promises', () => ({
 }));
 
 import ntfyChannel from './ntfy';
+import { encryptSecret } from '../secretKey';
 import { _transport } from './ssrf';
 import type { NotificationPayload } from '../notifyTypes';
 
@@ -139,6 +140,31 @@ describe('send', () => {
 		await ntfyChannel.send(userId, { ...PAYLOAD, level: 'info' });
 		body = JSON.parse((sendMock.mock.calls[1][2] as RequestInit).body as string);
 		expect(body.priority).toBe(3);
+	});
+
+	it('decrypts an encrypted-at-rest access token (cairn-e9mz.1)', async () => {
+		configureUser({
+			server: 'https://push.example.com',
+			topic: 'mytopic',
+			accessTokenEnc: encryptSecret('tk_encrypted')
+		});
+		sendMock.mockResolvedValueOnce(textResponse(200));
+		const res = await ntfyChannel.send(userId, PAYLOAD);
+		expect(res.ok).toBe(true);
+		const headers = (sendMock.mock.calls[0][2] as RequestInit).headers as Record<string, string>;
+		expect(headers.authorization).toBe('Bearer tk_encrypted');
+	});
+
+	it('fails closed (not configured) when the stored token cannot be decrypted', async () => {
+		configureUser({
+			server: 'https://push.example.com',
+			topic: 'mytopic',
+			accessTokenEnc: JSON.stringify({ v: 1, iv: 'AAAA', tag: 'AAAA', data: 'AAAA' })
+		});
+		const res = await ntfyChannel.send(userId, PAYLOAD);
+		expect(res.ok).toBe(false);
+		expect(res.retryable).toBe(false);
+		expect(sendMock).not.toHaveBeenCalled();
 	});
 
 	it('treats 403 (topic ACL / bad token) as non-retryable', async () => {

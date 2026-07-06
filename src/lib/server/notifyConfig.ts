@@ -36,8 +36,10 @@ export function redactChannelConfig(
 ): Record<string, unknown> {
 	switch (channel) {
 		case 'ntfy': {
-			const { accessToken, ...rest } = cfg;
-			return { ...rest, hasAccessToken: !!accessToken };
+			// accessTokenEnc is the encrypted-at-rest form; accessToken only appears
+			// on legacy rows the startup migration hasn't rewritten yet.
+			const { accessToken, accessTokenEnc, ...rest } = cfg;
+			return { ...rest, hasAccessToken: !!(accessTokenEnc || accessToken) };
 		}
 		case 'webhook': {
 			const { secret, ...rest } = cfg;

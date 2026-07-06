@@ -146,13 +146,53 @@ describe('email channel config — personal SMTP', () => {
 	});
 });
 
-describe('other channels unaffected', () => {
-	it('ntfy still round-trips topic + redacts accessToken', async () => {
+function rawStoredConfigFor(channel: string): string {
+	const row = db
+		.prepare(`SELECT config FROM notification_channel_config WHERE user_id = ? AND channel = ?`)
+		.get(userId, channel) as { config: string } | undefined;
+	return row?.config ?? '';
+}
+
+describe('ntfy channel config — encrypted access token (cairn-e9mz.1)', () => {
+	it('stores the access token ENCRYPTED (plaintext never stored) and redacts it', async () => {
 		const { status, body } = await put('ntfy', { topic: 'my-topic', accessToken: 'tk_123' });
 		expect(status).toBe(200);
 		expect(body.config.accessToken).toBeUndefined();
+		expect(body.config.accessTokenEnc).toBeUndefined();
 		expect(body.config.hasAccessToken).toBe(true);
+
+		const raw = rawStoredConfigFor('ntfy');
+		expect(raw).not.toContain('tk_123');
+		const stored = JSON.parse(raw);
+		expect(stored.accessToken).toBeUndefined();
+		expect(decryptSecret(stored.accessTokenEnc)).toBe('tk_123');
 	});
+
+	it('keeps the stored encrypted token when accessToken is blank on a later save', async () => {
+		await put('ntfy', { topic: 'my-topic', accessToken: 'tk_123' });
+		const firstEnc = JSON.parse(rawStoredConfigFor('ntfy')).accessTokenEnc;
+
+		await put('ntfy', { topic: 'renamed-topic', accessToken: '' });
+		const stored = JSON.parse(rawStoredConfigFor('ntfy'));
+		expect(stored.accessTokenEnc).toBe(firstEnc); // unchanged
+		expect(stored.topic).toBe('renamed-topic');
+	});
+
+	it('upgrades a legacy plaintext accessToken to the envelope on re-save', async () => {
+		// A row written before encryption shipped: plaintext accessToken key.
+		db.prepare(
+			`INSERT INTO notification_channel_config (user_id, channel, config) VALUES (?, 'ntfy', ?)`
+		).run(userId, JSON.stringify({ topic: 'my-topic', accessToken: 'tk_legacy' }));
+
+		// Re-save without retyping the token — blank means keep.
+		await put('ntfy', { topic: 'my-topic', accessToken: '' });
+		const raw = rawStoredConfigFor('ntfy');
+		expect(raw).not.toContain('tk_legacy');
+		expect(decryptSecret(JSON.parse(raw).accessTokenEnc)).toBe('tk_legacy');
+	});
+});
+
+describe('other channels unaffected', () => {
 
 	it('DELETE clears the channel config row', async () => {
 		await put('email', { address: 'to@example.com', smtp: VALID_SMTP });

@@ -114,6 +114,29 @@ export function encryptSecret(plaintext: string): string {
 	return JSON.stringify(envelope);
 }
 
+/**
+ * Whether a stored value LOOKS like an {@link encryptSecret} envelope (versioned
+ * JSON with iv/tag/data). Used by startup migrations and legacy-tolerant readers
+ * to tell an already-encrypted value from pre-encryption plaintext — it does NOT
+ * verify the ciphertext decrypts.
+ */
+export function isSecretEnvelope(text: string): boolean {
+	if (!text.startsWith('{')) return false;
+	try {
+		const env = JSON.parse(text) as Partial<Envelope>;
+		return (
+			!!env &&
+			typeof env === 'object' &&
+			typeof env.v === 'number' &&
+			typeof env.iv === 'string' &&
+			typeof env.tag === 'string' &&
+			typeof env.data === 'string'
+		);
+	} catch {
+		return false;
+	}
+}
+
 /** Inverse of {@link encryptSecret}. Throws SecretKeyError on a malformed/wrong-
  *  version envelope or a failed auth-tag check (tampered ciphertext) — never
  *  silently returns garbage. */

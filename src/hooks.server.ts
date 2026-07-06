@@ -9,6 +9,7 @@ import { startAddressWatcher } from '$lib/server/addressWatcher';
 import { startKeyHealthWatcher } from '$lib/server/keyHealth';
 import { startBackupHealthWatcher } from '$lib/server/backupHealth';
 import { startPortfolioWarm } from '$lib/server/portfolioWarm';
+import { migratePlaintextSecretsAtRest } from '$lib/server/secretsMigration';
 
 const httpLog = childLogger('http');
 const errLog = childLogger('error');
@@ -19,6 +20,15 @@ try {
 	bootstrapAdminFromEnv();
 } catch (e) {
 	errLog.error({ err: e }, 'admin bootstrap from env failed');
+}
+
+// Re-encrypt any secrets still stored in plaintext by older releases
+// (cairn-e9mz). Idempotent; runs before the queue worker so channel sends only
+// ever see the encrypted shape.
+try {
+	migratePlaintextSecretsAtRest();
+} catch (e) {
+	errLog.error({ err: e }, 'plaintext-secret migration failed');
 }
 
 // Start the outbound notification delivery worker (idempotent, unref'd — it
