@@ -28,7 +28,7 @@
 	import LedgerSigner from '$lib/components/signing/LedgerSigner.svelte';
 	import QrSigner from './_components/QrSigner.svelte';
 	import TrezorSigner from '$lib/components/signing/TrezorSigner.svelte';
-	import BitboxSigner from './_components/BitboxSigner.svelte';
+	import BitboxSigner from '$lib/components/signing/BitboxSigner.svelte';
 	import JadeUsbSigner from './_components/JadeUsbSigner.svelte';
 	import JadeQrSigner from './_components/JadeQrSigner.svelte';
 	import type { DeviceMethod, SignerContext } from './_components/signerContract';
