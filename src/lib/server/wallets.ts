@@ -13,6 +13,7 @@ import {
 } from './bitcoin/walletScan';
 import { childLogger } from './logger';
 import { deleteAddressLabels } from './addressLabels';
+import { recordActivity } from './activity';
 import type { ScriptType, WalletDeviceType, WalletSummary } from '$lib/types';
 
 const GAP_LIMIT = 20;
@@ -165,6 +166,16 @@ export function createWallet(
 			.run(userId, name, 'xpub', xpub, scriptType, deviceType);
 		const row = getWallet(userId, Number(res.lastInsertRowid));
 		if (!row) throw new Error('Wallet insert failed');
+		// Adding a wallet is a significant account action: surface it in the
+		// user's activity feed and the admin log (cairn-cvcu). recordActivity is
+		// best-effort and never throws. No xpub in the detail — identity only.
+		recordActivity({
+			type: 'wallet_added',
+			level: 'success',
+			userId,
+			message: `Wallet “${name}” added`,
+			detail: { walletKind: 'wallet', walletId: row.id, scriptType, deviceType }
+		});
 		return toWalletSummary(row);
 	} catch (e) {
 		if (e instanceof Error && /UNIQUE/i.test(e.message)) {

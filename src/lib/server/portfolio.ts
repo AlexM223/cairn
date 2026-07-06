@@ -83,16 +83,153 @@ export function recordSnapshot(
 	}
 }
 
-/** Total confirmed sats over time (oldest first), summed across wallets per tick. */
+/**
+ * Total confirmed sats over time (oldest first). Snapshot rows are per wallet
+ * and — since historical backfill — NOT taken at shared timestamps, so the
+ * total at each instant is the sum of every wallet's latest-known balance
+ * (carry-forward), not a naive GROUP BY taken_at. Rows for since-deleted
+ * wallets are excluded, matching what the retention sweep does permanently.
+ */
 export function getBalanceSeries(userId: number): BalancePoint[] {
 	const rows = db
 		.prepare(
-			`SELECT taken_at, SUM(balance_sats) AS total
-			 FROM balance_snapshots WHERE user_id = ?
-			 GROUP BY taken_at ORDER BY taken_at ASC`
+			`SELECT wallet_kind, wallet_id, taken_at, balance_sats
+			 FROM balance_snapshots
+			 WHERE user_id = ?
+			   AND ((wallet_kind = 'wallet' AND wallet_id IN (SELECT id FROM wallets))
+			     OR (wallet_kind = 'multisig' AND wallet_id IN (SELECT id FROM multisigs)))
+			 ORDER BY taken_at ASC, id ASC`
 		)
-		.all(userId) as { taken_at: string; total: number }[];
-	return rows.map((r) => ({ t: Math.floor(Date.parse(r.taken_at) / 1000), sats: r.total }));
+		.all(userId) as {
+		wallet_kind: string;
+		wallet_id: number;
+		taken_at: string;
+		balance_sats: number;
+	}[];
+
+	const latest = new Map<string, number>();
+	const out: BalancePoint[] = [];
+	const emit = (takenAt: string) => {
+		let sum = 0;
+		for (const v of latest.values()) sum += v;
+		out.push({ t: Math.floor(Date.parse(takenAt) / 1000), sats: sum });
+	};
+	let current: string | null = null;
+	for (const r of rows) {
+		if (current !== null && r.taken_at !== current) emit(current);
+		current = r.taken_at;
+		latest.set(`${r.wallet_kind}-${r.wallet_id}`, r.balance_sats);
+	}
+	if (current !== null) emit(current);
+	return out;
+}
+
+// ------------------------------------------------------------------- backfill
+//
+// A wallet imported with existing on-chain history used to chart nothing:
+// snapshots only accumulate from the moment Cairn starts sampling (cairn-ittq).
+// Its full balance history is already implied by the scan, though — the
+// running sum of confirmed tx deltas over confirmation time — so the first
+// time a wallet is scanned, that derived history is written into
+// balance_snapshots and the chart is populated on day one.
+
+/** Mirror of the retention policy (dataRetention.purgeBalanceSnapshots):
+ *  hourly resolution for the last 30 days, daily beyond that, nothing past
+ *  ~13 months — no point inserting rows the next sweep would delete. */
+const BACKFILL_DAILY_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
+const BACKFILL_HORIZON_MS = 396 * 24 * 60 * 60 * 1000;
+
+/**
+ * Derive historical balance points from a wallet's confirmed transactions.
+ * Returns null when the history can't be trusted to reconstruct the balance:
+ * a confirmed tx with no timestamp, or deltas that don't sum to the scanned
+ * confirmed balance (both would draw a chart that contradicts the real
+ * number). Points follow the retention policy's resolution; history older
+ * than the horizon contributes a single carry-in point at the horizon edge.
+ */
+export function buildBackfillPoints(
+	txs: { height: number; time: number | null; delta: number }[],
+	confirmedBalance: number,
+	nowMs: number
+): { t: number; sats: number }[] | null {
+	const confirmed = txs.filter((tx) => tx.height > 0);
+	if (confirmed.length === 0) return [];
+	if (confirmed.some((tx) => tx.time == null)) return null;
+	let total = 0;
+	for (const tx of confirmed) total += tx.delta;
+	if (total !== confirmedBalance) return null;
+
+	confirmed.sort((a, b) => a.time! - b.time!);
+
+	const horizonS = Math.floor((nowMs - BACKFILL_HORIZON_MS) / 1000);
+	const dailyBeforeS = Math.floor((nowMs - BACKFILL_DAILY_AFTER_MS) / 1000);
+
+	let running = 0;
+	let carryIn: number | null = null; // balance entering the horizon window
+	const points: { t: number; sats: number }[] = [];
+	for (const tx of confirmed) {
+		running += tx.delta;
+		const t = tx.time!;
+		if (t < horizonS) {
+			carryIn = running;
+			continue;
+		}
+		// Same-second txs collapse to the final balance at that instant; in the
+		// daily band, keep only the first point of each UTC day (what the
+		// retention downsampler would keep anyway).
+		const prev = points[points.length - 1];
+		if (prev && prev.t === t) {
+			prev.sats = running;
+		} else if (
+			prev &&
+			t < dailyBeforeS &&
+			Math.floor(prev.t / 86400) === Math.floor(t / 86400)
+		) {
+			continue; // this day already has its point
+		} else {
+			points.push({ t, sats: running });
+		}
+	}
+	if (carryIn !== null) points.unshift({ t: horizonS, sats: carryIn });
+	return points;
+}
+
+/**
+ * One-time per wallet: if it has no snapshot rows at all, write its derived
+ * history. Guarded by row existence, so subsequent scans cost one SELECT.
+ */
+function backfillSnapshots(userId: number, w: ScannedWallet): void {
+	const existing = db
+		.prepare(
+			'SELECT 1 FROM balance_snapshots WHERE user_id = ? AND wallet_kind = ? AND wallet_id = ? LIMIT 1'
+		)
+		.get(userId, w.kind, w.id);
+	if (existing) return;
+
+	const points = buildBackfillPoints(w.scan.txs, w.scan.confirmed, Date.now());
+	if (points === null) {
+		log.warn(
+			{ kind: w.kind, walletId: w.id },
+			'balance backfill skipped: tx history cannot reconstruct the confirmed balance'
+		);
+		return;
+	}
+	if (points.length === 0) return;
+
+	const insert = db.prepare(
+		'INSERT INTO balance_snapshots (user_id, wallet_kind, wallet_id, taken_at, balance_sats) VALUES (?, ?, ?, ?, ?)'
+	);
+	db.prepare('BEGIN').run();
+	try {
+		for (const p of points) {
+			insert.run(userId, w.kind, w.id, new Date(p.t * 1000).toISOString(), p.sats);
+		}
+		db.prepare('COMMIT').run();
+		log.info({ kind: w.kind, walletId: w.id, points: points.length }, 'balance history backfilled');
+	} catch (err) {
+		db.prepare('ROLLBACK').run();
+		throw err;
+	}
 }
 
 /** Per-wallet balance history keyed by `${kind}-${id}` (oldest first). */
@@ -202,6 +339,13 @@ export async function getPortfolioDetail(userId: number): Promise<PortfolioDetai
 	for (const w of scanned) {
 		if (!w) continue;
 		scannedCount++;
+		// First-ever scan of this wallet: derive its balance history from the
+		// tx list so an imported wallet charts from day one (cairn-ittq).
+		try {
+			backfillSnapshots(userId, w);
+		} catch (err) {
+			log.warn({ err, kind: w.kind, walletId: w.id }, 'balance history backfill failed');
+		}
 		confirmed += w.scan.confirmed;
 		unconfirmed += w.scan.unconfirmed;
 		const key = `${w.kind}-${w.id}`;

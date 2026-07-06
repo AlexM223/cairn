@@ -19,6 +19,28 @@
 		return next && next.startsWith('/') ? next : '/';
 	}
 
+	// The v0.1.1 Umbrel bug's failure shape, kept from ever being silent again
+	// (cairn-az83): login succeeds server-side, but the browser drops the session
+	// cookie (e.g. a Secure cookie over plain HTTP), so the next request is
+	// unauthenticated and this page just reloads with no feedback. Before
+	// navigating, probe an authenticated endpoint; a definite 401 means the
+	// cookie didn't stick — say so instead of looping.
+	const COOKIE_ERROR =
+		'Login succeeded, but your browser did not keep the session cookie — the ' +
+		'connection may not support secure cookies. Contact your administrator ' +
+		'(on a plain-HTTP server, ORIGIN or PROTOCOL_HEADER needs to be set).';
+
+	async function sessionStuck(): Promise<boolean> {
+		try {
+			const res = await fetch('/api/auth/me', { cache: 'no-store' });
+			return res.status !== 401;
+		} catch {
+			// A network blip can't tell us anything — give the login the benefit
+			// of the doubt rather than blocking a session the server accepted.
+			return true;
+		}
+	}
+
 	async function signInPassword(e: SubmitEvent) {
 		e.preventDefault();
 		error = null;
@@ -35,6 +57,7 @@
 			});
 			const body = await res.json().catch(() => null);
 			if (!res.ok) throw new Error(body?.error || 'Could not sign in.');
+			if (!(await sessionStuck())) throw new Error(COOKIE_ERROR);
 			await goto(nextUrl(), { invalidateAll: true });
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Could not sign in.';
@@ -52,6 +75,7 @@
 		submitting = true;
 		try {
 			await signInWithPasskey(email.trim());
+			if (!(await sessionStuck())) throw new Error(COOKIE_ERROR);
 			await goto(nextUrl(), { invalidateAll: true });
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Could not sign in.';
