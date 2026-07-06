@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { tick } from 'svelte';
 	import Icon from './Icon.svelte';
 	import { copyToClipboard } from '$lib/clipboard';
 	import { truncateMiddle } from '$lib/format';
@@ -18,22 +19,48 @@
 	} = $props();
 
 	let copied = $state(false);
+	let copyFailed = $state(false);
+	let fullEl: HTMLElement | undefined = $state();
 
 	async function copy() {
-		if (!(await copyToClipboard(value))) return;
-		copied = true;
-		setTimeout(() => (copied = false), 1500);
+		if (await copyToClipboard(value)) {
+			copied = true;
+			setTimeout(() => (copied = false), 1500);
+			return;
+		}
+		// Copying is blocked (no Clipboard API and execCommand refused). Never
+		// leave the value hidden behind a dead button: show it in full and
+		// pre-select it so the user can copy manually.
+		copyFailed = true;
+		await tick();
+		selectFull();
+	}
+
+	function selectFull() {
+		if (!fullEl) return;
+		const range = document.createRange();
+		range.selectNodeContents(fullEl);
+		const sel = window.getSelection();
+		sel?.removeAllRanges();
+		sel?.addRange(range);
 	}
 
 	const shown = $derived(display ?? (truncate > 0 ? truncateMiddle(value, truncate, truncate) : value));
 </script>
 
-<button class="copy-text" class:mono onclick={copy} title="Copy to clipboard">
-	<span class="copy-value">{shown}</span>
-	<span class="copy-icon" class:copied>
-		<Icon name={copied ? 'check' : 'copy'} size={13} />
+{#if copyFailed}
+	<span class="copy-fallback" class:mono>
+		<span class="copy-full" bind:this={fullEl} onclick={selectFull} role="presentation">{value}</span>
+		<span class="copy-hint">Automatic copying isn't available here — tap the text to select it, then copy.</span>
 	</span>
-</button>
+{:else}
+	<button class="copy-text" class:mono onclick={copy} title="Copy to clipboard">
+		<span class="copy-value">{shown}</span>
+		<span class="copy-icon" class:copied>
+			<Icon name={copied ? 'check' : 'copy'} size={13} />
+		</span>
+	</button>
+{/if}
 
 <style>
 	.copy-text {
@@ -54,6 +81,29 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.copy-fallback {
+		display: inline-flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
+		max-width: 100%;
+	}
+
+	.copy-full {
+		/* The whole point of this state is that nothing is truncated. */
+		white-space: normal;
+		word-break: break-all;
+		user-select: all;
+		cursor: text;
+	}
+
+	.copy-hint {
+		font-family: var(--font-body, inherit);
+		font-size: 0.75rem;
+		color: var(--text-muted);
+		user-select: none;
 	}
 
 	.copy-icon {

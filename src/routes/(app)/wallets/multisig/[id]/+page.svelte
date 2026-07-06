@@ -40,7 +40,7 @@
 	let generating = $state(false);
 	let retrying = $state(false);
 	let tab = $state<'transactions' | 'addresses'>('transactions');
-	let addrFilter = $state<'used' | 'unused'>('used');
+	let addrFilter = $state<'used' | 'unused' | 'change'>('used');
 
 	// --- speed up (RBF-vs-CPFP routing, cairn-u9ob.4 multisig parity) ---
 	// Detection resolves each unconfirmed inflow to 'rbf' (we originated it and it
@@ -181,7 +181,15 @@
 	const unusedAddrs = $derived(
 		(data.detail?.addresses ?? []).filter((a) => !a.used && a.chain === 0)
 	);
-	const shownAddrs = $derived(addrFilter === 'used' ? usedAddrs : unusedAddrs);
+	// Change = the whole internal chain (…/1/*), used and upcoming — so you can
+	// verify where change went AND where the next spend's change will go
+	// (cairn-teyh).
+	const changeAddrs = $derived(
+		(data.detail?.addresses ?? []).filter((a) => a.chain === 1).toSorted((a, b) => a.index - b.index)
+	);
+	const shownAddrs = $derived(
+		addrFilter === 'used' ? usedAddrs : addrFilter === 'unused' ? unusedAddrs : changeAddrs
+	);
 
 	// --- address labels (cairn-nbsx) ---
 	let addrLabelOverrides = $state<Record<string, string>>({});
@@ -849,11 +857,23 @@
 					>
 						Unused {unusedAddrs.length}
 					</button>
+					<button
+						type="button"
+						class="chip"
+						class:active={addrFilter === 'change'}
+						onclick={() => (addrFilter = 'change')}
+					>
+						Change {changeAddrs.length}
+					</button>
 				</div>
 				{#if shownAddrs.length === 0}
 					<div class="empty-state">
 						<span class="empty-title">
-							{addrFilter === 'used' ? 'No used addresses yet' : 'No unused addresses in the window'}
+							{addrFilter === 'used'
+								? 'No used addresses yet'
+								: addrFilter === 'unused'
+									? 'No unused addresses in the window'
+									: 'No change addresses in the window'}
 						</span>
 					</div>
 				{:else}

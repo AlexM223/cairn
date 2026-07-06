@@ -54,7 +54,7 @@
 	let generating = $state(false);
 	let retrying = $state(false);
 	let tab = $state<'transactions' | 'addresses' | 'saved'>('transactions');
-	let addrFilter = $state<'used' | 'unused'>('used');
+	let addrFilter = $state<'used' | 'unused' | 'change'>('used');
 
 	// --- saved transactions (draft → awaiting-signature → broadcast) ---
 	// Rows removed optimistically on delete; a failed DELETE restores the id.
@@ -370,7 +370,15 @@
 			.filter((a) => !a.used)
 			.toSorted((a, b) => Number(a.change) - Number(b.change))
 	);
-	const shownAddrs = $derived(addrFilter === 'used' ? usedAddrs : unusedAddrs);
+	// Change = the whole internal chain (m/1/*), used and upcoming — so you can
+	// verify where change went AND where the next spend's change will go
+	// (cairn-teyh).
+	const changeAddrs = $derived(
+		(data.scan?.addresses ?? []).filter((a) => a.change).toSorted((a, b) => a.index - b.index)
+	);
+	const shownAddrs = $derived(
+		addrFilter === 'used' ? usedAddrs : addrFilter === 'unused' ? unusedAddrs : changeAddrs
+	);
 
 	async function retry() {
 		retrying = true;
@@ -939,11 +947,23 @@
 					>
 						Unused {unusedAddrs.length}
 					</button>
+					<button
+						type="button"
+						class="chip"
+						class:active={addrFilter === 'change'}
+						onclick={() => (addrFilter = 'change')}
+					>
+						Change {changeAddrs.length}
+					</button>
 				</div>
 				{#if shownAddrs.length === 0}
 					<div class="empty-state">
 						<span class="empty-title">
-							{addrFilter === 'used' ? 'No used addresses yet' : 'No unused addresses in the window'}
+							{addrFilter === 'used'
+								? 'No used addresses yet'
+								: addrFilter === 'unused'
+									? 'No unused addresses in the window'
+									: 'No change addresses in the window'}
 						</span>
 					</div>
 				{:else}
@@ -961,7 +981,13 @@
 							<tbody>
 								{#each shownAddrs as addr (addr.address)}
 									<tr>
-										<td class="mono text-muted">{addr.derivationPath}</td>
+										<td class="mono text-muted"
+											>{addr.derivationPath}{#if addr.change}<span
+													class="chg-chip"
+													title="An internal address — leftovers from your own spends land here."
+													>change</span
+												>{/if}</td
+										>
 										<td class="addr-cell">
 											<CopyText value={addr.address} truncate={12} />
 										</td>
@@ -1011,6 +1037,18 @@
 							</tbody>
 						</table>
 					</div>
+					{#if shownAddrs.some((a) => a.change)}
+						<p class="change-note">
+							<Icon name="info" size={13} />
+							<span>
+								Rows marked <span class="chg-chip">change</span> are this wallet's internal
+								addresses. When you spend, whatever isn't sent to the recipient comes back to one
+								of these — same keys, just a separate branch so payments you receive stay apart
+								from your own leftovers. Seeing them here is normal; that money never left the
+								wallet.
+							</span>
+						</p>
+					{/if}
 				{/if}
 			</section>
 		{:else}

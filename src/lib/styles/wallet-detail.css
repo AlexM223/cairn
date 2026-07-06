@@ -379,3 +379,36 @@
 	width: 100%;
 	max-width: 190px;
 }
+
+/* --- change addresses (cairn-teyh) --- */
+
+.wallet-detail .chg-chip {
+	display: inline-block;
+	font-size: 10.5px;
+	font-weight: 500;
+	color: var(--text-muted);
+	border: 1px solid var(--border);
+	border-radius: 99px;
+	padding: 1px 7px;
+	margin-left: 6px;
+	vertical-align: middle;
+}
+
+.wallet-detail .change-note {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	padding: 12px 14px;
+	border-top: 1px solid var(--border-subtle);
+	font-size: 12.5px;
+	line-height: 1.65;
+	color: var(--text-muted);
+}
+
+.wallet-detail .change-note svg {
+	margin-top: 3px;
+}
+
+.wallet-detail .change-note .chg-chip {
+	margin-left: 0;
+}
