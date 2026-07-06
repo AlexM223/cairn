@@ -54,7 +54,7 @@
 				<a href="/" class="btn btn-secondary">Back to Cairn</a>
 			</div>
 		{:else}
-			<form method="POST" use:enhance={() => {
+			<form method="POST" action="?/accept" use:enhance={() => {
 				submitting = true;
 				return async ({ update }) => {
 					submitting = false;

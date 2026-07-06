@@ -74,6 +74,8 @@ export function deleteUser(id: number): void {
 		throw new AuthError('Cannot delete the only administrator.', 'last_admin');
 
 	db.prepare('DELETE FROM users WHERE id = ?').run(id); // sessions + wallets cascade
+	// notified_txids has no FK, so it does not cascade with the user (cairn-zari).
+	db.prepare('DELETE FROM notified_txids WHERE user_id = ?').run(id);
 }
 
 /**
@@ -90,6 +92,13 @@ export function resetInstance(): void {
 		DELETE FROM sessions;
 		DELETE FROM users;
 		DELETE FROM settings;
+		-- Instance-wide activity (events.user_id IS NULL) and the notified-txid
+		-- ledger have no FK target to cascade from, so they must be cleared
+		-- explicitly. Otherwise a new operator sees the prior instance's activity
+		-- history and dedup state, contradicting the "nothing else survives" copy
+		-- in the reset danger-zone (cairn-5s8y, cairn-zari).
+		DELETE FROM events;
+		DELETE FROM notified_txids;
 		COMMIT;
 	`);
 }

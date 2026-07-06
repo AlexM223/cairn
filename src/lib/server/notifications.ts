@@ -170,8 +170,13 @@ export function resolveRecipients(
  * operation paths, so it wraps everything in try/catch and only logs on failure.
  */
 export function notify(payload: NotificationPayload): void {
+	// Each stage is independently guarded so a failure in one never suppresses the
+	// others. Previously a single outer try/catch meant a DB hiccup while
+	// enqueueing external channels silently dropped ALL external delivery even
+	// though the in-app record had already succeeded (cairn-s0p5).
+
+	// 1. In-app is always-on and instant — it IS the activity feed.
 	try {
-		// 1. In-app is always-on and instant — it IS the activity feed.
 		recordActivity({
 			type: payload.type,
 			message: payload.title + (payload.body ? ` — ${payload.body}` : ''),
@@ -179,29 +184,41 @@ export function notify(payload: NotificationPayload): void {
 			userId: payload.userId,
 			detail: payload.detail ?? null
 		});
+	} catch (e) {
+		log.error({ err: e, type: payload.type }, 'notify() in-app record failed');
+	}
 
-		// Live-push nudge for the in-app bell: the SSE stream endpoint subscribes
-		// to this and forwards a "your unread count may have changed" event to the
-		// connected user. Best-effort — emit failures must never break notify().
-		try {
-			notifyBus.emit('event', { userId: payload.userId });
-		} catch (e) {
-			log.error({ err: e, type: payload.type }, 'notifyBus emit failed');
-		}
+	// Live-push nudge for the in-app bell: the SSE stream endpoint subscribes
+	// to this and forwards a "your unread count may have changed" event to the
+	// connected user. Best-effort — emit failures must never break notify().
+	try {
+		notifyBus.emit('event', { userId: payload.userId });
+	} catch (e) {
+		log.error({ err: e, type: payload.type }, 'notifyBus emit failed');
+	}
 
-		// 2. Resolve which users + external channels apply, then enqueue. The
-		//    queued payload is a serialized NotificationPayload and by contract
-		//    carries NO secrets; channel credentials are looked up fresh inside
-		//    plugin.send(), never embedded in the queue row.
+	// 2. Resolve which users + external channels apply, then enqueue. The
+	//    queued payload is a serialized NotificationPayload and by contract
+	//    carries NO secrets; channel credentials are looked up fresh inside
+	//    plugin.send(), never embedded in the queue row. Each recipient is
+	//    enqueued independently so one bad row can't drop the rest.
+	try {
 		const serialized = JSON.stringify(payload);
 		const insert = db.prepare(
 			`INSERT INTO notification_queue (user_id, channel, event_type, payload)
 			 VALUES (?, ?, ?, ?)`
 		);
 		for (const { userId, channel } of resolveRecipients(payload)) {
-			insert.run(userId, channel, payload.type, serialized);
+			try {
+				insert.run(userId, channel, payload.type, serialized);
+			} catch (e) {
+				log.error(
+					{ err: e, type: payload.type, channel, recipientId: userId },
+					'notify() external-channel enqueue failed for one recipient'
+				);
+			}
 		}
 	} catch (e) {
-		log.error({ err: e, type: payload.type }, 'notify() failed');
+		log.error({ err: e, type: payload.type }, 'notify() external enqueue failed');
 	}
 }

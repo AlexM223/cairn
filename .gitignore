@@ -32,7 +32,6 @@ npm-debug.log*
 !.vscode/extensions.json
 .idea/
 .claude/
-.beads/
 
 # Runtime data (SQLite database)
 data/

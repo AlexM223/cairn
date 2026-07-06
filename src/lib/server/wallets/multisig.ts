@@ -276,6 +276,11 @@ export function createMultisig(
 
 export function deleteMultisig(userId: number, id: number): boolean {
 	const info = db.prepare('DELETE FROM multisigs WHERE id = ? AND user_id = ?').run(id, userId);
+	if (info.changes > 0) {
+		// notified_txids has no FK to multisigs (cairn-zari) and won't cascade —
+		// clear this multisig's dedup rows explicitly to avoid orphans.
+		db.prepare("DELETE FROM notified_txids WHERE wallet_kind = 'multisig' AND wallet_id = ?").run(id);
+	}
 	return info.changes > 0;
 }
 

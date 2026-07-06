@@ -24,4 +24,20 @@ export async function readJson<T = Record<string, unknown>>(event: RequestEvent)
 	}
 }
 
+/**
+ * Like readJson, but treats an *empty* body as `{}` (some POSTs legitimately
+ * carry no body, e.g. broadcasting an already-saved draft with no fresh PSBT).
+ * A non-empty but malformed body still returns 400 — it must not be silently
+ * swallowed on irreversible actions like broadcast (cairn-1yw7).
+ */
+export async function readOptionalJson<T = Record<string, unknown>>(event: RequestEvent): Promise<T> {
+	const raw = (await event.request.text()).trim();
+	if (!raw) return {} as T;
+	try {
+		return JSON.parse(raw) as T;
+	} catch {
+		error(400, 'Invalid JSON body');
+	}
+}
+
 export { json };

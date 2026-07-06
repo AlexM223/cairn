@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { requireUser, readJson } from '$lib/server/api';
+import { requireUser, readOptionalJson } from '$lib/server/api';
 import { broadcastMultisigTransaction } from '$lib/server/multisigTransactions';
 import { BroadcastError } from '$lib/server/transactions';
 import { childLogger } from '$lib/server/logger';
@@ -20,7 +20,7 @@ export const POST: RequestHandler = async (event) => {
 	const multisigId = Number(event.params.id);
 	const txId = Number(event.params.txId);
 
-	const body = await readJson<{ psbt?: string }>(event).catch(() => ({ psbt: undefined }));
+	const body = await readOptionalJson<{ psbt?: string }>(event);
 
 	try {
 		const { txid, transaction } = await broadcastMultisigTransaction(

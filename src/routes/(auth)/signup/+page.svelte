@@ -22,6 +22,10 @@
 
 	async function createAccount(e: SubmitEvent) {
 		e.preventDefault();
+		// Guard against re-entrant submits (Enter key + button click, or a double
+		// Enter). Without this, a second invocation resets `error` to null while the
+		// first request is still in flight, so a 400's error banner never appears.
+		if (submitting) return;
 		error = validate();
 		if (error) return;
 		submitting = true;

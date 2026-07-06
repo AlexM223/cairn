@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { requireUser, readJson } from '$lib/server/api';
+import { requireUser, readOptionalJson } from '$lib/server/api';
 import { broadcastTransaction, BroadcastError } from '$lib/server/transactions';
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
@@ -16,7 +16,7 @@ export const POST: RequestHandler = async (event) => {
 	const walletId = Number(event.params.id);
 	const txId = Number(event.params.txId);
 
-	const body = await readJson<{ psbt?: string }>(event).catch(() => ({ psbt: undefined }));
+	const body = await readOptionalJson<{ psbt?: string }>(event);
 
 	try {
 		const { txid, transaction } = await broadcastTransaction(

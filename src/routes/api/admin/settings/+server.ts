@@ -21,9 +21,40 @@ const KEY_MAP: Record<string, string> = {
 	coreRpcPass: 'core_rpc_pass'
 };
 
+// Mirrors the validation in the admin settings form action
+// (src/routes/(app)/admin/settings/+page.server.ts). Without it, a scripted
+// caller with an admin cookie could set registrationMode to a garbage value
+// that matches neither the invite nor closed check in signup, silently falling
+// through to fully-open registration; a non-numeric electrumPort becomes NaN and
+// breaks the node connection. Returns an error string, or null if valid.
+function validateSettings(body: Record<string, unknown>): string | null {
+	if ('registrationMode' in body && !['open', 'invite', 'closed'].includes(String(body.registrationMode)))
+		return 'Invalid registration mode.';
+
+	if ('connectionMode' in body && !['public', 'custom'].includes(String(body.connectionMode)))
+		return 'Invalid connection mode.';
+
+	if ('electrumPort' in body) {
+		const port = Number(body.electrumPort);
+		if (!Number.isInteger(port) || port < 1 || port > 65535)
+			return 'Electrum port must be an integer between 1 and 65535.';
+	}
+
+	if ('esploraUrl' in body) {
+		const esplora = String(body.esploraUrl).trim();
+		if (esplora && !/^https?:\/\//.test(esplora))
+			return 'Esplora URL must start with http:// or https://.';
+	}
+
+	return null;
+}
+
 export const PUT: RequestHandler = async (event) => {
 	requireAdmin(event);
 	const body = await readJson<Record<string, unknown>>(event);
+
+	const error = validateSettings(body);
+	if (error) return json({ error }, { status: 400 });
 
 	for (const [key, dbKey] of Object.entries(KEY_MAP)) {
 		if (!(key in body)) continue;

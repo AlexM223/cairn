@@ -190,6 +190,9 @@ export function deleteWallet(userId: number, id: number): boolean {
 	const row = getWallet(userId, id);
 	if (!row) return false;
 	db.prepare('DELETE FROM wallets WHERE id = ? AND user_id = ?').run(id, userId);
+	// notified_txids has no FK to wallets (cairn-zari), so it won't cascade —
+	// clear this wallet's dedup rows explicitly to avoid orphans accumulating.
+	db.prepare("DELETE FROM notified_txids WHERE wallet_kind = 'wallet' AND wallet_id = ?").run(id);
 	invalidateWalletCache(row.xpub);
 	return true;
 }

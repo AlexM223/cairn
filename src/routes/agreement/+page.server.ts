@@ -17,7 +17,10 @@ export const load: PageServerLoad = async ({ locals }) => {
 };
 
 export const actions: Actions = {
-	default: async ({ locals, request, getClientAddress }) => {
+	// Named action (not `default`) so the form always POSTs to an explicit
+	// `?/accept` target. A bare default action can collide with SvelteKit's
+	// reserved `?/default` name and 500 the mandatory onboarding gate.
+	accept: async ({ locals, request, getClientAddress }) => {
 		if (!locals.user) redirect(302, '/login');
 		const form = await request.formData();
 		if (form.get('accept') !== 'on') {

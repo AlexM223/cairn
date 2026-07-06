@@ -11,9 +11,17 @@ export const GET: RequestHandler = async (event) => {
 
 /** POST { id, disabled?, isAdmin? } — update a user's flags. */
 export const POST: RequestHandler = async (event) => {
-	requireAdmin(event);
+	const admin = requireAdmin(event);
 	const body = await readJson<{ id?: number; disabled?: boolean; isAdmin?: boolean }>(event);
 	if (typeof body.id !== 'number') return json({ error: 'id is required' }, { status: 400 });
+
+	// Match the DELETE self-guard: an admin must not be able to lock themselves
+	// out (self-disable) or strip their own admin rights (self-demote). The UI
+	// hides these controls, but the endpoint was reachable by scripting directly.
+	if (body.id === admin.id && body.disabled === true)
+		return json({ error: 'You cannot disable your own account.' }, { status: 400 });
+	if (body.id === admin.id && body.isAdmin === false)
+		return json({ error: 'You cannot remove your own admin access.' }, { status: 400 });
 
 	try {
 		if (typeof body.disabled === 'boolean') setUserDisabled(body.id, body.disabled);
