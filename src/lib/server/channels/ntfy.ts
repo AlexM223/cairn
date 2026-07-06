@@ -28,6 +28,7 @@ import type {
 	NotificationLevel,
 	NotificationPayload
 } from '../notifyTypes';
+import { absoluteNotificationLink } from '../notifyLinks';
 
 const log = childLogger('notify:ntfy');
 
@@ -99,7 +100,10 @@ async function publish(
 		message: payload.body,
 		priority: priorityForLevel(payload.level)
 	};
-	if (payload.link) body.click = payload.link;
+	// ntfy's `click` action opens a browser and expects an ABSOLUTE URL; a
+	// relative path is undefined behavior (cairn-5gpv.1). Omitted when unset.
+	const link = absoluteNotificationLink(payload.link);
+	if (link) body.click = link;
 
 	// safeFetch enforces the SSRF policy on the user-supplied `server` URL and
 	// pins the socket to a validated IP (cairn-iiuh, cairn-335b): a user could

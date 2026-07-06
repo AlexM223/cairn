@@ -9,6 +9,11 @@ import { randomBytes } from 'node:crypto';
 const dbPath = path.join(os.tmpdir(), `cairn-test-${randomBytes(8).toString('hex')}.db`);
 process.env.CAIRN_DB = dbPath;
 
+// A configured public origin, so notification deep-link resolution
+// (notifyLinks.ts / cairn-5gpv.1) behaves like a real deployed instance. Tests
+// that need the unset behavior clear it themselves.
+process.env.CAIRN_ORIGIN ??= 'https://cairn.test';
+
 afterAll(async () => {
 	// Close the sqlite handle if this test file ever opened it, so the files
 	// can be deleted on Windows. The db module creates the file at import time,

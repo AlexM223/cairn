@@ -22,6 +22,7 @@ import type {
 	NotificationChannelPlugin,
 	NotificationPayload
 } from '../notifyTypes';
+import { absoluteNotificationLink } from '../notifyLinks';
 
 const log = childLogger('notify:telegram');
 
@@ -60,7 +61,10 @@ function readChatId(userId: number): string | null {
 function renderMessage(payload: NotificationPayload): string {
 	let text = `<b>${escapeHtml(payload.title)}</b>`;
 	if (payload.body) text += `\n${escapeHtml(payload.body)}`;
-	if (payload.link) text += `\n${escapeHtml(payload.link)}`;
+	// Telegram only auto-links full URLs, so send the absolute form; a relative
+	// path renders as inert text (cairn-5gpv.1). Omitted when CAIRN_ORIGIN is unset.
+	const link = absoluteNotificationLink(payload.link);
+	if (link) text += `\n${escapeHtml(link)}`;
 	return text;
 }
 

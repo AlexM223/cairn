@@ -27,6 +27,7 @@ import { db } from '../db';
 import { childLogger } from '../logger';
 import { getSetting } from '../settings';
 import { decryptSecret } from '../secretKey';
+import { absoluteNotificationLink } from '../notifyLinks';
 import type {
 	ChannelSendResult,
 	NotificationChannelPlugin,
@@ -253,7 +254,10 @@ async function deliverWith(
 
 	let subject = payload.title;
 	let body = payload.body;
-	if (payload.link) body += `\n\n${payload.link}`;
+	// Deep links must be absolute in an email — a bare "/wallets/3" isn't clickable
+	// in any mail client (cairn-5gpv.1). Omitted when CAIRN_ORIGIN is unset.
+	const link = absoluteNotificationLink(payload.link);
+	if (link) body += `\n\n${link}`;
 
 	const pgpKey = readPgpPublicKey(userId);
 	if (pgpKey) {

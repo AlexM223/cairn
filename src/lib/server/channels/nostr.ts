@@ -47,6 +47,7 @@ import type {
 	NotificationChannelPlugin,
 	NotificationPayload
 } from '../notifyTypes';
+import { absoluteNotificationLink } from '../notifyLinks';
 
 const log = childLogger('notify:nostr');
 
@@ -166,7 +167,10 @@ function instanceDefaultRelays(): string[] {
 function composeMessage(payload: NotificationPayload): string {
 	const parts = [payload.title];
 	if (payload.body) parts.push(payload.body);
-	if (payload.link) parts.push(payload.link);
+	// A relative path is inert text in a Nostr DM — send the absolute URL
+	// (cairn-5gpv.1). Omitted when CAIRN_ORIGIN is unset.
+	const link = absoluteNotificationLink(payload.link);
+	if (link) parts.push(link);
 	return parts.filter(Boolean).join('\n\n');
 }
 

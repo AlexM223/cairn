@@ -17,6 +17,8 @@
 //       "body":      "0.015 BTC received to Savings",
 //       "detail":    { "amountSats": 1500000 }, // structured, NON-SECRET (may be null)
 //       "link":      "/wallets/3",              // relative deep-link (may be null)
+//       "linkAbsolute": "https://cairn.example.com/wallets/3", // link resolved
+//                                               //   against CAIRN_ORIGIN (null if unset)
 //       "timestamp": "2026-07-05T12:00:00.000Z" // ISO-8601, when the POST was built
 //     }
 //
@@ -68,6 +70,7 @@ import {
 	safeFetch,
 	type SafeResponse
 } from './ssrf';
+import { absoluteNotificationLink } from '../notifyLinks';
 import type {
 	ChannelSendResult,
 	NotificationChannelPlugin,
@@ -91,7 +94,12 @@ interface WebhookBody {
 	title: string;
 	body: string;
 	detail: Record<string, unknown> | null;
+	/** Relative in-app deep-link path (e.g. "/wallets/3"). A script consumer can
+	 *  prepend its own base URL. */
 	link: string | null;
+	/** The same deep link resolved to an absolute URL against CAIRN_ORIGIN, or
+	 *  null when CAIRN_ORIGIN is unset (cairn-5gpv.1). Ready to open as-is. */
+	linkAbsolute: string | null;
 	timestamp: string;
 }
 
@@ -132,6 +140,7 @@ function buildBody(payload: NotificationPayload, typeOverride?: string): Webhook
 		body: payload.body,
 		detail: payload.detail ?? null,
 		link: payload.link ?? null,
+		linkAbsolute: absoluteNotificationLink(payload.link),
 		timestamp: new Date().toISOString()
 	};
 }
