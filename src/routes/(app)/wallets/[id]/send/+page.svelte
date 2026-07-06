@@ -27,7 +27,7 @@
 	import ColdCardSigner from './_components/ColdCardSigner.svelte';
 	import LedgerSigner from './_components/LedgerSigner.svelte';
 	import QrSigner from './_components/QrSigner.svelte';
-	import TrezorSigner from './_components/TrezorSigner.svelte';
+	import TrezorSigner from '$lib/components/signing/TrezorSigner.svelte';
 	import BitboxSigner from './_components/BitboxSigner.svelte';
 	import JadeUsbSigner from './_components/JadeUsbSigner.svelte';
 	import JadeQrSigner from './_components/JadeQrSigner.svelte';

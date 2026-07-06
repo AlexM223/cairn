@@ -17,7 +17,7 @@
 	// their persistent versions depend on multisig API endpoints.
 	import QrSigner from '../../[id]/send/_components/QrSigner.svelte';
 	import type { SignerContext } from '../../[id]/send/_components/signerContract';
-	import MultisigTrezorSigner from '../[id]/send/_components/MultisigTrezorSigner.svelte';
+	import TrezorSigner from '$lib/components/signing/TrezorSigner.svelte';
 	import StatelessFileSigner from './_components/StatelessFileSigner.svelte';
 	import StatelessLedgerSigner from './_components/StatelessLedgerSigner.svelte';
 
@@ -942,18 +942,17 @@
 									oncancel={() => (activeKeyIdx = null)}
 								/>
 							{:else if activeMethod === 'trezor'}
-								<MultisigTrezorSigner
+								<TrezorSigner
 									unsignedPsbt={psbt}
-									keyName={activeKey.name}
-									multisigName={multisigLabel}
-									threshold={config.threshold}
-									totalKeys={config.totalKeys}
-									scriptType={config.scriptType}
-									multisigKeys={signKeys}
-									destinationAddress={signerContext.destinationAddress}
-									amountSats={signerContext.amountSats}
-									feeSats={signerContext.feeSats}
-									changeSats={signerContext.changeSats}
+									context={signerContext}
+									multisig={{
+										keyName: activeKey.name,
+										multisigName: multisigLabel,
+										threshold: config.threshold,
+										totalKeys: config.totalKeys,
+										scriptType: config.scriptType,
+										keys: signKeys
+									}}
 									onsigned={handleSigned}
 									onusefile={() => chooseMethod('file')}
 								/>

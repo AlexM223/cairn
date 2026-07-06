@@ -20,7 +20,7 @@
 	import QrSigner from '../../../[id]/send/_components/QrSigner.svelte';
 	import type { SignerContext } from '../../../[id]/send/_components/signerContract';
 	import MultisigFileSigner from './_components/MultisigFileSigner.svelte';
-	import MultisigTrezorSigner from './_components/MultisigTrezorSigner.svelte';
+	import TrezorSigner from '$lib/components/signing/TrezorSigner.svelte';
 	import MultisigLedgerSigner from './_components/MultisigLedgerSigner.svelte';
 	import MultisigBitboxSigner from './_components/MultisigBitboxSigner.svelte';
 	import MultisigJadeUsbSigner from './_components/MultisigJadeUsbSigner.svelte';
@@ -1255,18 +1255,17 @@
 							onsigned={handleSigned}
 						/>
 					{:else if effectiveDevice === 'trezor'}
-						<MultisigTrezorSigner
+						<TrezorSigner
 							unsignedPsbt={draft.psbt}
-							keyName={activeKey.name}
-							multisigName={data.multisig.name}
-							threshold={required}
-							totalKeys={keys.length}
-							scriptType={data.multisig.scriptType}
-							multisigKeys={signKeys}
-							destinationAddress={signerContext.destinationAddress}
-							amountSats={signerContext.amountSats}
-							feeSats={signerContext.feeSats}
-							changeSats={signerContext.changeSats}
+							context={signerContext}
+							multisig={{
+								keyName: activeKey.name,
+								multisigName: data.multisig.name,
+								threshold: required,
+								totalKeys: keys.length,
+								scriptType: data.multisig.scriptType,
+								keys: signKeys
+							}}
 							onsigned={handleSigned}
 							onusefile={overrideToFile}
 						/>

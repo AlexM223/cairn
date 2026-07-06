@@ -7,37 +7,25 @@
 	import { formatSats, truncateMiddle } from '$lib/format';
 	import {
 		isTrezorConnectAvailable,
+		signPsbtWithTrezor,
 		signMultisigPsbtWithTrezor,
 		TrezorError,
 		type MultisigScriptType,
 		type MultisigSignKey
 	} from '$lib/hw/trezor';
 
-	// Live USB multisig signing for one multisig key. A multisig-local sibling of the
-	// wallets flow's TrezorSigner (same connect → verify-on-device → sign
-	// idiom), with the multisig differences spelled out: the FULL cosigner set
-	// travels to the device with every request, the Trezor shows the multisig's
-	// M-of-N quorum on its own screen each time (no registration step — unlike
-	// Ledger/ColdCard, Trezor keeps no persistent multisig memory), and the
-	// signed PSBT that comes back still carries every previously collected
-	// signature — this device only ADDS one.
-	let {
-		unsignedPsbt,
-		keyName,
-		multisigName,
-		threshold,
-		totalKeys,
-		scriptType,
-		multisigKeys,
-		destinationAddress,
-		amountSats,
-		feeSats,
-		changeSats = 0,
-		onsigned,
-		onusefile
-	}: {
-		/** The CURRENT combined PSBT (other cosigners' signatures included). */
-		unsignedPsbt: string;
+	// Live USB Trezor signing for BOTH send flows — the single component the
+	// 2026-07-06 architecture review asked for instead of the former
+	// TrezorSigner / MultisigTrezorSigner fork. The connect → verify-on-device →
+	// sign idiom is identical for both wallet types; passing `multisig` selects
+	// the multisig flow, whose differences are confined to copy and the sign
+	// call: the FULL cosigner set travels to the device with every request, the
+	// Trezor shows the multisig's M-of-N quorum on its own screen each time (no
+	// registration step — unlike Ledger/ColdCard, Trezor keeps no persistent
+	// multisig memory), and the signed PSBT that comes back still carries every
+	// previously collected signature — the device only ADDS one.
+
+	interface MultisigContext {
 		/** Which multisig key this signature is being collected from. */
 		keyName: string;
 		multisigName: string;
@@ -45,24 +33,46 @@
 		totalKeys: number;
 		scriptType: MultisigScriptType;
 		/** The multisig's full cosigner roster, in position order. */
-		multisigKeys: MultisigSignKey[];
-		destinationAddress: string;
-		amountSats: number;
-		feeSats: number;
-		changeSats?: number;
+		keys: MultisigSignKey[];
+	}
+
+	let {
+		unsignedPsbt,
+		context,
+		multisig,
+		onsigned,
+		oncancel,
+		onusefile
+	}: {
+		/** Unsigned tx, base64 PSBT. For a multisig this is the CURRENT combined
+		 *  PSBT (other cosigners' signatures included). */
+		unsignedPsbt: string;
+		/** What the user must verify on-device (SignerContext-compatible). */
+		context: {
+			destinationAddress: string;
+			amountSats: number;
+			feeSats: number;
+			changeSats: number;
+		};
+		/** Present → sign as one key of this multisig; absent → single-sig. */
+		multisig?: MultisigContext;
 		onsigned: (signedPsbtBase64: string) => void;
-		/** Route this key through the generic file method instead. */
+		/** Optional: surfaced when the user backs out (single-sig flow). */
+		oncancel?: () => void;
+		/** Optional: route this key through the generic file method instead
+		 *  (multisig flow). */
 		onusefile?: () => void;
 	} = $props();
 
 	// The secure-context check must only run in the browser: window does not
-	// exist during SSR. Start pessimistic and re-check after mount, so the
-	// server-rendered markup is the safe disabled state.
+	// exist during SSR. We start pessimistic (unavailable) and re-check after
+	// mount, so the server-rendered markup is the safe disabled state and never
+	// touches window. `mounted` gates the whole interactive UI on client hydration.
 	let mounted = $state(false);
 	let available = $state(false);
 
 	// idle → signing → done. Errors live alongside (not a state) so a failed
-	// attempt keeps the retry button on the still-visible connect card.
+	// attempt can show the retry button on the still-visible connect card.
 	let signing = $state(false);
 	let done = $state(false);
 	let error = $state<string | null>(null);
@@ -78,18 +88,20 @@
 		wrongDevice = false;
 		signing = true;
 		try {
-			const signed = await signMultisigPsbtWithTrezor({
-				unsignedPsbt,
-				threshold,
-				keys: multisigKeys,
-				scriptType
-			});
+			const signed = multisig
+				? await signMultisigPsbtWithTrezor({
+						unsignedPsbt,
+						threshold: multisig.threshold,
+						keys: multisig.keys,
+						scriptType: multisig.scriptType
+					})
+				: await signPsbtWithTrezor(unsignedPsbt);
 			done = true;
 			onsigned(signed);
 		} catch (err) {
-			// signMultisigPsbtWithTrezor throws typed, plain-language TrezorErrors —
-			// the wrong_device message already names both fingerprints (connected
-			// vs expected); anything else is surfaced rather than swallowed.
+			// The sign functions throw typed, plain-language TrezorErrors — the
+			// wrong_device message already names both fingerprints (connected vs
+			// expected); anything else is surfaced rather than swallowed.
 			if (err instanceof TrezorError) {
 				error = err.message;
 				wrongDevice = err.code === 'wrong_device';
@@ -106,32 +118,50 @@
 	<div class="method-head">
 		<span class="method-icon"><Icon name="shield" size={18} /></span>
 		<div class="grow">
-			<h3 class="method-title">Sign with {keyName} — Trezor</h3>
+			<h3 class="method-title">
+				{#if multisig}Sign with {multisig.keyName} — Trezor{:else}Trezor{/if}
+			</h3>
 			<p class="method-sub">
 				Sign on-device via the
 				<Term
 					tip="Trezor Connect is Trezor's official browser integration. It opens a small popup window from trezor.io that talks to your device — no extra app or driver, and it works in any modern browser over HTTPS or localhost."
 				>
 					Trezor Connect
-				</Term> popup. Nothing leaves the device but this key's signature.
+				</Term>
+				popup. Nothing leaves the device but {multisig ? "this key's signature" : 'signatures'}.
 			</p>
 		</div>
 	</div>
 
-	<HowItWorks id="multisig-trezor-sign">
-		<p>
-			Your <strong>private keys never leave the Trezor</strong>. Cairn hands the device the current
-			transaction — including every signature already collected — and the Trezor shows the full
-			picture on its own screen: that this is a <strong>{threshold}-of-{totalKeys} multisig
-			spend</strong>, plus the destination and amount. It returns one more signature, which Cairn
-			merges into the transaction.
-		</p>
-		<p>
-			No registration step is needed: unlike some devices, a Trezor doesn't store the wallet — it
-			re-checks the complete {threshold}-of-{totalKeys} cosigner set with every signature, every
-			time. That re-check is the reassurance, not a hurdle.
-		</p>
-	</HowItWorks>
+	{#if multisig}
+		<HowItWorks id="multisig-trezor-sign">
+			<p>
+				Your <strong>private keys never leave the Trezor</strong>. Cairn hands the device the
+				current transaction — including every signature already collected — and the Trezor shows
+				the full picture on its own screen: that this is a <strong>{multisig.threshold}-of-{multisig.totalKeys}
+				multisig spend</strong>, plus the destination and amount. It returns one more signature,
+				which Cairn merges into the transaction.
+			</p>
+			<p>
+				No registration step is needed: unlike some devices, a Trezor doesn't store the wallet — it
+				re-checks the complete {multisig.threshold}-of-{multisig.totalKeys} cosigner set with every
+				signature, every time. That re-check is the reassurance, not a hurdle.
+			</p>
+		</HowItWorks>
+	{:else}
+		<HowItWorks id="trezor-sign">
+			<p>
+				Your <strong>private keys never leave the Trezor</strong>. Cairn sends the unsigned
+				transaction to the device through Trezor's Connect popup; the Trezor shows you the amount
+				and destination on its own screen and asks you to physically approve. It returns only
+				signatures, which Cairn merges back into the transaction to broadcast.
+			</p>
+			<p>
+				The device is the source of truth — always confirm the address <strong>on the Trezor's
+				screen</strong>, not just here, before approving.
+			</p>
+		</HowItWorks>
+	{/if}
 
 	{#if !mounted}
 		<!-- Server-rendered / pre-hydration placeholder. Never probes window. -->
@@ -149,17 +179,23 @@
 				     WHY the device path is unavailable, not just the workaround. -->
 				<p class="hint" id="trezor-unavailable-reason">
 					The Trezor Connect popup needs a secure page — HTTPS or localhost. Open Cairn over one of
-					those, or sign this key with the file method instead.
+					those, or {multisig
+						? 'sign this key with the file method instead'
+						: 'use the Generic wallet / file method instead'}.
 				</p>
 			</div>
 		</div>
-		{#if onusefile}
+		{#if multisig && onusefile}
 			<button
 				class="btn btn-secondary"
 				onclick={onusefile}
 				aria-describedby="trezor-unavailable-title trezor-unavailable-reason"
 			>
 				Use the file method for this key
+			</button>
+		{:else if !multisig}
+			<button class="btn btn-secondary" disabled>
+				<Icon name="shield" size={15} /> Connect Trezor
 			</button>
 		{/if}
 	{:else if done}
@@ -168,45 +204,54 @@
 			<div>
 				<p class="ok-title">Signed on your Trezor</p>
 				<p class="hint">
-					{keyName}'s signature was merged into the transaction — the quorum tracker above shows
-					what's still needed.
+					{#if multisig}
+						{multisig.keyName}'s signature was merged into the transaction — the quorum tracker
+						above shows what's still needed.
+					{:else}
+						The signed transaction was handed back for the final review step.
+					{/if}
 				</p>
 			</div>
 		</div>
 	{:else}
-		<!-- Verification callout: the user MUST check everything on-device. -->
+		<!-- Verification callout: the user MUST check the destination on-device. -->
 		<div class="verify-callout" role="note">
 			<div class="verify-head">
 				<Icon name="alert-triangle" size={16} />
 				<span>Verify on your Trezor before approving</span>
 			</div>
 			<p class="verify-body">
-				The Trezor will present this as a <strong>{threshold}-of-{totalKeys} multisig
-				transaction</strong> and walk through each output. Check the address
-				<strong>on the Trezor's screen</strong> — not just here — matches:
+				{#if multisig}
+					The Trezor will present this as a <strong>{multisig.threshold}-of-{multisig.totalKeys}
+					multisig transaction</strong> and walk through each output. Check the address
+					<strong>on the Trezor's screen</strong> — not just here — matches:
+				{:else}
+					Your device will ask you to confirm this transaction. Check the address
+					<strong>on the Trezor's screen</strong> — not just here — matches:
+				{/if}
 			</p>
 			<dl class="verify-facts">
 				<div class="fact">
 					<dt>Sending</dt>
-					<dd class="num">{formatSats(amountSats)} sats</dd>
+					<dd class="num">{formatSats(context.amountSats)} sats</dd>
 				</div>
 				<div class="fact">
 					<dt>To</dt>
 					<dd>
 						<CopyText
-							value={destinationAddress}
-							display={truncateMiddle(destinationAddress, 14, 12)}
+							value={context.destinationAddress}
+							display={truncateMiddle(context.destinationAddress, 14, 12)}
 						/>
 					</dd>
 				</div>
 				<div class="fact">
 					<dt>Network fee</dt>
-					<dd class="num">{formatSats(feeSats)} sats</dd>
+					<dd class="num">{formatSats(context.feeSats)} sats</dd>
 				</div>
-				{#if changeSats > 0}
+				{#if context.changeSats > 0}
 					<div class="fact">
-						<dt>Change back to the wallet</dt>
-						<dd class="num">{formatSats(changeSats)} sats</dd>
+						<dt>{multisig ? 'Change back to the wallet' : 'Change back'}</dt>
+						<dd class="num">{formatSats(context.changeSats)} sats</dd>
 					</div>
 				{/if}
 			</dl>
@@ -220,10 +265,10 @@
 		{#if error}
 			<div class="form-error" role="alert">
 				{error}
-				{#if wrongDevice}
+				{#if multisig && wrongDevice}
 					<p class="hint" style="margin-top: 6px">
-						Plug in the Trezor that holds <strong>{keyName}</strong>'s key — or pick a different
-						key chip above to sign with the device you have connected.
+						Plug in the Trezor that holds <strong>{multisig.keyName}</strong>'s key — or pick a
+						different key chip above to sign with the device you have connected.
 					</p>
 				{/if}
 			</div>
@@ -239,20 +284,28 @@
 					<Icon name="shield" size={15} /> Connect Trezor &amp; sign
 				{/if}
 			</button>
+			{#if !multisig && oncancel && !signing}
+				<button class="btn btn-ghost" onclick={() => oncancel?.()}>Cancel</button>
+			{/if}
 		</div>
 
 		{#if signing}
 			<p class="hint signing-hint">
 				<Icon name="clock" size={13} /> A Trezor Connect window will open — approve it there, then
-				unlock the device and confirm. The Trezor shows “{multisigName}”'s quorum and each output;
-				check the address on its screen first.
+				unlock the device and confirm.
+				{#if multisig}
+					The Trezor shows “{multisig.multisigName}”'s quorum and each output; check the address on
+					its screen first.
+				{:else}
+					Check the address on the Trezor's screen first.
+				{/if}
 			</p>
 		{/if}
 
-		{#if onusefile && !signing}
+		{#if multisig && onusefile && !signing}
 			<p class="fallback-line">
-				or <button type="button" class="fallback-link" onclick={onusefile}>sign with the file
-					method instead</button>
+				or <button type="button" class="fallback-link" onclick={onusefile}
+					>sign with the file method instead</button>
 			</p>
 		{/if}
 	{/if}
