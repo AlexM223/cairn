@@ -412,6 +412,37 @@ describe('multisig signing lifecycle (2-of-3 p2wsh)', () => {
 		expect(p.collected).toBeGreaterThanOrEqual(2); // never "1 of 2" on a complete tx
 	});
 
+	it('still attributes earlier signers when the last signer\'s tool finalizes (cairn-8y3b)', async () => {
+		// The 2026-07-06 quorum-matrix repro: a cosigner tool (Bitcoin Core
+		// descriptorprocesspsbt, and many others) FINALIZES the PSBT as it adds the
+		// quorum-completing signature, stripping only its own partialSig into the
+		// witness. Earlier signers' partialSigs survive on the combined PSBT, so
+		// progress must still attribute them — not report "0 of N signed" at the
+		// exact moment the transaction became complete.
+		const draft = await build2of3();
+		const combinedA = combineMultisigPsbts(draft.psbtBase64, signWith(draft.psbtBase64, SIGNERS[0]));
+
+		// Signer 1's tool: takes the combined PSBT, adds its signature, finalizes.
+		const bWork = combineMultisigPsbts(combinedA, signWith(combinedA, SIGNERS[1]));
+		const bTx = Transaction.fromPSBT(base64.decode(bWork));
+		bTx.finalize();
+		const bFinalized = base64.encode(bTx.toPSBT());
+
+		const result = combineMultisigPsbts(combinedA, bFinalized);
+		// The earlier signer's partialSig survives the combine (sanity check).
+		expect(partialSigCount(result, 0)).toBe(1);
+
+		const p = multisigPsbtProgress(result, 2);
+		expect(p.complete).toBe(true);
+		expect(p.collected).toBe(2); // a complete tx is fully signed
+		// Signer 0 (whose partialSig survived) IS attributed — no longer "0 of 2".
+		expect(p.signedFingerprints).toEqual([SIGNERS[0].fingerprint]);
+		expect(p.keys.find((k) => k.fingerprint === SIGNERS[0].fingerprint)?.signed).toBe(true);
+		// Signer 1 (the finalizer) is the only unattributable one — its signature
+		// now lives in the witness, not in a partialSig entry.
+		expect(p.keys.find((k) => k.fingerprint === SIGNERS[1].fingerprint)?.signed).toBe(false);
+	});
+
 	it('excludes the 00000000 placeholder fingerprint from attribution but still counts its signature', async () => {
 		const cfg: TestConfig = {
 			threshold: 2,
@@ -683,6 +714,93 @@ describe('quorum enforcement (3-of-5 p2wsh)', () => {
 		expect(multisigInputVsize('p2wsh', 3, 5)).toBe(140);
 		// A 15-of-15 witness script exceeds 252 bytes → 3-byte varint kicks in.
 		expect(multisigInputVsize('p2wsh', 15, 15)).toBe(41 + Math.ceil((2 + 15 * 73 + 3 + 513) / 4));
+	});
+});
+
+// ── quorum boundaries: M = 1 and M = N (unanimous) ───────────────────────────
+// Every other lifecycle test uses a strict 1 < M < N config (2-of-3, 3-of-5).
+// Off-by-one threshold bugs in signature counting/finalization live exactly at
+// these edges, so exercise them explicitly (cairn-6zo7).
+describe('quorum boundary: 1-of-N (single signature suffices)', () => {
+	const CFG_1OF3 = config(1, 3);
+
+	async function build1of3() {
+		return constructMultisigPsbt({
+			config: CFG_1OF3,
+			utxos: [multisigUtxo(CFG_1OF3, 200_000)],
+			recipients: [{ address: RECIPIENT, amount: 50_000 }],
+			feeRate: FEE_RATE,
+			changeIndex: 0
+		});
+	}
+
+	it('is not complete with zero signatures and refuses to finalize', async () => {
+		const draft = await build1of3();
+		const p = multisigPsbtProgress(draft.psbtBase64, 1);
+		expect(p).toMatchObject({ required: 1, collected: 0, complete: false });
+		expect(() => finalizeMultisigPsbt(draft.psbtBase64)).toThrow(MultisigPsbtError);
+	});
+
+	it('completes and finalizes on the FIRST signature, from any single cosigner', async () => {
+		const draft = await build1of3();
+		// The third key alone must satisfy a 1-of-3 — not just the first.
+		const signed = combineMultisigPsbts(draft.psbtBase64, signWith(draft.psbtBase64, SIGNERS[2]));
+		const p = multisigPsbtProgress(signed, 1);
+		expect(p).toMatchObject({ required: 1, collected: 1, complete: true });
+		expect(p.signedFingerprints).toEqual([SIGNERS[2].fingerprint]);
+
+		const { rawHex, txid } = finalizeMultisigPsbt(signed);
+		expect(
+			Transaction.fromRaw(hexToBytes(rawHex), { allowUnknownInputs: true, disableScriptCheck: true }).id
+		).toBe(txid);
+	});
+});
+
+describe('quorum boundary: N-of-N (unanimous)', () => {
+	const CFG_2OF2 = config(2, 2);
+	const CFG_3OF3 = config(3, 3);
+
+	it('2-of-2: needs BOTH signatures — one is not enough', async () => {
+		const draft = await constructMultisigPsbt({
+			config: CFG_2OF2,
+			utxos: [multisigUtxo(CFG_2OF2, 200_000)],
+			recipients: [{ address: RECIPIENT, amount: 50_000 }],
+			feeRate: FEE_RATE,
+			changeIndex: 0
+		});
+		const one = combineMultisigPsbts(draft.psbtBase64, signWith(draft.psbtBase64, SIGNERS[0]));
+		expect(multisigPsbtProgress(one, 2)).toMatchObject({ collected: 1, complete: false });
+		expect(() => finalizeMultisigPsbt(one)).toThrow(MultisigPsbtError);
+
+		const both = combineMultisigPsbts(one, signWith(one, SIGNERS[1]));
+		const p = multisigPsbtProgress(both, 2);
+		expect(p).toMatchObject({ collected: 2, complete: true });
+		expect(p.remainingFingerprints).toEqual([]);
+		expect(() => finalizeMultisigPsbt(both)).not.toThrow();
+	});
+
+	it('3-of-3: only the third signature completes the quorum', async () => {
+		const draft = await constructMultisigPsbt({
+			config: CFG_3OF3,
+			utxos: [multisigUtxo(CFG_3OF3, 300_000)],
+			recipients: [{ address: RECIPIENT, amount: 100_000 }],
+			feeRate: FEE_RATE,
+			changeIndex: 0
+		});
+		let psbt = combineMultisigPsbts(draft.psbtBase64, signWith(draft.psbtBase64, SIGNERS[0]));
+		expect(multisigPsbtProgress(psbt, 3)).toMatchObject({ collected: 1, complete: false });
+		psbt = combineMultisigPsbts(psbt, signWith(psbt, SIGNERS[1]));
+		expect(multisigPsbtProgress(psbt, 3)).toMatchObject({ collected: 2, complete: false });
+		expect(() => finalizeMultisigPsbt(psbt)).toThrow(MultisigPsbtError);
+
+		psbt = combineMultisigPsbts(psbt, signWith(psbt, SIGNERS[2]));
+		const p = multisigPsbtProgress(psbt, 3);
+		expect(p).toMatchObject({ collected: 3, complete: true });
+		expect(p.signedFingerprints.sort()).toEqual(
+			[SIGNERS[0].fingerprint, SIGNERS[1].fingerprint, SIGNERS[2].fingerprint].sort()
+		);
+		const { txid } = finalizeMultisigPsbt(psbt);
+		expect(txid).toMatch(/^[0-9a-f]{64}$/);
 	});
 });
 

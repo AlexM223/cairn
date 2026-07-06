@@ -836,25 +836,32 @@ export function multisigPsbtProgress(psbtBase64: string, threshold: number): Mul
 			if (fp !== '00000000') allFingerprints.add(fp);
 		}
 
-		if (inputFinalized(inp)) {
-			// Finalized inputs carry the quorum by construction; their partialSig
-			// (and often bip32Derivation) has been stripped, so per-key attribution
-			// is no longer possible for them.
-			minSigs = Math.min(minSigs, threshold);
-			continue;
-		}
-
+		// Attribute by exact pubkey → key origin, NEVER by bare fingerprint: keys
+		// from the same seed at different accounts share a fingerprint, and only
+		// this per-pubkey match tells them apart (cairn-x54).
 		let count = 0;
 		for (const [pubkey] of inp.partialSig ?? []) {
 			const hit = byPubkey.get(bytesToHex(pubkey));
 			if (hit === undefined) continue; // foreign sig — combine refuses these; don't count
 			count++;
-			// Attribute by exact pubkey → key origin, NEVER by bare fingerprint:
-			// keys from the same seed at different accounts share a fingerprint,
-			// and only this per-pubkey match tells them apart (cairn-x54).
 			keyStates.get(hit.keyId)!.signed = true;
 			if (hit.fp !== '00000000') signedFingerprints.add(hit.fp);
 		}
+
+		if (inputFinalized(inp)) {
+			// A finalized input's quorum is complete by construction, so its count is
+			// the threshold. But the tool that finalized it may have stripped only
+			// ITS OWN partialSig into the witness — the EARLIER signers' partialSigs
+			// often survive on the combined PSBT (combineMultisigPsbts keeps them).
+			// Attribute those (done just above) so the stepper shows "N-1 of N signed"
+			// instead of a misleading "0 of N" at the very moment the tx went complete
+			// — the one signer whose tool finalized is the only unattributable one
+			// (its sig lives in the witness now). Callers still trust complete/collected
+			// for the authoritative count (cairn-8y3b).
+			minSigs = Math.min(minSigs, threshold);
+			continue;
+		}
+
 		minSigs = Math.min(minSigs, count);
 	}
 
