@@ -77,12 +77,15 @@ export interface SavedMultisigTransaction {
 	updatedAt: string;
 }
 
-// Access tiers (see docs/COLLABORATIVE-CUSTODY-PLAN.md §3): reading a
-// transaction is a viewer-reachable surface (owner, viewer, or cosigner);
-// building/signing is cosigner-reachable (owner or role='cosigner'); broadcast
-// stays owner-only (gated at its call site with getMultisig directly). Every
-// gate returns null for a non-participant exactly like a missing wallet, so
-// callers surface a uniform 404 and never leak a wallet's existence.
+// Access tiers (see docs/COLLABORATIVE-CUSTODY-PLAN.md §3): a saved
+// transaction's FULL shape (raw PSBT — recipients, amounts, BIP32 derivation)
+// is cosigner-reachable (owner or role='cosigner'), consistent with the
+// key-path redaction viewers already get elsewhere (cairn-o1dp.1); viewers get
+// only the projected summary via listMultisigTransactionSummaries.
+// Building/signing is cosigner-reachable; broadcast stays owner-only (gated at
+// its call site with getMultisig directly). Every gate returns null for a
+// non-participant exactly like a missing wallet, so callers surface a uniform
+// 404 and never leak a wallet's existence.
 function viewableMultisig(userId: number, multisigId: number): MultisigRow | null {
 	return getViewableMultisig(userId, multisigId);
 }
@@ -137,7 +140,7 @@ export function getMultisigTransaction(
 	multisigId: number,
 	txId: number
 ): SavedMultisigTransaction | null {
-	if (!viewableMultisig(userId, multisigId)) return null;
+	if (!signableMultisig(userId, multisigId)) return null;
 	const row = db
 		.prepare('SELECT * FROM multisig_transactions WHERE id = ? AND multisig_id = ?')
 		.get(txId, multisigId) as Record<string, unknown> | undefined;
@@ -148,11 +151,43 @@ export function listMultisigTransactions(
 	userId: number,
 	multisigId: number
 ): SavedMultisigTransaction[] | null {
-	if (!viewableMultisig(userId, multisigId)) return null;
+	if (!signableMultisig(userId, multisigId)) return null;
 	const rows = db
 		.prepare('SELECT * FROM multisig_transactions WHERE multisig_id = ? ORDER BY created_at DESC, id DESC')
 		.all(multisigId) as Record<string, unknown>[];
 	return rows.map(mapRow);
+}
+
+/** The PSBT-free projection of a saved transaction a pure viewer may see. */
+export interface MultisigTransactionSummary {
+	id: number;
+	txid: string | null;
+	status: MultisigTxStatus;
+	feeRate: number;
+}
+
+/**
+ * Viewer-reachable list of saved transactions, projected down to the summary
+ * the wallet-overview page shows. Deliberately never selects the psbt (or
+ * recipient/amount) columns — a read-only viewer share must not be able to
+ * reconstruct an in-flight draft (cairn-o1dp.1).
+ */
+export function listMultisigTransactionSummaries(
+	userId: number,
+	multisigId: number
+): MultisigTransactionSummary[] | null {
+	if (!viewableMultisig(userId, multisigId)) return null;
+	const rows = db
+		.prepare(
+			'SELECT id, txid, status, fee_rate FROM multisig_transactions WHERE multisig_id = ? ORDER BY created_at DESC, id DESC'
+		)
+		.all(multisigId) as Record<string, unknown>[];
+	return rows.map((r) => ({
+		id: r.id as number,
+		txid: (r.txid as string | null) ?? null,
+		status: r.status as MultisigTxStatus,
+		feeRate: r.fee_rate as number
+	}));
 }
 
 /**

@@ -21,10 +21,15 @@ import {
 	multisigAccessRole,
 	redactMultisigKeysForViewer
 } from './multisigShares';
+import {
+	getMultisigTransaction,
+	listMultisigTransactions,
+	listMultisigTransactionSummaries
+} from './multisigTransactions';
 
 function wipe(): void {
 	db.exec(
-		'DELETE FROM multisig_shares; DELETE FROM multisig_keys; DELETE FROM multisigs; DELETE FROM contacts; DELETE FROM sessions; DELETE FROM users; DELETE FROM settings;'
+		'DELETE FROM multisig_transactions; DELETE FROM multisig_shares; DELETE FROM multisig_keys; DELETE FROM multisigs; DELETE FROM contacts; DELETE FROM sessions; DELETE FROM users; DELETE FROM settings;'
 	);
 }
 
@@ -113,6 +118,50 @@ describe('collaborative custody access gates (cairn-xkpd)', () => {
 		// The sign gate rejects a pure viewer — they never reach the send flow.
 		expect(getSignableMultisig(carol, msId)).toBeNull();
 		expect(multisigAccessRole(carol, msId)).toBe('viewer');
+	});
+
+	it('a viewer cannot fetch a saved transaction (raw PSBT) — only the summary (cairn-o1dp.1)', () => {
+		const owner = makeUser('owner@example.com');
+		const bob = makeUser('bob@example.com');
+		const carol = makeUser('carol@example.com');
+		const { msId, keyIds } = makeMultisig(owner);
+		befriend(owner, bob);
+		befriend(owner, carol);
+		shareMultisig(owner, msId, bob, 'cosigner', [keyIds[1]]);
+		shareMultisig(owner, msId, carol, 'viewer');
+
+		// An in-flight, unbroadcast draft with its (secret-bearing) PSBT.
+		const txId = Number(
+			db
+				.prepare(
+					`INSERT INTO multisig_transactions
+					   (multisig_id, status, psbt, recipient, amount, fee, fee_rate)
+					 VALUES (?, 'awaiting_signature', 'cHNidP8BAF4CAAAAAA==', 'bc1qexample', 100000, 500, 5)`
+				)
+				.run(msId).lastInsertRowid
+		);
+
+		// Owner and cosigner get the full shape (detail, list) — the PSBT rides along.
+		for (const uid of [owner, bob]) {
+			expect(getMultisigTransaction(uid, msId, txId)?.psbt).toBe('cHNidP8BAF4CAAAAAA==');
+			expect(listMultisigTransactions(uid, msId)).toHaveLength(1);
+		}
+
+		// A pure viewer is denied on the full-shape functions (→ 404 on the detail,
+		// file-download, and list routes built on them)...
+		expect(getMultisigTransaction(carol, msId, txId)).toBeNull();
+		expect(listMultisigTransactions(carol, msId)).toBeNull();
+
+		// ...but keeps the PSBT-free overview summary.
+		const summaries = listMultisigTransactionSummaries(carol, msId);
+		expect(summaries).toHaveLength(1);
+		expect(summaries![0]).toEqual({ id: txId, txid: null, status: 'awaiting_signature', feeRate: 5 });
+		expect(JSON.stringify(summaries)).not.toContain('cHNidP8');
+
+		// A non-participant sees nothing at any tier.
+		const outsider = makeUser('outsider@example.com');
+		expect(getMultisigTransaction(outsider, msId, txId)).toBeNull();
+		expect(listMultisigTransactionSummaries(outsider, msId)).toBeNull();
 	});
 
 	it('redacts other keys’ paths for a cosigner but reveals their own', () => {

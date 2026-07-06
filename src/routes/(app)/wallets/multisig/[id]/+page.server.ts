@@ -16,7 +16,7 @@ import {
 } from '$lib/server/multisigScan';
 import { multisigToDescriptor } from '$lib/server/bitcoin/multisig';
 import {
-	listMultisigTransactions,
+	listMultisigTransactionSummaries,
 	detectMultisigUnconfirmedInflows
 } from '$lib/server/multisigTransactions';
 import { isBackedUp } from '$lib/server/backups';
@@ -113,12 +113,10 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 		} catch {
 			speedUp = [];
 		}
-		const savedTxs = (listMultisigTransactions(locals.user!.id, id) ?? []).map((t) => ({
-			id: t.id,
-			txid: t.txid,
-			status: t.status,
-			feeRate: t.feeRate
-		}));
+		// Already the viewer-safe projection (no PSBT/recipients) — the summary
+		// list stays viewer-reachable while the full-shape functions are
+		// cosigner-gated (cairn-o1dp.1).
+		const savedTxs = listMultisigTransactionSummaries(locals.user!.id, id) ?? [];
 
 		return {
 			...base,

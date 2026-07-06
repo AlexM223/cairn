@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { requireUser, readJson } from '$lib/server/api';
-import { getViewableMultisig, getSignableMultisig } from '$lib/server/wallets/multisig';
+import { getSignableMultisig } from '$lib/server/wallets/multisig';
 import {
 	getMultisigTransaction,
 	attachMultisigSignature,
@@ -36,8 +36,10 @@ function safeSummary(psbt: string): PsbtSummary | null {
 export const GET: RequestHandler = async (event) => {
 	const user = requireUser(event);
 	const { multisigId, txId } = ids(event);
-	// Reading a transaction is a viewer-reachable surface.
-	const multisig = getViewableMultisig(user.id, multisigId);
+	// The full transaction shape carries the raw PSBT (recipients, amounts, BIP32
+	// derivation), so it is cosigner-reachable — a read-only viewer only gets the
+	// projected summary on the wallet overview (cairn-o1dp.1).
+	const multisig = getSignableMultisig(user.id, multisigId);
 	const tx = multisig ? getMultisigTransaction(user.id, multisigId, txId) : null;
 	if (!multisig || !tx) return json({ error: 'Transaction not found' }, { status: 404 });
 	return json({
