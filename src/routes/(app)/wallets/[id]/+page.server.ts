@@ -14,6 +14,7 @@ import {
 	detectWalletUnconfirmedInflows
 } from '$lib/server/transactions';
 import { getChain } from '$lib/server/chain';
+import { getAddressLabels } from '$lib/server/addressLabels';
 import type { Actions, PageServerLoad } from './$types';
 
 const QR_OPTS = {
@@ -45,6 +46,8 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 		imported: url.searchParams.get('imported') === '1',
 		// Tx labels are local bookkeeping — one cheap SQLite read, no network.
 		labels: getLabels(locals.user!.id, id) ?? {},
+		// Address labels (cairn-nbsx) — annotate why an address exists; local read.
+		addressLabels: getAddressLabels('wallet', id),
 		// Saved transactions in the draft → awaiting-signature → broadcast
 		// lifecycle. Cheap local SQLite read, newest first.
 		transactions: listTransactions(locals.user!.id, id) ?? []

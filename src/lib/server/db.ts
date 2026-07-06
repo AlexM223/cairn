@@ -455,6 +455,25 @@ db.exec(`
 	CREATE INDEX IF NOT EXISTS idx_wallet_scan_cache_kind ON wallet_scan_cache(kind);
 `);
 
+// Address-level labels (see src/lib/server/addressLabels.ts and cairn-nbsx).
+// Complements tx_labels: lets a user annotate WHY an individual address exists
+// ("exchange deposit", "donation address") independent of any single tx. One row
+// per (wallet_kind, wallet_id, address). wallet_kind ('wallet' | 'multisig')
+// disambiguates the id, which isn't unique across the two tables — so there's no
+// single FK; rows are cleared explicitly when a wallet/multisig is deleted
+// (deleteWallet / deleteMultisig), same pattern as notified_txids. Private to the
+// instance, never shared.
+db.exec(`
+	CREATE TABLE IF NOT EXISTS address_labels (
+		wallet_kind TEXT NOT NULL,   -- 'wallet' | 'multisig'
+		wallet_id   INTEGER NOT NULL,
+		address     TEXT NOT NULL,
+		label       TEXT NOT NULL,
+		created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		PRIMARY KEY (wallet_kind, wallet_id, address)
+	);
+`);
+
 // Passkey (WebAuthn) credentials — auth is passkey-only, no passwords. Each
 // user can register several (phone + laptop + security key), so an account never
 // depends on a single device. See src/lib/server/webauthn.ts.

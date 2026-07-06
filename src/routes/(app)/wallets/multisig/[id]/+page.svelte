@@ -179,6 +179,55 @@
 	);
 	const shownAddrs = $derived(addrFilter === 'used' ? usedAddrs : unusedAddrs);
 
+	// --- address labels (cairn-nbsx) ---
+	let addrLabelOverrides = $state<Record<string, string>>({});
+	const addressLabels = $derived<Record<string, string>>({
+		...data.addressLabels,
+		...addrLabelOverrides
+	});
+	let editingAddr = $state<string | null>(null);
+	let addrEditValue = $state('');
+	let savingAddrLabel = $state(false);
+
+	function startAddrLabelEdit(address: string) {
+		editingAddr = address;
+		addrEditValue = addressLabels[address] ?? '';
+	}
+	function cancelAddrLabelEdit() {
+		editingAddr = null;
+	}
+	function focusAddrInput(node: HTMLInputElement) {
+		node.focus();
+		node.select();
+	}
+	async function saveAddrLabel() {
+		if (editingAddr === null || savingAddrLabel) return;
+		const address = editingAddr;
+		const next = addrEditValue.trim().slice(0, 120);
+		const prev = addressLabels[address] ?? '';
+		if (next === prev) {
+			cancelAddrLabelEdit();
+			return;
+		}
+		addrLabelOverrides = { ...addrLabelOverrides, [address]: next };
+		editingAddr = null;
+		savingAddrLabel = true;
+		try {
+			const res = await fetch(`/api/wallets/multisig/${data.multisig.id}/address-labels`, {
+				method: 'PUT',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ address, label: next })
+			});
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+		} catch {
+			addrLabelOverrides = { ...addrLabelOverrides, [address]: prev };
+			editingAddr = address;
+			addrEditValue = next;
+		} finally {
+			savingAddrLabel = false;
+		}
+	}
+
 	// --- address transparency (cairn-h73) ---
 	// When every key was created at the same account path, each address has ONE
 	// unambiguous full path to show. When key paths differ (mixed devices),
@@ -815,6 +864,7 @@
 								<tr>
 									<th>Path</th>
 									<th>Address</th>
+									<th>Label</th>
 									<th class="num">Balance</th>
 									<th class="num">Txs</th>
 									<th></th>
@@ -849,6 +899,39 @@
 										<td class="addr-cell">
 											<CopyText value={addr.address} truncate={12} />
 										</td>
+										<td class="addr-label-cell">
+											{#if editingAddr === addr.address}
+												<input
+													class="input addr-label-input"
+													bind:value={addrEditValue}
+													maxlength="120"
+													placeholder="e.g. donation address"
+													use:focusAddrInput
+													onkeydown={(e) => {
+														if (e.key === 'Enter') saveAddrLabel();
+														else if (e.key === 'Escape') cancelAddrLabelEdit();
+													}}
+													onblur={saveAddrLabel}
+												/>
+											{:else if addressLabels[addr.address]}
+												<button
+													type="button"
+													class="addr-label-btn has-label"
+													onclick={() => startAddrLabelEdit(addr.address)}
+													title="Edit label"
+												>
+													{addressLabels[addr.address]}
+												</button>
+											{:else}
+												<button
+													type="button"
+													class="addr-label-btn add-label"
+													onclick={() => startAddrLabelEdit(addr.address)}
+												>
+													+ Add label
+												</button>
+											{/if}
+										</td>
 										<td class="num" title="{formatSats(addr.balance)} sats">
 											{#if addr.balance !== 0}
 												{formatBtc(addr.balance)}
@@ -872,7 +955,7 @@
 									</tr>
 									{#if openAddrKey === `${addr.chain}/${addr.index}`}
 										<tr class="addr-detail-row">
-											<td colspan="5">
+											<td colspan="6">
 												<AddressScriptDetails
 													multisigId={data.multisig.id}
 													chain={addr.chain}
@@ -1354,6 +1437,53 @@
 
 	.addr-cell {
 		max-width: 320px;
+	}
+
+	/* --- address labels (cairn-nbsx) --- */
+	.addr-label-cell {
+		max-width: 200px;
+	}
+
+	.addr-label-btn {
+		background: none;
+		border: none;
+		padding: 2px 4px;
+		margin: -2px -4px;
+		border-radius: var(--radius-chip);
+		font-family: var(--font-ui);
+		font-size: 12.5px;
+		text-align: left;
+		cursor: pointer;
+		max-width: 100%;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.addr-label-btn.has-label {
+		color: var(--text);
+	}
+
+	.addr-label-btn.has-label:hover {
+		background: var(--surface-elevated);
+	}
+
+	.addr-label-btn.add-label {
+		color: var(--text-muted);
+		opacity: 0;
+		transition: opacity 120ms var(--ease);
+	}
+
+	tr:hover .addr-label-btn.add-label,
+	.addr-label-btn.add-label:focus-visible {
+		opacity: 1;
+	}
+
+	.addr-label-input {
+		font-size: 12.5px;
+		padding: 3px 6px;
+		width: 100%;
+		max-width: 190px;
 	}
 
 	/* --- address transparency (cairn-h73) --- */

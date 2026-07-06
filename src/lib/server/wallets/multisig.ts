@@ -11,6 +11,7 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { createBase58check } from '@scure/base';
 import { db } from '../db';
+import { deleteAddressLabels } from '../addressLabels';
 import {
 	MultisigError,
 	multisigTestAddress,
@@ -292,6 +293,8 @@ export function deleteMultisig(userId: number, id: number): boolean {
 		// notified_txids has no FK to multisigs (cairn-zari) and won't cascade —
 		// clear this multisig's dedup rows explicitly to avoid orphans.
 		db.prepare("DELETE FROM notified_txids WHERE wallet_kind = 'multisig' AND wallet_id = ?").run(id);
+		// address_labels has no FK to multisigs either — clear explicitly (cairn-nbsx).
+		deleteAddressLabels('multisig', id);
 	}
 	return info.changes > 0;
 }

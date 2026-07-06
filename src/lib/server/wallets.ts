@@ -12,6 +12,7 @@ import {
 	type WalletScanResult
 } from './bitcoin/walletScan';
 import { childLogger } from './logger';
+import { deleteAddressLabels } from './addressLabels';
 import type { ScriptType, WalletDeviceType, WalletSummary } from '$lib/types';
 
 const GAP_LIMIT = 20;
@@ -205,6 +206,9 @@ export function deleteWallet(userId: number, id: number): boolean {
 	// notified_txids has no FK to wallets (cairn-zari), so it won't cascade —
 	// clear this wallet's dedup rows explicitly to avoid orphans accumulating.
 	db.prepare("DELETE FROM notified_txids WHERE wallet_kind = 'wallet' AND wallet_id = ?").run(id);
+	// address_labels has no FK to wallets (id isn't unique across kinds) — clear
+	// this wallet's rows explicitly so annotations don't orphan (cairn-nbsx).
+	deleteAddressLabels('wallet', id);
 	invalidateWalletCache(row.xpub);
 	return true;
 }

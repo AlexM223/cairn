@@ -21,6 +21,7 @@ import {
 } from '$lib/server/multisigTransactions';
 import { isBackedUp } from '$lib/server/backups';
 import { getChain } from '$lib/server/chain';
+import { getAddressLabels } from '$lib/server/addressLabels';
 import type { Actions, PageServerLoad } from './$types';
 
 const QR_OPTS = {
@@ -73,7 +74,9 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 		// The descriptor embeds every key's origin path. Owners and cosigners need
 		// it (cosigners register the full quorum on their device to sign); a pure
 		// viewer never signs, so they don't get it (plan §6).
-		descriptor: role === 'viewer' ? null : multisigToDescriptor(toMultisigConfig(multisig))
+		descriptor: role === 'viewer' ? null : multisigToDescriptor(toMultisigConfig(multisig)),
+		// Address labels (cairn-nbsx) — shared annotations for this vault; local read.
+		addressLabels: getAddressLabels('multisig', id)
 	};
 
 	try {
