@@ -295,6 +295,10 @@ export function deleteMultisig(userId: number, id: number): boolean {
 		db.prepare("DELETE FROM notified_txids WHERE wallet_kind = 'multisig' AND wallet_id = ?").run(id);
 		// address_labels has no FK to multisigs either — clear explicitly (cairn-nbsx).
 		deleteAddressLabels('multisig', id);
+		// Same no-FK shape for the backup-status ledgers — a reused id must not
+		// inherit the old wallet's "already backed up" state (cairn-zui7.6).
+		db.prepare("DELETE FROM wallet_backups WHERE wallet_kind = 'multisig' AND wallet_id = ?").run(id);
+		db.prepare("DELETE FROM backup_missing_notified WHERE wallet_kind = 'multisig' AND wallet_id = ?").run(id);
 	}
 	return info.changes > 0;
 }

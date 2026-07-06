@@ -15,7 +15,7 @@ import { deleteMultisig } from './wallets/multisig';
 
 function wipe(): void {
 	db.exec(
-		'DELETE FROM notified_txids; DELETE FROM multisigs; DELETE FROM wallets; DELETE FROM sessions; DELETE FROM users; DELETE FROM settings;'
+		'DELETE FROM notified_txids; DELETE FROM wallet_backups; DELETE FROM backup_missing_notified; DELETE FROM multisigs; DELETE FROM wallets; DELETE FROM sessions; DELETE FROM users; DELETE FROM settings;'
 	);
 }
 
@@ -113,5 +113,54 @@ describe('notified_txids cleanup on wallet deletion (cairn-h8xo)', () => {
 
 		expect(deleteMultisig(other.id, ms)).toBe(false);
 		expect(notifiedCount('multisig', ms)).toBe(1);
+	});
+});
+
+// wallet_backups / backup_missing_notified share notified_txids' no-FK
+// (wallet_kind, wallet_id) shape and needed the same hand cleanup — a reused
+// wallet id must not inherit the old wallet's backup status (cairn-zui7.6).
+describe('backup-status ledger cleanup on wallet deletion (cairn-zui7.6)', () => {
+	function seedBackupRows(kind: 'wallet' | 'multisig', walletId: number, userId: number): void {
+		db.prepare(
+			'INSERT INTO wallet_backups (user_id, wallet_kind, wallet_id) VALUES (?, ?, ?)'
+		).run(userId, kind, walletId);
+		db.prepare(
+			'INSERT INTO backup_missing_notified (wallet_kind, wallet_id) VALUES (?, ?)'
+		).run(kind, walletId);
+	}
+
+	function ledgerCount(table: string, kind: 'wallet' | 'multisig', walletId: number): number {
+		return (
+			db
+				.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE wallet_kind = ? AND wallet_id = ?`)
+				.get(kind, walletId) as { n: number }
+		).n;
+	}
+
+	it('deleteWallet clears both ledgers for that wallet, kind-scoped', () => {
+		const user = makeUser('owner@example.com');
+		const gone = makeWallet(user.id);
+		seedBackupRows('wallet', gone, user.id);
+		// A multisig row with the same numeric id — must survive.
+		seedBackupRows('multisig', gone, user.id);
+
+		expect(deleteWallet(user.id, gone)).toBe(true);
+		expect(ledgerCount('wallet_backups', 'wallet', gone)).toBe(0);
+		expect(ledgerCount('backup_missing_notified', 'wallet', gone)).toBe(0);
+		expect(ledgerCount('wallet_backups', 'multisig', gone)).toBe(1);
+		expect(ledgerCount('backup_missing_notified', 'multisig', gone)).toBe(1);
+	});
+
+	it('deleteMultisig clears both ledgers for that multisig, kind-scoped', () => {
+		const user = makeUser('owner@example.com');
+		const gone = makeMultisig(user.id);
+		seedBackupRows('multisig', gone, user.id);
+		seedBackupRows('wallet', gone, user.id);
+
+		expect(deleteMultisig(user.id, gone)).toBe(true);
+		expect(ledgerCount('wallet_backups', 'multisig', gone)).toBe(0);
+		expect(ledgerCount('backup_missing_notified', 'multisig', gone)).toBe(0);
+		expect(ledgerCount('wallet_backups', 'wallet', gone)).toBe(1);
+		expect(ledgerCount('backup_missing_notified', 'wallet', gone)).toBe(1);
 	});
 });

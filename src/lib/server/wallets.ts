@@ -209,6 +209,11 @@ export function deleteWallet(userId: number, id: number): boolean {
 	// address_labels has no FK to wallets (id isn't unique across kinds) — clear
 	// this wallet's rows explicitly so annotations don't orphan (cairn-nbsx).
 	deleteAddressLabels('wallet', id);
+	// wallet_backups / backup_missing_notified share the same no-FK
+	// (wallet_kind, wallet_id) shape — clear them too, or a reused wallet id
+	// could read as "already backed up" (cairn-zui7.6).
+	db.prepare("DELETE FROM wallet_backups WHERE wallet_kind = 'wallet' AND wallet_id = ?").run(id);
+	db.prepare("DELETE FROM backup_missing_notified WHERE wallet_kind = 'wallet' AND wallet_id = ?").run(id);
 	invalidateWalletCache(row.xpub);
 	return true;
 }

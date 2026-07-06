@@ -101,11 +101,22 @@ export function purgeExpiredAuthRows(): void {
 	db.prepare('DELETE FROM recovery_grants WHERE expires_at < ?').run(now);
 }
 
+// ---------------------------------------------------------------------------
+// known_devices (cairn-zui7.5) — one (user, UA-hash) row per device forever,
+// written for new-device detection and never read back anywhere else. A device
+// not seen in 12 months is stale for that purpose (its next sign-in just reads
+// as a new device again) — no reason to retain the user_agent indefinitely.
+// ---------------------------------------------------------------------------
+export function purgeStaleKnownDevices(): void {
+	db.prepare('DELETE FROM known_devices WHERE last_seen < ?').run(isoDaysAgo(365));
+}
+
 // The registered purge steps, run in order.
 const STEPS: RetentionStep[] = [
 	{ name: 'balance_snapshots', run: purgeBalanceSnapshots },
 	{ name: 'notification_queue', run: purgeNotificationQueue },
-	{ name: 'expired_auth_rows', run: purgeExpiredAuthRows }
+	{ name: 'expired_auth_rows', run: purgeExpiredAuthRows },
+	{ name: 'known_devices', run: purgeStaleKnownDevices }
 ];
 
 /** Outcome of one step in a sweep — surfaced for tests and log summaries. */

@@ -14,6 +14,7 @@ import {
 	purgeBalanceSnapshots,
 	purgeNotificationQueue,
 	purgeExpiredAuthRows,
+	purgeStaleKnownDevices,
 	type RetentionStep
 } from './dataRetention';
 
@@ -206,6 +207,29 @@ describe('purgeNotificationQueue (cairn-zui7.3)', () => {
 		expect(ids.has(oldSent)).toBe(false);
 		expect(ids.has(oldDead)).toBe(false);
 		for (const id of [newSent, newDead, oldPending, oldFailed]) expect(ids.has(id)).toBe(true);
+	});
+});
+
+describe('purgeStaleKnownDevices (cairn-zui7.5)', () => {
+	beforeEach(() => {
+		wipeData();
+		seedUserAndWallet();
+		db.exec('DELETE FROM known_devices');
+	});
+
+	it('removes devices last seen over 12 months ago, keeps recent ones', () => {
+		const insert = db.prepare(
+			'INSERT INTO known_devices (user_id, fingerprint, user_agent, last_seen) VALUES (?, ?, ?, ?)'
+		);
+		insert.run(userId, 'fp-stale', 'OldBrowser/1.0', isoDaysAgo(400));
+		insert.run(userId, 'fp-recent', 'Browser/2.0', isoDaysAgo(30));
+
+		purgeStaleKnownDevices();
+
+		const rows = db.prepare('SELECT fingerprint FROM known_devices').all() as {
+			fingerprint: string;
+		}[];
+		expect(rows.map((r) => r.fingerprint)).toEqual(['fp-recent']);
 	});
 });
 
