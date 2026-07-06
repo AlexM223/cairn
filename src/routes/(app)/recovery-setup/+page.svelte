@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { copyToClipboard } from '$lib/clipboard';
 	import Icon from '$lib/components/Icon.svelte';
 	import Stepper from '$lib/components/Stepper.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
@@ -81,7 +82,7 @@
 
 	function copyAllCodes() {
 		if (!codes) return;
-		navigator.clipboard.writeText(codes.join('\n'));
+		void copyToClipboard(codes.join('\n'));
 	}
 
 	function downloadCodes() {
