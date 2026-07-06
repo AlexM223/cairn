@@ -20,14 +20,14 @@ import {
 import {
 	PsbtError,
 	assertSameTransaction,
-	MAX_FEE_RATE,
 	RBF_SEQUENCE,
+	selectSpendCandidates,
+	validateRecipientsAndFeeRate,
 	type SpendableUtxo,
 	type RecipientSpec
 } from './psbt';
-import { addressToScriptPubKey, isValidAddress } from './xpub';
+import { addressToScriptPubKey } from './xpub';
 import { signingMassFromFetchedParents, type SigningMass } from './signingMass';
-import { coinbaseMaturity, isImmatureCoinbase } from '$lib/shared/coinbase';
 
 /** The only sighash flag Cairn accepts on a co-signer signature: SIGHASH_ALL —
  *  the whole-transaction commitment. Enforced in combineMultisigPsbts. */
@@ -254,113 +254,12 @@ export async function constructMultisigPsbt(params: MultisigConstructParams): Pr
 	const threshold = config.threshold;
 	const keyCount = config.keys.length;
 
-	// ---- recipient / fee validation (same rules and messages as psbt.ts) ----
-	if (!Array.isArray(params.recipients) || params.recipients.length === 0) {
-		throw new PsbtError('At least one recipient is required.', 'invalid_recipient');
-	}
-	for (const r of params.recipients) {
-		if (!isValidAddress(r.address)) {
-			throw new PsbtError(
-				params.recipients.length === 1
-					? 'That does not look like a valid Bitcoin address.'
-					: `"${r.address}" does not look like a valid Bitcoin address.`,
-				'invalid_recipient'
-			);
-		}
-	}
-	if (!Number.isFinite(feeRate) || feeRate < 1) {
-		throw new PsbtError('Fee rate must be at least 1 sat/vB.', 'invalid_amount');
-	}
-	if (feeRate > MAX_FEE_RATE) {
-		throw new PsbtError(
-			`A fee rate above ${MAX_FEE_RATE} sat/vB is almost certainly a mistake — refusing to build this transaction.`,
-			'invalid_amount'
-		);
-	}
-	const sendMax = params.recipients.some((r) => r.amount === 'max');
-	if (sendMax && params.recipients.length > 1) {
-		throw new PsbtError(
-			'Send-max only works with a single recipient — a sweep cannot be split across several destinations.',
-			'invalid_amount'
-		);
-	}
-	for (const r of params.recipients) {
-		if (r.amount !== 'max' && (!Number.isInteger(r.amount) || r.amount <= 0)) {
-			throw new PsbtError(
-				params.recipients.length === 1
-					? 'Amount must be a positive number of sats.'
-					: `The amount for ${r.address} must be a positive number of sats.`,
-				'invalid_amount'
-			);
-		}
-	}
-
-	// ---- candidate coins (see docs/CPFP-UNCONFIRMED-PLAN.md §1, §6) ----------
-	// Coin control honors the user's explicit selection (including an unconfirmed
-	// received coin they opted into); automatic selection admits confirmed coins
-	// plus the wallet's OWN unconfirmed change, never a stranger's unconfirmed
-	// coin. Confirmed coins are still preferred first (the sort below).
-	const coinControl = (params.onlyUtxos?.length ?? 0) > 0;
-	let spendable: SpendableUtxo[];
-	if (params.exactInputs) {
-		// RBF replacement: the original's own inputs, spent verbatim (they were
-		// already confirmed when the original was built — no eligibility filtering).
-		spendable = params.utxos;
-	} else if (coinControl) {
-		const allow = new Set(params.onlyUtxos!.map((o) => `${o.txid}:${o.vout}`));
-		spendable = params.utxos.filter((u) => allow.has(`${u.txid}:${u.vout}`));
-		if (spendable.length === 0) {
-			throw new PsbtError(
-				'None of the selected coins are spendable right now — they may be already spent.',
-				'no_utxos'
-			);
-		}
-	} else {
-		spendable = params.utxos.filter(
-			(u) => u.height > 0 || u.unconfirmedTrust === 'own-change'
-		);
-	}
-	if (spendable.length === 0) {
-		throw new PsbtError('This multisig has no spendable coins right now.', 'no_utxos');
-	}
-
-	// Coinbase maturity (100-confirmation consensus rule): skip immature mining
-	// rewards in auto-selection; reject an explicitly-chosen immature one. An RBF
-	// replacement reuses inputs that already funded a broadcast tx, so they are
-	// necessarily mature — skip the check entirely.
-	if (params.tipHeight != null && !params.exactInputs) {
-		const tip = params.tipHeight;
-		const isImmature = (u: SpendableUtxo) => u.coinbase === true && isImmatureCoinbase(u.height, tip);
-		// Unverifiable coinbase-ness (chain hiccup, cairn-7fmd) inside the maturity
-		// window: can't prove it's safe, so treat conservatively. Coins past 100
-		// confirmations are safe regardless of coinbase status.
-		const isUnverifiable = (u: SpendableUtxo) =>
-			u.coinbase === 'unknown' && isImmatureCoinbase(u.height, tip);
-
-		const immature = spendable.filter(isImmature);
-		const unverifiable = spendable.filter(isUnverifiable);
-
-		if (coinControl && unverifiable.length > 0) {
-			throw new PsbtError(
-				"Couldn't verify whether a selected coin is a mature mining reward — the chain lookup failed. Try again in a moment.",
-				'immature_coinbase'
-			);
-		}
-		if (immature.length > 0 && coinControl) {
-			const m = coinbaseMaturity(immature[0].height, tip);
-			throw new PsbtError(
-				`A selected coin is an immature mining reward — it needs ${m.blocksRemaining} more confirmation${m.blocksRemaining === 1 ? '' : 's'} (~${m.etaHours}h) before it can be spent.`,
-				'immature_coinbase'
-			);
-		}
-
-		if (immature.length > 0 || unverifiable.length > 0) {
-			spendable = spendable.filter((u) => !isImmature(u) && !isUnverifiable(u));
-			if (spendable.length === 0) {
-				throw new PsbtError('This multisig has no mature coins to spend right now.', 'no_utxos');
-			}
-		}
-	}
+	// Recipient/fee validation and coin eligibility + coinbase maturity are the
+	// shared spend rules in psbt.ts (validateRecipientsAndFeeRate /
+	// selectSpendCandidates) — one source for both wallet types. Confirmed coins
+	// are still preferred first (the sort below).
+	const { sendMax } = validateRecipientsAndFeeRate(params.recipients, feeRate);
+	const { spendable, coinControl } = selectSpendCandidates(params, 'multisig');
 
 	// ---- per-address derivation cache (several UTXOs can share an address) --
 	const derivationCache = new Map<

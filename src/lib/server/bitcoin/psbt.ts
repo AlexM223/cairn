@@ -226,21 +226,30 @@ export function estimateTxVsize(
 	);
 }
 
-/**
- * Build an unsigned PSBT. Pure with respect to the chain: every external
- * datum (UTXOs, prev txs) comes in through params, which keeps this
- * deterministic and unit-testable.
- */
-export async function constructPsbt(params: ConstructParams): Promise<ConstructedPsbt> {
-	const { feeRate } = params;
+// ------------------------------------------------------ shared spend rules
+//
+// constructPsbt and constructMultisigPsbt enforce the exact same recipient,
+// fee, coin-eligibility, and coinbase-maturity rules with the exact same
+// user-facing messages. These helpers are the single source of those rules —
+// multisigPsbt.ts used to carry a verbatim copy of each block.
 
-	if (!Array.isArray(params.recipients) || params.recipients.length === 0) {
+/**
+ * Recipient / fee-rate validation shared by single-sig and multisig PSBT
+ * construction. Returns whether this spend is a send-max sweep: 'max' sweeps
+ * the whole (candidate) balance — meaningless alongside other recipients, so
+ * it is only accepted as the sole output.
+ */
+export function validateRecipientsAndFeeRate(
+	recipients: RecipientSpec[],
+	feeRate: number
+): { sendMax: boolean } {
+	if (!Array.isArray(recipients) || recipients.length === 0) {
 		throw new PsbtError('At least one recipient is required.', 'invalid_recipient');
 	}
-	for (const r of params.recipients) {
+	for (const r of recipients) {
 		if (!isValidAddress(r.address)) {
 			throw new PsbtError(
-				params.recipients.length === 1
+				recipients.length === 1
 					? 'That does not look like a valid Bitcoin address.'
 					: `"${r.address}" does not look like a valid Bitcoin address.`,
 				'invalid_recipient'
@@ -256,42 +265,56 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 			'invalid_amount'
 		);
 	}
-	// 'max' sweeps the whole (candidate) balance — meaningless alongside other
-	// recipients, so it is only accepted as the sole output.
-	const sendMax = params.recipients.some((r) => r.amount === 'max');
-	if (sendMax && params.recipients.length > 1) {
+	const sendMax = recipients.some((r) => r.amount === 'max');
+	if (sendMax && recipients.length > 1) {
 		throw new PsbtError(
 			'Send-max only works with a single recipient — a sweep cannot be split across several destinations.',
 			'invalid_amount'
 		);
 	}
-	for (const r of params.recipients) {
+	for (const r of recipients) {
 		if (r.amount !== 'max' && (!Number.isInteger(r.amount) || r.amount <= 0)) {
 			throw new PsbtError(
-				params.recipients.length === 1
+				recipients.length === 1
 					? 'Amount must be a positive number of sats.'
 					: `The amount for ${r.address} must be a positive number of sats.`,
 				'invalid_amount'
 			);
 		}
 	}
+	return { sendMax };
+}
 
-	const parsed = parseXpub(params.xpub);
-	const scriptType = parsed.scriptType;
-	if (!(scriptType in INPUT_VSIZE)) {
-		throw new PsbtError(`Spending from ${scriptType} wallets is not supported yet.`, 'construction_failed');
-	}
-
-	// Coin eligibility (see docs/CPFP-UNCONFIRMED-PLAN.md §1, §6):
-	//  - exactInputs (RBF replacement): spend the original tx's own inputs
-	//    verbatim — they were already confirmed when the original was built.
-	//  - coin control: the user picked coins explicitly, so honor exactly that
-	//    set, INCLUDING an unconfirmed received coin they knowingly opted into.
-	//  - automatic: confirmed coins plus the wallet's OWN unconfirmed change, but
-	//    never an unconfirmed coin received from elsewhere — a normal send must
-	//    not silently become hostage to a stranger's unconfirmed tx. Confirmed
-	//    coins are still preferred (the two-pass selection on the normal path
-	//    below only reaches for unconfirmed change when confirmed can't cover it).
+/**
+ * Candidate-coin eligibility + coinbase-maturity filtering shared by
+ * single-sig and multisig spends (see docs/CPFP-UNCONFIRMED-PLAN.md §1, §6):
+ *
+ *  - exactInputs (RBF replacement): spend the original tx's own inputs
+ *    verbatim — they were already confirmed when the original was built, so
+ *    eligibility and maturity filtering are skipped entirely.
+ *  - coin control: the user picked coins explicitly, so honor exactly that
+ *    set, INCLUDING an unconfirmed received coin they knowingly opted into —
+ *    but reject an explicitly-chosen immature mining reward (or one whose
+ *    coinbase-ness couldn't be verified inside the maturity window,
+ *    cairn-7fmd) with a clear message rather than building an invalid tx.
+ *  - automatic: confirmed coins plus the wallet's OWN unconfirmed change,
+ *    never an unconfirmed coin received from elsewhere — a normal send must
+ *    not silently become hostage to a stranger's unconfirmed tx. Immature and
+ *    unverifiable-young coinbase coins are silently dropped.
+ *
+ * `walletNoun` labels the coin source in user-facing errors ("wallet" or
+ * "multisig"); the callers' selection preferences (confirmed-first ordering,
+ * low-mass bias) stay caller-side.
+ */
+export function selectSpendCandidates(
+	params: {
+		utxos: SpendableUtxo[];
+		onlyUtxos?: { txid: string; vout: number }[];
+		exactInputs?: boolean;
+		tipHeight?: number;
+	},
+	walletNoun: string
+): { spendable: SpendableUtxo[]; coinControl: boolean } {
 	const coinControl = (params.onlyUtxos?.length ?? 0) > 0;
 	let spendable: SpendableUtxo[];
 	if (params.exactInputs) {
@@ -311,7 +334,7 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		);
 	}
 	if (spendable.length === 0) {
-		throw new PsbtError('This wallet has no spendable coins right now.', 'no_utxos');
+		throw new PsbtError(`This ${walletNoun} has no spendable coins right now.`, 'no_utxos');
 	}
 
 	// Coinbase maturity: a coinbase (mining reward) output needs 100 confirmations
@@ -351,10 +374,37 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 			// coins so we never build an invalid tx.
 			spendable = spendable.filter((u) => !isImmature(u) && !isUnverifiable(u));
 			if (spendable.length === 0) {
-				throw new PsbtError('This wallet has no mature coins to spend right now.', 'no_utxos');
+				throw new PsbtError(`This ${walletNoun} has no mature coins to spend right now.`, 'no_utxos');
 			}
 		}
 	}
+
+	return { spendable, coinControl };
+}
+
+/**
+ * Build an unsigned PSBT. Pure with respect to the chain: every external
+ * datum (UTXOs, prev txs) comes in through params, which keeps this
+ * deterministic and unit-testable.
+ */
+export async function constructPsbt(params: ConstructParams): Promise<ConstructedPsbt> {
+	const { feeRate } = params;
+
+	const { sendMax } = validateRecipientsAndFeeRate(params.recipients, feeRate);
+
+	const parsed = parseXpub(params.xpub);
+	const scriptType = parsed.scriptType;
+	if (!(scriptType in INPUT_VSIZE)) {
+		throw new PsbtError(`Spending from ${scriptType} wallets is not supported yet.`, 'construction_failed');
+	}
+
+	// Coin eligibility + coinbase maturity (shared rules — see
+	// selectSpendCandidates). Confirmed coins are still preferred (the two-pass
+	// selection on the normal path below only reaches for unconfirmed change
+	// when confirmed can't cover it).
+	const candidates = selectSpendCandidates(params, 'wallet');
+	const coinControl = candidates.coinControl;
+	let spendable = candidates.spendable;
 
 	// Low-mass selection bias (normal selection only — exact-inputs must spend
 	// what it's given, and send-max spends every candidate anyway): stable
