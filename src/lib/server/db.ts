@@ -434,6 +434,27 @@ db.exec(`
 	CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, id DESC);
 `);
 
+// Persisted portfolio scan cache (see src/lib/server/scanCachePersist.ts and
+// cairn-er1k). One row per unique wallet xpub / multisig descriptor holding the
+// LAST completed scan result (balances, tx summary, scanned addresses) as JSON.
+// Purely a performance cache: on a cold restart these rows seed the in-memory
+// 60s scan caches so the first portfolio/detail request serves instant (if
+// slightly stale) data instead of paying a full serialized Electrum re-scan,
+// which the warm pass then refreshes. Never authoritative — a missing, corrupt,
+// or absent row just falls back to a live scan. `kind` disambiguates the key
+// space ('wallet' = xpub, 'multisig' = receive descriptor). Deleted by
+// invalidateWalletCache/invalidateMultisigCache when a wallet is removed or the
+// backend changes, so stale data for a gone wallet can never leak.
+db.exec(`
+	CREATE TABLE IF NOT EXISTS wallet_scan_cache (
+		cache_key  TEXT PRIMARY KEY,   -- xpub (wallet) or receive descriptor (multisig)
+		kind       TEXT NOT NULL,      -- 'wallet' | 'multisig'
+		result     TEXT NOT NULL,      -- JSON of WalletScanResult / MultisigScanResult
+		updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+	);
+	CREATE INDEX IF NOT EXISTS idx_wallet_scan_cache_kind ON wallet_scan_cache(kind);
+`);
+
 // Passkey (WebAuthn) credentials — auth is passkey-only, no passwords. Each
 // user can register several (phone + laptop + security key), so an account never
 // depends on a single device. See src/lib/server/webauthn.ts.

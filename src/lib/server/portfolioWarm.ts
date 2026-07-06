@@ -6,14 +6,18 @@
 // the first portfolio load pays a full serialized scan of every wallet over the
 // single shared Electrum connection (~4.29s for 245 wallets in the load test,
 // Scenario 7). Warming those caches shortly after boot turns that first request
-// warm. See cairn-fd56. (Cross-restart instant-but-stale reads via SQLite
-// persistence are tracked separately in cairn-er1k.)
+// warm. See cairn-fd56. Cross-restart instant-but-stale reads are handled by
+// seeding these caches from the persisted wallet_scan_cache table at startup
+// (seedScanCachesFromDb below / scanCachePersist.ts — cairn-er1k).
 
 import { db } from './db';
 import { childLogger } from './logger';
-import { scanWallet } from './bitcoin/walletScan';
-import { scanMultisig } from './multisigScan';
+import type { WalletScanResult } from './bitcoin/walletScan';
+import { scanWallet, primeWalletScanCache } from './bitcoin/walletScan';
+import type { MultisigScanResult } from './multisigScan';
+import { scanMultisig, primeMultisigScanCache } from './multisigScan';
 import { listMultisigs } from './wallets/multisig';
+import { loadPersistedScans } from './scanCachePersist';
 
 const log = childLogger('portfolio-warm');
 
@@ -26,6 +30,46 @@ let started = false;
 /** Yield to the event loop so a queued HTTP request can interleave between scans. */
 function yieldToEventLoop(): Promise<void> {
 	return new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * Seed the in-memory scan caches from the persisted `wallet_scan_cache` table so
+ * requests in the window between boot and the warm pass get an instant (if
+ * slightly stale) result instead of paying a cold serialized re-scan. Synchronous
+ * and cheap (local SQLite reads); runs at startup, BEFORE the network warm pass.
+ *
+ * The seeded entries are given a normal TTL so early requests are served, then
+ * replaced with live data by the force-refreshing warm pass moments later.
+ * Best-effort: any failure is logged and skipped — persistence is a pure
+ * optimization, never a correctness dependency.
+ *
+ * Staleness UX note (cairn-er1k item 5): a seeded read is at most as stale as the
+ * last pre-restart scan and is refreshed within ~WARM_DELAY_MS. The existing live
+ * cache already serves up-to-60s-old balances with no indicator, and per Cairn's
+ * UX philosophy (calm, no exposed internals, no signal the user can act on) we
+ * deliberately do NOT add an "Updating…" badge for the brief post-restart window
+ * — it would flicker on every restart for a difference the user cannot influence.
+ */
+export function seedScanCachesFromDb(): void {
+	let wallets = 0;
+	let multisigs = 0;
+	try {
+		for (const row of loadPersistedScans<WalletScanResult>('wallet')) {
+			primeWalletScanCache(row.key, row.result);
+			wallets++;
+		}
+	} catch (e) {
+		log.debug({ err: e }, 'seed: wallet scan cache failed (skipped)');
+	}
+	try {
+		for (const row of loadPersistedScans<MultisigScanResult>('multisig')) {
+			primeMultisigScanCache(row.key, row.result);
+			multisigs++;
+		}
+	} catch (e) {
+		log.debug({ err: e }, 'seed: multisig scan cache failed (skipped)');
+	}
+	if (wallets || multisigs) log.info({ wallets, multisigs }, 'scan caches seeded from persisted rows');
 }
 
 /**
@@ -49,7 +93,8 @@ export async function warmPortfolioCache(): Promise<void> {
 	);
 	for (const xpub of xpubs) {
 		try {
-			await scanWallet(xpub);
+			// Force-refresh: replace any persisted seed with a live scan.
+			await scanWallet(xpub, { forceRefresh: true });
 			wallets++;
 		} catch (e) {
 			log.debug({ err: e }, 'warm: wallet scan failed (skipped)');
@@ -70,7 +115,7 @@ export async function warmPortfolioCache(): Promise<void> {
 		}
 		for (const m of rows) {
 			try {
-				await scanMultisig(m);
+				await scanMultisig(m, { forceRefresh: true });
 				multisigs++;
 			} catch (e) {
 				log.debug({ err: e, multisigId: m.id }, 'warm: multisig scan failed (skipped)');
@@ -89,6 +134,14 @@ export async function warmPortfolioCache(): Promise<void> {
 export function startPortfolioWarm(): void {
 	if (started) return;
 	started = true;
+
+	// Seed the in-memory caches from persisted rows immediately (synchronous,
+	// local) so requests before the deferred network warm pass get instant data.
+	try {
+		seedScanCachesFromDb();
+	} catch (e) {
+		log.error({ err: e }, 'seeding scan caches from persisted rows failed');
+	}
 
 	const timer = setTimeout(() => {
 		void warmPortfolioCache().catch((e) => log.error({ err: e }, 'portfolio warm pass failed'));

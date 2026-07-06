@@ -26,6 +26,7 @@ import {
 	type MultisigRow
 } from './wallets/multisig';
 import { listSharedMultisigs, type ShareRole } from './multisigShares';
+import { persistScanResult, deletePersistedScan, clearPersistedScans } from './scanCachePersist';
 
 const GAP_LIMIT = 20;
 const BATCH_SIZE = 20;
@@ -280,6 +281,14 @@ async function doScan(multisig: MultisigRow): Promise<MultisigScanResult & { sca
 	const addresses: MultisigScanAddress[] = scanned.map(
 		({ history: _h, confirmedSats: _c, unconfirmedSats: _u, ...addr }) => addr
 	);
+	// Persist ONLY the public result (never the heavy per-address `scanned`
+	// histories) so a cold restart can serve it instantly. One write, best-effort.
+	persistScanResult('multisig', multisigToDescriptor(toMultisigConfig(multisig)), {
+		addresses,
+		txs,
+		confirmed,
+		unconfirmed
+	});
 	return { addresses, txs, confirmed, unconfirmed, scanned };
 }
 
@@ -298,12 +307,19 @@ function cacheKey(multisig: MultisigRow): string {
 	return multisigToDescriptor(toMultisigConfig(multisig));
 }
 
-/** Scan a multisig over Electrum. Results are cached in-process for 60s. */
-export function scanMultisig(multisig: MultisigRow): Promise<MultisigScanResult> {
+/** Scan a multisig over Electrum. Results are cached in-process for 60s.
+ *  `forceRefresh` skips the cache-hit read (the warm pass uses it to replace a
+ *  persisted seed with a live scan). */
+export function scanMultisig(
+	multisig: MultisigRow,
+	opts: { forceRefresh?: boolean } = {}
+): Promise<MultisigScanResult> {
 	const key = cacheKey(multisig);
 	const now = Date.now();
-	const hit = scanCache.get(key);
-	if (hit && hit.expires > now) return hit.promise;
+	if (!opts.forceRefresh) {
+		const hit = scanCache.get(key);
+		if (hit && hit.expires > now) return hit.promise;
+	}
 
 	const promise = doScan(multisig);
 	scanCache.set(key, { expires: now + CACHE_TTL_MS, promise });
@@ -314,10 +330,34 @@ export function scanMultisig(multisig: MultisigRow): Promise<MultisigScanResult>
 	return promise;
 }
 
-/** Drop cached scan results for one multisig, or all when omitted. */
+/**
+ * Seed the in-memory cache from a persisted scan at startup (see
+ * scanCachePersist.ts). Keyed by the receive descriptor — the same key the live
+ * cache uses. Fills only an empty/expired slot; the persisted result has no
+ * per-address `scanned` histories, so seed an empty `scanned` (no consumer reads
+ * it). The warm pass force-refreshes shortly after.
+ */
+export function primeMultisigScanCache(descriptorKey: string, result: MultisigScanResult): void {
+	const now = Date.now();
+	const hit = scanCache.get(descriptorKey);
+	if (hit && hit.expires > now) return;
+	scanCache.set(descriptorKey, {
+		expires: now + CACHE_TTL_MS,
+		promise: Promise.resolve({ ...result, scanned: [] })
+	});
+}
+
+/** Drop cached scan results for one multisig, or all when omitted. Also removes
+ *  the persisted row(s) so a deleted multisig's stale scan can never re-seed. */
 export function invalidateMultisigCache(multisig?: MultisigRow): void {
-	if (multisig === undefined) scanCache.clear();
-	else scanCache.delete(cacheKey(multisig));
+	if (multisig === undefined) {
+		scanCache.clear();
+		clearPersistedScans('multisig');
+	} else {
+		const key = cacheKey(multisig);
+		scanCache.delete(key);
+		deletePersistedScan(key);
+	}
 }
 
 // ----------------------------------------------------------- send-flow contract
