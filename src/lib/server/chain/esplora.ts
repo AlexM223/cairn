@@ -1,6 +1,19 @@
 // Esplora-compatible HTTP API client (mempool.space, blockstream.info, self-hosted
 // esplora/mempool instances). Uses global fetch, with a small in-memory TTL cache.
 
+import http from 'node:http';
+import https from 'node:https';
+import type { Agent } from 'node:http';
+import { SocksProxyAgent } from 'socks-proxy-agent';
+import { childLogger } from '../logger';
+
+const log = childLogger('esplora');
+
+export interface EsploraProxyOptions {
+	socks5Host?: string | null;
+	socks5Port?: number | null;
+}
+
 const REQUEST_TIMEOUT_MS = 12_000;
 const SHORT_TTL_MS = 10_000; // tip / mempool / fees
 const IMMUTABLE_TTL_MS = 10 * 60_000; // confirmed txs, blocks
@@ -157,29 +170,39 @@ export class EsploraApi {
 	private cache = new Map<string, CacheEntry>();
 	/** Whether mempool.space-style /v1/ endpoints exist. null = not probed yet. */
 	private hasV1: boolean | null = null;
+	/** SOCKS5 proxy agent when a Tor/SOCKS proxy is configured; null = direct. */
+	private readonly proxyAgent: Agent | null;
 
-	constructor(baseUrl: string) {
+	constructor(baseUrl: string, proxy?: EsploraProxyOptions) {
 		this.baseUrl = baseUrl.replace(/\/+$/, '');
+		// socks5h:// keeps DNS resolution on the proxy side (no DNS leak, and
+		// .onion hosts resolve) — the whole point of routing over Tor (cairn-oh7a).
+		this.proxyAgent =
+			proxy?.socks5Host && proxy?.socks5Port
+				? new SocksProxyAgent(`socks5h://${proxy.socks5Host}:${proxy.socks5Port}`)
+				: null;
 	}
 
 	// ------------------------------------------------------------------ plumbing
 
 	private async fetchPath(path: string): Promise<unknown> {
 		const url = this.baseUrl + path;
-		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-		let res: Response;
+		let status: number;
+		let ok: boolean;
+		let text: string;
 		try {
-			res = await fetch(url, { signal: controller.signal, headers: { accept: 'application/json, text/plain' } });
+			// Global fetch (undici) can't take a SOCKS dispatcher, so when a proxy is
+			// configured we fall back to node's http/https with a SocksProxyAgent.
+			const res = this.proxyAgent ? await this.proxiedGet(url) : await this.directGet(url);
+			status = res.status;
+			ok = res.ok;
+			text = res.text;
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
 			throw new Error(`Esplora GET ${path} failed: ${msg}`);
-		} finally {
-			clearTimeout(timer);
 		}
-		const text = await res.text();
-		if (!res.ok) {
-			throw new EsploraHttpError(res.status, path, text.slice(0, 200));
+		if (!ok) {
+			throw new EsploraHttpError(status, path, text.slice(0, 200));
 		}
 		// Some endpoints return plain text (block hash, tip height).
 		try {
@@ -187,6 +210,50 @@ export class EsploraApi {
 		} catch {
 			return text.trim();
 		}
+	}
+
+	private async directGet(url: string): Promise<{ status: number; ok: boolean; text: string }> {
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+		try {
+			const res = await fetch(url, {
+				signal: controller.signal,
+				headers: { accept: 'application/json, text/plain' }
+			});
+			return { status: res.status, ok: res.ok, text: await res.text() };
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
+	/** GET over node http/https through the configured SOCKS5 proxy agent. */
+	private proxiedGet(url: string): Promise<{ status: number; ok: boolean; text: string }> {
+		const lib = url.startsWith('https:') ? https : http;
+		return new Promise((resolve, reject) => {
+			const req = lib.get(
+				url,
+				{
+					agent: this.proxyAgent ?? undefined,
+					headers: { accept: 'application/json, text/plain' },
+					timeout: REQUEST_TIMEOUT_MS
+				},
+				(res) => {
+					const chunks: Buffer[] = [];
+					res.on('data', (c: Buffer) => chunks.push(c));
+					res.on('end', () => {
+						const status = res.statusCode ?? 0;
+						resolve({
+							status,
+							ok: status >= 200 && status < 300,
+							text: Buffer.concat(chunks).toString('utf8')
+						});
+					});
+					res.on('error', reject);
+				}
+			);
+			req.on('timeout', () => req.destroy(new Error(`timed out after ${REQUEST_TIMEOUT_MS}ms`)));
+			req.on('error', reject);
+		});
 	}
 
 	/** GET with per-path TTL caching. Failed requests are not cached. */
@@ -222,7 +289,8 @@ export class EsploraApi {
 		try {
 			const body = await this.get<{ USD?: number }>('/v1/prices', PRICE_TTL_MS);
 			return body && typeof body.USD === 'number' && body.USD > 0 ? body.USD : null;
-		} catch {
+		} catch (e) {
+			log.debug({ err: e, baseUrl: this.baseUrl }, 'v1/prices fetch failed');
 			return null;
 		}
 	}
@@ -242,8 +310,10 @@ export class EsploraApi {
 		} catch (e) {
 			if (e instanceof EsploraHttpError && e.status >= 400 && e.status < 500) {
 				this.hasV1 = false;
+				log.debug({ baseUrl: this.baseUrl }, 'backend has no mempool.space /v1 endpoints');
 				return false;
 			}
+			log.debug({ err: e, baseUrl: this.baseUrl }, 'v1 probe inconclusive (network); will retry');
 			return false; // undecided (network problem) — do not persist
 		}
 	}
@@ -278,7 +348,8 @@ export class EsploraApi {
 		if (await this.probeV1()) {
 			try {
 				return await this.get<EsploraBlock[]>(`/v1/blocks${suffix}`, SHORT_TTL_MS);
-			} catch {
+			} catch (e) {
+				log.debug({ err: e, baseUrl: this.baseUrl }, 'v1/blocks failed; falling back to /blocks');
 				// fall through to the plain esplora endpoint
 			}
 		}
@@ -323,7 +394,8 @@ export class EsploraApi {
 		if (!(await this.probeV1())) return null;
 		try {
 			return await this.get<unknown>(`/v1/tx/${txid}/rbf`, SHORT_TTL_MS);
-		} catch {
+		} catch (e) {
+			log.debug({ err: e, txid }, 'v1/tx/rbf fetch failed');
 			return null;
 		}
 	}
@@ -333,7 +405,8 @@ export class EsploraApi {
 		if (!(await this.probeV1())) return null;
 		try {
 			return await this.get<unknown>(`/v1/cpfp/${txid}`, SHORT_TTL_MS);
-		} catch {
+		} catch (e) {
+			log.debug({ err: e, txid }, 'v1/cpfp fetch failed');
 			return null;
 		}
 	}
@@ -373,7 +446,8 @@ export class EsploraApi {
 					hour: rec.hourFee,
 					economy: rec.economyFee
 				};
-			} catch {
+			} catch (e) {
+				log.debug({ err: e, baseUrl: this.baseUrl }, 'v1/fees/recommended failed; falling back to /fee-estimates');
 				// fall through to /fee-estimates
 			}
 		}
@@ -400,7 +474,8 @@ export class EsploraApi {
 		if (!(await this.probeV1())) return null;
 		try {
 			return await this.get<EsploraMempoolBlock[]>('/v1/fees/mempool-blocks', SHORT_TTL_MS);
-		} catch {
+		} catch (e) {
+			log.debug({ err: e, baseUrl: this.baseUrl }, 'v1/fees/mempool-blocks fetch failed');
 			return null;
 		}
 	}
@@ -413,7 +488,8 @@ export class EsploraApi {
 		if (!(await this.probeV1())) return null;
 		try {
 			return await this.get<EsploraMempoolStat[]>('/v1/statistics/2h', 60_000);
-		} catch {
+		} catch (e) {
+			log.debug({ err: e, baseUrl: this.baseUrl }, 'v1/statistics fetch failed');
 			return null;
 		}
 	}
@@ -423,7 +499,8 @@ export class EsploraApi {
 		if (!(await this.probeV1())) return null;
 		try {
 			return await this.get<EsploraDifficultyAdjustment>('/v1/difficulty-adjustment', SHORT_TTL_MS);
-		} catch {
+		} catch (e) {
+			log.debug({ err: e, baseUrl: this.baseUrl }, 'v1/difficulty-adjustment fetch failed');
 			return null;
 		}
 	}
@@ -439,7 +516,8 @@ export class EsploraApi {
 				`/v1/mining/difficulty-adjustments/${interval}`,
 				10 * 60_000
 			);
-		} catch {
+		} catch (e) {
+			log.debug({ err: e, interval }, 'v1/mining/difficulty-adjustments fetch failed');
 			return null;
 		}
 	}
@@ -453,7 +531,8 @@ export class EsploraApi {
 				SHORT_TTL_MS
 			);
 			return typeof data.currentHashrate === 'number' ? data.currentHashrate : null;
-		} catch {
+		} catch (e) {
+			log.debug({ err: e, baseUrl: this.baseUrl }, 'v1/mining/hashrate fetch failed');
 			return null;
 		}
 	}

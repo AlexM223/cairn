@@ -10,6 +10,18 @@ export const load: PageServerLoad = async () => {
 	return { settings: getPublicInstanceSettings(), agreement: getUserAgreement() };
 };
 
+/** Parse the optional SOCKS5 proxy fields from a settings form submission. */
+function readProxyFromForm(form: FormData): {
+	socks5Host: string | null;
+	socks5Port: number | null;
+} {
+	const host = String(form.get('socks5Host') ?? '').trim();
+	const portRaw = String(form.get('socks5Port') ?? '').trim();
+	const port = Number(portRaw);
+	if (!host || !portRaw || !Number.isInteger(port)) return { socks5Host: null, socks5Port: null };
+	return { socks5Host: host, socks5Port: port };
+}
+
 export const actions: Actions = {
 	saveAgreement: async ({ request, locals }) => {
 		if (!locals.user?.isAdmin) return fail(403, { error: 'Admin access required.' });
@@ -43,6 +55,33 @@ export const actions: Actions = {
 		const operatorName = form.get('operatorName');
 		if (operatorName !== null) {
 			setUserAgreement({ text: getUserAgreement().text, operator: String(operatorName) });
+		}
+
+		// Electrum connection-pool size — a client-side tuning knob independent of
+		// which server is used, so it applies in both modes (cairn-ynfp).
+		const poolSize = Number(form.get('electrumPoolSize'));
+		if (!Number.isInteger(poolSize) || poolSize < 1 || poolSize > 4)
+			return fail(400, { error: 'Electrum connections must be between 1 and 4.' });
+		setSetting('electrum_pool_size', String(poolSize));
+
+		// SOCKS5/Tor proxy — applies in BOTH public and custom modes, so it lives
+		// outside the custom-only block (cairn-oh7a). Both fields set → enable; both
+		// blank → disable (stored as empty, which loads back as null).
+		const socks5Host = String(form.get('socks5Host') ?? '').trim();
+		const socks5PortRaw = String(form.get('socks5Port') ?? '').trim();
+		if (socks5Host || socks5PortRaw) {
+			const socks5Port = Number(socks5PortRaw);
+			if (!socks5Host)
+				return fail(400, {
+					error: 'Enter a SOCKS5 proxy host, or clear the port to connect directly.'
+				});
+			if (!Number.isInteger(socks5Port) || socks5Port < 1 || socks5Port > 65535)
+				return fail(400, { error: 'SOCKS5 proxy port must be between 1 and 65535.' });
+			setSetting('socks5_host', socks5Host);
+			setSetting('socks5_port', String(socks5Port));
+		} else {
+			setSetting('socks5_host', '');
+			setSetting('socks5_port', '');
 		}
 
 		if (connectionMode === 'custom') {
@@ -91,7 +130,9 @@ export const actions: Actions = {
 		if (!host || !Number.isInteger(port))
 			return fail(400, { electrumTest: { ok: false, error: 'Enter a host and port first.' } });
 
-		const result = await testElectrum({ host, port, tls, tlsInsecure });
+		// Test through the proxy too, so the result reflects real connectivity.
+		const { socks5Host, socks5Port } = readProxyFromForm(form);
+		const result = await testElectrum({ host, port, tls, tlsInsecure, socks5Host, socks5Port });
 		return { electrumTest: result };
 	},
 
@@ -101,7 +142,8 @@ export const actions: Actions = {
 		if (!url)
 			return fail(400, { esploraTest: { ok: false, error: 'Enter an Esplora URL first.' } });
 
-		const result = await testEsplora(url.replace(/\/+$/, ''));
+		const proxy = readProxyFromForm(form);
+		const result = await testEsplora(url.replace(/\/+$/, ''), proxy);
 		return { esploraTest: result };
 	},
 

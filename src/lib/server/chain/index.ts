@@ -6,9 +6,11 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { getChainConfig } from '../settings';
 import { ElectrumClient } from '../electrum/client';
+import { ElectrumPool } from '../electrum/pool';
 import type { ElectrumBalance, ElectrumHistoryItem } from '../electrum/client';
 import { wireChainEvents, resetConnectionState } from '../chainEvents';
 import { recordActivity } from '../activity';
+import { childLogger } from '../logger';
 import { EsploraApi } from './esplora';
 import type { EsploraBlock, EsploraTx } from './esplora';
 import type {
@@ -33,6 +35,8 @@ import type {
 
 const BLOCK_TXS_PAGE_SIZE = 25;
 
+const log = childLogger('chain');
+
 // Public price fallback for plain esplora backends (blockstream.info) that have
 // no /v1/prices endpoint of their own. Cached process-wide (independent of the
 // configured backend, so it survives a chain reconfigure) to avoid hammering
@@ -55,7 +59,8 @@ async function fetchPublicBtcUsdPrice(): Promise<number | null> {
 			const body = (await res.json()) as { USD?: number };
 			if (typeof body.USD === 'number' && body.USD > 0) usd = body.USD;
 		}
-	} catch {
+	} catch (e) {
+		log.debug({ err: e }, 'public BTC/USD price fetch failed');
 		usd = null;
 	}
 	publicPriceCache = { at: now, usd };
@@ -189,21 +194,33 @@ function addressDelta(tx: EsploraTx, address: string): number {
 // ------------------------------------------------------------------ ChainService
 
 export class ChainService {
-	readonly electrum: ElectrumClient;
+	// A pool of Electrum connections behind one ElectrumClient-shaped facade, so
+	// concurrent lookups fan out across sockets instead of queuing on one
+	// (cairn-ynfp). Subscriptions stay on the pool's primary connection; every
+	// call site is unaware it's pooled.
+	readonly electrum: ElectrumPool;
 	readonly esplora: EsploraApi;
 	private readonly config: ReturnType<typeof getChainConfig>;
 
 	constructor(config = getChainConfig()) {
 		this.config = config;
-		this.electrum = new ElectrumClient({
-			host: config.electrumHost,
-			port: config.electrumPort,
-			tls: config.electrumTls,
-			tlsInsecure: config.electrumTlsInsecure
-		});
+		this.electrum = new ElectrumPool(
+			{
+				host: config.electrumHost,
+				port: config.electrumPort,
+				tls: config.electrumTls,
+				tlsInsecure: config.electrumTlsInsecure,
+				socks5Host: config.socks5Host,
+				socks5Port: config.socks5Port
+			},
+			config.electrumPoolSize
+		);
 		// Surface connect/disconnect/new-block on the user activity feed + server log.
 		wireChainEvents(this.electrum);
-		this.esplora = new EsploraApi(config.esploraUrl);
+		this.esplora = new EsploraApi(config.esploraUrl, {
+			socks5Host: config.socks5Host,
+			socks5Port: config.socks5Port
+		});
 	}
 
 	close(): void {
@@ -252,7 +269,8 @@ export class ChainService {
 		try {
 			const summaries = await this.esplora.getBlocks(block.height);
 			extras = summaries.find((b) => b.id === block.id)?.extras;
-		} catch {
+		} catch (e) {
+			log.debug({ err: e, height: block.height }, 'block extras (fees/miner) unavailable');
 			extras = undefined;
 		}
 
@@ -292,7 +310,8 @@ export class ChainService {
 		let outspends: (boolean | null)[] | undefined;
 		try {
 			outspends = (await this.esplora.getTxOutspends(txid)).map((o) => o.spent ?? null);
-		} catch {
+		} catch (e) {
+			log.debug({ err: e, txid }, 'outspends unavailable; output spent-ness degraded to null');
 			outspends = undefined;
 		}
 		return toTxDetail(tx, tipHeight, outspends);
@@ -501,7 +520,8 @@ export class ChainService {
 				projectedChangePercent: projected,
 				estimatedRetargetDate: tip.timestamp + base.blocksRemaining * projectionAvg
 			};
-		} catch {
+		} catch (e) {
+			log.debug({ err: e }, 'epoch-pace difficulty projection failed; returning base info');
 			return base;
 		}
 	}
@@ -532,7 +552,8 @@ export class ChainService {
 			const tipHash = await this.esplora.getTipHash();
 			const block = await this.esplora.getBlockByHash(tipHash);
 			return (block.difficulty * 2 ** 32) / 600;
-		} catch {
+		} catch (e) {
+			log.debug({ err: e }, 'hashrate fallback (difficulty-derived) failed');
 			return null;
 		}
 	}
@@ -644,6 +665,8 @@ export async function testElectrum(cfg: {
 	port: number;
 	tls: boolean;
 	tlsInsecure?: boolean;
+	socks5Host?: string | null;
+	socks5Port?: number | null;
 }): Promise<{ ok: boolean; banner?: string; tipHeight?: number; error?: string }> {
 	const client = new ElectrumClient({ ...cfg, timeoutMs: 8_000 });
 	try {
@@ -663,10 +686,11 @@ export async function testElectrum(cfg: {
 }
 
 export async function testEsplora(
-	url: string
+	url: string,
+	proxy?: { socks5Host?: string | null; socks5Port?: number | null }
 ): Promise<{ ok: boolean; tipHeight?: number; error?: string }> {
 	try {
-		const api = new EsploraApi(url);
+		const api = new EsploraApi(url, proxy);
 		const tipHeight = await api.getTipHeight();
 		if (!Number.isFinite(tipHeight)) {
 			return { ok: false, error: 'Server did not return a numeric tip height' };

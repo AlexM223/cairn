@@ -32,7 +32,8 @@ import { notify } from './notifications';
 import { verifyTxInclusion } from './bitcoin/spv';
 import { childLogger } from './logger';
 import type { ChainService } from './chain/index';
-import type { ElectrumClient, ElectrumHeader, ElectrumHistoryItem } from './electrum/client';
+import type { ElectrumHeader, ElectrumHistoryItem } from './electrum/client';
+import type { ElectrumPool } from './electrum/pool';
 
 const log = childLogger('notify:txwatch');
 
@@ -64,7 +65,7 @@ interface Watched {
 interface WatchState {
 	/** scripthash → the address it belongs to. */
 	byScripthash: Map<string, Watched>;
-	electrum: ElectrumClient | null;
+	electrum: ElectrumPool | null;
 	onScripthash: ((sh: string, status: string | null) => void) | null;
 	onHeader: ((header: ElectrumHeader) => void) | null;
 	started: boolean;
@@ -155,15 +156,33 @@ interface MultisigDbRow {
 	created_at: string;
 }
 
-/** Enumerate every watched address across every wallet and multisig, all users. */
-function enumerateAll(): Watched[] {
+/** Yield to the event loop so a queued HTTP request can interleave between batches. */
+function yieldToEventLoop(): Promise<void> {
+	return new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * Enumerate every watched address across every wallet and multisig, all users.
+ *
+ * Each wallet/multisig runs ~60 synchronous EC derivations; without yielding,
+ * the whole (W + M) pass hogs the single-threaded event loop and stalls any
+ * in-flight HTTP request (see load test Scenario 5). We yield once per
+ * wallet/multisig batch so requests can interleave between batches. Because we
+ * now read the desired set across multiple event-loop turns it is no longer an
+ * atomic snapshot, but refreshWatches' subscribe/unsubscribe diffing already
+ * tolerates eventual consistency (5-min refresh cadence).
+ */
+async function enumerateAll(): Promise<Watched[]> {
 	const all: Watched[] = [];
 
 	try {
 		const wallets = db
 			.prepare('SELECT id, user_id, name, xpub FROM wallets')
 			.all() as unknown as WalletRow[];
-		for (const w of wallets) all.push(...walletAddresses(w));
+		for (const w of wallets) {
+			all.push(...walletAddresses(w));
+			await yieldToEventLoop();
+		}
 	} catch (e) {
 		log.error({ err: e }, 'failed to enumerate single-sig wallets');
 	}
@@ -172,10 +191,24 @@ function enumerateAll(): Watched[] {
 		const multisigRows = db
 			.prepare('SELECT * FROM multisigs')
 			.all() as unknown as MultisigDbRow[];
+
+		// Batch the per-multisig keys lookup into one query (was an N+1 pattern).
+		const keysByMultisig = new Map<number, Record<string, unknown>[]>();
+		const allKeys = db
+			.prepare('SELECT * FROM multisig_keys ORDER BY multisig_id, position')
+			.all() as Record<string, unknown>[];
+		for (const k of allKeys) {
+			const mid = k.multisig_id as number;
+			let bucket = keysByMultisig.get(mid);
+			if (!bucket) {
+				bucket = [];
+				keysByMultisig.set(mid, bucket);
+			}
+			bucket.push(k);
+		}
+
 		for (const m of multisigRows) {
-			const keys = db
-				.prepare('SELECT * FROM multisig_keys WHERE multisig_id = ? ORDER BY position')
-				.all(m.id) as Record<string, unknown>[];
+			const keys = keysByMultisig.get(m.id) ?? [];
 			const multisig: MultisigRow = {
 				id: m.id,
 				userId: m.user_id,
@@ -187,6 +220,7 @@ function enumerateAll(): Watched[] {
 				keys: keys.map(mapKeyRow)
 			};
 			all.push(...multisigAddresses(multisig));
+			await yieldToEventLoop();
 		}
 	} catch (e) {
 		log.error({ err: e }, 'failed to enumerate multisigs');
@@ -213,13 +247,18 @@ function mapKeyRow(r: Record<string, unknown>): MultisigKeyRow {
 
 // ------------------------------------------------------------- notified-txid store
 
-/** Has this (kind, wallet, txid) already been notified about? */
-function alreadyNotified(kind: WalletKind, walletId: number, txid: string): boolean {
+/** Has this (kind, wallet, user, txid) already been notified about? */
+function alreadyNotified(
+	kind: WalletKind,
+	walletId: number,
+	userId: number,
+	txid: string
+): boolean {
 	const row = db
 		.prepare(
-			'SELECT confirmed FROM notified_txids WHERE wallet_kind = ? AND wallet_id = ? AND txid = ?'
+			'SELECT confirmed FROM notified_txids WHERE wallet_kind = ? AND wallet_id = ? AND user_id = ? AND txid = ?'
 		)
-		.get(kind, walletId, txid) as { confirmed: number } | undefined;
+		.get(kind, walletId, userId, txid) as { confirmed: number } | undefined;
 	return row !== undefined;
 }
 
@@ -365,7 +404,7 @@ async function handleScripthashChange(scripthash: string): Promise<void> {
 
 		for (const item of history) {
 			const txid = item.tx_hash;
-			if (alreadyNotified(w.kind, w.walletId, txid)) continue;
+			if (alreadyNotified(w.kind, w.walletId, w.userId, txid)) continue;
 
 			// SPV gate (cairn-7zj6): only ever notify for a transaction we can
 			// independently prove is confirmed in a PoW-valid block. An unconfirmed
@@ -556,7 +595,7 @@ export async function refreshWatches(): Promise<void> {
 		attachListeners(electrum);
 	}
 
-	const addresses = enumerateAll();
+	const addresses = await enumerateAll();
 	const desired = new Map<string, Watched>();
 	for (const w of addresses) {
 		try {
@@ -606,7 +645,7 @@ async function baselineExisting(): Promise<void> {
 		try {
 			const history = await chain.electrum.getHistory(scripthash);
 			for (const item of history) {
-				const key = `${w.kind}:${w.walletId}:${item.tx_hash}`;
+				const key = `${w.kind}:${w.walletId}:${w.userId}:${item.tx_hash}`;
 				if (seen.has(key)) continue;
 				seen.add(key);
 				insert.run(w.kind, w.walletId, w.userId, item.tx_hash);
@@ -619,7 +658,7 @@ async function baselineExisting(): Promise<void> {
 	state.baselined = true;
 }
 
-function attachListeners(electrum: ElectrumClient): void {
+function attachListeners(electrum: ElectrumPool): void {
 	state.onScripthash = (sh: string) => {
 		void handleScripthashChange(sh).catch((e) =>
 			log.error({ err: e }, 'scripthash handler threw')

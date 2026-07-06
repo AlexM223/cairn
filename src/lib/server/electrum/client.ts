@@ -4,6 +4,10 @@
 import net from 'node:net';
 import tls from 'node:tls';
 import { EventEmitter } from 'node:events';
+import { SocksClient } from 'socks';
+import { childLogger } from '../logger';
+
+const log = childLogger('electrum');
 
 const CLIENT_NAME = 'Cairn 0.1';
 const PROTOCOL_VERSION = '1.4';
@@ -25,6 +29,15 @@ export interface ElectrumClientOptions {
 	tlsInsecure?: boolean;
 	/** Per-request timeout in ms (default 15000). */
 	timeoutMs?: number;
+	/**
+	 * SOCKS5 proxy host (e.g. '127.0.0.1' for a local Tor daemon). When set with
+	 * socks5Port, the TCP connection to the Electrum server is dialed through the
+	 * proxy via a SOCKS5 CONNECT, so the server never sees the operator's real IP
+	 * (cairn-oh7a). TLS, when enabled, is then negotiated end-to-end over that
+	 * tunnel — the proxy sees only ciphertext to host:port.
+	 */
+	socks5Host?: string | null;
+	socks5Port?: number | null;
 }
 
 export interface ElectrumBalance {
@@ -77,6 +90,8 @@ export class ElectrumClient extends EventEmitter {
 	private readonly useTls: boolean;
 	private readonly tlsInsecure: boolean;
 	private readonly timeoutMs: number;
+	private readonly socks5Host: string | null;
+	private readonly socks5Port: number | null;
 
 	private socket: net.Socket | null = null;
 	/** Socket for a connection still being established — see close(). */
@@ -100,6 +115,8 @@ export class ElectrumClient extends EventEmitter {
 		this.useTls = opts.tls;
 		this.tlsInsecure = opts.tlsInsecure ?? false;
 		this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+		this.socks5Host = opts.socks5Host || null;
+		this.socks5Port = opts.socks5Port || null;
 		// Consumers may not attach an 'error' listener; never let EventEmitter throw.
 		this.on('error', () => {});
 	}
@@ -152,44 +169,77 @@ export class ElectrumClient extends EventEmitter {
 					});
 			};
 
-			try {
-				if (this.useTls) {
-					// Validate the server's TLS certificate by default. Although the
-					// protocol carries no secrets, an unauthenticated TLS connection lets
-					// a network-level attacker MITM the Electrum host and feed forged
-					// balances/UTXOs/history or interfere with broadcast (cairn-azei).
-					// `tlsInsecure` is an explicit, custom-server-only opt-out for a
-					// trusted self-hosted node with a self-signed certificate.
-					socket = tls.connect(
-						{
-							host: this.host,
-							port: this.port,
-							servername: this.host,
-							rejectUnauthorized: !this.tlsInsecure
-						},
-						onReady
-					);
-				} else {
-					socket = net.connect({ host: this.host, port: this.port }, onReady);
-				}
-				this.connectingSocket = socket;
-			} catch (e) {
-				fail(e instanceof Error ? e : new Error(String(e)));
-				return;
-			}
+			// TLS cert validation is ON by default. Although the protocol carries no
+			// secrets, an unauthenticated TLS connection lets a network-level attacker
+			// MITM the Electrum host and feed forged balances/UTXOs/history or
+			// interfere with broadcast (cairn-azei). `tlsInsecure` is an explicit,
+			// custom-server-only opt-out for a trusted self-hosted node with a
+			// self-signed certificate.
+			const wrapTls = (base?: net.Socket): net.Socket =>
+				tls.connect(
+					{
+						...(base ? { socket: base } : { host: this.host, port: this.port }),
+						servername: this.host,
+						rejectUnauthorized: !this.tlsInsecure
+					},
+					onReady
+				);
 
-			socket.setEncoding('utf8');
-			socket.setTimeout(0);
-			socket.on('data', (chunk: string) => this.onData(chunk));
-			socket.on('error', (err: Error) => {
-				// 'close' always follows 'error'; teardown happens there.
-				this.emit('error', err);
-				fail(new Error(`Electrum connection error (${this.server}): ${err.message}`));
-			});
-			socket.on('close', () => {
-				fail(new Error(`Electrum connection closed (${this.server})`));
-				this.onDisconnect();
-			});
+			const attach = (s: net.Socket) => {
+				this.connectingSocket = s;
+				s.setEncoding('utf8');
+				s.setTimeout(0);
+				s.on('data', (chunk: string) => this.onData(chunk));
+				s.on('error', (err: Error) => {
+					// 'close' always follows 'error'; teardown happens there.
+					this.emit('error', err);
+					fail(new Error(`Electrum connection error (${this.server}): ${err.message}`));
+				});
+				s.on('close', () => {
+					fail(new Error(`Electrum connection closed (${this.server})`));
+					this.onDisconnect();
+				});
+			};
+
+			// Establish the transport, optionally through a SOCKS5 proxy (Tor).
+			void (async () => {
+				try {
+					if (this.socks5Host && this.socks5Port) {
+						// Dial the destination through the proxy first; TLS (if any) is then
+						// negotiated end-to-end over the tunnel so the proxy sees only
+						// ciphertext (cairn-oh7a).
+						const { socket: tunnel } = await SocksClient.createConnection({
+							proxy: { host: this.socks5Host, port: this.socks5Port, type: 5 },
+							command: 'connect',
+							destination: { host: this.host, port: this.port },
+							timeout: this.timeoutMs
+						});
+						if (this.closed) {
+							tunnel.destroy();
+							fail(new Error('Client is closed'));
+							return;
+						}
+						if (this.useTls) {
+							socket = wrapTls(tunnel);
+							attach(socket);
+						} else {
+							// The tunnel is already connected end-to-end; adopt it and signal
+							// readiness on the next tick (parity with the connect callback).
+							socket = tunnel;
+							attach(socket);
+							setImmediate(onReady);
+						}
+					} else if (this.useTls) {
+						socket = wrapTls();
+						attach(socket);
+					} else {
+						socket = net.connect({ host: this.host, port: this.port }, onReady);
+						attach(socket);
+					}
+				} catch (e) {
+					fail(e instanceof Error ? e : new Error(String(e)));
+				}
+			})();
 		});
 		return this.connecting;
 	}
@@ -210,12 +260,14 @@ export class ElectrumClient extends EventEmitter {
 		if ((this.headersSubscribed || this.scripthashSubs.size > 0) && !this.reconnectTimer) {
 			const delay = this.reconnectDelay;
 			this.reconnectDelay = Math.min(this.reconnectDelay * 2, RECONNECT_MAX_MS);
+			log.debug({ server: this.server, delayMs: delay }, 'scheduling reconnect');
 			this.reconnectTimer = setTimeout(() => {
 				this.reconnectTimer = null;
 				if (this.closed) return;
-				this.ensureConnected().catch(() => {
+				this.ensureConnected().catch((e: unknown) => {
 					// ensureConnected failure re-triggers onDisconnect via 'close',
 					// which schedules the next backoff attempt. Never throw.
+					log.debug({ err: e, server: this.server }, 'reconnect attempt failed; will back off');
 				});
 			}, delay);
 			this.reconnectTimer.unref?.();
@@ -240,8 +292,14 @@ export class ElectrumClient extends EventEmitter {
 				const status = await this.rawRequest('blockchain.scripthash.subscribe', [sh]);
 				this.emit('scripthash', sh, status as string | null);
 			}
-		} catch {
-			// Resubscription failure will surface via the next disconnect/retry.
+		} catch (e) {
+			// A failed resubscribe silently stops live header/scripthash updates until
+			// the next full disconnect/retry cycle — without this log there is no
+			// diagnostic trail for "balances stopped updating but we're connected".
+			log.warn(
+				{ err: e, server: this.server, scripthashSubs: this.scripthashSubs.size },
+				'resubscribe after reconnect failed; live updates paused until next reconnect'
+			);
 		}
 	}
 

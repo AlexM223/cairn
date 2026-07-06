@@ -296,6 +296,66 @@
 				</div>
 			</div>
 		{/if}
+
+		<div class="subgroup proxy-group">
+			<span class="subgroup-title">Connection performance</span>
+			<p class="hint">
+				How many parallel connections Cairn opens to the Electrum server. More connections let
+				wallet balance lookups run at the same time instead of queuing, which speeds up loading
+				many wallets. 1 disables pooling. Most setups are fine with the default.
+			</p>
+			<div class="row-fields">
+				<div class="field port">
+					<label class="label" for="electrumPoolSize">Connections</label>
+					<input
+						class="input mono"
+						id="electrumPoolSize"
+						name="electrumPoolSize"
+						type="number"
+						min="1"
+						max="4"
+						value={data.settings.electrumPoolSize}
+					/>
+				</div>
+			</div>
+		</div>
+
+		<div class="subgroup proxy-group">
+			<span class="subgroup-title">
+				Privacy: SOCKS5 / Tor proxy <span class="badge badge-neutral">optional</span>
+			</span>
+			<p class="hint">
+				Route all chain traffic (Electrum + explorer) through a SOCKS5 proxy so the servers never
+				see your real IP address. For Tor, run a Tor daemon and point this at its SOCKS port
+				(usually 127.0.0.1:9050). Applies whether you use the public servers or your own node.
+				Leave both blank to connect directly.
+			</p>
+			<div class="row-fields">
+				<div class="field grow">
+					<label class="label" for="socks5Host">Proxy host</label>
+					<input
+						class="input mono"
+						id="socks5Host"
+						name="socks5Host"
+						placeholder="127.0.0.1"
+						value={data.settings.socks5Host ?? ''}
+					/>
+				</div>
+				<div class="field port">
+					<label class="label" for="socks5Port">Port</label>
+					<input
+						class="input mono"
+						id="socks5Port"
+						name="socks5Port"
+						type="number"
+						min="1"
+						max="65535"
+						placeholder="9050"
+						value={data.settings.socks5Port ?? ''}
+					/>
+				</div>
+			</div>
+		</div>
 	</section>
 
 	<div class="save-row">
@@ -504,6 +564,11 @@
 		display: flex;
 		flex-direction: column;
 		gap: 10px;
+	}
+
+	.proxy-group {
+		border-top: 1px solid var(--border-subtle);
+		padding-top: 18px;
 	}
 
 	.subgroup-title {

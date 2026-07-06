@@ -663,10 +663,46 @@ db.exec(`
 		txid         TEXT NOT NULL,
 		confirmed    INTEGER NOT NULL DEFAULT 0,     -- 1 once a tx_confirmed has fired
 		created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-		UNIQUE (wallet_kind, wallet_id, txid)
+		UNIQUE (wallet_kind, wallet_id, user_id, txid)
 	);
 	CREATE INDEX IF NOT EXISTS idx_notified_txids_wallet ON notified_txids(wallet_kind, wallet_id);
 `);
+
+// cairn-7tst: the dedup key must include user_id. The original schema used
+// UNIQUE(wallet_kind, wallet_id, txid), which — once collaborative custody wires
+// up shared wallets — would let the FIRST collaborator's insert silently suppress
+// every co-owner's tx_received/tx_confirmed notification for that txid. Widen the
+// constraint to be per-recipient. SQLite can't ALTER a constraint in place, so
+// rebuild the table when the old (narrower) shape is detected. Multisigs are
+// single-owner today, so this rebuild is a lossless 1:1 copy of existing rows.
+{
+	const ntSql = (
+		db
+			.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notified_txids'")
+			.get() as { sql: string } | undefined
+	)?.sql;
+	// Old shape lacks user_id in the UNIQUE list; new shape has "user_id, txid)".
+	if (ntSql && !/user_id\s*,\s*txid\s*\)/i.test(ntSql)) {
+		db.exec(`
+			ALTER TABLE notified_txids RENAME TO notified_txids_old;
+			CREATE TABLE notified_txids (
+				id           INTEGER PRIMARY KEY AUTOINCREMENT,
+				wallet_kind  TEXT NOT NULL,
+				wallet_id    INTEGER NOT NULL,
+				user_id      INTEGER NOT NULL,
+				txid         TEXT NOT NULL,
+				confirmed    INTEGER NOT NULL DEFAULT 0,
+				created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+				UNIQUE (wallet_kind, wallet_id, user_id, txid)
+			);
+			INSERT INTO notified_txids (id, wallet_kind, wallet_id, user_id, txid, confirmed, created_at)
+				SELECT id, wallet_kind, wallet_id, user_id, txid, confirmed, created_at
+				FROM notified_txids_old;
+			DROP TABLE notified_txids_old;
+			CREATE INDEX IF NOT EXISTS idx_notified_txids_wallet ON notified_txids(wallet_kind, wallet_id);
+		`);
+	}
+}
 
 // Key-health nudge throttle. key_health_due fires when a multisig key hasn't
 // been verified in ~180 days; this column records the last time we notified for

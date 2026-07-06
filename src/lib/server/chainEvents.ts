@@ -6,7 +6,8 @@
 // resubscription re-emits the current tip, so we only record a *change* in
 // connection state and each block height once.
 
-import type { ElectrumClient, ElectrumHeader } from './electrum/client';
+import type { ElectrumHeader } from './electrum/client';
+import type { ElectrumPool } from './electrum/pool';
 import { recordActivity } from './activity';
 import { notify } from './notifications';
 import { childLogger } from './logger';
@@ -38,7 +39,7 @@ function clearOutageTimer(): void {
 }
 
 /** Attach activity/logging listeners to a freshly built Electrum client. */
-export function wireChainEvents(electrum: ElectrumClient): void {
+export function wireChainEvents(electrum: ElectrumPool): void {
 	const server = electrum.server;
 
 	// The SSE endpoint attaches a 'header' listener per open tab on top of ours.

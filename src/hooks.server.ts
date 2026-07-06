@@ -8,6 +8,7 @@ import { startNotificationQueueWorker } from '$lib/server/notificationQueue';
 import { startAddressWatcher } from '$lib/server/addressWatcher';
 import { startKeyHealthWatcher } from '$lib/server/keyHealth';
 import { startBackupHealthWatcher } from '$lib/server/backupHealth';
+import { startPortfolioWarm } from '$lib/server/portfolioWarm';
 
 const httpLog = childLogger('http');
 const errLog = childLogger('error');
@@ -50,6 +51,14 @@ try {
 	startBackupHealthWatcher();
 } catch (e) {
 	errLog.error({ err: e }, 'backup health watcher start failed');
+}
+// Pre-warm the per-wallet/per-multisig scan caches shortly after boot so the
+// first portfolio load isn't a cold multi-second scan (cairn-fd56). Deferred and
+// unref'd; never throws here.
+try {
+	startPortfolioWarm();
+} catch (e) {
+	errLog.error({ err: e }, 'portfolio warm start failed');
 }
 
 // Static assets and build output aren't worth a log line each (and the SPA

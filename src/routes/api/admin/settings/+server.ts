@@ -15,7 +15,10 @@ const KEY_MAP: Record<string, string> = {
 	electrumHost: 'electrum_host',
 	electrumPort: 'electrum_port',
 	electrumTls: 'electrum_tls',
+	electrumPoolSize: 'electrum_pool_size',
 	esploraUrl: 'esplora_url',
+	socks5Host: 'socks5_host',
+	socks5Port: 'socks5_port',
 	coreRpcUrl: 'core_rpc_url',
 	coreRpcUser: 'core_rpc_user',
 	coreRpcPass: 'core_rpc_pass'
@@ -40,10 +43,24 @@ function validateSettings(body: Record<string, unknown>): string | null {
 			return 'Electrum port must be an integer between 1 and 65535.';
 	}
 
+	if ('electrumPoolSize' in body) {
+		const size = Number(body.electrumPoolSize);
+		if (!Number.isInteger(size) || size < 1 || size > 4)
+			return 'Electrum connections must be an integer between 1 and 4.';
+	}
+
 	if ('esploraUrl' in body) {
 		const esplora = String(body.esploraUrl).trim();
 		if (esplora && !/^https?:\/\//.test(esplora))
 			return 'Esplora URL must start with http:// or https://.';
+	}
+
+	// A SOCKS5 port only makes sense with a host, and vice versa: reject a
+	// half-configured proxy that would silently do nothing.
+	if ('socks5Port' in body && String(body.socks5Port).trim() !== '') {
+		const port = Number(body.socks5Port);
+		if (!Number.isInteger(port) || port < 1 || port > 65535)
+			return 'SOCKS5 proxy port must be an integer between 1 and 65535.';
 	}
 
 	return null;
