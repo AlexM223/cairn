@@ -7,7 +7,12 @@
 // (the toggle grid and per-user override grid are both generated from this
 // array).
 
-export type FeatureFlagCategory = 'wallet' | 'hardware' | 'notifications' | 'upcoming';
+export type FeatureFlagCategory =
+	| 'wallet'
+	| 'hardware'
+	| 'notifications'
+	| 'marketing'
+	| 'upcoming';
 
 export interface FeatureFlagDef {
 	/** Stable id, referenced in code and DB — never rename, only deprecate. */
@@ -193,6 +198,26 @@ export const FEATURE_FLAGS: FeatureFlagDef[] = [
 		label: 'Webhook channel',
 		description: '',
 		userMessage: 'Webhook notifications have been disabled by your administrator.',
+		defaultEnabled: true
+	},
+
+	// marketing — instance-to-user messaging surfaces (never wallet functionality)
+	{
+		key: 'announcement_banners',
+		category: 'marketing',
+		label: 'Announcement banners',
+		description:
+			'Instance-wide banners (maintenance notices, warnings, promotions) shown to all users. Off = no banners render and the admin announcements page is disabled.',
+		userMessage: 'Announcements have been disabled by your administrator.',
+		defaultEnabled: true
+	},
+	{
+		key: 'referral_links',
+		category: 'marketing',
+		label: 'Referral links',
+		description:
+			'Buy-a-device links in the wallet wizards/signing flows and managed multisig service suggestions. Official troubleshooting links are not affected. Off = all referral UI hidden.',
+		userMessage: 'Referral links have been disabled by your administrator.',
 		defaultEnabled: true
 	},
 

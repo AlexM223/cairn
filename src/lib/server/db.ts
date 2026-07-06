@@ -902,3 +902,53 @@ db.exec(`
 	);
 	CREATE INDEX IF NOT EXISTS idx_user_feature_flags_user ON user_feature_flags(user_id);
 `);
+
+// Admin announcement/banner system (cairn-yspt). Instance-wide messages —
+// maintenance notices, warnings, promotions — rendered on every authenticated
+// page, DISTINCT from the per-user events/notifications system. Body is plain
+// text in v1 (no markdown/HTML renderer exists; link_url covers the "link" use
+// case without opening an XSS surface). Dismissals mirror backup_reminders:
+// per-user, permanent per announcement.
+db.exec(`
+	CREATE TABLE IF NOT EXISTS announcements (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		type          TEXT NOT NULL DEFAULT 'info', -- 'info' | 'warning' | 'urgent' | 'promotion'
+		title         TEXT NOT NULL,
+		body          TEXT NOT NULL,
+		link_url      TEXT,
+		link_text     TEXT,
+		dismissible   INTEGER NOT NULL DEFAULT 1,
+		active        INTEGER NOT NULL DEFAULT 1,
+		expires_at    TEXT,
+		display_order INTEGER NOT NULL DEFAULT 0,
+		created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+	);
+
+	CREATE TABLE IF NOT EXISTS announcement_dismissals (
+		id              INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		announcement_id INTEGER NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
+		dismissed_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		UNIQUE (user_id, announcement_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_announcement_dismissals_user ON announcement_dismissals(user_id);
+`);
+
+// Managed multisig service referrals (cairn-01i0). An admin-managed repeatable
+// list (Casa/Nunchuk/Unchained/custom) surfaced as a small card in the multisig
+// wizard — so a dedicated table rather than settings k/v rows. Per-device
+// referral URL overrides DO live in the settings table (referral_device_*_url).
+db.exec(`
+	CREATE TABLE IF NOT EXISTS multisig_service_referrals (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		name          TEXT NOT NULL,
+		url           TEXT NOT NULL,
+		description   TEXT,
+		logo_url      TEXT,
+		active        INTEGER NOT NULL DEFAULT 1,
+		display_order INTEGER NOT NULL DEFAULT 0,
+		created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+	);
+`);

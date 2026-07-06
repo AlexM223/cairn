@@ -104,6 +104,11 @@ export function resetInstance(): void {
 		-- in the reset danger-zone (cairn-5s8y, cairn-zari).
 		DELETE FROM events;
 		DELETE FROM notified_txids;
+		-- Instance-level marketing content also has no user FK to cascade from
+		-- (dismissals do cascade with users; the announcements/referral rows
+		-- themselves belong to the instance being reset).
+		DELETE FROM announcements;
+		DELETE FROM multisig_service_referrals;
 		COMMIT;
 	`);
 }
