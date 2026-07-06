@@ -44,6 +44,53 @@
 	let webhookSecret = $state('');
 	const webhookHasSecret = $derived(!!channel('webhook').config.hasSecret);
 
+	// ---- Personal SMTP (email) ----------------------------------------------
+	// Optional per-user relay; when unset, email falls back to the instance relay.
+	type StoredSmtp = {
+		host?: string;
+		port?: number;
+		user?: string | null;
+		from?: string;
+		tls?: 'starttls' | 'tls' | 'none';
+		hasPass?: boolean;
+	};
+	const smtpInit = (emailInit.smtp as StoredSmtp | undefined) ?? undefined;
+	let useOwnSmtp = $state(!!smtpInit);
+	let smtpHost = $state(smtpInit?.host ?? '');
+	let smtpPort = $state<string | number>(smtpInit?.port ?? 587);
+	let smtpUser = $state(smtpInit?.user ?? '');
+	let smtpFrom = $state(smtpInit?.from ?? '');
+	let smtpTls = $state<'starttls' | 'tls' | 'none'>(smtpInit?.tls ?? 'starttls');
+	let smtpPass = $state('');
+	let smtpHasPass = $state(!!smtpInit?.hasPass);
+	let testingSmtp = $state(false);
+	let smtpTest = $state<{ ok: boolean; error?: string } | null>(null);
+
+	async function testSmtp() {
+		smtpTest = null;
+		testingSmtp = true;
+		try {
+			const res = await fetch('/api/notifications/channels/email/test-smtp', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({
+					host: smtpHost,
+					port: Number(smtpPort),
+					user: smtpUser,
+					pass: smtpPass, // blank = use the stored password (if any)
+					from: smtpFrom,
+					tls: smtpTls
+				})
+			});
+			const body = (await res.json().catch(() => null)) as { ok: boolean; error?: string } | null;
+			smtpTest = body ?? { ok: false, error: 'No response from the server.' };
+		} catch (e) {
+			smtpTest = { ok: false, error: e instanceof Error ? e.message : 'Test failed.' };
+		} finally {
+			testingSmtp = false;
+		}
+	}
+
 	// Per-channel busy + result state.
 	let saving = $state<Record<string, boolean>>({});
 	let testing = $state<Record<string, boolean>>({});
@@ -52,8 +99,24 @@
 
 	function payloadFor(id: ChannelId): Record<string, unknown> {
 		switch (id) {
-			case 'email':
-				return { address: emailAddress };
+			case 'email': {
+				const p: Record<string, unknown> = { address: emailAddress };
+				if (useOwnSmtp) {
+					// Blank smtpPass means "keep the stored password" (server convention).
+					p.smtp = {
+						host: smtpHost,
+						port: Number(smtpPort),
+						user: smtpUser,
+						from: smtpFrom,
+						tls: smtpTls,
+						pass: smtpPass
+					};
+				} else {
+					// Explicitly drop any saved personal relay, keeping the address.
+					p.clearSmtp = true;
+				}
+				return p;
+			}
 			case 'telegram':
 				return { chatId: telegramChatId };
 			case 'ntfy':
@@ -87,6 +150,11 @@
 			// Clear the just-submitted secret inputs (server kept/updated them).
 			if (id === 'ntfy') ntfyToken = '';
 			if (id === 'webhook') webhookSecret = '';
+			if (id === 'email') {
+				smtpPass = '';
+				const savedSmtp = (body.config?.smtp as { hasPass?: boolean } | undefined) ?? undefined;
+				smtpHasPass = !!savedSmtp?.hasPass;
+			}
 		} catch (e) {
 			saveError[id] = e instanceof Error ? e.message : 'Could not save this channel.';
 		} finally {
@@ -388,6 +456,83 @@
 					<button class="btn btn-ghost btn-sm danger" onclick={() => disconnectChannel('email')} disabled={saving.email}>Disconnect</button>
 				{/if}
 				{@render resultBadge('email')}
+			</div>
+
+			<!-- Personal SMTP sub-section -->
+			<div class="subsection">
+				<div class="ch-head">
+					<span class="sub-title">Use my own email server</span>
+					<span class="badge badge-neutral">optional</span>
+				</div>
+				<p class="hint">
+					By default, notifications go out through the instance's shared email server (if the admin
+					has set one up). Turn this on to send them through your own email provider (Gmail,
+					Fastmail, etc.) instead.
+				</p>
+				<label class="toggle-row">
+					<input type="checkbox" bind:checked={useOwnSmtp} />
+					<span class="toggle-title">Send email through my own SMTP server</span>
+				</label>
+
+				{#if useOwnSmtp}
+					<div class="smtp-form fade-in">
+						<div class="two-col">
+							<div class="field">
+								<label class="label" for="smtp-host">Host</label>
+								<input class="input mono" id="smtp-host" bind:value={smtpHost} placeholder="smtp.gmail.com" />
+							</div>
+							<div class="field">
+								<label class="label" for="smtp-port">Port</label>
+								<input class="input mono" id="smtp-port" type="number" min="1" max="65535" bind:value={smtpPort} />
+							</div>
+						</div>
+						<div class="two-col">
+							<div class="field">
+								<label class="label" for="smtp-user">Username</label>
+								<input class="input mono" id="smtp-user" bind:value={smtpUser} autocomplete="off" placeholder="you@gmail.com" />
+							</div>
+							<div class="field">
+								<label class="label" for="smtp-pass">Password</label>
+								<input
+									class="input mono"
+									id="smtp-pass"
+									type="password"
+									bind:value={smtpPass}
+									autocomplete="new-password"
+									placeholder={smtpHasPass ? '•••••••• (unchanged)' : ''}
+								/>
+								{#if smtpHasPass}<span class="hint">A password is stored. Leave blank to keep it.</span>{/if}
+							</div>
+						</div>
+						<div class="two-col">
+							<div class="field">
+								<label class="label" for="smtp-from">From address</label>
+								<input class="input mono" id="smtp-from" type="email" bind:value={smtpFrom} placeholder="you@gmail.com" />
+							</div>
+							<div class="field">
+								<label class="label" for="smtp-tls">Encryption</label>
+								<select class="select input" id="smtp-tls" bind:value={smtpTls}>
+									<option value="starttls">STARTTLS</option>
+									<option value="tls">TLS (implicit)</option>
+									<option value="none">None</option>
+								</select>
+							</div>
+						</div>
+						<div class="ch-actions">
+							<button class="btn btn-secondary btn-sm" onclick={testSmtp} disabled={testingSmtp}>
+								{#if testingSmtp}<span class="spinner"></span>{/if} Test
+							</button>
+							{#if smtpTest}
+								{#if smtpTest.ok}
+									<span class="badge badge-success">Test email sent</span>
+								{:else}
+									<span class="badge badge-error">{smtpTest.error ?? 'Failed'}</span>
+								{/if}
+							{/if}
+							<span class="hint">Sends a test to your destination address using these values (not yet saved). Click <strong>Save</strong> above to keep them.</span>
+						</div>
+					</div>
+				{/if}
 			</div>
 
 			<!-- PGP sub-section -->
@@ -989,6 +1134,29 @@
 
 	.tiny {
 		font-size: 11.5px;
+	}
+
+	.toggle-row {
+		display: flex;
+		gap: 8px;
+		align-items: center;
+		cursor: pointer;
+	}
+
+	.toggle-row input {
+		accent-color: var(--accent);
+		margin: 0;
+	}
+
+	.toggle-title {
+		font-size: 13px;
+		font-weight: 500;
+	}
+
+	.smtp-form {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
 	}
 
 	.danger:hover:not(:disabled) {

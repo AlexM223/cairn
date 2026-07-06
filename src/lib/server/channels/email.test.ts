@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 const { sendMail, createTransport } = vi.hoisted(() => {
 	const sendMail = vi.fn<(opts: unknown) => Promise<unknown>>();
 	const close = vi.fn();
-	const createTransport = vi.fn(() => ({ sendMail, close }));
+	const createTransport = vi.fn((_opts: unknown) => ({ sendMail, close }));
 	return { sendMail, createTransport };
 });
 vi.mock('nodemailer', () => ({ default: { createTransport } }));
@@ -14,6 +14,7 @@ vi.mock('nodemailer', () => ({ default: { createTransport } }));
 import { db } from '../db';
 import { registerUser } from '../auth';
 import { setSetting } from '../settings';
+import { encryptSecret } from '../secretKey';
 import emailChannel from './email';
 import type { NotificationPayload } from '../notifyTypes';
 
@@ -67,11 +68,30 @@ describe('isConfigured', () => {
 	});
 });
 
+/** Save a personal SMTP relay for the user (password encrypted at rest). */
+function savePersonalSmtp(pass: string | null, extra: Record<string, unknown> = {}): void {
+	const smtp = {
+		host: 'personal.smtp.example.com',
+		port: 2525,
+		user: 'me@personal.example.com',
+		from: 'me@personal.example.com',
+		tls: 'starttls',
+		passEnc: pass === null ? null : encryptSecret(pass),
+		...extra
+	};
+	db.prepare(
+		`INSERT INTO notification_channel_config (user_id, channel, config)
+		 VALUES (?, 'email', ?)
+		 ON CONFLICT(user_id, channel) DO UPDATE SET config = excluded.config`
+	).run(userId, JSON.stringify({ smtp }));
+}
+
 describe('send', () => {
 	it('returns a non-retryable error when SMTP is not configured', async () => {
 		const res = await emailChannel.send(userId, PAYLOAD);
 		expect(res.ok).toBe(false);
 		expect(res.retryable).toBe(false);
+		expect(res.error).toContain('No SMTP configured');
 		expect(sendMail).not.toHaveBeenCalled();
 	});
 
@@ -118,6 +138,71 @@ describe('send', () => {
 		const res = await emailChannel.send(userId, PAYLOAD);
 		expect(res.ok).toBe(false);
 		expect(res.retryable).toBe(true);
+	});
+});
+
+describe('per-user SMTP resolution (cairn-l512.2)', () => {
+	it('routes through the user personal relay even when instance SMTP is also set', async () => {
+		configureSmtp(); // instance relay present
+		savePersonalSmtp('personal-pass');
+		const res = await emailChannel.send(userId, PAYLOAD);
+		expect(res.ok).toBe(true);
+		const opts = createTransport.mock.calls.at(-1)![0] as {
+			host: string;
+			port: number;
+			auth?: { user: string; pass: string };
+		};
+		// Personal relay wins over the instance relay.
+		expect(opts.host).toBe('personal.smtp.example.com');
+		expect(opts.port).toBe(2525);
+		// The stored password is decrypted for the actual send.
+		expect(opts.auth?.pass).toBe('personal-pass');
+	});
+
+	it('falls back to instance SMTP when the user has no personal relay', async () => {
+		configureSmtp();
+		const res = await emailChannel.send(userId, PAYLOAD);
+		expect(res.ok).toBe(true);
+		const opts = createTransport.mock.calls.at(-1)![0] as { host: string };
+		expect(opts.host).toBe('smtp.example.com'); // the instance host
+	});
+
+	it('supports a no-auth personal relay (no user, passEnc null)', async () => {
+		savePersonalSmtp(null, { user: null });
+		const res = await emailChannel.send(userId, PAYLOAD);
+		expect(res.ok).toBe(true);
+		const opts = createTransport.mock.calls.at(-1)![0] as { auth?: unknown };
+		expect(opts.auth).toBeUndefined();
+	});
+
+	it('returns a clear non-retryable error (no throw) when the saved password is corrupt', async () => {
+		// A row whose passEnc is not a valid envelope — decryptSecret will throw
+		// inside resolution; the channel must translate that, not crash the tick.
+		db.prepare(
+			`INSERT INTO notification_channel_config (user_id, channel, config) VALUES (?, 'email', ?)`
+		).run(
+			userId,
+			JSON.stringify({
+				smtp: {
+					host: 'personal.smtp.example.com',
+					port: 2525,
+					user: 'me@personal.example.com',
+					from: 'me@personal.example.com',
+					tls: 'starttls',
+					passEnc: 'this-is-not-a-valid-envelope'
+				}
+			})
+		);
+		const res = await emailChannel.send(userId, PAYLOAD);
+		expect(res.ok).toBe(false);
+		expect(res.retryable).toBe(false);
+		expect(res.error).toMatch(/could not be read/i);
+		expect(sendMail).not.toHaveBeenCalled();
+	});
+
+	it('isConfigured is true from a personal relay alone (no instance SMTP), without decrypting', () => {
+		savePersonalSmtp('personal-pass');
+		expect(emailChannel.isConfigured(userId)).toBe(true);
 	});
 });
 

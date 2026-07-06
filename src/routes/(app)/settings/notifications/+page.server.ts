@@ -60,6 +60,16 @@ function redact(channel: ExternalChannel, cfg: Record<string, unknown>): Record<
 		const { secret, ...rest } = cfg;
 		return { ...rest, hasSecret: !!secret };
 	}
+	if (channel === 'email') {
+		// Personal SMTP: never ship the encrypted password envelope to the browser
+		// — expose only its presence, mirroring the route's redactForClient.
+		const { smtp, ...rest } = cfg;
+		if (smtp && typeof smtp === 'object') {
+			const { passEnc, ...smtpRest } = smtp as Record<string, unknown>;
+			return { ...rest, smtp: { ...smtpRest, hasPass: !!passEnc } };
+		}
+		return cfg;
+	}
 	return cfg;
 }
 

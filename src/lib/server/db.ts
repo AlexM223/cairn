@@ -6,7 +6,10 @@ import { childLogger } from './logger';
 
 const log = childLogger('db');
 
-const DB_PATH = env.CAIRN_DB ?? path.join(process.cwd(), 'data', 'cairn.db');
+// Exported so colocated instance state (e.g. secretKey.ts's `instance.key`) can
+// live NEXT TO the DB file on the same persistent volume — under Docker/Umbrel
+// that is the mounted /data volume (CAIRN_DB), not process.cwd().
+export const DB_PATH = env.CAIRN_DB ?? path.join(process.cwd(), 'data', 'cairn.db');
 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 

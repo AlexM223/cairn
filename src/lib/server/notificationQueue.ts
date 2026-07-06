@@ -258,4 +258,4 @@ export function startNotificationQueueWorker(): void {
 }
 
 // Exported for tests.
-export const _internals = { backoffMs, takeToken, buckets, BACKOFF_MS, MAX_ATTEMPTS };
+export const _internals = { backoffMs, takeToken, buckets, BACKOFF_MS, MAX_ATTEMPTS, tick };

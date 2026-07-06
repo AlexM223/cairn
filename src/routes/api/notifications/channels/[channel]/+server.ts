@@ -14,6 +14,7 @@ import { json, readJson, requireUser } from '$lib/server/api';
 import { db } from '$lib/server/db';
 import { childLogger } from '$lib/server/logger';
 import { getSetting } from '$lib/server/settings';
+import { encryptSecret } from '$lib/server/secretKey';
 import type { NotificationChannelId } from '$lib/server/notifyTypes';
 import type { RequestHandler } from './$types';
 
@@ -58,6 +59,16 @@ function redactForClient(channel: ConfigurableChannel, cfg: Record<string, unkno
 		case 'webhook': {
 			const { secret, ...rest } = cfg;
 			return { ...rest, hasSecret: !!secret };
+		}
+		case 'email': {
+			// Personal SMTP: strip the encrypted password envelope, expose presence
+			// only — same pattern as ntfy/webhook above.
+			const { smtp, ...rest } = cfg;
+			if (smtp && typeof smtp === 'object') {
+				const { passEnc, ...smtpRest } = smtp as Record<string, unknown>;
+				return { ...rest, smtp: { ...smtpRest, hasPass: !!passEnc } };
+			}
+			return cfg;
 		}
 		default:
 			return cfg;
@@ -188,9 +199,31 @@ function buildConfig(
 	switch (channel) {
 		case 'email': {
 			const address = str(body.address);
-			if (!address) throw new Error('Enter an email address.');
-			if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) throw new Error('Enter a valid email address.');
-			return { address };
+			if (address && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address))
+				throw new Error('Enter a valid email address.');
+
+			const cfg: Record<string, unknown> = {};
+			if (address) cfg.address = address;
+
+			// Personal SMTP (additive, optional). Precedence:
+			//   clearSmtp:true      → drop personal SMTP (keep address)
+			//   body.smtp present   → validate + save it (encrypting the password)
+			//   body.smtp absent    → leave any previously-saved SMTP untouched
+			const prevSmtp =
+				prev.smtp && typeof prev.smtp === 'object'
+					? (prev.smtp as Record<string, unknown>)
+					: undefined;
+			if (body.clearSmtp === true) {
+				// personal SMTP removed; cfg.smtp intentionally left unset
+			} else if (body.smtp && typeof body.smtp === 'object') {
+				cfg.smtp = buildEmailSmtp(body.smtp as Record<string, unknown>, prevSmtp);
+			} else if (prevSmtp) {
+				cfg.smtp = prevSmtp;
+			}
+
+			if (!cfg.address && !cfg.smtp)
+				throw new Error('Enter an email address or set up your own SMTP.');
+			return cfg;
 		}
 		case 'telegram': {
 			const chatId = str(body.chatId);
@@ -235,4 +268,44 @@ function buildConfig(
 			// Unreachable — channel is validated by isConfigurable before we get here.
 			throw new Error('Unknown channel.');
 	}
+}
+
+const SMTP_TLS_MODES = new Set(['starttls', 'tls', 'none']);
+
+/**
+ * Validate + assemble a personal SMTP sub-config for storage. Mirrors the
+ * instance-wide validation in /api/admin/notifications. The password is
+ * encrypted (via secretKey.ts) before it ever hits the config JSON; a blank
+ * password keeps the previously-stored encrypted envelope (blank-means-keep,
+ * same convention as ntfy/webhook secrets). Throws on invalid input.
+ */
+function buildEmailSmtp(
+	smtp: Record<string, unknown>,
+	prevSmtp: Record<string, unknown> | undefined
+): Record<string, unknown> {
+	const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+
+	const host = str(smtp.host);
+	if (!host) throw new Error('Enter your SMTP server host.');
+
+	const from = str(smtp.from);
+	if (!from) throw new Error('Enter the From address for your SMTP server.');
+	if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(from))
+		throw new Error('The SMTP From address must be a valid email.');
+
+	const tls = str(smtp.tls);
+	if (!SMTP_TLS_MODES.has(tls)) throw new Error('Choose a valid SMTP encryption mode.');
+
+	const port = Number(smtp.port);
+	if (!Number.isInteger(port) || port < 1 || port > 65535)
+		throw new Error('SMTP port must be between 1 and 65535.');
+
+	const user = str(smtp.user) || null;
+
+	// pass: blank/absent → keep the previously-stored encrypted password; a
+	// non-blank value is encrypted here so plaintext never reaches storage.
+	const rawPass = smtp.pass == null ? '' : str(smtp.pass);
+	const passEnc = rawPass === '' ? (prevSmtp?.passEnc ?? null) : encryptSecret(rawPass);
+
+	return { host, port, user, from, tls, passEnc };
 }

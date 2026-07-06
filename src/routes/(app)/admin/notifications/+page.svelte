@@ -57,7 +57,11 @@
 	function currentBody() {
 		return {
 			smtpHost: smtpHost.trim(),
-			smtpPort: smtpPort.trim(),
+			// smtpPort is string state, but Svelte's bind:value on <input type=number>
+			// writes back a JS number once the field is edited — coerce to string
+			// before trimming so save() never throws 'smtpPort.trim is not a function'
+			// (cairn-vbnq).
+			smtpPort: String(smtpPort).trim(),
 			smtpUser: smtpUser.trim(),
 			smtpFrom: smtpFrom.trim(),
 			smtpTls,
@@ -167,6 +171,13 @@
 			<p class="hint">
 				One SMTP relay for the whole instance. Each user picks their own destination address in
 				their notification settings.
+			</p>
+			<p class="hint">
+				This is the <strong>fallback</strong> email server, used for any user who hasn't set up
+				their own in their notification settings. If a user has a personal email server saved,
+				their notifications use that instead. System and admin emails (new sign-ups, invites
+				redeemed, server health) sent to <strong>you</strong> also use this fallback — unless
+				you've set up a personal email server for your own account.
 			</p>
 		</div>
 

@@ -26,6 +26,7 @@ import * as openpgp from 'openpgp';
 import { db } from '../db';
 import { childLogger } from '../logger';
 import { getSetting } from '../settings';
+import { decryptSecret } from '../secretKey';
 import type {
 	ChannelSendResult,
 	NotificationChannelPlugin,
@@ -34,13 +35,34 @@ import type {
 
 const log = childLogger('notify:email');
 
-/** Per-user config JSON stored in notification_channel_config.config. */
+/** Shown when neither personal nor instance SMTP is configured — distinguishes
+ *  the two escape routes a user has (bring your own, or ask the admin). */
+const NO_SMTP_MESSAGE =
+	'No SMTP configured — set up your own in Settings › Notifications, or ask your admin to configure instance email.';
+
+/** Personal SMTP relay saved by a user, stored (encrypted pass) alongside the
+ *  destination address in notification_channel_config.config. */
+export interface PersonalSmtp {
+	host: string;
+	port: number;
+	user: string | null;
+	from: string;
+	tls: 'starttls' | 'tls' | 'none';
+	/** Encrypted envelope from secretKey.ts — NEVER plaintext. Null = no-auth relay. */
+	passEnc: string | null;
+}
+
+/** Per-user config JSON stored in notification_channel_config.config. Old rows
+ *  hold only `address`; `smtp` is additive — absent means "fall back to the
+ *  instance relay", i.e. exactly today's behaviour. */
 interface EmailChannelConfig {
 	/** Destination address; defaults to the user's account email if absent. */
 	address?: string;
+	/** Personal SMTP relay. Absent = use the instance-wide relay. */
+	smtp?: PersonalSmtp;
 }
 
-interface SmtpConfig {
+export interface SmtpConfig {
 	host: string;
 	port: number;
 	user: string | null;
@@ -51,7 +73,7 @@ interface SmtpConfig {
 
 /** Assemble the instance-wide SMTP config from raw settings keys. Returns null
  *  when the minimum (a host and a From: address) isn't configured. */
-function readSmtpConfig(): SmtpConfig | null {
+function readInstanceSmtpConfig(): SmtpConfig | null {
 	const host = getSetting('smtp_host');
 	if (!host) return null;
 	const from = getSetting('smtp_from') ?? getSetting('smtp_user');
@@ -71,6 +93,37 @@ function readSmtpConfig(): SmtpConfig | null {
 		from,
 		tls
 	};
+}
+
+/**
+ * Resolve the SMTP relay to use for THIS recipient, per docs/PER-USER-SMTP-PLAN.md
+ * §1: the user's own saved relay first (decrypting its password), else the
+ * instance-wide relay, else null. May THROW if the user's stored password can't
+ * be decrypted (corrupt envelope / wrong key) — callers translate that into a
+ * clear non-retryable error rather than letting it crash a queue tick.
+ */
+function readSmtpConfig(userId: number): SmtpConfig | null {
+	const cfg = readChannelConfig(userId);
+	const personal = cfg?.smtp;
+	if (personal?.host && personal.from) {
+		return {
+			host: personal.host,
+			port: personal.port,
+			user: personal.user,
+			pass: personal.passEnc ? decryptSecret(personal.passEnc) : null,
+			from: personal.from,
+			tls: personal.tls
+		};
+	}
+	return readInstanceSmtpConfig();
+}
+
+/** Whether SOME relay (personal or instance) is available for this user, without
+ *  decrypting anything — used by isConfigured() to grey out the toggle. */
+function smtpIsAvailable(userId: number): boolean {
+	const cfg = readChannelConfig(userId);
+	if (cfg?.smtp?.host && cfg.smtp.from) return true;
+	return readInstanceSmtpConfig() !== null;
 }
 
 /** The user's saved email config row (or null). */
@@ -184,17 +237,15 @@ async function sendMail(
 	}
 }
 
-/** Compose + (optionally) encrypt + send. Shared by send() and test(). */
-async function deliver(userId: number, payload: NotificationPayload): Promise<ChannelSendResult> {
-	const smtp = readSmtpConfig();
-	if (!smtp) {
-		return {
-			ok: false,
-			error: 'SMTP is not configured on this instance.',
-			retryable: false
-		};
-	}
-
+/** Compose + (optionally) encrypt + send with an EXPLICIT relay. The single
+ *  send/error-classification path shared by real sends, the test button, and the
+ *  test-before-save endpoint (via sendTestWithConfig) — so a green test result
+ *  genuinely exercises what a real notification would do. */
+async function deliverWith(
+	userId: number,
+	payload: NotificationPayload,
+	smtp: SmtpConfig
+): Promise<ChannelSendResult> {
 	const to = resolveAddress(userId);
 	if (!to) {
 		return { ok: false, error: 'No destination email address configured.', retryable: false };
@@ -225,14 +276,68 @@ async function deliver(userId: number, payload: NotificationPayload): Promise<Ch
 	return sendMail(smtp, to, subject, body);
 }
 
+/** Resolve this recipient's relay, mapping the two "can't send" cases (a corrupt
+ *  saved password, or nothing configured at all) to a clear non-retryable
+ *  ChannelSendResult so a decryption error never throws out of a queue tick. */
+function resolveSmtp(userId: number): { smtp: SmtpConfig } | { error: ChannelSendResult } {
+	let smtp: SmtpConfig | null;
+	try {
+		smtp = readSmtpConfig(userId);
+	} catch (err) {
+		log.warn({ err, userId }, 'failed to decrypt saved SMTP password');
+		return {
+			error: {
+				ok: false,
+				error: 'Your saved email password could not be read. Re-enter it in Settings › Notifications.',
+				retryable: false
+			}
+		};
+	}
+	if (!smtp) return { error: { ok: false, error: NO_SMTP_MESSAGE, retryable: false } };
+	return { smtp };
+}
+
+/** The canned "does email work?" payload, shared by test() and the test-smtp route. */
+function testPayload(userId: number): NotificationPayload {
+	return {
+		type: 'admin_server_health',
+		userId,
+		level: 'info',
+		title: 'Test notification from Cairn',
+		body: 'This is a test notification. If you received it, email notifications are working.'
+	};
+}
+
+/** Compose + encrypt + send. Shared by send() and test(): resolves the recipient's
+ *  relay (personal → instance) then delegates to deliverWith. */
+async function deliver(userId: number, payload: NotificationPayload): Promise<ChannelSendResult> {
+	const resolved = resolveSmtp(userId);
+	if ('error' in resolved) return resolved.error;
+	return deliverWith(userId, payload, resolved.smtp);
+}
+
+/**
+ * Send the canned test message through an EXPLICIT candidate relay, bypassing
+ * stored config entirely. The test-before-save endpoint (§4) uses this to verify
+ * form values the user hasn't saved yet; test() uses it with the resolved stored
+ * relay. Same send/error path either way (deliverWith → sendMail → classifyError).
+ */
+export async function sendTestWithConfig(
+	userId: number,
+	smtp: SmtpConfig
+): Promise<ChannelSendResult> {
+	return deliverWith(userId, testPayload(userId), smtp);
+}
+
 const emailChannel: NotificationChannelPlugin = {
 	id: 'email',
 	label: 'Email',
 
-	/** Configured when the instance has SMTP set up AND we can resolve a
-	 *  destination address for this user (explicit override or account email). */
+	/** Configured when SOME relay (the user's own or the instance's) is available
+	 *  AND we can resolve a destination address (explicit override or account
+	 *  email). Deliberately does not decrypt the saved password (pure DB read). */
 	isConfigured(userId: number): boolean {
-		return readSmtpConfig() !== null && resolveAddress(userId) !== null;
+		return smtpIsAvailable(userId) && resolveAddress(userId) !== null;
 	},
 
 	async send(userId: number, payload: NotificationPayload): Promise<ChannelSendResult> {
@@ -240,13 +345,9 @@ const emailChannel: NotificationChannelPlugin = {
 	},
 
 	async test(userId: number): Promise<ChannelSendResult> {
-		return deliver(userId, {
-			type: 'admin_server_health',
-			userId,
-			level: 'info',
-			title: 'Test notification from Cairn',
-			body: 'This is a test notification. If you received it, email notifications are working.'
-		});
+		const resolved = resolveSmtp(userId);
+		if ('error' in resolved) return resolved.error;
+		return sendTestWithConfig(userId, resolved.smtp);
 	}
 };
 
