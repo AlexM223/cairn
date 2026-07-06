@@ -1,27 +1,12 @@
 import { json, requireUser } from '$lib/server/api';
 import { getWallet } from '$lib/server/wallets';
 import { getWalletUtxos } from '$lib/server/transactions';
-import { getChain } from '$lib/server/chain';
-import {
-	classifyAndCacheParent,
-	getCachedParentMass,
-	rememberWalletMassProfile,
-	tierForVsize
-} from '$lib/server/bitcoin/signingMass';
+import { classifyUtxoMasses } from '$lib/server/walletApi';
+import { getCachedParentMass, rememberWalletMassProfile } from '$lib/server/bitcoin/signingMass';
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
 
 const log = childLogger('wallet');
-
-/**
- * How many parent transactions to fetch from the chain source at once. The
- * endpoint is user-triggered (the coin-control mass disclosure), so it IS
- * allowed to fetch — but a wallet of pool payouts could reference dozens of
- * multi-hundred-KB parents, so fetches are bounded rather than fired all at
- * once, and everything lands in the process-wide parent cache so the work
- * happens once per parent per process.
- */
-const FETCH_CONCURRENCY = 4;
 
 /**
  * GET /api/wallets/:id/utxo-mass — signing-mass classification for each of
@@ -30,10 +15,9 @@ const FETCH_CONCURRENCY = 4;
  *
  * Response: { masses: { txid, vout, parentVsize, tier, source }[] }
  *
- * Lazy + cached: parents are fetched only on this user-triggered request,
- * consulted from the in-process cache first, and individually tolerated on
- * failure — a coin whose parent can't be fetched or parsed is simply absent
- * from `masses` (the UI shows nothing for it rather than a guess).
+ * Lazy + cached: parents are fetched only on this user-triggered request
+ * (bounded concurrency and per-coin failure tolerance live in
+ * classifyUtxoMasses, shared with the multisig twin).
  */
 export const GET: RequestHandler = async (event) => {
 	const user = requireUser(event);
@@ -46,42 +30,13 @@ export const GET: RequestHandler = async (event) => {
 
 	try {
 		const utxos = (await getWalletUtxos(wallet.xpub)).filter((u) => u.height > 0);
-
-		// Unique parents not yet cached, fetched with bounded concurrency.
-		const missing = [...new Set(utxos.map((u) => u.txid))].filter(
-			(txid) => !getCachedParentMass(txid)
-		);
-		const chain = getChain();
-		let next = 0;
-		const workers = Array.from({ length: Math.min(FETCH_CONCURRENCY, missing.length) }, async () => {
-			while (next < missing.length) {
-				const txid = missing[next++];
-				try {
-					classifyAndCacheParent(txid, await chain.getTxHex(txid));
-				} catch {
-					// Tolerated: this parent's coins are left out of the response.
-				}
-			}
-		});
-		await Promise.all(workers);
-
-		const masses = utxos.flatMap((u) => {
-			const parent = getCachedParentMass(u.txid);
-			if (!parent) return [];
-			return [
-				{
-					txid: u.txid,
-					vout: u.vout,
-					parentVsize: parent.vsize,
-					tier: tierForVsize(parent.vsize),
-					source: parent.source
-				}
-			];
-		});
+		const masses = await classifyUtxoMasses(utxos);
 
 		// Remember this wallet's (value, parent-mass) profile so the multisig
 		// wizard's signing-time preview can estimate from the user's real coins
-		// without ever fetching (see /api/signing-time-preview).
+		// without ever fetching (see /api/signing-time-preview). Deliberately NOT
+		// done for multisigs — that cache is keyed by wallet id, and multisig ids
+		// live in a different id space.
 		rememberWalletMassProfile(
 			user.id,
 			wallet.id,

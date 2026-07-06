@@ -2,8 +2,7 @@ import { error } from '@sveltejs/kit';
 import { requireFeature } from '$lib/server/api';
 import { getWallet, getLabels } from '$lib/server/wallets';
 import { scanWallet } from '$lib/server/bitcoin/walletScan';
-import { getChain } from '$lib/server/chain';
-import { buildHistoryCsv, historyCsvFilename } from '$lib/server/historyExport';
+import { historyCsvResponse } from '$lib/server/walletApi';
 import type { RequestHandler } from './$types';
 
 /**
@@ -27,29 +26,10 @@ export const GET: RequestHandler = async (event) => {
 		error(502, e instanceof Error ? e.message : 'Could not scan the wallet.');
 	}
 
-	const chain = getChain();
-	let tipHeight = 0;
-	try {
-		tipHeight = (await chain.getTip()).height;
-	} catch {
-		// No tip → confirmations report 0; the rest of the export is unaffected.
-		tipHeight = 0;
-	}
-
-	const csv = await buildHistoryCsv({
+	return historyCsvResponse({
+		walletName: wallet.name,
 		rows: scan.txs,
 		ownedAddresses: scan.addresses.map((a) => a.address),
-		tipHeight,
-		getTx: (txid) => chain.getTx(txid),
 		labels: getLabels(user.id, id) ?? {}
-	});
-
-	const today = new Date().toISOString().slice(0, 10);
-	return new Response(csv, {
-		headers: {
-			'content-type': 'text/csv; charset=utf-8',
-			'content-disposition': `attachment; filename="${historyCsvFilename(wallet.name, today)}"`,
-			'cache-control': 'no-store'
-		}
 	});
 };

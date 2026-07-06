@@ -2,7 +2,7 @@ import { json, requireFeature } from '$lib/server/api';
 import { getSignableMultisig, toMultisigConfig } from '$lib/server/wallets/multisig';
 import { multisigToDescriptor, MultisigError } from '$lib/server/bitcoin/multisig';
 import { descriptorBackup } from '$lib/server/multisigExport';
-import { filenameSlug } from '$lib/server/walletExport';
+import { backupFileResponse } from '$lib/server/walletApi';
 import { markBackedUp } from '$lib/server/backups';
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
@@ -31,13 +31,7 @@ export const GET: RequestHandler = async (event) => {
 			if (multisig.userId === user.id) markBackedUp(user.id, 'multisig', id);
 			// Standard dated backup filename, comparable across a wallet's export
 			// buttons after a re-download or key rotation (cairn-vxum).
-			const date = new Date().toISOString().slice(0, 10);
-			return new Response(body, {
-				headers: {
-					'content-type': 'text/plain; charset=utf-8',
-					'content-disposition': `attachment; filename="cairn-${filenameSlug(multisig.name)}-backup-${date}-descriptor.txt"`
-				}
-			});
+			return backupFileResponse(body, multisig.name);
 		}
 		const config = toMultisigConfig(multisig);
 		return json({

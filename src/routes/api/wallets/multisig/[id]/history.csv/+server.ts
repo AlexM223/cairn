@@ -2,8 +2,7 @@ import { error } from '@sveltejs/kit';
 import { requireFeature } from '$lib/server/api';
 import { getViewableMultisig } from '$lib/server/wallets/multisig';
 import { getMultisigDetail } from '$lib/server/multisigScan';
-import { getChain } from '$lib/server/chain';
-import { buildHistoryCsv, historyCsvFilename } from '$lib/server/historyExport';
+import { historyCsvResponse } from '$lib/server/walletApi';
 import type { RequestHandler } from './$types';
 
 /**
@@ -27,27 +26,9 @@ export const GET: RequestHandler = async (event) => {
 		error(502, e instanceof Error ? e.message : 'Could not scan the multisig.');
 	}
 
-	const chain = getChain();
-	let tipHeight = 0;
-	try {
-		tipHeight = (await chain.getTip()).height;
-	} catch {
-		tipHeight = 0;
-	}
-
-	const csv = await buildHistoryCsv({
+	return historyCsvResponse({
+		walletName: multisig.name,
 		rows: detail.history,
-		ownedAddresses: detail.addresses.map((a) => a.address),
-		tipHeight,
-		getTx: (txid) => chain.getTx(txid)
-	});
-
-	const today = new Date().toISOString().slice(0, 10);
-	return new Response(csv, {
-		headers: {
-			'content-type': 'text/csv; charset=utf-8',
-			'content-disposition': `attachment; filename="${historyCsvFilename(multisig.name, today)}"`,
-			'cache-control': 'no-store'
-		}
+		ownedAddresses: detail.addresses.map((a) => a.address)
 	});
 };

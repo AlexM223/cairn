@@ -1,23 +1,10 @@
 import { json } from '@sveltejs/kit';
-import { requireFeature, readJson } from '$lib/server/api';
+import { requireFeature } from '$lib/server/api';
+import { readSpendRequest, psbtBuildErrorResponse } from '$lib/server/walletApi';
 import { buildMultisigDraft, multisigTransactionProgress } from '$lib/server/multisigTransactions';
 import { getSignableMultisig } from '$lib/server/wallets/multisig';
-import { PsbtError } from '$lib/server/bitcoin/psbt';
-import { childLogger } from '$lib/server/logger';
 import { recordActivity } from '$lib/server/activity';
 import type { RequestHandler } from './$types';
-
-const log = childLogger('wallet');
-
-interface RecipientBody {
-	address?: unknown;
-	amount?: unknown;
-}
-
-interface CoinBody {
-	txid?: unknown;
-	vout?: unknown;
-}
 
 /**
  * Construct an unsigned multisig PSBT from this multisig and save it as a draft.
@@ -38,45 +25,20 @@ interface CoinBody {
  */
 export const POST: RequestHandler = async (event) => {
 	// Building a spend is the core gated action; coin control and batching are
-	// finer gates checked below only when the request actually uses them.
+	// finer gates applied inside readSpendRequest, only when the request
+	// actually uses them.
 	const user = requireFeature(event, 'send');
 	const multisigId = Number(event.params.id);
 	if (!Number.isInteger(multisigId)) return json({ error: 'Bad multisig id' }, { status: 400 });
 
-	const body = await readJson<{
-		recipients?: RecipientBody[];
-		recipient?: string;
-		amount?: number | 'max';
-		feeRate?: number;
-		onlyUtxos?: CoinBody[];
-	}>(event);
-
-	const toAmount = (a: unknown): number | 'max' => (a === 'max' ? 'max' : Number(a));
-
-	const recipients: { address: string; amount: number | 'max' }[] =
-		Array.isArray(body.recipients) && body.recipients.length > 0
-			? body.recipients.map((r) => ({
-					address: String(r?.address ?? ''),
-					amount: toAmount(r?.amount)
-				}))
-			: [{ address: String(body.recipient ?? ''), amount: toAmount(body.amount) }];
-
-	const onlyUtxos = Array.isArray(body.onlyUtxos)
-		? body.onlyUtxos
-				.map((c) => ({ txid: String(c?.txid ?? ''), vout: Number(c?.vout) }))
-				.filter((c) => /^[0-9a-f]{64}$/i.test(c.txid) && Number.isInteger(c.vout) && c.vout >= 0)
-		: undefined;
-
-	// Finer gates: only reject when the request actually exercises the feature.
-	if (onlyUtxos && onlyUtxos.length > 0) requireFeature(event, 'coin_control');
-	if (recipients.length > 1) requireFeature(event, 'batch_transactions');
+	const spend = await readSpendRequest(event);
 
 	try {
-		const { draft, details, chainDepthWarning } = await buildMultisigDraft(user.id, multisigId, {
-			recipients,
-			feeRate: Number(body.feeRate),
-			onlyUtxos: onlyUtxos && onlyUtxos.length > 0 ? onlyUtxos : undefined
-		});
+		const { draft, details, chainDepthWarning } = await buildMultisigDraft(
+			user.id,
+			multisigId,
+			spend
+		);
 		// buildMultisigDraft already gated (owner or cosigner); re-read the same way.
 		const multisig = getSignableMultisig(user.id, multisigId)!;
 		recordActivity({
@@ -90,15 +52,6 @@ export const POST: RequestHandler = async (event) => {
 			{ status: 201 }
 		);
 	} catch (e) {
-		if (e instanceof PsbtError) {
-			const status = e.code === 'construction_failed' ? 404 : 400;
-			return json({ error: e.message, code: e.code }, { status });
-		}
-		// Unexpected construction failure — not a known PsbtError.
-		log.error({ err: e, multisigId }, 'wallet psbt build failed');
-		return json(
-			{ error: e instanceof Error ? e.message : 'Could not build the transaction' },
-			{ status: 502 }
-		);
+		return psbtBuildErrorResponse(e, { multisigId });
 	}
 };

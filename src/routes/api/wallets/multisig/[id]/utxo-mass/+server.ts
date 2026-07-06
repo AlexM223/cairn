@@ -1,34 +1,20 @@
 import { json, requireUser } from '$lib/server/api';
 import { getViewableMultisig } from '$lib/server/wallets/multisig';
 import { getMultisigUtxos } from '$lib/server/multisigScan';
-import { getChain } from '$lib/server/chain';
-import {
-	classifyAndCacheParent,
-	getCachedParentMass,
-	tierForVsize
-} from '$lib/server/bitcoin/signingMass';
+import { classifyUtxoMasses } from '$lib/server/walletApi';
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
 
 const log = childLogger('wallet');
 
 /**
- * How many parent transactions to fetch from the chain source at once — same
- * bound (and the same reasoning) as the wallet-scoped twin at
- * /api/wallets/[id]/utxo-mass: user-triggered, so fetching is allowed, but a
- * multisig holding pool payouts could reference dozens of multi-hundred-KB
- * parents, so fetches are bounded and land in the process-wide parent cache.
- */
-const FETCH_CONCURRENCY = 4;
-
-/**
  * GET /api/wallets/multisig/:id/utxo-mass — signing-mass classification for each of the
  * multisig's current CONFIRMED UTXOs. Response shape is identical to the wallet
  * variant: { masses: { txid, vout, parentVsize, tier, source }[] }.
  *
- * Lazy + cached + individually tolerant: a coin whose parent can't be fetched
- * or parsed is simply absent from `masses` — the UI shows nothing for it
- * rather than a guess.
+ * Lazy + cached + individually tolerant (see classifyUtxoMasses, shared with
+ * the wallet twin): a coin whose parent can't be fetched or parsed is simply
+ * absent from `masses` — the UI shows nothing for it rather than a guess.
  *
  * Unlike the wallet route this deliberately does NOT call
  * rememberWalletMassProfile: that cache is keyed by wallet id, and multisig ids
@@ -47,39 +33,7 @@ export const GET: RequestHandler = async (event) => {
 
 	try {
 		const utxos = (await getMultisigUtxos(multisig)).filter((u) => u.height > 0);
-
-		// Unique parents not yet cached, fetched with bounded concurrency.
-		const missing = [...new Set(utxos.map((u) => u.txid))].filter(
-			(txid) => !getCachedParentMass(txid)
-		);
-		const chain = getChain();
-		let next = 0;
-		const workers = Array.from({ length: Math.min(FETCH_CONCURRENCY, missing.length) }, async () => {
-			while (next < missing.length) {
-				const txid = missing[next++];
-				try {
-					classifyAndCacheParent(txid, await chain.getTxHex(txid));
-				} catch {
-					// Tolerated: this parent's coins are left out of the response.
-				}
-			}
-		});
-		await Promise.all(workers);
-
-		const masses = utxos.flatMap((u) => {
-			const parent = getCachedParentMass(u.txid);
-			if (!parent) return [];
-			return [
-				{
-					txid: u.txid,
-					vout: u.vout,
-					parentVsize: parent.vsize,
-					tier: tierForVsize(parent.vsize),
-					source: parent.source
-				}
-			];
-		});
-
+		const masses = await classifyUtxoMasses(utxos);
 		return json({ masses });
 	} catch (e) {
 		log.error({ err: e, multisigId: Number(event.params.id) }, 'wallet utxo-mass failed');

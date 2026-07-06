@@ -1,7 +1,8 @@
 import { error } from '@sveltejs/kit';
 import { requireFeature } from '$lib/server/api';
 import { getWallet } from '$lib/server/wallets';
-import { walletDescriptorBackup, filenameSlug } from '$lib/server/walletExport';
+import { walletDescriptorBackup } from '$lib/server/walletExport';
+import { backupFileResponse } from '$lib/server/walletApi';
 import { markBackedUp } from '$lib/server/backups';
 import { childLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
@@ -40,13 +41,5 @@ export const GET: RequestHandler = async (event) => {
 
 	// Downloading a descriptor backup counts as backing the wallet up.
 	markBackedUp(user.id, 'wallet', id);
-	const date = new Date().toISOString().slice(0, 10);
-
-	return new Response(body, {
-		headers: {
-			'content-type': 'text/plain; charset=utf-8',
-			'content-disposition': `attachment; filename="cairn-${filenameSlug(wallet.name)}-backup-${date}-descriptor.txt"`,
-			'cache-control': 'no-store'
-		}
-	});
+	return backupFileResponse(body, wallet.name, { noStore: true });
 };
