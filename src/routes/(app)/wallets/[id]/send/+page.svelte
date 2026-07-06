@@ -25,7 +25,7 @@
 	import DeviceCard from './_components/DeviceCard.svelte';
 	import RecipientCombobox from './_components/RecipientCombobox.svelte';
 	import ColdCardSigner from './_components/ColdCardSigner.svelte';
-	import LedgerSigner from './_components/LedgerSigner.svelte';
+	import LedgerSigner from '$lib/components/signing/LedgerSigner.svelte';
 	import QrSigner from './_components/QrSigner.svelte';
 	import TrezorSigner from '$lib/components/signing/TrezorSigner.svelte';
 	import BitboxSigner from './_components/BitboxSigner.svelte';

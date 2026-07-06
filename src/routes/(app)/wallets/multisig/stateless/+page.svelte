@@ -13,13 +13,16 @@
 	// does the multisig math) and the Trezor signer needs no server state at
 	// all (Trezor keeps no multisig memory — the full cosigner set travels with
 	// every request), so both work unchanged for a multisig that was never saved.
-	// File and Ledger get stateless-local siblings (see _components/) because
-	// their persistent versions depend on multisig API endpoints.
+	// The Ledger signer takes its stateless path when `multisig.multisigId` is
+	// absent: it re-runs the on-device BIP-388 registration each session instead
+	// of persisting the HMAC. Only File keeps a stateless-local sibling (see
+	// _components/) because its persistent version depends on multisig API
+	// endpoints.
 	import QrSigner from '../../[id]/send/_components/QrSigner.svelte';
 	import type { SignerContext } from '../../[id]/send/_components/signerContract';
 	import TrezorSigner from '$lib/components/signing/TrezorSigner.svelte';
 	import StatelessFileSigner from './_components/StatelessFileSigner.svelte';
-	import StatelessLedgerSigner from './_components/StatelessLedgerSigner.svelte';
+	import LedgerSigner from '$lib/components/signing/LedgerSigner.svelte';
 
 	let { data } = $props();
 
@@ -957,18 +960,17 @@
 									onusefile={() => chooseMethod('file')}
 								/>
 							{:else if activeMethod === 'ledger'}
-								<StatelessLedgerSigner
+								<LedgerSigner
 									unsignedPsbt={psbt}
-									keyName={activeKey.name}
-									{multisigLabel}
-									threshold={config.threshold}
-									totalKeys={config.totalKeys}
-									scriptType={config.scriptType}
-									multisigKeys={signKeys}
-									destinationAddress={signerContext.destinationAddress}
-									amountSats={signerContext.amountSats}
-									feeSats={signerContext.feeSats}
-									changeSats={signerContext.changeSats}
+									context={signerContext}
+									multisig={{
+										keyName: activeKey.name,
+										multisigName: multisigLabel,
+										threshold: config.threshold,
+										totalKeys: config.totalKeys,
+										scriptType: config.scriptType,
+										keys: signKeys
+									}}
 									onsigned={handleSigned}
 									onusefile={() => chooseMethod('file')}
 								/>
