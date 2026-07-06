@@ -1,4 +1,36 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// cairn-yjs5 (fix cairn-sd3n): restoreBackup skips malformed/duplicate rows —
+// those skips must each log a warning with table + source-id context. backup.ts
+// captures `const log = childLogger('backup')` at import time, so the logger is
+// mocked here at the top; vi.mock is hoisted above the imports below, which is
+// what makes spying possible despite this file importing backup.ts directly.
+const logMock = vi.hoisted(() => {
+	const log: Record<string, unknown> = {
+		warn: vi.fn(),
+		info: vi.fn(),
+		error: vi.fn(),
+		debug: vi.fn(),
+		trace: vi.fn(),
+		fatal: vi.fn()
+	};
+	log.child = () => log;
+	return log as {
+		warn: ReturnType<typeof vi.fn>;
+		info: ReturnType<typeof vi.fn>;
+		error: ReturnType<typeof vi.fn>;
+		debug: ReturnType<typeof vi.fn>;
+		trace: ReturnType<typeof vi.fn>;
+		fatal: ReturnType<typeof vi.fn>;
+		child: () => unknown;
+	};
+});
+vi.mock('./logger', () => ({
+	childLogger: () => logMock,
+	logger: logMock,
+	LOG_FILE: 'test.log'
+}));
+
 import { db } from './db';
 import { registerUser, addCredential, getUserByEmail, hasNoCredentials, listCredentials } from './auth';
 import { buildBackup, encryptBackup, decryptBackup, restoreBackup, BackupError } from './backup';
@@ -136,6 +168,123 @@ describe('restore', () => {
 		const imported = getUserByEmail('attacker@example.com');
 		expect(imported).not.toBeNull();
 		expect(imported!.isAdmin).toBe(false); // demoted despite is_admin: 1 in the file
+	});
+
+	it('logs one warning per skipped row with table context, and counts only successful inserts (cairn-yjs5 / cairn-sd3n)', () => {
+		registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+		const data = buildBackup('t');
+
+		// A new user whose child rows include deliberate constraint violations —
+		// the "malformed/duplicate row" shapes restoreBackup skips row-by-row.
+		data.users.push({
+			id: 500,
+			email: 'carol@example.com',
+			display_name: 'Carol',
+			is_admin: 0,
+			disabled: 0,
+			created_at: 't',
+			last_login: null
+		});
+		const wallet = (id: number, xpub: string) => ({
+			id,
+			user_id: 500,
+			name: `W${id}`,
+			type: 'xpub',
+			xpub,
+			script_type: 'p2wpkh',
+			receive_cursor: 0,
+			created_at: 't',
+			master_fingerprint: null,
+			derivation_path: null,
+			device_type: null
+		});
+		// Second wallet duplicates (user_id, xpub) → UNIQUE violation, skipped.
+		data.wallets.push(wallet(1, 'xpubDUP'), wallet(2, 'xpubDUP'), wallet(3, 'xpubOK'));
+
+		data.multisigs.push({
+			id: 10,
+			user_id: 500,
+			name: 'Vault',
+			threshold: 2,
+			script_type: 'p2wsh',
+			receive_cursor: 0,
+			created_at: 't'
+		});
+		const key = (name: string, xpub: string) => ({
+			multisig_id: 10,
+			position: 0, // both keys claim position 0 → second violates UNIQUE(multisig_id, position)
+			name,
+			category: 'hardware',
+			device_type: null,
+			xpub,
+			fingerprint: '00000000',
+			path: "m/48'/0'/0'/2'",
+			last_verified_at: null
+		});
+		data.multisig_keys.push(key('K1', 'xpubK1'), key('K2', 'xpubK2'));
+
+		const addr = (label: string) => ({
+			id: null,
+			user_id: 500,
+			label,
+			address: 'bc1qsameaddress',
+			created_at: 't',
+			last_used_at: null
+		});
+		// Duplicate (user_id, address) → UNIQUE violation, skipped.
+		data.saved_addresses.push(addr('Exchange'), addr('Exchange again'));
+
+		logMock.warn.mockClear();
+		const summary = restoreBackup(data);
+
+		// The summary counts only rows that actually landed.
+		expect(summary.usersAdded).toBe(1);
+		expect(summary.wallets).toBe(2); // xpubDUP once + xpubOK
+		expect(summary.multisigs).toBe(1);
+		expect(summary.addresses).toBe(1);
+
+		// One warning per skipped row — three skips across three tables.
+		expect(logMock.warn).toHaveBeenCalledTimes(3);
+		const calls = logMock.warn.mock.calls as [Record<string, unknown>, string][];
+		for (const [, msg] of calls) expect(msg).toMatch(/skipped/i);
+
+		const walletWarn = calls.find(([ctx]) => ctx.table === 'wallets');
+		expect(walletWarn).toBeDefined();
+		expect(walletWarn![0]).toMatchObject({ table: 'wallets', srcId: 2 });
+		expect(walletWarn![0].err).toBeTruthy();
+
+		const keyWarn = calls.find(([ctx]) => ctx.table === 'multisig_keys');
+		expect(keyWarn).toBeDefined();
+		expect(keyWarn![0]).toMatchObject({ table: 'multisig_keys', srcMultisigId: 10 });
+
+		const addrWarn = calls.find(([ctx]) => ctx.table === 'saved_addresses');
+		expect(addrWarn).toBeDefined();
+		expect(addrWarn![0]).toMatchObject({ table: 'saved_addresses', srcUserId: 500 });
+
+		// Only the surviving rows are in the DB.
+		const carol = getUserByEmail('carol@example.com');
+		expect(carol).not.toBeNull();
+		const xpubs = (
+			db.prepare('SELECT xpub FROM wallets WHERE user_id = ?').all(carol!.id) as {
+				xpub: string;
+			}[]
+		)
+			.map((w) => w.xpub)
+			.sort();
+		expect(xpubs).toEqual(['xpubDUP', 'xpubOK']);
+
+		const vault = db.prepare("SELECT id FROM multisigs WHERE name = 'Vault'").get() as {
+			id: number;
+		};
+		const keys = db
+			.prepare('SELECT name FROM multisig_keys WHERE multisig_id = ?')
+			.all(vault.id) as { name: string }[];
+		expect(keys.map((k) => k.name)).toEqual(['K1']);
+
+		const addrs = db
+			.prepare('SELECT label FROM saved_addresses WHERE user_id = ?')
+			.all(carol!.id) as { label: string }[];
+		expect(addrs.map((a) => a.label)).toEqual(['Exchange']);
 	});
 
 	it('restores settings', () => {
