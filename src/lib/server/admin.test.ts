@@ -15,7 +15,9 @@ import {
 } from './admin';
 
 function wipe(): void {
-	db.exec('DELETE FROM sessions; DELETE FROM wallets; DELETE FROM invites; DELETE FROM users; DELETE FROM settings;');
+	db.exec(
+		'DELETE FROM events; DELETE FROM notified_txids; DELETE FROM sessions; DELETE FROM multisigs; DELETE FROM wallets; DELETE FROM invites; DELETE FROM users; DELETE FROM settings;'
+	);
 }
 
 beforeEach(() => {
@@ -167,15 +169,60 @@ describe('resetInstance', () => {
 		const fresh = registerUser({ email: 'new@example.com', password: PASSWORD, displayName: 'new' });
 		expect(fresh.isAdmin).toBe(true);
 	});
+
+	// cairn-fsfa: events.user_id NULL (instance-wide activity) has no FK to cascade
+	// from, so the pre-fix reset left the prior instance's activity history visible
+	// to the next operator — contradicting the "nothing else survives" reset copy.
+	it('deletes instance-wide (user_id NULL) events as well as per-user ones', () => {
+		const admin = makeUser('admin@example.com');
+		db.prepare(
+			"INSERT INTO events (user_id, type, level, message) VALUES (NULL, 'network_up', 'info', 'Connected to electrum.example')"
+		).run();
+		db.prepare(
+			"INSERT INTO events (user_id, type, level, message) VALUES (?, 'broadcast', 'success', 'Payment sent')"
+		).run(admin.id);
+
+		resetInstance();
+
+		const { n } = db.prepare('SELECT COUNT(*) AS n FROM events').get() as { n: number };
+		expect(n).toBe(0);
+	});
+
+	// cairn-h8xo: notified_txids has no FK either (cairn-zari) — the pre-fix reset
+	// carried the old instance's notification-dedup ledger into the next one.
+	it('clears the whole notified_txids dedup ledger', () => {
+		const admin = makeUser('admin@example.com');
+		db.prepare(
+			"INSERT INTO notified_txids (wallet_kind, wallet_id, user_id, txid) VALUES ('wallet', 1, ?, ?)"
+		).run(admin.id, 'a'.repeat(64));
+		db.prepare(
+			"INSERT INTO notified_txids (wallet_kind, wallet_id, user_id, txid) VALUES ('multisig', 1, ?, ?)"
+		).run(admin.id, 'b'.repeat(64));
+
+		resetInstance();
+
+		const { n } = db.prepare('SELECT COUNT(*) AS n FROM notified_txids').get() as { n: number };
+		expect(n).toBe(0);
+	});
 });
 
 describe('instanceStats', () => {
-	it('counts users, active admins and active invites', () => {
+	// cairn-ogi7: the wallets stat must count single-sig AND multisig wallets
+	// (cairn-xqfb). The old fixture had zero rows in both tables, so a regression
+	// back to counting only `wallets` would have passed unnoticed.
+	it('counts users, active admins, active invites, and wallets across both tables', () => {
 		const admin = makeUser('admin@example.com');
-		makeUser('user@example.com');
+		const user = makeUser('user@example.com');
 		const [invite] = createInvites({ createdBy: admin.id, count: 2 });
 		revokeInvite(invite.id);
+		// One single-sig and one multisig, owned by different users → wallets: 2.
+		db.prepare(
+			"INSERT INTO wallets (user_id, name, xpub, script_type) VALUES (?, 'w', 'xpub-test', 'p2wpkh')"
+		).run(admin.id);
+		db.prepare(
+			"INSERT INTO multisigs (user_id, name, threshold, script_type) VALUES (?, 'ms', 2, 'p2wsh')"
+		).run(user.id);
 
-		expect(instanceStats()).toEqual({ users: 2, admins: 1, wallets: 0, activeInvites: 1 });
+		expect(instanceStats()).toEqual({ users: 2, admins: 1, wallets: 2, activeInvites: 1 });
 	});
 });
