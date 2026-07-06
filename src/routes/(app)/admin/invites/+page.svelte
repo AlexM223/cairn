@@ -44,7 +44,11 @@
 		method="POST"
 		action="?/create"
 		class="create-form"
-		use:enhance={() => {
+		use:enhance={({ cancel }) => {
+			// Guard re-entrant submits: a fast double/triple-click can fire before the
+			// button's reactive `disabled` attribute is flushed to the DOM, creating
+			// duplicate invites (cairn-u6eg). Cancel any submit while one is in flight.
+			if (creating) return cancel();
 			creating = true;
 			return async ({ update }) => {
 				creating = false;
