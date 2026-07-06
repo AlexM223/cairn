@@ -1,0 +1,14 @@
+services:
+  cairn:
+    build: .
+    ports:
+      - '3000:3000'
+    volumes:
+      # The SQLite database. Swap for a named volume if you prefer:
+      #   - cairn-data:/data
+      - ./data:/data
+    restart: unless-stopped
+    # Healthcheck is inherited from the Dockerfile (/api/health via node fetch).
+
+# volumes:
+#   cairn-data:

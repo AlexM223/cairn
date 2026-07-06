@@ -1,0 +1,381 @@
+/*
+ * Shared styles for the two wallet-detail pages — wallets/[id] and
+ * wallets/multisig/[id] — which render the same layout (header, balance +
+ * receive grid, backup card, tabs, history/address tables) and used to carry
+ * two near-verbatim copies of this block in their scoped <style> sections.
+ *
+ * Every rule is namespaced under .wallet-detail (the pages' root element) so
+ * nothing leaks to other routes that reuse generic class names like .detail,
+ * .tab, or .chip. Page-specific rules — and the handful of properties where
+ * the two pages intentionally differ (head gap, top-grid margin, the
+ * delete-backup warning) — stay in each page's scoped <style>, which also
+ * wins the cascade over this sheet by specificity, so a page can override any
+ * shared value locally.
+ */
+
+.wallet-detail {
+	display: flex;
+	flex-direction: column;
+}
+
+.wallet-detail .back-link {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 12.5px;
+	color: var(--text-secondary);
+	margin-bottom: 14px;
+	align-self: flex-start;
+}
+
+.wallet-detail .back-link:hover {
+	color: var(--accent);
+}
+
+/* Success banner after import (single-sig) / creation (multisig). */
+.wallet-detail .imported-banner,
+.wallet-detail .created-banner {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 10px 14px;
+	margin-bottom: 16px;
+	font-size: 13px;
+	color: var(--success);
+	background: var(--success-muted);
+	border: 1px solid rgba(107, 191, 107, 0.3);
+	border-radius: var(--radius-control);
+}
+
+.wallet-detail .banner-dismiss {
+	display: flex;
+	align-items: center;
+	background: none;
+	border: none;
+	color: inherit;
+	cursor: pointer;
+	padding: 2px;
+	opacity: 0.7;
+}
+
+.wallet-detail .banner-dismiss:hover,
+.wallet-detail .banner-dismiss:focus-visible {
+	opacity: 1;
+}
+
+.wallet-detail .head {
+	flex-wrap: wrap;
+}
+
+/* On narrow viewports the title owns the first row outright — otherwise
+   the shrinkable title group absorbs all the squeeze from its rigid
+   button siblings and the wallet name collapses to nothing. */
+@media (max-width: 640px) {
+	.wallet-detail .head .head-title {
+		flex-basis: 100%;
+	}
+}
+
+.wallet-detail .watch-note {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	margin: 6px 0 18px;
+}
+
+.wallet-detail .delete-trigger:hover {
+	color: var(--error);
+	background: var(--error-muted);
+}
+
+.wallet-detail .confirm-text {
+	font-size: 12.5px;
+	color: var(--error);
+}
+
+.wallet-detail .delete-confirm {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.wallet-detail .scan-error {
+	display: flex;
+	align-items: center;
+	gap: 14px;
+	color: var(--warning);
+}
+
+.wallet-detail .scan-error .hint {
+	color: var(--text-muted);
+}
+
+/* --- top grid --- */
+
+.wallet-detail .top-grid {
+	display: grid;
+	grid-template-columns: 1fr 1.2fr;
+	gap: 14px;
+}
+
+.wallet-detail .top-grid > * {
+	min-width: 0;
+}
+
+@media (max-width: 860px) {
+	.wallet-detail .top-grid {
+		grid-template-columns: 1fr;
+	}
+}
+
+@media (max-width: 480px) {
+	.wallet-detail .receive-body {
+		flex-direction: column;
+		align-items: center;
+	}
+}
+
+.wallet-detail .balance-card {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.wallet-detail .balance-line {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+}
+
+.wallet-detail .balance-btc {
+	font-size: 40px;
+}
+
+.wallet-detail .balance-unit {
+	font-size: 14px;
+	color: var(--text-muted);
+}
+
+.wallet-detail .receive-card {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+}
+
+.wallet-detail .receive-body {
+	display: flex;
+	gap: 16px;
+	align-items: flex-start;
+}
+
+.wallet-detail .qr {
+	flex-shrink: 0;
+	border-radius: var(--radius-control);
+	background: var(--bg);
+	border: 1px solid var(--border-subtle);
+	padding: 6px;
+}
+
+.wallet-detail .receive-meta {
+	display: flex;
+	flex-direction: column;
+	gap: 9px;
+	min-width: 0;
+	flex: 1;
+}
+
+.wallet-detail .receive-addr {
+	font-size: 13.5px;
+}
+
+/* --- backup card --- */
+
+.wallet-detail .backup-card {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	margin-bottom: 18px;
+}
+
+.wallet-detail .backup-copy {
+	font-size: 13px;
+	line-height: 1.65;
+	color: var(--text-secondary);
+}
+
+.wallet-detail .backup-copy strong {
+	color: var(--text);
+}
+
+.wallet-detail .backup-notes {
+	border-top: 1px solid var(--border-subtle);
+	padding-top: 10px;
+}
+
+.wallet-detail .backup-notes .hint {
+	line-height: 1.6;
+}
+
+.wallet-detail .backup-notes strong {
+	color: var(--text-secondary);
+	font-weight: 500;
+}
+
+/* --- tabs --- */
+
+.wallet-detail .tabs {
+	display: flex;
+	gap: 4px;
+	border-bottom: 1px solid var(--border-subtle);
+	margin-bottom: 14px;
+}
+
+.wallet-detail .tab {
+	display: inline-flex;
+	align-items: center;
+	gap: 7px;
+	padding: 8px 14px;
+	background: none;
+	border: none;
+	border-bottom: 2px solid transparent;
+	margin-bottom: -1px;
+	color: var(--text-secondary);
+	font: inherit;
+	font-size: 13.5px;
+	font-weight: 500;
+	cursor: pointer;
+	transition: color 120ms var(--ease);
+}
+
+.wallet-detail .tab:hover {
+	color: var(--text);
+}
+
+.wallet-detail .tab.active {
+	color: var(--accent);
+	border-bottom-color: var(--accent);
+}
+
+.wallet-detail .tab-count {
+	font-size: 11px;
+	padding: 1px 7px;
+	border-radius: 99px;
+	background: var(--surface-elevated);
+	color: var(--text-muted);
+	font-variant-numeric: tabular-nums;
+}
+
+.wallet-detail .tab.active .tab-count {
+	background: var(--accent-muted);
+	color: var(--accent);
+}
+
+/* --- transactions --- */
+
+.wallet-detail .dir {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 12.5px;
+}
+
+.wallet-detail .dir.in,
+.wallet-detail .delta.in {
+	color: var(--success);
+}
+
+.wallet-detail .dir.out,
+.wallet-detail .delta.out {
+	color: var(--error);
+}
+
+.wallet-detail .delta {
+	font-weight: 500;
+}
+
+/* --- addresses --- */
+
+.wallet-detail .chips {
+	display: flex;
+	gap: 8px;
+	padding: 14px 14px 4px;
+}
+
+.wallet-detail .chip {
+	padding: 4px 12px;
+	border-radius: 99px;
+	border: 1px solid var(--border);
+	background: transparent;
+	color: var(--text-secondary);
+	font: inherit;
+	font-size: 12px;
+	font-weight: 500;
+	cursor: pointer;
+	font-variant-numeric: tabular-nums;
+	transition:
+		background 120ms var(--ease),
+		color 120ms var(--ease),
+		border-color 120ms var(--ease);
+}
+
+.wallet-detail .chip:hover {
+	color: var(--text);
+}
+
+.wallet-detail .chip.active {
+	background: var(--accent-muted);
+	border-color: transparent;
+	color: var(--accent);
+}
+
+.wallet-detail .addr-cell {
+	max-width: 320px;
+}
+
+/* --- address labels (cairn-nbsx) --- */
+
+.wallet-detail .addr-label-cell {
+	max-width: 200px;
+}
+
+.wallet-detail .addr-label-btn {
+	background: none;
+	border: none;
+	padding: 2px 4px;
+	margin: -2px -4px;
+	border-radius: var(--radius-chip);
+	font-family: var(--font-ui);
+	font-size: 12.5px;
+	text-align: left;
+	cursor: pointer;
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.wallet-detail .addr-label-btn.has-label {
+	color: var(--text);
+}
+
+.wallet-detail .addr-label-btn.has-label:hover {
+	background: var(--surface-elevated);
+}
+
+.wallet-detail .addr-label-btn.add-label {
+	color: var(--text-muted);
+	opacity: 0;
+	transition: opacity 120ms var(--ease);
+}
+
+.wallet-detail tr:hover .addr-label-btn.add-label,
+.wallet-detail .addr-label-btn.add-label:focus-visible {
+	opacity: 1;
+}
+
+.wallet-detail .addr-label-input {
+	font-size: 12.5px;
+	padding: 3px 6px;
+	width: 100%;
+	max-width: 190px;
+}

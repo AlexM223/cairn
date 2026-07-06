@@ -1,0 +1,241 @@
+// WebAuthn (passkey) ceremony helpers built on @simplewebauthn/server.
+//
+// Relying-Party identity is derived from the request so a self-hosted instance
+// "just works" on whatever hostname the operator serves it from — overridable
+// with CAIRN_RP_ID / CAIRN_ORIGIN for reverse-proxy setups. WebAuthn requires a
+// secure context, so this only works over HTTPS (or http://localhost in dev).
+//
+// The per-ceremony challenge is held in a short-lived httpOnly cookie between
+// the `options` and `verify` requests. The challenge is not secret; httpOnly +
+// single-use (cleared on verify) + the authenticator's signature are what make
+// the ceremony safe.
+
+import type { RequestEvent } from '@sveltejs/kit';
+import { env } from '$env/dynamic/private';
+import {
+	generateRegistrationOptions,
+	verifyRegistrationResponse,
+	generateAuthenticationOptions,
+	verifyAuthenticationResponse
+} from '@simplewebauthn/server';
+import { notify } from './notifications';
+import { childLogger } from './logger';
+import type {
+	AuthenticatorTransportFuture,
+	AuthenticationResponseJSON,
+	PublicKeyCredentialCreationOptionsJSON,
+	PublicKeyCredentialRequestOptionsJSON,
+	RegistrationResponseJSON,
+	VerifiedAuthenticationResponse,
+	VerifiedRegistrationResponse,
+	WebAuthnCredential
+} from '@simplewebauthn/server';
+
+// Security-event log — passkey ceremonies must be visible in /admin/logs
+// (cairn-wbmu). Never logs the challenge, credential secrets, or signatures.
+const log = childLogger('security');
+
+const RP_NAME = 'Cairn';
+const REG_COOKIE = 'cairn_wa_reg';
+const AUTH_COOKIE = 'cairn_wa_auth';
+const CEREMONY_TTL_S = 300; // 5 minutes to complete a ceremony
+
+type Descriptor = { id: string; transports?: string[] };
+
+/** RP identity for this request. rpID is the host (no scheme/port). */
+export function getRp(event: RequestEvent): { rpID: string; rpName: string; origin: string } {
+	const origin = env.CAIRN_ORIGIN ?? event.url.origin;
+	const rpID = env.CAIRN_RP_ID ?? event.url.hostname;
+	return { rpID, rpName: RP_NAME, origin };
+}
+
+/** Stable per-account user handle for the authenticator (keeps a user's passkeys grouped). */
+function userHandle(email: string): Uint8Array<ArrayBuffer> {
+	// Copy into a fresh ArrayBuffer-backed view (TextEncoder yields ArrayBufferLike).
+	return new Uint8Array(new TextEncoder().encode(email.trim().toLowerCase()));
+}
+
+function toDescriptors(creds: Descriptor[]) {
+	return creds.map((c) => ({
+		id: c.id,
+		transports: (c.transports ?? []) as AuthenticatorTransportFuture[]
+	}));
+}
+
+// ---------------------------------------------------------------- ceremonies
+
+export function buildRegistrationOptions(
+	event: RequestEvent,
+	opts: { email: string; displayName: string; exclude: Descriptor[] }
+): Promise<PublicKeyCredentialCreationOptionsJSON> {
+	const { rpID, rpName } = getRp(event);
+	return generateRegistrationOptions({
+		rpName,
+		rpID,
+		userName: opts.email,
+		userID: userHandle(opts.email),
+		userDisplayName: opts.displayName,
+		attestationType: 'none',
+		excludeCredentials: toDescriptors(opts.exclude),
+		authenticatorSelection: { residentKey: 'preferred', userVerification: 'preferred' }
+	});
+}
+
+export async function verifyRegistration(
+	event: RequestEvent,
+	response: RegistrationResponseJSON,
+	expectedChallenge: string
+): Promise<VerifiedRegistrationResponse> {
+	const { rpID, origin } = getRp(event);
+	try {
+		const result = await verifyRegistrationResponse({
+			response,
+			expectedChallenge,
+			expectedOrigin: origin,
+			expectedRPID: rpID,
+			// Accept both biometric (UV) and possession-only security keys.
+			requireUserVerification: false
+		});
+		log.info({ event: 'passkey_registration', verified: result.verified, rpID }, 'passkey registration verified');
+		return result;
+	} catch (err) {
+		log.warn({ event: 'passkey_registration_error', rpID, err }, 'passkey registration verification threw');
+		throw err;
+	}
+}
+
+export function buildAuthenticationOptions(
+	event: RequestEvent,
+	allow: Descriptor[]
+): Promise<PublicKeyCredentialRequestOptionsJSON> {
+	const { rpID } = getRp(event);
+	return generateAuthenticationOptions({
+		rpID,
+		allowCredentials: toDescriptors(allow),
+		userVerification: 'preferred'
+	});
+}
+
+export async function verifyAuthentication(
+	event: RequestEvent,
+	response: AuthenticationResponseJSON,
+	expectedChallenge: string,
+	credential: WebAuthnCredential
+): Promise<VerifiedAuthenticationResponse> {
+	const { rpID, origin } = getRp(event);
+	try {
+		const result = await verifyAuthenticationResponse({
+			response,
+			expectedChallenge,
+			expectedOrigin: origin,
+			expectedRPID: rpID,
+			credential,
+			requireUserVerification: false
+		});
+		if (result.verified) {
+			log.info({ event: 'passkey_login_success', rpID, credentialId: response.id }, 'passkey authentication verified');
+		} else {
+			log.warn({ event: 'passkey_login_failed', rpID, credentialId: response.id }, 'passkey authentication not verified');
+		}
+		return result;
+	} catch (err) {
+		log.warn({ event: 'passkey_login_error', rpID, credentialId: response.id, err }, 'passkey authentication verification threw');
+		throw err;
+	}
+}
+
+// ------------------------------------------------------------ challenge cookies
+
+export interface RegChallenge {
+	challenge: string;
+	/** Signup context — a user does not exist yet. */
+	email?: string;
+	displayName?: string;
+	inviteCode?: string;
+	/** Reclaim context — attach this passkey to an existing credential-less account. */
+	reclaimUserId?: number;
+	/** Add-passkey context — an existing signed-in user is registering another credential. */
+	userId?: number;
+}
+
+export interface AuthChallenge {
+	challenge: string;
+	userId: number;
+}
+
+function cookieOpts(event: RequestEvent) {
+	return {
+		path: '/',
+		httpOnly: true,
+		sameSite: 'lax' as const,
+		secure: event.url.protocol === 'https:',
+		maxAge: CEREMONY_TTL_S
+	};
+}
+
+export function setRegChallenge(event: RequestEvent, data: RegChallenge): void {
+	event.cookies.set(REG_COOKIE, JSON.stringify(data), cookieOpts(event));
+}
+
+export function readRegChallenge(event: RequestEvent): RegChallenge | null {
+	return parseCookie<RegChallenge>(event.cookies.get(REG_COOKIE));
+}
+
+export function clearRegChallenge(event: RequestEvent): void {
+	event.cookies.delete(REG_COOKIE, { path: '/' });
+}
+
+export function setAuthChallenge(event: RequestEvent, data: AuthChallenge): void {
+	event.cookies.set(AUTH_COOKIE, JSON.stringify(data), cookieOpts(event));
+}
+
+export function readAuthChallenge(event: RequestEvent): AuthChallenge | null {
+	return parseCookie<AuthChallenge>(event.cookies.get(AUTH_COOKIE));
+}
+
+export function clearAuthChallenge(event: RequestEvent): void {
+	event.cookies.delete(AUTH_COOKIE, { path: '/' });
+}
+
+function parseCookie<T>(raw: string | undefined): T | null {
+	if (!raw) return null;
+	try {
+		return JSON.parse(raw) as T;
+	} catch {
+		return null;
+	}
+}
+
+// ---------------------------------------------------------------- notifications
+
+/**
+ * security_new_passkey (Unit 8, docs/NOTIFICATION-PLAN.md §3): fire a "was this
+ * you?" alert when a passkey is added to an existing account — both the normal
+ * "add a passkey in Settings" flow AND the account-recovery register-verify
+ * flow, which is exactly the case an attacker with a stolen recovery phrase
+ * would exercise. Deliberately NOT called for the first passkey created at
+ * signup (that's expected, and there is no prior owner to warn). Scoped to the
+ * affected user so it can reach them via channels that don't require being
+ * logged in (email/Telegram). Best-effort: notify() never throws.
+ *
+ * `viaRecovery` distinguishes the higher-signal recovery path from a routine
+ * add, and bumps the level accordingly.
+ */
+export function notifyNewPasskey(
+	userId: number,
+	opts: { name?: string | null; viaRecovery?: boolean } = {}
+): void {
+	const name = opts.name?.trim();
+	const label = name ? `"${name}"` : 'A new passkey';
+	notify({
+		type: 'security_new_passkey',
+		userId,
+		level: opts.viaRecovery ? 'warn' : 'info',
+		title: opts.viaRecovery ? 'Account recovered with a new passkey' : 'New passkey added',
+		body: opts.viaRecovery
+			? `${label} was registered to your account during account recovery. If this wasn't you, secure your account immediately.`
+			: `${label} was added to your account. If this wasn't you, review your passkeys.`,
+		detail: { viaRecovery: opts.viaRecovery === true },
+		link: '/settings'
+	});
+}
