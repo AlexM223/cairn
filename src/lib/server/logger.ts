@@ -174,6 +174,36 @@ function buildStreams(): pino.StreamEntry[] {
 	return streams;
 }
 
+// Secret-bearing field names to redact from any logged object (top level and one
+// level of nesting). Kept broad on purpose — defense-in-depth, not a promise that
+// these are ever logged today.
+const REDACT_KEYS = [
+	'password',
+	'pass',
+	'passEnc',
+	'newPassword',
+	'oldPassword',
+	'smtpPass',
+	'smtp_pass',
+	'secret',
+	'token',
+	'accessToken',
+	'botToken',
+	'telegram_bot_token',
+	'sessionToken',
+	'apiKey',
+	'privateKey',
+	'privkey',
+	'nostr_sender_privkey',
+	'xprv',
+	'mnemonic',
+	'phrase',
+	'recoveryPhrase',
+	'seed',
+	'psbt',
+	'challenge'
+];
+
 /**
  * The base logger. Prefer {@link childLogger} to tag a subsystem, and always
  * pass structured context as the first arg:
@@ -186,7 +216,17 @@ export const logger = pino(
 		level: LEVEL,
 		// Render Error objects (message + stack) instead of "{}".
 		serializers: { err: pino.stdSerializers.err },
-		base: undefined // no pid/hostname noise — this is a single-tenant box
+		base: undefined, // no pid/hostname noise — this is a single-tenant box
+		// Defense-in-depth redaction (cairn-byoz): no call site is known to log a
+		// secret, but /admin/logs serves data/logs/cairn.log over HTTP, so a future
+		// logger.*({ ... }) that accidentally includes a credential must never leak
+		// it. Covers common secret-bearing keys at the top level and one nesting
+		// down (e.g. { config: { pass } }, { smtp: { accessToken } }). Values are
+		// replaced with [redacted]; `err` is intentionally NOT redacted.
+		redact: {
+			paths: REDACT_KEYS.flatMap((k) => [k, `*.${k}`]),
+			censor: '[redacted]'
+		}
 	},
 	pino.multistream(buildStreams())
 );

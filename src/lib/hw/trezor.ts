@@ -1124,8 +1124,12 @@ export function trezorMultisigSignRequest(
 					multisig
 				});
 				continue;
-			} catch {
+			} catch (e) {
 				// Not multisig change after all — display it as a recipient below.
+				// Leave a diagnostic trace: a genuine policy mismatch and a benign
+				// "unrelated recipient" otherwise collapse into identical silence
+				// (cairn-yaw1).
+				console.warn(`Trezor: output ${o} not treated as multisig change:`, e);
 			}
 		}
 		const address = addressFromScript(out.script);
@@ -1242,7 +1246,11 @@ export function selectMultisigKeyForDevice(
 	const parsed = keys.map((k) => {
 		try {
 			return HDKey.fromExtendedKey(normalizeMultisigXpub(k.xpub));
-		} catch {
+		} catch (e) {
+			// A malformed STORED cosigner xpub would otherwise surface only as a
+			// generic wrong_device error, misleading the user into thinking they
+			// plugged in the wrong device (cairn-yaw1).
+			console.warn('Trezor: stored cosigner xpub failed to parse:', e);
 			return null;
 		}
 	});
@@ -1250,7 +1258,8 @@ export function selectMultisigKeyForDevice(
 		let node: HDKey;
 		try {
 			node = HDKey.fromExtendedKey(normalizeMultisigXpub(account.xpub));
-		} catch {
+		} catch (e) {
+			console.warn('Trezor: device account xpub failed to parse; skipping:', e);
 			continue;
 		}
 		for (let i = 0; i < parsed.length; i++) {

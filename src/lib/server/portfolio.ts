@@ -11,6 +11,7 @@ import { scanWallet, type WalletScanResult } from './bitcoin/walletScan';
 import { scanMultisig, type MultisigScanResult } from './multisigScan';
 import { listMultisigs, type MultisigRow } from './wallets/multisig';
 import { getChain } from './chain';
+import { childLogger } from './logger';
 import type {
 	AllocationSlice,
 	BalancePoint,
@@ -18,6 +19,8 @@ import type {
 	PortfolioDetail,
 	WalletKind
 } from '$lib/types';
+
+const log = childLogger('portfolio');
 
 /** How often a portfolio fetch is allowed to record a new snapshot tick. */
 const SNAPSHOT_INTERVAL_MS = 60 * 60 * 1000; // once per hour
@@ -163,7 +166,13 @@ export async function getPortfolioDetail(userId: number): Promise<PortfolioDetai
 					href: `/wallets/${w.id}`,
 					scan
 				}),
-				() => null
+				(err) => {
+					// A scan failure (e.g. Electrum down) silently drops this wallet from
+					// the dashboard totals, understating the balance — at least leave a
+					// trace to diagnose the partial outage (cairn-ednl).
+					log.warn({ err, walletId: w.id, kind: 'wallet' }, 'portfolio scan failed; wallet excluded from totals');
+					return null;
+				}
 			)
 		),
 		...multisigs.map((m) =>
@@ -175,7 +184,10 @@ export async function getPortfolioDetail(userId: number): Promise<PortfolioDetai
 					href: `/wallets/multisig/${m.id}`,
 					scan
 				}),
-				() => null
+				(err) => {
+					log.warn({ err, multisigId: m.id, kind: 'multisig' }, 'portfolio scan failed; multisig excluded from totals');
+					return null;
+				}
 			)
 		)
 	]);

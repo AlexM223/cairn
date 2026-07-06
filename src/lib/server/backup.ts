@@ -238,8 +238,9 @@ export function restoreBackup(data: BackupData): RestoreSummary {
 				);
 				walletIdMap.set(Number(w.id), Number(res.lastInsertRowid));
 				summary.wallets++;
-			} catch {
+			} catch (e) {
 				// Duplicate (user_id, xpub) or malformed row — skip it, keep going.
+				log.warn({ err: e, table: 'wallets', srcId: w.id }, 'restore: skipped a wallet row');
 			}
 		}
 
@@ -281,8 +282,11 @@ export function restoreBackup(data: BackupData): RestoreSummary {
 					str(k.path),
 					orNull(k.last_verified_at)
 				);
-			} catch {
-				/* skip malformed/duplicate key */
+			} catch (eKey) {
+				log.warn(
+					{ err: eKey, table: 'multisig_keys', srcMultisigId: k.multisig_id },
+					'restore: skipped a multisig key row'
+				);
 			}
 		}
 
@@ -302,8 +306,11 @@ export function restoreBackup(data: BackupData): RestoreSummary {
 					orNull(r.policy_id),
 					str(r.created_at) || new Date().toISOString()
 				);
-			} catch {
-				/* skip */
+			} catch (e) {
+				log.warn(
+					{ err: e, table: 'ledger_multisig_registrations', srcMultisigId: r.multisig_id },
+					'restore: skipped a Ledger registration row'
+				);
 			}
 		}
 
@@ -322,8 +329,11 @@ export function restoreBackup(data: BackupData): RestoreSummary {
 					orNull(a.last_used_at)
 				);
 				summary.addresses++;
-			} catch {
-				/* skip duplicate */
+			} catch (e) {
+				log.warn(
+					{ err: e, table: 'saved_addresses', srcUserId: a.user_id },
+					'restore: skipped a saved-address row'
+				);
 			}
 		}
 
