@@ -290,16 +290,31 @@ export async function constructMultisigPsbt(params: MultisigConstructParams): Pr
 	if (params.tipHeight != null) {
 		const tip = params.tipHeight;
 		const isImmature = (u: SpendableUtxo) => u.coinbase === true && isImmatureCoinbase(u.height, tip);
+		// Unverifiable coinbase-ness (chain hiccup, cairn-7fmd) inside the maturity
+		// window: can't prove it's safe, so treat conservatively. Coins past 100
+		// confirmations are safe regardless of coinbase status.
+		const isUnverifiable = (u: SpendableUtxo) =>
+			u.coinbase === 'unknown' && isImmatureCoinbase(u.height, tip);
+
 		const immature = spendable.filter(isImmature);
-		if (immature.length > 0) {
-			if (coinControl) {
-				const m = coinbaseMaturity(immature[0].height, tip);
-				throw new PsbtError(
-					`A selected coin is an immature mining reward — it needs ${m.blocksRemaining} more confirmation${m.blocksRemaining === 1 ? '' : 's'} (~${m.etaHours}h) before it can be spent.`,
-					'immature_coinbase'
-				);
-			}
-			spendable = spendable.filter((u) => !isImmature(u));
+		const unverifiable = spendable.filter(isUnverifiable);
+
+		if (coinControl && unverifiable.length > 0) {
+			throw new PsbtError(
+				"Couldn't verify whether a selected coin is a mature mining reward — the chain lookup failed. Try again in a moment.",
+				'immature_coinbase'
+			);
+		}
+		if (immature.length > 0 && coinControl) {
+			const m = coinbaseMaturity(immature[0].height, tip);
+			throw new PsbtError(
+				`A selected coin is an immature mining reward — it needs ${m.blocksRemaining} more confirmation${m.blocksRemaining === 1 ? '' : 's'} (~${m.etaHours}h) before it can be spent.`,
+				'immature_coinbase'
+			);
+		}
+
+		if (immature.length > 0 || unverifiable.length > 0) {
+			spendable = spendable.filter((u) => !isImmature(u) && !isUnverifiable(u));
 			if (spendable.length === 0) {
 				throw new PsbtError('This multisig has no mature coins to spend right now.', 'no_utxos');
 			}
@@ -388,7 +403,7 @@ export async function constructMultisigPsbt(params: MultisigConstructParams): Pr
 	type PsbtInput = Record<string, unknown>;
 	async function buildInput(utxo: SpendableUtxo): Promise<PsbtInput> {
 		// A coinbase input always needs its full previous transaction to sign.
-		if (utxo.coinbase && !params.fetchRawTx) {
+		if (utxo.coinbase === true && !params.fetchRawTx) {
 			throw new PsbtError(
 				'Spending a mining reward needs its full previous transaction, which is unavailable right now.',
 				'construction_failed'
@@ -415,7 +430,7 @@ export async function constructMultisigPsbt(params: MultisigConstructParams): Pr
 			// Full prev tx alongside witnessUtxo when available: a bare amount is
 			// the classic fee-lying surface and several devices warn without it —
 			// and for a coinbase input it's mandatory, not just belt-and-braces.
-			if (utxo.coinbase || params.fetchRawTx) input.nonWitnessUtxo = await rawPrevTx(utxo.txid);
+			if (utxo.coinbase === true || params.fetchRawTx) input.nonWitnessUtxo = await rawPrevTx(utxo.txid);
 		}
 		return input;
 	}

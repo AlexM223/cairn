@@ -27,11 +27,17 @@ export interface SpendableUtxo {
 	address: string;
 	chain: 0 | 1; // receive / change
 	index: number;
-	/** True when this output was created by a coinbase (mining reward) tx.
+	/** Whether this output was created by a coinbase (mining reward) tx.
 	 *  Coinbase outputs need 100 confirmations to spend and always carry the full
-	 *  previous transaction (nonWitnessUtxo). undefined = not yet determined. */
-	coinbase?: boolean;
+	 *  previous transaction (nonWitnessUtxo). `true`/`false` = determined,
+	 *  `'unknown'` = a chain fetch failed and coinbase-ness is unverifiable (the
+	 *  maturity guard treats it conservatively), undefined = not yet determined. */
+	coinbase?: CoinbaseStatus;
 }
+
+/** Result of a coinbase-ness check: definitive, or unverifiable after a chain
+ *  fetch failure (cairn-7fmd). */
+export type CoinbaseStatus = boolean | 'unknown';
 
 export interface KeyOrigin {
 	/** Master key fingerprint, 8 hex chars. */
@@ -273,17 +279,36 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 	// reject with a clear message rather than silently building an invalid tx.
 	if (params.tipHeight != null && !params.exactInputs) {
 		const tip = params.tipHeight;
+		// A confirmed coinbase output younger than 100 blocks is definitely immature.
 		const isImmature = (u: SpendableUtxo) => u.coinbase === true && isImmatureCoinbase(u.height, tip);
+		// A UTXO whose coinbase-ness couldn't be verified (chain hiccup, cairn-7fmd)
+		// AND that is still inside the maturity window could be an immature mining
+		// reward — we can't prove it's safe, so refuse rather than draft a tx the
+		// network may reject. Coins past 100 confirmations are safe regardless.
+		const isUnverifiable = (u: SpendableUtxo) =>
+			u.coinbase === 'unknown' && isImmatureCoinbase(u.height, tip);
+
 		const immature = spendable.filter(isImmature);
-		if (immature.length > 0) {
-			if (coinControl) {
-				const m = coinbaseMaturity(immature[0].height, tip);
-				throw new PsbtError(
-					`A selected coin is an immature mining reward — it needs ${m.blocksRemaining} more confirmation${m.blocksRemaining === 1 ? '' : 's'} (~${m.etaHours}h) before it can be spent.`,
-					'immature_coinbase'
-				);
-			}
-			spendable = spendable.filter((u) => !isImmature(u));
+		const unverifiable = spendable.filter(isUnverifiable);
+
+		if (coinControl && unverifiable.length > 0) {
+			throw new PsbtError(
+				"Couldn't verify whether a selected coin is a mature mining reward — the chain lookup failed. Try again in a moment.",
+				'immature_coinbase'
+			);
+		}
+		if (immature.length > 0 && coinControl) {
+			const m = coinbaseMaturity(immature[0].height, tip);
+			throw new PsbtError(
+				`A selected coin is an immature mining reward — it needs ${m.blocksRemaining} more confirmation${m.blocksRemaining === 1 ? '' : 's'} (~${m.etaHours}h) before it can be spent.`,
+				'immature_coinbase'
+			);
+		}
+
+		if (immature.length > 0 || unverifiable.length > 0) {
+			// Auto-selection: drop both definitely-immature and unverifiable-young
+			// coins so we never build an invalid tx.
+			spendable = spendable.filter((u) => !isImmature(u) && !isUnverifiable(u));
 			if (spendable.length === 0) {
 				throw new PsbtError('This wallet has no mature coins to spend right now.', 'no_utxos');
 			}
@@ -352,7 +377,7 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		// signers require it to safely sign a mining reward. Every non-p2tr input
 		// already attaches nonWitnessUtxo when fetchRawTx is present (below); this
 		// only rejects the pathological case of a coinbase spend with no fetcher.
-		if (utxo.coinbase && !params.fetchRawTx) {
+		if (utxo.coinbase === true && !params.fetchRawTx) {
 			throw new PsbtError(
 				'Spending a mining reward needs its full previous transaction, which is unavailable right now.',
 				'construction_failed'
