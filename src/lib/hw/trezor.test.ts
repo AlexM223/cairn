@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeAll, afterAll, type Mock } from 'vitest';
 import { Transaction, p2wpkh, p2pkh, p2ms, p2wsh, p2sh, NETWORK } from '@scure/btc-signer';
 import { base64 } from '@scure/base';
 import { HDKey } from '@scure/bip32';
@@ -19,6 +19,7 @@ import {
 	multisigAccountPath,
 	singleSigAccountPath,
 	readSingleSigKeyFromTrezor,
+	signPsbtWithTrezor,
 	type MultisigSignParams
 } from './trezor';
 import type { ScriptType } from '$lib/types';
@@ -647,6 +648,63 @@ describe('trezorMultisigSignRequest', () => {
 	it('rejects an out-of-range device key index', () => {
 		expect(() => trezorMultisigSignRequest(multisigParams(makeMultisigPsbt()), 3)).toThrow(TrezorError);
 	});
+
+	// cairn-s2bf — pins fix cairn-yaw1 (trezor.ts:1081): an output that carries
+	// bip32Derivation but fails multisig-change verification must fall back to a
+	// plain display address WITH a console.warn diagnostic — a genuine policy
+	// mismatch and a benign unrelated recipient must not collapse into silence.
+	it('warns when an output with derivations fails multisig-change verification, falling back to a display address', () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		try {
+			// A normal 2-of-3 input…
+			const inSorted = bip67Order(0, 5).map((k) => multisigChild(k, 0, 5));
+			const inPayment = p2wsh(p2ms(2, inSorted), NETWORK);
+			// …and a change-shaped output whose witnessScript is a 2-of-3 of
+			// STRANGER keys: the derivations parse, but the script's keys aren't
+			// derived from this multisig's cosigners.
+			const strangers = [0, 1, 2].map(
+				(i) =>
+					HDKey.fromMasterSeed(new Uint8Array(32).fill(50 + i))
+						.deriveChild(1)
+						.deriveChild(2).publicKey!
+			);
+			const changePayment = p2wsh(p2ms(2, strangers), NETWORK);
+
+			const tx = new Transaction();
+			tx.addInput({
+				txid: hexToBytes('a'.repeat(64)),
+				index: 0,
+				witnessUtxo: { script: inPayment.script, amount: 100_000n },
+				witnessScript: inPayment.witnessScript,
+				bip32Derivation: multisigDerivations(0, 5)
+			});
+			tx.addOutputAddress(DEST, 60_000n, NETWORK);
+			tx.addOutput({
+				script: changePayment.script,
+				amount: 30_000n,
+				witnessScript: changePayment.witnessScript,
+				bip32Derivation: multisigDerivations(1, 2)
+			});
+
+			const { request } = trezorMultisigSignRequest(
+				multisigParams(base64.encode(tx.toPSBT())),
+				0
+			);
+
+			// Soft-fail behavior preserved: the output becomes a plain address the
+			// user confirms on the device, and the request still builds.
+			expect(request.outputs).toHaveLength(2);
+			expect(request.outputs[1].script_type).toBe('PAYTOADDRESS');
+			expect(request.outputs[1].address).toBeTruthy();
+
+			// …but no longer silently: exactly one diagnostic for output 1.
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(String(warn.mock.calls[0]![0])).toContain('output 1 not treated as multisig change');
+			expect(warn.mock.calls[0]![1]).toBeInstanceOf(TrezorError);
+		} finally {
+			warn.mockRestore();
+		}
+	});
 });
 
 describe('mergeTrezorMultisigSignatures', () => {
@@ -727,6 +785,60 @@ describe('selectMultisigKeyForDevice', () => {
 			for (const k of MULTISIG_KEYS) expect((e as TrezorError).message).toContain(k.fingerprint);
 		}
 	});
+
+	// cairn-s2bf — pins fix cairn-yaw1 (trezor.ts:1202): a malformed STORED
+	// cosigner xpub must leave a console.warn trace, not be silently swallowed
+	// into a misleading generic wrong_device.
+	it('warns about an unparseable stored cosigner xpub and still resolves via the fingerprint fallback', () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		try {
+			const keys = [{ ...MULTISIG_KEYS[0], xpub: 'not-an-xpub' }, MULTISIG_KEYS[1], MULTISIG_KEYS[2]];
+			expect(selectMultisigKeyForDevice(keys, [], MULTISIG_KEYS[0].fingerprint)).toBe(0);
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(String(warn.mock.calls[0]![0])).toContain('stored cosigner xpub failed to parse');
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	// cairn-s2bf — pins fix cairn-yaw1 (trezor.ts:1211): an unparseable DEVICE
+	// account xpub is warned about and skipped, never failing the whole match.
+	it('warns about an unparseable device account xpub and keeps matching the remaining reads', () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		try {
+			expect(
+				selectMultisigKeyForDevice(
+					MULTISIG_KEYS,
+					[{ xpub: 'device-garbage' }, { xpub: MULTISIG_KEYS[2].xpub }],
+					null
+				)
+			).toBe(2);
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(String(warn.mock.calls[0]![0])).toContain('device account xpub failed to parse');
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	// cairn-s2bf — the pre-existing soft-fail contract still holds: when every
+	// stored xpub is malformed and nothing matches, the result is the typed
+	// wrong_device error — but now with one warning per unparseable key.
+	it('still soft-fails to wrong_device after warning about every unparseable stored xpub', () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		try {
+			const keys = MULTISIG_KEYS.map((k) => ({ ...k, xpub: 'nope' }));
+			try {
+				selectMultisigKeyForDevice(keys, [{ xpub: MULTISIG_KEYS[0].xpub }], 'deadbeef');
+				expect.unreachable('expected a wrong_device error');
+			} catch (e) {
+				expect(e).toBeInstanceOf(TrezorError);
+				expect((e as TrezorError).code).toBe('wrong_device');
+			}
+			expect(warn).toHaveBeenCalledTimes(keys.length);
+		} finally {
+			warn.mockRestore();
+		}
+	});
 });
 
 describe('xfpFromXpub', () => {
@@ -791,6 +903,14 @@ const trezorStub = {
 		async (_params: { bundle: { path: string; coin?: string; showOnTrezor?: boolean }[] }) => ({
 			success: true,
 			payload: [] as { xpub: string }[]
+		})
+	),
+	// signPsbtWithTrezor's device call. Loosely typed on purpose: tests script
+	// both success and failure payload shapes per call.
+	signTransaction: vi.fn(
+		async (_params: Record<string, unknown>): Promise<{ success: boolean; payload: unknown }> => ({
+			success: false,
+			payload: { error: 'not stubbed' }
 		})
 	)
 };
@@ -857,5 +977,122 @@ describe('readSingleSigKeyFromTrezor', () => {
 		const key = await readSingleSigKeyFromTrezor('p2wpkh', 2);
 		expect(key.path).toBe(path);
 		expect(trezorStub.getPublicKey.mock.calls[0]![0].bundle[1]!.path).toBe(path);
+	});
+});
+
+// cairn-aczh — the signing ENTRY POINT itself (signPsbtWithTrezor), previously
+// untested beyond its pure helpers: the full popup flow against the mocked
+// Connect module — wrong-device guard read, signTransaction, signature merge —
+// plus the typed mapping of a device rejection.
+describe('signPsbtWithTrezor', () => {
+	// The device: a deterministic master whose m/84'/0'/0' account holds the
+	// PSBT's input key at 0/4 (makePsbt's defaults).
+	const master = HDKey.fromMasterSeed(new Uint8Array(32).fill(21));
+	const account = master.derive("m/84'/0'/0'");
+	const child = account.deriveChild(0).deriveChild(4);
+	const accountPayload = {
+		publicKey: bytesToHex(account.publicKey!),
+		chainCode: bytesToHex(account.chainCode!)
+	};
+	// A structurally plausible DER signature (0x30 sequence, two 0x20-byte ints).
+	const SIGN_DER_SIG = new Uint8Array([
+		0x30, 0x44, 0x02, 0x20, ...new Array(32).fill(0x33), 0x02, 0x20, ...new Array(32).fill(0x44)
+	]);
+
+	// Loose views for scripting per-call payload shapes (the stub's declared
+	// types describe the bundle-read flow used elsewhere in this file).
+	const getPublicKey = trezorStub.getPublicKey as unknown as Mock;
+	const signTransaction = trezorStub.signTransaction as unknown as Mock;
+
+	beforeAll(() => {
+		(globalThis as { window?: unknown }).window = {
+			isSecureContext: true,
+			location: { origin: 'https://localhost' }
+		};
+	});
+	afterAll(() => {
+		delete (globalThis as { window?: unknown }).window;
+	});
+	afterEach(() => {
+		getPublicKey.mockReset();
+		signTransaction.mockReset();
+	});
+
+	it('throws the typed unavailable error outside a secure browser context, before touching the device', async () => {
+		const saved = (globalThis as { window?: unknown }).window;
+		delete (globalThis as { window?: unknown }).window;
+		try {
+			await expect(signPsbtWithTrezor(makePsbt())).rejects.toMatchObject({
+				name: 'TrezorError',
+				code: 'unavailable'
+			});
+			expect(signTransaction).not.toHaveBeenCalled();
+		} finally {
+			(globalThis as { window?: unknown }).window = saved;
+		}
+	});
+
+	it('happy path: verifies the account, signs, and returns the PSBT with the signature merged', async () => {
+		const psbt = makePsbt({ pubkey: child.publicKey! });
+		getPublicKey.mockResolvedValueOnce({ success: true, payload: accountPayload });
+		signTransaction.mockResolvedValueOnce({
+			success: true,
+			payload: { signatures: [bytesToHex(SIGN_DER_SIG)] }
+		});
+
+		const signedBase64 = await signPsbtWithTrezor(psbt);
+
+		// The wrong-device guard read was silent, at the PSBT's account path.
+		expect(getPublicKey).toHaveBeenCalledTimes(1);
+		expect(getPublicKey.mock.calls[0]![0]).toMatchObject({
+			path: [84 + HARDENED, 0 + HARDENED, 0 + HARDENED],
+			coin: 'btc',
+			showOnTrezor: false
+		});
+
+		// The device request came from the PSBT and never lets Connect broadcast.
+		expect(signTransaction).toHaveBeenCalledTimes(1);
+		const req = signTransaction.mock.calls[0]![0] as Record<string, unknown>;
+		expect(req.push).toBe(false);
+		expect(req.coin).toBe('btc');
+		expect((req.inputs as unknown[]).length).toBe(1);
+		expect((req.outputs as unknown[]).length).toBe(1);
+
+		// The returned PSBT is the ORIGINAL commitment plus the merged signature
+		// (device DER sig completed with SIGHASH_ALL, attributed to the input key).
+		const signed = Transaction.fromPSBT(base64.decode(signedBase64));
+		expect(signed.inputsLength).toBe(1);
+		expect(Number(signed.getOutput(0).amount)).toBe(90_000);
+		const partialSig = signed.getInput(0).partialSig;
+		expect(partialSig).toHaveLength(1);
+		const [pk, sig] = partialSig![0];
+		expect(bytesToHex(Uint8Array.from(pk))).toBe(bytesToHex(child.publicKey!));
+		expect(Array.from(sig)).toEqual([...SIGN_DER_SIG, 0x01]);
+	});
+
+	it('maps an on-device rejection from signTransaction to the typed rejected error', async () => {
+		const psbt = makePsbt({ pubkey: child.publicKey! });
+		getPublicKey.mockResolvedValueOnce({ success: true, payload: accountPayload });
+		signTransaction.mockResolvedValueOnce({
+			success: false,
+			payload: { error: 'Failure_ActionCancelled' }
+		});
+
+		await expect(signPsbtWithTrezor(psbt)).rejects.toMatchObject({
+			name: 'TrezorError',
+			code: 'rejected'
+		});
+	});
+
+	it('fails the wrong-device guard BEFORE signTransaction when the account derives different keys', async () => {
+		const psbt = makePsbt({ pubkey: child.publicKey! });
+		const other = HDKey.fromMasterSeed(new Uint8Array(32).fill(22)).derive("m/84'/0'/0'");
+		getPublicKey.mockResolvedValueOnce({
+			success: true,
+			payload: { publicKey: bytesToHex(other.publicKey!), chainCode: bytesToHex(other.chainCode!) }
+		});
+
+		await expect(signPsbtWithTrezor(psbt)).rejects.toThrow(/does not hold this wallet's keys/);
+		expect(signTransaction).not.toHaveBeenCalled();
 	});
 });

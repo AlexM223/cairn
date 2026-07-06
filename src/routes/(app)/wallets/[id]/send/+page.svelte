@@ -9,13 +9,6 @@
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import { formatBtc, formatSats, formatFeeRate, truncateMiddle } from '$lib/format';
-	import { isWebHidAvailable } from '$lib/hw/ledger';
-	import { isTrezorConnectAvailable } from '$lib/hw/trezor';
-	import {
-		isWebHidAvailable as isBitboxWebHidAvailable,
-		bitbox02SupportsScriptType
-	} from '$lib/hw/bitbox02';
-	import { isWebSerialAvailable } from '$lib/hw/jade';
 	import type { ScriptType } from '$lib/types';
 	import type { ConstructedPsbt } from '$lib/server/bitcoin/psbt';
 	import type { SavedTransaction } from '$lib/server/transactions';
@@ -31,7 +24,8 @@
 	import BitboxSigner from '$lib/components/signing/BitboxSigner.svelte';
 	import JadeUsbSigner from '$lib/components/signing/JadeUsbSigner.svelte';
 	import JadeQrSigner from './_components/JadeQrSigner.svelte';
-	import type { DeviceMethod, SignerContext } from './_components/signerContract';
+	import type { SignerContext } from './_components/signerContract';
+	import { deviceSignMethods, type DeviceSignMethodKey } from './_components/signMethods';
 	import {
 		formatSigningRange,
 		perDeviceLine,
@@ -593,15 +587,7 @@
 	// The SignMethod set is exactly WalletDeviceType, so the device on record
 	// (if any) both pre-selects a method and drives the "Sign with your <device>"
 	// heading — a single-key wallet lands on one signing screen, not a menu.
-	type SignMethod =
-		| 'file'
-		| 'trezor'
-		| 'ledger'
-		| 'coldcard'
-		| 'bitbox02'
-		| 'jade'
-		| 'jade-qr'
-		| 'qr';
+	type SignMethod = 'file' | DeviceSignMethodKey;
 
 	// The wallet's script type — the BitBox02 tile is greyed out for legacy
 	// (p2pkh) wallets it can't sign (the device firmware has no legacy config).
@@ -665,82 +651,11 @@
 		return unsubscribe;
 	});
 
-	// The device signer methods, gated per the DeviceMethod contract. The generic
-	// file card is handled separately (it is always available and hosts its own
-	// upload/paste UI).
-	const deviceMethods: (DeviceMethod & {
-		key: Exclude<SignMethod, 'file'>;
-		icon: string;
-		unavailableReason: string;
-	})[] = [
-		{
-			key: 'trezor',
-			name: 'Trezor',
-			blurb: 'Sign on-device over USB via Trezor Connect — approve in the Connect popup',
-			icon: 'shield',
-			available: () => isTrezorConnectAvailable(),
-			unavailableReason:
-				'Needs a secure context (HTTPS or localhost) for the Trezor Connect popup.'
-		},
-		{
-			key: 'ledger',
-			name: 'Ledger',
-			blurb: 'Sign on-device over USB (WebHID) — nothing leaves the device but signatures',
-			icon: 'shield',
-			available: () => isWebHidAvailable(),
-			unavailableReason:
-				'Needs WebHID, which is only in Chromium desktop browsers (Chrome, Edge, Brave) over HTTPS or localhost.'
-		},
-		{
-			key: 'bitbox02',
-			name: 'BitBox02',
-			blurb: 'Sign on-device over USB (WebHID) — nothing leaves the device but signatures',
-			icon: 'shield',
-			// Needs WebHID AND a script type the device supports (no legacy p2pkh).
-			available: () => isBitboxWebHidAvailable() && bitbox02SupportsScriptType(walletScriptType),
-			unavailableReason: !bitbox02SupportsScriptType(walletScriptType)
-				? "The BitBox02 doesn't support legacy (P2PKH) single-sig wallets — use the file method."
-				: 'Needs WebHID, which is only in Chromium desktop browsers (Chrome, Edge, Brave) over HTTPS or localhost.'
-		},
-		{
-			key: 'jade',
-			name: 'Jade (USB)',
-			blurb: 'Sign on-device over USB (Web Serial) — nothing leaves the device but signatures',
-			icon: 'shield',
-			available: () => isWebSerialAvailable(),
-			unavailableReason:
-				'Needs Web Serial, which is only in Chromium desktop browsers (Chrome, Edge, Brave) over HTTPS or localhost.'
-		},
-		{
-			key: 'jade-qr',
-			name: 'Jade (QR)',
-			blurb: 'Air-gapped signing with the Jade camera — QR codes cross the gap in both directions',
-			icon: 'qr',
-			// Displaying the unsigned QR always works; the signer falls back to a
-			// paste box when the browser can't camera-scan the signature back.
-			available: () => true,
-			unavailableReason: ''
-		},
-		{
-			key: 'coldcard',
-			name: 'ColdCard (microSD)',
-			blurb: 'Air-gapped signing over a microSD card — no cable, no connection',
-			icon: 'shield',
-			// Pure file round-trip: works in any browser that can download + upload.
-			available: () => true,
-			unavailableReason: ''
-		},
-		{
-			key: 'qr',
-			name: 'Animated QR (SeedSigner, Passport, Jade)',
-			blurb: 'Air-gapped signing over the camera — QR codes cross the gap in both directions',
-			icon: 'qr',
-			// Displaying the unsigned QR always works; the signer itself falls back
-			// to a paste box when the browser can't camera-scan the signature back.
-			available: () => true,
-			unavailableReason: ''
-		}
-	];
+	// The device signer methods, gated per the DeviceMethod contract. The list
+	// and its capability gating live in _components/signMethods.ts (pure,
+	// unit-tested — cairn-34nl); the generic file card is handled separately (it
+	// is always available and hosts its own upload/paste UI).
+	const deviceMethods = deviceSignMethods(walletScriptType);
 
 	// Only one Svelte component per method key — the {#each} below picks from here.
 	const SIGNER_COMPONENTS = {

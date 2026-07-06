@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { HDKey } from '@scure/bip32';
 import { createBase58check } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha2.js';
@@ -13,9 +13,40 @@ import {
 	jadeMultisigRegistrationName,
 	jadeKeyIdentityMatches,
 	toJadeError,
+	signPsbtWithJade,
 	JadeError,
+	type JadeHttpRequestFunction,
 	type MultisigSignKey
 } from './jade';
+
+// A scripted fake of the jadets device (cairn-aczh). jade.ts imports jadets
+// lazily inside openJade(), so this factory intercepts that dynamic import.
+// The Jade class hands back one shared scripted device object; each test sets
+// what connect/authUser/signPSBT do. vi.hoisted because vi.mock is hoisted
+// above the const declarations.
+const jadeDevice = vi.hoisted(() => ({
+	connect: vi.fn(async (): Promise<void> => {}),
+	authUser: vi.fn(async (_network: string, _httpFn: unknown): Promise<boolean> => true),
+	signPSBT: vi.fn(async (_network: string, _psbt: Uint8Array): Promise<Uint8Array> => new Uint8Array()),
+	getXpub: vi.fn(async (): Promise<string> => ''),
+	getMasterFingerPrint: vi.fn(async (): Promise<string> => ''),
+	registerMultisig: vi.fn(async (): Promise<boolean> => true),
+	disconnect: vi.fn(async (): Promise<void> => {})
+}));
+
+vi.mock('jadets', () => ({
+	SerialTransport: class {
+		constructor(_opts: unknown) {}
+	},
+	JadeInterface: class {
+		constructor(_transport: unknown) {}
+	},
+	Jade: class {
+		constructor(_iface: unknown) {
+			return jadeDevice;
+		}
+	}
+}));
 
 const HARDENED = 0x80000000;
 const b58check = createBase58check(sha256);
@@ -427,4 +458,134 @@ describe('device functions reject without Web Serial', () => {
 		const { readSingleSigKeyFromJade } = await import('./jade');
 		return readSingleSigKeyFromJade(scriptType);
 	}
+});
+
+// --------------------------------------------------- scripted sign exchanges
+//
+// cairn-aczh — Jade's sign flow (signPsbtWithJade), previously untested beyond
+// its pure helpers. The jadets transport is the scripted fake above; the
+// PIN-server HTTP relay is exercised by having the fake device's authUser call
+// the relay function jade.ts hands it (exactly what the real device does — the
+// device drives the handshake, the host only relays fetch).
+describe('signPsbtWithJade (scripted device)', () => {
+	const PIN_URL = 'https://jadepin.blockstream.com/start_handshake';
+
+	beforeEach(() => {
+		jadeDevice.connect.mockReset().mockResolvedValue(undefined);
+		jadeDevice.authUser.mockReset().mockResolvedValue(true);
+		jadeDevice.signPSBT.mockReset();
+		jadeDevice.disconnect.mockReset().mockResolvedValue(undefined);
+		// Web Serial present, like a Chromium desktop browser.
+		vi.stubGlobal('navigator', { serial: {} });
+	});
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it('completes a full sign exchange: connect → PIN relay over fetch → signPSBT → dispose', async () => {
+		// The PIN server's reply, which the relay must hand back verbatim.
+		const pinServerReply = { blob: 'pin-server-handshake-blob' };
+		const fetchMock = vi.fn(async () => ({
+			ok: true,
+			status: 200,
+			json: async () => pinServerReply
+		}));
+		vi.stubGlobal('fetch', fetchMock);
+
+		// The device drives the PIN handshake: authUser calls the host's relay
+		// with the request IT chose and expects the response body back.
+		let relayed: unknown = null;
+		jadeDevice.authUser.mockImplementation(async (_network: string, httpFn: unknown) => {
+			const res = await (httpFn as JadeHttpRequestFunction)({
+				urls: [PIN_URL, 'http://fallback.onion/start_handshake'],
+				method: 'POST',
+				data: { ske: 'abc', cke: 'def' }
+			});
+			relayed = res.body;
+			return true;
+		});
+
+		const signedBytes = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+		jadeDevice.signPSBT.mockResolvedValue(signedBytes);
+
+		const unsigned = new Uint8Array([1, 2, 3]);
+		const out = await signPsbtWithJade('mainnet', unsigned);
+
+		expect(out).toBe(signedBytes);
+		expect(jadeDevice.connect).toHaveBeenCalledTimes(1);
+		expect(jadeDevice.authUser).toHaveBeenCalledWith('mainnet', expect.any(Function));
+		expect(jadeDevice.signPSBT).toHaveBeenCalledWith('mainnet', unsigned);
+
+		// The relay performed exactly the device's request against the FIRST URL,
+		// as JSON, and handed the body back unaltered.
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+		expect(url).toBe(PIN_URL);
+		expect(init.method).toBe('POST');
+		expect(init.body).toBe(JSON.stringify({ ske: 'abc', cke: 'def' }));
+		expect(relayed).toEqual(pinServerReply);
+
+		// The serial port is always released.
+		expect(jadeDevice.disconnect).toHaveBeenCalledTimes(1);
+	});
+
+	it('maps a PIN-server HTTP error to the typed auth_failed and still releases the port', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => ({ ok: false, status: 500, json: async () => ({}) }))
+		);
+		jadeDevice.authUser.mockImplementation(async (_network: string, httpFn: unknown) => {
+			await (httpFn as JadeHttpRequestFunction)({ urls: [PIN_URL], method: 'POST', data: {} });
+			return true;
+		});
+
+		await expect(signPsbtWithJade('mainnet', new Uint8Array([1]))).rejects.toMatchObject({
+			name: 'JadeError',
+			code: 'auth_failed'
+		});
+		expect(jadeDevice.signPSBT).not.toHaveBeenCalled();
+		expect(jadeDevice.disconnect).toHaveBeenCalledTimes(1);
+	});
+
+	it('maps an unreachable PIN server (fetch rejects) to auth_failed', async () => {
+		vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new TypeError('Failed to fetch'))));
+		jadeDevice.authUser.mockImplementation(async (_network: string, httpFn: unknown) => {
+			await (httpFn as JadeHttpRequestFunction)({ urls: [PIN_URL], method: 'POST', data: {} });
+			return true;
+		});
+
+		await expect(signPsbtWithJade('mainnet', new Uint8Array([1]))).rejects.toMatchObject({
+			name: 'JadeError',
+			code: 'auth_failed'
+		});
+		expect(jadeDevice.disconnect).toHaveBeenCalledTimes(1);
+	});
+
+	it('maps an on-device rejection during signPSBT to the typed rejected error', async () => {
+		jadeDevice.signPSBT.mockRejectedValue(new Error('RPC Error 6: user cancelled the request'));
+
+		await expect(signPsbtWithJade('mainnet', new Uint8Array([1]))).rejects.toMatchObject({
+			name: 'JadeError',
+			code: 'rejected'
+		});
+		expect(jadeDevice.disconnect).toHaveBeenCalledTimes(1);
+	});
+
+	it('rejects an empty signed result as unexpected instead of returning it', async () => {
+		jadeDevice.signPSBT.mockResolvedValue(new Uint8Array());
+
+		await expect(signPsbtWithJade('mainnet', new Uint8Array([1]))).rejects.toMatchObject({
+			name: 'JadeError',
+			code: 'unexpected'
+		});
+		expect(jadeDevice.disconnect).toHaveBeenCalledTimes(1);
+	});
+
+	it('rejects a non-PSBT argument before ever opening the port', async () => {
+		await expect(signPsbtWithJade('mainnet', new Uint8Array())).rejects.toMatchObject({
+			name: 'JadeError',
+			code: 'bad_psbt'
+		});
+		expect(jadeDevice.connect).not.toHaveBeenCalled();
+	});
 });
