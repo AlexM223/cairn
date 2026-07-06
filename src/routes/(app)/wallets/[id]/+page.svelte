@@ -227,6 +227,17 @@
 
 	const receive = $derived(form?.receive ?? data.receive);
 
+	// Backup status: source of truth is the server-tracked wallet_backups table
+	// (data.backedUp) — the same value the creation wizard and the persistent
+	// banner use, so a download from anywhere (wizard, another browser) reflects
+	// here. The local flag is a purely-optimistic overlay for instant feedback on
+	// this page's own download buttons.
+	let downloadedNow = $state(false);
+	const backupDone = $derived(data.backedUp || downloadedNow);
+	function markBackupDownloaded() {
+		downloadedNow = true;
+	}
+
 	// --- tx labels ---
 	// Server-loaded labels plus optimistic local edits layered on top; an
 	// override of '' hides a label that was just cleared.
@@ -603,6 +614,12 @@
 			<div class="row" style="gap: 8px">
 				<Icon name="arrow-down-left" size={15} />
 				<span class="card-title grow">Export wallet config <span class="optional-tag">optional</span></span>
+				{#if backupDone}
+					<span class="badge badge-success" title="A copy of this wallet's config has been downloaded">
+						<Icon name="check" size={11} />
+						downloaded
+					</span>
+				{/if}
 			</div>
 			<p class="backup-copy">
 				You don't need to back this up — a single-key wallet always rebuilds from your
@@ -615,6 +632,7 @@
 					href="/api/wallets/{data.wallet.id}/config"
 					class="btn btn-primary btn-sm"
 					download
+					onclick={markBackupDownloaded}
 				>
 					Wallet config (JSON)
 				</a>
@@ -622,6 +640,7 @@
 					href="/api/wallets/{data.wallet.id}/descriptor"
 					class="btn btn-ghost btn-sm"
 					download
+					onclick={markBackupDownloaded}
 				>
 					Descriptor (.txt)
 				</a>

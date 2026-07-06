@@ -15,6 +15,7 @@ import {
 } from '$lib/server/transactions';
 import { getChain } from '$lib/server/chain';
 import { getAddressLabels } from '$lib/server/addressLabels';
+import { isBackedUp } from '$lib/server/backups';
 import type { Actions, PageServerLoad } from './$types';
 
 const QR_OPTS = {
@@ -44,6 +45,9 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 			createdAt: row.created_at
 		},
 		imported: url.searchParams.get('imported') === '1',
+		// Server-tracked backup status (wallet_backups) — the single source of
+		// truth the wizard's download step and the persistent banner both use.
+		backedUp: isBackedUp('wallet', id),
 		// Tx labels are local bookkeeping — one cheap SQLite read, no network.
 		labels: getLabels(locals.user!.id, id) ?? {},
 		// Address labels (cairn-nbsx) — annotate why an address exists; local read.

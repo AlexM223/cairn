@@ -42,7 +42,13 @@ export const POST: RequestHandler = async (event) => {
 	} catch (e) {
 		if (e instanceof AuthError) {
 			if (e.code === 'bad_invite') noteInviteFailure(ip);
-			return json({ error: e.message, code: e.code }, { status: 400 });
+			// Invite dead-ends get a pointer to the human who can fix them (cairn-keo,
+			// regressed once in the passkey refactor — see cairn-nnfj).
+			const error =
+				e.code === 'invite_required' || e.code === 'bad_invite'
+					? `${e.message} Invites come from whoever runs this Cairn instance — ask them for a code.`
+					: e.message;
+			return json({ error, code: e.code }, { status: 400 });
 		}
 		log.error({ err: e }, 'password register failed');
 		return json({ error: 'Could not create the account.' }, { status: 500 });
