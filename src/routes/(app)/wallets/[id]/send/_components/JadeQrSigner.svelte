@@ -3,6 +3,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
+	import DeviceHelpLink from '$lib/components/signing/DeviceHelpLink.svelte';
 	import { formatBtc, formatSats, truncateMiddle } from '$lib/format';
 	import { encodePsbtToFrames, PsbtQrJoiner, looksLikeUrFrame } from '$lib/hw/jadeUr';
 	import { isCameraScanAvailable, startScan, type ScanHandle } from '$lib/hw/qrScan';
@@ -282,6 +283,9 @@
 			own and will refuse to sign. Use the <strong>Generic wallet / file</strong> method with software
 			that knows this wallet, or re-import the wallet with its master fingerprint.
 		</div>
+		<!-- Official troubleshooting resource — always shown on an error, never
+		     flag-gated (it is help, not promotion). -->
+		<DeviceHelpLink device="jade" kind="support" />
 		{#if oncancel}
 			<div class="signer-foot">
 				<button type="button" class="btn btn-secondary btn-sm" onclick={oncancel}>
@@ -473,6 +477,9 @@
 
 				{#if scanError}
 					<div class="form-error" role="alert">{scanError}</div>
+					<!-- Official troubleshooting resource — always shown on an error,
+					     never flag-gated (it is help, not promotion). -->
+					<DeviceHelpLink device="jade" kind="support" />
 				{/if}
 
 				{#if !scanComplete}

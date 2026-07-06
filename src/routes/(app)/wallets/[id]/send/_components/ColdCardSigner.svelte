@@ -2,6 +2,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
+	import DeviceHelpLink from '$lib/components/signing/DeviceHelpLink.svelte';
 	import { formatBtc, formatSats, truncateMiddle } from '$lib/format';
 	import { psbtHasKeyOrigin } from '$lib/hw/keyOrigin';
 	import type { SignerProps } from './signerContract';
@@ -102,6 +103,9 @@
 			<strong>Generic wallet / file</strong> method with software that knows this wallet, or
 			re-import the wallet with its master fingerprint.
 		</div>
+		<!-- Official troubleshooting resource — always shown on an error, never
+		     flag-gated (it is help, not promotion). -->
+		<DeviceHelpLink device="coldcard" kind="support" />
 		{#if oncancel}
 			<div class="coldcard-foot">
 				<button type="button" class="btn btn-secondary btn-sm" onclick={oncancel}>
@@ -198,6 +202,7 @@
 				</label>
 				{#if signError}
 					<div class="form-error" role="alert">{signError}</div>
+					<DeviceHelpLink device="coldcard" kind="support" />
 				{/if}
 			</div>
 		</li>

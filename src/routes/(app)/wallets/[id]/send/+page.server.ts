@@ -10,6 +10,7 @@ import {
 } from '$lib/server/transactions';
 import type { UnconfirmedTrust } from '$lib/server/bitcoin/psbt';
 import { summarizePsbt, type PsbtSummary } from '$lib/server/bitcoin/psbt';
+import { getReferralBuyUrls } from '$lib/server/referrals';
 import { getChain } from '$lib/server/chain';
 import type { FeeEstimates } from '$lib/types';
 import type { PageServerLoad } from './$types';
@@ -133,6 +134,9 @@ export const load: PageServerLoad = async (event) => {
 		tipHeight,
 		// The user's address book seeds the recipient autocomplete. User-scoped,
 		// small, and cheap to load alongside the page.
-		savedAddresses: listSavedAddresses(locals.user!.id)
+		savedAddresses: listSavedAddresses(locals.user!.id),
+		// Buy-a-device links for the signer cards' unavailable states; null when
+		// the referral_links flag is off (the cards then render no referral UI).
+		referralBuyUrls: getReferralBuyUrls(locals.flags)
 	};
 };

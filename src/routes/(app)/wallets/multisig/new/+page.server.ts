@@ -18,6 +18,7 @@ import {
 import { containsPrivateKeyMaterial, parseCaravanImport } from '$lib/server/multisigExport';
 import { detectCosignerContacts } from '$lib/server/cosignerDetection';
 import { listMultisigs } from '$lib/server/wallets/multisig';
+import { listActiveMultisigServiceReferrals } from '$lib/server/referrals';
 import { requireFeature } from '$lib/server/api';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -31,7 +32,14 @@ export const load: PageServerLoad = async (event) => {
 	requireFeature(event, 'multisig_create');
 	// First-timers get the "why a multisig?" education expanded; repeat users get
 	// it collapsed out of the way.
-	return { hasMultisigs: listMultisigs(event.locals.user.id).length > 0 };
+	return {
+		hasMultisigs: listMultisigs(event.locals.user.id).length > 0,
+		// Managed-service suggestions (cairn-y5l6): active rows only, and only
+		// when the referral_links flag is on — otherwise an empty list, which the
+		// page treats as "render nothing".
+		multisigServices:
+			event.locals.flags?.referral_links !== false ? listActiveMultisigServiceReferrals() : []
+	};
 };
 
 const DEVICE_TYPES = new Set(['trezor', 'ledger', 'coldcard', 'qr', 'file']);

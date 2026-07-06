@@ -1,5 +1,6 @@
 import { requireFeature } from '$lib/server/api';
 import { getChain } from '$lib/server/chain';
+import { getReferralBuyUrls } from '$lib/server/referrals';
 import type { FeeEstimates } from '$lib/types';
 import type { PageServerLoad } from './$types';
 
@@ -17,5 +18,11 @@ export const load: PageServerLoad = async (event) => {
 	} catch {
 		fees = null;
 	}
-	return { fees };
+	return {
+		fees,
+		// Buy-a-device links for the signer cards' unavailable states; null when
+		// the referral_links flag is off (the cards then render no referral UI).
+		// Nothing multisig-shaped — this stays a config-file-only page.
+		referralBuyUrls: getReferralBuyUrls(event.locals.flags)
+	};
 };

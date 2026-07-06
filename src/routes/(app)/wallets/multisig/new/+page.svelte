@@ -1010,6 +1010,36 @@
 				</div>
 			{/if}
 
+			{#if data.multisigServices.length > 0}
+				<!-- Managed-service referrals (cairn-y5l6): a quiet, non-modal aside
+				     below the DIY setup. The load only hands us rows when the
+				     referral_links flag is on AND at least one service is active. -->
+				<aside class="services-card" aria-label="Managed multisig services">
+					<p class="services-lead">Want a managed multisig service instead?</p>
+					<p class="services-sub">
+						These companies set up and help run a multisig for you. Setting one up here yourself is
+						free and private — but if you'd rather have help, they're an option.
+					</p>
+					<ul class="services-list">
+						{#each data.multisigServices as service (service.id)}
+							<li class="service-item">
+								{#if service.logoUrl}
+									<img class="service-logo" src={service.logoUrl} alt="{service.name} logo" />
+								{/if}
+								<div class="service-body">
+									<a href={service.url} target="_blank" rel="noopener" class="service-name">
+										{service.name} →
+									</a>
+									{#if service.description}
+										<span class="service-desc">{service.description}</span>
+									{/if}
+								</div>
+							</li>
+						{/each}
+					</ul>
+				</aside>
+			{/if}
+
 			<div class="pane-actions">
 				<a href="/wallets" class="btn btn-ghost">Cancel</a>
 				<button
@@ -1862,6 +1892,76 @@
 		font-size: 12.5px;
 		line-height: 1.6;
 		color: var(--text-secondary);
+	}
+
+	/* --- step 1: managed-service referrals (quiet aside, never a modal) --- */
+
+	.services-card {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		padding: 12px 14px;
+		background: var(--bg);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-control);
+	}
+
+	.services-lead {
+		font-size: 12.5px;
+		font-weight: 600;
+	}
+
+	.services-sub {
+		font-size: 12.5px;
+		line-height: 1.6;
+		color: var(--text-secondary);
+	}
+
+	.services-list {
+		list-style: none;
+		margin: 4px 0 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.service-item {
+		display: flex;
+		gap: 10px;
+		align-items: flex-start;
+	}
+
+	.service-logo {
+		width: 22px;
+		height: 22px;
+		object-fit: contain;
+		border-radius: 4px;
+		flex-shrink: 0;
+		margin-top: 1px;
+	}
+
+	.service-body {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+		min-width: 0;
+	}
+
+	.service-name {
+		font-size: 12.5px;
+		font-weight: 600;
+		color: var(--accent);
+	}
+
+	.service-name:hover {
+		text-decoration: underline;
+	}
+
+	.service-desc {
+		font-size: 12px;
+		color: var(--text-secondary);
+		line-height: 1.5;
 	}
 
 	/* --- step 1: presets --- */

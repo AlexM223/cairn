@@ -10,6 +10,11 @@
 	import MiningRewards from '$lib/components/MiningRewards.svelte';
 	import { formatBtc, formatFeeRate, formatSats, timeAgo, truncateMiddle } from '$lib/format';
 	import { SCRIPT_TYPE_LABELS, WALLET_DEVICE_LABELS, walletTypeLabel } from '../labels';
+	import {
+		OFFICIAL_SUPPORT_URLS,
+		REFERRAL_DEVICE_LABELS,
+		referralDeviceId
+	} from '$lib/referrals';
 	// Layout/styling shared with the multisig detail page (namespaced under the
 	// root's .wallet-detail class); this page's style block keeps only what differs.
 	import '$lib/styles/wallet-detail.css';
@@ -20,6 +25,11 @@
 	// record, otherwise just "Wallet" — never "watch-only", since it can always
 	// sign (a device signs directly, an unassociated key signs via a file/PSBT).
 	const walletKind = $derived(walletTypeLabel(data.wallet.deviceType));
+
+	// Which vendor's OFFICIAL troubleshooting resource fits this wallet's device
+	// (null for file/QR/unset). Deliberately independent of the referral_links
+	// flag: this is help, not promotion, so it is always shown when known.
+	const helpDevice = $derived(referralDeviceId(data.wallet.deviceType));
 
 	let bannerDismissed = $state(false);
 
@@ -499,6 +509,23 @@
 		</Term>
 		· {truncateMiddle(data.wallet.xpub, 10, 8)}
 	</p>
+
+	{#if helpDevice}
+		<!-- Official device help (cairn-4161): a quiet expandable near the device
+		     badge. Always shown for a known device — never gated by the referral
+		     flag, because troubleshooting help isn't promotion. -->
+		<details class="device-help">
+			<summary>Need help with your {REFERRAL_DEVICE_LABELS[helpDevice]}?</summary>
+			<p>
+				Connection trouble, firmware updates, or the device acting up — the
+				<a href={OFFICIAL_SUPPORT_URLS[helpDevice]} target="_blank" rel="noopener"
+					>official {REFERRAL_DEVICE_LABELS[helpDevice]} support site</a
+				>
+				is the best place to sort it out. Your bitcoin is safe on the blockchain either way —
+				a misbehaving device never puts funds at risk as long as you have its seed backup.
+			</p>
+		</details>
+	{/if}
 
 	{#if inProgress.length > 0}
 		<!-- ------------------------------ transactions in progress -->
@@ -1175,6 +1202,39 @@
 		outline: 2px solid var(--accent);
 		outline-offset: 2px;
 		border-radius: 2px;
+	}
+
+	/* Official device-help expandable near the header (same quiet <details>
+	   idiom as the import wizard's optional-config box). */
+	.device-help {
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-control);
+		padding: 8px 14px;
+		margin: -8px 0 18px;
+		max-width: 620px;
+	}
+
+	.device-help summary {
+		cursor: pointer;
+		font-size: 12.5px;
+		color: var(--text-secondary);
+	}
+
+	.device-help summary:hover {
+		color: var(--text);
+	}
+
+	.device-help p {
+		font-size: 12.5px;
+		color: var(--text-secondary);
+		line-height: 1.6;
+		margin: 8px 0 4px;
+	}
+
+	.device-help a {
+		color: var(--accent);
+		text-decoration: underline;
+		text-underline-offset: 2px;
 	}
 
 	.head {

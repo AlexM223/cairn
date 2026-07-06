@@ -12,6 +12,7 @@ import { getMultisigUtxos } from '$lib/server/multisigScan';
 import { classifyUnconfirmedTrust } from '$lib/server/transactions';
 import { summarizePsbt, type PsbtSummary, type UnconfirmedTrust } from '$lib/server/bitcoin/psbt';
 import type { MultisigSigningProgress } from '$lib/server/bitcoin/multisigPsbt';
+import { getReferralBuyUrls } from '$lib/server/referrals';
 import { getChain } from '$lib/server/chain';
 import type { FeeEstimates } from '$lib/types';
 import type { PageServerLoad } from './$types';
@@ -150,6 +151,9 @@ export const load: PageServerLoad = async (event) => {
 		// Confirmed spendable coins for the optional coin-control picker (empty when
 		// the scan failed or the wallet is empty), plus the tip for maturity checks.
 		utxos,
-		tipHeight
+		tipHeight,
+		// Buy-a-device links for the signer cards' unavailable states; null when
+		// the referral_links flag is off (the cards then render no referral UI).
+		referralBuyUrls: getReferralBuyUrls(locals.flags)
 	};
 };

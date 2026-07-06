@@ -2,7 +2,17 @@ import { fail } from '@sveltejs/kit';
 import { parseXpub } from '$lib/server/bitcoin/xpub';
 import { derivePreviewAddresses } from '$lib/server/bitcoin/walletScan';
 import { createWallet, friendlyXpubError } from '$lib/server/wallets';
-import type { Actions } from './$types';
+import { getReferralBuyUrls } from '$lib/server/referrals';
+import type { Actions, PageServerLoad } from './$types';
+
+export const load: PageServerLoad = async ({ locals }) => {
+	return {
+		// Resolved buy-a-device links for the method picker. null when the
+		// referral_links flag is off — the wizard then renders no referral UI at
+		// all (the client keys purely off URL presence).
+		referralBuyUrls: getReferralBuyUrls(locals.flags)
+	};
+};
 
 export const actions: Actions = {
 	/** Step 2 → 3: validate the pasted key and derive the first 5 receive addresses. */

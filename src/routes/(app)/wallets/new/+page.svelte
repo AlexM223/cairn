@@ -11,6 +11,7 @@
 	import { SCRIPT_TYPE_LABELS, WALLET_DEVICE_LABELS } from '../labels';
 	import { isCameraScanAvailable, startScan, type ScanHandle } from '$lib/hw/qrScan';
 	import { bitbox02SupportsScriptType } from '$lib/hw/bitbox02';
+	import { referralDeviceId, type ReferralBuyUrls } from '$lib/referrals';
 	import {
 		readKeyFromTrezor,
 		readKeyFromLedger,
@@ -73,6 +74,11 @@
 	// the rare case the signing device differs from what read the key (e.g. a
 	// Ledger xpub read via QR because the browser lacks WebHID).
 	let changeDevice = $state(false);
+
+	// Referral buy links (cairn-dwib): present on page data only when the
+	// referral_links flag is on — absent means render NO referral UI. Official
+	// URLs are resolved server-side (admin override or official store).
+	const buyUrls = $derived<ReferralBuyUrls | null>(page.data.referralBuyUrls ?? null);
 
 	const METHOD_CARDS: { key: Method; title: string; desc: string }[] = [
 		{ key: 'trezor', title: 'Trezor', desc: 'Plug it in and connect with one click.' },
@@ -463,20 +469,45 @@
 
 				<div class="method-grid">
 					{#each METHOD_CARDS as m (m.key)}
-						<!-- Explicit aria-label so each card announces its key source by name
-						     ("Trezor", "Paste public key", …) instead of a generic "button"
-						     to screen readers (cairn-oqri). -->
-						<button
-							type="button"
-							class="method-card"
-							aria-label={m.title}
-							onclick={() => pickMethod(m.key)}
-						>
-							<span class="method-title">{m.title}</span>
-							<span class="method-desc">{m.desc}</span>
-						</button>
+						{@const buyDevice = referralDeviceId(m.key)}
+						{@const buyUrl = buyDevice && buyUrls ? buyUrls[buyDevice] : null}
+						<div class="method-cell">
+							<!-- Explicit aria-label so each card announces its key source by name
+							     ("Trezor", "Paste public key", …) instead of a generic "button"
+							     to screen readers (cairn-oqri). -->
+							<button
+								type="button"
+								class="method-card"
+								aria-label={m.title}
+								onclick={() => pickMethod(m.key)}
+							>
+								<span class="method-title">{m.title}</span>
+								<span class="method-desc">{m.desc}</span>
+							</button>
+							{#if buyUrl}
+								<!-- Referral link (flag-gated by URL presence) — outside the
+								     button so it stays a real link, not a nested control. -->
+								<a
+									class="buy-link"
+									href={buyUrl}
+									target="_blank"
+									rel="noopener"
+									aria-label="Buy a {m.title}"
+								>
+									Buy one →
+								</a>
+							{/if}
+						</div>
 					{/each}
 				</div>
+
+				{#if buyUrls}
+					<p class="hint no-device-hint">
+						No hardware wallet yet? You can start with <strong>Paste public key</strong> from any
+						wallet app today — and when you're ready for a dedicated signing device, the
+						<em>Buy one</em> links above go straight to each maker's store.
+					</p>
+				{/if}
 
 				<div class="pane-actions">
 					<button type="button" class="btn btn-ghost" onclick={() => (step = 0)}>
@@ -1365,10 +1396,20 @@
 		}
 	}
 
+	/* Each grid cell holds the method card plus an optional buy link below it,
+	   so the referral link never nests inside the card's <button>. */
+	.method-cell {
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+		min-width: 0;
+	}
+
 	.method-card {
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
+		flex: 1;
 		text-align: left;
 		padding: 13px 14px;
 		background: var(--surface);
@@ -1378,6 +1419,23 @@
 		font: inherit;
 		cursor: pointer;
 		transition: border-color 120ms var(--ease);
+	}
+
+	/* Unobtrusive referral link: hint-sized, tucked under its device card. */
+	.buy-link {
+		align-self: flex-start;
+		font-size: 11.5px;
+		color: var(--text-muted);
+		padding: 1px 2px;
+	}
+
+	.buy-link:hover {
+		color: var(--accent);
+		text-decoration: underline;
+	}
+
+	.no-device-hint {
+		line-height: 1.6;
 	}
 
 	.method-card:hover {

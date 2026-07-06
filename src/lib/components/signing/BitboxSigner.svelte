@@ -4,6 +4,7 @@
 	import CopyText from '$lib/components/CopyText.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
+	import DeviceHelpLink from '$lib/components/signing/DeviceHelpLink.svelte';
 	import { formatSats, truncateMiddle } from '$lib/format';
 	import {
 		isWebHidAvailable,
@@ -268,6 +269,7 @@
 						? 'sign this key with the file method instead'
 						: 'use the Generic wallet / file method instead'}.
 				</p>
+				<DeviceHelpLink device="bitbox02" kind="buy" />
 			</div>
 		</div>
 		{#if multisig && onusefile}
@@ -388,6 +390,9 @@
 					</p>
 				{/if}
 			</div>
+			<!-- Official troubleshooting resource — always shown on an error, never
+			     flag-gated (it is help, not promotion). -->
+			<DeviceHelpLink device="bitbox02" kind="support" />
 		{/if}
 
 		<div class="actions">
