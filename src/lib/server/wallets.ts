@@ -18,11 +18,16 @@ const GAP_LIMIT = 20;
 
 const log = childLogger('wallets');
 
-/** Device types a wallet's key can be routed to when signing. */
+/** Device types a wallet's key can be routed to when signing. Must stay in sync
+ *  with WalletDeviceType and the DevicePicker tiles — an omitted type silently
+ *  normalizes to null (file fallback), so a wallet can never remember it. */
 const WALLET_DEVICE_TYPES: readonly WalletDeviceType[] = [
 	'trezor',
 	'ledger',
 	'coldcard',
+	'bitbox02',
+	'jade',
+	'jade-qr',
 	'qr',
 	'file'
 ];

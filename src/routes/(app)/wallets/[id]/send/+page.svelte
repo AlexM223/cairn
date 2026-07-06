@@ -30,6 +30,7 @@
 	import TrezorSigner from './_components/TrezorSigner.svelte';
 	import BitboxSigner from './_components/BitboxSigner.svelte';
 	import JadeUsbSigner from './_components/JadeUsbSigner.svelte';
+	import JadeQrSigner from './_components/JadeQrSigner.svelte';
 	import type { DeviceMethod, SignerContext } from './_components/signerContract';
 	import {
 		formatSigningRange,
@@ -585,7 +586,15 @@
 	// The SignMethod set is exactly WalletDeviceType, so the device on record
 	// (if any) both pre-selects a method and drives the "Sign with your <device>"
 	// heading — a single-key wallet lands on one signing screen, not a menu.
-	type SignMethod = 'file' | 'trezor' | 'ledger' | 'coldcard' | 'bitbox02' | 'jade' | 'qr';
+	type SignMethod =
+		| 'file'
+		| 'trezor'
+		| 'ledger'
+		| 'coldcard'
+		| 'bitbox02'
+		| 'jade'
+		| 'jade-qr'
+		| 'qr';
 
 	// The wallet's script type — the BitBox02 tile is greyed out for legacy
 	// (p2pkh) wallets it can't sign (the device firmware has no legacy config).
@@ -696,6 +705,16 @@
 				'Needs Web Serial, which is only in Chromium desktop browsers (Chrome, Edge, Brave) over HTTPS or localhost.'
 		},
 		{
+			key: 'jade-qr',
+			name: 'Jade (QR)',
+			blurb: 'Air-gapped signing with the Jade camera — QR codes cross the gap in both directions',
+			icon: 'qr',
+			// Displaying the unsigned QR always works; the signer falls back to a
+			// paste box when the browser can't camera-scan the signature back.
+			available: () => true,
+			unavailableReason: ''
+		},
+		{
 			key: 'coldcard',
 			name: 'ColdCard (microSD)',
 			blurb: 'Air-gapped signing over a microSD card — no cable, no connection',
@@ -723,6 +742,7 @@
 		coldcard: ColdCardSigner,
 		bitbox02: BitboxSigner,
 		jade: JadeUsbSigner,
+		'jade-qr': JadeQrSigner,
 		qr: QrSigner
 	} as const;
 

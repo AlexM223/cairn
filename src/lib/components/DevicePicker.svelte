@@ -33,6 +33,13 @@
 		{ key: 'bitbox02', title: 'BitBox02', desc: 'Plug in over USB — confirm on the device.', icon: 'shield', flag: 'hw_bitbox02' },
 		{ key: 'jade', title: 'Jade', desc: 'Plug in over USB (Chrome/Edge).', icon: 'shield', flag: 'hw_jade' },
 		{
+			key: 'jade-qr',
+			title: 'Jade (QR)',
+			desc: 'Air-gapped — sign with the Jade camera.',
+			icon: 'qr',
+			flag: 'hw_jade'
+		},
+		{
 			key: 'qr',
 			title: 'Air-gapped QR',
 			desc: 'Camera QR — SeedSigner, Passport, Keystone.',

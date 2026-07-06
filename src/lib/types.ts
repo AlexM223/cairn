@@ -33,6 +33,7 @@ export type WalletDeviceType =
 	| 'coldcard'
 	| 'bitbox02'
 	| 'jade'
+	| 'jade-qr'
 	| 'qr'
 	| 'file';
 
