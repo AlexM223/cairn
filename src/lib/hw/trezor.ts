@@ -21,13 +21,24 @@
 // (assertSameTransaction).
 
 import { Transaction, Address, OutScript, NETWORK } from '@scure/btc-signer';
-import { base64, createBase58check } from '@scure/base';
+import { base64 } from '@scure/base';
 import { HDKey } from '@scure/bip32';
-import { sha256 } from '@noble/hashes/sha2.js';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
 import type { ScriptType } from '$lib/types';
+import {
+	HARDENED,
+	HwError,
+	SINGLE_SIG_VERSIONS,
+	formatKeyPath,
+	multisigAccountPathIndexes,
+	normalizeXpub,
+	parseKeyPath,
+	singleSigAccountPathIndexes,
+	xpubWithVersion,
+	type MultisigScriptType,
+	type MultisigSignKey
+} from './common';
 
-const HARDENED = 0x80000000;
 const SIGHASH_ALL = 0x01;
 
 /**
@@ -43,17 +54,14 @@ export type TrezorErrorCode =
 	| 'wrong_device' // the connected Trezor holds none of the multisig's keys
 	| 'unexpected'; // anything else
 
-export class TrezorError extends Error {
-	constructor(
-		message: string,
-		public readonly code: TrezorErrorCode,
-		options?: { cause?: unknown }
-	) {
-		super(message);
-		this.name = 'TrezorError';
-		if (options?.cause !== undefined) (this as { cause?: unknown }).cause = options.cause;
+export class TrezorError extends HwError<TrezorErrorCode> {
+	constructor(message: string, code: TrezorErrorCode, options?: { cause?: unknown }) {
+		super('TrezorError', message, code, options);
 	}
 }
+
+/** Builds this driver's typed error for the shared common.ts helpers. */
+const trezorFail = (message: string): TrezorError => new TrezorError(message, 'unexpected');
 
 /**
  * True in any browser running in a secure context (HTTPS or localhost). Unlike
@@ -597,19 +605,10 @@ export async function signPsbtWithTrezor(unsignedPsbtBase64: string): Promise<st
 // ≥ 2.8.7 — explicit script-order nodes work on every firmware, so we use
 // those and skip the flag entirely.)
 
-/** The three multisig script forms — mirrors multisig.ts's MultisigScriptType
- *  (duplicated here so this browser driver never imports server code). */
-export type MultisigScriptType = 'p2wsh' | 'p2sh-p2wsh' | 'p2sh';
-
-/** One cosigner key, exactly as the multisig stores it (MultisigKeyRow shape). */
-export interface MultisigSignKey {
-	/** Account xpub (SLIP-132 ypub/zpub/Ypub/Zpub accepted, normalized internally). */
-	xpub: string;
-	/** Master fingerprint, 8 hex chars ("00000000" when unknown). */
-	fingerprint: string;
-	/** Account origin path, e.g. "m/48'/0'/0'/2'" ("m" when unknown). */
-	path: string;
-}
+// The multisig script forms and cosigner-key shape live in the client-safe
+// common.ts (shared across drivers); re-exported so existing importers of this
+// driver keep working.
+export type { MultisigScriptType, MultisigSignKey } from './common';
 
 /** Everything multisig signing needs. Framework-agnostic plain values the UI
  *  passes straight from the multisig row + the sign session's combined PSBT. */
@@ -682,63 +681,20 @@ export interface TrezorMultisigSignRequest {
 	locktime: number;
 }
 
-// SLIP-132 public-key version bytes, rewritten to standard xpub before parsing.
-// (Multisig rows store the xpub as the user pasted it, which may be ypub/zpub for
+// SLIP-132 → standard-xpub rewriting lives in common.ts (normalizeXpub); this
+// alias keeps the driver's historical vocabulary at its call sites. (Multisig
+// rows store the xpub as the user pasted it, which may be ypub/zpub for
 // single-sig-style prefixes or Ypub/Zpub for the multisig conventions.)
-const XPUB_VERSION = 0x0488b21e;
-const SLIP132_VERSIONS = new Set([
-	0x049d7cb2, // ypub
-	0x04b24746, // zpub
-	0x0295b43f, // Ypub (p2sh-p2wsh multisig)
-	0x02aa7ed3 // Zpub (p2wsh multisig)
-]);
-const b58check = /* @__PURE__ */ createBase58check(sha256);
-
-/** Rewrite a SLIP-132 prefix to standard xpub bytes; anything else (including
- *  invalid input) passes through unchanged so HDKey produces the real error. */
-function normalizeMultisigXpub(input: string): string {
-	const trimmed = input.trim();
-	let raw: Uint8Array;
-	try {
-		raw = b58check.decode(trimmed);
-	} catch {
-		return trimmed;
-	}
-	if (raw.length !== 78) return trimmed;
-	const version = ((raw[0] << 24) | (raw[1] << 16) | (raw[2] << 8) | raw[3]) >>> 0;
-	if (!SLIP132_VERSIONS.has(version)) return trimmed;
-	const out = new Uint8Array(raw);
-	out[0] = (XPUB_VERSION >>> 24) & 0xff;
-	out[1] = (XPUB_VERSION >>> 16) & 0xff;
-	out[2] = (XPUB_VERSION >>> 8) & 0xff;
-	out[3] = XPUB_VERSION & 0xff;
-	return b58check.encode(out);
-}
+const normalizeMultisigXpub = normalizeXpub;
 
 /** "m/48'/0'/0'/2'" (h/H/' markers, leading m/ optional) → hardened-offset
  *  index array; "m"/"" → []. */
 function parseMultisigKeyPath(path: string, label: string): number[] {
-	const stripped = path.trim().replace(/^m\/?/i, '');
-	if (stripped === '') return [];
-	return stripped.split('/').map((p) => {
-		const hardened = /['’hH]$/.test(p);
-		const digits = hardened ? p.slice(0, -1) : p;
-		if (!/^\d+$/.test(digits)) {
-			throw new TrezorError(`${label}: bad derivation path segment "${p}".`, 'unexpected');
-		}
-		const n = parseInt(digits, 10);
-		if (n >= HARDENED) {
-			throw new TrezorError(`${label}: derivation path segment out of range "${p}".`, 'unexpected');
-		}
-		return hardened ? n + HARDENED : n;
-	});
+	return parseKeyPath(path, label, trezorFail);
 }
 
 /** Hardened-offset index array → "m/48'/0'/0'/2'" (apostrophe markers). */
-function formatMultisigKeyPath(indexes: number[]): string {
-	if (indexes.length === 0) return 'm';
-	return `m/${indexes.map((i) => (i >= HARDENED ? `${i - HARDENED}'` : `${i}`)).join('/')}`;
-}
+const formatMultisigKeyPath = formatKeyPath;
 
 /**
  * Master fingerprint (8 lowercase hex) of an extended public key — hash160 of
@@ -769,14 +725,7 @@ export function xfpFromXpub(xpub: string): string {
  * only, matching the rest of Cairn. Exported for unit testing.
  */
 export function multisigAccountPath(scriptType: MultisigScriptType, account = 0): string {
-	if (!MULTISIG_SPEND[scriptType]) {
-		throw new TrezorError(`Unsupported multisig script type "${scriptType}".`, 'unexpected');
-	}
-	if (!Number.isInteger(account) || account < 0 || account >= HARDENED) {
-		throw new TrezorError(`Invalid account index ${account}.`, 'unexpected');
-	}
-	const sub = scriptType === 'p2wsh' ? 2 : 1;
-	return `m/48'/0'/${account}'/${sub}'`;
+	return formatKeyPath(multisigAccountPathIndexes(scriptType, account, trezorFail));
 }
 
 /**
@@ -1354,16 +1303,6 @@ export async function readMultisigKeyFromTrezor(
 // rather than the multisig Ypub/Zpub convention. Kept a separate function, not a
 // parameterized merge, so each key kind reads exactly like its wizard.
 
-/** SLIP-132 single-sig public version bytes per script type — the prefix family
- *  xpub.ts's PUBLIC_VERSIONS recognizes (xpub for p2pkh AND p2tr, ypub for
- *  p2sh-p2wpkh, zpub for p2wpkh). NOT the multisig Ypub/Zpub convention. */
-const SINGLE_SIG_VERSIONS: Record<ScriptType, number> = {
-	p2pkh: 0x0488b21e, // xpub (BIP44)
-	'p2sh-p2wpkh': 0x049d7cb2, // ypub (BIP49)
-	p2wpkh: 0x04b24746, // zpub (BIP84)
-	p2tr: 0x0488b21e // xpub (BIP86 — no dedicated SLIP-132 prefix)
-};
-
 /**
  * The standard single-sig account path for a script type:
  * m/44'/0'/{account}' (p2pkh), m/49'/0'/{account}' (p2sh-p2wpkh),
@@ -1372,23 +1311,7 @@ const SINGLE_SIG_VERSIONS: Record<ScriptType, number> = {
  * testing.
  */
 export function singleSigAccountPath(scriptType: ScriptType, account = 0): string {
-	const purpose =
-		scriptType === 'p2pkh'
-			? 44
-			: scriptType === 'p2sh-p2wpkh'
-				? 49
-				: scriptType === 'p2wpkh'
-					? 84
-					: scriptType === 'p2tr'
-						? 86
-						: null;
-	if (purpose === null) {
-		throw new TrezorError(`Unsupported single-sig script type "${scriptType}".`, 'unexpected');
-	}
-	if (!Number.isInteger(account) || account < 0 || account >= HARDENED) {
-		throw new TrezorError(`Invalid account index ${account}.`, 'unexpected');
-	}
-	return `m/${purpose}'/0'/${account}'`;
+	return formatKeyPath(singleSigAccountPathIndexes(scriptType, account, trezorFail));
 }
 
 /**
@@ -1404,20 +1327,7 @@ function normalizeSingleSigXpub(input: string, scriptType: ScriptType): string {
 	if (version === undefined) {
 		throw new TrezorError(`Unsupported single-sig script type "${scriptType}".`, 'unexpected');
 	}
-	const trimmed = input.trim();
-	let raw: Uint8Array;
-	try {
-		raw = b58check.decode(trimmed);
-	} catch {
-		return trimmed;
-	}
-	if (raw.length !== 78) return trimmed;
-	const out = new Uint8Array(raw);
-	out[0] = (version >>> 24) & 0xff;
-	out[1] = (version >>> 16) & 0xff;
-	out[2] = (version >>> 8) & 0xff;
-	out[3] = version & 0xff;
-	return b58check.encode(out);
+	return xpubWithVersion(input, version);
 }
 
 /**

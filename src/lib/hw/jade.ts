@@ -30,15 +30,25 @@
 // uses BC-UR (a different codec from Cairn's existing BBQr) and is a separate
 // follow-on driver (hw/jadeUr.ts, plan Unit E2) — not built here.
 
-import { createBase58check } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import type { ScriptType } from '$lib/types';
+import {
+	HARDENED,
+	HwError,
+	SINGLE_SIG_VERSIONS,
+	b58check,
+	formatKeyPath,
+	multisigAccountPathIndexes as sharedMultisigAccountPathIndexes,
+	parseKeyPath as sharedParseKeyPath,
+	singleSigAccountPathIndexes,
+	xpubWithVersion,
+	type MultisigScriptType,
+	type MultisigSignKey
+} from './common';
 
 // ---- Types imported for annotations only (erased at build, no runtime load) --
 import type { MultisigDescriptor, SignerDescriptor } from 'jadets';
-
-const HARDENED = 0x80000000;
 
 // Cairn is mainnet-only, matching the rest of the codebase. jadets' network
 // strings are "mainnet"/"testnet" (see its getFingerprintFromXpub).
@@ -58,17 +68,14 @@ export type JadeErrorCode =
 	| 'wrong_device' // the connected Jade holds none of the multisig's keys
 	| 'unexpected'; // anything else
 
-export class JadeError extends Error {
-	constructor(
-		message: string,
-		public readonly code: JadeErrorCode,
-		options?: { cause?: unknown }
-	) {
-		super(message);
-		this.name = 'JadeError';
-		if (options?.cause !== undefined) (this as { cause?: unknown }).cause = options.cause;
+export class JadeError extends HwError<JadeErrorCode> {
+	constructor(message: string, code: JadeErrorCode, options?: { cause?: unknown }) {
+		super('JadeError', message, code, options);
 	}
 }
+
+/** Builds this driver's typed error for the shared common.ts helpers. */
+const jadeFail = (message: string): JadeError => new JadeError(message, 'unexpected');
 
 /** True only in a browser that exposes Web Serial (Chromium desktop, secure
  *  context). Jade USB shares Ledger's Chromium-only posture. */
@@ -85,30 +92,6 @@ export function isWebSerialAvailable(): boolean {
 // Everything below the device functions is pure and unit-tested without a
 // device or the jadets library.
 
-const b58check = /* @__PURE__ */ createBase58check(sha256);
-
-// Standard BIP32 mainnet xpub version bytes.
-const XPUB_VERSION = 0x0488b21e;
-
-// Single-sig SLIP-132 mainnet public version bytes per script type. Cairn's
-// single-sig wallets are keyed by the prefix the account xpub carries (see
-// xpub.ts PUBLIC_VERSIONS, the inverse of this map). BIP-86 taproot has NO
-// SLIP-132 prefix — its account key stays a plain xpub.
-const SLIP132_SINGLESIG_VERSION: Record<ScriptType, number> = {
-	p2pkh: 0x0488b21e, // xpub  (BIP44)
-	'p2sh-p2wpkh': 0x049d7cb2, // ypub  (BIP49)
-	p2wpkh: 0x04b24746, // zpub  (BIP84)
-	p2tr: 0x0488b21e // xpub  (BIP86 — no dedicated SLIP-132 prefix)
-};
-
-// BIP purpose (first hardened path element) per single-sig script type.
-const SCRIPT_TYPE_PURPOSE: Record<ScriptType, number> = {
-	p2pkh: 44, // BIP44
-	'p2sh-p2wpkh': 49, // BIP49
-	p2wpkh: 84, // BIP84
-	p2tr: 86 // BIP86
-};
-
 /**
  * The standard single-sig BIP44/49/84/86 account path for a script type, as a
  * hardened-offset index array (the form jadets' getXpub wants): purpose', 0'
@@ -117,19 +100,12 @@ const SCRIPT_TYPE_PURPOSE: Record<ScriptType, number> = {
  * Exported for unit testing — the load-bearing single-sig derivation.
  */
 export function singleSigAccountPath(scriptType: ScriptType, account = 0): number[] {
-	const purpose = SCRIPT_TYPE_PURPOSE[scriptType];
-	if (purpose === undefined) {
-		throw new JadeError(`Unsupported single-sig script type "${scriptType}".`, 'unexpected');
-	}
-	if (!Number.isInteger(account) || account < 0 || account >= HARDENED) {
-		throw new JadeError(`Invalid account index ${account}.`, 'unexpected');
-	}
-	return [purpose + HARDENED, 0 + HARDENED, account + HARDENED];
+	return singleSigAccountPathIndexes(scriptType, account, jadeFail);
 }
 
-/** The three multisig script forms — mirrors multisig.ts's MultisigScriptType
- *  (duplicated here so this browser driver never imports server code). */
-export type MultisigScriptType = 'p2wsh' | 'p2sh-p2wsh' | 'p2sh';
+// The multisig script forms live in the client-safe common.ts (shared across
+// drivers); re-exported so existing importers of this driver keep working.
+export type { MultisigScriptType } from './common';
 
 /**
  * The BIP-48 account path for a multisig cosigner key:
@@ -139,71 +115,36 @@ export type MultisigScriptType = 'p2wsh' | 'p2sh-p2wsh' | 'p2sh';
  * only. Exported for unit testing.
  */
 export function multisigAccountPathIndexes(scriptType: MultisigScriptType, account = 0): number[] {
-	if (scriptType !== 'p2wsh' && scriptType !== 'p2sh-p2wsh' && scriptType !== 'p2sh') {
-		throw new JadeError(`Unsupported multisig script type "${scriptType}".`, 'unexpected');
-	}
-	if (!Number.isInteger(account) || account < 0 || account >= HARDENED) {
-		throw new JadeError(`Invalid account index ${account}.`, 'unexpected');
-	}
-	const sub = scriptType === 'p2wsh' ? 2 : 1;
-	return [48 + HARDENED, 0 + HARDENED, account + HARDENED, sub + HARDENED];
+	return sharedMultisigAccountPathIndexes(scriptType, account, jadeFail);
 }
 
 /** Hardened-offset index array → apostrophe-notation path string, e.g.
  *  [84',0',0'] → "m/84'/0'/0'". [] → "m". Exported for unit testing. */
 export function formatPath(indexes: number[]): string {
-	if (indexes.length === 0) return 'm';
-	return `m/${indexes.map((i) => (i >= HARDENED ? `${i - HARDENED}'` : `${i}`)).join('/')}`;
+	return formatKeyPath(indexes);
 }
 
 /**
  * Rewrite a standard xpub (as Jade returns it) to the SLIP-132 prefix Cairn's
- * single-sig wallets are keyed by for this script type. Taproot stays xpub.
- * Anything that doesn't decode to a 78-byte extended key passes through
- * unchanged so later parsing surfaces the real error.
+ * single-sig wallets are keyed by for this script type. Taproot stays xpub —
+ * and a plain-xpub target still re-encodes, so a SLIP-132 alias arriving here
+ * is normalized to the canonical prefix. Anything that doesn't decode to a
+ * 78-byte extended key passes through unchanged so later parsing surfaces the
+ * real error.
  *
  * Exported for unit testing.
  */
 export function toSingleSigXpub(input: string, scriptType: ScriptType): string {
-	const targetVersion = SLIP132_SINGLESIG_VERSION[scriptType];
+	const targetVersion = SINGLE_SIG_VERSIONS[scriptType];
 	if (targetVersion === undefined) {
 		throw new JadeError(`Unsupported single-sig script type "${scriptType}".`, 'unexpected');
 	}
-	const trimmed = input.trim();
-	let raw: Uint8Array;
-	try {
-		raw = b58check.decode(trimmed);
-	} catch {
-		return trimmed;
-	}
-	if (raw.length !== 78) return trimmed;
-	if (targetVersion === XPUB_VERSION) {
-		// Ensure a canonical xpub prefix (Jade already returns xpub, but normalize
-		// in case a SLIP-132 alias ever arrives here).
-		const out = new Uint8Array(raw);
-		out[0] = (XPUB_VERSION >>> 24) & 0xff;
-		out[1] = (XPUB_VERSION >>> 16) & 0xff;
-		out[2] = (XPUB_VERSION >>> 8) & 0xff;
-		out[3] = XPUB_VERSION & 0xff;
-		return b58check.encode(out);
-	}
-	const out = new Uint8Array(raw);
-	out[0] = (targetVersion >>> 24) & 0xff;
-	out[1] = (targetVersion >>> 16) & 0xff;
-	out[2] = (targetVersion >>> 8) & 0xff;
-	out[3] = targetVersion & 0xff;
-	return b58check.encode(out);
+	return xpubWithVersion(input, targetVersion);
 }
 
-/** One cosigner key, exactly as the multisig stores it (MultisigKeyRow shape). */
-export interface MultisigSignKey {
-	/** Account xpub (SLIP-132 ypub/zpub/Ypub/Zpub accepted; standard xpub too). */
-	xpub: string;
-	/** Master fingerprint, 8 hex chars ("00000000" when unknown). */
-	fingerprint: string;
-	/** Account origin path, e.g. "m/48'/0'/0'/2'" ("m" when unknown). */
-	path: string;
-}
+// One cosigner key, exactly as the multisig stores it (MultisigKeyRow shape)
+// — lives in the client-safe common.ts, re-exported for importers.
+export type { MultisigSignKey } from './common';
 
 /** What building a Jade multisig registration needs — the multisig's quorum,
  *  keys, script form, and a display name. */
@@ -235,20 +176,7 @@ const JADE_MULTISIG_VARIANT: Record<MultisigScriptType, string> = {
 /** "m/48'/0'/0'/2'" (h/H/' markers, leading m/ optional) → hardened-offset
  *  index array; "m"/"" → []. */
 function parseKeyPath(path: string, label: string): number[] {
-	const stripped = path.trim().replace(/^m\/?/i, '');
-	if (stripped === '') return [];
-	return stripped.split('/').map((p) => {
-		const hardened = /['’hH]$/.test(p);
-		const digits = hardened ? p.slice(0, -1) : p;
-		if (!/^\d+$/.test(digits)) {
-			throw new JadeError(`${label}: bad derivation path segment "${p}".`, 'unexpected');
-		}
-		const n = parseInt(digits, 10);
-		if (n >= HARDENED) {
-			throw new JadeError(`${label}: derivation path segment out of range "${p}".`, 'unexpected');
-		}
-		return hardened ? n + HARDENED : n;
-	});
+	return sharedParseKeyPath(path, label, jadeFail);
 }
 
 /** 8-hex-char fingerprint string → 4-byte Uint8Array (the form jadets' signer

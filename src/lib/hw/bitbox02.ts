@@ -32,9 +32,15 @@
 // wipe, analogous to Cairn's ledger_multisig_registrations) is a deliberate
 // separate follow-on — NOT added in this unit, and db.ts is untouched.
 
-import { createBase58check } from '@scure/base';
-import { sha256 } from '@noble/hashes/sha2.js';
 import type { ScriptType } from '$lib/types';
+import {
+	HARDENED,
+	HwError,
+	SCRIPT_TYPE_PURPOSE,
+	normalizeXpub,
+	type MultisigScriptType,
+	type MultisigSignKey
+} from './common';
 
 // ---- Types imported for annotations only (erased at build, no runtime load) --
 // bitbox-api ships generated .d.ts types; importing them as `import type` never
@@ -44,8 +50,6 @@ import type {
 	PairedBitBox as PairedBitBoxType,
 	PairingBitBox as PairingBitBoxType
 } from 'bitbox-api';
-
-const HARDENED = 0x80000000;
 
 /**
  * A typed error the UI can present verbatim. `code` lets callers branch (e.g.
@@ -64,15 +68,9 @@ export type Bitbox02ErrorCode =
 	| 'wrong_device' // the connected BitBox02 holds none of the multisig's keys
 	| 'unexpected'; // anything else
 
-export class Bitbox02Error extends Error {
-	constructor(
-		message: string,
-		public readonly code: Bitbox02ErrorCode,
-		options?: { cause?: unknown }
-	) {
-		super(message);
-		this.name = 'Bitbox02Error';
-		if (options?.cause !== undefined) (this as { cause?: unknown }).cause = options.cause;
+export class Bitbox02Error extends HwError<Bitbox02ErrorCode> {
+	constructor(message: string, code: Bitbox02ErrorCode, options?: { cause?: unknown }) {
+		super('Bitbox02Error', message, code, options);
 	}
 }
 
@@ -106,12 +104,7 @@ const SIMPLE_TYPE: Record<ScriptType, BitboxSimpleType | null> = {
 };
 
 /** Cairn ScriptType → BIP purpose (the first, hardened path element). */
-const SCRIPT_PURPOSE: Record<ScriptType, number> = {
-	p2pkh: 44,
-	'p2sh-p2wpkh': 49,
-	p2wpkh: 84,
-	p2tr: 86
-};
+const SCRIPT_PURPOSE = SCRIPT_TYPE_PURPOSE;
 
 /**
  * Whether the BitBox02 can act as a SINGLE-SIG signer/key-source for a given
@@ -161,9 +154,9 @@ export function singleSigAccountPath(scriptType: ScriptType, account = 0): strin
 // returns false for it so the signer/picker UI can grey it out with copy
 // instead of failing mid-flow.
 
-/** Cairn's three multisig script forms — mirrors multisig.ts's MultisigScriptType
- *  (duplicated here so this browser driver never imports server code). */
-export type MultisigScriptType = 'p2wsh' | 'p2sh-p2wsh' | 'p2sh';
+// Cairn's three multisig script forms live in the client-safe common.ts
+// (shared across drivers); re-exported so existing importers keep working.
+export type { MultisigScriptType } from './common';
 
 /** The device's multisig script-config discriminant. */
 export type BitboxMultisigScriptType = 'p2wsh' | 'p2wshP2sh';
@@ -212,43 +205,12 @@ export function multisigAccountPath(scriptType: MultisigScriptType, account = 0)
 //
 // The device can return an xpub under any SLIP-132 prefix (btcXpub's XPubType).
 // We always REQUEST a standard 'xpub' from the device, but keep this
-// normalization helper for defence-in-depth and testability: a SLIP-132 prefix
-// (ypub/zpub/Ypub/Zpub) is rewritten to standard xpub bytes so downstream
-// parseXpub/HDKey code sees a canonical key, matching how xpub.ts /
-// multisig.ts canonicalize. Anything else (including invalid input) passes
-// through unchanged so later parsing surfaces the real error.
-
-const XPUB_VERSION = 0x0488b21e;
-const SLIP132_VERSIONS = new Set([
-	0x049d7cb2, // ypub  (BIP49 single-sig)
-	0x04b24746, // zpub  (BIP84 single-sig)
-	0x0295b43f, // Ypub  (p2sh-p2wsh multisig)
-	0x02aa7ed3 // Zpub  (p2wsh multisig)
-]);
-const b58check = /* @__PURE__ */ createBase58check(sha256);
-
-/**
- * Rewrite a SLIP-132 prefix (ypub/zpub/Ypub/Zpub) to standard xpub bytes;
- * anything else passes through unchanged. Exported for unit testing.
- */
-export function normalizeXpub(input: string): string {
-	const trimmed = input.trim();
-	let raw: Uint8Array;
-	try {
-		raw = b58check.decode(trimmed);
-	} catch {
-		return trimmed;
-	}
-	if (raw.length !== 78) return trimmed;
-	const version = ((raw[0] << 24) | (raw[1] << 16) | (raw[2] << 8) | raw[3]) >>> 0;
-	if (!SLIP132_VERSIONS.has(version)) return trimmed;
-	const out = new Uint8Array(raw);
-	out[0] = (XPUB_VERSION >>> 24) & 0xff;
-	out[1] = (XPUB_VERSION >>> 16) & 0xff;
-	out[2] = (XPUB_VERSION >>> 8) & 0xff;
-	out[3] = XPUB_VERSION & 0xff;
-	return b58check.encode(out);
-}
+// normalization for defence-in-depth: a SLIP-132 prefix (ypub/zpub/Ypub/Zpub)
+// is rewritten to standard xpub bytes so downstream parseXpub/HDKey code sees
+// a canonical key, matching how xpub.ts / multisig.ts canonicalize. The logic
+// lives in the client-safe common.ts; re-exported so existing importers (and
+// this file's own call sites) keep the same name.
+export { normalizeXpub } from './common';
 
 // --------------------------------------------------------- scriptConfig build
 //
@@ -285,15 +247,9 @@ export function buildSimpleScriptConfig(scriptType: ScriptType): BitboxSimpleScr
 	return { simpleType };
 }
 
-/** One cosigner key, exactly as a Cairn multisig stores it (MultisigKeyRow shape). */
-export interface MultisigSignKey {
-	/** Account xpub (SLIP-132 accepted, normalized internally). */
-	xpub: string;
-	/** Master fingerprint, 8 hex chars ("00000000" when unknown). */
-	fingerprint: string;
-	/** Account origin path, e.g. "m/48'/0'/0'/2'" ("m" when unknown). */
-	path: string;
-}
+// One cosigner key, exactly as a Cairn multisig stores it (MultisigKeyRow
+// shape) — lives in the client-safe common.ts, re-exported for importers.
+export type { MultisigSignKey } from './common';
 
 /**
  * Build the device multisig script config for a Cairn multisig, given which key
