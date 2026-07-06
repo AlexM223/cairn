@@ -1,5 +1,5 @@
 import { json, requireFeature } from '$lib/server/api';
-import { getMultisig } from '$lib/server/wallets/multisig';
+import { getSignableMultisig } from '$lib/server/wallets/multisig';
 import { coldcardRegistration } from '$lib/server/multisigExport';
 import { MultisigError } from '$lib/server/bitcoin/multisig';
 import { markBackedUp } from '$lib/server/backups';
@@ -26,7 +26,8 @@ export const GET: RequestHandler = async (event) => {
 	// Gate ColdCard registration export behind the wallet_config_export feature flag.
 	const user = requireFeature(event, 'wallet_config_export');
 	const id = Number(event.params.id);
-	const multisig = Number.isInteger(id) && id > 0 ? getMultisig(user.id, id) : null;
+	// Air-gapped registration file with full key origins — owner or cosigner.
+	const multisig = Number.isInteger(id) && id > 0 ? getSignableMultisig(user.id, id) : null;
 	if (!multisig) return json({ error: 'Multisig not found' }, { status: 404 });
 
 	try {

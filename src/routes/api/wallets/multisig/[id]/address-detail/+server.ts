@@ -1,5 +1,5 @@
 import { json, requireUser } from '$lib/server/api';
-import { getMultisig } from '$lib/server/wallets/multisig';
+import { getSignableMultisig } from '$lib/server/wallets/multisig';
 import { multisigAddressDetailAt } from '$lib/server/multisigScan';
 import { MultisigError } from '$lib/server/bitcoin/multisig';
 import type { RequestHandler } from './$types';
@@ -17,7 +17,9 @@ const log = childLogger('wallet');
 export const GET: RequestHandler = async (event) => {
 	const user = requireUser(event);
 	const id = Number(event.params.id);
-	const multisig = Number.isInteger(id) && id > 0 ? getMultisig(user.id, id) : null;
+	// This surfaces every key's full derivation path, so it is signer-only
+	// (owner or cosigner) — a pure viewer must not learn other keys' paths (§6).
+	const multisig = Number.isInteger(id) && id > 0 ? getSignableMultisig(user.id, id) : null;
 	if (!multisig) return json({ error: 'Multisig not found' }, { status: 404 });
 
 	const chain = Number(event.url.searchParams.get('chain'));

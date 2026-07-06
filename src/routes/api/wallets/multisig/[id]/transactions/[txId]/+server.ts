@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { requireUser, readJson } from '$lib/server/api';
-import { getMultisig } from '$lib/server/wallets/multisig';
+import { getViewableMultisig, getSignableMultisig } from '$lib/server/wallets/multisig';
 import {
 	getMultisigTransaction,
 	attachMultisigSignature,
@@ -36,7 +36,8 @@ function safeSummary(psbt: string): PsbtSummary | null {
 export const GET: RequestHandler = async (event) => {
 	const user = requireUser(event);
 	const { multisigId, txId } = ids(event);
-	const multisig = getMultisig(user.id, multisigId);
+	// Reading a transaction is a viewer-reachable surface.
+	const multisig = getViewableMultisig(user.id, multisigId);
 	const tx = multisig ? getMultisigTransaction(user.id, multisigId, txId) : null;
 	if (!multisig || !tx) return json({ error: 'Transaction not found' }, { status: 404 });
 	return json({
@@ -56,7 +57,9 @@ export const GET: RequestHandler = async (event) => {
 export const PATCH: RequestHandler = async (event) => {
 	const user = requireUser(event);
 	const { multisigId, txId } = ids(event);
-	const multisig = getMultisig(user.id, multisigId);
+	// Attaching a signature / adjusting lifecycle is cosigner-reachable; the
+	// per-transaction roster gate inside attachMultisigSignature is the finer check.
+	const multisig = getSignableMultisig(user.id, multisigId);
 	const existing = multisig ? getMultisigTransaction(user.id, multisigId, txId) : null;
 	if (!multisig || !existing) return json({ error: 'Transaction not found' }, { status: 404 });
 	if (existing.status === 'completed')

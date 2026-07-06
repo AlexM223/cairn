@@ -1,6 +1,12 @@
 import { error, fail, redirect } from '@sveltejs/kit';
 import QRCode from 'qrcode';
-import { getMultisig, deleteMultisig, toMultisigConfig } from '$lib/server/wallets/multisig';
+import {
+	getMultisig,
+	getViewableMultisig,
+	deleteMultisig,
+	toMultisigConfig
+} from '$lib/server/wallets/multisig';
+import { multisigAccessRole, redactMultisigKeysForViewer } from '$lib/server/multisigShares';
 import {
 	getMultisigDetail,
 	getMultisigUtxos,
@@ -27,10 +33,18 @@ function multisigId(param: string): number {
 
 export const load: PageServerLoad = async ({ params, locals, url }) => {
 	const id = multisigId(params.id);
-	const multisig = getMultisig(locals.user!.id, id);
+	// Owner OR any accepted share (viewer/cosigner) — read-only surface. A non-
+	// participant gets the same 404 as a missing wallet.
+	const multisig = getViewableMultisig(locals.user!.id, id);
 	if (!multisig) error(404, 'Multisig not found');
+	const role = multisigAccessRole(locals.user!.id, id);
+	// Non-owner viewers see their own key's path but not other cosigners' (plan §6).
+	const visibleKeys = redactMultisigKeysForViewer(multisig.keys, locals.user!.id, multisig.userId);
 
 	const base = {
+		// The caller's role drives which owner-only controls (share, delete,
+		// broadcast) the page renders — the server gates them regardless.
+		role,
 		multisig: {
 			id: multisig.id,
 			name: multisig.name,
@@ -38,7 +52,7 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 			scriptType: multisig.scriptType,
 			createdAt: multisig.createdAt,
 			source: multisig.source,
-			keys: multisig.keys.map((k) => ({
+			keys: visibleKeys.map((k) => ({
 				id: k.id,
 				name: k.name,
 				category: k.category,
@@ -52,7 +66,10 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 		// Server-tracked backup status (wallet_backups) — authoritative, matching
 		// the wizard's download step and the persistent banner.
 		backedUp: isBackedUp('multisig', id),
-		descriptor: multisigToDescriptor(toMultisigConfig(multisig))
+		// The descriptor embeds every key's origin path. Owners and cosigners need
+		// it (cosigners register the full quorum on their device to sign); a pure
+		// viewer never signs, so they don't get it (plan §6).
+		descriptor: role === 'viewer' ? null : multisigToDescriptor(toMultisigConfig(multisig))
 	};
 
 	try {
@@ -108,7 +125,8 @@ export const actions: Actions = {
 	/** Hand out the next unused receive address (after the one on display). */
 	receive: async ({ params, locals, request }) => {
 		const id = multisigId(params.id);
-		const multisig = getMultisig(locals.user!.id, id);
+		// Any participant can fetch a deposit address for a shared wallet.
+		const multisig = getViewableMultisig(locals.user!.id, id);
 		if (!multisig) error(404, 'Multisig not found');
 
 		const form = await request.formData();

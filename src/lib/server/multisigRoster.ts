@@ -72,6 +72,19 @@ export function freezeRosterAndNotify(
 	}
 }
 
+/**
+ * Whether a user is on a transaction's frozen roster — the per-transaction gate
+ * for attaching a signature (see the plan §4). Being a wallet-level cosigner is
+ * necessary but not sufficient: a user added to multisig_shares AFTER this
+ * transaction's roster was frozen is deliberately not on it, symmetric with the
+ * revoke case (a later share change never rewrites an in-flight roster).
+ */
+export function isRosterMember(txId: number, userId: number): boolean {
+	return !!db
+		.prepare('SELECT 1 FROM multisig_transaction_signers WHERE transaction_id = ? AND user_id = ?')
+		.get(txId, userId);
+}
+
 /** Notify every roster member except `exceptId` that a signature is wanted. */
 function notifyRoster(
 	multisig: MultisigRow,

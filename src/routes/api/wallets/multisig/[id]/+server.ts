@@ -1,5 +1,6 @@
 import { json, requireUser } from '$lib/server/api';
-import { getMultisig, deleteMultisig } from '$lib/server/wallets/multisig';
+import { getMultisig, getViewableMultisig, deleteMultisig } from '$lib/server/wallets/multisig';
+import { redactMultisigKeysForViewer, multisigAccessRole } from '$lib/server/multisigShares';
 import { getMultisigDetail, invalidateMultisigCache, toMultisigSummary } from '$lib/server/multisigScan';
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
@@ -19,15 +20,21 @@ export const GET: RequestHandler = async (event) => {
 	const id = parseId(event.params.id);
 	if (id === null) return notFound();
 
-	const multisig = getMultisig(user.id, id);
+	// Read-only surface: owner OR any accepted share (viewer/cosigner). Non-
+	// participants get the same 404 as a missing wallet (no existence leak).
+	const multisig = getViewableMultisig(user.id, id);
 	if (!multisig) return notFound();
+	const role = multisigAccessRole(user.id, id);
 
 	try {
 		const detail = await getMultisigDetail(multisig);
 		return json({
 			multisig: toMultisigSummary(multisig),
 			threshold: multisig.threshold,
-			keys: multisig.keys,
+			// Non-owner viewers see every key's xpub/fingerprint but only their own
+			// derivation path — other cosigners' paths are stripped (plan §6).
+			keys: redactMultisigKeysForViewer(multisig.keys, user.id, multisig.userId),
+			role,
 			...detail
 		});
 	} catch (e) {

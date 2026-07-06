@@ -18,7 +18,14 @@ import { addressToScripthash, scriptPubKeyHex } from './bitcoin/xpub';
 import { getChain } from './chain/index';
 import type { ElectrumBalance, ElectrumHistoryItem } from './electrum/client';
 import type { SpendableUtxo } from './bitcoin/psbt';
-import { toMultisigConfig, bumpReceiveCursor, listMultisigs, type MultisigRow } from './wallets/multisig';
+import {
+	toMultisigConfig,
+	bumpReceiveCursor,
+	listMultisigs,
+	getViewableMultisig,
+	type MultisigRow
+} from './wallets/multisig';
+import { listSharedMultisigs, type ShareRole } from './multisigShares';
 
 const GAP_LIMIT = 20;
 const BATCH_SIZE = 20;
@@ -416,6 +423,15 @@ export interface MultisigSummary {
 	balance: number; // confirmed sats
 	unconfirmed: number; // sats delta
 	lastActivity: number | null; // unix seconds
+	/**
+	 * The caller's relationship to this wallet: 'owner' for wallets they own, or
+	 * the share role for wallets shared with them (collaborative custody). Lets
+	 * the list distinguish "your wallets" from "shared with you".
+	 */
+	role: 'owner' | ShareRole;
+	/** Owner's display name when this wallet was shared with the caller; null for
+	 *  wallets they own outright. Drives the "Shared by X" badge. */
+	sharedBy: string | null;
 }
 
 function lastActivityOf(scan: MultisigScanResult): number | null {
@@ -429,7 +445,11 @@ function lastActivityOf(scan: MultisigScanResult): number | null {
 	return latest;
 }
 
-export function toMultisigSummary(multisig: MultisigRow, scan?: MultisigScanResult): MultisigSummary {
+export function toMultisigSummary(
+	multisig: MultisigRow,
+	scan?: MultisigScanResult,
+	share?: { role: ShareRole; sharedBy: string }
+): MultisigSummary {
 	return {
 		id: multisig.id,
 		name: multisig.name,
@@ -439,30 +459,47 @@ export function toMultisigSummary(multisig: MultisigRow, scan?: MultisigScanResu
 		createdAt: multisig.createdAt,
 		balance: scan?.confirmed ?? 0,
 		unconfirmed: scan?.unconfirmed ?? 0,
-		lastActivity: scan ? lastActivityOf(scan) : null
+		lastActivity: scan ? lastActivityOf(scan) : null,
+		role: share?.role ?? 'owner',
+		sharedBy: share?.sharedBy ?? null
 	};
 }
 
 /**
- * All multisigs for a user, with live balances from (cached) scans.
- * A scan failure never throws: that multisig comes back with zeroed balances
- * and its error message lands in `errors[multisigId]`.
+ * All multisigs the user can see — the ones they own PLUS the ones shared with
+ * them as a viewer/cosigner (collaborative custody) — with live balances from
+ * (cached) scans. A scan failure never throws: that multisig comes back with
+ * zeroed balances and its error message lands in `errors[multisigId]`.
  */
 export async function listMultisigSummaries(
 	userId: number
 ): Promise<{ multisigs: MultisigSummary[]; errors: Record<number, string> }> {
-	const rows = listMultisigs(userId);
 	const errors: Record<number, string> = {};
-	const multisigs = await Promise.all(
-		rows.map(async (row) => {
-			try {
-				const scan = await scanMultisig(row);
-				return toMultisigSummary(row, scan);
-			} catch (e) {
-				errors[row.id] = e instanceof Error ? e.message : 'Multisig scan failed';
-				return toMultisigSummary(row);
-			}
+
+	const summarize = async (
+		row: MultisigRow,
+		share?: { role: ShareRole; sharedBy: string }
+	): Promise<MultisigSummary> => {
+		try {
+			return toMultisigSummary(row, await scanMultisig(row), share);
+		} catch (e) {
+			errors[row.id] = e instanceof Error ? e.message : 'Multisig scan failed';
+			return toMultisigSummary(row, undefined, share);
+		}
+	};
+
+	const owned = await Promise.all(listMultisigs(userId).map((row) => summarize(row)));
+
+	// Wallets shared WITH this user. Load each full row through the viewable gate
+	// (skip any share whose wallet vanished in a race) so its keys/balance render
+	// exactly like an owned wallet, just tagged with the share role and owner.
+	const shared = await Promise.all(
+		listSharedMultisigs(userId).map(async (s) => {
+			const row = getViewableMultisig(userId, s.multisigId);
+			if (!row) return null;
+			return summarize(row, { role: s.role, sharedBy: s.ownerName });
 		})
 	);
-	return { multisigs, errors };
+
+	return { multisigs: [...owned, ...shared.filter((s): s is MultisigSummary => s !== null)], errors };
 }

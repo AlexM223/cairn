@@ -1,5 +1,5 @@
 import { json, requireUser } from '$lib/server/api';
-import { getMultisig } from '$lib/server/wallets/multisig';
+import { getViewableMultisig } from '$lib/server/wallets/multisig';
 import { getMultisigUtxos } from '$lib/server/multisigScan';
 import { getChain } from '$lib/server/chain';
 import {
@@ -41,7 +41,8 @@ export const GET: RequestHandler = async (event) => {
 	if (!Number.isInteger(id) || id <= 0) {
 		return json({ error: 'Multisig not found' }, { status: 404 });
 	}
-	const multisig = getMultisig(user.id, id);
+	// Read-only coin classification — owner or any accepted share.
+	const multisig = getViewableMultisig(user.id, id);
 	if (!multisig) return json({ error: 'Multisig not found' }, { status: 404 });
 
 	try {

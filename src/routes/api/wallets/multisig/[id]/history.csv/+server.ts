@@ -1,6 +1,6 @@
 import { error } from '@sveltejs/kit';
 import { requireFeature } from '$lib/server/api';
-import { getMultisig } from '$lib/server/wallets/multisig';
+import { getViewableMultisig } from '$lib/server/wallets/multisig';
 import { getMultisigDetail } from '$lib/server/multisigScan';
 import { getChain } from '$lib/server/chain';
 import { buildHistoryCsv, historyCsvFilename } from '$lib/server/historyExport';
@@ -16,7 +16,8 @@ export const GET: RequestHandler = async (event) => {
 	const id = Number(event.params.id);
 	if (!Number.isInteger(id) || id <= 0) error(404, 'Multisig not found');
 
-	const multisig = getMultisig(user.id, id);
+	// History is a read-only surface — owner or any accepted share.
+	const multisig = getViewableMultisig(user.id, id);
 	if (!multisig) error(404, 'Multisig not found');
 
 	let detail;

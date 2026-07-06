@@ -1,5 +1,5 @@
 import { json, requireUser } from '$lib/server/api';
-import { getMultisig } from '$lib/server/wallets/multisig';
+import { getViewableMultisig } from '$lib/server/wallets/multisig';
 import { nextMultisigReceiveAddress } from '$lib/server/multisigScan';
 import { childLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
@@ -15,7 +15,8 @@ const log = childLogger('wallet');
 export const GET: RequestHandler = async (event) => {
 	const user = requireUser(event);
 	const id = Number(event.params.id);
-	const multisig = Number.isInteger(id) && id > 0 ? getMultisig(user.id, id) : null;
+	// Any participant can fetch a deposit address for a shared wallet.
+	const multisig = Number.isInteger(id) && id > 0 ? getViewableMultisig(user.id, id) : null;
 	if (!multisig) return json({ error: 'Multisig not found' }, { status: 404 });
 
 	const afterRaw = event.url.searchParams.get('after');

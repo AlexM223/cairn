@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import { requireFeature, readJson } from '$lib/server/api';
 import { buildMultisigDraft, multisigTransactionProgress } from '$lib/server/multisigTransactions';
-import { getMultisig } from '$lib/server/wallets/multisig';
+import { getSignableMultisig } from '$lib/server/wallets/multisig';
 import { PsbtError } from '$lib/server/bitcoin/psbt';
 import { childLogger } from '$lib/server/logger';
 import { recordActivity } from '$lib/server/activity';
@@ -77,7 +77,8 @@ export const POST: RequestHandler = async (event) => {
 			feeRate: Number(body.feeRate),
 			onlyUtxos: onlyUtxos && onlyUtxos.length > 0 ? onlyUtxos : undefined
 		});
-		const multisig = getMultisig(user.id, multisigId)!;
+		// buildMultisigDraft already gated (owner or cosigner); re-read the same way.
+		const multisig = getSignableMultisig(user.id, multisigId)!;
 		recordActivity({
 			userId: user.id,
 			type: 'signing_started',

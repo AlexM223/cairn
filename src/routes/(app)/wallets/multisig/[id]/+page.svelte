@@ -193,29 +193,32 @@
 			</span>
 			<span class="badge badge-neutral">{MULTISIG_SCRIPT_LABELS[data.multisig.scriptType]}</span>
 		</div>
-		{#if data.flags?.send === false}
-			<button
-				type="button"
-				class="btn btn-primary btn-sm"
-				disabled
-				title="Sending has been disabled by your administrator."
-			>
-				<Icon name="arrow-up-right" size={14} />
-				Send
-			</button>
-		{:else}
-			<a href="/wallets/multisig/{data.multisig.id}/send" class="btn btn-primary btn-sm">
-				<Icon name="arrow-up-right" size={14} />
-				Send
+		<!-- Signing surface: hidden from a pure viewer (they can't co-sign). -->
+		{#if data.role !== 'viewer'}
+			{#if data.flags?.send === false}
+				<button
+					type="button"
+					class="btn btn-primary btn-sm"
+					disabled
+					title="Sending has been disabled by your administrator."
+				>
+					<Icon name="arrow-up-right" size={14} />
+					Send
+				</button>
+			{:else}
+				<a href="/wallets/multisig/{data.multisig.id}/send" class="btn btn-primary btn-sm">
+					<Icon name="arrow-up-right" size={14} />
+					Send
+				</a>
+			{/if}
+			<a href="#backup" class="btn btn-secondary btn-sm backup-btn">
+				<Icon name="arrow-down-left" size={14} />
+				Download backup
+				{#if needsBackup}
+					<span class="backup-dot" title="No backup downloaded yet"></span>
+				{/if}
 			</a>
 		{/if}
-		<a href="#backup" class="btn btn-secondary btn-sm backup-btn">
-			<Icon name="arrow-down-left" size={14} />
-			Download backup
-			{#if needsBackup}
-				<span class="backup-dot" title="No backup downloaded yet"></span>
-			{/if}
-		</a>
 		{#if data.flags?.csv_export !== false}
 			<a
 				href="/api/wallets/multisig/{data.multisig.id}/history.csv"
@@ -227,7 +230,10 @@
 				Export history
 			</a>
 		{/if}
-		{#if !confirmDelete}
+		<!-- Removing the wallet is owner-only (the delete action 404s otherwise). -->
+		{#if data.role !== 'owner'}
+			<!-- no delete control for shared collaborators -->
+		{:else if !confirmDelete}
 			<button
 				type="button"
 				class="btn btn-ghost btn-sm delete-trigger"
@@ -502,6 +508,9 @@
 		{/if}
 
 		<!-- ------------------------------------------- backup / export -->
+		<!-- Registration/backup exports carry full key origins; only signers (owner
+		     or cosigner) can reach these endpoints, so a pure viewer never sees them. -->
+		{#if data.role !== 'viewer'}
 		<section class="card card-pad backup-card" id="backup">
 			<div class="row" style="gap: 8px">
 				<Icon name="arrow-down-left" size={15} />
@@ -548,14 +557,16 @@
 				>
 					Descriptor (.txt)
 				</a>
-				<a
-					href="/api/wallets/multisig/{data.multisig.id}/backup-pdf"
-					class="btn btn-secondary btn-sm"
-					download
-					onclick={markBackupDownloaded}
-				>
-					<Icon name="shield" size={13} /> Printable backup (PDF)
-				</a>
+				{#if data.role === 'owner'}
+					<a
+						href="/api/wallets/multisig/{data.multisig.id}/backup-pdf"
+						class="btn btn-secondary btn-sm"
+						download
+						onclick={markBackupDownloaded}
+					>
+						<Icon name="shield" size={13} /> Printable backup (PDF)
+					</a>
+				{/if}
 			</div>
 			<div class="backup-notes">
 				<span class="hint">
@@ -564,12 +575,15 @@
 					Passport/Keystone/SeedSigner) recognizes the wallet before co-signing.
 					· <strong>Descriptor</strong> — the raw text form, for Bitcoin Core and power users.
 				</span>
-				<div class="descriptor-line">
-					<span class="hint">Descriptor:</span>
-					<CopyText value={data.descriptor} truncate={18} />
-				</div>
+				{#if data.descriptor}
+					<div class="descriptor-line">
+						<span class="hint">Descriptor:</span>
+						<CopyText value={data.descriptor} truncate={18} />
+					</div>
+				{/if}
 			</div>
 		</section>
+		{/if}
 
 		<!-- ------------------------------------------- tabs -->
 		<div class="tabs" role="tablist">

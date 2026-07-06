@@ -11,8 +11,15 @@
 
 import { db } from './db';
 import { getChain } from './chain';
-import { getMultisig, toMultisigConfig, type MultisigRow } from './wallets/multisig';
+import {
+	getMultisig,
+	getViewableMultisig,
+	getSignableMultisig,
+	toMultisigConfig,
+	type MultisigRow
+} from './wallets/multisig';
 import { getMultisigUtxos, nextMultisigChangeIndex } from './multisigScan';
+import { freezeRosterAndNotify, notifyRosterProgress, isRosterMember } from './multisigRoster';
 import {
 	constructMultisigPsbt,
 	combineMultisigPsbts,
@@ -24,7 +31,6 @@ import {
 } from './bitcoin/multisigPsbt';
 import { PsbtError } from './bitcoin/psbt';
 import { normalizePsbt, InvalidPsbtError, BroadcastError } from './transactions';
-import { freezeRosterAndNotify, notifyRosterProgress } from './multisigRoster';
 
 export type MultisigTxStatus = 'draft' | 'awaiting_signature' | 'completed';
 
@@ -48,8 +54,18 @@ export interface SavedMultisigTransaction {
 	updatedAt: string;
 }
 
-function ownedMultisig(userId: number, multisigId: number): MultisigRow | null {
-	return getMultisig(userId, multisigId);
+// Access tiers (see docs/COLLABORATIVE-CUSTODY-PLAN.md §3): reading a
+// transaction is a viewer-reachable surface (owner, viewer, or cosigner);
+// building/signing is cosigner-reachable (owner or role='cosigner'); broadcast
+// stays owner-only (gated at its call site with getMultisig directly). Every
+// gate returns null for a non-participant exactly like a missing wallet, so
+// callers surface a uniform 404 and never leak a wallet's existence.
+function viewableMultisig(userId: number, multisigId: number): MultisigRow | null {
+	return getViewableMultisig(userId, multisigId);
+}
+
+function signableMultisig(userId: number, multisigId: number): MultisigRow | null {
+	return getSignableMultisig(userId, multisigId);
 }
 
 function recipientsJson(recipients: { address: string; amount: number }[]): string | null {
@@ -97,7 +113,7 @@ export function getMultisigTransaction(
 	multisigId: number,
 	txId: number
 ): SavedMultisigTransaction | null {
-	if (!ownedMultisig(userId, multisigId)) return null;
+	if (!viewableMultisig(userId, multisigId)) return null;
 	const row = db
 		.prepare('SELECT * FROM multisig_transactions WHERE id = ? AND multisig_id = ?')
 		.get(txId, multisigId) as Record<string, unknown> | undefined;
@@ -108,7 +124,7 @@ export function listMultisigTransactions(
 	userId: number,
 	multisigId: number
 ): SavedMultisigTransaction[] | null {
-	if (!ownedMultisig(userId, multisigId)) return null;
+	if (!viewableMultisig(userId, multisigId)) return null;
 	const rows = db
 		.prepare('SELECT * FROM multisig_transactions WHERE multisig_id = ? ORDER BY created_at DESC, id DESC')
 		.all(multisigId) as Record<string, unknown>[];
@@ -148,7 +164,9 @@ export async function buildMultisigDraft(
 	multisigId: number,
 	input: BuildMultisigDraftInput
 ): Promise<{ draft: SavedMultisigTransaction; details: ConstructedMultisigPsbt }> {
-	const multisig = ownedMultisig(userId, multisigId);
+	// A wallet-level cosigner (or the owner) may initiate a spend; the roster
+	// frozen just below records who is then expected to sign it.
+	const multisig = signableMultisig(userId, multisigId);
 	if (!multisig) throw new PsbtError('Multisig not found.', 'construction_failed');
 
 	const utxos = await getMultisigUtxos(multisig);
@@ -243,9 +261,16 @@ export function attachMultisigSignature(
 	txId: number,
 	signedPsbt: string
 ): { transaction: SavedMultisigTransaction; progress: MultisigSigningProgress } | null {
-	const multisig = ownedMultisig(userId, multisigId);
+	const multisig = signableMultisig(userId, multisigId);
 	const existing = multisig ? getMultisigTransaction(userId, multisigId, txId) : null;
 	if (!multisig || !existing) return null;
+	// Per-transaction roster gate. The owner is always an implicit roster member
+	// (the plan §4) and signs the "remaining" keys, so they're allowed
+	// unconditionally — never bricked even if the best-effort roster insert at
+	// creation failed. A wallet-level COSIGNER, however, may only sign a
+	// transaction whose frozen roster they are actually on (a share added after
+	// this draft was created doesn't retroactively join its roster).
+	if (multisig.userId !== userId && !isRosterMember(txId, userId)) return null;
 	if (existing.status === 'completed' || existing.txid) {
 		throw new BroadcastError('This transaction has already been broadcast.', 'already_sent');
 	}
@@ -275,6 +300,9 @@ export function attachMultisigSignature(
 }
 
 export function deleteMultisigTransaction(userId: number, multisigId: number, txId: number): boolean {
+	// Draft management is owner-only — a cosigner can sign but not discard a
+	// pending session out from under the owner and other signers.
+	if (!getMultisig(userId, multisigId)) return false;
 	const tx = getMultisigTransaction(userId, multisigId, txId);
 	if (!tx) return false;
 	// Completed transactions are history — the record that a broadcast happened.
@@ -298,7 +326,9 @@ export async function broadcastMultisigTransaction(
 	txId: number,
 	signedPsbt?: string
 ): Promise<{ txid: string; transaction: SavedMultisigTransaction }> {
-	const multisig = ownedMultisig(userId, multisigId);
+	// Broadcast stays owner-only (plan §3, §8): a cosigner signs, only the owner
+	// sends the fully-signed transaction to the network.
+	const multisig = getMultisig(userId, multisigId);
 	let tx = multisig ? getMultisigTransaction(userId, multisigId, txId) : null;
 	if (!multisig || !tx) throw new BroadcastError('Transaction not found.', 'not_found');
 	if (tx.status === 'completed' || tx.txid) {

@@ -1,6 +1,6 @@
 import { error } from '@sveltejs/kit';
 import { requireFeature } from '$lib/server/api';
-import { getMultisig } from '$lib/server/wallets/multisig';
+import { getSignableMultisig } from '$lib/server/wallets/multisig';
 import {
 	getMultisigTransaction,
 	multisigTransactionProgress,
@@ -19,7 +19,12 @@ export const load: PageServerLoad = async (event) => {
 	const id = Number(params.id);
 	if (!Number.isInteger(id) || id <= 0) error(404, 'Multisig not found');
 
-	const multisig = getMultisig(locals.user!.id, id);
+	// The sign flow is cosigner-reachable: owner or a role='cosigner' share. A
+	// pure viewer (or non-participant) gets the uniform 404. Full key material
+	// (xpub + path for every key) is intentionally unredacted here — the signing
+	// stepper builds the multisig request client-side and a cosigner must hold
+	// the whole quorum's config to produce a valid signature.
+	const multisig = getSignableMultisig(locals.user!.id, id);
 	if (!multisig) error(404, 'Multisig not found');
 
 	// Fee estimates seed the fee selector; best-effort only.

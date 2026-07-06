@@ -32,6 +32,9 @@
 			balance: m.balance,
 			unconfirmed: m.unconfirmed,
 			lastActivity: m.lastActivity,
+			// Collaborative custody: wallets shared WITH this user carry the owner's
+			// name so the card can distinguish them from wallets they own outright.
+			sharedBy: m.sharedBy,
 			unreachable: data.multisigErrors[m.id] !== undefined,
 			error: data.multisigErrors[m.id]
 		}))
@@ -95,6 +98,9 @@
 				</div>
 				<span class="wallet-kind">
 					{item.kind === 'multisig' ? 'Multisig wallet' : walletTypeLabel(item.deviceType)}
+					{#if item.kind === 'multisig' && item.sharedBy}
+						· <span class="shared-by">Shared by {item.sharedBy}</span>
+					{/if}
 				</span>
 
 				{#if item.unreachable}
@@ -142,6 +148,10 @@
 	.head {
 		gap: 16px;
 		margin-bottom: 22px;
+	}
+
+	.shared-by {
+		color: var(--accent);
 	}
 
 	.grid {

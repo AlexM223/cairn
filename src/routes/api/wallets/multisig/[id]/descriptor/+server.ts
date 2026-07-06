@@ -1,5 +1,5 @@
 import { json, requireFeature } from '$lib/server/api';
-import { getMultisig, toMultisigConfig } from '$lib/server/wallets/multisig';
+import { getSignableMultisig, toMultisigConfig } from '$lib/server/wallets/multisig';
 import { multisigToDescriptor, MultisigError } from '$lib/server/bitcoin/multisig';
 import { descriptorBackup } from '$lib/server/multisigExport';
 import { markBackedUp } from '$lib/server/backups';
@@ -26,7 +26,9 @@ export const GET: RequestHandler = async (event) => {
 	// Gate multisig descriptor export behind the wallet_config_export feature flag.
 	const user = requireFeature(event, 'wallet_config_export');
 	const id = Number(event.params.id);
-	const multisig = Number.isInteger(id) && id > 0 ? getMultisig(user.id, id) : null;
+	// The descriptor is a device-registration artifact carrying every key's full
+	// path — owner or cosigner (both register the quorum to sign); not viewers.
+	const multisig = Number.isInteger(id) && id > 0 ? getSignableMultisig(user.id, id) : null;
 	if (!multisig) return json({ error: 'Multisig not found' }, { status: 404 });
 
 	try {
