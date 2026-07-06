@@ -211,3 +211,159 @@ describe('getPortfolioDetail failed scans (cairn-rr94 / cairn-ednl)', () => {
 		expect(String(msg)).toMatch(/excluded/);
 	});
 });
+
+// ---- cairn-ittq: balance-history backfill on first scan -------------------------
+
+import { buildBackfillPoints, getBalanceSeries } from './portfolio';
+import type { WalletTx } from '$lib/types';
+
+const HOUR = 3600;
+const DAY = 86400;
+
+function tx(time: number | null, delta: number, height = 100): WalletTx {
+	return { txid: 't'.repeat(64), height, time, delta, fee: null };
+}
+
+describe('buildBackfillPoints (cairn-ittq)', () => {
+	const NOW_MS = 1_700_000_000_000;
+	const nowS = Math.floor(NOW_MS / 1000);
+
+	it('derives running balances from confirmed txs in time order', () => {
+		const points = buildBackfillPoints(
+			[tx(nowS - 3 * HOUR, -20_000), tx(nowS - 10 * HOUR, 50_000), tx(nowS - 5 * HOUR, 30_000)],
+			60_000,
+			NOW_MS
+		);
+		expect(points).toEqual([
+			{ t: nowS - 10 * HOUR, sats: 50_000 },
+			{ t: nowS - 5 * HOUR, sats: 80_000 },
+			{ t: nowS - 3 * HOUR, sats: 60_000 }
+		]);
+	});
+
+	it('returns [] when there are no confirmed txs', () => {
+		expect(buildBackfillPoints([], 0, NOW_MS)).toEqual([]);
+		expect(buildBackfillPoints([tx(null, 5_000, 0)], 0, NOW_MS)).toEqual([]);
+	});
+
+	it('refuses (null) when a confirmed tx has no timestamp', () => {
+		expect(buildBackfillPoints([tx(null, 5_000, 100)], 5_000, NOW_MS)).toBeNull();
+	});
+
+	it('refuses (null) when deltas do not reconstruct the confirmed balance', () => {
+		expect(buildBackfillPoints([tx(nowS - HOUR, 5_000)], 9_999, NOW_MS)).toBeNull();
+	});
+
+	it('ignores unconfirmed txs in the running sum', () => {
+		const points = buildBackfillPoints(
+			[tx(nowS - HOUR, 5_000), tx(null, 1_000, 0)],
+			5_000,
+			NOW_MS
+		);
+		expect(points).toEqual([{ t: nowS - HOUR, sats: 5_000 }]);
+	});
+
+	it('collapses same-second txs into the final balance at that instant', () => {
+		const t0 = nowS - 2 * HOUR;
+		const points = buildBackfillPoints([tx(t0, 10_000), tx(t0, -4_000)], 6_000, NOW_MS);
+		expect(points).toEqual([{ t: t0, sats: 6_000 }]);
+	});
+
+	it('downsamples the >30d band to one point per day and carries in pre-horizon history', () => {
+		const horizonS = Math.floor((NOW_MS - 396 * DAY * 1000) / 1000);
+		const oldDay = nowS - 100 * DAY; // in the daily band
+		const points = buildBackfillPoints(
+			[
+				tx(horizonS - 50 * DAY, 200_000), // before the 13-month horizon
+				tx(oldDay, 10_000),
+				tx(oldDay + HOUR, 5_000), // same UTC day → dropped
+				tx(nowS - HOUR, 1_000) // recent → full resolution
+			],
+			216_000,
+			NOW_MS
+		);
+		expect(points).toEqual([
+			{ t: horizonS, sats: 200_000 }, // carry-in at the horizon edge
+			{ t: oldDay, sats: 210_000 },
+			{ t: nowS - HOUR, sats: 216_000 }
+		]);
+	});
+});
+
+describe('backfill through getPortfolioDetail (cairn-ittq)', () => {
+	it('populates the balance series from an imported wallet’s history on first scan, once', async () => {
+		const nowS = Math.floor(Date.now() / 1000);
+		makeWallet('Imported', 'xpubHist');
+		mocks.scanWallet.mockResolvedValue(
+			scanResult(75_000, 0, [
+				tx(nowS - 20 * DAY, 100_000),
+				tx(nowS - 10 * DAY, -25_000)
+			])
+		);
+
+		const detail = await getPortfolioDetail(userId);
+
+		// Historical points chart immediately (plus possibly a current tick).
+		expect(detail.balanceSeries.length).toBeGreaterThanOrEqual(2);
+		expect(detail.balanceSeries[0]).toEqual({ t: nowS - 20 * DAY, sats: 100_000 });
+		expect(detail.balanceSeries[1]).toEqual({ t: nowS - 10 * DAY, sats: 75_000 });
+		// Lookback changes work on day one.
+		expect(detail.change.d7).toBe(0);
+		expect(detail.change.d30).toBeNull(); // history starts 20d ago
+
+		const countAfterFirst = (
+			db.prepare('SELECT COUNT(*) AS c FROM balance_snapshots WHERE user_id = ?').get(userId) as {
+				c: number;
+			}
+		).c;
+
+		// Second load: backfill must not duplicate rows.
+		await getPortfolioDetail(userId);
+		const countAfterSecond = (
+			db.prepare('SELECT COUNT(*) AS c FROM balance_snapshots WHERE user_id = ?').get(userId) as {
+				c: number;
+			}
+		).c;
+		expect(countAfterSecond).toBe(countAfterFirst);
+	});
+
+	it('skips backfill (with a warning) when history cannot reconstruct the balance', async () => {
+		const nowS = Math.floor(Date.now() / 1000);
+		makeWallet('Odd', 'xpubOdd');
+		// Confirmed tx with no timestamp → refuse rather than chart nonsense.
+		mocks.scanWallet.mockResolvedValue(scanResult(5_000, 0, [tx(null, 5_000, 120)]));
+
+		const detail = await getPortfolioDetail(userId);
+		// Only the current sampling tick may exist; no historical points.
+		expect(detail.balanceSeries.every((p) => p.t >= nowS - 5)).toBe(true);
+		expect(
+			logMock.warn.mock.calls.some(([, msg]) => /backfill skipped/.test(String(msg)))
+		).toBe(true);
+	});
+});
+
+describe('getBalanceSeries carry-forward (cairn-ittq)', () => {
+	it('sums latest-known per-wallet balances at unaligned timestamps', () => {
+		const a = makeWallet('A', 'xpubA');
+		const b = makeWallet('B', 'xpubB');
+		const ins = db.prepare(
+			"INSERT INTO balance_snapshots (user_id, wallet_kind, wallet_id, taken_at, balance_sats) VALUES (?, 'wallet', ?, ?, ?)"
+		);
+		ins.run(userId, a, '2026-01-01T00:00:00.000Z', 10_000);
+		ins.run(userId, b, '2026-01-02T00:00:00.000Z', 5_000); // A carries forward
+		ins.run(userId, a, '2026-01-03T00:00:00.000Z', 20_000); // B carries forward
+
+		expect(getBalanceSeries(userId).map((p) => p.sats)).toEqual([10_000, 15_000, 25_000]);
+	});
+
+	it('excludes rows for wallets that no longer exist', () => {
+		const a = makeWallet('A', 'xpubA');
+		const ins = db.prepare(
+			"INSERT INTO balance_snapshots (user_id, wallet_kind, wallet_id, taken_at, balance_sats) VALUES (?, 'wallet', ?, ?, ?)"
+		);
+		ins.run(userId, a, '2026-01-01T00:00:00.000Z', 10_000);
+		ins.run(userId, 999_999, '2026-01-02T00:00:00.000Z', 7_777); // deleted wallet's orphan
+
+		expect(getBalanceSeries(userId).map((p) => p.sats)).toEqual([10_000]);
+	});
+});

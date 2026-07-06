@@ -219,7 +219,9 @@
 
 	{#if filtered.length < 2}
 		<div class="empty">
-			Not enough history yet — your balance chart fills in as Cairn samples it over time.
+			No balance history to chart yet. History starts from when a wallet is added to Cairn
+			(wallets with past transactions chart their full history), and fills in from here as
+			balances change.
 		</div>
 	{:else}
 		<div class="chart-wrap">

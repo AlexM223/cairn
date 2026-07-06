@@ -124,3 +124,49 @@ describe('tx labels', () => {
 		expect(n).toBe(0);
 	});
 });
+
+// ---- cairn-cvcu: wallet creation shows up in the activity feed ------------------
+
+import { createWallet } from './wallets';
+import { listUserFeed, listAllActivity } from './activity';
+
+// BIP84 test-vector account zpub — public test key, never a real wallet.
+const ZPUB =
+	'zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs';
+
+describe('createWallet activity event (cairn-cvcu)', () => {
+	beforeEach(() => {
+		db.exec('DELETE FROM events;');
+	});
+
+	it('emits wallet_added into the user feed and the admin log', () => {
+		const user = makeUser('feed@example.com');
+		const summary = createWallet(user.id, { name: 'Cold storage', xpub: ZPUB, deviceType: 'trezor' });
+
+		const feed = listUserFeed(user.id);
+		expect(feed).toHaveLength(1);
+		expect(feed[0].type).toBe('wallet_added');
+		expect(feed[0].level).toBe('success');
+		expect(feed[0].message).toContain('Cold storage');
+		expect(feed[0].scope).toBe('you');
+
+		const admin = listAllActivity({ type: 'wallet_added', includeDetail: true });
+		expect(admin.total).toBe(1);
+		expect(admin.events[0].userId).toBe(user.id);
+		expect(admin.events[0].detail).toMatchObject({
+			walletKind: 'wallet',
+			walletId: summary.id,
+			deviceType: 'trezor'
+		});
+		// Privacy: the xpub itself never lands in the event detail.
+		expect(JSON.stringify(admin.events[0].detail)).not.toContain(ZPUB);
+	});
+
+	it('does not emit when creation fails (duplicate key)', () => {
+		const user = makeUser('dup@example.com');
+		createWallet(user.id, { name: 'First', xpub: ZPUB });
+		db.exec('DELETE FROM events;');
+		expect(() => createWallet(user.id, { name: 'Second', xpub: ZPUB })).toThrow(/already/i);
+		expect(listUserFeed(user.id)).toHaveLength(0);
+	});
+});

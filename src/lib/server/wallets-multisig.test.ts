@@ -267,3 +267,45 @@ describe('multisigAddressDetailAt (address transparency)', () => {
 		expect(detail.keys[0].fullPath).toBe(`${BIP48_PATH}/0/3`);
 	});
 });
+
+// ---- cairn-cvcu: multisig creation shows up in the activity feed ----------------
+
+import { listUserFeed, listAllActivity } from './activity';
+
+describe('createMultisig activity event (cairn-cvcu)', () => {
+	it('emits wallet_created with the quorum in the message', () => {
+		const user = makeUser('msfeed@example.com');
+		db.exec('DELETE FROM events;');
+		const ms = makeMultisig(user.id);
+
+		const feed = listUserFeed(user.id);
+		expect(feed).toHaveLength(1);
+		expect(feed[0].type).toBe('wallet_created');
+		expect(feed[0].message).toContain('Family savings');
+		expect(feed[0].message).toContain('2-of-3');
+		expect(feed[0].message).toContain('created');
+
+		const admin = listAllActivity({ type: 'wallet_created', includeDetail: true });
+		expect(admin.total).toBe(1);
+		expect(admin.events[0].detail).toMatchObject({
+			walletKind: 'multisig',
+			walletId: ms.id,
+			threshold: 2,
+			totalKeys: 3,
+			source: 'created'
+		});
+	});
+
+	it('says "imported" for a config import', () => {
+		const user = makeUser('msimport@example.com');
+		db.exec('DELETE FROM events;');
+		createMultisig(user.id, {
+			name: 'Restored vault',
+			threshold: 2,
+			source: 'imported',
+			keys: [newKey(4, 'K1'), newKey(5, 'K2'), newKey(6, 'K3')]
+		});
+		const feed = listUserFeed(user.id);
+		expect(feed[0].message).toContain('imported');
+	});
+});

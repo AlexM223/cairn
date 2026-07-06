@@ -12,6 +12,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { createBase58check } from '@scure/base';
 import { db } from '../db';
 import { deleteAddressLabels } from '../addressLabels';
+import { recordActivity } from '../activity';
 import {
 	MultisigError,
 	multisigTestAddress,
@@ -282,6 +283,23 @@ export function createMultisig(
 			k.fingerprint.toLowerCase(),
 			k.path.trim()
 		);
+	});
+
+	// Creating/importing a multisig is a significant account action: surface it
+	// in the user's activity feed and the admin log (cairn-cvcu). recordActivity
+	// is best-effort and never throws. No xpubs in the detail — identity only.
+	recordActivity({
+		type: 'wallet_created',
+		level: 'success',
+		userId,
+		message: `Multisig wallet “${name}” ${source === 'imported' ? 'imported' : 'created'} (${params.threshold}-of-${params.keys.length})`,
+		detail: {
+			walletKind: 'multisig',
+			walletId: multisigId,
+			threshold: params.threshold,
+			totalKeys: params.keys.length,
+			source
+		}
 	});
 
 	return getMultisig(userId, multisigId)!;
