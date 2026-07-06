@@ -2,15 +2,19 @@
 // after its one-time on-device review of a multisig's BIP-388 wallet policy
 // (see src/lib/hw/ledger.ts registerMultisigPolicy). The HMAC is NOT a secret —
 // the device only uses it to skip re-approving a policy it has already shown
-// the user — but rows are still strictly ownership-scoped: every function
-// takes the caller's locals.user.id and verifies the multisig belongs to them
-// against the multisigs table directly (deliberately not via multisigs.ts, so this
-// module stays a leaf with no service-layer coupling).
+// the user — but rows are still access-gated: every function takes the caller's
+// locals.user.id and verifies signing access to the multisig against the
+// multisigs/multisig_shares tables directly (deliberately not via multisigs.ts,
+// so this module stays a leaf with no service-layer coupling).
 //
 // One registration per device (master fingerprint) per multisig, enforced by the
 // UNIQUE(multisig_id, master_fp) constraint; re-registering the same device
 // upserts (a device wiped and re-seeded, or a renamed multisig, yields a fresh
 // HMAC that must replace the stale one).
+//
+// Access tier (cairn-o1dp.2): owner OR cosigner-role share — a cosigner signs
+// on their own Ledger and so both saves and fetches registrations for a shared
+// multisig. Viewer shares are excluded; registration data has no read-only use.
 
 import { db } from './db';
 
@@ -62,13 +66,22 @@ function toRegistration(row: Row): LedgerMultisigRegistration {
 	};
 }
 
-/** Ownership gate: does this multisig exist AND belong to this user? Queried
- *  against the multisigs table directly (see the module comment). */
-function ownsMultisig(userId: number, multisigId: number): boolean {
+/** Access gate: the multisig exists AND the caller may sign with it — owner or
+ *  a cosigner-role share. Mirrors getSignableMultisig's logic replicated as
+ *  plain SQL so this module stays a leaf (see the module comment). Viewer
+ *  shares are deliberately excluded (cairn-o1dp.2). */
+function canSignMultisig(userId: number, multisigId: number): boolean {
 	if (!Number.isInteger(multisigId) || multisigId <= 0) return false;
 	const row = db
-		.prepare('SELECT 1 AS ok FROM multisigs WHERE id = ? AND user_id = ?')
-		.get(multisigId, userId);
+		.prepare(
+			`SELECT 1 AS ok FROM multisigs m
+			 WHERE m.id = ?
+			   AND (m.user_id = ?
+			        OR EXISTS (SELECT 1 FROM multisig_shares s
+			                   WHERE s.multisig_id = m.id AND s.shared_with_id = ?
+			                     AND s.role = 'cosigner'))`
+		)
+		.get(multisigId, userId, userId);
 	return row !== undefined;
 }
 
@@ -88,15 +101,13 @@ export function getLedgerRegistration(
 ): LedgerMultisigRegistration | null {
 	const fp = String(masterFp ?? '').trim().toLowerCase();
 	if (!FP_RE.test(fp)) return null;
-	if (!Number.isInteger(multisigId) || multisigId <= 0) return null;
+	if (!canSignMultisig(userId, multisigId)) return null;
 	const row = db
 		.prepare(
-			`SELECT r.id, r.multisig_id, r.master_fp, r.policy_name, r.policy_hmac, r.policy_id, r.created_at
-			 FROM ledger_multisig_registrations r
-			 JOIN multisigs v ON v.id = r.multisig_id
-			 WHERE r.multisig_id = ? AND v.user_id = ? AND r.master_fp = ?`
+			`SELECT ${COLUMNS} FROM ledger_multisig_registrations
+			 WHERE multisig_id = ? AND master_fp = ?`
 		)
-		.get(multisigId, userId, fp) as unknown as Row | undefined;
+		.get(multisigId, fp) as unknown as Row | undefined;
 	return row ? toRegistration(row) : null;
 }
 
@@ -109,7 +120,7 @@ export function listLedgerRegistrations(
 	userId: number,
 	multisigId: number
 ): LedgerMultisigRegistration[] | null {
-	if (!ownsMultisig(userId, multisigId)) return null;
+	if (!canSignMultisig(userId, multisigId)) return null;
 	const rows = db
 		.prepare(
 			`SELECT ${COLUMNS} FROM ledger_multisig_registrations
@@ -132,7 +143,7 @@ export function saveLedgerRegistration(
 	multisigId: number,
 	input: { masterFp?: unknown; policyName?: unknown; policyHmac?: unknown; policyId?: unknown }
 ): LedgerMultisigRegistration {
-	if (!ownsMultisig(userId, multisigId)) {
+	if (!canSignMultisig(userId, multisigId)) {
 		throw new MultisigRegistrationError('Multisig not found.', 'multisig_not_found');
 	}
 

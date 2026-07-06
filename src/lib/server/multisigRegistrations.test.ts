@@ -19,8 +19,15 @@ const POLICY_ID = 'cc'.repeat(32);
 
 function wipe(): void {
 	db.exec(
-		'DELETE FROM ledger_multisig_registrations; DELETE FROM multisig_keys; DELETE FROM multisigs; DELETE FROM sessions; DELETE FROM users; DELETE FROM settings;'
+		'DELETE FROM ledger_multisig_registrations; DELETE FROM multisig_shares; DELETE FROM multisig_keys; DELETE FROM multisigs; DELETE FROM sessions; DELETE FROM users; DELETE FROM settings;'
 	);
+}
+
+/** A share row via direct SQL — this module (and its tests) stay off the service layer. */
+function shareWith(multisigId: number, ownerId: number, userId: number, role: 'viewer' | 'cosigner'): void {
+	db.prepare(
+		'INSERT INTO multisig_shares (multisig_id, owner_id, shared_with_id, role) VALUES (?, ?, ?, ?)'
+	).run(multisigId, ownerId, userId, role);
 }
 
 beforeEach(() => {
@@ -222,6 +229,44 @@ describe('ledger multisig registrations', () => {
 
 		// Alice's row is untouched.
 		expect(listLedgerRegistrations(alice.id, aliceMultisig)).toEqual([saved]);
+	});
+
+	it('a cosigner-role share can fetch AND save registrations; a viewer cannot (cairn-o1dp.2)', () => {
+		const alice = makeUser('alice@example.com');
+		const carl = makeUser('carl@example.com'); // cosigner
+		const vera = makeUser('vera@example.com'); // viewer
+		const multisigId = makeMultisig(alice.id, 'Shared vault');
+		shareWith(multisigId, alice.id, carl.id, 'cosigner');
+		shareWith(multisigId, alice.id, vera.id, 'viewer');
+
+		const ownerReg = saveLedgerRegistration(alice.id, multisigId, {
+			masterFp: FP_A,
+			policyName: 'Shared vault',
+			policyHmac: HMAC_A
+		});
+
+		// Cosigner: full read access (needed to co-sign on their Ledger)...
+		expect(listLedgerRegistrations(carl.id, multisigId)).toEqual([ownerReg]);
+		expect(getLedgerRegistration(carl.id, multisigId, FP_A)).toEqual(ownerReg);
+		// ...and can register their OWN device.
+		const carlReg = saveLedgerRegistration(carl.id, multisigId, {
+			masterFp: FP_B,
+			policyName: 'Shared vault',
+			policyHmac: HMAC_B
+		});
+		expect(listLedgerRegistrations(alice.id, multisigId)).toEqual([ownerReg, carlReg]);
+
+		// Viewer: uniform not-found on every shape — registration data has no
+		// read-only use case.
+		expect(listLedgerRegistrations(vera.id, multisigId)).toBeNull();
+		expect(getLedgerRegistration(vera.id, multisigId, FP_A)).toBeNull();
+		expect(() =>
+			saveLedgerRegistration(vera.id, multisigId, {
+				masterFp: 'abcd0123',
+				policyName: 'nope',
+				policyHmac: HMAC_B
+			})
+		).toThrow(MultisigRegistrationError);
 	});
 
 	it('the (multisig_id, master_fp) uniqueness constraint holds at the database level', () => {
