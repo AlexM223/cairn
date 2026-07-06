@@ -16,6 +16,7 @@ import {
 	type MultisigScriptType
 } from '$lib/server/wallets/multisig';
 import { containsPrivateKeyMaterial, parseCaravanImport } from '$lib/server/multisigExport';
+import { detectCosignerContacts } from '$lib/server/cosignerDetection';
 import { listMultisigs } from '$lib/server/wallets/multisig';
 import { requireFeature } from '$lib/server/api';
 import type { Actions, PageServerLoad } from './$types';
@@ -199,28 +200,34 @@ export const actions: Actions = {
 	import: async (event) => {
 		// Pasting/uploading an existing config to prefill the wizard is the import gate.
 		requireFeature(event, 'wallet_config_import');
-		const { request } = event;
+		const { request, locals } = event;
 		const form = await request.formData();
 		const source = String(form.get('source') ?? '').trim();
 		try {
 			if (containsPrivateKeyMaterial(source)) {
 				throw new MultisigError(PASTED_PRIVATE_KEY_REFUSAL, 'invalid_key');
 			}
-			if (source.startsWith('{')) {
-				const caravan = parseCaravanImport(source);
-				return { imported: caravan };
-			}
-			// parseDescriptor only accepts wsh(sortedmulti(...)) — native segwit.
-			const config = parseDescriptor(source);
-			return {
-				imported: {
-					name: '',
-					scriptType: 'p2wsh' as const,
-					threshold: config.threshold,
-					totalKeys: config.keys.length,
-					keys: config.keys.map((k, i) => ({ name: `Key ${i + 1}`, ...k }))
-				}
-			};
+			const imported = source.startsWith('{')
+				? parseCaravanImport(source)
+				: (() => {
+						// parseDescriptor only accepts wsh(sortedmulti(...)) — native segwit.
+						const config = parseDescriptor(source);
+						return {
+							name: '',
+							scriptType: 'p2wsh' as const,
+							threshold: config.threshold,
+							totalKeys: config.keys.length,
+							keys: config.keys.map((k, i) => ({ name: `Key ${i + 1}`, ...k }))
+						};
+					})();
+			// Anti-enumeration-safe: does any of these cosigner keys belong to one of
+			// the importer's existing contacts? A non-committing invite suggestion only
+			// (cairn-jaev) — never auto-shares.
+			const cosignerMatches = detectCosignerContacts(
+				locals.user!.id,
+				imported.keys.map((k) => k.fingerprint)
+			);
+			return { imported, cosignerMatches };
 		} catch (e) {
 			return fail(400, {
 				error:

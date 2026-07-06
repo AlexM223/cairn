@@ -46,6 +46,10 @@
 	let importing = $state(false);
 	let importError = $state<string | null>(null);
 	let importedNote = $state<string | null>(null);
+	// Cosigner keys that may belong to an existing contact (cairn-jaev). A
+	// non-committing suggestion surfaced after import — never auto-shares.
+	type CosignerMatch = { fingerprint: string; displayName: string; email: string };
+	let cosignerMatches = $state<CosignerMatch[]>([]);
 	// True once a config has been imported — imports skip the mandatory-backup gate
 	// on the Done step (the user already has the file they uploaded).
 	let configImported = $state(false);
@@ -507,7 +511,7 @@
 		importing = true;
 		importError = null;
 		try {
-			const res = await callAction<{ imported: ImportedMultisig }>(
+			const res = await callAction<{ imported: ImportedMultisig; cosignerMatches?: CosignerMatch[] }>(
 				'import',
 				{ source: importText },
 				"Couldn't import that configuration — paste a descriptor or a Caravan wallet JSON."
@@ -517,6 +521,7 @@
 				return;
 			}
 			const { imported } = res.data;
+			cosignerMatches = res.data.cosignerMatches ?? [];
 			preset = 'custom';
 			customM = imported.threshold;
 			customN = imported.totalKeys;
@@ -754,6 +759,27 @@
 				<div class="imported-note" role="status">
 					<Icon name="check" size={14} />
 					{importedNote}
+				</div>
+			{/if}
+
+			{#if cosignerMatches.length > 0}
+				<div class="cosigner-hint" role="status">
+					<Icon name="users" size={15} />
+					<div>
+						<strong
+							>{cosignerMatches.length === 1
+								? 'A key in this wallet may belong to one of your contacts.'
+								: 'Some keys in this wallet may belong to your contacts.'}</strong
+						>
+						<p>
+							{#each cosignerMatches as m, i (m.fingerprint + m.email)}{i > 0
+									? ', '
+									: ''}{m.displayName}{/each}
+							already {cosignerMatches.length === 1 ? 'holds' : 'hold'} a matching key. Once this vault
+							is created you can share it with them from its page to set up shared custody — nothing is
+							shared automatically.
+						</p>
+					</div>
 				</div>
 			{/if}
 
@@ -1763,6 +1789,32 @@
 		background: var(--success-muted);
 		border: 1px solid rgba(107, 191, 107, 0.3);
 		border-radius: var(--radius-control);
+	}
+
+	/* Non-committing cosigner-match suggestion (cairn-jaev). */
+	.cosigner-hint {
+		display: flex;
+		align-items: flex-start;
+		gap: 10px;
+		margin-top: 10px;
+		padding: 11px 13px;
+		font-size: 13px;
+		color: var(--text);
+		background: var(--accent-muted);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-control);
+		line-height: 1.5;
+	}
+
+	.cosigner-hint :global(svg) {
+		color: var(--accent);
+		flex-shrink: 0;
+		margin-top: 2px;
+	}
+
+	.cosigner-hint p {
+		margin: 3px 0 0;
+		color: var(--text-secondary);
 	}
 
 	.optional {

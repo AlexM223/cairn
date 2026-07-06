@@ -7,6 +7,7 @@ import {
 	type CaravanImport
 } from '$lib/server/multisigExport';
 import { createMultisig, type NewMultisigKey } from '$lib/server/wallets/multisig';
+import { detectCosignerContacts } from '$lib/server/cosignerDetection';
 import { childLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
 
@@ -67,7 +68,15 @@ export const POST: RequestHandler = async (event) => {
 		return json({ error: message }, { status: 400 });
 	}
 
-	if (!body.create) return json({ imported: parsed });
+	if (!body.create) {
+		// Anti-enumeration-safe cosigner-match hint: does any key here belong to one
+		// of the importer's existing contacts? Non-committing suggestion (cairn-jaev).
+		const cosignerMatches = detectCosignerContacts(
+			user.id,
+			parsed.keys.map((k) => k.fingerprint)
+		);
+		return json({ imported: parsed, cosignerMatches });
+	}
 
 	const keys: NewMultisigKey[] = parsed.keys.map((k) => ({
 		name: k.name,
