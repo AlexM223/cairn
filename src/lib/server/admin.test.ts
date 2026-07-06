@@ -31,6 +31,32 @@ function makeUser(email: string) {
 	return registerUser({ email, password: PASSWORD, displayName: email.split('@')[0] });
 }
 
+// cairn-o1dp.6 — the admin user list carries a coarse activity bucket, never
+// the exact last_login timestamp (minute-level behavioral tracking that every
+// admin on a multi-admin instance would otherwise see).
+describe('listUsers activity bucketing', () => {
+	function setLastLogin(id: number, iso: string | null): void {
+		db.prepare('UPDATE users SET last_login = ? WHERE id = ?').run(iso, id);
+	}
+
+	it('buckets last_login into recent / inactive / never and omits the raw timestamp', () => {
+		const fresh = makeUser('fresh@example.com');
+		const dormant = makeUser('dormant@example.com');
+		const never = makeUser('never@example.com');
+		setLastLogin(fresh.id, new Date(Date.now() - 2 * 24 * 60 * 60_000).toISOString());
+		setLastLogin(dormant.id, new Date(Date.now() - 90 * 24 * 60 * 60_000).toISOString());
+		setLastLogin(never.id, null);
+
+		const users = listUsers();
+		const byId = (id: number) => users.find((u) => u.id === id)!;
+		expect(byId(fresh.id).lastActivity).toBe('recent');
+		expect(byId(dormant.id).lastActivity).toBe('inactive');
+		expect(byId(never.id).lastActivity).toBe('never');
+		// The exact timestamp never rides along in the serialized shape.
+		expect(JSON.stringify(users)).not.toContain('lastLogin');
+	});
+});
+
 describe('admin guards', () => {
 	it('setUserAdmin refuses to demote the only admin', () => {
 		const admin = makeUser('admin@example.com');

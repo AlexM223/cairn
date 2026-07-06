@@ -11,6 +11,14 @@
 		if (!iso) return 'never';
 		return timeAgo(Math.floor(new Date(iso).getTime() / 1000));
 	}
+
+	// Coarse activity bucket (cairn-o1dp.6) — the server no longer sends exact
+	// last-login timestamps to this multi-admin surface.
+	const ACTIVITY_LABEL = {
+		recent: 'Active in last 30 days',
+		inactive: 'Inactive 30+ days',
+		never: 'Never logged in'
+	} as const;
 </script>
 
 <svelte:head>
@@ -31,7 +39,7 @@
 					<th>Status</th>
 					<th class="num">Wallets</th>
 					<th>Joined</th>
-					<th>Last login</th>
+					<th>Activity</th>
 					<th></th>
 				</tr>
 			</thead>
@@ -68,7 +76,7 @@
 						</td>
 						<td class="num">{user.walletCount}</td>
 						<td class="text-muted">{since(user.createdAt)}</td>
-						<td class="text-muted">{since(user.lastLogin)}</td>
+						<td class="text-muted">{ACTIVITY_LABEL[user.lastActivity as keyof typeof ACTIVITY_LABEL] ?? 'Never logged in'}</td>
 						<td>
 							<div class="actions">
 								<form method="POST" action={user.isAdmin ? '?/demote' : '?/promote'} use:enhance>

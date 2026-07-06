@@ -273,7 +273,12 @@ export interface AdminUserInfo {
 	isAdmin: boolean;
 	disabled: boolean;
 	createdAt: string;
-	lastLogin: string | null;
+	/**
+	 * Coarse activity signal instead of the exact last_login timestamp
+	 * (cairn-o1dp.6): every admin sees this list, and "who has an account" does
+	 * not need minute-level behavioral tracking of other users.
+	 */
+	lastActivity: 'recent' | 'inactive' | 'never';
 	walletCount: number;
 }
 

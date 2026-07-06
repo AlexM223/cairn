@@ -30,9 +30,24 @@ export function listUsers(): AdminUserInfo[] {
 		isAdmin: r.is_admin === 1,
 		disabled: r.disabled === 1,
 		createdAt: r.created_at,
-		lastLogin: r.last_login,
+		lastActivity: activityBucket(r.last_login),
 		walletCount: r.wallet_count
 	}));
+}
+
+/** 30-day window separating "around lately" from "inactive". */
+const ACTIVITY_WINDOW_MS = 30 * 24 * 60 * 60_000;
+
+/**
+ * Coarsen an exact last_login into the bucket the admin user list shows
+ * (cairn-o1dp.6) — the precise timestamp stays in the DB but never leaves the
+ * server for this surface.
+ */
+function activityBucket(lastLogin: string | null): AdminUserInfo['lastActivity'] {
+	if (!lastLogin) return 'never';
+	const t = Date.parse(lastLogin);
+	if (Number.isNaN(t)) return 'never';
+	return Date.now() - t <= ACTIVITY_WINDOW_MS ? 'recent' : 'inactive';
 }
 
 /** One user's admin-facing info, or null if no such id. Used by /admin/users/[id]. */
