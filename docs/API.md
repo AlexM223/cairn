@@ -35,12 +35,15 @@ Exceeding a limit returns **429** with a `retry-after` header (seconds) and
 
 ## Auth
 
-### POST /api/auth/register
+### POST /api/auth/register/password
 
 No auth. Body: `{ email, password, displayName, inviteCode? }` (`inviteCode`
 required when the instance is in invite-only mode; registration may be closed).
 
-- 200 `{ "user": { "id", "email", "displayName", "isAdmin" } }` + session cookie
+Passkey (WebAuthn) registration is a separate two-step ceremony:
+`POST /api/auth/register/options` then `POST /api/auth/register/verify`.
+
+- 201 `{ "user": { "id", "email", "displayName", "isAdmin" } }` + session cookie
 - 400 `{ "error", "code" }` — codes: `invalid_email`, `weak_password` (min 8 chars),
   `invalid_name`, `email_taken`, `closed`, `invite_required`, `bad_invite`
 - 429 on repeated bad invite codes

@@ -258,7 +258,12 @@ function buildConfig(
 			const url = str(body.url);
 			if (!url) throw new Error('Enter a webhook URL.');
 			if (!HTTP_RE.test(url)) throw new Error('Webhook URL must start with http:// or https://.');
-			// secret: blank means keep the stored one.
+			// A newly-set secret must be long enough to be a meaningful HMAC key —
+			// a 1-char secret makes X-Cairn-Signature trivially forgeable (cairn-45a2).
+			// Blank means keep the stored one (existing secrets are grandfathered).
+			if (body.secret != null && str(body.secret) !== '' && str(body.secret).length < 16) {
+				throw new Error('The signing secret must be at least 16 characters.');
+			}
 			const secret = body.secret == null || str(body.secret) === '' ? prev.secret : str(body.secret);
 			const cfg: Record<string, unknown> = { url };
 			if (secret) cfg.secret = secret;

@@ -32,7 +32,11 @@
 			{data.alreadyAccepted ? 'Your agreement with this operator' : 'Before you continue'}
 		</h1>
 		<p class="operator">
-			This instance is operated by <strong>{data.agreement.operator}</strong>.
+			{#if data.hasCustomOperator}
+				This instance is operated by <strong>{data.agreement.operator}</strong>.
+			{:else}
+				This is a self-hosted Cairn instance, run by whoever operates it.
+			{/if}
 		</p>
 
 		<div class="agreement">

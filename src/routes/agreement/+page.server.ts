@@ -1,5 +1,6 @@
 import { redirect, fail } from '@sveltejs/kit';
 import {
+	DEFAULT_OPERATOR,
 	getUserAgreement,
 	hasAcceptedCurrentAgreement,
 	recordUserAgreement
@@ -8,8 +9,13 @@ import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals }) => {
 	if (!locals.user) redirect(302, '/login');
+	const agreement = getUserAgreement();
 	return {
-		agreement: getUserAgreement(),
+		agreement,
+		// Whether the admin has set a real operator name — the template avoids the
+		// awkward "operated by the operator of this Cairn instance" placeholder when
+		// they haven't (cairn-lngx, cairn-qf1e).
+		hasCustomOperator: agreement.operator.trim() !== '' && agreement.operator !== DEFAULT_OPERATOR,
 		// When already accepted, the page is a read-only review (reachable from
 		// Settings); otherwise it's the acceptance gate.
 		alreadyAccepted: hasAcceptedCurrentAgreement(locals.user.id)
