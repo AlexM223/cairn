@@ -113,7 +113,7 @@ export const actions: Actions = {
 			// encrypted at rest (cairn-e9mz.3).
 			const rpcPass = String(form.get('coreRpcPass') ?? '');
 			if (rpcPass !== '') setSecretSetting('core_rpc_pass', rpcPass);
-			if (form.get('clearCoreRpcPass') === 'on') setSetting('core_rpc_pass', '');
+			if (form.get('clearCoreRpcPass') === 'on') setSecretSetting('core_rpc_pass', '');
 		}
 
 		// Apply the new connection immediately — no restart needed.
@@ -146,6 +146,24 @@ export const actions: Actions = {
 		const proxy = readProxyFromForm(form);
 		const result = await testEsplora(url.replace(/\/+$/, ''), proxy);
 		return { esploraTest: result };
+	},
+
+	unlockTeamMode: async ({ locals }) => {
+		if (!locals.user?.isAdmin) return fail(403, { error: 'Admin access required.' });
+		setSetting('instance_mode', 'team');
+		return { instanceModeSaved: true };
+	},
+
+	/**
+	 * Non-destructive: only re-hides the nav. Existing users, invites, contacts,
+	 * and multisig shares are untouched, and a shared-with cosigner's own access
+	 * to a wallet keeps working — only the owner-side management surfaces
+	 * disappear again (cairn-7t0z.5).
+	 */
+	lockTeamMode: async ({ locals }) => {
+		if (!locals.user?.isAdmin) return fail(403, { error: 'Admin access required.' });
+		setSetting('instance_mode', 'solo');
+		return { instanceModeSaved: true };
 	},
 
 	resetInstance: async ({ request, locals }) => {
