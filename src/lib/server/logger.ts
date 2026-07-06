@@ -203,7 +203,12 @@ const REDACT_KEYS = [
 	'recoveryPhrase',
 	'seed',
 	'psbt',
-	'challenge'
+	'challenge',
+	// PII (cairn-o1dp.7): /admin/logs is readable by EVERY admin on a
+	// multi-admin instance, so raw emails/IPs from ordinary login, recovery, and
+	// invite traffic don't belong in it. userId keeps events traceable.
+	'email',
+	'ip'
 ];
 
 /**

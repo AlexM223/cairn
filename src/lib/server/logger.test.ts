@@ -80,17 +80,38 @@ describe('redaction through a real pino instance', () => {
 		expect(raw()).not.toContain('nested-xprv-material');
 	});
 
-	it('leaves non-secret triage context intact (email, userId, nested host)', () => {
+	it('leaves non-secret triage context intact (userId, nested host)', () => {
 		const { log, lines } = captureLogger();
 		log.info(
-			{ email: 'user@example.com', userId: 42, config: { host: 'mail.example', pass: 'x' } },
+			{ userId: 42, config: { host: 'mail.example', pass: 'x' } },
 			'context survives'
 		);
 
 		const [line] = lines();
-		expect(line.email).toBe('user@example.com');
 		expect(line.userId).toBe(42);
 		expect((line.config as Record<string, unknown>).host).toBe('mail.example');
 		expect(line.msg).toBe('context survives');
+	});
+
+	it('censors email and ip — PII from routine auth/invite traffic (cairn-o1dp.7)', () => {
+		expect(REDACT_OPTIONS.paths).toContain('email');
+		expect(REDACT_OPTIONS.paths).toContain('ip');
+
+		const { log, raw, lines } = captureLogger();
+		// The four real call-site shapes: failed login, disabled-account login,
+		// break-glass recovery, invite rate-limit.
+		log.warn({ event: 'password_login_failed', email: 'victim@example.com' }, 'login failed');
+		log.warn({ event: 'password_login_denied', email: 'victim@example.com', userId: 7 }, 'denied');
+		log.warn({ userId: 7, email: 'victim@example.com' }, 'Admin recovery login via environment variable');
+		log.warn({ scope: 'invite', ip: '203.0.113.9' }, 'invalid invite code submitted');
+
+		const out = lines();
+		expect(out[0].email).toBe('[redacted]');
+		expect(out[1].email).toBe('[redacted]');
+		expect(out[1].userId).toBe(7); // still traceable to the account
+		expect(out[2].email).toBe('[redacted]');
+		expect(out[3].ip).toBe('[redacted]');
+		expect(raw()).not.toContain('victim@example.com');
+		expect(raw()).not.toContain('203.0.113.9');
 	});
 });
