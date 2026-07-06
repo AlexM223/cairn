@@ -51,6 +51,10 @@
 	const resumeSummary = data.resume?.summary ?? null;
 	// svelte-ignore state_referenced_locally — per-navigation constant
 	const resumeProgress: MultisigSigningProgress | null = data.resume?.progress ?? null;
+	// Per-person signing roster for a SHARED wallet ("Alice signed, Bob waiting"),
+	// or null for a solo wallet. Read-only snapshot from the loader's reconcile.
+	// svelte-ignore state_referenced_locally — per-navigation constant
+	const roster = data.resume?.roster ?? null;
 
 	function initialStep(): StepKey {
 		if (!resumeTx) return 'create';
@@ -1046,6 +1050,29 @@
 					<div class="quorum-bar-fill" style={`width:${Math.min(100, (collected / required) * 100)}%`}></div>
 				</div>
 
+				{#if roster}
+					<!-- Shared-wallet signer roster: who has contributed a signature and
+					     who is still owed one, by person (the key chips below show it by
+					     key). Reconciled server-side against the real PSBT. -->
+					<ul class="signer-roster" aria-label="Signers">
+						{#each roster as member (member.userId)}
+							<li class="signer-row" class:signed={member.hasSigned}>
+								<span class="signer-state" aria-hidden="true">
+									{#if member.hasSigned}
+										<Icon name="check" size={13} strokeWidth={2.5} />
+									{:else}
+										<Icon name="clock" size={13} />
+									{/if}
+								</span>
+								<span class="signer-name">
+									{member.displayName}{#if member.isOwner}<span class="signer-tag">owner</span>{/if}
+								</span>
+								<span class="signer-status">{member.hasSigned ? 'Signed' : 'Waiting'}</span>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+
 				<!-- Per-key chips: signed / active / queued / spare. Unsigned chips are
 				     buttons — clicking one makes it the active key ("use this key
 				     instead", the signer-cursor reorder). -->
@@ -1907,6 +1934,65 @@
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
+	}
+
+	/* Shared-wallet signer roster (person view). */
+	.signer-roster {
+		list-style: none;
+		margin: 0;
+		padding: 10px 12px;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		background: var(--surface-elevated);
+		border-radius: var(--radius-control);
+	}
+
+	.signer-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 13px;
+	}
+
+	.signer-state {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 18px;
+		height: 18px;
+		flex-shrink: 0;
+		color: var(--text-muted);
+	}
+
+	.signer-row.signed .signer-state {
+		color: var(--success);
+	}
+
+	.signer-name {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		align-items: baseline;
+		gap: 6px;
+	}
+
+	.signer-tag {
+		font-size: 11px;
+		color: var(--text-muted);
+		border: 1px solid var(--border-subtle);
+		border-radius: 999px;
+		padding: 0 6px;
+	}
+
+	.signer-status {
+		font-size: 12px;
+		color: var(--text-muted);
+		flex-shrink: 0;
+	}
+
+	.signer-row.signed .signer-status {
+		color: var(--success);
 	}
 
 	.quorum-head {

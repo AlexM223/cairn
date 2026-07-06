@@ -261,6 +261,7 @@
 				{ type: 'tx_confirmed', label: 'Transaction confirmed', desc: 'A transaction crosses a confirmation threshold.', tunable: 'confirmations' },
 				{ type: 'tx_large', label: 'Large transaction', desc: 'A transaction exceeds your sats threshold.', tunable: 'threshold' },
 				{ type: 'sign_session_waiting', label: 'Signature waiting', desc: 'A multisig transaction is waiting for signatures.' },
+				{ type: 'sign_session_complete', label: 'Ready to broadcast', desc: 'A multisig transaction has collected every signature and is ready to broadcast.' },
 				{ type: 'key_health_due', label: 'Key health check due', desc: 'A multisig key has not been verified in ~180 days.' },
 				{ type: 'backup_missing', label: 'Backup missing', desc: 'A wallet was created with no backup ever downloaded.' },
 				{ type: 'backup_stale', label: 'Backup stale', desc: 'Your instance backup is older than the reminder interval.' }

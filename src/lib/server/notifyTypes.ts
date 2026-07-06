@@ -17,6 +17,7 @@ export const NOTIFICATION_EVENT_TYPES = [
 	'backup_missing', // wallet/multisig created with no descriptor/Caravan backup ever downloaded
 	'backup_stale', // an instance backup exists but is older than the reminder interval
 	'sign_session_waiting', // a multisig transaction is awaiting_signature and has sat for a while
+	'sign_session_complete', // the final required signature landed — quorum met, ready to broadcast (cairn-5gpv.7)
 	'admin_new_signup', // a new user account was created
 	'admin_invite_used', // an invite code was redeemed
 	'admin_restore', // an encrypted instance backup was restored (may import accounts)

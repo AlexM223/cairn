@@ -101,10 +101,49 @@ function notifyRoster(
 			userId,
 			level: 'info',
 			title: 'Signature requested',
-			body: `A transaction from “${multisig.name}” is waiting for your signature.`,
+			// Surface quorum progress the caller already computed, so a cosigner
+			// sees how close the session is at a glance (cairn-5gpv.7).
+			body: `A transaction from “${multisig.name}” is waiting for your signature (${collected} of ${required} collected).`,
 			detail: { multisigId: multisig.id, txId: tx.id, collected, required },
 			link: `/wallets/multisig/${multisig.id}/send?tx=${tx.id}`
 		});
+	}
+}
+
+/**
+ * Fire the "quorum met — ready to broadcast" notification for a session that has
+ * just collected its final required signature. Notifies every roster member: the
+ * owner (who broadcasts) gets the actionable nudge, cosigners learn their
+ * signature completed the quorum. Call ONLY on the transition into completeness
+ * (see attachMultisigSignature) so it never repeats. Best-effort — never breaks
+ * the attach path. This is the single most actionable moment in the whole signing
+ * flow (someone must go broadcast it) and was previously silent (cairn-5gpv.7).
+ */
+export function notifySignSessionComplete(
+	multisig: MultisigRow,
+	tx: SavedMultisigTransaction,
+	progress: MultisigSigningProgress
+): void {
+	try {
+		const roster = computeRoster(multisig);
+		for (const userId of roster.keys()) {
+			notify({
+				type: 'sign_session_complete',
+				userId,
+				level: 'success',
+				title: 'Ready to broadcast',
+				body: `“${multisig.name}” has collected all ${progress.required} signatures — the transaction is ready to broadcast.`,
+				detail: {
+					multisigId: multisig.id,
+					txId: tx.id,
+					collected: progress.collected,
+					required: progress.required
+				},
+				link: `/wallets/multisig/${multisig.id}/send?tx=${tx.id}`
+			});
+		}
+	} catch (e) {
+		log.error({ err: e, txId: tx.id }, 'notifySignSessionComplete failed');
 	}
 }
 

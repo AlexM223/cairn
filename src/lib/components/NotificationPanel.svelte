@@ -51,6 +51,7 @@
 		backup_missing: 'alert-triangle',
 		backup_stale: 'clock',
 		sign_session_waiting: 'clock',
+		sign_session_complete: 'check',
 		admin_new_signup: 'users',
 		admin_invite_used: 'ticket',
 		admin_restore: 'alert-triangle',

@@ -19,7 +19,12 @@ import {
 	type MultisigRow
 } from './wallets/multisig';
 import { getMultisigUtxos, nextMultisigChangeIndex } from './multisigScan';
-import { freezeRosterAndNotify, notifyRosterProgress, isRosterMember } from './multisigRoster';
+import {
+	freezeRosterAndNotify,
+	notifyRosterProgress,
+	notifySignSessionComplete,
+	isRosterMember
+} from './multisigRoster';
 import {
 	constructMultisigPsbt,
 	combineMultisigPsbts,
@@ -275,6 +280,10 @@ export function attachMultisigSignature(
 	const multisig = signableMultisig(userId, multisigId);
 	const existing = multisig ? getMultisigTransaction(userId, multisigId, txId) : null;
 	if (!multisig || !existing) return null;
+	// Capture whether quorum was ALREADY met before this signature, so the
+	// "ready to broadcast" notification fires exactly once — on the transition
+	// into completeness, never on a redundant re-attach (cairn-5gpv.7).
+	const wasComplete = multisigTransactionProgress(multisig, existing)?.complete === true;
 	// Per-transaction roster gate. The owner is always an implicit roster member
 	// (the plan §4) and signs the "remaining" keys, so they're allowed
 	// unconditionally — never bricked even if the best-effort roster insert at
@@ -306,6 +315,11 @@ export function attachMultisigSignature(
 	// Reconcile the advisory roster against the real PSBT progress and notify any
 	// members still owed a signature. Best-effort — never breaks the attach.
 	notifyRosterProgress(multisig, updated, progress);
+	// Quorum just reached: nudge the roster that it's ready to broadcast. Only on
+	// the transition into completeness, so it never repeats (cairn-5gpv.7).
+	if (progress.complete && !wasComplete) {
+		notifySignSessionComplete(multisig, updated, progress);
+	}
 
 	return { transaction: updated, progress };
 }

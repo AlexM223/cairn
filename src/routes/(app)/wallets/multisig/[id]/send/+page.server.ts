@@ -6,6 +6,7 @@ import {
 	multisigTransactionProgress,
 	type SavedMultisigTransaction
 } from '$lib/server/multisigTransactions';
+import { getRoster, type RosterMember } from '$lib/server/multisigRoster';
 import { summarizePsbt, type PsbtSummary } from '$lib/server/bitcoin/psbt';
 import type { MultisigSigningProgress } from '$lib/server/bitcoin/multisigPsbt';
 import { getChain } from '$lib/server/chain';
@@ -42,6 +43,10 @@ export const load: PageServerLoad = async (event) => {
 		transaction: SavedMultisigTransaction;
 		summary: PsbtSummary | null;
 		progress: MultisigSigningProgress | null;
+		/** Per-PERSON signing roster (display name + signed state), for shared
+		 *  wallets only — the collaborative-custody "who has signed" view. Null for
+		 *  a solo wallet, where the per-key chips already say everything. */
+		roster: RosterMember[] | null;
 	} | null = null;
 	const txParam = url.searchParams.get('tx');
 	if (txParam !== null) {
@@ -56,7 +61,18 @@ export const load: PageServerLoad = async (event) => {
 		} catch {
 			summary = null;
 		}
-		resume = { transaction, summary, progress: multisigTransactionProgress(multisig, transaction) };
+		const progress = multisigTransactionProgress(multisig, transaction);
+		// Reconcile the frozen roster against the real PSBT and surface it only when
+		// the wallet is actually shared (more than the owner) — otherwise the
+		// person-view is just the owner and adds nothing over the key chips.
+		let roster: RosterMember[] | null = null;
+		try {
+			const members = getRoster(multisig, transaction, progress);
+			roster = members.length > 1 ? members : null;
+		} catch {
+			roster = null;
+		}
+		resume = { transaction, summary, progress, roster };
 	}
 
 	return {

@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { db } from './db';
 import { registerUser } from './auth';
 import { setSetting } from './settings';
-import { freezeRosterAndNotify, reconcileRoster, getRoster } from './multisigRoster';
+import {
+	freezeRosterAndNotify,
+	reconcileRoster,
+	getRoster,
+	notifySignSessionComplete
+} from './multisigRoster';
 import type { MultisigRow, MultisigKeyRow } from './wallets/multisig';
 import type { SavedMultisigTransaction } from './multisigTransactions';
 import type { MultisigSigningProgress } from './bitcoin/multisigPsbt';
@@ -153,5 +158,25 @@ describe('multisig sign-session roster', () => {
 		const status = reconcileRoster(multisig, tx, progressFor(multisig, [0]));
 		expect(status.signedBy).toContain(alice.id);
 		expect(status.waitingOn).toContain(bob.id);
+	});
+
+	it('notifies every roster member when quorum is met (ready to broadcast)', () => {
+		const alice = makeUser('alice@example.com');
+		const bob = makeUser('bob@example.com');
+		const { multisig, tx } = scenario(alice.id, [
+			{ fp: 'aaaaaaaa', path: "m/48'/0'/0'/2'", assignedUserId: alice.id },
+			{ fp: 'bbbbbbbb', path: "m/48'/0'/0'/2'", assignedUserId: bob.id }
+		]);
+		freezeRosterAndNotify(multisig, tx, alice.id);
+
+		// Both keys signed → quorum met.
+		notifySignSessionComplete(multisig, tx, progressFor(multisig, [0, 1]));
+
+		for (const uid of [alice.id, bob.id]) {
+			const n = db
+				.prepare("SELECT COUNT(*) AS n FROM events WHERE user_id = ? AND type = 'sign_session_complete'")
+				.get(uid) as { n: number };
+			expect(n.n).toBe(1);
+		}
 	});
 });
