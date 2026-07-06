@@ -33,11 +33,24 @@ export interface SpendableUtxo {
 	 *  `'unknown'` = a chain fetch failed and coinbase-ness is unverifiable (the
 	 *  maturity guard treats it conservatively), undefined = not yet determined. */
 	coinbase?: CoinbaseStatus;
+	/**
+	 * Trust classification for an UNCONFIRMED coin (height <= 0), per
+	 * docs/CPFP-UNCONFIRMED-PLAN.md §6. `'own-change'` = funded by a transaction
+	 * this wallet itself broadcast (safe to spend — only your own conflicting
+	 * spend could invalidate it); `'received'` = funded by someone else's still-
+	 * unconfirmed transaction (risky — they could still replace it). Absent for
+	 * confirmed coins, and treated conservatively as `'received'` when unknown, so
+	 * automatic selection never silently depends on a stranger's unconfirmed tx.
+	 */
+	unconfirmedTrust?: UnconfirmedTrust;
 }
 
 /** Result of a coinbase-ness check: definitive, or unverifiable after a chain
  *  fetch failure (cairn-7fmd). */
 export type CoinbaseStatus = boolean | 'unknown';
+
+/** How much an unconfirmed coin can be trusted (see SpendableUtxo.unconfirmedTrust). */
+export type UnconfirmedTrust = 'own-change' | 'received';
 
 export interface KeyOrigin {
 	/** Master key fingerprint, 8 hex chars. */
@@ -245,32 +258,36 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		throw new PsbtError(`Spending from ${scriptType} wallets is not supported yet.`, 'construction_failed');
 	}
 
-	// Confirmed coins only: unconfirmed inputs make the new tx's confirmation
-	// hostage to someone else's, and RBF could invalidate it entirely.
-	// Exact-inputs mode (RBF replacement) skips the filter: the inputs are the
-	// original transaction's own, whose funding txs were already confirmed
-	// when the original was built.
-	let spendable = params.exactInputs
-		? params.utxos
-		: params.utxos.filter((u) => u.height > 0);
-	if (spendable.length === 0) {
-		throw new PsbtError('This wallet has no confirmed coins to spend.', 'no_utxos');
-	}
-
-	// Manual coin control: restrict the candidate set to the allowlist. Coins
-	// that dropped out of the wallet (spent, reorged to unconfirmed) simply
-	// don't match — an empty result gets its own message rather than the
-	// generic no-coins one.
+	// Coin eligibility (see docs/CPFP-UNCONFIRMED-PLAN.md §1, §6):
+	//  - exactInputs (RBF replacement): spend the original tx's own inputs
+	//    verbatim — they were already confirmed when the original was built.
+	//  - coin control: the user picked coins explicitly, so honor exactly that
+	//    set, INCLUDING an unconfirmed received coin they knowingly opted into.
+	//  - automatic: confirmed coins plus the wallet's OWN unconfirmed change, but
+	//    never an unconfirmed coin received from elsewhere — a normal send must
+	//    not silently become hostage to a stranger's unconfirmed tx. Confirmed
+	//    coins are still preferred (the two-pass selection on the normal path
+	//    below only reaches for unconfirmed change when confirmed can't cover it).
 	const coinControl = (params.onlyUtxos?.length ?? 0) > 0;
-	if (coinControl) {
+	let spendable: SpendableUtxo[];
+	if (params.exactInputs) {
+		spendable = params.utxos;
+	} else if (coinControl) {
 		const allow = new Set(params.onlyUtxos!.map((o) => `${o.txid}:${o.vout}`));
-		spendable = spendable.filter((u) => allow.has(`${u.txid}:${u.vout}`));
+		spendable = params.utxos.filter((u) => allow.has(`${u.txid}:${u.vout}`));
 		if (spendable.length === 0) {
 			throw new PsbtError(
-				'None of the selected coins are spendable right now — they may be unconfirmed or already spent.',
+				'None of the selected coins are spendable right now — they may be already spent.',
 				'no_utxos'
 			);
 		}
+	} else {
+		spendable = params.utxos.filter(
+			(u) => u.height > 0 || u.unconfirmedTrust === 'own-change'
+		);
+	}
+	if (spendable.length === 0) {
+		throw new PsbtError('This wallet has no spendable coins right now.', 'no_utxos');
 	}
 
 	// Coinbase maturity: a coinbase (mining reward) output needs 100 confirmations
@@ -371,7 +388,7 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		return bytes;
 	}
 
-	const inputs = [];
+	const inputs: Record<string, unknown>[] = [];
 	for (const utxo of spendable) {
 		// Coinbase inputs MUST carry the full previous transaction — hardware
 		// signers require it to safely sign a mining reward. Every non-p2tr input
@@ -521,25 +538,41 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		// NOTE: btc-signer's `dust` option is NOT a sats threshold — passing 546
 		// there silently burns any change below ~18k sats into the fee. The
 		// library's default dust handling is correct; do not "tune" it.
-		const selection = selectUTXO(
-			inputs as never,
-			recipients.map((r) => ({ address: r.address, amount: toBigInt(r.amount) })),
-			'default',
-			{
-				changeAddress: params.changeAddress,
-				feePerByte: toBigInt(Math.ceil(feeRate)),
-				bip69: true,
-				createTx: true,
-				network: NETWORK,
-				allowLegacyWitnessUtxo: true
-			}
-		);
+		const runSelection = (candidateInputs: typeof inputs) =>
+			selectUTXO(
+				candidateInputs as never,
+				recipients.map((r) => ({ address: r.address, amount: toBigInt(r.amount) })),
+				'default',
+				{
+					changeAddress: params.changeAddress,
+					feePerByte: toBigInt(Math.ceil(feeRate)),
+					bip69: true,
+					createTx: true,
+					network: NETWORK,
+					allowLegacyWitnessUtxo: true
+				}
+			);
+
+		// Prefer confirmed coins: try to fund the send from confirmed inputs alone
+		// first, and only reach for the wallet's own unconfirmed change (already
+		// the sole unconfirmed coins here — received-unconfirmed was excluded
+		// above) when confirmed coins can't cover the amount plus fee. `inputs` is
+		// 1:1 with `spendable`, so a positional filter yields the confirmed subset.
+		const hasUnconfirmed = spendable.some((u) => u.height <= 0);
+		const confirmedInputs = hasUnconfirmed
+			? inputs.filter((_, i) => spendable[i].height > 0)
+			: inputs;
+
+		let selection = confirmedInputs.length > 0 ? runSelection(confirmedInputs) : null;
+		if ((!selection || !selection.tx) && hasUnconfirmed) {
+			selection = runSelection(inputs);
+		}
 
 		if (!selection || !selection.tx) {
 			throw new PsbtError(
 				coinControl
 					? "The selected coins don't cover that amount plus the network fee — select more coins or lower the amount."
-					: 'Not enough confirmed funds to cover that amount plus the network fee.',
+					: 'Not enough funds to cover that amount plus the network fee.',
 				'insufficient_funds'
 			);
 		}

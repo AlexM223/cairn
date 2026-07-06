@@ -30,7 +30,7 @@ import {
 	type MultisigSigningProgress
 } from './bitcoin/multisigPsbt';
 import { PsbtError } from './bitcoin/psbt';
-import { normalizePsbt, InvalidPsbtError, BroadcastError } from './transactions';
+import { normalizePsbt, InvalidPsbtError, BroadcastError, classifyUnconfirmedTrust } from './transactions';
 
 export type MultisigTxStatus = 'draft' | 'awaiting_signature' | 'completed';
 
@@ -169,7 +169,18 @@ export async function buildMultisigDraft(
 	const multisig = signableMultisig(userId, multisigId);
 	if (!multisig) throw new PsbtError('Multisig not found.', 'construction_failed');
 
-	const utxos = await getMultisigUtxos(multisig);
+	// Classify unconfirmed coins so selection can spend our own change but never
+	// auto-select a stranger's unconfirmed coin (cairn-u9ob.1).
+	const ownTxids = new Set(
+		(
+			db
+				.prepare(
+					"SELECT txid FROM multisig_transactions WHERE multisig_id = ? AND txid IS NOT NULL"
+				)
+				.all(multisigId) as { txid: string }[]
+		).map((r) => r.txid.toLowerCase())
+	);
+	const utxos = classifyUnconfirmedTrust(await getMultisigUtxos(multisig), ownTxids);
 	const changeIndex = await nextMultisigChangeIndex(multisig);
 	// Only fetch the tip (for the coinbase-maturity guard) when a coinbase coin is
 	// present, and never let a transient tip failure block an ordinary send.

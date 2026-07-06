@@ -279,6 +279,35 @@ describe('constructMultisigPsbt (p2wsh)', () => {
 	});
 });
 
+describe('unconfirmed coin selection (cairn-u9ob.1)', () => {
+	it('auto-spends unconfirmed own-change but never an unconfirmed received coin', async () => {
+		const ownChange: SpendableUtxo = {
+			...multisigUtxo(MULTISIG_2OF3, 200_000, { txid: 'dd'.repeat(32), chain: 1, index: 0, height: 0 }),
+			unconfirmedTrust: 'own-change'
+		};
+		const draft = await build2of3({ utxos: [ownChange] });
+		expect(draft.inputs[0].txid).toBe(ownChange.txid);
+
+		const received: SpendableUtxo = {
+			...multisigUtxo(MULTISIG_2OF3, 200_000, { txid: 'ee'.repeat(32), height: 0 }),
+			unconfirmedTrust: 'received'
+		};
+		await expect(build2of3({ utxos: [received] })).rejects.toMatchObject({ code: 'no_utxos' });
+	});
+
+	it('spends a received unconfirmed coin only when the user picks it via coin control', async () => {
+		const received: SpendableUtxo = {
+			...multisigUtxo(MULTISIG_2OF3, 200_000, { txid: 'ff'.repeat(32), height: 0 }),
+			unconfirmedTrust: 'received'
+		};
+		const draft = await build2of3({
+			utxos: [received],
+			onlyUtxos: [{ txid: received.txid, vout: received.vout }]
+		});
+		expect(draft.inputs[0].txid).toBe(received.txid);
+	});
+});
+
 // ── sign → combine → progress → finalize ────────────────────────────────────
 
 describe('multisig signing lifecycle (2-of-3 p2wsh)', () => {

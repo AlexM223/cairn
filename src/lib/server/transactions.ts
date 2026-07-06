@@ -16,7 +16,8 @@ import {
 	DEFAULT_ORIGIN_PATH,
 	PsbtError,
 	type ConstructedPsbt,
-	type SpendableUtxo
+	type SpendableUtxo,
+	type UnconfirmedTrust
 } from './bitcoin/psbt';
 import { annotateCoinbase } from './bitcoin/coinbaseScan';
 import { parseXpub, deriveAddress, addressToScripthash } from './bitcoin/xpub';
@@ -93,6 +94,34 @@ export async function getWalletUtxos(xpub: string): Promise<SpendableUtxo[]> {
 	return annotateCoinbase(results.flat());
 }
 
+/**
+ * Txids this wallet has itself broadcast — the signal that distinguishes an
+ * unconfirmed coin that is our OWN change (safe to spend) from one received from
+ * a stranger's still-unconfirmed tx (risky). See docs/CPFP-UNCONFIRMED-PLAN.md §6.
+ */
+function ownBroadcastTxids(walletId: number): Set<string> {
+	const rows = db
+		.prepare("SELECT txid FROM transactions WHERE wallet_id = ? AND txid IS NOT NULL")
+		.all(walletId) as { txid: string }[];
+	return new Set(rows.map((r) => r.txid.toLowerCase()));
+}
+
+/** Tag each UNCONFIRMED coin as own-change vs received; confirmed coins pass
+ *  through untouched (their trust is irrelevant to selection). Exported so the
+ *  multisig builder can reuse the identical policy. */
+export function classifyUnconfirmedTrust(
+	utxos: SpendableUtxo[],
+	ownTxids: Set<string>
+): SpendableUtxo[] {
+	return utxos.map((u) => {
+		if (u.height > 0) return u;
+		const trust: UnconfirmedTrust = ownTxids.has(u.txid.toLowerCase())
+			? 'own-change'
+			: 'received';
+		return { ...u, unconfirmedTrust: trust };
+	});
+}
+
 export interface BuildDraftInput {
 	/** One or more outputs; 'max' only as the sole recipient's amount. */
 	recipients: { address: string; amount: number | 'max' }[];
@@ -127,7 +156,12 @@ export async function buildDraft(
 	if (!wallet) throw new PsbtError('Wallet not found.', 'construction_failed');
 
 	const scriptType = wallet.script_type as ScriptType;
-	const utxos = await getWalletUtxos(wallet.xpub);
+	// Classify unconfirmed coins so selection can spend our own change but never
+	// auto-select a stranger's unconfirmed coin (cairn-u9ob.1).
+	const utxos = classifyUnconfirmedTrust(
+		await getWalletUtxos(wallet.xpub),
+		ownBroadcastTxids(walletId)
+	);
 	// Tip height enables the coinbase-maturity guard — but only fetch it when a
 	// coinbase coin is actually present (the vast majority of wallets have none),
 	// and never let a transient tip failure block an ordinary send.

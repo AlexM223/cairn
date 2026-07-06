@@ -384,15 +384,17 @@ describe('coin control (onlyUtxos allowlist)', () => {
 		await expect(constructPsbt(params)).rejects.toThrow(/selected coins don't cover/);
 	});
 
-	it('still refuses unconfirmed coins even when explicitly allowlisted', async () => {
-		const params = {
+	it('spends an unconfirmed coin when the user explicitly allowlists it (coin-control opt-in)', async () => {
+		// cairn-u9ob.1: coin control is an explicit opt-in, so an unconfirmed coin
+		// the user picked by hand is now spendable (it was previously refused).
+		const draft = await constructPsbt({
 			...COMMON,
 			recipients: [{ address: RECIPIENT, amount: 1_000 }],
 			feeRate: 5,
 			onlyUtxos: [COIN_UNCONFIRMED]
-		};
-		await expect(constructPsbt(params)).rejects.toMatchObject({ code: 'no_utxos' });
-		await expect(constructPsbt(params)).rejects.toThrow(/unconfirmed or already spent/);
+		});
+		expect(draft.inputs).toHaveLength(1);
+		expect(draft.inputs[0]).toMatchObject({ txid: COIN_UNCONFIRMED.txid, vout: COIN_UNCONFIRMED.vout });
 	});
 
 	it('send-max over an allowlist sweeps exactly the selected coins minus fee', async () => {
@@ -420,6 +422,78 @@ describe('coin control (onlyUtxos allowlist)', () => {
 		});
 		// 70k needs both confirmed coins — an empty list must not restrict.
 		expect(draft.inputs).toHaveLength(2);
+	});
+});
+
+describe('unconfirmed coin selection policy (cairn-u9ob.1)', () => {
+	const CONFIRMED: SpendableUtxo = {
+		txid: 'a1'.repeat(32), vout: 0, value: 100_000, height: 800_000, address: RECEIVE_0, chain: 0, index: 0
+	};
+	const OWN_CHANGE: SpendableUtxo = {
+		txid: 'b2'.repeat(32), vout: 0, value: 80_000, height: 0, address: CHANGE_0, chain: 1, index: 0,
+		unconfirmedTrust: 'own-change'
+	};
+	const RECEIVED: SpendableUtxo = {
+		txid: 'c3'.repeat(32), vout: 0, value: 80_000, height: 0, address: RECEIVE_1, chain: 0, index: 1,
+		unconfirmedTrust: 'received'
+	};
+
+	it('prefers confirmed coins and leaves unconfirmed change untouched when confirmed covers it', async () => {
+		const draft = await constructPsbt({
+			...COMMON,
+			utxos: [CONFIRMED, OWN_CHANGE],
+			recipients: [{ address: RECIPIENT, amount: 50_000 }],
+			feeRate: 5
+		});
+		expect(draft.inputs.map((i) => i.txid)).toEqual([CONFIRMED.txid]);
+	});
+
+	it('reaches for unconfirmed own-change only when confirmed coins cannot cover the spend', async () => {
+		const draft = await constructPsbt({
+			...COMMON,
+			utxos: [CONFIRMED, OWN_CHANGE],
+			recipients: [{ address: RECIPIENT, amount: 150_000 }],
+			feeRate: 5
+		});
+		const used = new Set(draft.inputs.map((i) => i.txid));
+		expect(used.has(CONFIRMED.txid)).toBe(true);
+		expect(used.has(OWN_CHANGE.txid)).toBe(true);
+	});
+
+	it('never auto-selects an unconfirmed coin received from elsewhere', async () => {
+		// Confirmed alone can't cover 150k; the only other coin is received-
+		// unconfirmed, which must NOT be pulled in without explicit coin control.
+		await expect(
+			constructPsbt({
+				...COMMON,
+				utxos: [CONFIRMED, RECEIVED],
+				recipients: [{ address: RECIPIENT, amount: 150_000 }],
+				feeRate: 5
+			})
+		).rejects.toMatchObject({ code: 'insufficient_funds' });
+	});
+
+	it('treats an unconfirmed coin of unknown trust conservatively (excluded from auto)', async () => {
+		const unknown: SpendableUtxo = { ...RECEIVED, unconfirmedTrust: undefined };
+		await expect(
+			constructPsbt({
+				...COMMON,
+				utxos: [CONFIRMED, unknown],
+				recipients: [{ address: RECIPIENT, amount: 150_000 }],
+				feeRate: 5
+			})
+		).rejects.toMatchObject({ code: 'insufficient_funds' });
+	});
+
+	it('spends a received unconfirmed coin only when the user picks it via coin control', async () => {
+		const draft = await constructPsbt({
+			...COMMON,
+			utxos: [CONFIRMED, RECEIVED],
+			recipients: [{ address: RECIPIENT, amount: 50_000 }],
+			feeRate: 5,
+			onlyUtxos: [{ txid: RECEIVED.txid, vout: RECEIVED.vout }]
+		});
+		expect(draft.inputs.map((i) => i.txid)).toEqual([RECEIVED.txid]);
 	});
 });
 

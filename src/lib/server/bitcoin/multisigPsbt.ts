@@ -268,21 +268,29 @@ export async function constructMultisigPsbt(params: MultisigConstructParams): Pr
 		}
 	}
 
-	// ---- candidate coins: confirmed only, optionally coin-controlled --------
-	let spendable = params.utxos.filter((u) => u.height > 0);
-	if (spendable.length === 0) {
-		throw new PsbtError('This multisig has no confirmed coins to spend.', 'no_utxos');
-	}
+	// ---- candidate coins (see docs/CPFP-UNCONFIRMED-PLAN.md §1, §6) ----------
+	// Coin control honors the user's explicit selection (including an unconfirmed
+	// received coin they opted into); automatic selection admits confirmed coins
+	// plus the wallet's OWN unconfirmed change, never a stranger's unconfirmed
+	// coin. Confirmed coins are still preferred first (the sort below).
 	const coinControl = (params.onlyUtxos?.length ?? 0) > 0;
+	let spendable: SpendableUtxo[];
 	if (coinControl) {
 		const allow = new Set(params.onlyUtxos!.map((o) => `${o.txid}:${o.vout}`));
-		spendable = spendable.filter((u) => allow.has(`${u.txid}:${u.vout}`));
+		spendable = params.utxos.filter((u) => allow.has(`${u.txid}:${u.vout}`));
 		if (spendable.length === 0) {
 			throw new PsbtError(
-				'None of the selected coins are spendable right now — they may be unconfirmed or already spent.',
+				'None of the selected coins are spendable right now — they may be already spent.',
 				'no_utxos'
 			);
 		}
+	} else {
+		spendable = params.utxos.filter(
+			(u) => u.height > 0 || u.unconfirmedTrust === 'own-change'
+		);
+	}
+	if (spendable.length === 0) {
+		throw new PsbtError('This multisig has no spendable coins right now.', 'no_utxos');
 	}
 
 	// Coinbase maturity (100-confirmation consensus rule): skip immature mining
@@ -494,7 +502,11 @@ export async function constructMultisigPsbt(params: MultisigConstructParams): Pr
 	const changeAddress = changeDerived.address;
 	const changeVsize = outputVsize(changeAddress);
 
-	const candidates = [...spendable].sort((a, b) => b.value - a.value);
+	// Confirmed coins first (unconfirmed own-change only when confirmed can't
+	// cover the spend), then largest-value-first within each group.
+	const candidates = [...spendable].sort(
+		(a, b) => Number(b.height > 0) - Number(a.height > 0) || b.value - a.value
+	);
 	const chosen: SpendableUtxo[] = [];
 	let totalIn = 0;
 	let fee = 0;
