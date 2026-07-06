@@ -20,7 +20,13 @@ RUN npm prune --omit=dev
 FROM node:22-alpine
 WORKDIR /app
 
-RUN addgroup -S cairn && adduser -S cairn -G cairn
+# Pin cairn to UID/GID 1000 (replacing the base image's `node` user, which owns
+# those IDs): Umbrel bind-mounts app data owned by 1000:1000 and runs services
+# as `user: "1000:1000"`, so the in-image user must match for /data to be
+# writable there.
+RUN deluser node \
+	&& addgroup -S -g 1000 cairn \
+	&& adduser -S -u 1000 -G cairn cairn
 
 COPY --from=build /app/build ./build
 COPY --from=build /app/node_modules ./node_modules
@@ -28,6 +34,9 @@ COPY --from=build /app/package.json ./package.json
 
 # SQLite database lives on the /data volume — mount it or lose it.
 ENV CAIRN_DB=/data/cairn.db
+# Keep the rotating log on the same volume (the in-container default would be
+# /app/data/logs, i.e. the ephemeral writable layer — history lost on recreate).
+ENV CAIRN_LOG_FILE=/data/logs/cairn.log
 ENV PORT=3000
 # adapter-node: take the client IP from X-Forwarded-For. Only safe when the
 # container sits behind a reverse proxy that sets/overwrites this header.

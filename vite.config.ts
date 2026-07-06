@@ -2,11 +2,18 @@ import adapter from '@sveltejs/adapter-node';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 import wasm from 'vite-plugin-wasm';
-import topLevelAwait from 'vite-plugin-top-level-await';
 
 export default defineConfig({
 	server: {
 		port: Number(process.env.PORT) || 5173
+	},
+	build: {
+		// bitbox-api's WASM glue uses top-level await. Every browser Cairn can
+		// actually run in supports TLA natively (hardware signing needs
+		// WebUSB/WebHID, which set a far higher floor), so emit it as-is instead
+		// of down-leveling. This also sidesteps vite-plugin-top-level-await,
+		// whose esbuild re-transform of rolldown output breaks the prod build.
+		target: 'esnext'
 	},
 	optimizeDeps: {
 		// The Ledger driver (src/lib/hw/ledger.ts) and everything under it — the
@@ -43,9 +50,9 @@ export default defineConfig({
 	},
 	plugins: [
 		// Required by bitbox-api's WASM bindings (see its README-npm.md): the
-		// glue module uses top-level await around the wasm instantiation.
+		// glue module uses top-level await around the wasm instantiation —
+		// supported natively via build.target 'esnext' above.
 		wasm(),
-		topLevelAwait(),
 		sveltekit({
 			compilerOptions: {
 				// Force runes mode for the project, except for libraries. Can be removed in svelte 6.
