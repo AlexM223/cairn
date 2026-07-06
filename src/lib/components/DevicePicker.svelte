@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
+	import { page } from '$app/state';
 	import type { WalletDeviceType } from '$lib/types';
 
 	// A grid of signing-device tiles for single-sig wallets. Whichever device
@@ -16,17 +17,27 @@
 		compact?: boolean;
 	} = $props();
 
-	const OPTIONS: { key: WalletDeviceType; title: string; desc: string; icon: string }[] = [
-		{ key: 'trezor', title: 'Trezor', desc: 'Plug in over USB — sign with one click.', icon: 'shield' },
-		{ key: 'ledger', title: 'Ledger', desc: 'Plug in over USB — sign with one click.', icon: 'shield' },
-		{ key: 'coldcard', title: 'ColdCard', desc: 'Air-gapped over a microSD card.', icon: 'shield' },
-		{ key: 'bitbox02', title: 'BitBox02', desc: 'Plug in over USB — confirm on the device.', icon: 'shield' },
-		{ key: 'jade', title: 'Jade', desc: 'Plug in over USB (Chrome/Edge).', icon: 'shield' },
+	// Each hardware device is driven by a client-side driver with no server route,
+	// so its feature flag can only be enforced by hiding its tile here. `flag`
+	// undefined = always shown ('file' is the universal fallback and never gated).
+	const OPTIONS: {
+		key: WalletDeviceType;
+		title: string;
+		desc: string;
+		icon: string;
+		flag?: string;
+	}[] = [
+		{ key: 'trezor', title: 'Trezor', desc: 'Plug in over USB — sign with one click.', icon: 'shield', flag: 'hw_trezor' },
+		{ key: 'ledger', title: 'Ledger', desc: 'Plug in over USB — sign with one click.', icon: 'shield', flag: 'hw_ledger' },
+		{ key: 'coldcard', title: 'ColdCard', desc: 'Air-gapped over a microSD card.', icon: 'shield', flag: 'hw_coldcard' },
+		{ key: 'bitbox02', title: 'BitBox02', desc: 'Plug in over USB — confirm on the device.', icon: 'shield', flag: 'hw_bitbox02' },
+		{ key: 'jade', title: 'Jade', desc: 'Plug in over USB (Chrome/Edge).', icon: 'shield', flag: 'hw_jade' },
 		{
 			key: 'qr',
 			title: 'Air-gapped QR',
 			desc: 'Camera QR — SeedSigner, Passport, Keystone.',
-			icon: 'qr'
+			icon: 'qr',
+			flag: 'qr_scan'
 		},
 		{
 			key: 'file',
@@ -35,10 +46,14 @@
 			icon: 'wallet'
 		}
 	];
+
+	// A flag resolves to false only when the admin explicitly disabled it; an
+	// absent flags object (or missing key) leaves the tile visible.
+	const options = $derived(OPTIONS.filter((o) => !o.flag || page.data.flags?.[o.flag] !== false));
 </script>
 
 <div class="device-grid" class:compact role="radiogroup" aria-label="Signing device">
-	{#each OPTIONS as opt (opt.key)}
+	{#each options as opt (opt.key)}
 		<button
 			type="button"
 			class="device-opt"

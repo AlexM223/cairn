@@ -1,4 +1,4 @@
-import { json, requireUser } from '$lib/server/api';
+import { json, requireFeature } from '$lib/server/api';
 import { getMultisig } from '$lib/server/wallets/multisig';
 import { caravanExport } from '$lib/server/multisigExport';
 import { MultisigError } from '$lib/server/bitcoin/multisig';
@@ -23,7 +23,8 @@ function safeFilename(name: string): string {
  * "see my multisig in another app" backup.
  */
 export const GET: RequestHandler = async (event) => {
-	const user = requireUser(event);
+	// Gate Caravan config export behind the wallet_config_export feature flag.
+	const user = requireFeature(event, 'wallet_config_export');
 	const id = Number(event.params.id);
 	const multisig = Number.isInteger(id) && id > 0 ? getMultisig(user.id, id) : null;
 	if (!multisig) return json({ error: 'Multisig not found' }, { status: 404 });

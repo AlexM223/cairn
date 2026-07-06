@@ -5,6 +5,8 @@ import type { BlockSummary, MempoolSummary, SearchResult } from '$lib/types';
 
 const PAGE_SIZE = 15;
 
+// The `explorer` feature gate lives in +layout.server.ts so it covers every
+// explorer sub-route, not just this index page.
 export const load: PageServerLoad = async ({ url, depends }) => {
 	// Re-run on new-block SSE events without re-running unrelated loads.
 	depends('cairn:chain');

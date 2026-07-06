@@ -9,6 +9,8 @@ declare global {
 		}
 		interface Locals {
 			user: SessionUser | null;
+			/** Resolved feature flags for this request's user, keyed by flag id. */
+			flags: Record<string, boolean>;
 		}
 		// interface PageData {}
 		// interface PageState {}

@@ -1,6 +1,11 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestEvent } from '@sveltejs/kit';
 import type { SessionUser } from '$lib/types';
+import { FEATURE_FLAGS_BY_KEY } from './featureFlags/registry';
+import { isFeatureEnabled } from './featureFlags/resolve';
+import { childLogger } from './logger';
+
+const flagLog = childLogger('feature-flags');
 
 /** Guard for /api routes: 401 JSON error when not signed in. */
 export function requireUser(event: RequestEvent): SessionUser {
@@ -12,6 +17,32 @@ export function requireUser(event: RequestEvent): SessionUser {
 export function requireAdmin(event: RequestEvent): SessionUser {
 	const user = requireUser(event);
 	if (!user.isAdmin) error(403, 'Admin access required');
+	return user;
+}
+
+/**
+ * Guard for any route/action that performs a feature-gated action. This is the
+ * ACTUAL enforcement boundary — the UI hiding a button (§5) is a courtesy; the
+ * 403 here is what makes a disabled flag real against a stale client bundle or
+ * a direct API call. Prefers the per-request resolved flags (event.locals.flags)
+ * and falls back to a fresh DB read for contexts where they weren't populated.
+ * Throws 403 with the flag's user-facing message when the resolved value is off.
+ */
+export function requireFeature(event: RequestEvent, key: string): SessionUser {
+	const user = requireUser(event);
+	const enabled = event.locals.flags?.[key] ?? isFeatureEnabled(key, user.id);
+	if (!enabled) {
+		const def = FEATURE_FLAGS_BY_KEY.get(key);
+		if (!def) throw new Error(`requireFeature: unknown feature flag: ${key}`);
+		// Surface blocked attempts in /admin/logs so an operator can see who ran
+		// into a disabled feature (and spot an over-restrictive flag). warn level,
+		// no secrets — just the user id, flag key, and the request path.
+		flagLog.warn(
+			{ userId: user.id, flag: key, method: event.request?.method, path: event.url?.pathname },
+			`feature blocked: ${key} for user ${user.id}`
+		);
+		error(403, def.userMessage);
+	}
 	return user;
 }
 

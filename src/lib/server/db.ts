@@ -736,3 +736,31 @@ db.exec(`
 		db.exec("ALTER TABLE multisigs ADD COLUMN source TEXT NOT NULL DEFAULT 'created'");
 	}
 }
+
+db.exec(`
+	-- Instance-wide feature toggles. A row's ABSENCE means "use the registry
+	-- default" (FEATURE_FLAGS[].defaultEnabled, which is always true), so an
+	-- empty table = every feature on = no existing install regresses on upgrade.
+	-- Modeled on notification_preferences: the DB stores only DEVIATIONS from the
+	-- code-defined default; the flag list itself lives in featureFlags/registry.ts.
+	CREATE TABLE IF NOT EXISTS feature_flags (
+		key        TEXT PRIMARY KEY,
+		enabled    INTEGER NOT NULL,
+		updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		updated_by INTEGER REFERENCES users(id)
+	);
+
+	-- Per-user overrides. A row wins over the global row in EITHER direction
+	-- (force-on grants an exception, force-off restricts one user); its ABSENCE
+	-- means "inherit the global/registry value". See docs/FEATURE-FLAGS-PLAN.md §1.2.
+	CREATE TABLE IF NOT EXISTS user_feature_flags (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		key        TEXT NOT NULL,
+		enabled    INTEGER NOT NULL,
+		updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		updated_by INTEGER REFERENCES users(id),
+		UNIQUE (user_id, key)
+	);
+	CREATE INDEX IF NOT EXISTS idx_user_feature_flags_user ON user_feature_flags(user_id);
+`);

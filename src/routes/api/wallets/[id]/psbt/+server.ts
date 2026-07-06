@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { requireUser, readJson } from '$lib/server/api';
+import { requireUser, requireFeature, readJson } from '$lib/server/api';
 import { buildDraft } from '$lib/server/transactions';
 import { PsbtError } from '$lib/server/bitcoin/psbt';
 import { childLogger } from '$lib/server/logger';
@@ -33,7 +33,9 @@ interface CoinBody {
  * absent when the chosen inputs' parents weren't all available.
  */
 export const POST: RequestHandler = async (event) => {
-	const user = requireUser(event);
+	// Building a spend is the core gated action. Coin control and batching are
+	// finer gates checked below, only when the request actually uses them.
+	const user = requireFeature(event, 'send');
 	const walletId = Number(event.params.id);
 	if (!Number.isInteger(walletId)) return json({ error: 'Bad wallet id' }, { status: 400 });
 
@@ -62,6 +64,11 @@ export const POST: RequestHandler = async (event) => {
 				.map((c) => ({ txid: String(c?.txid ?? ''), vout: Number(c?.vout) }))
 				.filter((c) => /^[0-9a-f]{64}$/i.test(c.txid) && Number.isInteger(c.vout) && c.vout >= 0)
 		: undefined;
+
+	// Finer gates: only reject when the request actually exercises the feature, so
+	// an ordinary single-recipient auto-coin-select spend is unaffected.
+	if (onlyUtxos && onlyUtxos.length > 0) requireFeature(event, 'coin_control');
+	if (recipients.length > 1) requireFeature(event, 'batch_transactions');
 
 	try {
 		const { draft, details } = await buildDraft(user.id, walletId, {

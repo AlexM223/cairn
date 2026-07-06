@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { enhance, applyAction, deserialize } from '$app/forms';
+	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onDestroy, tick } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
@@ -211,7 +212,10 @@
 	// --- air-gapped QR scanning (device-agnostic camera path) ---
 	let cameraAvailable = $state(false);
 	$effect(() => {
-		cameraAvailable = isCameraScanAvailable();
+		// Camera scanning is a client-only feature (no server route), so the
+		// qr_scan flag is enforced purely by suppressing the camera path here —
+		// the UI falls back to "paste the key" when it's off.
+		cameraAvailable = isCameraScanAvailable() && page.data.flags?.qr_scan !== false;
 	});
 	let scanning = $state(false);
 	let videoEl = $state<HTMLVideoElement | null>(null);
@@ -369,23 +373,25 @@
 				</span>
 				<Icon name="check" size={17} />
 			</button>
-			<button
-				type="button"
-				class="type-card"
-				class:selected={walletType === 'multisig'}
-				aria-pressed={walletType === 'multisig'}
-				onclick={() => (walletType = 'multisig')}
-			>
-				<span class="type-icon"><Icon name="shield" size={20} /></span>
-				<span class="type-body">
-					<span class="type-name">Multiple keys (multisig)</span>
-					<span class="type-desc">
-						Several keys guard one wallet, and spending needs a quorum — e.g. any 2 of 3. No single
-						lost or stolen key can move the funds. Best for savings.
+			{#if page.data.flags?.multisig_create !== false}
+				<button
+					type="button"
+					class="type-card"
+					class:selected={walletType === 'multisig'}
+					aria-pressed={walletType === 'multisig'}
+					onclick={() => (walletType = 'multisig')}
+				>
+					<span class="type-icon"><Icon name="shield" size={20} /></span>
+					<span class="type-body">
+						<span class="type-name">Multiple keys (multisig)</span>
+						<span class="type-desc">
+							Several keys guard one wallet, and spending needs a quorum — e.g. any 2 of 3. No single
+							lost or stolen key can move the funds. Best for savings.
+						</span>
 					</span>
-				</span>
-				<Icon name="check" size={17} />
-			</button>
+					<Icon name="check" size={17} />
+				</button>
+			{/if}
 			<div class="pane-actions">
 				<span></span>
 				<button

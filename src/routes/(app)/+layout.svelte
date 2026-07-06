@@ -6,9 +6,13 @@
 
 	let { data, children } = $props();
 
+	// A feature the user has no access to at all is absent from the nav (not shown
+	// disabled) — same pattern as the admin-only Admin entry. The server-side gate
+	// (requireFeature) is the real boundary; hiding the link is the courtesy.
+	const flags = $derived(data.flags ?? {});
 	const nav = $derived([
 		{ href: '/', label: 'Dashboard', icon: 'dashboard' },
-		{ href: '/explorer', label: 'Explorer', icon: 'blocks' },
+		...(flags.explorer !== false ? [{ href: '/explorer', label: 'Explorer', icon: 'blocks' }] : []),
 		{ href: '/wallets', label: 'Wallets', icon: 'wallet' },
 		{ href: '/activity', label: 'Activity', icon: 'activity' },
 		{ href: '/settings', label: 'Settings', icon: 'settings' },

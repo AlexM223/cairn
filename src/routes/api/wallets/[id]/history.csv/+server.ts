@@ -1,5 +1,5 @@
 import { error } from '@sveltejs/kit';
-import { requireUser } from '$lib/server/api';
+import { requireFeature } from '$lib/server/api';
 import { getWallet, getLabels } from '$lib/server/wallets';
 import { scanWallet } from '$lib/server/bitcoin/walletScan';
 import { getChain } from '$lib/server/chain';
@@ -12,7 +12,8 @@ import type { RequestHandler } from './$types';
  * Address, Label). Same 50-tx window the detail page shows.
  */
 export const GET: RequestHandler = async (event) => {
-	const user = requireUser(event);
+	// Gate CSV history export behind the csv_export feature flag.
+	const user = requireFeature(event, 'csv_export');
 	const id = Number(event.params.id);
 	if (!Number.isInteger(id) || id <= 0) error(404, 'Wallet not found');
 

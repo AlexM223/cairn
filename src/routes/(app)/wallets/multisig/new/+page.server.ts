@@ -17,12 +17,15 @@ import {
 } from '$lib/server/wallets/multisig';
 import { containsPrivateKeyMaterial, parseCaravanImport } from '$lib/server/multisigExport';
 import { listMultisigs } from '$lib/server/wallets/multisig';
+import { requireFeature } from '$lib/server/api';
 import type { Actions, PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async ({ locals }) => {
+export const load: PageServerLoad = async (event) => {
+	// The whole create-multisig wizard is gated; existing multisigs stay usable.
+	requireFeature(event, 'multisig_create');
 	// First-timers get the "why a multisig?" education expanded; repeat users get
 	// it collapsed out of the way.
-	return { hasMultisigs: listMultisigs(locals.user!.id).length > 0 };
+	return { hasMultisigs: listMultisigs(event.locals.user!.id).length > 0 };
 };
 
 const DEVICE_TYPES = new Set(['trezor', 'ledger', 'coldcard', 'qr', 'file']);
@@ -133,7 +136,10 @@ export const actions: Actions = {
 	},
 
 	/** Create the multisig. Returns the id so the wizard can show its Done step. */
-	create: async ({ request, locals }) => {
+	create: async (event) => {
+		// The persistence boundary for a new multisig — the real create gate.
+		requireFeature(event, 'multisig_create');
+		const { request, locals } = event;
 		const form = await request.formData();
 		const name = String(form.get('name') ?? '').trim();
 		const scriptTypeRaw = String(form.get('scriptType') ?? 'p2wsh') as MultisigScriptType;
@@ -185,7 +191,10 @@ export const actions: Actions = {
 	 * Caravan/Unchained wallet-config JSON (also what Cairn's own JSON backup
 	 * emits, so export → import round-trips).
 	 */
-	import: async ({ request }) => {
+	import: async (event) => {
+		// Pasting/uploading an existing config to prefill the wizard is the import gate.
+		requireFeature(event, 'wallet_config_import');
+		const { request } = event;
 		const form = await request.formData();
 		const source = String(form.get('source') ?? '').trim();
 		try {

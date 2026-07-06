@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { requireUser, readOptionalJson } from '$lib/server/api';
+import { requireFeature, readOptionalJson } from '$lib/server/api';
 import { broadcastTransaction, BroadcastError } from '$lib/server/transactions';
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
@@ -12,7 +12,8 @@ const log = childLogger('wallet');
  * draft (verified server-side). Refuses transactions that already have a txid.
  */
 export const POST: RequestHandler = async (event) => {
-	const user = requireUser(event);
+	// Gate broadcasting behind the 'send' feature flag.
+	const user = requireFeature(event, 'send');
 	const walletId = Number(event.params.id);
 	const txId = Number(event.params.txId);
 

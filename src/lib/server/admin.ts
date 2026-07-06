@@ -35,6 +35,11 @@ export function listUsers(): AdminUserInfo[] {
 	}));
 }
 
+/** One user's admin-facing info, or null if no such id. Used by /admin/users/[id]. */
+export function getUser(id: number): AdminUserInfo | null {
+	return listUsers().find((u) => u.id === id) ?? null;
+}
+
 function adminCount(): number {
 	const row = db
 		.prepare('SELECT COUNT(*) AS n FROM users WHERE is_admin = 1 AND disabled = 0')

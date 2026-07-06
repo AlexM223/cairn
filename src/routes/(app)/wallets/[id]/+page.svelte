@@ -260,19 +260,33 @@
 			{/if}
 			<span class="badge badge-neutral">{SCRIPT_TYPE_LABELS[data.wallet.scriptType]}</span>
 		</div>
-		<a href="/wallets/{data.wallet.id}/send" class="btn btn-primary btn-sm">
-			<Icon name="arrow-up-right" size={14} />
-			Send
-		</a>
-		<a
-			href="/api/wallets/{data.wallet.id}/history.csv"
-			class="btn btn-ghost btn-sm"
-			download
-			title="Download this wallet's transaction history as a CSV file"
-		>
-			<Icon name="arrow-down-left" size={14} />
-			Export history
-		</a>
+		{#if data.flags?.send === false}
+			<button
+				type="button"
+				class="btn btn-primary btn-sm"
+				disabled
+				title="Sending has been disabled by your administrator."
+			>
+				<Icon name="arrow-up-right" size={14} />
+				Send
+			</button>
+		{:else}
+			<a href="/wallets/{data.wallet.id}/send" class="btn btn-primary btn-sm">
+				<Icon name="arrow-up-right" size={14} />
+				Send
+			</a>
+		{/if}
+		{#if data.flags?.csv_export !== false}
+			<a
+				href="/api/wallets/{data.wallet.id}/history.csv"
+				class="btn btn-ghost btn-sm"
+				download
+				title="Download this wallet's transaction history as a CSV file"
+			>
+				<Icon name="arrow-down-left" size={14} />
+				Export history
+			</a>
+		{/if}
 		{#if !confirmDelete}
 			<button
 				type="button"

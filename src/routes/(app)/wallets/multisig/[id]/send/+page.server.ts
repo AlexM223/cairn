@@ -1,4 +1,5 @@
 import { error } from '@sveltejs/kit';
+import { requireFeature } from '$lib/server/api';
 import { getMultisig } from '$lib/server/wallets/multisig';
 import {
 	getMultisigTransaction,
@@ -11,7 +12,10 @@ import { getChain } from '$lib/server/chain';
 import type { FeeEstimates } from '$lib/types';
 import type { PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async ({ params, locals, url }) => {
+export const load: PageServerLoad = async (event) => {
+	const { params, locals, url } = event;
+	// The send flow itself is gated; the multisig stays viewable via its own page.
+	requireFeature(event, 'send');
 	const id = Number(params.id);
 	if (!Number.isInteger(id) || id <= 0) error(404, 'Multisig not found');
 

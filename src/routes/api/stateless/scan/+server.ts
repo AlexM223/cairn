@@ -1,4 +1,4 @@
-import { json, requireUser, readJson } from '$lib/server/api';
+import { json, requireFeature, readJson } from '$lib/server/api';
 import { scanStatelessSource, statelessErrorInfo } from '$lib/server/stateless';
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
@@ -14,7 +14,8 @@ const log = childLogger('stateless');
  * multisig row", not "no login".
  */
 export const POST: RequestHandler = async (event) => {
-	requireUser(event);
+	// Gate: the stateless signer tools require the stateless_signer feature.
+	requireFeature(event, 'stateless_signer');
 	const body = await readJson<{ source?: unknown }>(event);
 	try {
 		return json(await scanStatelessSource(String(body.source ?? '')));

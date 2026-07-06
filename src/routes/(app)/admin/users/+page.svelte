@@ -39,13 +39,18 @@
 				{#each data.users as user (user.id)}
 					<tr>
 						<td>
-							<div class="user-cell">
+							<a class="user-cell" href="/admin/users/{user.id}">
 								<span class="user-name">
 									{user.displayName}
 									{#if user.id === me?.id}<span class="you">you</span>{/if}
+									{#if user.overrideCount > 0}
+										<span class="override-badge" title="Feature overrides differ from the instance default">
+											{user.overrideCount} override{user.overrideCount === 1 ? '' : 's'}
+										</span>
+									{/if}
 								</span>
 								<span class="user-email">{user.email}</span>
-							</div>
+							</a>
 						</td>
 						<td>
 							{#if user.isAdmin}
@@ -99,8 +104,23 @@
 		min-width: 160px;
 	}
 
+	a.user-cell:hover .user-name {
+		color: var(--accent);
+	}
+
 	.user-name {
 		font-weight: 500;
+	}
+
+	.override-badge {
+		font-size: 10.5px;
+		font-weight: 600;
+		color: var(--accent);
+		background: var(--accent-muted);
+		border-radius: var(--radius-chip);
+		padding: 1px 5px;
+		margin-left: 5px;
+		vertical-align: 1px;
 	}
 
 	.you {

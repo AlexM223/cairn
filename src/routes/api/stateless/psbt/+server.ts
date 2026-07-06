@@ -1,4 +1,4 @@
-import { json, requireUser, readJson } from '$lib/server/api';
+import { json, requireFeature, readJson } from '$lib/server/api';
 import { buildStatelessPsbt, statelessErrorInfo } from '$lib/server/stateless';
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
@@ -23,7 +23,8 @@ interface CoinBody {
  * response PSBT is the client's to keep and walk through the signers.
  */
 export const POST: RequestHandler = async (event) => {
-	requireUser(event);
+	// Gate: the stateless signer tools require the stateless_signer feature.
+	requireFeature(event, 'stateless_signer');
 	const body = await readJson<{
 		source?: unknown;
 		recipients?: RecipientBody[];

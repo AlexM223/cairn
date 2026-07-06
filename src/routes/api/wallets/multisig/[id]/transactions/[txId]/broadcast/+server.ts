@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { requireUser, readOptionalJson } from '$lib/server/api';
+import { requireFeature, readOptionalJson } from '$lib/server/api';
 import { broadcastMultisigTransaction } from '$lib/server/multisigTransactions';
 import { BroadcastError } from '$lib/server/transactions';
 import { childLogger } from '$lib/server/logger';
@@ -16,7 +16,8 @@ const log = childLogger('wallet');
  * claims the broadcast atomically, so concurrent calls cannot double-send.
  */
 export const POST: RequestHandler = async (event) => {
-	const user = requireUser(event);
+	// Gate broadcasting behind the 'send' feature flag.
+	const user = requireFeature(event, 'send');
 	const multisigId = Number(event.params.id);
 	const txId = Number(event.params.txId);
 

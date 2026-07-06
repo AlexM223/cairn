@@ -10,7 +10,7 @@
 // an empty submit means "keep the stored value" so an untouched field can't
 // wipe it.
 
-import { json, readJson, requireUser } from '$lib/server/api';
+import { json, readJson, requireUser, requireFeature } from '$lib/server/api';
 import { db } from '$lib/server/db';
 import { childLogger } from '$lib/server/logger';
 import { getSetting } from '$lib/server/settings';
@@ -124,6 +124,8 @@ export const PUT: RequestHandler = async (event) => {
 	if (!isConfigurable(channel)) {
 		return json({ error: `Unknown channel: ${channel}` }, { status: 404 });
 	}
+	// Can't configure a channel the admin has disabled for this user.
+	requireFeature(event, `notify_${channel}`);
 
 	const body = await readJson<Record<string, unknown>>(event);
 	const prev = readStoredConfig(user.id, channel);

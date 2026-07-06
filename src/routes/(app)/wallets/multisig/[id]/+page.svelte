@@ -193,10 +193,22 @@
 			</span>
 			<span class="badge badge-neutral">{MULTISIG_SCRIPT_LABELS[data.multisig.scriptType]}</span>
 		</div>
-		<a href="/wallets/multisig/{data.multisig.id}/send" class="btn btn-primary btn-sm">
-			<Icon name="arrow-up-right" size={14} />
-			Send
-		</a>
+		{#if data.flags?.send === false}
+			<button
+				type="button"
+				class="btn btn-primary btn-sm"
+				disabled
+				title="Sending has been disabled by your administrator."
+			>
+				<Icon name="arrow-up-right" size={14} />
+				Send
+			</button>
+		{:else}
+			<a href="/wallets/multisig/{data.multisig.id}/send" class="btn btn-primary btn-sm">
+				<Icon name="arrow-up-right" size={14} />
+				Send
+			</a>
+		{/if}
 		<a href="#backup" class="btn btn-secondary btn-sm backup-btn">
 			<Icon name="arrow-down-left" size={14} />
 			Download backup
@@ -204,15 +216,17 @@
 				<span class="backup-dot" title="No backup downloaded yet"></span>
 			{/if}
 		</a>
-		<a
-			href="/api/wallets/multisig/{data.multisig.id}/history.csv"
-			class="btn btn-ghost btn-sm"
-			download
-			title="Download this wallet's transaction history as a CSV file"
-		>
-			<Icon name="arrow-down-left" size={14} />
-			Export history
-		</a>
+		{#if data.flags?.csv_export !== false}
+			<a
+				href="/api/wallets/multisig/{data.multisig.id}/history.csv"
+				class="btn btn-ghost btn-sm"
+				download
+				title="Download this wallet's transaction history as a CSV file"
+			>
+				<Icon name="arrow-down-left" size={14} />
+				Export history
+			</a>
+		{/if}
 		{#if !confirmDelete}
 			<button
 				type="button"

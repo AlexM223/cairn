@@ -1,10 +1,15 @@
 import { fail } from '@sveltejs/kit';
 import { listUsers, setUserAdmin, setUserDisabled } from '$lib/server/admin';
+import { overrideCountsByUser } from '$lib/server/featureFlags/admin';
 import { AuthError } from '$lib/server/auth';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async () => {
-	return { users: listUsers() };
+	// Attach each user's feature-override count so the list can badge users whose
+	// features differ from the instance default (links to their detail page).
+	const counts = overrideCountsByUser();
+	const users = listUsers().map((u) => ({ ...u, overrideCount: counts.get(u.id) ?? 0 }));
+	return { users };
 };
 
 function userAction(fn: (id: number) => void) {

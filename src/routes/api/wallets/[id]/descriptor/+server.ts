@@ -1,5 +1,5 @@
 import { error } from '@sveltejs/kit';
-import { requireUser } from '$lib/server/api';
+import { requireFeature } from '$lib/server/api';
 import { getWallet } from '$lib/server/wallets';
 import { walletDescriptorBackup } from '$lib/server/walletExport';
 import { markBackedUp } from '$lib/server/backups';
@@ -26,7 +26,8 @@ function slug(name: string): string {
  * it cannot spend. Downloading it records the wallet as backed up.
  */
 export const GET: RequestHandler = async (event) => {
-	const user = requireUser(event);
+	// Gate wallet descriptor export behind the wallet_config_export feature flag.
+	const user = requireFeature(event, 'wallet_config_export');
 	const id = Number(event.params.id);
 	if (!Number.isInteger(id) || id <= 0) error(404, 'Wallet not found');
 

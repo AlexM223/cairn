@@ -1,4 +1,4 @@
-import { json, requireUser, readJson } from '$lib/server/api';
+import { json, requireUser, requireFeature, readJson } from '$lib/server/api';
 import {
 	createMultisig,
 	type NewMultisigKey,
@@ -42,7 +42,8 @@ const DEVICE_TYPES = new Set(['trezor', 'ledger', 'coldcard', 'qr', 'file']);
  * address before anything is stored); MultisigError messages surface verbatim.
  */
 export const POST: RequestHandler = async (event) => {
-	const user = requireUser(event);
+	// Gate: creating a multisig requires the multisig_create feature.
+	const user = requireFeature(event, 'multisig_create');
 	const body = await readJson<CreateBody>(event);
 
 	const keys: NewMultisigKey[] = (Array.isArray(body.keys) ? body.keys : []).map((k) => ({

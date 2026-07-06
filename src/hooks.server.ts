@@ -2,6 +2,7 @@ import { redirect } from '@sveltejs/kit';
 import type { Handle, HandleServerError } from '@sveltejs/kit';
 import { randomBytes } from 'node:crypto';
 import { getSessionUser, SESSION_COOKIE, bootstrapAdminFromEnv } from '$lib/server/auth';
+import { resolveAllFlags } from '$lib/server/featureFlags/resolve';
 import { childLogger } from '$lib/server/logger';
 import { startNotificationQueueWorker } from '$lib/server/notificationQueue';
 import { startAddressWatcher } from '$lib/server/addressWatcher';
@@ -68,6 +69,10 @@ function redactPath(pathname: string): string {
 
 export const handle: Handle = async ({ event, resolve }) => {
 	event.locals.user = getSessionUser(event.cookies.get(SESSION_COOKIE));
+	// Resolve feature flags once per request, right after the user is known, so
+	// every route guard and load function reads the same object instead of
+	// re-querying. A logged-out/system context (null) gets the global values.
+	event.locals.flags = resolveAllFlags(event.locals.user?.id ?? null);
 
 	const { pathname } = event.url;
 	if (isAsset(pathname)) return resolve(event);

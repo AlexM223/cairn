@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onDestroy, tick } from 'svelte';
 	import { deserialize } from '$app/forms';
+	import { page } from '$app/state';
 	import Icon from '$lib/components/Icon.svelte';
 	import Stepper from '$lib/components/Stepper.svelte';
 	import Term from '$lib/components/Term.svelte';
@@ -399,7 +400,9 @@
 	// --- air-gapped QR scanning ---
 	let cameraAvailable = $state(false);
 	$effect(() => {
-		cameraAvailable = isCameraScanAvailable();
+		// qr_scan is a client-only feature (no server route); suppressing the camera
+		// path here is its enforcement. Falls back to paste when off.
+		cameraAvailable = isCameraScanAvailable() && page.data.flags?.qr_scan !== false;
 	});
 	let scanning = $state(false);
 	let videoEl = $state<HTMLVideoElement | null>(null);

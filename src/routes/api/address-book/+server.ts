@@ -1,10 +1,11 @@
-import { json, readJson, requireUser } from '$lib/server/api';
+import { json, readJson, requireFeature } from '$lib/server/api';
 import { listSavedAddresses, saveAddress, AddressBookError } from '$lib/server/addressBook';
 import type { RequestHandler } from './$types';
 
 /** GET /api/address-book — every saved recipient for the signed-in user. */
 export const GET: RequestHandler = async (event) => {
-	const user = requireUser(event);
+	// Gate: the address book requires the address_book feature.
+	const user = requireFeature(event, 'address_book');
 	return json({ addresses: listSavedAddresses(user.id) });
 };
 
@@ -15,7 +16,8 @@ export const GET: RequestHandler = async (event) => {
  * 201 when created, 200 when an existing entry was updated.
  */
 export const POST: RequestHandler = async (event) => {
-	const user = requireUser(event);
+	// Gate: the address book requires the address_book feature.
+	const user = requireFeature(event, 'address_book');
 	const body = await readJson<{ address?: unknown; label?: unknown }>(event);
 	try {
 		const { entry, created } = saveAddress(user.id, body);

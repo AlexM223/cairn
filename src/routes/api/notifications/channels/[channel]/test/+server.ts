@@ -2,7 +2,7 @@
 // test() for the signed-in user and return the ChannelSendResult inline (§4.1).
 // Same send path as a real notification, so a green result means it truly works.
 
-import { json, requireUser } from '$lib/server/api';
+import { json, requireUser, requireFeature } from '$lib/server/api';
 import { childLogger } from '$lib/server/logger';
 import { CHANNELS } from '$lib/server/notifications';
 import type { ChannelSendResult, NotificationChannelId } from '$lib/server/notifyTypes';
@@ -24,6 +24,8 @@ export const POST: RequestHandler = async (event) => {
 	if (!isTestableChannel(channel)) {
 		return json({ ok: false, error: `Unknown channel: ${channel}` }, { status: 404 });
 	}
+	// A disabled channel can't be test-fired (same send path as a real delivery).
+	requireFeature(event, `notify_${channel}`);
 
 	const plugin = CHANNELS[channel];
 

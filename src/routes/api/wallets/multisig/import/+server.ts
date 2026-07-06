@@ -1,4 +1,4 @@
-import { json, requireUser, readJson } from '$lib/server/api';
+import { json, requireFeature, readJson } from '$lib/server/api';
 import { parseDescriptor, MultisigError } from '$lib/server/bitcoin/multisig';
 import {
 	containsPrivateKeyMaterial,
@@ -51,7 +51,8 @@ function parseSource(source: string): CaravanImport {
  * create=true it creates the multisig directly.
  */
 export const POST: RequestHandler = async (event) => {
-	const user = requireUser(event);
+	// Gate: importing a wallet config requires the wallet_config_import feature.
+	const user = requireFeature(event, 'wallet_config_import');
 	const body = await readJson<ImportBody>(event);
 
 	let parsed: CaravanImport;

@@ -1,5 +1,5 @@
 import { error } from '@sveltejs/kit';
-import { requireUser } from '$lib/server/api';
+import { requireFeature } from '$lib/server/api';
 import { getMultisig } from '$lib/server/wallets/multisig';
 import { getMultisigDetail } from '$lib/server/multisigScan';
 import { getChain } from '$lib/server/chain';
@@ -11,7 +11,8 @@ import type { RequestHandler } from './$types';
  * download. Same columns and format as the single-sig wallet export.
  */
 export const GET: RequestHandler = async (event) => {
-	const user = requireUser(event);
+	// Gate CSV history export behind the csv_export feature flag.
+	const user = requireFeature(event, 'csv_export');
 	const id = Number(event.params.id);
 	if (!Number.isInteger(id) || id <= 0) error(404, 'Multisig not found');
 

@@ -1,4 +1,4 @@
-import { json, requireUser, readJson } from '$lib/server/api';
+import { json, requireUser, requireFeature, readJson } from '$lib/server/api';
 import {
 	getLedgerRegistration,
 	listLedgerRegistrations,
@@ -48,7 +48,8 @@ export const GET: RequestHandler = async (event) => {
  * (multisig, masterFp): re-registering the same Ledger replaces the stored HMAC.
  */
 export const POST: RequestHandler = async (event) => {
-	const user = requireUser(event);
+	// Gate: saving a Ledger registration requires the hw_ledger feature.
+	const user = requireFeature(event, 'hw_ledger');
 	const multisigId = Number(event.params.id);
 	if (!Number.isInteger(multisigId) || multisigId <= 0) {
 		return json({ error: 'Multisig not found' }, { status: 404 });

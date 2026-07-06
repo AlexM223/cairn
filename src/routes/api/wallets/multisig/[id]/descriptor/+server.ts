@@ -1,4 +1,4 @@
-import { json, requireUser } from '$lib/server/api';
+import { json, requireFeature } from '$lib/server/api';
 import { getMultisig, toMultisigConfig } from '$lib/server/wallets/multisig';
 import { multisigToDescriptor, MultisigError } from '$lib/server/bitcoin/multisig';
 import { descriptorBackup } from '$lib/server/multisigExport';
@@ -23,7 +23,8 @@ function safeFilename(name: string): string {
  * store to restore or cross-check the multisig in another tool).
  */
 export const GET: RequestHandler = async (event) => {
-	const user = requireUser(event);
+	// Gate multisig descriptor export behind the wallet_config_export feature flag.
+	const user = requireFeature(event, 'wallet_config_export');
 	const id = Number(event.params.id);
 	const multisig = Number.isInteger(id) && id > 0 ? getMultisig(user.id, id) : null;
 	if (!multisig) return json({ error: 'Multisig not found' }, { status: 404 });

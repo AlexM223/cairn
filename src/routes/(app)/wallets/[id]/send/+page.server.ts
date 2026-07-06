@@ -1,4 +1,5 @@
 import { error } from '@sveltejs/kit';
+import { requireFeature } from '$lib/server/api';
 import { getWallet, getWalletDetail } from '$lib/server/wallets';
 import { listSavedAddresses } from '$lib/server/addressBook';
 import { getTransaction, getWalletUtxos } from '$lib/server/transactions';
@@ -7,7 +8,10 @@ import { getChain } from '$lib/server/chain';
 import type { FeeEstimates } from '$lib/types';
 import type { PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async ({ params, locals, url }) => {
+export const load: PageServerLoad = async (event) => {
+	const { params, locals, url } = event;
+	// The send flow itself is gated; the wallet stays viewable via its own page.
+	requireFeature(event, 'send');
 	const id = Number(params.id);
 	if (!Number.isInteger(id) || id <= 0) error(404, 'Wallet not found');
 

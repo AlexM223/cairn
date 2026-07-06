@@ -6,6 +6,7 @@
 // queue worker (notificationQueue.ts) to deliver with retry/backoff.
 
 import { db } from './db';
+import { isFeatureEnabled } from './featureFlags/resolve';
 import { recordActivity } from './activity';
 import { notifyBus } from './notifyBus';
 import { childLogger } from './logger';
@@ -105,7 +106,10 @@ function enabledExternalChannels(
 	const result: Exclude<NotificationChannelId, 'inapp'>[] = [];
 	for (const channel of EXTERNAL_CHANNELS) {
 		const enabled = saved.has(channel) ? saved.get(channel)! : defaults.has(channel);
-		if (enabled) result.push(channel);
+		// An admin-disabled channel never delivers, regardless of the user's own
+		// routing preference or a still-present connection config — the same gate
+		// requireFeature enforces on the config/test routes, applied to delivery.
+		if (enabled && isFeatureEnabled(`notify_${channel}`, userId)) result.push(channel);
 	}
 	return result;
 }

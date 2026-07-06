@@ -45,6 +45,10 @@ export const load: LayoutServerLoad = async ({ locals, url }) => {
 	// Both are cheap local SQLite reads.
 	return {
 		user: locals.user,
+		// Resolved feature flags for this user, read on the client as data.flags.send
+		// (etc). Server-side enforcement (requireFeature) is the real gate; this is
+		// what lets the UI hide/grey features the user can't use.
+		flags: locals.flags,
 		unbackedWallets: listUnbackedWallets(locals.user.id),
 		showBackupReminder: shouldShowBackupReminder(locals.user.id)
 	};

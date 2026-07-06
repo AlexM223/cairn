@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { requireUser, readJson } from '$lib/server/api';
+import { requireFeature, readJson } from '$lib/server/api';
 import { bumpTransaction, BumpError } from '$lib/server/transactions';
 import { PsbtError } from '$lib/server/bitcoin/psbt';
 import type { RequestHandler } from './$types';
@@ -13,7 +13,8 @@ const log = childLogger('wallet');
  * the new draft's id; the send flow resumes it for signing and broadcast.
  */
 export const POST: RequestHandler = async (event) => {
-	const user = requireUser(event);
+	// Gate fee bumping (RBF) behind the 'fee_bumping' feature flag.
+	const user = requireFeature(event, 'fee_bumping');
 	const walletId = Number(event.params.id);
 	const txId = Number(event.params.txId);
 
