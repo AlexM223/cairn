@@ -2,7 +2,8 @@
 	import { enhance, applyAction, deserialize } from '$app/forms';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { onDestroy, tick } from 'svelte';
+	import { browser } from '$app/environment';
+	import { onDestroy, onMount, tick } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import DevicePicker from '$lib/components/DevicePicker.svelte';
 	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
@@ -20,6 +21,11 @@
 		DeviceReadUnavailable
 	} from './_components/deviceRead';
 	import { parseColdcardSingleSigExport } from './_components/coldcardImport';
+	import {
+		WIZARD_PROGRESS_KEY,
+		parseSavedProgress,
+		hasMeaningfulProgress
+	} from './_components/wizardProgress';
 
 	const STEPS = ['Type', 'Key', 'Preview', 'Name', 'Done'];
 
@@ -58,6 +64,94 @@
 	let backedUp = $state(false);
 
 	const looksLikeKey = $derived(/^[xyz]pub[1-9A-HJ-NP-Za-km-z]{20,}$/.test(xpubInput.trim()));
+
+	// ------------------------------------------- progress survives page reloads
+	//
+	// Everything above is ephemeral component state, so a full-page reload used
+	// to restart the wizard from scratch — on Umbrel, app_proxy's auth layer can
+	// force exactly such a reload mid-wizard, which read as "I confirmed the
+	// addresses and it looped back to choosing a method". A sessionStorage
+	// snapshot (tab-scoped, public-key data only) lets a remounted wizard resume
+	// at the step the user actually reached. Captured at init, applied after
+	// hydration (onMount) so the server-rendered markup is never contradicted.
+	const savedProgress = browser
+		? parseSavedProgress(safeReadProgress(), Date.now())
+		: null;
+	// True after a resume: shows the "picked up where you left off" note.
+	let resumed = $state(false);
+
+	function safeReadProgress(): string | null {
+		try {
+			return sessionStorage.getItem(WIZARD_PROGRESS_KEY);
+		} catch {
+			return null; // storage blocked (private mode etc.) — just start fresh
+		}
+	}
+
+	onMount(() => {
+		if (!savedProgress || !hasMeaningfulProgress(savedProgress)) return;
+		step = savedProgress.step;
+		method = savedProgress.method;
+		readMethod = savedProgress.readMethod;
+		deviceType = savedProgress.deviceType;
+		xpubInput = savedProgress.xpubInput;
+		validatedXpub = savedProgress.validatedXpub;
+		preview = savedProgress.preview;
+		scriptType = savedProgress.scriptType;
+		if (savedProgress.name) name = savedProgress.name;
+		resumed = true;
+	});
+
+	// Persist on every change; once the wallet exists (Done step) the snapshot
+	// is cleared so a later visit starts a fresh wizard, not a stale resume.
+	$effect(() => {
+		const snapshot = JSON.stringify({
+			step,
+			method,
+			readMethod,
+			deviceType,
+			xpubInput,
+			validatedXpub,
+			preview: $state.snapshot(preview),
+			scriptType,
+			name,
+			savedAt: Date.now()
+		});
+		try {
+			if (step >= 4) sessionStorage.removeItem(WIZARD_PROGRESS_KEY);
+			else sessionStorage.setItem(WIZARD_PROGRESS_KEY, snapshot);
+		} catch {
+			// Best-effort: without storage the wizard still works, it just
+			// can't survive a reload.
+		}
+	});
+
+	/** The escape hatch on the resume note: forget the snapshot, start clean. */
+	function startOver() {
+		stopQrScan();
+		resumed = false;
+		step = 0;
+		walletType = 'single';
+		method = null;
+		readMethod = null;
+		deviceType = null;
+		changeDevice = false;
+		xpubInput = '';
+		validatedXpub = '';
+		preview = [];
+		scriptType = null;
+		name = '';
+		previewError = null;
+		deviceError = null;
+		createError = null;
+		restoreNote = null;
+		restoreError = null;
+		try {
+			sessionStorage.removeItem(WIZARD_PROGRESS_KEY);
+		} catch {
+			// Already reset in memory; a stale snapshot will age out.
+		}
+	}
 
 	// -------------------------------------------------- Step 2: how the key arrives
 	//
@@ -345,6 +439,16 @@
 	<p class="hint" style="margin-bottom: 24px">
 		A short guided setup — Cairn only ever sees public keys.
 	</p>
+
+	{#if resumed}
+		<!-- A reload (or coming back to the tab) landed mid-wizard and we restored
+		     the saved progress — say so, with a way out to a clean start. -->
+		<div class="resume-note" role="status">
+			<Icon name="info" size={14} />
+			<span class="grow">Picked up where you left off.</span>
+			<button type="button" class="resume-reset" onclick={startOver}>Start over</button>
+		</div>
+	{/if}
 
 	<!-- Step indicator -->
 	<ol class="steps" aria-label="Import progress">
@@ -1025,6 +1129,47 @@
 
 	.back-link:hover {
 		color: var(--accent);
+	}
+
+	/* --- resume note (shown after a mid-wizard reload restored progress) --- */
+
+	.resume-note {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-bottom: 14px;
+		padding: 8px 12px;
+		font-size: 12.5px;
+		color: var(--text-secondary);
+		background: var(--surface);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-control);
+	}
+
+	.resume-note :global(svg) {
+		color: var(--accent);
+		flex-shrink: 0;
+	}
+
+	.resume-note .grow {
+		flex: 1;
+	}
+
+	.resume-reset {
+		flex-shrink: 0;
+		background: none;
+		border: none;
+		padding: 0;
+		font: inherit;
+		font-size: 12.5px;
+		color: var(--accent);
+		text-decoration: underline;
+		text-underline-offset: 3px;
+		cursor: pointer;
+	}
+
+	.resume-reset:hover {
+		color: var(--text);
 	}
 
 	/* --- step indicator --- */
