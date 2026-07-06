@@ -1,5 +1,8 @@
-import { fail } from '@sveltejs/kit';
+import { fail, redirect } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
+import { deleteOwnAccount } from '$lib/server/accountDeletion';
+import { AuthError } from '$lib/server/auth';
+import { invalidateWalletCache } from '$lib/server/bitcoin/walletScan';
 import {
 	listCredentials,
 	hasPassword,
@@ -111,5 +114,30 @@ export const actions: Actions = {
 		setSessionCookie(cookies, token, expiresAt, url);
 
 		return { passwordSaved: true };
+	},
+
+	/**
+	 * Danger zone (cairn-5u2i.2): delete the caller's OWN account after a typed
+	 * confirmation, mirroring the admin reset-instance pattern. Everything the
+	 * user owns goes; multisigs they merely participated in survive for their
+	 * owner (only the share row is removed).
+	 */
+	deleteAccount: async ({ request, locals }) => {
+		const form = await request.formData();
+		if (String(form.get('confirm') ?? '') !== 'DELETE')
+			return fail(400, { deleteError: 'Type DELETE to confirm deleting your account.' });
+
+		try {
+			deleteOwnAccount(locals.user!.id);
+		} catch (e) {
+			if (e instanceof AuthError && e.code === 'last_admin') {
+				return fail(400, { deleteError: e.message });
+			}
+			throw e;
+		}
+		invalidateWalletCache(); // drop cached scans for the deleted wallets
+
+		// The account (and every session) is gone; the stale cookie fails auth.
+		redirect(303, '/login');
 	}
 };

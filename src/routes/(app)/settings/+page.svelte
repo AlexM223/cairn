@@ -12,6 +12,12 @@
 	let savingProfile = $state(false);
 	let savingPassword = $state(false);
 
+	// Danger zone: delete my account — two-step typed confirmation, same
+	// pattern as the admin instance reset (cairn-5u2i.2).
+	let confirmingDelete = $state(false);
+	let deleteConfirmText = $state('');
+	let deleting = $state(false);
+
 	// Passkeys: first paint from the server load; mutations replace the list.
 	let override = $state<CredentialInfo[] | null>(null);
 	const passkeys = $derived(override ?? (data.passkeys as CredentialInfo[]));
@@ -359,18 +365,31 @@
 		</div>
 	</section>
 
-	<section class="card card-pad section">
-		<span class="card-title">Contacts</span>
-		<p class="hint" style="margin: 4px 0 10px">
-			The people you can share a multisig wallet with. Add someone by email, then
-			invite them to co-sign a wallet you own.
-		</p>
-		<div class="row">
-			<a href="/settings/contacts" class="btn btn-secondary btn-sm">
-				<Icon name="users" size={14} /> Manage contacts
-			</a>
-		</div>
-	</section>
+	{#if page.data.instanceMode === 'team'}
+		<section class="card card-pad section">
+			<span class="card-title">Contacts</span>
+			<p class="hint" style="margin: 4px 0 10px">
+				The people you can share a multisig wallet with. Add someone by email, then
+				invite them to co-sign a wallet you own.
+			</p>
+			<div class="row">
+				<a href="/settings/contacts" class="btn btn-secondary btn-sm">
+					<Icon name="users" size={14} /> Manage contacts
+				</a>
+			</div>
+		</section>
+	{:else}
+		<section class="card card-pad section">
+			<span class="card-title">Contacts</span>
+			<p class="hint" style="margin: 4px 0 10px">
+				Want to share a multisig wallet with a co-signer? {#if user?.isAdmin}
+					<a href="/admin/settings">Turn on team features</a>
+				{:else}
+					Ask your admin to turn on team features
+				{/if} to unlock contacts and wallet sharing.
+			</p>
+		</section>
+	{/if}
 
 	<section class="card card-pad section">
 		<span class="card-title">Notifications</span>
@@ -400,12 +419,124 @@
 			</a>
 		</div>
 	</section>
+
+	<section class="card card-pad section danger-zone">
+		<span class="card-title danger-title">Danger zone</span>
+		<p class="hint">
+			Delete your account and everything it stores on this server: your wallets and their
+			configuration, labels, address book, notification settings, and activity. Multisig wallets
+			someone shared with you stay intact for their owner — you're just removed from them. Your
+			bitcoin is not touched (this server never holds keys), but if you haven't downloaded your
+			wallet backups, recovering your wallet setup later will be much harder.
+		</p>
+
+		{#if form?.deleteError}
+			<p class="hint danger-title">{form.deleteError}</p>
+		{/if}
+
+		{#if !confirmingDelete}
+			<div>
+				<button
+					type="button"
+					class="btn btn-secondary danger-btn"
+					onclick={() => {
+						confirmingDelete = true;
+						deleteConfirmText = '';
+					}}
+				>
+					Delete my account
+				</button>
+			</div>
+		{:else}
+			<form
+				method="POST"
+				action="?/deleteAccount"
+				class="delete-confirm"
+				use:enhance={() => {
+					deleting = true;
+					return async ({ update }) => {
+						deleting = false;
+						await update();
+					};
+				}}
+			>
+				<label class="label" for="deleteConfirm">
+					This cannot be undone. Type <strong>DELETE</strong> to confirm.
+				</label>
+				<div class="delete-row">
+					<input
+						class="input mono"
+						id="deleteConfirm"
+						name="confirm"
+						autocomplete="off"
+						spellcheck="false"
+						placeholder="DELETE"
+						bind:value={deleteConfirmText}
+					/>
+					<button
+						class="btn btn-secondary danger-btn"
+						disabled={deleteConfirmText !== 'DELETE' || deleting}
+					>
+						{#if deleting}<span class="spinner"></span>{/if}
+						Delete my account forever
+					</button>
+					<button
+						type="button"
+						class="btn btn-ghost"
+						onclick={() => {
+							confirmingDelete = false;
+							deleteConfirmText = '';
+						}}
+					>
+						Cancel
+					</button>
+				</div>
+			</form>
+		{/if}
+	</section>
 </div>
 
 <style>
 	.settings {
 		gap: 14px;
 		max-width: 640px;
+	}
+
+	/* Danger zone — same treatment as the admin instance-reset card. */
+	.danger-zone {
+		margin-top: 24px;
+		border-color: rgba(232, 90, 90, 0.4);
+	}
+
+	.danger-title {
+		color: var(--error);
+	}
+
+	.danger-btn {
+		color: var(--error);
+		border-color: rgba(232, 90, 90, 0.4);
+	}
+
+	.danger-btn:hover:not(:disabled) {
+		background: var(--error-muted);
+		border-color: var(--error);
+	}
+
+	.delete-confirm {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.delete-row {
+		display: flex;
+		gap: 10px;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+
+	.delete-row .input {
+		max-width: 160px;
 	}
 
 	.section {
