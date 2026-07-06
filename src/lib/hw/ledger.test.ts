@@ -3,6 +3,7 @@ import { Transaction, p2wpkh, p2ms, p2wsh, NETWORK } from '@scure/btc-signer';
 import { base64 } from '@scure/base';
 import { HDKey } from '@scure/bip32';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
+import { sha256 } from '@noble/hashes/sha2.js';
 import {
 	isWebHidAvailable,
 	accountOriginFromPsbt,
@@ -19,7 +20,12 @@ import {
 	signMultisigPsbtWithLedger,
 	singleSigAccountPath,
 	readSingleSigKeyFromLedger,
-	type MultisigSignKey
+	serializeMultisigPolicy,
+	makeDeviceWalletPolicy,
+	primeInterpreterWithPolicy,
+	exchangeInterruptible,
+	type MultisigSignKey,
+	type PolicyDeps
 } from './ledger';
 import type { ScriptType } from '$lib/types';
 
@@ -295,6 +301,127 @@ describe('buildMultisigPolicy', () => {
 		expect(() =>
 			buildMultisigPolicy({ policyName: 'x', threshold: 0, keys: MULTISIG_KEYS, scriptType: 'p2wsh' })
 		).toThrow(LedgerError);
+	});
+});
+
+describe('BIP-388 wallet-policy wire protocol', () => {
+	// Minimal Bitcoin varint (single byte below 0xfd — every length in these
+	// tests) so serialization structure is asserted without pulling ledger-bitcoin.
+	function varint(n: number): Buffer {
+		if (n < 0xfd) return Buffer.from([n]);
+		const b = Buffer.alloc(3);
+		b[0] = 0xfd;
+		b.writeUInt16LE(n, 1);
+		return b;
+	}
+	const KEYS_ROOT = Buffer.alloc(32, 0xab);
+	let merkleLeaves: Buffer[] | null = null;
+	function stubDeps(overrides: Partial<PolicyDeps> = {}): PolicyDeps {
+		return {
+			createVarint: varint,
+			hashLeaf: (buf: Buffer) => Buffer.concat([Buffer.from([0x00]), Buffer.from(sha256(buf))]),
+			Merkle: class {
+				constructor(leaves: Buffer[]) {
+					merkleLeaves = leaves;
+				}
+				getRoot() {
+					return KEYS_ROOT;
+				}
+			},
+			ClientCommandInterpreter: class {
+				execute() {
+					return Buffer.alloc(0);
+				}
+				addKnownPreimage() {}
+				addKnownList() {}
+			},
+			...overrides
+		} as PolicyDeps;
+	}
+
+	const policy = buildMultisigPolicy({
+		policyName: 'Family multisig',
+		threshold: 2,
+		keys: MULTISIG_KEYS,
+		scriptType: 'p2wsh'
+	});
+
+	it('serializes the exact v2 named-policy byte layout', () => {
+		merkleLeaves = null;
+		const out = serializeMultisigPolicy(policy, stubDeps());
+		const name = Buffer.from(policy.name, 'ascii');
+		const template = Buffer.from(policy.template, 'ascii');
+		const expected = Buffer.concat([
+			Buffer.from([0x02]), // wallet policy version 2
+			varint(name.length),
+			name,
+			varint(template.length),
+			Buffer.from(sha256(template)), // template committed as its sha256, not raw
+			varint(policy.keys.length),
+			KEYS_ROOT
+		]);
+		expect(Buffer.compare(out, expected)).toBe(0);
+		// The keys Merkle tree is built over hashLeaf(ascii(keyString)) per key.
+		expect(merkleLeaves).toEqual(
+			policy.keys.map((k) => Buffer.concat([Buffer.from([0x00]), Buffer.from(sha256(Buffer.from(k, 'ascii')))]))
+		);
+	});
+
+	it('derives wallet_id = sha256(serialization)', () => {
+		const deps = stubDeps();
+		const device = makeDeviceWalletPolicy(policy, deps);
+		expect(device.descriptorTemplate).toBe(policy.template);
+		expect(device.keys).toEqual(policy.keys);
+		expect(Buffer.compare(device.getWalletId(), Buffer.from(sha256(serializeMultisigPolicy(policy, deps))))).toBe(0);
+	});
+
+	it('primes the interpreter with the policy preimage, key list, and template preimage', () => {
+		const deps = stubDeps();
+		const device = makeDeviceWalletPolicy(policy, deps);
+		const preimages: Buffer[] = [];
+		const lists: Buffer[][] = [];
+		primeInterpreterWithPolicy(
+			{
+				addKnownPreimage: (p: Buffer) => preimages.push(p),
+				addKnownList: (l: Buffer[]) => lists.push(l)
+			},
+			policy,
+			device
+		);
+		// Order matters: serialized policy, then the key list, then the raw template.
+		expect(Buffer.compare(preimages[0], device.serialize())).toBe(0);
+		expect(lists[0]).toEqual(policy.keys.map((k) => Buffer.from(k, 'ascii')));
+		expect(Buffer.compare(preimages[1], Buffer.from(policy.template, 'ascii'))).toBe(0);
+	});
+
+	it('runs the interrupt loop: serves merkle requests until 0x9000, strips the status word', async () => {
+		const SW_OK = Buffer.from([0x90, 0x00]);
+		const SW_INT = Buffer.from([0xe0, 0x00]);
+		const hwRequest = Buffer.from([0xde, 0xad]);
+		const finalBody = Buffer.from([0xca, 0xfe, 0x01]);
+		// First send → interrupted (body = hwRequest). Second send → done (finalBody).
+		const responses = [Buffer.concat([hwRequest, SW_INT]), Buffer.concat([finalBody, SW_OK])];
+		const sent: { cla: number; ins: number; data: Buffer }[] = [];
+		const transport = {
+			send: async (cla: number, ins: number, _p1: number, _p2: number, data: Buffer) => {
+				sent.push({ cla, ins, data });
+				return responses.shift()!;
+			}
+		};
+		let executedWith: Buffer | null = null;
+		const interpreter = {
+			execute: (req: Buffer) => {
+				executedWith = req;
+				return Buffer.from([0x42]); // the served merkle data
+			}
+		};
+		const body = await exchangeInterruptible(transport, 0x02, Buffer.from([0x01]), interpreter);
+
+		expect(Buffer.compare(body, finalBody)).toBe(0); // status word stripped
+		expect(executedWith && Buffer.compare(executedWith, hwRequest)).toBe(0); // served the app's request
+		expect(sent).toHaveLength(2);
+		expect(sent[0].ins).toBe(0x02); // first exchange uses the caller's INS
+		expect(Buffer.compare(sent[1].data, Buffer.from([0x42]))).toBe(0); // continuation carries the interpreter's answer
 	});
 });
 

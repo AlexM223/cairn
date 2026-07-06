@@ -779,7 +779,7 @@ const INS_CONTINUE_INTERRUPTED = 0x01;
 const APDU_PROTOCOL_VERSION = 1; // supported from version 2.1.0 of the app
 const SW_INTERRUPTED = 0xe000;
 
-interface PolicyDeps {
+export interface PolicyDeps {
 	ClientCommandInterpreter: new (progress: () => void) => {
 		execute(request: Buffer): Buffer;
 		addKnownPreimage(preimage: Buffer): void;
@@ -812,7 +812,7 @@ async function loadPolicyDeps(): Promise<PolicyDeps> {
  * (hw-app-btc's own WalletPolicy hardcodes an empty name, which is why this
  * driver serializes the named form itself.)
  */
-function serializeMultisigPolicy(policy: MultisigWalletPolicy, deps: PolicyDeps): Buffer {
+export function serializeMultisigPolicy(policy: MultisigWalletPolicy, deps: PolicyDeps): Buffer {
 	const nameBytes = Buffer.from(policy.name, 'ascii');
 	const templateBytes = Buffer.from(policy.template, 'ascii');
 	const keysRoot = new deps.Merkle(
@@ -830,14 +830,14 @@ function serializeMultisigPolicy(policy: MultisigWalletPolicy, deps: PolicyDeps)
 }
 
 /** The structural shape AppClient.signPsbt expects of a wallet policy. */
-interface DeviceWalletPolicy {
+export interface DeviceWalletPolicy {
 	descriptorTemplate: string;
 	keys: string[];
 	serialize(): Buffer;
 	getWalletId(): Buffer;
 }
 
-function makeDeviceWalletPolicy(policy: MultisigWalletPolicy, deps: PolicyDeps): DeviceWalletPolicy {
+export function makeDeviceWalletPolicy(policy: MultisigWalletPolicy, deps: PolicyDeps): DeviceWalletPolicy {
 	const serialized = serializeMultisigPolicy(policy, deps);
 	return {
 		descriptorTemplate: policy.template,
@@ -851,7 +851,7 @@ function makeDeviceWalletPolicy(policy: MultisigWalletPolicy, deps: PolicyDeps):
  *  requests via the interpreter until it stops yielding SW_INTERRUPTED, and
  *  return the final response body (status word stripped). Same loop as
  *  AppClient's private makeRequest. */
-async function exchangeInterruptible(
+export async function exchangeInterruptible(
 	transport: { send(cla: number, ins: number, p1: number, p2: number, data: Buffer, statusList: number[]): Promise<Buffer> },
 	ins: number,
 	data: Buffer,
@@ -878,7 +878,7 @@ async function exchangeInterruptible(
 /** Prime a ClientCommandInterpreter with everything the app may request while
  *  processing a wallet policy (the policy preimage, the keys list, the
  *  template preimage) — mirrors ledger-bitcoin's addKnownWalletPolicy. */
-function primeInterpreterWithPolicy(
+export function primeInterpreterWithPolicy(
 	interpreter: { addKnownPreimage(p: Buffer): void; addKnownList(l: Buffer[]): void },
 	policy: MultisigWalletPolicy,
 	device: DeviceWalletPolicy
