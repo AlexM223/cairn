@@ -15,6 +15,10 @@ import {
 	peekMultisigReceiveAddress
 } from '$lib/server/multisigScan';
 import { multisigToDescriptor } from '$lib/server/bitcoin/multisig';
+import {
+	listMultisigTransactions,
+	detectMultisigUnconfirmedInflows
+} from '$lib/server/multisigTransactions';
 import { isBackedUp } from '$lib/server/backups';
 import { getChain } from '$lib/server/chain';
 import type { Actions, PageServerLoad } from './$types';
@@ -97,6 +101,22 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 			tipHeight = 0;
 		}
 
+		// Which unconfirmed txs can be sped up, and how (RBF vs CPFP) — feeds the
+		// "Speed up" button (cairn-u9ob.4). Tolerate a chain hiccup. The saved-tx
+		// list lets the RBF path find the row to bump.
+		let speedUp: Awaited<ReturnType<typeof detectMultisigUnconfirmedInflows>> = [];
+		try {
+			speedUp = (await detectMultisigUnconfirmedInflows(locals.user!.id, id)) ?? [];
+		} catch {
+			speedUp = [];
+		}
+		const savedTxs = (listMultisigTransactions(locals.user!.id, id) ?? []).map((t) => ({
+			id: t.id,
+			txid: t.txid,
+			status: t.status,
+			feeRate: t.feeRate
+		}));
+
 		return {
 			...base,
 			detail: {
@@ -108,14 +128,20 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 			receive: { ...receive, qr },
 			coinbaseUtxos,
 			tipHeight,
+			speedUp: speedUp ?? [],
+			savedTxs,
 			scanError: null as string | null
 		};
 	} catch (e) {
-		// Only swallow scan failures — the multisig shell still renders.
+		// Only swallow scan failures — the multisig shell still renders. Keep the
+		// same fields the success branch returns (empty) so `data.speedUp`/
+		// `data.savedTxs` aren't typed as possibly-undefined at the call sites.
 		return {
 			...base,
 			detail: null,
 			receive: null,
+			speedUp: [] as Awaited<ReturnType<typeof detectMultisigUnconfirmedInflows>>,
+			savedTxs: [] as { id: number; txid: string | null; status: string; feeRate: number }[],
 			scanError: e instanceof Error ? e.message : 'Multisig scan failed'
 		};
 	}

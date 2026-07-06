@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
-	import { afterNavigate, invalidateAll, replaceState } from '$app/navigation';
+	import { afterNavigate, goto, invalidateAll, replaceState } from '$app/navigation';
 	import Icon from '$lib/components/Icon.svelte';
 	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
@@ -37,6 +37,99 @@
 	let retrying = $state(false);
 	let tab = $state<'transactions' | 'addresses'>('transactions');
 	let addrFilter = $state<'used' | 'unused'>('used');
+
+	// --- speed up (RBF-vs-CPFP routing, cairn-u9ob.4 multisig parity) ---
+	// Detection resolves each unconfirmed inflow to 'rbf' (we originated it and it
+	// still signals replaceability — bump it) or 'cpfp' (attach a high-fee child).
+	// See docs/CPFP-UNCONFIRMED-PLAN.md §4.
+	const speedUpByTxid = $derived<Record<string, NonNullable<typeof data.speedUp>[number]>>(
+		Object.fromEntries((data.speedUp ?? []).map((s) => [s.txid, s]))
+	);
+	let speedUpTxid = $state<string | null>(null);
+	let speedUpRate = $state('');
+	let speedingUp = $state(false);
+	let speedUpError = $state<string | null>(null);
+
+	async function fastRateSeed(floorRate: number): Promise<string> {
+		let seed = String(Math.max(2, Math.ceil(floorRate) + 1));
+		try {
+			const res = await fetch('/api/mempool/fees');
+			if (res.ok) {
+				const fees = (await res.json()) as { fastest?: number };
+				if (typeof fees.fastest === 'number' && fees.fastest > floorRate) {
+					seed = String(fees.fastest);
+				}
+			}
+		} catch {
+			/* keep the fallback seed */
+		}
+		return seed;
+	}
+
+	async function openSpeedUp(txid: string) {
+		const inflow = speedUpByTxid[txid];
+		if (!inflow) return;
+		speedUpError = null;
+		speedUpTxid = txid;
+		const saved =
+			inflow.action === 'rbf'
+				? data.savedTxs.find(
+						(t) => t.txid === txid && (t.status === 'completed' || t.status === 'superseded')
+					)
+				: undefined;
+		speedUpRate = await fastRateSeed(saved?.feeRate ?? 1);
+	}
+
+	/** Apply the detection verdict: RBF-bump our own replaceable tx, else CPFP. */
+	async function submitSpeedUp(txid: string) {
+		if (speedingUp) return;
+		const inflow = speedUpByTxid[txid];
+		if (!inflow) return;
+		speedingUp = true;
+		speedUpError = null;
+		try {
+			let res: Response;
+			if (inflow.action === 'rbf') {
+				const saved = data.savedTxs.find(
+					(t) => t.txid === txid && (t.status === 'completed' || t.status === 'superseded')
+				);
+				if (!saved) {
+					// No saved row to replace — fall back to a CPFP child.
+					res = await fetch(`/api/wallets/multisig/${data.multisig.id}/transactions/cpfp`, {
+						method: 'POST',
+						headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({ parentTxid: txid, feeRate: Number(speedUpRate) })
+					});
+				} else {
+					res = await fetch(
+						`/api/wallets/multisig/${data.multisig.id}/transactions/${saved.id}/bump`,
+						{
+							method: 'POST',
+							headers: { 'content-type': 'application/json' },
+							body: JSON.stringify({ feeRate: Number(speedUpRate) })
+						}
+					);
+				}
+			} else {
+				res = await fetch(`/api/wallets/multisig/${data.multisig.id}/transactions/cpfp`, {
+					method: 'POST',
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify({ parentTxid: txid, feeRate: Number(speedUpRate) })
+				});
+			}
+			const body = await res.json();
+			if (!res.ok) {
+				speedUpError = typeof body?.error === 'string' ? body.error : 'Speed up failed.';
+				return;
+			}
+			// The new draft re-enters the roster sign/broadcast flow.
+			await goto(`/wallets/multisig/${data.multisig.id}/send?tx=${body.id}`);
+		} catch {
+			speedUpError = 'Speed up failed — check your connection and try again.';
+		} finally {
+			speedingUp = false;
+		}
+	}
 
 	const receive = $derived(form?.receive ?? data.receive);
 

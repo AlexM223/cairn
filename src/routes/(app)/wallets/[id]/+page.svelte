@@ -115,6 +115,88 @@
 		}
 	}
 
+	// --- speed up (RBF-vs-CPFP routing, cairn-u9ob.4) ---
+	// Detection (server) resolves each unconfirmed inflow to an action: 'rbf' when
+	// we originated the tx and it still signals replaceability (replace it more
+	// cheaply), or 'cpfp' otherwise (received funds, or our own tx that no longer
+	// signals RBF — attach a high-fee child instead). See docs/CPFP-UNCONFIRMED-PLAN.md §4.
+	const speedUpByTxid = $derived<Record<string, NonNullable<typeof data.speedUp>[number]>>(
+		Object.fromEntries((data.speedUp ?? []).map((s) => [s.txid, s]))
+	);
+	let cpfpTxid = $state<string | null>(null);
+	let cpfpRate = $state('');
+	let cpfping = $state(false);
+	let cpfpError = $state<string | null>(null);
+
+	/** Seed a fee input just above the parent's rate, upgraded to the live fast
+	 *  tier when the oracle is reachable. Shared by RBF and CPFP entry points. */
+	async function fastRateSeed(floorRate: number): Promise<string> {
+		let seed = String(Math.max(2, Math.ceil(floorRate) + 1));
+		try {
+			const res = await fetch('/api/mempool/fees');
+			if (res.ok) {
+				const fees = (await res.json()) as { fastest?: number };
+				if (typeof fees.fastest === 'number' && fees.fastest > floorRate) {
+					seed = String(fees.fastest);
+				}
+			}
+		} catch {
+			/* keep the fallback seed */
+		}
+		return seed;
+	}
+
+	/** Route a "Speed up" click per the detection verdict: reuse the RBF bump form
+	 *  for our own replaceable tx, or open the CPFP form otherwise. */
+	async function openSpeedUp(txid: string) {
+		const inflow = speedUpByTxid[txid];
+		if (!inflow) return;
+		if (inflow.action === 'rbf') {
+			// RBF replaces the whole tx — find its saved (broadcast) row and reuse the
+			// existing bump form, which resumes the send flow at Review.
+			const saved = data.transactions.find(
+				(t) => t.txid === txid && (t.status === 'completed' || t.status === 'superseded')
+			);
+			if (saved) {
+				cpfpTxid = null;
+				await openBump(saved);
+				return;
+			}
+			// No saved row (shouldn't happen — 'ours' implies one) → fall back to CPFP.
+		}
+		bumpTxId = null;
+		cpfpError = null;
+		cpfpTxid = txid;
+		// The server prices against the parent's real rate and refuses if the target
+		// is already met; seed from the live fast tier (floor 1).
+		cpfpRate = await fastRateSeed(1);
+	}
+
+	/** Build a CPFP child on the stuck parent and hand off to the send flow. */
+	async function submitCpfp(parentTxid: string) {
+		if (cpfping) return;
+		cpfping = true;
+		cpfpError = null;
+		try {
+			const res = await fetch(`/api/wallets/${data.wallet.id}/transactions/cpfp`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ parentTxid, feeRate: Number(cpfpRate) })
+			});
+			const body = await res.json();
+			if (!res.ok) {
+				cpfpError = typeof body?.error === 'string' ? body.error : 'Speed up failed.';
+				return;
+			}
+			// The CPFP child is a fresh draft — resume it for signing + broadcast.
+			await goto(`/wallets/${data.wallet.id}/send?tx=${body.id}`);
+		} catch {
+			cpfpError = 'Speed up failed — check your connection and try again.';
+		} finally {
+			cpfping = false;
+		}
+	}
+
 	// createdAt is an ISO string; timeAgo wants unix seconds.
 	function isoToUnix(iso: string): number {
 		return Math.floor(Date.parse(iso) / 1000);
@@ -662,10 +744,66 @@
 										</td>
 										<td>
 											{#if tx.height <= 0}
-												<span class="badge badge-warning">
-													<Icon name="clock" size={11} />
-													pending
-												</span>
+												<div class="pending-cell">
+													<span class="badge badge-warning">
+														<Icon name="clock" size={11} />
+														pending
+													</span>
+													{#if speedUpByTxid[tx.txid]}
+														{#if cpfpTxid === tx.txid}
+															<form
+																class="bump-form"
+																onsubmit={(e) => {
+																	e.preventDefault();
+																	submitCpfp(tx.txid);
+																}}
+															>
+																<label class="hint" for="cpfp-rate-{tx.txid}">Target rate</label>
+																<input
+																	id="cpfp-rate-{tx.txid}"
+																	class="input bump-input"
+																	type="number"
+																	min="1"
+																	step="any"
+																	bind:value={cpfpRate}
+																	disabled={cpfping}
+																/>
+																<span class="hint">sat/vB</span>
+																<button
+																	class="btn btn-primary btn-sm"
+																	type="submit"
+																	disabled={cpfping}
+																>
+																	{#if cpfping}<span class="spinner"></span>{/if}
+																	Speed up
+																</button>
+																<button
+																	type="button"
+																	class="btn btn-ghost btn-sm"
+																	disabled={cpfping}
+																	onclick={() => (cpfpTxid = null)}
+																>
+																	Cancel
+																</button>
+															</form>
+															{#if cpfpError}
+																<div class="form-error bump-error" role="alert">{cpfpError}</div>
+															{/if}
+														{:else}
+															<button
+																type="button"
+																class="btn btn-ghost btn-sm speed-up-btn"
+																onclick={() => openSpeedUp(tx.txid)}
+																title={speedUpByTxid[tx.txid].action === 'rbf'
+																	? 'Replace this transaction with a higher-fee version (RBF).'
+																	: 'Add a higher-fee child transaction so miners confirm them together (CPFP).'}
+															>
+																<Icon name="zap" size={13} />
+																Speed up
+															</button>
+														{/if}
+													{/if}
+												</div>
 											{:else}
 												<span class="text-muted">{timeAgo(tx.time)}</span>
 											{/if}
@@ -1478,6 +1616,18 @@
 		width: 90px;
 		font-size: 12.5px;
 		padding: 4px 8px;
+	}
+
+	/* Pending tx history cell: badge + inline Speed up affordance. */
+	.pending-cell {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+
+	.speed-up-btn {
+		gap: 4px;
 	}
 
 	.bump-error {

@@ -8,7 +8,11 @@ import {
 	nextReceiveAddress,
 	peekReceiveAddress
 } from '$lib/server/wallets';
-import { listTransactions, getWalletUtxos } from '$lib/server/transactions';
+import {
+	listTransactions,
+	getWalletUtxos,
+	detectWalletUnconfirmedInflows
+} from '$lib/server/transactions';
 import { getChain } from '$lib/server/chain';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -72,6 +76,16 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 			tipHeight = 0;
 		}
 
+		// Which unconfirmed transactions can be sped up, and how (RBF vs CPFP) —
+		// feeds the "Speed up" button (cairn-u9ob.4). Tolerate a chain hiccup: the
+		// button simply doesn't appear rather than failing the page.
+		let speedUp: Awaited<ReturnType<typeof detectWalletUnconfirmedInflows>> = [];
+		try {
+			speedUp = (await detectWalletUnconfirmedInflows(locals.user!.id, id)) ?? [];
+		} catch {
+			speedUp = [];
+		}
+
 		return {
 			...base,
 			scan: {
@@ -83,6 +97,7 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 			receive: { ...receive, qr },
 			coinbaseUtxos,
 			tipHeight,
+			speedUp: speedUp ?? [],
 			scanError: null as string | null
 		};
 	} catch (e) {
