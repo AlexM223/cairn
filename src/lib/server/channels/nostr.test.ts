@@ -24,7 +24,9 @@ vi.mock('nostr-tools/pool', () => ({
 }));
 
 // Import AFTER the mock is registered.
-import nostrChannel, { _internals } from './nostr';
+import nostrChannel, { _internals, rotateSenderSecretKey } from './nostr';
+import { bytesToHex } from 'nostr-tools/utils';
+import { decryptSecret } from '../secretKey';
 
 function wipe(): void {
 	db.exec(
@@ -107,16 +109,48 @@ describe('normalizePubkey', () => {
 });
 
 describe('instance sender identity', () => {
-	it('generates and persists a sender key on first use', () => {
+	it('generates and persists a sender key ENCRYPTED at rest on first use (cairn-o6y5)', () => {
 		expect(getSetting('nostr_sender_privkey')).toBeNull();
 		const sk = _internals.getOrCreateSenderSecretKey();
 		expect(sk).not.toBeNull();
-		const stored = getSetting('nostr_sender_privkey');
-		expect(stored).toMatch(/^[0-9a-f]{64}$/);
-		// Stable across calls.
+		const stored = getSetting('nostr_sender_privkey')!;
+		// The raw private key must NOT sit in the settings table in plaintext.
+		expect(stored).not.toMatch(/^[0-9a-f]{64}$/);
+		// It's a versioned encrypted envelope that decrypts back to the key hex.
+		expect(decryptSecret(stored)).toBe(bytesToHex(sk!));
+		// Stable across calls, no needless re-write.
 		const again = _internals.getOrCreateSenderSecretKey();
 		expect(getSetting('nostr_sender_privkey')).toBe(stored);
 		expect(Array.from(again!)).toEqual(Array.from(sk!));
+	});
+
+	it('transparently migrates a legacy PLAINTEXT key to encrypted storage', () => {
+		// Simulate a pre-encryption instance: a bare 64-hex key in the DB.
+		const legacyHex = 'b'.repeat(64);
+		setSetting('nostr_sender_privkey', legacyHex);
+		const sk = _internals.getOrCreateSenderSecretKey();
+		expect(sk).not.toBeNull();
+		expect(bytesToHex(sk!)).toBe(legacyHex); // identity preserved
+		const stored = getSetting('nostr_sender_privkey')!;
+		expect(stored).not.toBe(legacyHex); // plaintext no longer in the DB
+		expect(decryptSecret(stored)).toBe(legacyHex); // now encrypted at rest
+	});
+
+	it('fails closed on an undecryptable stored key rather than silently changing identity', () => {
+		setSetting('nostr_sender_privkey', JSON.stringify({ v: 1, iv: 'x', tag: 'y', data: 'z' }));
+		expect(_internals.getOrCreateSenderSecretKey()).toBeNull();
+	});
+
+	it('rotate generates a NEW encrypted identity and reports the new pubkey', () => {
+		const first = _internals.getOrCreateSenderSecretKey();
+		const before = getSetting('nostr_sender_privkey');
+		const result = rotateSenderSecretKey();
+		expect(result?.pubkey).toMatch(/^[0-9a-f]{64}$/);
+		const after = getSetting('nostr_sender_privkey')!;
+		expect(after).not.toBe(before); // a new key was written
+		expect(after).not.toMatch(/^[0-9a-f]{64}$/); // still encrypted
+		const rotated = _internals.getOrCreateSenderSecretKey();
+		expect(Array.from(rotated!)).not.toEqual(Array.from(first!)); // key actually changed
 	});
 });
 
