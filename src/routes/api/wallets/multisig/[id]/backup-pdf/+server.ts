@@ -1,20 +1,12 @@
 import { json, requireFeature } from '$lib/server/api';
 import { getMultisig } from '$lib/server/wallets/multisig';
 import { buildMultisigBackupPdf } from '$lib/server/multisigBackupPdf';
+import { filenameSlug } from '$lib/server/walletExport';
 import { markBackedUp } from '$lib/server/backups';
 import { childLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
 
 const log = childLogger('wallet');
-
-function safeFilename(name: string): string {
-	const slug = name
-		.toLowerCase()
-		.replace(/[^a-z0-9]+/g, '-')
-		.replace(/^-+|-+$/g, '')
-		.slice(0, 40);
-	return slug || 'multisig';
-}
 
 /**
  * GET /api/wallets/multisig/:id/backup-pdf — the printable "break glass in a
@@ -39,7 +31,7 @@ export const GET: RequestHandler = async (event) => {
 		return new Response(new Blob([new Uint8Array(pdf)], { type: 'application/pdf' }), {
 			headers: {
 				'content-type': 'application/pdf',
-				'content-disposition': `attachment; filename="cairn-${safeFilename(multisig.name)}-backup-${date}.pdf"`
+				'content-disposition': `attachment; filename="cairn-${filenameSlug(multisig.name)}-backup-${date}.pdf"`
 			}
 		});
 	} catch (e) {

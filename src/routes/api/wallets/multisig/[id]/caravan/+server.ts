@@ -1,21 +1,13 @@
 import { json, requireFeature } from '$lib/server/api';
 import { getSignableMultisig } from '$lib/server/wallets/multisig';
 import { caravanExport } from '$lib/server/multisigExport';
+import { filenameSlug } from '$lib/server/walletExport';
 import { MultisigError } from '$lib/server/bitcoin/multisig';
 import { markBackedUp } from '$lib/server/backups';
 import { childLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
 
 const log = childLogger('wallet');
-
-function safeFilename(name: string): string {
-	const slug = name
-		.toLowerCase()
-		.replace(/[^a-z0-9]+/g, '-')
-		.replace(/^-+|-+$/g, '')
-		.slice(0, 40);
-	return slug || 'multisig';
-}
 
 /**
  * GET /api/wallets/multisig/:id/caravan — Caravan-compatible JSON wallet config.
@@ -40,14 +32,15 @@ export const GET: RequestHandler = async (event) => {
 		return new Response(body, {
 			headers: {
 				'content-type': 'application/json; charset=utf-8',
-				'content-disposition': `attachment; filename="cairn-${safeFilename(multisig.name)}-backup-${date}.json"`
+				'content-disposition': `attachment; filename="cairn-${filenameSlug(multisig.name)}-backup-${date}.json"`
 			}
 		});
 	} catch (e) {
-		const message = e instanceof MultisigError ? e.message : 'Could not build the wallet config file.';
-		if (!(e instanceof MultisigError)) {
-			log.error({ err: e, multisigId: Number(event.params.id) }, 'wallet caravan export failed');
-		}
-		return json({ error: message }, { status: 500 });
+		// MultisigError is a config-validation failure — a client error (400),
+		// mapped identically across every export route (cairn-8jc7). Anything else
+		// is a genuine server fault (500).
+		if (e instanceof MultisigError) return json({ error: e.message }, { status: 400 });
+		log.error({ err: e, multisigId: Number(event.params.id) }, 'wallet caravan export failed');
+		return json({ error: 'Could not build the wallet config file.' }, { status: 500 });
 	}
 };

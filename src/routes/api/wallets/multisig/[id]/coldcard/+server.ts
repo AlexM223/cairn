@@ -1,21 +1,13 @@
 import { json, requireFeature } from '$lib/server/api';
 import { getSignableMultisig } from '$lib/server/wallets/multisig';
 import { coldcardRegistration } from '$lib/server/multisigExport';
+import { filenameSlug } from '$lib/server/walletExport';
 import { MultisigError } from '$lib/server/bitcoin/multisig';
 import { markBackedUp } from '$lib/server/backups';
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
 
 const log = childLogger('wallet');
-
-function safeFilename(name: string): string {
-	const slug = name
-		.toLowerCase()
-		.replace(/[^a-z0-9]+/g, '-')
-		.replace(/^-+|-+$/g, '')
-		.slice(0, 40);
-	return slug || 'multisig';
-}
 
 /**
  * GET /api/wallets/multisig/:id/coldcard — the ColdCard multisig registration file
@@ -35,18 +27,20 @@ export const GET: RequestHandler = async (event) => {
 		// Owner-only backup credit (wallet_backups is wallet-level) — a cosigner
 		// registering their own device must not clear the owner's backup reminder.
 		if (multisig.userId === user.id) markBackedUp(user.id, 'multisig', id);
+		// Standard dated backup filename, comparable across a wallet's three export
+		// buttons after a re-download or key rotation (cairn-vxum).
+		const date = new Date().toISOString().slice(0, 10);
 		return new Response(body, {
 			headers: {
 				'content-type': 'text/plain; charset=utf-8',
-				'content-disposition': `attachment; filename="cairn-multisig-${safeFilename(multisig.name)}-coldcard.txt"`
+				'content-disposition': `attachment; filename="cairn-${filenameSlug(multisig.name)}-backup-${date}-coldcard.txt"`
 			}
 		});
 	} catch (e) {
-		if (!(e instanceof MultisigError)) {
-			log.error({ err: e, multisigId: id }, 'wallet coldcard export failed');
-		}
-		const message =
-			e instanceof MultisigError ? e.message : 'Could not build the ColdCard registration file.';
-		return json({ error: message }, { status: 500 });
+		// Config-validation failure → 400; anything else is a real server fault
+		// (500). Same mapping in every export route (cairn-8jc7).
+		if (e instanceof MultisigError) return json({ error: e.message }, { status: 400 });
+		log.error({ err: e, multisigId: id }, 'wallet coldcard export failed');
+		return json({ error: 'Could not build the ColdCard registration file.' }, { status: 500 });
 	}
 };

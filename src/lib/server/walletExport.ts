@@ -7,6 +7,26 @@ import { descriptorChecksum } from './bitcoin/multisig';
 import { DEFAULT_ORIGIN_PATH } from './bitcoin/psbt';
 import type { ScriptType } from '$lib/types';
 
+/**
+ * Filename-safe slug for a Content-Disposition `filename="..."` value: lowercase,
+ * each run of non-[a-z0-9] collapsed to one '-', leading/trailing dashes trimmed,
+ * capped at 48 chars, with a fallback when nothing usable survives. This is a
+ * security boundary, not just cosmetics: neutralizing quotes, CRLF, path
+ * separators and unicode is what stops a wallet name from breaking out of the
+ * header (Content-Disposition header injection). It lives here once — every
+ * wallet-export route imports it — so the sanitizer can't silently diverge in a
+ * single copy and reopen the injection path (cairn-i5h3).
+ */
+export function filenameSlug(name: string, fallback = 'wallet'): string {
+	return (
+		name
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, '-')
+			.replace(/^-+|-+$/g, '')
+			.slice(0, 48) || fallback
+	);
+}
+
 /** Descriptor wrapper per script type: how the account key expression is
  *  wrapped into a scriptPubKey descriptor.
  *   p2pkh        pkh(KEY)          1…      (legacy)

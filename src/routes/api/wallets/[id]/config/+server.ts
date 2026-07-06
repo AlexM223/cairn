@@ -1,18 +1,9 @@
 import { error } from '@sveltejs/kit';
 import { requireFeature } from '$lib/server/api';
 import { getWallet } from '$lib/server/wallets';
+import { filenameSlug } from '$lib/server/walletExport';
 import { markBackedUp } from '$lib/server/backups';
 import type { RequestHandler } from './$types';
-
-function slug(name: string): string {
-	return (
-		name
-			.toLowerCase()
-			.replace(/[^a-z0-9]+/g, '-')
-			.replace(/^-+|-+$/g, '')
-			.slice(0, 48) || 'wallet'
-	);
-}
 
 /**
  * GET /api/wallets/:id/config — the single-sig wallet's configuration backup as
@@ -49,7 +40,7 @@ export const GET: RequestHandler = async (event) => {
 	return new Response(JSON.stringify(config, null, 2), {
 		headers: {
 			'content-type': 'application/json; charset=utf-8',
-			'content-disposition': `attachment; filename="cairn-${slug(wallet.name)}-backup-${date}.json"`,
+			'content-disposition': `attachment; filename="cairn-${filenameSlug(wallet.name)}-backup-${date}.json"`,
 			'cache-control': 'no-store'
 		}
 	});

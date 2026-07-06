@@ -1,22 +1,12 @@
 import { error } from '@sveltejs/kit';
 import { requireFeature } from '$lib/server/api';
 import { getWallet } from '$lib/server/wallets';
-import { walletDescriptorBackup } from '$lib/server/walletExport';
+import { walletDescriptorBackup, filenameSlug } from '$lib/server/walletExport';
 import { markBackedUp } from '$lib/server/backups';
 import { childLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
 
 const log = childLogger('wallet');
-
-function slug(name: string): string {
-	return (
-		name
-			.toLowerCase()
-			.replace(/[^a-z0-9]+/g, '-')
-			.replace(/^-+|-+$/g, '')
-			.slice(0, 48) || 'wallet'
-	);
-}
 
 /**
  * GET /api/wallets/:id/descriptor — the single-sig wallet's output descriptors
@@ -55,7 +45,7 @@ export const GET: RequestHandler = async (event) => {
 	return new Response(body, {
 		headers: {
 			'content-type': 'text/plain; charset=utf-8',
-			'content-disposition': `attachment; filename="cairn-${slug(wallet.name)}-descriptor-${date}.txt"`,
+			'content-disposition': `attachment; filename="cairn-${filenameSlug(wallet.name)}-backup-${date}-descriptor.txt"`,
 			'cache-control': 'no-store'
 		}
 	});
