@@ -93,6 +93,10 @@ export class ElectrumPool extends EventEmitter {
 		return this.pick().broadcast(rawTxHex);
 	}
 
+	broadcastPackage(rawTxHexes: string[]): Promise<unknown> {
+		return this.pick().broadcastPackage(rawTxHexes);
+	}
+
 	getTransaction(txid: string, verbose = false): Promise<unknown> {
 		return this.pick().getTransaction(txid, verbose);
 	}

@@ -28,7 +28,11 @@ import {
 	checkSelectedInputsChainDepth,
 	type ChainDepthWarning
 } from './chainDepth';
+import { broadcastPackage } from './packageRelay';
+import { childLogger } from './logger';
 import type { ScriptType } from '$lib/types';
+
+const log = childLogger('transactions');
 
 export type TxStatus = 'draft' | 'awaiting_signature' | 'completed' | 'superseded';
 
@@ -482,6 +486,68 @@ export class BroadcastError extends Error {
 	}
 }
 
+/** Node rejections that a parent+child package can fix: a below-relay-floor
+ *  parent, or a child whose parent isn't in this node's mempool. */
+const PACKAGE_RESCUABLE_REJECTION =
+	/min relay fee|mempool min fee|min fee not met|missingorspent|missing inputs|bad-txns-inputs|too-long-mempool-chain|package/i;
+
+/**
+ * Opportunistic package-relay rescue (cairn-u9ob.8): when a single broadcast is
+ * rejected for a reason a fee-paying parent+child package could fix, try to
+ * resubmit the just-rejected transaction together with its unconfirmed parent(s)
+ * as a package. The parents' raw hex is fetched from the chain (only reachable
+ * when they've propagated at all); confirmed parents are excluded. Returns the
+ * broadcast txid on success, or null to fall back to surfacing the original
+ * rejection. Never throws — pure enhancement, must never make a failure worse.
+ */
+export async function tryPackageRescue(
+	signedPsbtBase64: string,
+	childRawHex: string,
+	childTxid: string,
+	rejectionMsg: string
+): Promise<string | null> {
+	if (!PACKAGE_RESCUABLE_REJECTION.test(rejectionMsg)) return null;
+	try {
+		const tx = Transaction.fromPSBT(base64.decode(signedPsbtBase64), {
+			allowUnknownInputs: true
+		});
+		const parentTxids = new Set<string>();
+		for (let i = 0; i < tx.inputsLength; i++) {
+			const inp = tx.getInput(i);
+			if (inp.txid) parentTxids.add(bytesToHex(inp.txid));
+		}
+		if (parentTxids.size === 0) return null;
+
+		const chain = getChain();
+		const parentHexes: string[] = [];
+		for (const parentTxid of parentTxids) {
+			// A confirmed parent doesn't belong in the package; an unreachable one
+			// (never propagated) means we can't build a valid package — bail either way.
+			let detail;
+			try {
+				detail = await chain.getTx(parentTxid);
+			} catch {
+				return null;
+			}
+			if (detail.confirmed) continue;
+			try {
+				parentHexes.push(await chain.getTxHex(parentTxid));
+			} catch {
+				return null; // parent hex unavailable — can't assemble the package
+			}
+		}
+		if (parentHexes.length === 0) return null; // nothing unconfirmed to rescue
+
+		// Parents first (dependency order), then the child.
+		const result = await broadcastPackage([...parentHexes, childRawHex]);
+		if (result.status !== 'sent') return null;
+		log.info({ childTxid, parents: parentHexes.length }, 'broadcast rescued via package relay');
+		return childTxid;
+	} catch {
+		return null; // any failure → fall back to the original rejection
+	}
+}
+
 /**
  * Finalize a saved transaction's (fully-signed) PSBT and broadcast it. Guards
  * against double-broadcast: a transaction already carrying a txid is refused.
@@ -561,11 +627,19 @@ export async function broadcastTransaction(
 	try {
 		reportedTxid = await getChain().electrum.broadcast(finalized.rawHex);
 	} catch (e) {
-		// Release the claim: a failed broadcast must stay retryable.
-		db.prepare('UPDATE transactions SET broadcast_started_at = NULL WHERE id = ?').run(txId);
-		// Surface the node's rejection reason in as-plain-as-possible language.
 		const raw = e instanceof Error ? e.message : String(e);
-		throw new BroadcastError(`The network rejected this transaction: ${raw}`, 'rejected');
+		// Opportunistic package-relay rescue: if the rejection is one a parent+child
+		// package could fix and package relay is available, resubmit with the
+		// unconfirmed parent(s). Degrades silently to the original error (cairn-u9ob.8).
+		const rescued = await tryPackageRescue(psbt, finalized.rawHex, finalized.txid, raw);
+		if (rescued) {
+			reportedTxid = rescued;
+		} else {
+			// Release the claim: a failed broadcast must stay retryable.
+			db.prepare('UPDATE transactions SET broadcast_started_at = NULL WHERE id = ?').run(txId);
+			// Surface the node's rejection reason in as-plain-as-possible language.
+			throw new BroadcastError(`The network rejected this transaction: ${raw}`, 'rejected');
+		}
 	}
 
 	// A malicious or misbehaving Electrum server can return an arbitrary txid for

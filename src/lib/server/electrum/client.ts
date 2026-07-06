@@ -401,6 +401,18 @@ export class ElectrumClient extends EventEmitter {
 		return (await this.request('blockchain.transaction.broadcast', [rawTxHex])) as string;
 	}
 
+	/**
+	 * Submit several raw transactions as one package (BIP-331 / Core's
+	 * submitpackage), so a parent below the mempool's minimum relay fee is accepted
+	 * together with a fee-paying child. Not every Electrum server implements
+	 * `blockchain.transaction.broadcast_package`; the caller (packageRelay.ts)
+	 * probes support and degrades silently. Resolves to the server's raw response
+	 * (shape is server-dependent — typically the child/all txids).
+	 */
+	async broadcastPackage(rawTxHexes: string[]): Promise<unknown> {
+		return this.request('blockchain.transaction.broadcast_package', [rawTxHexes]);
+	}
+
 	/** Raw hex when verbose=false, decoded object when verbose=true. */
 	async getTransaction(txid: string, verbose = false): Promise<unknown> {
 		return this.request('blockchain.transaction.get', [txid, verbose]);

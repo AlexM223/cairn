@@ -49,6 +49,7 @@ import {
 	cpfpChildFee,
 	detectUnconfirmedInflows,
 	classifyUnconfirmedTrust,
+	tryPackageRescue,
 	type UnconfirmedInflow
 } from './transactions';
 import {
@@ -462,10 +463,16 @@ export async function broadcastMultisigTransaction(
 	try {
 		reportedTxid = await getChain().electrum.broadcast(finalized.rawHex);
 	} catch (e) {
-		// Release the claim: a failed broadcast must stay retryable.
-		db.prepare('UPDATE multisig_transactions SET broadcast_started_at = NULL WHERE id = ?').run(txId);
 		const raw = e instanceof Error ? e.message : String(e);
-		throw new BroadcastError(`The network rejected this transaction: ${raw}`, 'rejected');
+		// Opportunistic package-relay rescue, same as the single-sig path (cairn-u9ob.8).
+		const rescued = await tryPackageRescue(tx.psbt, finalized.rawHex, finalized.txid, raw);
+		if (rescued) {
+			reportedTxid = rescued;
+		} else {
+			// Release the claim: a failed broadcast must stay retryable.
+			db.prepare('UPDATE multisig_transactions SET broadcast_started_at = NULL WHERE id = ?').run(txId);
+			throw new BroadcastError(`The network rejected this transaction: ${raw}`, 'rejected');
+		}
 	}
 
 	// A malicious or misbehaving Electrum server can return an arbitrary txid for

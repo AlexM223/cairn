@@ -9,6 +9,7 @@ import { ElectrumClient } from '../electrum/client';
 import { ElectrumPool } from '../electrum/pool';
 import type { ElectrumBalance, ElectrumHistoryItem } from '../electrum/client';
 import { wireChainEvents, resetConnectionState } from '../chainEvents';
+import { resetPackageRelaySupport } from '../packageRelay';
 import { recordActivity } from '../activity';
 import { childLogger } from '../logger';
 import { EsploraApi } from './esplora';
@@ -656,6 +657,9 @@ export function reconfigureChain(): void {
 		});
 	}
 	resetConnectionState();
+	// Package-relay support is per-server — forget the cached verdict so the new
+	// backend is probed afresh (cairn-u9ob.8).
+	resetPackageRelaySupport();
 }
 
 // ---------------------------------------------------------------- test helpers
