@@ -30,6 +30,13 @@
 	function valueOut(tx: TxDetail): number {
 		return tx.vout.reduce((sum, v) => sum + v.value, 0);
 	}
+
+	// Regtest's real difficulty is a tiny fraction that formatNumber rounds to a
+	// bare "0", which reads like a bug next to the other stats — show it's small
+	// but non-zero instead (cairn-8sbh).
+	const difficultyText = $derived(
+		block.difficulty > 0 && block.difficulty < 1 ? '<0.01' : formatNumber(block.difficulty)
+	);
 </script>
 
 <svelte:head>
@@ -165,7 +172,7 @@
 					>Difficulty</Term
 				>
 			</span>
-			<span class="detail-value tabular">{formatNumber(block.difficulty)}</span>
+			<span class="detail-value tabular">{difficultyText}</span>
 		</div>
 		<div class="detail">
 			<span class="overline">

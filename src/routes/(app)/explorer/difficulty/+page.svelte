@@ -21,8 +21,16 @@
 		if (d >= 1e12) return { value: (d / 1e12).toFixed(2), unit: 'T' };
 		if (d >= 1e9) return { value: (d / 1e9).toFixed(2), unit: 'G' };
 		if (d >= 1e6) return { value: (d / 1e6).toFixed(2), unit: 'M' };
+		// A true tiny value (e.g. regtest's near-zero real difficulty) would round to
+		// a bare "0" and read like a bug — show it's small but non-zero (cairn-t6t7).
+		if (d > 0 && d < 1) return { value: '<0.01', unit: '' };
 		return { value: formatNumber(d), unit: '' };
 	}
+
+	// Cap the per-block pace used for the far-out halving estimate to the consensus
+	// 4x band. A slow test/regtest chain otherwise extrapolates a nonsensical
+	// five-digit-year halving date (observed: year 27506) — cairn-t6t7.
+	const HALVING_PACE_CAP = 2400; // 10-minute target × 4
 
 	/** 597.4 seconds -> "9m 57s" */
 	function minSec(seconds: number): string {
@@ -67,9 +75,8 @@
 		if (!info) return null;
 		const nextHeight = (Math.floor(info.tipHeight / HALVING_INTERVAL) + 1) * HALVING_INTERVAL;
 		const blocksRemaining = nextHeight - info.tipHeight;
-		const estimatedUnix = Math.floor(
-			(Date.now() + blocksRemaining * (info.avgBlockTimeSeconds ?? 600) * 1000) / 1000
-		);
+		const pace = Math.min(info.avgBlockTimeSeconds ?? 600, HALVING_PACE_CAP);
+		const estimatedUnix = Math.floor((Date.now() + blocksRemaining * pace * 1000) / 1000);
 		return {
 			nextHeight,
 			blocksRemaining,

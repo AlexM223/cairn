@@ -360,6 +360,27 @@
 			flex-direction: row;
 			overflow-x: auto;
 			padding: 4px 10px 10px;
+			/* Edge-fade scroll cue (cairn-peoj / cairn-ei6): off-screen items
+			   (Settings, Activity) otherwise had no affordance beyond a thin
+			   scrollbar. The bg-colored covers are pinned to the content (local) and
+			   the fades to the element (scroll), so a fade shows at an edge only
+			   while there is more to scroll that way — and disappears once that end
+			   is reached, leaving the end items crisp. */
+			background:
+				linear-gradient(to right, var(--bg) 40%, transparent) 0 0 / 30px 100% no-repeat local,
+				linear-gradient(to left, var(--bg) 40%, transparent) 100% 0 / 30px 100% no-repeat local,
+				linear-gradient(
+						to right,
+						color-mix(in srgb, var(--text) 16%, transparent),
+						transparent
+					)
+					0 0 / 22px 100% no-repeat scroll,
+				linear-gradient(
+						to left,
+						color-mix(in srgb, var(--text) 16%, transparent),
+						transparent
+					)
+					100% 0 / 22px 100% no-repeat scroll;
 		}
 
 		.nav-item {

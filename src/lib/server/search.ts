@@ -2,7 +2,7 @@
 
 import { getChain } from './chain';
 import { EsploraHttpError } from './chain/esplora';
-import { isValidAddress } from './bitcoin/xpub';
+import { isExplorerAddress } from './bitcoin/xpub';
 import type { SearchResult } from '$lib/types';
 
 /**
@@ -64,7 +64,11 @@ export async function classifySearch(q: string): Promise<SearchResult> {
 		}
 	}
 
-	if (isValidAddress(query)) {
+	// Use isExplorerAddress (not the mainnet-only isValidAddress) so the search
+	// bar recognizes the same tb.../bcrt.../testnet addresses the address page
+	// itself accepts — otherwise a valid testnet/regtest address pasted here
+	// returns "unknown" even though /explorer/address/<addr> works (cairn-i8vr).
+	if (isExplorerAddress(query)) {
 		return { type: 'address', redirect: `/explorer/address/${query}`, query };
 	}
 

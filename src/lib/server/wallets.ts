@@ -11,9 +11,12 @@ import {
 	findNextUnusedIndex,
 	type WalletScanResult
 } from './bitcoin/walletScan';
+import { childLogger } from './logger';
 import type { ScriptType, WalletDeviceType, WalletSummary } from '$lib/types';
 
 const GAP_LIMIT = 20;
+
+const log = childLogger('wallets');
 
 /** Device types a wallet's key can be routed to when signing. */
 const WALLET_DEVICE_TYPES: readonly WalletDeviceType[] = [
@@ -161,7 +164,11 @@ export function createWallet(
 		if (e instanceof Error && /UNIQUE/i.test(e.message)) {
 			throw new Error('You already imported this key.');
 		}
-		throw e;
+		// Log the raw DB driver error but throw a sanitized message: the wallets
+		// API route forwards this verbatim to the client, so a raw driver string
+		// must not reach it (cairn-6y98).
+		log.error({ err: e, userId }, 'createWallet insert failed');
+		throw new Error('Could not save the wallet. Please try again.');
 	}
 }
 

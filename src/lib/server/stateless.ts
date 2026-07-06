@@ -315,8 +315,12 @@ export function statelessErrorInfo(e: unknown): { status: number; message: strin
 	if (e instanceof Error && (e.message === 'Empty PSBT' || e.message === 'Not a PSBT')) {
 		return { status: 400, message: "That doesn't look like a valid PSBT.", code: 'invalid_psbt' };
 	}
+	// Unknown/unclassified failure: return a generic message rather than forwarding
+	// raw exception text (which may carry driver/connection detail) to the client.
+	// The stateless routes log the raw error at >=500, so nothing is lost for the
+	// operator (cairn-6y98).
 	return {
 		status: 502,
-		message: e instanceof Error ? e.message : 'The chain source could not be reached.'
+		message: 'The chain source could not be reached.'
 	};
 }

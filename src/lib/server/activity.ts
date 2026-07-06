@@ -173,6 +173,10 @@ export const USER_FEED_TYPES: ReadonlySet<string> = new Set([
 	'sign_session_waiting',
 	// Key health nudge
 	'key_health_due',
+	// Social graph (collaborative custody): a pending request the recipient must
+	// act on, and confirmation your own request was accepted (cairn-1wvp).
+	'contact_request',
+	'contact_accepted',
 	// Your own account security ("was this you?")
 	'security_new_passkey',
 	'security_password_changed',

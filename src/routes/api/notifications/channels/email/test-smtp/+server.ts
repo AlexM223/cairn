@@ -98,8 +98,14 @@ export const POST: RequestHandler = async (event) => {
 	try {
 		result = await sendTestWithConfig(user.id, candidate);
 	} catch (err) {
+		// Don't forward the raw exception text: this route accepts unsaved,
+		// user-typed host/port with no SSRF guard, so a verbatim driver/connection
+		// error is a mild network-reconnaissance oracle (cairn-6y98). The real
+		// error is logged for the operator; the client gets a generic message.
+		// (Expected SMTP failures come back as a curated ChannelSendResult from
+		// sendTestWithConfig, not through this unexpected-exception path.)
 		log.error({ err, userId: user.id }, 'SMTP test threw');
-		result = { ok: false, error: err instanceof Error ? err.message : 'The test failed unexpectedly.' };
+		result = { ok: false, error: 'The test failed unexpectedly.' };
 	}
 	return json(result);
 };

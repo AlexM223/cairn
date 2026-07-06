@@ -276,9 +276,15 @@
 
 	// Programmatic form-action calls (the wizard adds keys one at a time, so
 	// static use:enhance forms don't fit).
+	// `fallback` is the operation-specific message shown when the server returns no
+	// error text of its own (e.g. an unexpected 500). Each caller passes one so the
+	// three distinct operations this helper backs — adding a key, importing a
+	// config, previewing an address — no longer collapse into one vague "Something
+	// went wrong", the exact flow a first-time self-hoster gets stuck in (cairn-odq1).
 	async function callAction<T>(
 		action: string,
-		fields: Record<string, string>
+		fields: Record<string, string>,
+		fallback: string
 	): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
 		const body = new FormData();
 		for (const [k, v] of Object.entries(fields)) body.set(k, v);
@@ -293,12 +299,10 @@
 			if (result.type === 'failure') {
 				return {
 					ok: false,
-					error:
-						(result.data as { error?: string } | undefined)?.error ??
-						'Something went wrong — try again.'
+					error: (result.data as { error?: string } | undefined)?.error ?? fallback
 				};
 			}
-			return { ok: false, error: 'Something went wrong — try again.' };
+			return { ok: false, error: fallback };
 		} catch {
 			return { ok: false, error: 'Network hiccup — check your connection and try again.' };
 		}
@@ -309,14 +313,18 @@
 		adding = true;
 		addError = null;
 		try {
-			const res = await callAction<{ key: WizardKey }>('key', {
-				name: keyName.trim() || `Key ${keys.length + 1}`,
-				category: keyCategory,
-				deviceType: keyDevice ?? '',
-				xpub: pasteValue,
-				fingerprint: fpValue,
-				path: pathValue
-			});
+			const res = await callAction<{ key: WizardKey }>(
+				'key',
+				{
+					name: keyName.trim() || `Key ${keys.length + 1}`,
+					category: keyCategory,
+					deviceType: keyDevice ?? '',
+					xpub: pasteValue,
+					fingerprint: fpValue,
+					path: pathValue
+				},
+				"Couldn't add that key — double-check it and try again."
+			);
 			if (!res.ok) {
 				addError = res.error;
 				return false;
@@ -499,9 +507,11 @@
 		importing = true;
 		importError = null;
 		try {
-			const res = await callAction<{ imported: ImportedMultisig }>('import', {
-				source: importText
-			});
+			const res = await callAction<{ imported: ImportedMultisig }>(
+				'import',
+				{ source: importText },
+				"Couldn't import that configuration — paste a descriptor or a Caravan wallet JSON."
+			);
 			if (!res.ok) {
 				importError = res.error;
 				return;
@@ -511,7 +521,10 @@
 			customM = imported.threshold;
 			customN = imported.totalKeys;
 			if (imported.scriptType) scriptType = imported.scriptType;
-			if (imported.name && !multisigName.trim()) multisigName = imported.name;
+			if (imported.name && !multisigName.trim()) {
+				multisigName = imported.name;
+				namePrefilledFromImport = true;
+			}
 			keys = imported.keys.map((k) => ({
 				category: 'hardware' as MultisigKeyCategory,
 				deviceType: 'file' as MultisigDeviceType,
@@ -546,12 +559,16 @@
 		previewLoading = true;
 		previewError = null;
 		previewAddresses = [];
-		const res = await callAction<{ addresses: string[] }>('preview', {
-			config: JSON.stringify({
-				threshold,
-				keys: keys.map((k) => ({ xpub: k.xpub, fingerprint: k.fingerprint, path: k.path }))
-			})
-		});
+		const res = await callAction<{ addresses: string[] }>(
+			'preview',
+			{
+				config: JSON.stringify({
+					threshold,
+					keys: keys.map((k) => ({ xpub: k.xpub, fingerprint: k.fingerprint, path: k.path }))
+				})
+			},
+			"Couldn't preview the addresses — go back and re-check the keys."
+		);
 		previewLoading = false;
 		if (res.ok) previewAddresses = res.data.addresses;
 		else previewError = res.error;
@@ -559,6 +576,15 @@
 
 	// ----------------------------------------------------------- step 4: confirm
 	let multisigName = $state('');
+	// Set when the name was pre-filled from an imported Caravan config so the first
+	// focus selects the suggested text — typing then replaces it instead of
+	// concatenating into "P2WSH-MMy Vault" (cairn-9g6b). Cleared after one focus.
+	let namePrefilledFromImport = $state(false);
+	function selectPrefilledName(e: FocusEvent) {
+		if (!namePrefilledFromImport) return;
+		namePrefilledFromImport = false;
+		(e.currentTarget as HTMLInputElement).select();
+	}
 	let verified = $state(false);
 	let creating = $state(false);
 	let createError = $state<string | null>(null);
@@ -569,14 +595,18 @@
 		creating = true;
 		createError = null;
 		try {
-			const res = await callAction<{ multisigId: number }>('create', {
-				name: multisigName.trim(),
-				threshold: String(threshold),
-				scriptType,
-				keys: JSON.stringify(keys),
-				source: configImported ? 'imported' : 'created',
-				startingAddressIndex: String(configImported ? importedStartIndex : 0)
-			});
+			const res = await callAction<{ multisigId: number }>(
+				'create',
+				{
+					name: multisigName.trim(),
+					threshold: String(threshold),
+					scriptType,
+					keys: JSON.stringify(keys),
+					source: configImported ? 'imported' : 'created',
+					startingAddressIndex: String(configImported ? importedStartIndex : 0)
+				},
+				"Couldn't create the wallet — your keys are still here, try again."
+			);
 			if (!res.ok) {
 				createError = res.error;
 				return;
@@ -1462,6 +1492,7 @@
 					placeholder="e.g. Family savings"
 					maxlength="60"
 					bind:value={multisigName}
+					onfocus={selectPrefilledName}
 				/>
 				<span class="hint">Just a label — you can't break anything here.</span>
 			</div>

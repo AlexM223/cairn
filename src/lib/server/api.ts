@@ -46,10 +46,33 @@ export function requireFeature(event: RequestEvent, key: string): SessionUser {
 	return user;
 }
 
+/**
+ * Shared body-size cap for JSON endpoints. There is no adapter/hook-level
+ * max-body-size in this repo, so every JSON route otherwise buffers and
+ * JSON.parses an arbitrarily large pasted/uploaded blob (a memory/CPU self-DoS
+ * surface — cairn-973j). 1 MB is far above any legitimate PSBT/descriptor/config
+ * payload. Applied centrally here rather than per-route.
+ */
+const MAX_JSON_BODY_BYTES = 1_000_000;
+
+/** Read the request body as text, rejecting anything over the shared cap. */
+async function readCappedBody(event: RequestEvent): Promise<string> {
+	const declared = Number(event.request.headers.get('content-length'));
+	if (Number.isFinite(declared) && declared > MAX_JSON_BODY_BYTES) {
+		error(413, 'Request body too large');
+	}
+	const raw = await event.request.text();
+	if (raw.length > MAX_JSON_BODY_BYTES) {
+		error(413, 'Request body too large');
+	}
+	return raw;
+}
+
 /** Read a JSON body, returning 400 on malformed input. */
 export async function readJson<T = Record<string, unknown>>(event: RequestEvent): Promise<T> {
+	const raw = await readCappedBody(event);
 	try {
-		return (await event.request.json()) as T;
+		return JSON.parse(raw) as T;
 	} catch {
 		error(400, 'Invalid JSON body');
 	}
@@ -62,7 +85,7 @@ export async function readJson<T = Record<string, unknown>>(event: RequestEvent)
  * swallowed on irreversible actions like broadcast (cairn-1yw7).
  */
 export async function readOptionalJson<T = Record<string, unknown>>(event: RequestEvent): Promise<T> {
-	const raw = (await event.request.text()).trim();
+	const raw = (await readCappedBody(event)).trim();
 	if (!raw) return {} as T;
 	try {
 		return JSON.parse(raw) as T;

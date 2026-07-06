@@ -186,7 +186,18 @@ export const PRIVATE_KEY_REFUSAL =
  * because Cairn derives mainnet addresses. Throws MultisigError with a
  * user-presentable message on anything unusable.
  */
+/** Upper bound on a pasted/uploaded wallet config. A real Caravan/Cairn config
+ *  is a few KB; 1 MB is generous headroom while still rejecting an adversarially
+ *  large blob before it is buffered and JSON.parsed synchronously (cairn-973j). */
+const MAX_IMPORT_BYTES = 1_000_000;
+
 export function parseCaravanImport(text: string): CaravanImport {
+	if (text.length > MAX_IMPORT_BYTES) {
+		throw new MultisigError(
+			'That file is too large to be a wallet configuration.',
+			'invalid_descriptor'
+		);
+	}
 	if (containsPrivateKeyMaterial(text)) {
 		throw new MultisigError(PRIVATE_KEY_REFUSAL, 'invalid_key');
 	}

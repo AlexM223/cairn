@@ -71,7 +71,7 @@
 				<Icon name="plus" size={15} />
 				Add your first wallet
 			</a>
-			<a href="/wallets/new" class="restore-link">
+			<a href="/wallets/new?restore=1" class="restore-link">
 				<Icon name="arrow-down-left" size={14} />
 				Restore from a backup
 			</a>

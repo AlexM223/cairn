@@ -68,7 +68,14 @@
 		</div>
 	{/if}
 
-	<form class="stack" onsubmit={createAccount}>
+	<!--
+		novalidate hands all validation to validate() below so every empty/invalid
+		field surfaces a styled message in the form-error banner. Without it the
+		browser's native `required` check short-circuits submit on the first empty
+		field (e.g. a blank invite code) showing only a focus outline and no text
+		(cairn-1qv7). The `required` attributes are kept as accessibility hints.
+	-->
+	<form class="stack" onsubmit={createAccount} novalidate>
 		{#if error}
 			<div class="form-error" role="alert">{error}</div>
 		{/if}

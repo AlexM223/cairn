@@ -13,6 +13,15 @@
 
 import { db } from './db';
 import { revokeAllSharesBetween } from './multisigShares';
+import { recordActivity } from './activity';
+import { childLogger } from './logger';
+
+// Observability parity with the sibling multisigRoster.ts from the same commit
+// family, which logs and records feed events for its analogous actions. Contacts
+// previously did neither, so a request recipient had no feed entry and an
+// operator had no server-log trail (cairn-1wvp). Best-effort — recordActivity
+// never throws, and logging must never break a contact operation.
+const log = childLogger('contacts');
 
 export class ContactError extends Error {
 	code: 'self' | 'invalid_email';
@@ -77,7 +86,16 @@ export function requestContact(userId: number, rawEmail: string): void {
 
 	const target = findUserByEmail(email);
 	// Unknown account: silently succeed — indistinguishable from "request sent".
-	if (!target) return;
+	if (!target) {
+		// Timing normalization (cairn-n4k4): the known-email path below runs two
+		// extra index lookups (reciprocal + own-request). Do equivalent-cost dummy
+		// reads here so response latency doesn't correlate with whether the email
+		// exists. Rate limiting on the route is the primary enumeration defense;
+		// this narrows the residual timing channel.
+		db.prepare(`SELECT id FROM contacts WHERE user_id = ? AND contact_user_id = ?`).get(-1, -1);
+		db.prepare(`SELECT id FROM contacts WHERE user_id = ? AND contact_user_id = ?`).get(-1, -1);
+		return;
+	}
 	if (target.id === userId) {
 		throw new ContactError('That is your own email address.', 'self');
 	}
@@ -94,6 +112,15 @@ export function requestContact(userId: number, rawEmail: string): void {
 			db.prepare(
 				`UPDATE contacts SET status = 'accepted', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`
 			).run(reciprocal.id);
+			// A mutual request IS acceptance: tell the original requester (target)
+			// their pending request just became a friendship.
+			recordActivity({
+				type: 'contact_accepted',
+				userId: target.id,
+				level: 'success',
+				message: 'Your contact request was accepted.'
+			});
+			log.info({ userId, otherUserId: target.id }, 'contact request auto-accepted (reciprocal)');
 		}
 		return;
 	}
@@ -106,6 +133,15 @@ export function requestContact(userId: number, rawEmail: string): void {
 	db.prepare(
 		`INSERT INTO contacts (user_id, contact_user_id, status) VALUES (?, ?, 'pending')`
 	).run(userId, target.id);
+	// Give the recipient a feed entry so a pending request is discoverable without
+	// manually opening Settings › Contacts.
+	recordActivity({
+		type: 'contact_request',
+		userId: target.id,
+		level: 'info',
+		message: 'Someone sent you a contact request. Review it in Settings › Contacts.'
+	});
+	log.info({ userId, otherUserId: target.id }, 'contact request created');
 }
 
 /**
@@ -116,17 +152,27 @@ export function requestContact(userId: number, rawEmail: string): void {
 export function respondToContact(userId: number, contactId: number, accept: boolean): boolean {
 	const row = db
 		.prepare(
-			`SELECT id FROM contacts WHERE id = ? AND contact_user_id = ? AND status = 'pending'`
+			`SELECT id, user_id FROM contacts WHERE id = ? AND contact_user_id = ? AND status = 'pending'`
 		)
-		.get(contactId, userId) as { id: number } | undefined;
+		.get(contactId, userId) as { id: number; user_id: number } | undefined;
 	if (!row) return false;
 
 	if (accept) {
 		db.prepare(
 			`UPDATE contacts SET status = 'accepted', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`
 		).run(contactId);
+		// Tell the requester their request was accepted. A decline is deliberately
+		// silent — you don't notify someone that you turned them down.
+		recordActivity({
+			type: 'contact_accepted',
+			userId: row.user_id,
+			level: 'success',
+			message: 'Your contact request was accepted.'
+		});
+		log.info({ userId, otherUserId: row.user_id, contactId }, 'contact request accepted');
 	} else {
 		db.prepare('DELETE FROM contacts WHERE id = ?').run(contactId);
+		log.info({ userId, otherUserId: row.user_id, contactId }, 'contact request declined');
 	}
 	return true;
 }
@@ -149,6 +195,7 @@ export function removeContact(userId: number, contactId: number): boolean {
 	if (!row) return false;
 
 	db.prepare('DELETE FROM contacts WHERE id = ?').run(contactId);
+	log.info({ userId, contactId }, 'contact relationship removed');
 
 	// Ending the contact relationship also ends any multisig access it enabled:
 	// sharing requires an accepted contact, so revoke shares in BOTH directions

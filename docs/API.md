@@ -16,9 +16,11 @@ The API is **same-origin, session-based**. There are no API tokens or keys yet.
   page action, which clears the same cookie.
 
 **Rate limits** (fixed 15-minute windows, in-memory, per process): 5 failed
-logins per email and 20 per IP; 10 invalid invite codes per IP on registration.
-Exceeding a limit returns **429** with a `retry-after` header (seconds) and
-`{ "error": "Too many attempts. …", "code": "rate_limited" }`.
+logins per email and 20 per IP; 10 invalid invite codes per IP on registration;
+20 contact requests per user and 60 per IP on `POST /api/contacts` (every
+request counts, not just failures — it blunts account enumeration). Exceeding a
+limit returns **429** with `{ "error": "Too many attempts. …", "code": "rate_limited" }`
+(auth endpoints also set a `retry-after` header in seconds).
 
 **Common error statuses**
 
@@ -156,6 +158,134 @@ Aggregate across all of the caller's wallets (scans run concurrently, cached per
 
 - 200 `{ "portfolio": { "walletCount", "scannedCount", "confirmed", "unconfirmed" } }`
   — or `{ "portfolio": null }` when the user has no wallets.
+
+---
+
+## Multisig wallets (per-user)
+
+Multisig wallets live under `/api/wallets/multisig/` and are watch-only in the
+same sense as single-sig wallets: Cairn holds only extended **public** keys and
+coordinates signing (PSBT construction, quorum tracking, broadcast). All
+endpoints require the session cookie and are scoped to the caller; `[id]` that
+isn't the caller's returns **404**. Creating/importing is gated by the
+`multisig_create` / `wallet_config_import` feature flags (**403** with the flag's
+message when disabled).
+
+### GET /api/wallets/multisig
+
+- 200 `{ "multisigs": [ MultisigSummary ] }` — the caller's multisigs (owned and
+  shared with them), each with quorum, script type, balance and last activity.
+
+### POST /api/wallets/multisig
+
+Body: `{ name, threshold, scriptType?, keys }` — create a multisig. All
+cryptographic validation happens in `createMultisig` (a real address is derived
+before anything is stored); `MultisigError` messages surface verbatim.
+
+- 201 `{ "multisig": MultisigSummary }` · 400 `{ "error", "code" }` · 403 (flag off)
+
+### POST /api/wallets/multisig/import
+
+Body: `{ descriptor | source, create?, name? }` — parse an existing multisig
+definition (output descriptor **or** Caravan/Unchained wallet-config JSON, which
+is also what Cairn's own JSON backup emits, so export→import round-trips).
+
+- Default: 200 `{ "imported": <wizard prefill> }`
+- With `create: true`: 201 `{ "multisig": MultisigSummary }`
+- 400 `{ "error", "code" }` (malformed / private-key material refused) · 403
+
+### GET /api/wallets/multisig/[id]
+
+- 200 `{ "multisig": MultisigSummary, "keys": [...], "addresses": [...], "txs": [...], "confirmed", "unconfirmed" }` · 404 · 502 scan failed
+
+### DELETE /api/wallets/multisig/[id]
+
+- 200 `{ "ok": true }` · 404
+
+### GET /api/wallets/multisig/[id]/receive
+
+`?after=N` requests a fresh address strictly beyond the one on display, clamped
+to the gap-limit window. Advances the receive cursor.
+
+- 200 `{ "address", "derivationPath", "index" }` · 404 · 502
+
+### GET /api/wallets/multisig/[id]/address-detail
+
+Query: `chain` (0|1), `index`. Pure on-demand derivation (no network, nothing
+stored) for one address's verification detail.
+
+- 200 `{ "witnessScript"?, "redeemScript"?, "pubkeys": [...], "keys": [ { …path } ] }` · 404
+
+### GET /api/wallets/multisig/[id]/utxo-mass
+
+- 200 `{ "masses": [ { "txid", "vout", "parentVsize", "tier", "source" } ] }` —
+  signing-mass classification for the current confirmed UTXOs (a coin whose
+  parent can't be fetched is simply absent). · 404 · 502
+
+### POST /api/wallets/multisig/[id]/psbt
+
+Body: `{ recipients: [ { address, amount: sats | "max" } ], feeRate, onlyUtxos?: [ { txid, vout } ] }`.
+Constructs an unsigned multisig PSBT and saves it as a draft.
+
+- 200 `{ "transaction": SavedMultisigTransaction, "details": ConstructedMultisigPsbt, "progress": { …0 of M } }`
+- 400 `{ "error", "code" }` · 404 · 502
+
+### Transactions
+
+- `GET /api/wallets/multisig/[id]/transactions` → 200 `{ "transactions": [...] }` newest first
+- `GET  …/transactions/[txId]` → 200 `{ "transaction", "summary", "progress": { required, collected, complete, signedFingerprints, remainingFingerprints } }`
+- `PATCH …/transactions/[txId]` — attach one signer's PSBT (merged into the stored
+  draft; idempotent, same-tx guarded) → 200 `{ "transaction", "progress" }`; a
+  `{ status }`-only body adjusts lifecycle state without touching the PSBT
+- `DELETE …/transactions/[txId]` → 200 `{ "ok": true }`
+- `GET  …/transactions/[txId]/file` → the current combined PSBT as a binary
+  `.psbt` download (what ColdCard / Sparrow / Electrum read)
+- `POST …/transactions/[txId]/broadcast` — finalize + broadcast a quorum-complete
+  tx (optional last signed PSBT in the body). Refuses below quorum
+  (`"X of M signatures collected"`) and refuses a tx that already carries a txid;
+  the broadcast is claimed atomically so concurrent calls can't double-send →
+  200 `{ "txid" }` · 400 · 404
+- `POST …/transactions/[txId]/bump` — build an RBF replacement at a higher fee
+  rate for a broadcast-but-unconfirmed tx (owner-only) → 200 `{ "transactionId" }`
+
+### Exports / backups
+
+Each of these counts as a config backup (`markBackedUp`) where noted:
+
+- `GET /api/wallets/multisig/[id]/caravan` — Caravan/Sparrow-compatible JSON config
+- `GET …/descriptor` — both checksummed descriptors as JSON; `?download=1` for a
+  plain-text backup file
+- `GET …/coldcard` — the ColdCard multisig registration file (also Passport /
+  Keystone / SeedSigner)
+- `GET …/backup-pdf` — the printable black-and-white "break glass" PDF (quorum,
+  keys, receive descriptor, and a QR of the Caravan config)
+- `GET …/history.csv` — transaction history as CSV (same columns as single-sig)
+
+### Ledger BIP-388 policy registration
+
+- `GET /api/wallets/multisig/[id]/ledger-registration` → 200 `{ "registrations": [...] }`;
+  with `?fp=<masterFp>` → 200 `{ "registration": {...} | null }`
+- `POST …/ledger-registration` body `{ masterFp, policyName, policyHmac, policyId? }` —
+  persist an on-device registration (upsert per `(multisig, masterFp)`) → 200
+
+### POST /api/wallets/multisig/[id]/keys/[keyId]/verified
+
+Record a Casa-style key-health check. Body is one of:
+
+- `{ method: "device", xpub, fingerprint }` — a live hardware re-read; the server
+  compares it against the stored row (canonicalizing SLIP-132 aliases) →
+  200 `{ verified: true, keyId, lastVerifiedAt }` on a match, or
+  `{ verified: false, fingerprintMatch, xpubMatch, expectedFingerprint, deviceFingerprint }` on a mismatch
+- `{ method: "manual" }` — a user-confirmed manual verification (ColdCard / QR /
+  file keys Cairn can't re-read) → 200 `{ verified: true, keyId, lastVerifiedAt }`
+
+### Sharing (collaborative custody)
+
+- `GET /api/wallets/multisig/[id]/shares` → 200 `{ "shares": [...] }`
+- `POST …/shares` body `{ contactUserId, role: "viewer"|"cosigner", keyIds?: number[] }` —
+  share with an accepted contact → 200 · 400
+- `PATCH …/shares/[shareId]` body `{ role?, keyIds? }` — change role / reassign keys → 200
+- `DELETE …/shares/[shareId]` → 200 `{ "ok": true }`
 
 ---
 

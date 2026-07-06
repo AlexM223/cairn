@@ -1,4 +1,4 @@
-import { fail } from '@sveltejs/kit';
+import { fail, redirect } from '@sveltejs/kit';
 import {
 	deriveMultisigAddress,
 	parseDescriptor,
@@ -21,11 +21,16 @@ import { requireFeature } from '$lib/server/api';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async (event) => {
+	// Guard locals.user directly rather than trusting the parent layout's redirect
+	// to have already run: a race (observed as a 500 "Cannot read properties of
+	// null (reading id)" that succeeded on retry) could let this child load run
+	// with a stale/null user before the parent guard took effect (cairn-mlxf).
+	if (!event.locals.user) throw redirect(302, '/login');
 	// The whole create-multisig wizard is gated; existing multisigs stay usable.
 	requireFeature(event, 'multisig_create');
 	// First-timers get the "why a multisig?" education expanded; repeat users get
 	// it collapsed out of the way.
-	return { hasMultisigs: listMultisigs(event.locals.user!.id).length > 0 };
+	return { hasMultisigs: listMultisigs(event.locals.user.id).length > 0 };
 };
 
 const DEVICE_TYPES = new Set(['trezor', 'ledger', 'coldcard', 'qr', 'file']);

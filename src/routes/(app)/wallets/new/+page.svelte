@@ -26,7 +26,11 @@
 	// stays in this wizard; "Multiple keys" hands off to the multisig builder.
 	let walletType = $state<'single' | 'multisig'>('single');
 
-	let step = $state(0);
+	// Arriving via the wallets empty-state "Restore from a backup" link (?restore=1)
+	// drops the user straight onto the Key step, whose restore-box is the first
+	// thing shown — otherwise the two entry links were indistinguishable, both
+	// landing on the type picker (cairn-rfuc).
+	let step = $state(page.url.searchParams.get('restore') !== null ? 1 : 0);
 	let xpubInput = $state('');
 	let showHelp = $state(false);
 	let validating = $state(false);
@@ -459,7 +463,15 @@
 
 				<div class="method-grid">
 					{#each METHOD_CARDS as m (m.key)}
-						<button type="button" class="method-card" onclick={() => pickMethod(m.key)}>
+						<!-- Explicit aria-label so each card announces its key source by name
+						     ("Trezor", "Paste public key", …) instead of a generic "button"
+						     to screen readers (cairn-oqri). -->
+						<button
+							type="button"
+							class="method-card"
+							aria-label={m.title}
+							onclick={() => pickMethod(m.key)}
+						>
 							<span class="method-title">{m.title}</span>
 							<span class="method-desc">{m.desc}</span>
 						</button>

@@ -219,6 +219,39 @@ export function noteInviteFailure(ip: string): void {
 	log.warn({ event: 'invite_failed', ip }, 'invalid invite code submitted');
 }
 
+// ---------------------------------------------------------------- contacts
+
+// POST /api/contacts is limited per requesting user AND per IP to stop
+// wordlist-based account enumeration (cairn-n4k4). Unlike the login/invite
+// limiters, EVERY request counts (not just failures): a probe against a real
+// account returns the same 200 as a miss, so there is no "failure" to key on —
+// the request itself is the unit to throttle. Generous vs. legitimate use
+// (adding a handful of friends), tight enough to make bulk probing impractical.
+const CONTACT_LIMITS = { user: 20, ip: 60 } as const;
+
+const contactKeys = (ip: string, userId: number) => [
+	`contact:ip:${ip}`,
+	`contact:user:${userId}`
+];
+
+/** Seconds the caller must wait before another contact request, or null. */
+export function contactRequestRetryAfter(ip: string, userId: number): number | null {
+	const [ipKey, userKey] = contactKeys(ip, userId);
+	const wait = retryAfter(userKey, CONTACT_LIMITS.user) ?? retryAfter(ipKey, CONTACT_LIMITS.ip);
+	if (wait !== null) {
+		log.warn(
+			{ event: 'contact_request_throttled', ip, userId, retryAfter: wait },
+			'contact request throttled by rate limiter'
+		);
+	}
+	return wait;
+}
+
+/** Count a contact request against both buckets (every attempt, success or not). */
+export function noteContactRequest(ip: string, userId: number): void {
+	for (const key of contactKeys(ip, userId)) recordFailure(key);
+}
+
 /** Human phrasing shared by the endpoints. */
 export function tooManyAttemptsMessage(seconds: number): string {
 	const minutes = Math.ceil(seconds / 60);

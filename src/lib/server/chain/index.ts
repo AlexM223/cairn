@@ -489,11 +489,17 @@ export class ChainService {
 			// Retarget multiplier = target/actual pace, clamped to 4x either way
 			// (the consensus rule) — expressed here as a percent change.
 			const projected = Math.max(-75, Math.min(300, (TARGET_SECONDS / avg - 1) * 100));
+			// Clamp the pace used for the date projection to the consensus 4x band
+			// (the same bound already applied to projectedChangePercent just above).
+			// On a slow test/regtest chain `avg` can balloon to hours, extrapolating
+			// an absurd far-future retarget date (observed: year 2255) — cairn-t6t7.
+			// The displayed avgBlockTimeSeconds stays the true measured value.
+			const projectionAvg = Math.max(TARGET_SECONDS / 4, Math.min(TARGET_SECONDS * 4, avg));
 			return {
 				...base,
 				avgBlockTimeSeconds: avg,
 				projectedChangePercent: projected,
-				estimatedRetargetDate: tip.timestamp + base.blocksRemaining * avg
+				estimatedRetargetDate: tip.timestamp + base.blocksRemaining * projectionAvg
 			};
 		} catch {
 			return base;

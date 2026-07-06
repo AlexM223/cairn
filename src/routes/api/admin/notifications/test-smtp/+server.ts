@@ -21,8 +21,10 @@ export const POST: RequestHandler = async (event) => {
 	try {
 		result = await CHANNELS.email.test(admin.id);
 	} catch (e) {
+		// Log the real error for the operator, but return a generic message rather
+		// than forwarding raw driver/connection text to the client (cairn-6y98).
 		log.error({ err: e, userId: admin.id }, 'SMTP test threw');
-		result = { ok: false, error: e instanceof Error ? e.message : 'The test failed unexpectedly.' };
+		result = { ok: false, error: 'The test failed unexpectedly.' };
 	}
 	return json(result);
 };
