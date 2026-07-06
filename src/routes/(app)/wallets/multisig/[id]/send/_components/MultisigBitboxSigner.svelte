@@ -108,7 +108,10 @@
 			const signed = await signPsbtWithBitbox02(unsignedPsbt, {
 				scriptConfig,
 				keypath,
-				walletName: multisigName
+				walletName: multisigName,
+				// Verify the connected device is actually this key before signing, so a
+				// wrong BitBox02 gets the early, clear wrong_device error (cairn-86n5).
+				expectedKey: multisigKeys[ourKeyIndex]
 			});
 			done = true;
 			onsigned(signed);

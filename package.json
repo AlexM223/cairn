@@ -60,7 +60,7 @@
 		"bbqr": "^1.2.0",
 		"bitbox-api": "^0.13.0",
 		"buffer": "^6.0.3",
-		"jadets": "^1.1.18",
+		"jadets": "1.1.18",
 		"jspdf": "^4.2.1",
 		"nodemailer": "^9.0.3",
 		"nostr-tools": "^2.23.9",

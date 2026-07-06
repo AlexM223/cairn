@@ -340,6 +340,23 @@ export function buildMultisigScriptConfig(
 	};
 }
 
+/**
+ * Does a connected device's identity match the multisig key a signing slot
+ * expects? Primary check: the account xpub read from the device equals the
+ * stored cosigner xpub (key material — compared after SLIP-132 normalization so
+ * version prefixes can't cause a false negative). Fallback: the device's master
+ * fingerprint equals the key's recorded (non-placeholder) fingerprint, covering
+ * keys stored without a re-derivable account xpub. Exported for unit testing.
+ */
+export function bitboxKeyIdentityMatches(
+	expected: { xpub: string; fingerprint: string },
+	reading: { xpub: string; fingerprint: string }
+): boolean {
+	if (normalizeXpub(expected.xpub) === normalizeXpub(reading.xpub)) return true;
+	const fp = reading.fingerprint.trim().toLowerCase();
+	return fp !== '' && fp !== '00000000' && fp === expected.fingerprint.trim().toLowerCase();
+}
+
 // ---------------------------------------------------------------- error map
 //
 // bitbox-api raises typed errors; run any caught value through the library's
@@ -598,6 +615,14 @@ export interface Bitbox02SignParams {
 	 * name during registration.
 	 */
 	walletName?: string;
+	/**
+	 * For a MULTISIG config, the cosigner key this device is expected to be
+	 * (multisigKeys[ourXpubIndex]). When present, the driver verifies the
+	 * connected device actually holds this key before signing and throws
+	 * `wrong_device` otherwise (see assertBitboxIsExpectedKey). Omitted for
+	 * single-sig and by callers that opt out of the check (e.g. tests).
+	 */
+	expectedKey?: MultisigSignKey;
 }
 
 /** True when a script config is the multisig variant (needs device registration). */
@@ -659,6 +684,40 @@ async function maybeRegisterMultisig(
 }
 
 /**
+ * Guard: the connected BitBox02 must actually be the multisig key this signing
+ * slot is collecting a signature for. Without it a user who plugs in the WRONG
+ * BitBox02 (or the right one with a different passphrase/wallet loaded) sails past
+ * registration into a confusing mid-sign failure, instead of getting the clear,
+ * early "wrong device" error Trezor and Ledger already give — and the signer UI's
+ * wrong_device branch stays dead code. Runs only for multisig signing when the
+ * caller supplies expectedKey; single-sig and opt-out callers are untouched. The
+ * server still re-checks PSBT contents (assertSameTransaction) regardless — this
+ * is the early, actionable warning, not the fund-safety backstop (cairn-86n5).
+ */
+async function assertBitboxIsExpectedKey(
+	paired: PairedBitBoxType,
+	mod: BitboxModule,
+	params: Bitbox02SignParams
+): Promise<void> {
+	if (!isMultisigConfig(params.scriptConfig) || !params.expectedKey) return;
+	// Multisig signing always uses a string account keypath; nothing to read otherwise.
+	if (typeof params.keypath !== 'string') return;
+	let reading: { xpub: string; fingerprint: string };
+	try {
+		const fingerprint = (await paired.rootFingerprint()).toLowerCase();
+		const xpub = await paired.btcXpub(COIN, params.keypath, 'xpub', false);
+		reading = { xpub: normalizeXpub(xpub), fingerprint };
+	} catch (err) {
+		throw toBitbox02Error(err, mod);
+	}
+	if (bitboxKeyIdentityMatches(params.expectedKey, reading)) return;
+	throw new Bitbox02Error(
+		`This BitBox02 isn't the key this signature is for — the connected device's fingerprint is ${reading.fingerprint}, but this signing slot expects ${params.expectedKey.fingerprint.toLowerCase()}. Connect the BitBox02 that holds this multisig key.`,
+		'wrong_device'
+	);
+}
+
+/**
  * Sign a PSBT with a connected BitBox02 and return the signed PSBT as base64.
  *
  * Unlike the Ledger/Trezor drivers, the device signs the PSBT and returns the
@@ -689,6 +748,9 @@ export async function signPsbtWithBitbox02(
 	const mod = await loadBitbox();
 	const { paired, close } = await connectAndPair(mod);
 	try {
+		// Fail fast and clearly if this isn't the device this key belongs to, before
+		// registering or signing under a wallet the device doesn't hold (cairn-86n5).
+		await assertBitboxIsExpectedKey(paired, mod, params);
 		// A multisig config the device hasn't registered would otherwise be signed
 		// blind — register (with on-device approval) before signing (cairn-5kth).
 		await maybeRegisterMultisig(paired, mod, params);

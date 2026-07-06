@@ -1231,6 +1231,7 @@
 						<MultisigJadeUsbSigner
 							unsignedPsbt={draft.psbt}
 							keyName={activeKey.name}
+							ourKeyIndex={activeKeyIndex}
 							multisigName={data.multisig.name}
 							threshold={required}
 							totalKeys={keys.length}

@@ -32,6 +32,7 @@
 
 import { createBase58check } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import type { ScriptType } from '$lib/types';
 
 // ---- Types imported for annotations only (erased at build, no runtime load) --
@@ -212,6 +213,14 @@ export interface JadeMultisigParams {
 	threshold: number;
 	keys: MultisigSignKey[];
 	scriptType: MultisigScriptType;
+	/**
+	 * The cosigner key the connected Jade is expected to be (the roster key this
+	 * signature is being collected for). When present, registerMultisigWithJade
+	 * verifies the connected device actually holds this key and throws
+	 * `wrong_device` otherwise (see assertJadeIsExpectedKey). Optional so the
+	 * creation-wizard descriptor build and tests need not supply it.
+	 */
+	expectedKey?: MultisigSignKey;
 }
 
 /** jadets multisig `variant` string per Cairn script form. Jade's sorted-multi
@@ -321,6 +330,79 @@ export function sanitizeJadeMultisigName(raw: string): string {
 	const cleaned = ascii || 'cairnms';
 	// Jade caps registration names (16 chars in its firmware); stay under it.
 	return cleaned.length > 16 ? cleaned.slice(0, 16) : cleaned;
+}
+
+/** Key material of an extended key (everything past the 4 version bytes: depth,
+ *  parent fp, child number, chain code, pubkey) as hex — identical for a
+ *  SLIP-132 alias and its standard-xpub form. Non-decodable input hashes as its
+ *  raw string so a malformed key still contributes to identity distinctly. */
+function extendedKeyMaterialHex(xpub: string): string {
+	const s = xpub.trim();
+	try {
+		const raw = b58check.decode(s);
+		if (raw.length === 78) return bytesToHex(raw.slice(4));
+	} catch {
+		// fall through
+	}
+	return `raw:${s}`;
+}
+
+/** Do two extended-key strings identify the same key? True when they match on
+ *  everything but the version bytes (so ypub/Zpub aliases equal their xpub). */
+function sameExtendedKey(a: string, b: string): boolean {
+	const ma = extendedKeyMaterialHex(a);
+	return !ma.startsWith('raw:') && ma === extendedKeyMaterialHex(b);
+}
+
+/**
+ * Does a connected Jade's identity match the multisig key a signing slot expects?
+ * Primary: the account xpub read from the device equals the stored cosigner xpub
+ * (key material, SLIP-132-insensitive). Fallback: the device master fingerprint
+ * equals the key's recorded (non-placeholder) fingerprint — covers keys stored
+ * with an unresolvable account path. Exported for unit testing.
+ */
+export function jadeKeyIdentityMatches(
+	expected: { xpub: string; fingerprint: string },
+	reading: { xpub: string; fingerprint: string }
+): boolean {
+	if (sameExtendedKey(expected.xpub, reading.xpub)) return true;
+	const fp = reading.fingerprint.trim().toLowerCase();
+	return fp !== '' && fp !== '00000000' && fp === expected.fingerprint.trim().toLowerCase();
+}
+
+/** A canonical, order-independent identity string for a multisig wallet: its
+ *  script form, threshold, and the SLIP-132-insensitive material of each key
+ *  (fingerprint + origin path + key material), sorted so cosigner order can't
+ *  change it. Two wallets with the same quorum+keys hash equal; any different
+ *  key set hashes differently. */
+function canonicalMultisigIdentity(params: JadeMultisigParams): Uint8Array {
+	const perKey = (params.keys ?? [])
+		.map(
+			(k) =>
+				`${k.fingerprint.trim().toLowerCase()}:${k.path.trim()}:${extendedKeyMaterialHex(k.xpub)}`
+		)
+		.sort();
+	return sha256(new TextEncoder().encode(`${params.scriptType}:${params.threshold}:${perKey.join('|')}`));
+}
+
+/**
+ * Deterministic Jade registration name for a multisig: a short readable prefix
+ * plus a hash of the wallet's canonical descriptor, kept within Jade's 16-char
+ * firmware limit. The hash suffix is the fix for cairn-1qkk: Jade registers
+ * multisigs by name into fixed device-side slots and silently REPLACES an
+ * existing entry when the name repeats. Two DIFFERENT wallets whose names share a
+ * 16-char sanitized prefix ("Family Vault Primary" / "Family Vault Backup" ->
+ * both "FamilyVaultBack"...) would otherwise clobber each other's registration,
+ * corrupting the first wallet's later address-verification and signing with no
+ * error. Binding the name to the descriptor makes distinct wallets get distinct
+ * names, while the same wallet always resolves to the same name (idempotent
+ * re-registration). Exported for unit testing.
+ */
+export function jadeMultisigRegistrationName(params: JadeMultisigParams): string {
+	// 6 hex chars of identity + '_' separator leaves 9 for the human-readable part.
+	const digest = bytesToHex(canonicalMultisigIdentity(params)).slice(0, 6);
+	const base = sanitizeJadeMultisigName(params.name).slice(0, 9);
+	return `${base}_${digest}`;
 }
 
 /**
@@ -600,10 +682,32 @@ export async function registerMultisigWithJade(
 ): Promise<{ name: string }> {
 	// Build (and validate) the descriptor before touching the device.
 	const descriptor = buildJadeMultisigDescriptor(params);
-	const name = sanitizeJadeMultisigName(params.name);
+	// Descriptor-bound name so distinct wallets never clobber each other's
+	// device-side registration slot (cairn-1qkk).
+	const name = jadeMultisigRegistrationName(params);
 
 	const { jade, dispose } = await openJade();
 	try {
+		// Fail fast and clearly if this Jade isn't the key this signature is for,
+		// before registering or signing under a wallet it doesn't hold (cairn-86n5).
+		if (params.expectedKey) {
+			let reading: { xpub: string; fingerprint: string };
+			try {
+				const derivation = parseKeyPath(params.expectedKey.path, 'expected key');
+				const xpub = await jade.getXpub(JADE_NETWORK, derivation);
+				const fingerprint = (await jade.getMasterFingerPrint(JADE_NETWORK)) ?? '';
+				reading = { xpub: (xpub ?? '').trim(), fingerprint: fingerprint.toLowerCase() };
+			} catch (err) {
+				throw toJadeError(err);
+			}
+			if (!jadeKeyIdentityMatches(params.expectedKey, reading)) {
+				throw new JadeError(
+					`This Jade isn't the key this signature is for — the connected device's fingerprint is ${reading.fingerprint || 'unknown'}, but this signing slot expects ${params.expectedKey.fingerprint.toLowerCase()}. Connect the Jade that holds this multisig key.`,
+					'wrong_device'
+				);
+			}
+		}
+
 		let ok: boolean;
 		try {
 			ok = await jade.registerMultisig(JADE_NETWORK, name, descriptor);

@@ -11,6 +11,7 @@ import {
 	bitbox02SupportsMultisigScriptType,
 	buildSimpleScriptConfig,
 	buildMultisigScriptConfig,
+	bitboxKeyIdentityMatches,
 	toBitbox02Error,
 	Bitbox02Error,
 	type MultisigSignKey
@@ -121,6 +122,42 @@ describe('normalizeXpub', () => {
 
 	it('trims and passes through non-base58 garbage unchanged (real error later)', () => {
 		expect(normalizeXpub('  not-a-key  ')).toBe('not-a-key');
+	});
+});
+
+describe('bitboxKeyIdentityMatches', () => {
+	const expected: MultisigSignKey = { xpub: XPUB, fingerprint: 'd34db33f', path: "m/48'/0'/0'/2'" };
+
+	it('matches identical account xpubs', () => {
+		expect(bitboxKeyIdentityMatches(expected, { xpub: XPUB, fingerprint: '00000000' })).toBe(true);
+	});
+
+	it('matches a SLIP-132 alias of the same key (Zpub == xpub)', () => {
+		expect(
+			bitboxKeyIdentityMatches(expected, { xpub: withVersion(XPUB, 0x02aa7ed3), fingerprint: '00000000' })
+		).toBe(true);
+	});
+
+	it('matches on fingerprint fallback when the xpub differs', () => {
+		expect(
+			bitboxKeyIdentityMatches(expected, { xpub: 'unreadable', fingerprint: 'D34DB33F' })
+		).toBe(true);
+	});
+
+	it('rejects a wholly different device', () => {
+		const other = HDKey.fromMasterSeed(new Uint8Array(32).fill(9)).derive("m/48'/0'/0'/2'");
+		expect(
+			bitboxKeyIdentityMatches(expected, { xpub: other.publicExtendedKey, fingerprint: 'aaaaaaaa' })
+		).toBe(false);
+	});
+
+	it('does not treat placeholder fingerprints as a match', () => {
+		expect(
+			bitboxKeyIdentityMatches(
+				{ xpub: 'a', fingerprint: '00000000' },
+				{ xpub: 'b', fingerprint: '00000000' }
+			)
+		).toBe(false);
 	});
 });
 

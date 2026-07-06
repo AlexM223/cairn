@@ -10,6 +10,8 @@ import {
 	toSingleSigXpub,
 	buildJadeMultisigDescriptor,
 	sanitizeJadeMultisigName,
+	jadeMultisigRegistrationName,
+	jadeKeyIdentityMatches,
 	toJadeError,
 	JadeError,
 	type MultisigSignKey
@@ -241,6 +243,77 @@ describe('sanitizeJadeMultisigName', () => {
 	it('falls back for empty / all-non-ASCII input', () => {
 		expect(sanitizeJadeMultisigName('')).toBe('cairnms');
 		expect(sanitizeJadeMultisigName('🏰🏰')).toBe('cairnms');
+	});
+});
+
+describe('jadeMultisigRegistrationName', () => {
+	const base = { threshold: 2, keys: MULTISIG_KEYS, scriptType: 'p2wsh' as const };
+
+	it('stays within Jade\'s 16-char firmware limit', () => {
+		const name = jadeMultisigRegistrationName({ ...base, name: 'Family Vault Multisig Primary' });
+		expect(name.length).toBeLessThanOrEqual(16);
+	});
+
+	it('is deterministic — same wallet always yields the same name', () => {
+		const a = jadeMultisigRegistrationName({ ...base, name: 'My Vault' });
+		const b = jadeMultisigRegistrationName({ ...base, name: 'My Vault' });
+		expect(a).toBe(b);
+	});
+
+	it('does NOT collide for two different wallets that share a 16-char name prefix', () => {
+		// The exact cairn-1qkk scenario: both names sanitize to the same 16-char
+		// prefix, but the wallets differ (different key sets → must differ).
+		const primary = jadeMultisigRegistrationName({
+			...base,
+			name: 'Family Vault Multisig Primary',
+			keys: MULTISIG_KEYS
+		});
+		const backup = jadeMultisigRegistrationName({
+			...base,
+			name: 'Family Vault Multisig Backup',
+			keys: [MULTISIG_KEYS[2], MULTISIG_KEYS[0], MULTISIG_KEYS[1]].map((k, i) => ({
+				...k,
+				// Perturb one key so it is a genuinely different wallet.
+				fingerprint: i === 0 ? 'deadbeef' : k.fingerprint
+			}))
+		});
+		expect(primary).not.toBe(backup);
+	});
+
+	it('is independent of cosigner ordering (BIP-67 sorted semantics)', () => {
+		const forward = jadeMultisigRegistrationName({ ...base, name: 'Vault', keys: MULTISIG_KEYS });
+		const reversed = jadeMultisigRegistrationName({
+			...base,
+			name: 'Vault',
+			keys: [...MULTISIG_KEYS].reverse()
+		});
+		expect(forward).toBe(reversed);
+	});
+});
+
+describe('jadeKeyIdentityMatches', () => {
+	const key = MULTISIG_KEYS[0];
+
+	it('matches when the device account xpub equals the stored cosigner xpub', () => {
+		expect(jadeKeyIdentityMatches(key, { xpub: key.xpub, fingerprint: '00000000' })).toBe(true);
+	});
+
+	it('matches on fingerprint fallback when the xpub cannot be compared', () => {
+		expect(
+			jadeKeyIdentityMatches(key, { xpub: 'not-an-xpub', fingerprint: key.fingerprint.toUpperCase() })
+		).toBe(true);
+	});
+
+	it('rejects a different device (different xpub and fingerprint)', () => {
+		expect(
+			jadeKeyIdentityMatches(key, { xpub: MULTISIG_KEYS[1].xpub, fingerprint: MULTISIG_KEYS[1].fingerprint })
+		).toBe(false);
+	});
+
+	it('does not match a placeholder fingerprint against a placeholder', () => {
+		expect(
+			jadeKeyIdentityMatches({ xpub: 'x', fingerprint: '00000000' }, { xpub: 'y', fingerprint: '00000000' })
+		).toBe(false);
 	});
 });
 

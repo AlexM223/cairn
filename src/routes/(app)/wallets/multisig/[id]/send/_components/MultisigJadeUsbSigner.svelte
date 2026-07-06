@@ -27,6 +27,7 @@
 	let {
 		unsignedPsbt,
 		keyName,
+		ourKeyIndex,
 		multisigName,
 		threshold,
 		totalKeys,
@@ -43,6 +44,8 @@
 		unsignedPsbt: string;
 		/** Which multisig key this signature is being collected from. */
 		keyName: string;
+		/** Index of THIS key in the roster — used to verify the right Jade is plugged in. */
+		ourKeyIndex: number;
 		multisigName: string;
 		threshold: number;
 		totalKeys: number;
@@ -110,7 +113,10 @@
 				name: multisigName,
 				threshold,
 				keys: multisigKeys,
-				scriptType
+				scriptType,
+				// Verify the connected Jade is actually this key before registering/signing,
+				// so a wrong device gets the early, clear wrong_device error (cairn-86n5).
+				expectedKey: multisigKeys[ourKeyIndex]
 			});
 
 			phase = 'signing';
