@@ -21,6 +21,7 @@
 	import type { SavedTransaction } from '$lib/server/transactions';
 	import type { SavedAddress } from '$lib/server/addressBook';
 	import CoinControl from './_components/CoinControl.svelte';
+	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
 	import DeviceCard from './_components/DeviceCard.svelte';
 	import RecipientCombobox from './_components/RecipientCombobox.svelte';
 	import ColdCardSigner from './_components/ColdCardSigner.svelte';
@@ -336,7 +337,11 @@
 			});
 			const body = await res.json();
 			if (!res.ok) {
-				buildError = body.error ?? 'Could not build the transaction.';
+				// The wallet's own errors come back as { error }, but a requireFeature
+				// gate throws SvelteKit's error(403, …) which serializes as { message }
+				// — read both so a "disabled by your administrator" reason surfaces
+				// instead of the generic fallback (cairn-1x3w).
+				buildError = body.error ?? body.message ?? 'Could not build the transaction.';
 				return;
 			}
 			draft = body.draft as SavedTransaction;
@@ -479,7 +484,8 @@
 				return;
 			}
 			if (!res.ok) {
-				broadcastError = body.error ?? 'Broadcast failed.';
+				// { error } from the wallet, { message } from a requireFeature 403.
+				broadcastError = body.error ?? body.message ?? 'Broadcast failed.';
 				broadcastRejected = body.code === 'rejected';
 				return;
 			}
@@ -991,16 +997,26 @@
 				</div>
 
 				{#if data.utxos.length > 0}
-					<!-- Optional manual coin control — collapsed so the default flow stays clean. -->
-					<div class="field">
-						<CoinControl
-							{walletId}
-							utxos={data.utxos}
-							bind:selected={selectedCoins}
-							{tipHeight}
-							initialOpen={consolidate !== null}
+					{#if data.flags?.coin_control === false}
+						<!-- Coin control disabled by an admin: show WHY rather than silently
+						     dropping the picker, and leave selection empty so the send uses
+						     automatic coin selection (cairn-jyh7, cairn-8dup). -->
+						<FeatureDisabled
+							block
+							message="Choosing specific coins to spend has been disabled by your administrator."
 						/>
-					</div>
+					{:else}
+						<!-- Optional manual coin control — collapsed so the default flow stays clean. -->
+						<div class="field">
+							<CoinControl
+								{walletId}
+								utxos={data.utxos}
+								bind:selected={selectedCoins}
+								{tipHeight}
+								initialOpen={consolidate !== null}
+							/>
+						</div>
+					{/if}
 				{/if}
 
 				{#if buildError}

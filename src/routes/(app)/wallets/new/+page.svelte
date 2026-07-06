@@ -5,6 +5,7 @@
 	import { onDestroy, tick } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import DevicePicker from '$lib/components/DevicePicker.svelte';
+	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import type { ScriptType, WalletDeviceType } from '$lib/types';
 	import { SCRIPT_TYPE_LABELS, WALLET_DEVICE_LABELS } from '../labels';
@@ -391,6 +392,16 @@
 					</span>
 					<Icon name="check" size={17} />
 				</button>
+			{:else}
+				<!-- Show the option greyed-out with the reason, so a user knows multisig
+				     exists but is turned off, not simply absent (cairn-8dup). -->
+				<div class="type-card type-card-off" aria-disabled="true">
+					<span class="type-icon"><Icon name="shield" size={20} /></span>
+					<span class="type-body">
+						<span class="type-name">Multiple keys (multisig)</span>
+						<FeatureDisabled message="Creating multisig wallets has been disabled by your administrator." />
+					</span>
+				</div>
 			{/if}
 			<div class="pane-actions">
 				<span></span>
@@ -1096,6 +1107,16 @@
 
 	.type-card:hover {
 		border-color: var(--text-muted);
+	}
+
+	.type-card-off {
+		cursor: not-allowed;
+		opacity: 0.6;
+		border-style: dashed;
+	}
+
+	.type-card-off:hover {
+		border-color: var(--border);
 	}
 
 	/* The trailing check only reads as "selected"; hide it on the resting card. */

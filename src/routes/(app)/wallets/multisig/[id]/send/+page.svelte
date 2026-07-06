@@ -173,7 +173,8 @@
 			});
 			const body = await res.json();
 			if (!res.ok) {
-				buildError = body.error ?? 'Could not build the transaction.';
+				// { error } from the wallet; { message } from a requireFeature 403.
+				buildError = body.error ?? body.message ?? 'Could not build the transaction.';
 				return;
 			}
 			draft = body.draft as SavedMultisigTransaction;
@@ -497,7 +498,7 @@
 			});
 			const body = await res.json();
 			if (!res.ok) {
-				signError = body.error ?? 'That PSBT could not be attached.';
+				signError = body.error ?? body.message ?? 'That PSBT could not be attached.';
 				return;
 			}
 			draft = body.transaction as SavedMultisigTransaction;
@@ -592,7 +593,7 @@
 				return;
 			}
 			if (!res.ok) {
-				broadcastError = body.error ?? 'Broadcast failed.';
+				broadcastError = body.error ?? body.message ?? 'Broadcast failed.';
 				return;
 			}
 			sentTxid = body.txid as string;

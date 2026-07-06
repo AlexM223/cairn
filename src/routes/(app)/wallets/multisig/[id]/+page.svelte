@@ -2,6 +2,7 @@
 	import { enhance } from '$app/forms';
 	import { afterNavigate, invalidateAll, replaceState } from '$app/navigation';
 	import Icon from '$lib/components/Icon.svelte';
+	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import MiningRewards from '$lib/components/MiningRewards.svelte';
@@ -229,6 +230,8 @@
 				<Icon name="arrow-down-left" size={14} />
 				Export history
 			</a>
+		{:else}
+			<FeatureDisabled message="CSV export has been disabled by your administrator." />
 		{/if}
 		<!-- Removing the wallet is owner-only (the delete action 404s otherwise). -->
 		{#if data.role !== 'owner'}

@@ -3,6 +3,7 @@
 	import { afterNavigate, goto, invalidateAll, replaceState } from '$app/navigation';
 	import Icon from '$lib/components/Icon.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
+	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import TxStatusBadge from '$lib/components/TxStatusBadge.svelte';
 	import ConsolidationCard from './_components/ConsolidationCard.svelte';
@@ -286,6 +287,8 @@
 				<Icon name="arrow-down-left" size={14} />
 				Export history
 			</a>
+		{:else}
+			<FeatureDisabled message="CSV export has been disabled by your administrator." />
 		{/if}
 		{#if !confirmDelete}
 			<button
