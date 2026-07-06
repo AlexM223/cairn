@@ -38,9 +38,11 @@ ENV CAIRN_DB=/data/cairn.db
 # /app/data/logs, i.e. the ephemeral writable layer — history lost on recreate).
 ENV CAIRN_LOG_FILE=/data/logs/cairn.log
 ENV PORT=3000
-# adapter-node: take the client IP from X-Forwarded-For. Only safe when the
-# container sits behind a reverse proxy that sets/overwrites this header.
-ENV ADDRESS_HEADER=x-forwarded-for
+# NOTE: deliberately no ADDRESS_HEADER default. adapter-node THROWS on any
+# getClientAddress() call when the configured header is absent, which breaks
+# login for direct (unproxied) deployments. Deployments that sit behind a
+# reverse proxy which sets X-Forwarded-For (e.g. Umbrel's app_proxy) should
+# set ADDRESS_HEADER=x-forwarded-for themselves.
 ENV NODE_ENV=production
 
 RUN mkdir -p /data && chown cairn:cairn /data
