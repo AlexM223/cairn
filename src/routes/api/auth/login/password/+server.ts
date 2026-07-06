@@ -10,6 +10,7 @@ import {
 	hasNoCredentials,
 	AuthError
 } from '$lib/server/auth';
+import { sessionContextFrom } from '$lib/server/deviceTracking';
 import { tryAdminBreakGlass, recordBreakGlassLogin } from '$lib/server/recovery';
 import { loginRetryAfter, noteLoginFailure, noteLoginSuccess, tooManyAttemptsMessage } from '$lib/server/rateLimit';
 import type { RequestHandler } from './$types';
@@ -26,7 +27,7 @@ export const POST: RequestHandler = async (event) => {
 	try {
 		const user = loginWithPassword(email, password);
 		noteLoginSuccess(ip, email);
-		const { token, expiresAt } = createSession(user.id);
+		const { token, expiresAt } = createSession(user.id, sessionContextFrom(event));
 		setSessionCookie(event.cookies, token, expiresAt, event.url);
 		return json({ user });
 	} catch (e) {
@@ -42,7 +43,7 @@ export const POST: RequestHandler = async (event) => {
 					if (admin) {
 						noteLoginSuccess(ip, email);
 						recordBreakGlassLogin(admin.id, admin.email);
-						const { token, expiresAt } = createSession(admin.id);
+						const { token, expiresAt } = createSession(admin.id, sessionContextFrom(event));
 						setSessionCookie(event.cookies, token, expiresAt, event.url);
 						return json({ user: admin });
 					}

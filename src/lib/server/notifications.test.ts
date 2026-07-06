@@ -67,14 +67,20 @@ describe('resolveRecipients', () => {
 		vi.spyOn(CHANNELS.email, 'isConfigured').mockReturnValue(true);
 		vi.spyOn(CHANNELS.telegram, 'isConfigured').mockReturnValue(true);
 		// Pretend the default for a custom event enables email; user disables it.
+		// try/finally so a failed assertion can't leave the shared, exported
+		// DEFAULT_PREFERENCES permanently mutated for the rest of the run (cairn-9hq7).
+		const original = DEFAULT_PREFERENCES['tx_received'];
 		DEFAULT_PREFERENCES['tx_received'] = ['inapp', 'email'];
-		db.prepare(
-			`INSERT INTO notification_preferences (user_id, event_type, channel, enabled)
-			 VALUES (?, 'tx_received', 'email', 0)`
-		).run(u.id);
-		const targets = resolveRecipients(payload({ userId: u.id }));
-		expect(targets).toEqual([]);
-		DEFAULT_PREFERENCES['tx_received'] = ['inapp']; // restore
+		try {
+			db.prepare(
+				`INSERT INTO notification_preferences (user_id, event_type, channel, enabled)
+				 VALUES (?, 'tx_received', 'email', 0)`
+			).run(u.id);
+			const targets = resolveRecipients(payload({ userId: u.id }));
+			expect(targets).toEqual([]);
+		} finally {
+			DEFAULT_PREFERENCES['tx_received'] = original; // restore
+		}
 	});
 
 	it('userId null fans out to every enabled admin, skipping disabled admins and non-admins', () => {
@@ -102,11 +108,15 @@ describe('resolveRecipients', () => {
 		const u = makeUser('d@example.com');
 		// Force every channel configured; in-app has no plugin so it can't appear.
 		for (const ch of Object.values(CHANNELS)) vi.spyOn(ch, 'isConfigured').mockReturnValue(true);
+		const original = DEFAULT_PREFERENCES['tx_received'];
 		DEFAULT_PREFERENCES['tx_received'] = ['inapp', 'email'];
-		const targets = resolveRecipients(payload({ userId: u.id }));
-		expect(targets.some((t) => (t.channel as string) === 'inapp')).toBe(false);
-		expect(targets).toEqual([{ userId: u.id, channel: 'email' }]);
-		DEFAULT_PREFERENCES['tx_received'] = ['inapp'];
+		try {
+			const targets = resolveRecipients(payload({ userId: u.id }));
+			expect(targets.some((t) => (t.channel as string) === 'inapp')).toBe(false);
+			expect(targets).toEqual([{ userId: u.id, channel: 'email' }]);
+		} finally {
+			DEFAULT_PREFERENCES['tx_received'] = original;
+		}
 	});
 });
 

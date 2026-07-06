@@ -12,6 +12,8 @@ import {
 	MIN_PASSWORD_LENGTH
 } from '$lib/server/auth';
 import { hasRecoverySetup } from '$lib/server/recovery';
+import { notify } from '$lib/server/notifications';
+import { sessionContextFrom } from '$lib/server/deviceTracking';
 import type { Actions, PageServerLoad } from './$types';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -57,7 +59,8 @@ export const actions: Actions = {
 		return { profileSaved: true };
 	},
 
-	password: async ({ request, locals, cookies, url }) => {
+	password: async (event) => {
+		const { request, locals, cookies, url } = event;
 		const form = await request.formData();
 		const current = String(form.get('currentPassword') ?? '');
 		const next = String(form.get('newPassword') ?? '');
@@ -80,11 +83,31 @@ export const actions: Actions = {
 				return fail(400, { passwordError: 'Current password is incorrect.' });
 		}
 
+		const wasExisting = hasPassword(uid);
 		setUserPassword(uid, next);
 
+		// Security alert (cairn-5gpv.5): password is Cairn's default auth method, so a
+		// silent change is a bigger blind spot than the new-passkey case webauthn.ts
+		// already covers. Fire "was this you?" so an attacker who changes the password
+		// to lock out the real owner leaves a signal on every enabled channel. Only for
+		// an actual CHANGE — setting a first password on a passkey-only account is
+		// expected and self-initiated. Best-effort: notify() never throws.
+		if (wasExisting) {
+			notify({
+				type: 'security_password_changed',
+				userId: uid,
+				level: 'warn',
+				title: 'Password changed',
+				body: 'Your account password was just changed. If this wasn’t you, secure your account immediately — someone with access could lock you out.',
+				link: '/settings'
+			});
+		}
+
 		// Rotate all sessions: sign everything out, then start a fresh one here.
+		// Pass the request context so the new session is recorded as this (already
+		// known) device — no spurious new-device alert on top of the password one.
 		destroyUserSessions(uid);
-		const { token, expiresAt } = createSession(uid);
+		const { token, expiresAt } = createSession(uid, sessionContextFrom(event));
 		setSessionCookie(cookies, token, expiresAt, url);
 
 		return { passwordSaved: true };

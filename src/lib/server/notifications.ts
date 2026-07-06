@@ -60,8 +60,12 @@ export const DEFAULT_PREFERENCES: Record<string, NotificationChannelId[]> = {
 	admin_invite_used: ['inapp'],
 	admin_restore: ['inapp'],
 	admin_server_health: ['inapp'],
+	admin_user_disabled: ['inapp'],
+	admin_settings_changed: ['inapp'],
 	security_failed_login: ['inapp'],
-	security_new_passkey: ['inapp']
+	security_new_passkey: ['inapp'],
+	security_password_changed: ['inapp'],
+	security_new_device: ['inapp']
 };
 
 /** Every non-inapp channel id — the set resolveRecipients can enqueue. */

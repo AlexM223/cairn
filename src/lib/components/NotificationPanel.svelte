@@ -56,8 +56,12 @@
 		admin_invite_used: 'ticket',
 		admin_restore: 'alert-triangle',
 		admin_server_health: 'server',
+		admin_user_disabled: 'users',
+		admin_settings_changed: 'settings',
 		security_failed_login: 'shield',
-		security_new_passkey: 'shield'
+		security_new_passkey: 'shield',
+		security_password_changed: 'shield',
+		security_new_device: 'eye'
 	};
 	function iconFor(n: Notification): string {
 		if (ICON[n.type]) return ICON[n.type];

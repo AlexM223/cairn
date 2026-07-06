@@ -8,36 +8,15 @@
 import { json, readJson, requireAdmin } from '$lib/server/api';
 import { childLogger } from '$lib/server/logger';
 import { getSetting, setSetting } from '$lib/server/settings';
+import { getPublicInstanceNotificationSettings } from '$lib/server/notifyConfig';
+import { notify } from '$lib/server/notifications';
 import type { RequestHandler } from './$types';
 
 const log = childLogger('notify:admin-api');
 
-/** Assemble the redacted instance notification settings for the client. */
-function publicNotificationSettings() {
-	const relaysRaw = getSetting('nostr_default_relays');
-	let relays: string[] = [];
-	if (relaysRaw) {
-		try {
-			const v = JSON.parse(relaysRaw);
-			if (Array.isArray(v)) relays = v.map(String);
-		} catch {
-			relays = [];
-		}
-	}
-	return {
-		smtpHost: getSetting('smtp_host') ?? '',
-		smtpPort: getSetting('smtp_port') ?? '587',
-		smtpUser: getSetting('smtp_user') ?? '',
-		smtpFrom: getSetting('smtp_from') ?? '',
-		smtpTls: (getSetting('smtp_tls') ?? 'starttls') as 'starttls' | 'tls' | 'none',
-		hasSmtpPass: !!getSetting('smtp_pass'),
-		telegramBotToken: '', // never sent to the client
-		hasTelegramBotToken: !!getSetting('telegram_bot_token'),
-		ntfyDefaultServer: getSetting('ntfy_default_server') ?? '',
-		nostrDefaultRelays: relays,
-		webhookAllowPrivateTargets: getSetting('webhook_allow_private_targets') === 'true'
-	};
-}
+// Instance-settings redaction is shared with the admin page loader via
+// notifyConfig.ts (cairn-ofna) — one place to add a new secret field.
+const publicNotificationSettings = getPublicInstanceNotificationSettings;
 
 export const GET: RequestHandler = async (event) => {
 	requireAdmin(event);
@@ -52,9 +31,16 @@ const TLS_MODES = new Set(['starttls', 'tls', 'none']);
  * the stored value); an explicit clearSmtpPass / clearTelegramBotToken flag wipes.
  */
 export const POST: RequestHandler = async (event) => {
-	requireAdmin(event);
+	const admin = requireAdmin(event);
 	const body = await readJson<Record<string, unknown>>(event);
 	const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+
+	// Snapshot the security-relevant SSRF escape-hatch before the save so we can
+	// alert other admins if it flips (cairn-5gpv.8). Turning
+	// webhook_allow_private_targets ON lets webhooks reach private/internal network
+	// targets — a change other admins on a multi-admin instance should be pushed,
+	// not left to discover in /admin/logs.
+	const prevAllowPrivate = getSetting('webhook_allow_private_targets') === 'true';
 
 	// Cross-field guard (cairn-es32): refuse smtp_tls='none' when SMTP credentials
 	// are (or remain) configured — nodemailer would send AUTH and the message body
@@ -132,6 +118,27 @@ export const POST: RequestHandler = async (event) => {
 	} catch (e) {
 		log.error({ err: e }, 'failed to save admin notification settings');
 		return json({ error: 'Could not save settings.' }, { status: 500 });
+	}
+
+	// Broadcast a security-relevant settings change to every admin (cairn-5gpv.8):
+	// only when the webhook SSRF allow-list actually FLIPPED (not on every save, to
+	// avoid nagging an admin editing their own SMTP fields). Best-effort.
+	if ('webhookAllowPrivateTargets' in body) {
+		const nowAllowPrivate = body.webhookAllowPrivateTargets === true;
+		if (nowAllowPrivate !== prevAllowPrivate) {
+			const actor = admin.displayName || admin.email || 'An admin';
+			notify({
+				type: 'admin_settings_changed',
+				userId: null,
+				level: 'warn',
+				title: 'Webhook network policy changed',
+				body: nowAllowPrivate
+					? `${actor} allowed webhooks to reach private/internal network targets. This relaxes SSRF protection for all users.`
+					: `${actor} restored the block on webhooks reaching private/internal network targets.`,
+				detail: { setting: 'webhook_allow_private_targets', value: nowAllowPrivate },
+				link: '/admin/notifications'
+			});
+		}
 	}
 
 	return json({ settings: publicNotificationSettings() });

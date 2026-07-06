@@ -593,6 +593,55 @@ db.exec(`
 	);
 	CREATE INDEX IF NOT EXISTS idx_notification_queue_pending ON notification_queue(status, next_attempt_at);
 	CREATE INDEX IF NOT EXISTS idx_notification_queue_user ON notification_queue(user_id, id DESC);
+
+	-- Per-user delivery preferences that aren't per-event routing (cairn-5gpv.4).
+	-- Quiet hours: a do-not-disturb window during which routine (info/success)
+	-- external-channel sends are DEFERRED to the window's end rather than dropped.
+	-- Times are 'HH:MM' interpreted in quiet_tz (an IANA zone; NULL = server local).
+	-- quiet_urgent_override=1 lets warn/error events (security alerts) still deliver
+	-- inside the window. One row per user; absence means quiet hours are off.
+	CREATE TABLE IF NOT EXISTS user_notification_settings (
+		user_id               INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+		quiet_enabled         INTEGER NOT NULL DEFAULT 0,
+		quiet_start           TEXT,                       -- 'HH:MM' local
+		quiet_end             TEXT,                       -- 'HH:MM' local
+		quiet_tz              TEXT,                       -- IANA tz name; NULL = server local
+		quiet_urgent_override INTEGER NOT NULL DEFAULT 1  -- warn/error bypass the window
+	);
+
+	-- Throttle memory for the backup_missing detector (cairn-evp9): one row per
+	-- wallet we've nudged about a never-downloaded backup, so the daily scan
+	-- re-nudges at most once per renotify window instead of every day. Mirrors
+	-- multisig_keys.last_notified_at's guard, but for wallets that have no
+	-- wallet_backups row at all.
+	CREATE TABLE IF NOT EXISTS backup_missing_notified (
+		wallet_kind TEXT NOT NULL,               -- 'wallet' | 'multisig'
+		wallet_id   INTEGER NOT NULL,
+		notified_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		PRIMARY KEY (wallet_kind, wallet_id)
+	);
+`);
+
+// Device tracking for new-device login alerts (cairn-5gpv.6). The sessions table
+// gains the user_agent / IP captured at creation, and known_devices is the small
+// per-user set of device fingerprints we've seen — a login from an unrecognized
+// fingerprint fires security_new_device (but never the user's FIRST device).
+{
+	const sessionCols = (db.prepare('PRAGMA table_info(sessions)').all() as { name: string }[]).map(
+		(c) => c.name
+	);
+	if (!sessionCols.includes('user_agent')) db.exec('ALTER TABLE sessions ADD COLUMN user_agent TEXT');
+	if (!sessionCols.includes('ip_address')) db.exec('ALTER TABLE sessions ADD COLUMN ip_address TEXT');
+}
+db.exec(`
+	CREATE TABLE IF NOT EXISTS known_devices (
+		user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		fingerprint TEXT NOT NULL,               -- sha256 of the user-agent (coarse)
+		user_agent  TEXT,
+		first_seen  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		last_seen   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		PRIMARY KEY (user_id, fingerprint)
+	);
 `);
 
 // Notification event hooks (Unit 8, docs/NOTIFICATION-PLAN.md §3). The address

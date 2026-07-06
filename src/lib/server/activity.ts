@@ -175,6 +175,8 @@ export const USER_FEED_TYPES: ReadonlySet<string> = new Set([
 	'key_health_due',
 	// Your own account security ("was this you?")
 	'security_new_passkey',
+	'security_password_changed',
+	'security_new_device',
 	'security_failed_login',
 	'account_recovery',
 	'account_recovery_codes_set',

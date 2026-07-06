@@ -17,6 +17,7 @@ import {
 	consumeRecoveryGrant,
 	RECOVERY_GRANT_COOKIE
 } from '$lib/server/recovery';
+import { sessionContextFrom } from '$lib/server/deviceTracking';
 import {
 	verifyRegistration,
 	readRegChallenge,
@@ -109,7 +110,7 @@ export const POST: RequestHandler = async (event) => {
 	notifyNewPasskey(user.id, { name: body.name ?? null, viaRecovery: true });
 
 	// Establish the REAL session.
-	const { token, expiresAt } = createSession(user.id);
+	const { token, expiresAt } = createSession(user.id, sessionContextFrom(event));
 	setSessionCookie(event.cookies, token, expiresAt, event.url);
 	return json({ user });
 };

@@ -11,6 +11,7 @@ import {
 	setSessionCookie
 } from '$lib/server/auth';
 import { verifyAuthentication, readAuthChallenge, clearAuthChallenge } from '$lib/server/webauthn';
+import { sessionContextFrom } from '$lib/server/deviceTracking';
 import { loginRetryAfter, noteLoginFailure, noteLoginSuccess, tooManyAttemptsMessage } from '$lib/server/rateLimit';
 import { childLogger } from '$lib/server/logger';
 import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
@@ -69,7 +70,7 @@ export const POST: RequestHandler = async (event) => {
 	clearAuthChallenge(event);
 
 	try {
-		const { token, expiresAt } = createSession(user.id);
+		const { token, expiresAt } = createSession(user.id, sessionContextFrom(event));
 		setSessionCookie(event.cookies, token, expiresAt, event.url);
 	} catch (e) {
 		log.error({ err: e, userId: user.id }, 'session creation failed after login');

@@ -271,7 +271,9 @@
 			title: 'Security',
 			events: [
 				{ type: 'security_failed_login', label: 'Failed sign-in attempts', desc: 'Repeated failed sign-ins against your account.' },
-				{ type: 'security_new_passkey', label: 'New passkey added', desc: 'A new passkey or recovery credential was added — "was this you?"' }
+				{ type: 'security_new_passkey', label: 'New passkey added', desc: 'A new passkey or recovery credential was added — "was this you?"' },
+				{ type: 'security_password_changed', label: 'Password changed', desc: 'Your account password was changed — "was this you?"' },
+				{ type: 'security_new_device', label: 'New device sign-in', desc: 'Your account was signed in from a device we haven\'t seen before.' }
 			]
 		},
 		{
@@ -281,7 +283,9 @@
 				{ type: 'admin_new_signup', label: 'New sign-up', desc: 'A new user account was created.' },
 				{ type: 'admin_invite_used', label: 'Invite redeemed', desc: 'An invite code was redeemed.' },
 				{ type: 'admin_restore', label: 'Backup restored', desc: 'An encrypted instance backup was restored — flags any imported accounts.' },
-				{ type: 'admin_server_health', label: 'Server health', desc: 'Node connection down, reconnect looping, or disk space low.' }
+				{ type: 'admin_server_health', label: 'Server health', desc: 'Node connection down, reconnect looping, or disk space low.' },
+				{ type: 'admin_user_disabled', label: 'User disabled or re-enabled', desc: 'Another admin disabled or re-enabled a user account.' },
+				{ type: 'admin_settings_changed', label: 'Instance settings changed', desc: 'A security-relevant instance setting was changed by an admin.' }
 			]
 		}
 	];
@@ -407,6 +411,58 @@
 		if (on.length === 1) return 'In-app only';
 		const labels = on.map((c) => (c === 'inapp' ? 'In-app' : EXTERNAL_CHANNELS.find((e) => e.id === c)?.label));
 		return labels.join(', ');
+	}
+
+	// ---- Quiet hours (cairn-5gpv.4) -----------------------------------------
+	// A do-not-disturb window during which routine external notifications are
+	// deferred to the window's end; urgent security alerts still come through when
+	// the override is on. In-app alerts are never affected.
+	type QuietHours = {
+		enabled: boolean;
+		start: string | null;
+		end: string | null;
+		tz: string | null;
+		urgentOverride: boolean;
+	};
+	// svelte-ignore state_referenced_locally
+	let quiet = $state<QuietHours>(data.quietHours as QuietHours);
+	// svelte-ignore state_referenced_locally
+	let quietStart = $state((data.quietHours as QuietHours).start ?? '22:00');
+	// svelte-ignore state_referenced_locally
+	let quietEnd = $state((data.quietHours as QuietHours).end ?? '07:00');
+	// Pre-fill the time zone from the saved value, else the browser's own zone.
+	const browserTz = typeof Intl !== 'undefined' ? Intl.DateTimeFormat().resolvedOptions().timeZone : '';
+	// svelte-ignore state_referenced_locally
+	let quietTz = $state((data.quietHours as QuietHours).tz ?? browserTz ?? '');
+	let quietSaving = $state(false);
+	let quietError = $state<string | null>(null);
+	let quietSaved = $state(false);
+
+	async function saveQuiet() {
+		quietError = null;
+		quietSaving = true;
+		try {
+			const res = await fetch('/api/notifications/quiet-hours', {
+				method: 'PUT',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({
+					enabled: quiet.enabled,
+					start: quietStart,
+					end: quietEnd,
+					tz: quietTz,
+					urgentOverride: quiet.urgentOverride
+				})
+			});
+			const body = await res.json().catch(() => null);
+			if (!res.ok) throw new Error(body?.error || 'Could not save quiet hours.');
+			quiet = body.quietHours as QuietHours;
+			quietSaved = true;
+			setTimeout(() => (quietSaved = false), 2000);
+		} catch (e) {
+			quietError = e instanceof Error ? e.message : 'Could not save quiet hours.';
+		} finally {
+			quietSaving = false;
+		}
 	}
 </script>
 
@@ -770,6 +826,54 @@
 				</ul>
 			</div>
 		{/each}
+	</section>
+
+	<!-- ============ QUIET HOURS ============ -->
+	<section class="stack group">
+		<h2 class="group-title">Quiet hours</h2>
+		<div class="card card-pad channel">
+			<p class="hint">
+				Pause routine notifications (like payments received and confirmations) during a nightly
+				window. They're held and delivered when the window ends — nothing is lost. Urgent security
+				alerts can still come through. In-app alerts are always available regardless.
+			</p>
+			<label class="toggle-row">
+				<input type="checkbox" bind:checked={quiet.enabled} />
+				<span class="toggle-title">Enable quiet hours</span>
+			</label>
+
+			{#if quiet.enabled}
+				<div class="fade-in stack" style="gap:12px;">
+					<div class="two-col">
+						<div class="field">
+							<label class="label" for="q-start">From</label>
+							<input class="input" id="q-start" type="time" bind:value={quietStart} />
+						</div>
+						<div class="field">
+							<label class="label" for="q-end">To</label>
+							<input class="input" id="q-end" type="time" bind:value={quietEnd} />
+						</div>
+					</div>
+					<div class="field">
+						<label class="label" for="q-tz">Time zone</label>
+						<input class="input mono" id="q-tz" bind:value={quietTz} placeholder="America/New_York" />
+						<span class="hint">IANA name (e.g. Europe/Berlin). Leave blank to use the server's local time.</span>
+					</div>
+					<label class="toggle-row">
+						<input type="checkbox" bind:checked={quiet.urgentOverride} />
+						<span class="toggle-title">Still deliver urgent security alerts during quiet hours</span>
+					</label>
+				</div>
+			{/if}
+
+			{#if quietError}<div class="form-error" role="alert">{quietError}</div>{/if}
+			<div class="ch-actions">
+				<button class="btn btn-primary btn-sm" onclick={saveQuiet} disabled={quietSaving}>
+					{#if quietSaving}<span class="spinner"></span>{/if} Save
+				</button>
+				{#if quietSaved}<span class="saved-inline"><Icon name="check" size={13} /> Saved</span>{/if}
+			</div>
+		</div>
 	</section>
 </div>
 

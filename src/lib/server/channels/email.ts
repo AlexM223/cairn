@@ -28,9 +28,11 @@ import { childLogger } from '../logger';
 import { getSetting } from '../settings';
 import { decryptSecret } from '../secretKey';
 import { absoluteNotificationLink } from '../notifyLinks';
+import { renderEmail, renderText } from './emailTemplate';
 import type {
 	ChannelSendResult,
 	NotificationChannelPlugin,
+	NotificationLevel,
 	NotificationPayload
 } from '../notifyTypes';
 
@@ -209,13 +211,30 @@ function classifyError(err: unknown): { message: string; retryable: boolean } {
 	return { message, retryable: true };
 }
 
+/** Map a notification level to email priority headers. warn/error become
+ *  high-importance so an urgent alert is visually flagged in the inbox; routine
+ *  info/success carry no header (normal). Mirrors ntfy's priorityForLevel
+ *  (cairn-5gpv.4). */
+function priorityHeaders(level: NotificationLevel): Record<string, string> | undefined {
+	if (level === 'warn' || level === 'error') {
+		return { Importance: 'high', 'X-Priority': '1 (Highest)', 'X-MSMail-Priority': 'High' };
+	}
+	return undefined;
+}
+
+interface MailParts {
+	to: string;
+	subject: string;
+	/** Plain-text alternative (always present). */
+	text: string;
+	/** HTML alternative — omitted on the PGP-encrypted path. */
+	html?: string;
+	/** Extra headers (e.g. Importance for warn/error). */
+	headers?: Record<string, string>;
+}
+
 /** Build a transporter and send one mail, mapping the result. */
-async function sendMail(
-	smtp: SmtpConfig,
-	to: string,
-	subject: string,
-	text: string
-): Promise<ChannelSendResult> {
+async function sendMail(smtp: SmtpConfig, parts: MailParts): Promise<ChannelSendResult> {
 	const transporter = nodemailer.createTransport({
 		host: smtp.host,
 		port: smtp.port,
@@ -227,11 +246,18 @@ async function sendMail(
 		auth: smtp.user ? { user: smtp.user, pass: smtp.pass ?? '' } : undefined
 	});
 	try {
-		await transporter.sendMail({ from: smtp.from, to, subject, text });
+		await transporter.sendMail({
+			from: smtp.from,
+			to: parts.to,
+			subject: parts.subject,
+			text: parts.text,
+			...(parts.html ? { html: parts.html } : {}),
+			...(parts.headers ? { headers: parts.headers } : {})
+		});
 		return { ok: true };
 	} catch (err) {
 		const { message, retryable } = classifyError(err);
-		log.warn({ err, to, retryable }, 'email send failed');
+		log.warn({ err, to: parts.to, retryable }, 'email send failed');
 		return { ok: false, error: message, retryable };
 	} finally {
 		transporter.close();
@@ -252,19 +278,24 @@ async function deliverWith(
 		return { ok: false, error: 'No destination email address configured.', retryable: false };
 	}
 
-	let subject = payload.title;
-	let body = payload.body;
 	// Deep links must be absolute in an email — a bare "/wallets/3" isn't clickable
 	// in any mail client (cairn-5gpv.1). Omitted when CAIRN_ORIGIN is unset.
 	const link = absoluteNotificationLink(payload.link);
-	if (link) body += `\n\n${link}`;
+	const headers = priorityHeaders(payload.level);
 
 	const pgpKey = readPgpPublicKey(userId);
 	if (pgpKey) {
+		// Encrypted path stays plain-text only: encrypting HTML adds armored-payload
+		// complexity for no benefit (cairn-5gpv.2). Encrypt only the body (+ link) —
+		// the title already rode in as context nowhere the mail server can read, and
+		// the subject is forced generic below; keeping the body title-free preserves
+		// the pre-existing encrypted-body contract (title '' → renderText emits body).
+		let text: string;
 		try {
-			body = await encryptBody(body, pgpKey);
-			// Never leak the event in the subject when we bothered to encrypt.
-			subject = 'Cairn notification';
+			text = await encryptBody(
+				renderText({ title: '', body: payload.body, link, level: payload.level }),
+				pgpKey
+			);
 		} catch (err) {
 			// A bad/unreadable key is a config problem the user must fix — do not
 			// silently fall back to plaintext (that would defeat the point).
@@ -275,9 +306,19 @@ async function deliverWith(
 				retryable: false
 			};
 		}
+		// Never leak the event in the subject when we bothered to encrypt.
+		return sendMail(smtp, { to, subject: 'Cairn notification', text, headers });
 	}
 
-	return sendMail(smtp, to, subject, body);
+	// Cleartext path: full branded HTML alternative + a plain-text fallback
+	// (cairn-5gpv.2).
+	const { html, text } = renderEmail({
+		title: payload.title,
+		body: payload.body,
+		link,
+		level: payload.level
+	});
+	return sendMail(smtp, { to, subject: payload.title, text, html, headers });
 }
 
 /** Resolve this recipient's relay, mapping the two "can't send" cases (a corrupt

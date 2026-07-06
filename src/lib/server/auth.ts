@@ -4,6 +4,7 @@ import { env } from '$env/dynamic/private';
 import { db } from './db';
 import { getInstanceSettings, getSetting } from './settings';
 import { notify } from './notifications';
+import { recordDeviceAndMaybeNotify, type SessionContext } from './deviceTracking';
 import { childLogger } from './logger';
 import type { CredentialInfo, SessionUser } from '$lib/types';
 
@@ -31,17 +32,26 @@ function hashToken(token: string): string {
 	return createHash('sha256').update(token).digest('hex');
 }
 
-export function createSession(userId: number): { token: string; expiresAt: Date } {
+/**
+ * Create a session for a user. Pass `context` (the request's user-agent + client
+ * IP) so the session records the device and new-device detection can run
+ * (cairn-5gpv.6); omit it for internal/system callers that have no request. The
+ * device-tracking side effect is best-effort and never affects the returned
+ * session.
+ */
+export function createSession(
+	userId: number,
+	context?: SessionContext
+): { token: string; expiresAt: Date } {
 	const token = randomBytes(32).toString('base64url');
 	const expiresAt = new Date(Date.now() + SESSION_DAYS * 86400_000);
-	db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)').run(
-		hashToken(token),
-		userId,
-		expiresAt.toISOString()
-	);
+	db.prepare(
+		'INSERT INTO sessions (token_hash, user_id, expires_at, user_agent, ip_address) VALUES (?, ?, ?, ?, ?)'
+	).run(hashToken(token), userId, expiresAt.toISOString(), context?.userAgent ?? null, context?.ip ?? null);
 	db.prepare(
 		`UPDATE users SET last_login = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`
 	).run(userId);
+	if (context) recordDeviceAndMaybeNotify(userId, context);
 	return { token, expiresAt };
 }
 

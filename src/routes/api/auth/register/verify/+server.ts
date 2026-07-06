@@ -14,6 +14,7 @@ import {
 	AuthError
 } from '$lib/server/auth';
 import { verifyRegistration, readRegChallenge, clearRegChallenge } from '$lib/server/webauthn';
+import { sessionContextFrom } from '$lib/server/deviceTracking';
 import { childLogger } from '$lib/server/logger';
 import type { RegistrationResponseJSON } from '@simplewebauthn/server';
 import type { RequestHandler } from './$types';
@@ -77,7 +78,7 @@ export const POST: RequestHandler = async (event) => {
 			return json({ error: 'Could not reclaim the account.' }, { status: 500 });
 		}
 		clearRegChallenge(event);
-		const { token, expiresAt } = createSession(existing.id);
+		const { token, expiresAt } = createSession(existing.id, sessionContextFrom(event));
 		setSessionCookie(event.cookies, token, expiresAt, event.url);
 		return json({ user: existing });
 	}
@@ -103,7 +104,7 @@ export const POST: RequestHandler = async (event) => {
 	}
 
 	clearRegChallenge(event);
-	const { token, expiresAt } = createSession(user.id);
+	const { token, expiresAt } = createSession(user.id, sessionContextFrom(event));
 	setSessionCookie(event.cookies, token, expiresAt, event.url);
 	// A brand-new account has exactly one passkey and no account-recovery set up.
 	// Signal the UI to send them straight into the mandatory recovery-setup wizard

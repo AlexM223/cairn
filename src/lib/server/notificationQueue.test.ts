@@ -166,6 +166,48 @@ describe('notify() -> queue -> tick() end-to-end', () => {
 		}
 	});
 
+	it('coalesces a burst of same-type rows into ONE digest send (cairn-5gpv.3)', async () => {
+		setSetting('smtp_host', 'smtp.example.com');
+		setSetting('smtp_from', 'cairn@example.com');
+		enableChannel(userId, 'tx_confirmed', 'email');
+
+		// Three confirmations in one block → three queued email rows.
+		for (let i = 0; i < 3; i++) {
+			notify({
+				type: 'tx_confirmed',
+				userId,
+				level: 'success',
+				title: 'Transaction confirmed',
+				body: `tx ${i} confirmed`,
+				detail: { txid: `tx${i}` }
+			});
+		}
+		expect(queueRows()).toHaveLength(3);
+
+		await tick();
+
+		// One digest send, all three rows marked sent.
+		expect(sendMail).toHaveBeenCalledTimes(1);
+		const rows = queueRows();
+		expect(rows.every((r) => r.status === 'sent')).toBe(true);
+		const opts = sendMail.mock.calls[0][0] as { subject: string };
+		expect(opts.subject).toBe('3 transactions confirmed');
+	});
+
+	it('does not coalesce a single row — it sends individually', async () => {
+		setSetting('smtp_host', 'smtp.example.com');
+		setSetting('smtp_from', 'cairn@example.com');
+		enableChannel(userId, 'tx_confirmed', 'email');
+
+		notify({ type: 'tx_confirmed', userId, level: 'success', title: 'Transaction confirmed', body: 'one' });
+		await tick();
+
+		expect(sendMail).toHaveBeenCalledTimes(1);
+		const opts = sendMail.mock.calls[0][0] as { subject: string };
+		expect(opts.subject).toBe('Transaction confirmed'); // not a digest subject
+		expect(queueRows()[0].status).toBe('sent');
+	});
+
 	it('does not enqueue anything for an event type/channel that is not configured', async () => {
 		// email preference enabled, but SMTP never configured on the instance ->
 		// isConfigured() is false -> resolveRecipients() must not emit a target.

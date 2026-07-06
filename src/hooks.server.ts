@@ -7,6 +7,7 @@ import { childLogger } from '$lib/server/logger';
 import { startNotificationQueueWorker } from '$lib/server/notificationQueue';
 import { startAddressWatcher } from '$lib/server/addressWatcher';
 import { startKeyHealthWatcher } from '$lib/server/keyHealth';
+import { startBackupHealthWatcher } from '$lib/server/backupHealth';
 
 const httpLog = childLogger('http');
 const errLog = childLogger('error');
@@ -41,6 +42,14 @@ try {
 	startKeyHealthWatcher();
 } catch (e) {
 	errLog.error({ err: e }, 'key health watcher start failed');
+}
+// Backup-health scan (cairn-evp9): fires backup_missing for never-backed-up
+// wallets and backup_stale when the instance backup ages past the reminder
+// interval — the previously-missing trigger point for those two event types.
+try {
+	startBackupHealthWatcher();
+} catch (e) {
+	errLog.error({ err: e }, 'backup health watcher start failed');
 }
 
 // Static assets and build output aren't worth a log line each (and the SPA

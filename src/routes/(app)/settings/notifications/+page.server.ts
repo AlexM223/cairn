@@ -8,13 +8,12 @@
 import { db } from '$lib/server/db';
 import { getSetting } from '$lib/server/settings';
 import { DEFAULT_PREFERENCES } from '$lib/server/notifications';
-import {
-	NOTIFICATION_EVENT_TYPES,
-	type NotificationChannelId
-} from '$lib/server/notifyTypes';
+import { redactChannelConfig, type ConfigurableChannel } from '$lib/server/notifyConfig';
+import { getQuietHours } from '$lib/server/quietHours';
+import { NOTIFICATION_EVENT_TYPES } from '$lib/server/notifyTypes';
 import type { PageServerLoad } from './$types';
 
-type ExternalChannel = Exclude<NotificationChannelId, 'inapp'>;
+type ExternalChannel = ConfigurableChannel;
 const EXTERNAL_CHANNELS: ExternalChannel[] = ['email', 'telegram', 'ntfy', 'nostr', 'webhook'];
 
 interface ChannelConfigRow {
@@ -50,28 +49,9 @@ function safeParseArray(raw: string | null): string[] {
 	}
 }
 
-/** Redact secret fields so the browser never receives a stored secret. */
-function redact(channel: ExternalChannel, cfg: Record<string, unknown>): Record<string, unknown> {
-	if (channel === 'ntfy') {
-		const { accessToken, ...rest } = cfg;
-		return { ...rest, hasAccessToken: !!accessToken };
-	}
-	if (channel === 'webhook') {
-		const { secret, ...rest } = cfg;
-		return { ...rest, hasSecret: !!secret };
-	}
-	if (channel === 'email') {
-		// Personal SMTP: never ship the encrypted password envelope to the browser
-		// — expose only its presence, mirroring the route's redactForClient.
-		const { smtp, ...rest } = cfg;
-		if (smtp && typeof smtp === 'object') {
-			const { passEnc, ...smtpRest } = smtp as Record<string, unknown>;
-			return { ...rest, smtp: { ...smtpRest, hasPass: !!passEnc } };
-		}
-		return cfg;
-	}
-	return cfg;
-}
+// Secret-field redaction is shared with the channel API route via notifyConfig.ts
+// (cairn-ofna) so a new secret field is redacted everywhere from one edit.
+const redact = redactChannelConfig;
 
 export const load: PageServerLoad = async ({ locals }) => {
 	const user = locals.user!;
@@ -125,6 +105,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		defaults,
 		pgp,
 		preferences,
-		defaultPreferences: DEFAULT_PREFERENCES
+		defaultPreferences: DEFAULT_PREFERENCES,
+		quietHours: getQuietHours(uid)
 	};
 };

@@ -13,9 +13,11 @@
 import { db } from './db';
 import { childLogger } from './logger';
 import { CHANNELS } from './notifications';
+import { quietDecision } from './quietHours';
 import type {
 	ChannelSendResult,
 	NotificationChannelId,
+	NotificationLevel,
 	NotificationPayload
 } from './notifyTypes';
 
@@ -96,6 +98,7 @@ let markSent: ReturnType<typeof db.prepare> | null = null;
 let markFailed: ReturnType<typeof db.prepare> | null = null;
 let markDead: ReturnType<typeof db.prepare> | null = null;
 let markRetry: ReturnType<typeof db.prepare> | null = null;
+let markDeferred: ReturnType<typeof db.prepare> | null = null;
 
 function prepareStatements(): void {
 	if (selectDue) return;
@@ -130,6 +133,29 @@ function prepareStatements(): void {
 		    SET attempts = ?, last_error = ?, next_attempt_at = ?
 		  WHERE id = ?`
 	);
+	// Quiet-hours deferral: stays 'pending', attempts UNCHANGED (a deferral is not
+	// a failed attempt) — only next_attempt_at moves to the window's end.
+	markDeferred = db.prepare(
+		`UPDATE notification_queue SET next_attempt_at = ? WHERE id = ?`
+	);
+}
+
+/** Priority rank for intra-tick ordering: urgent (warn/error) ahead of routine. */
+function levelRank(level: NotificationLevel): number {
+	if (level === 'error') return 3;
+	if (level === 'warn') return 2;
+	return 0; // info / success
+}
+
+/** The level carried by a queue row's payload, defaulting to 'info' if the JSON
+ *  can't be read (processRow will mark such a row failed for corrupt payload). */
+function rowLevel(row: QueueRow): NotificationLevel {
+	try {
+		const level = (JSON.parse(row.payload) as NotificationPayload).level;
+		return level === 'error' || level === 'warn' || level === 'success' ? level : 'info';
+	} catch {
+		return 'info';
+	}
 }
 
 /** Process one queue row: call its channel plugin's send() and update status
@@ -169,6 +195,13 @@ async function processRow(row: QueueRow): Promise<void> {
 		log.error({ err: e, id: row.id, channel: row.channel, userId: row.user_id }, 'plugin.send() threw');
 	}
 
+	applySendResult(row, result);
+}
+
+/** Update one queue row's status from a send result: sent / failed(non-retryable)
+ *  / retry-with-backoff / dead. Extracted so the batch (digest) path can apply the
+ *  same outcome to each coalesced row without duplicating the state machine. */
+function applySendResult(row: QueueRow, result: ChannelSendResult): void {
 	if (result.ok) {
 		markSent!.run(row.id);
 		log.info(
@@ -208,6 +241,85 @@ async function processRow(row: QueueRow): Promise<void> {
 	);
 }
 
+/** Event types whose bursts are worth collapsing into a single digest send
+ *  (cairn-5gpv.3): a block that confirms N of a user's UTXOs, or one Electrum
+ *  callback touching N watched addresses, otherwise fires N separate external
+ *  messages back-to-back. Non-batchable types (security alerts, admin events) are
+ *  low-volume and each carries distinct, individually-actionable context. */
+const BATCHABLE_EVENT_TYPES = new Set<string>(['tx_received', 'tx_confirmed']);
+
+/** Collapse several same-type payloads into one digest NotificationPayload. The
+ *  channel plugins send a single payload, so a digest is just a summary payload —
+ *  no plugin changes needed. */
+function buildDigest(eventType: string, payloads: NotificationPayload[]): NotificationPayload {
+	const n = payloads.length;
+	const userId = payloads[0].userId;
+	// Carry the most-severe level in the group.
+	const level = payloads.reduce<NotificationLevel>(
+		(acc, p) => (levelRank(p.level) > levelRank(acc) ? p.level : acc),
+		payloads[0].level
+	);
+	// Deep-link to the common target if every row shares it, else the activity feed
+	// (the digest spans multiple wallets/txs, so no single tx page fits).
+	const firstLink = payloads[0].link;
+	const link = firstLink && payloads.every((p) => p.link === firstLink) ? firstLink : '/activity';
+
+	let title: string;
+	let body: string;
+	if (eventType === 'tx_confirmed') {
+		title = `${n} transactions confirmed`;
+		body = `${n} transactions in your wallets just reached enough confirmations.`;
+	} else if (eventType === 'tx_received') {
+		title = `${n} payments received`;
+		body = `${n} inbound payments were detected across your wallets.`;
+	} else {
+		title = `${n} notifications`;
+		body = `You have ${n} new notifications.`;
+	}
+
+	return {
+		type: eventType as NotificationPayload['type'],
+		userId,
+		level,
+		title,
+		body,
+		detail: { coalesced: true, count: n },
+		link
+	};
+}
+
+/** Send one digest for a coalesced group and apply the outcome to every row in
+ *  it: on success every row is marked sent; on failure each row runs through the
+ *  normal retry/dead state machine (so a transient error re-coalesces next tick). */
+async function processBatch(
+	userId: number,
+	channel: Exclude<NotificationChannelId, 'inapp'>,
+	eventType: string,
+	items: { row: QueueRow; payload: NotificationPayload }[]
+): Promise<void> {
+	const plugin = CHANNELS[channel];
+	const digest = buildDigest(
+		eventType,
+		items.map((i) => i.payload)
+	);
+
+	let result: ChannelSendResult;
+	try {
+		result = await plugin.send(userId, digest);
+	} catch (e) {
+		result = { ok: false, error: e instanceof Error ? e.message : String(e), retryable: true };
+		log.error({ err: e, channel, userId, type: eventType }, 'digest plugin.send() threw');
+	}
+
+	if (result.ok) {
+		for (const { row } of items) markSent!.run(row.id);
+		log.info({ channel, userId, type: eventType, count: items.length }, 'notification digest sent');
+		return;
+	}
+	// Apply the same outcome to each coalesced row through the normal state machine.
+	for (const { row } of items) applySendResult(row, result);
+}
+
 /** One drain pass: pull due rows and process each, honoring the per-channel
  *  rate limit. A rate-limited row is simply left pending and picked up next
  *  tick. Never throws — a failure logs and the loop lives to tick again. */
@@ -218,13 +330,67 @@ async function tick(): Promise<void> {
 		const rows = selectDue!.all(BATCH_LIMIT) as unknown as QueueRow[];
 		if (rows.length === 0) return;
 
-		for (const row of rows) {
-			const channel = row.channel as NotificationChannelId;
-			if (!takeToken(channel, now)) {
-				// Rate-limited this tick; leave pending for the next pass.
+		// Priority-aware ordering (cairn-5gpv.4): process warn/error rows ahead of
+		// routine info/success within this tick so an urgent alert queued behind a
+		// burst of routine rows doesn't wait its FIFO turn. Ties keep FIFO (id ASC).
+		const ordered = rows
+			.map((row) => ({ row, level: rowLevel(row) }))
+			.sort((a, b) => levelRank(b.level) - levelRank(a.level) || a.row.id - b.row.id);
+
+		// Resolve quiet-hours deferrals up front and parse each survivor's payload
+		// once (reused for both the individual and digest paths).
+		const active: { row: QueueRow; payload: NotificationPayload | null }[] = [];
+		for (const { row, level } of ordered) {
+			// Quiet hours (cairn-5gpv.4): defer a routine send to the window's end
+			// rather than firing a 3am push. Urgent alerts bypass per the user's
+			// override. In-app is unaffected — it was delivered inline by notify().
+			const decision = quietDecision(row.user_id, level, now);
+			if (decision.action === 'defer') {
+				markDeferred!.run(new Date(decision.until).toISOString(), row.id);
 				continue;
 			}
+			let payload: NotificationPayload | null;
+			try {
+				payload = JSON.parse(row.payload) as NotificationPayload;
+			} catch {
+				payload = null; // processRow will mark it failed on the individual path
+			}
+			active.push({ row, payload });
+		}
+
+		// Coalesce same (user, channel, event_type) bursts of a batchable type into
+		// one digest (cairn-5gpv.3). Webhook is excluded — automation consumers want
+		// one JSON object per event, not a summary. A group of one is not a burst and
+		// falls through to the normal individual send.
+		const groups = new Map<string, { row: QueueRow; payload: NotificationPayload }[]>();
+		for (const { row, payload } of active) {
+			if (!payload) continue;
+			if (!BATCHABLE_EVENT_TYPES.has(row.event_type) || row.channel === 'webhook') continue;
+			const key = `${row.user_id}|${row.channel}|${row.event_type}`;
+			const arr = groups.get(key) ?? [];
+			arr.push({ row, payload });
+			groups.set(key, arr);
+		}
+		const coalescedIds = new Set<number>();
+		for (const items of groups.values()) {
+			if (items.length >= 2) for (const it of items) coalescedIds.add(it.row.id);
+		}
+
+		// Individual sends first, in priority order (urgent ahead of routine).
+		for (const { row } of active) {
+			if (coalescedIds.has(row.id)) continue;
+			const channel = row.channel as NotificationChannelId;
+			if (!takeToken(channel, now)) continue; // rate-limited; leave pending
 			await processRow(row);
+		}
+
+		// Then one digest per coalesced group.
+		for (const items of groups.values()) {
+			if (items.length < 2) continue;
+			const first = items[0].row;
+			const channel = first.channel as Exclude<NotificationChannelId, 'inapp'>;
+			if (!takeToken(channel, now)) continue; // rate-limited; whole group waits
+			await processBatch(first.user_id, channel, first.event_type, items);
 		}
 	} catch (e) {
 		log.error({ err: e }, 'queue tick failed');

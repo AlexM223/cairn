@@ -8,7 +8,7 @@
 // protects the page; the API routes it calls each re-check requireAdmin.
 
 import { db } from '$lib/server/db';
-import { getSetting } from '$lib/server/settings';
+import { getPublicInstanceNotificationSettings } from '$lib/server/notifyConfig';
 import type { PageServerLoad } from './$types';
 
 interface StatusCountRow {
@@ -28,30 +28,12 @@ interface FailedRow {
 	created_at: string;
 }
 
-function parseRelays(raw: string | null): string[] {
-	if (!raw) return [];
-	try {
-		const v = JSON.parse(raw);
-		return Array.isArray(v) ? v.map(String) : [];
-	} catch {
-		return [];
-	}
-}
-
 export const load: PageServerLoad = async () => {
 	// --- Instance settings (secrets redacted) --------------------------------
-	const settings = {
-		smtpHost: getSetting('smtp_host') ?? '',
-		smtpPort: getSetting('smtp_port') ?? '587',
-		smtpUser: getSetting('smtp_user') ?? '',
-		smtpFrom: getSetting('smtp_from') ?? '',
-		smtpTls: (getSetting('smtp_tls') ?? 'starttls') as 'starttls' | 'tls' | 'none',
-		hasSmtpPass: !!getSetting('smtp_pass'),
-		hasTelegramBotToken: !!getSetting('telegram_bot_token'),
-		ntfyDefaultServer: getSetting('ntfy_default_server') ?? '',
-		nostrDefaultRelays: parseRelays(getSetting('nostr_default_relays')),
-		webhookAllowPrivateTargets: getSetting('webhook_allow_private_targets') === 'true'
-	};
+	// Shared redactor (cairn-ofna) — the source of truth for which fields are
+	// secret. telegramBotToken ('') is dropped below since the page only needs the
+	// hasTelegramBotToken flag.
+	const { telegramBotToken, ...settings } = getPublicInstanceNotificationSettings();
 
 	// --- Delivery health -----------------------------------------------------
 	// Counts by status, plus the most recent failed/dead rows with their errors.

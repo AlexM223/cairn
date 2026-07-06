@@ -4,6 +4,7 @@
 
 import { json, readJson } from '$lib/server/api';
 import { registerUser, createSession, setSessionCookie, AuthError, MIN_PASSWORD_LENGTH } from '$lib/server/auth';
+import { sessionContextFrom } from '$lib/server/deviceTracking';
 import { inviteRetryAfter, noteInviteFailure, tooManyAttemptsMessage } from '$lib/server/rateLimit';
 import { childLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
@@ -35,7 +36,7 @@ export const POST: RequestHandler = async (event) => {
 
 	try {
 		const user = registerUser({ email, displayName, password, inviteCode });
-		const { token, expiresAt } = createSession(user.id);
+		const { token, expiresAt } = createSession(user.id, sessionContextFrom(event));
 		setSessionCookie(event.cookies, token, expiresAt, event.url);
 		return json({ user }, { status: 201 });
 	} catch (e) {

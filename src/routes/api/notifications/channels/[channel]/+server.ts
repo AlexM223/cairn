@@ -15,13 +15,12 @@ import { db } from '$lib/server/db';
 import { childLogger } from '$lib/server/logger';
 import { getSetting } from '$lib/server/settings';
 import { encryptSecret } from '$lib/server/secretKey';
-import type { NotificationChannelId } from '$lib/server/notifyTypes';
+import { redactChannelConfig, type ConfigurableChannel } from '$lib/server/notifyConfig';
 import type { RequestHandler } from './$types';
 
 const log = childLogger('notify:channel-cfg-api');
 
 // Channels that carry user-side connection config. in-app has none (always on).
-type ConfigurableChannel = Exclude<NotificationChannelId, 'inapp'>;
 const CONFIGURABLE = new Set<string>(['email', 'telegram', 'ntfy', 'nostr', 'webhook']);
 
 function isConfigurable(c: string): c is ConfigurableChannel {
@@ -46,34 +45,9 @@ function readStoredConfig(userId: number, channel: string): Record<string, unkno
 	}
 }
 
-/**
- * Redact a stored config for the client. Secrets become presence booleans; the
- * field itself is blanked so the form never round-trips a secret to the browser.
- */
-function redactForClient(channel: ConfigurableChannel, cfg: Record<string, unknown>) {
-	switch (channel) {
-		case 'ntfy': {
-			const { accessToken, ...rest } = cfg;
-			return { ...rest, hasAccessToken: !!accessToken };
-		}
-		case 'webhook': {
-			const { secret, ...rest } = cfg;
-			return { ...rest, hasSecret: !!secret };
-		}
-		case 'email': {
-			// Personal SMTP: strip the encrypted password envelope, expose presence
-			// only — same pattern as ntfy/webhook above.
-			const { smtp, ...rest } = cfg;
-			if (smtp && typeof smtp === 'object') {
-				const { passEnc, ...smtpRest } = smtp as Record<string, unknown>;
-				return { ...rest, smtp: { ...smtpRest, hasPass: !!passEnc } };
-			}
-			return cfg;
-		}
-		default:
-			return cfg;
-	}
-}
+// Redaction is shared with the settings-page loader via notifyConfig.ts so a new
+// secret field only has to be added in one place (cairn-ofna).
+const redactForClient = redactChannelConfig;
 
 /**
  * GET /api/notifications/channels/:channel — the caller's redacted config for
