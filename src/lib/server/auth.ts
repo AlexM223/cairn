@@ -88,6 +88,17 @@ export function getSessionUser(token: string | undefined): SessionUser | null {
 	};
 }
 
+/** The sessions.id row backing this token, or null. Lets the "Your devices"
+ *  page mark which listed session is the one making the request
+ *  (cairn-5u2i.4) without ever exposing token material. */
+export function currentSessionId(token: string | undefined): number | null {
+	if (!token) return null;
+	const row = db.prepare('SELECT id FROM sessions WHERE token_hash = ?').get(hashToken(token)) as
+		| { id: number }
+		| undefined;
+	return row?.id ?? null;
+}
+
 export function destroySession(token: string | undefined): void {
 	if (!token) return;
 	db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(hashToken(token));

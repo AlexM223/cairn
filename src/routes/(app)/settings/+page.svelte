@@ -405,6 +405,23 @@
 	</section>
 
 	<section class="card card-pad section">
+		<span class="card-title">Your data &amp; devices</span>
+		<p class="hint" style="margin: 4px 0 10px">
+			See where you're signed in and revoke old sessions, or download a copy of everything this
+			server stores about you (wallet configuration, labels, activity — never keys, Cairn holds
+			none).
+		</p>
+		<div class="row" style="gap: 10px; flex-wrap: wrap">
+			<a href="/settings/devices" class="btn btn-secondary btn-sm">
+				<Icon name="shield" size={14} /> Your devices
+			</a>
+			<a href="/api/account/export" class="btn btn-ghost btn-sm" download>
+				<Icon name="copy" size={14} /> Download my data
+			</a>
+		</div>
+	</section>
+
+	<section class="card card-pad section">
 		<span class="card-title">Terms &amp; agreement</span>
 		<p class="hint" style="margin: 4px 0 10px">
 			Review the agreement you accepted for this instance, along with Cairn's software disclaimer
