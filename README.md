@@ -95,17 +95,28 @@ comments show how.
 
 Environment variables (defaults baked into the image):
 
-| Variable         | Default          | Meaning                                                          |
-| ---------------- | ---------------- | ---------------------------------------------------------------- |
-| `CAIRN_DB`       | `/data/cairn.db` | Path to the SQLite database file.                                 |
-| `PORT`           | `3000`           | Port the Node server listens on.                                  |
-| `ADDRESS_HEADER` | `x-forwarded-for` | Header the server trusts for the client IP (see below).          |
+| Variable          | Default          | Meaning                                                          |
+| ----------------- | ---------------- | ---------------------------------------------------------------- |
+| `CAIRN_DB`        | `/data/cairn.db` | Path to the SQLite database file.                                 |
+| `PORT`            | `3000`           | Port the Node server listens on.                                  |
+| `ADDRESS_HEADER`  | _(unset)_        | Header the server trusts for the client IP (see below).          |
+| `PROTOCOL_HEADER` | _(unset)_        | Header the server trusts for the request protocol (see below).   |
+| `ORIGIN`          | _(unset)_        | Fixed public origin, e.g. `http://192.168.1.20:3000` (see below). |
 
 `ADDRESS_HEADER=x-forwarded-for` makes the login rate limiter see real
 client IPs instead of the proxy's. Only run the container behind a
 reverse proxy that **sets or overwrites** `X-Forwarded-For` — if clients
-can reach the port directly, they can spoof the header; unset the
-variable in that case.
+can reach the port directly, they can spoof the header; leave the
+variable unset in that case.
+
+**If you serve Cairn over plain HTTP** (a LAN deployment with no TLS),
+the server must know that: SvelteKit **assumes `https` by default**, which
+makes it mark the session cookie `Secure` (browsers silently drop it on
+http, so login goes nowhere) and reject form posts as cross-site. Behind
+a reverse proxy that sets `X-Forwarded-Proto` (nginx, Caddy, Umbrel's
+app_proxy), set `PROTOCOL_HEADER=x-forwarded-proto` — same spoofing
+caveat as `ADDRESS_HEADER`. With no proxy, set `ORIGIN` to the exact URL
+users type into the browser instead.
 
 Reverse-proxy note: live updates use Server-Sent Events, so response
 buffering must be off for `/api/events`. Cairn already sends

@@ -113,10 +113,34 @@ export function destroyUserSessions(userId: number): void {
 }
 
 /**
+ * Whether cookies set for this request should carry the `Secure` flag.
+ *
+ * Follows the request protocol, EXCEPT when the deployment's declared origin
+ * (CAIRN_ORIGIN) says the instance is served over plain HTTP — then Secure is
+ * skipped even if the request URL claims https. That claim can be wrong:
+ * adapter-node ASSUMES https whenever neither ORIGIN nor PROTOCOL_HEADER is
+ * configured, so behind a plain-HTTP proxy (Umbrel's app_proxy on
+ * http://umbrel.local) every request "looks" https server-side while the
+ * browser is on http — a Secure cookie there is silently dropped and login
+ * succeeds without ever creating a usable session.
+ */
+export function cookieSecure(url: URL): boolean {
+	const declared = env.CAIRN_ORIGIN?.trim();
+	if (declared) {
+		try {
+			if (new URL(declared).protocol === 'http:') return false;
+		} catch {
+			// Malformed CAIRN_ORIGIN — fall back to the request protocol.
+		}
+	}
+	return url.protocol === 'https:';
+}
+
+/**
  * Set the session cookie (httpOnly, lax) for a freshly created session.
- * `secure` follows the request protocol — explicit, matching the WebAuthn
- * challenge cookie: locked to HTTPS when served over it, while plain-HTTP
- * LAN deployments (Umbrel on umbrel.local) keep working.
+ * `secure` follows the request protocol via cookieSecure() — locked to HTTPS
+ * when served over it, while plain-HTTP LAN deployments (Umbrel on
+ * umbrel.local) keep working.
  */
 export function setSessionCookie(
 	cookies: Cookies,
@@ -128,7 +152,7 @@ export function setSessionCookie(
 		path: '/',
 		httpOnly: true,
 		sameSite: 'lax',
-		secure: url.protocol === 'https:',
+		secure: cookieSecure(url),
 		expires: expiresAt
 	});
 }
