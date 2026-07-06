@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { db } from '../db';
 import { registerUser } from '../auth';
@@ -11,6 +11,12 @@ vi.mock('node:dns/promises', () => ({
 }));
 
 import webhookChannel, { _internals } from './webhook';
+import { _transport } from './ssrf';
+
+/** A SafeResponse-shaped result for the pinned transport mock. */
+function resp(status: number, body = ''): { ok: boolean; status: number; text: () => Promise<string> } {
+	return { ok: status >= 200 && status < 300, status, text: async () => body };
+}
 
 function wipe(): void {
 	db.exec(
@@ -41,7 +47,10 @@ const payload = {
 	link: '/wallets/3'
 };
 
-let fetchMock: ReturnType<typeof vi.fn>;
+// The pinned-socket transport is mocked so no real sockets open. Its call args
+// are [url: URL, pinned: {address,family}, init] — the request the SSRF gate
+// approved and pinned to a validated IP.
+let sendMock: MockInstance<typeof _transport.pinnedRequest>;
 
 beforeEach(() => {
 	wipe();
@@ -49,12 +58,11 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	// Default DNS: a public address, so hostname targets pass the SSRF gate.
 	lookupMock.mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
-	fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }));
-	vi.stubGlobal('fetch', fetchMock);
+	sendMock = vi.spyOn(_transport, 'pinnedRequest').mockResolvedValue(resp(200, 'ok'));
 });
 
 afterEach(() => {
-	vi.unstubAllGlobals();
+	vi.restoreAllMocks();
 });
 
 describe('config + isConfigured', () => {
@@ -89,16 +97,18 @@ describe('send() — success + signing', () => {
 
 		const res = await webhookChannel.send(u, payload);
 		expect(res.ok).toBe(true);
-		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(sendMock).toHaveBeenCalledTimes(1);
 
-		const [url, init] = fetchMock.mock.calls[0];
-		expect(url).toBe('https://example.com/hook');
+		const [url, pinned, init] = sendMock.mock.calls[0];
+		expect(url.href).toBe('https://example.com/hook');
+		// Pinned to the validated IP the SSRF gate resolved, not the hostname.
+		expect(pinned.address).toBe('93.184.216.34');
 		expect(init.method).toBe('POST');
-		expect(init.headers['Content-Type']).toBe('application/json');
+		expect(init.headers!['Content-Type']).toBe('application/json');
 		// No secret → no signature header.
-		expect(init.headers['X-Cairn-Signature']).toBeUndefined();
+		expect(init.headers!['X-Cairn-Signature']).toBeUndefined();
 
-		const body = JSON.parse(init.body);
+		const body = JSON.parse(init.body!);
 		expect(body).toMatchObject({
 			type: 'tx_received',
 			level: 'info',
@@ -116,12 +126,12 @@ describe('send() — success + signing', () => {
 		saveConfig(u, { url: 'https://example.com/hook', secret });
 
 		await webhookChannel.send(u, payload);
-		const init = fetchMock.mock.calls[0][1];
-		const sig = init.headers['X-Cairn-Signature'] as string;
+		const init = sendMock.mock.calls[0][2];
+		const sig = init.headers!['X-Cairn-Signature'] as string;
 		expect(sig).toMatch(/^sha256=[0-9a-f]{64}$/);
 
 		// Recompute over the EXACT bytes we sent — must match.
-		const expected = 'sha256=' + createHmac('sha256', secret).update(init.body, 'utf8').digest('hex');
+		const expected = 'sha256=' + createHmac('sha256', secret).update(init.body!, 'utf8').digest('hex');
 		expect(sig).toBe(expected);
 	});
 });
@@ -130,7 +140,7 @@ describe('send() — failure classification', () => {
 	it('non-2xx → retryable', async () => {
 		const u = makeUser('g@example.com');
 		saveConfig(u, { url: 'https://example.com/hook' });
-		fetchMock.mockResolvedValue(new Response('boom', { status: 500 }));
+		sendMock.mockResolvedValue(resp(500, 'boom'));
 
 		const res = await webhookChannel.send(u, payload);
 		expect(res.ok).toBe(false);
@@ -141,7 +151,7 @@ describe('send() — failure classification', () => {
 	it('network error / timeout → retryable', async () => {
 		const u = makeUser('h@example.com');
 		saveConfig(u, { url: 'https://example.com/hook' });
-		fetchMock.mockRejectedValue(new Error('ETIMEDOUT'));
+		sendMock.mockRejectedValue(new Error('ETIMEDOUT'));
 
 		const res = await webhookChannel.send(u, payload);
 		expect(res.ok).toBe(false);
@@ -165,7 +175,7 @@ describe('SSRF guard', () => {
 		expect(res.ok).toBe(false);
 		expect(res.retryable).toBe(false);
 		expect(res.error).toMatch(/private|loopback|blocked/i);
-		expect(fetchMock).not.toHaveBeenCalled();
+		expect(sendMock).not.toHaveBeenCalled();
 	});
 
 	it('rejects a non-http(s) scheme as non-retryable', async () => {
@@ -175,7 +185,7 @@ describe('SSRF guard', () => {
 		expect(res.ok).toBe(false);
 		expect(res.retryable).toBe(false);
 		expect(res.error).toMatch(/scheme/i);
-		expect(fetchMock).not.toHaveBeenCalled();
+		expect(sendMock).not.toHaveBeenCalled();
 	});
 
 	it('rejects a hostname that RESOLVES to a private range', async () => {
@@ -186,7 +196,7 @@ describe('SSRF guard', () => {
 		const res = await webhookChannel.send(u, payload);
 		expect(res.ok).toBe(false);
 		expect(res.retryable).toBe(false);
-		expect(fetchMock).not.toHaveBeenCalled();
+		expect(sendMock).not.toHaveBeenCalled();
 	});
 
 	it('rejects if ANY resolved address is private (mixed A records)', async () => {
@@ -199,7 +209,7 @@ describe('SSRF guard', () => {
 		const res = await webhookChannel.send(u, payload);
 		expect(res.ok).toBe(false);
 		expect(res.retryable).toBe(false);
-		expect(fetchMock).not.toHaveBeenCalled();
+		expect(sendMock).not.toHaveBeenCalled();
 	});
 
 	it('allows private targets when the admin escape hatch is on', async () => {
@@ -209,7 +219,7 @@ describe('SSRF guard', () => {
 
 		const res = await webhookChannel.send(u, payload);
 		expect(res.ok).toBe(true);
-		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(sendMock).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -252,13 +262,13 @@ describe('test()', () => {
 	it('POSTs type:test and reports HTTP status verbatim on failure', async () => {
 		const u = makeUser('o@example.com');
 		saveConfig(u, { url: 'https://example.com/hook' });
-		fetchMock.mockResolvedValue(new Response('nope', { status: 418 }));
+		sendMock.mockResolvedValue(resp(418, 'nope'));
 
 		const res = await webhookChannel.test(u);
 		expect(res.ok).toBe(false);
 		expect(res.error).toContain('418');
 
-		const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+		const body = JSON.parse(sendMock.mock.calls[0][2].body!);
 		expect(body.type).toBe('test');
 	});
 

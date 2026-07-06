@@ -13,16 +13,22 @@
 //     legitimately POST to another service on their own LAN. It NEVER disables
 //     the scheme check.
 //
-// NOTE ON DNS-REBINDING (TOCTOU) — cairn-335b (still open)
+// DNS-REBINDING (TOCTOU) — cairn-335b (closed)
 //   checkTargetUrl resolves every A/AAAA record and rejects if ANY is blocked,
-//   which defeats the simple "one public + one private record" split. It does NOT
-//   fully close the time-of-check/time-of-use gap: the platform `fetch` re-resolves
-//   DNS at connect, so an attacker who flips their record between validation and
-//   fetch can still slip through. Fully closing it requires pinning the socket to
-//   the validated IP (a node:http transport), tracked separately in cairn-335b.
+//   which defeats the simple "one public + one private record" split. On its own
+//   that still left a time-of-check/time-of-use gap: the platform `fetch`
+//   re-resolves DNS at connect, so an attacker who flips their record between the
+//   check and the connect could slip a private IP through. safeFetch now closes
+//   that gap by PINNING the connection: it hands off to a node:http(s) transport
+//   that dials the exact validated IP directly (never re-resolving the hostname),
+//   while still presenting the original Host header and TLS servername so
+//   virtual-hosting and certificate validation keep working. DNS is consulted
+//   once, inside checkTargetUrl, and never again — there is no rebinding window.
 
 import { isIP } from 'node:net';
 import { lookup as dnsLookup } from 'node:dns/promises';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 
 import { getSetting } from '../settings';
 
@@ -196,10 +202,78 @@ export interface SafeFetchInit {
 }
 
 /**
+ * A single already-validated address to pin a connection to. Every address
+ * checkTargetUrl returns has passed the range policy.
+ */
+type PinnedAddress = { address: string; family: number };
+
+/**
+ * Low-level pinned HTTP(S) request. Dials the ALREADY-VALIDATED IP directly
+ * (`host: pinned.address`) so the hostname is never re-resolved at connect time —
+ * this is what closes the DNS-rebinding TOCTOU. The original Host header and (for
+ * https) the TLS `servername` are set to the real hostname, so virtual-hosting
+ * and certificate identity validation are unaffected. Redirects are NOT followed
+ * (there is no redirect handling here), so a 3xx cannot bounce past the gate.
+ *
+ * Kept on an overridable object (`_transport`) so tests can substitute a fake
+ * transport instead of opening real sockets.
+ */
+function pinnedRequest(
+	url: URL,
+	pinned: PinnedAddress,
+	init: SafeFetchInit
+): Promise<SafeResponse> {
+	const isHttps = url.protocol === 'https:';
+	const requestFn = isHttps ? httpsRequest : httpRequest;
+	const port = url.port ? Number(url.port) : isHttps ? 443 : 80;
+	const headers: Record<string, string> = { ...(init.headers ?? {}) };
+	// url.host carries the port when non-default — the correct Host header value.
+	headers.Host = url.host;
+
+	return new Promise<SafeResponse>((resolve, reject) => {
+		const req = requestFn(
+			{
+				host: pinned.address,
+				port,
+				method: init.method ?? 'GET',
+				path: `${url.pathname}${url.search}`,
+				headers,
+				// SNI + the default cert-identity check both key off servername, so
+				// TLS is verified against the real hostname, not the pinned IP.
+				servername: isHttps ? url.hostname : undefined,
+				timeout: init.timeoutMs ?? 10_000
+			},
+			(res) => {
+				const chunks: Buffer[] = [];
+				res.on('data', (c: Buffer) => chunks.push(c));
+				res.on('end', () => {
+					const status = res.statusCode ?? 0;
+					const bodyText = Buffer.concat(chunks).toString('utf8');
+					resolve({
+						ok: status >= 200 && status < 300,
+						status,
+						text: async () => bodyText
+					});
+				});
+				res.on('error', reject);
+			}
+		);
+		req.on('timeout', () => req.destroy(new Error('Request timed out')));
+		req.on('error', reject);
+		if (init.body != null) req.write(init.body);
+		req.end();
+	});
+}
+
+/** Overridable transport seam (tests substitute a fake to avoid real sockets). */
+export const _transport = { pinnedRequest };
+
+/**
  * SSRF-safe fetch: runs the URL through checkTargetUrl (scheme + resolved-IP
- * policy) BEFORE issuing the request, and never follows redirects so a 3xx can't
- * bounce past the gate. An SSRF/bad-scheme/unresolvable rejection throws an Error
- * with `.ssrf === true` (callers map that to non-retryable); a transport failure
+ * policy) BEFORE issuing the request, then pins the connection to a validated IP
+ * so DNS can't be rebound between check and connect (cairn-335b). Never follows
+ * redirects. An SSRF/bad-scheme/unresolvable rejection throws an Error with
+ * `.ssrf === true` (callers map that to non-retryable); a transport failure
  * throws a plain Error (retryable).
  */
 export async function safeFetch(rawUrl: string, init: SafeFetchInit = {}): Promise<SafeResponse> {
@@ -210,13 +284,7 @@ export async function safeFetch(rawUrl: string, init: SafeFetchInit = {}): Promi
 		throw err;
 	}
 
-	// Fetch the caller's original URL string (same target checkTargetUrl just
-	// validated) so we don't surprise callers with URL normalization.
-	return fetch(rawUrl, {
-		method: init.method ?? 'GET',
-		headers: init.headers,
-		body: init.body,
-		signal: AbortSignal.timeout(init.timeoutMs ?? 10_000),
-		redirect: 'manual' // a 3xx must not bounce us past the SSRF check
-	});
+	// Pin to the first validated address. Every returned address already passed
+	// the range check, and dialing it by IP means DNS is never consulted again.
+	return _transport.pinnedRequest(check.url, check.addresses[0], init);
 }

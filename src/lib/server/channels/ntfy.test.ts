@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from 'vitest';
 import { db } from '../db';
 import { registerUser } from '../auth';
 import { setSetting } from '../settings';
@@ -11,6 +11,7 @@ vi.mock('node:dns/promises', () => ({
 }));
 
 import ntfyChannel from './ntfy';
+import { _transport } from './ssrf';
 import type { NotificationPayload } from '../notifyTypes';
 
 function wipe(): void {
@@ -20,7 +21,8 @@ function wipe(): void {
 }
 
 let userId: number;
-const fetchMock = vi.fn<typeof fetch>();
+// The pinned-socket transport is mocked — args are [url: URL, pinned, init].
+let sendMock: MockInstance<typeof _transport.pinnedRequest>;
 
 const PAYLOAD: NotificationPayload = {
 	type: 'tx_large',
@@ -31,12 +33,12 @@ const PAYLOAD: NotificationPayload = {
 	link: 'https://example.com/x'
 };
 
-function textResponse(status: number, text = ''): Response {
+function textResponse(status: number, text = ''): { ok: boolean; status: number; text: () => Promise<string> } {
 	return {
 		ok: status >= 200 && status < 300,
 		status,
 		text: async () => text
-	} as unknown as Response;
+	};
 }
 
 function configureUser(cfg: Record<string, unknown>): void {
@@ -52,7 +54,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	// Default DNS: a public address so hostname targets pass the SSRF gate.
 	lookupMock.mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
-	vi.stubGlobal('fetch', fetchMock);
+	sendMock = vi.spyOn(_transport, 'pinnedRequest').mockResolvedValue(textResponse(200));
 	setSetting('registration_mode', 'open');
 	userId = registerUser({
 		email: 'user@example.com',
@@ -62,7 +64,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	vi.unstubAllGlobals();
+	vi.restoreAllMocks();
 });
 
 describe('isConfigured', () => {
@@ -92,7 +94,7 @@ describe('send', () => {
 		const res = await ntfyChannel.send(userId, PAYLOAD);
 		expect(res.ok).toBe(false);
 		expect(res.retryable).toBe(false);
-		expect(fetchMock).not.toHaveBeenCalled();
+		expect(sendMock).not.toHaveBeenCalled();
 	});
 
 	it('publishes JSON with mapped priority, click link and bearer token', async () => {
@@ -101,13 +103,14 @@ describe('send', () => {
 			topic: 'mytopic',
 			accessToken: 'tk_abc'
 		});
-		fetchMock.mockResolvedValueOnce(textResponse(200, ''));
+		sendMock.mockResolvedValueOnce(textResponse(200, ''));
 		const res = await ntfyChannel.send(userId, PAYLOAD);
 		expect(res.ok).toBe(true);
 
-		const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-		// Trailing slash normalized off.
-		expect(url).toBe('https://push.example.com');
+		const [url, , init] = sendMock.mock.calls[0];
+		// Trailing slash normalized off the server; the request targets its root.
+		expect(url.origin).toBe('https://push.example.com');
+		expect(url.pathname).toBe('/');
 		const headers = init.headers as Record<string, string>;
 		expect(headers.authorization).toBe('Bearer tk_abc');
 		const body = JSON.parse(init.body as string) as {
@@ -127,20 +130,20 @@ describe('send', () => {
 	it('maps warn → priority 4 and info → 3', async () => {
 		setSetting('ntfy_default_server', 'https://ntfy.sh');
 		configureUser({ topic: 't' });
-		fetchMock.mockResolvedValue(textResponse(200));
+		sendMock.mockResolvedValue(textResponse(200));
 
 		await ntfyChannel.send(userId, { ...PAYLOAD, level: 'warn' });
-		let body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+		let body = JSON.parse((sendMock.mock.calls[0][2] as RequestInit).body as string);
 		expect(body.priority).toBe(4);
 
 		await ntfyChannel.send(userId, { ...PAYLOAD, level: 'info' });
-		body = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string);
+		body = JSON.parse((sendMock.mock.calls[1][2] as RequestInit).body as string);
 		expect(body.priority).toBe(3);
 	});
 
 	it('treats 403 (topic ACL / bad token) as non-retryable', async () => {
 		configureUser({ server: 'https://push.example.com', topic: 't' });
-		fetchMock.mockResolvedValueOnce(textResponse(403, 'forbidden'));
+		sendMock.mockResolvedValueOnce(textResponse(403, 'forbidden'));
 		const res = await ntfyChannel.send(userId, PAYLOAD);
 		expect(res.ok).toBe(false);
 		expect(res.retryable).toBe(false);
@@ -148,7 +151,7 @@ describe('send', () => {
 
 	it('treats a 5xx as retryable', async () => {
 		configureUser({ server: 'https://push.example.com', topic: 't' });
-		fetchMock.mockResolvedValueOnce(textResponse(503, 'unavailable'));
+		sendMock.mockResolvedValueOnce(textResponse(503, 'unavailable'));
 		const res = await ntfyChannel.send(userId, PAYLOAD);
 		expect(res.ok).toBe(false);
 		expect(res.retryable).toBe(true);
@@ -156,7 +159,7 @@ describe('send', () => {
 
 	it('treats a network error as retryable', async () => {
 		configureUser({ server: 'https://push.example.com', topic: 't' });
-		fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+		sendMock.mockRejectedValueOnce(new Error('ECONNREFUSED'));
 		const res = await ntfyChannel.send(userId, PAYLOAD);
 		expect(res.ok).toBe(false);
 		expect(res.retryable).toBe(true);
@@ -167,10 +170,10 @@ describe('test()', () => {
 	it('publishes a canned test message', async () => {
 		setSetting('ntfy_default_server', 'https://ntfy.sh');
 		configureUser({ topic: 't' });
-		fetchMock.mockResolvedValueOnce(textResponse(200));
+		sendMock.mockResolvedValueOnce(textResponse(200));
 		const res = await ntfyChannel.test(userId);
 		expect(res.ok).toBe(true);
-		const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+		const body = JSON.parse((sendMock.mock.calls[0][2] as RequestInit).body as string);
 		expect(body.title).toContain('test notification');
 	});
 });

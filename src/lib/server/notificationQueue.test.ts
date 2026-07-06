@@ -12,6 +12,15 @@ import { registerUser } from './auth';
 import { setSetting } from './settings';
 import { notify } from './notifications';
 import { _internals } from './notificationQueue';
+import { _transport } from './channels/ssrf';
+
+// The ntfy/webhook channels resolve their target host through node:dns/promises
+// before pinning the socket; mock it so the SSRF gate is deterministic and does
+// no real lookup for the example hosts used here.
+const lookupMock = vi.fn();
+vi.mock('node:dns/promises', () => ({
+	lookup: (...args: unknown[]) => lookupMock(...args)
+}));
 
 const { tick } = _internals;
 
@@ -135,8 +144,12 @@ describe('notify() -> queue -> tick() end-to-end', () => {
 			`INSERT INTO notification_channel_config (user_id, channel, config) VALUES (?, 'ntfy', ?)`
 		).run(userId, JSON.stringify({ topic: 'my-topic' }));
 
-		const fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }));
-		vi.stubGlobal('fetch', fetchMock);
+		// ntfy delivers through the pinned-socket transport; mock it (and DNS) so no
+		// real network is touched, mirroring the channel's own unit test.
+		lookupMock.mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
+		const sendMock = vi
+			.spyOn(_transport, 'pinnedRequest')
+			.mockResolvedValue({ ok: true, status: 200, text: async () => 'ok' });
 		try {
 			notify({ type: 'tx_large', userId, level: 'warn', title: 'Large payment', body: '1.5 BTC' });
 
@@ -145,11 +158,11 @@ describe('notify() -> queue -> tick() end-to-end', () => {
 			expect(rows[0].channel).toBe('ntfy');
 
 			await tick();
-			expect(fetchMock).toHaveBeenCalledTimes(1);
+			expect(sendMock).toHaveBeenCalledTimes(1);
 			expect(sendMail).not.toHaveBeenCalled();
 			expect(queueRows()[0].status).toBe('sent');
 		} finally {
-			vi.unstubAllGlobals();
+			sendMock.mockRestore();
 		}
 	});
 
