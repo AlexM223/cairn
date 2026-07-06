@@ -100,7 +100,9 @@ export function parseStatelessSource(source: string): { config: StatelessConfig;
 				xpub: k.xpub,
 				fingerprint: k.fingerprint,
 				path: k.path
-			}))
+			})),
+			// A bare descriptor carries no receive cursor.
+			startingAddressIndex: 0
 		};
 	}
 

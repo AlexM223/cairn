@@ -38,7 +38,9 @@ function parseSource(source: string): CaravanImport {
 			xpub: k.xpub,
 			fingerprint: k.fingerprint,
 			path: k.path
-		}))
+		})),
+		// A bare descriptor carries no receive cursor.
+		startingAddressIndex: 0
 	};
 }
 
@@ -81,7 +83,10 @@ export const POST: RequestHandler = async (event) => {
 			scriptType: parsed.scriptType,
 			keys,
 			// Imported from a config the user already holds — no backup prompts.
-			source: 'imported'
+			source: 'imported',
+			// Resume the receive cursor from the backup so we don't reissue used
+			// addresses (cairn-u161).
+			receiveCursor: parsed.startingAddressIndex
 		});
 		return json({ multisig }, { status: 201 });
 	} catch (e) {

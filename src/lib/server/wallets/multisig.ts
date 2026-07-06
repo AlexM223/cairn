@@ -217,6 +217,9 @@ export function createMultisig(
 		/** 'created' (built key-by-key — the default, backup-critical) or
 		 *  'imported' (from a config the user already holds — no backup prompts). */
 		source?: MultisigSource;
+		/** Receive cursor to seed (from an imported config's startingAddressIndex),
+		 *  so a restored wallet resumes handing out fresh addresses (cairn-u161). */
+		receiveCursor?: number;
 	}
 ): MultisigRow {
 	const name = params.name.trim();
@@ -253,6 +256,15 @@ export function createMultisig(
 		)
 		.run(userId, name, params.threshold, scriptType, source);
 	const multisigId = Number(info.lastInsertRowid);
+
+	// Seed the receive cursor from an imported config so a backup→restore doesn't
+	// reissue already-used addresses (cairn-u161). Default stays 0 for new wallets.
+	if (params.receiveCursor && Number.isInteger(params.receiveCursor) && params.receiveCursor > 0) {
+		db.prepare('UPDATE multisigs SET receive_cursor = ? WHERE id = ?').run(
+			params.receiveCursor,
+			multisigId
+		);
+	}
 
 	const insertKey = db.prepare(
 		`INSERT INTO multisig_keys (multisig_id, position, name, category, device_type, xpub, fingerprint, path)

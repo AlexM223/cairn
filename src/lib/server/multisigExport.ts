@@ -11,6 +11,7 @@ import {
 	MAX_MULTISIG_KEYS
 } from './bitcoin/multisig';
 import { toMultisigConfig, type MultisigRow, type MultisigScriptType } from './wallets/multisig';
+import { parseXpub } from './bitcoin/xpub';
 
 /** ColdCard `Format:` values per script type. */
 const FORMAT_LABEL: Record<MultisigScriptType, string> = {
@@ -135,7 +136,10 @@ export function caravanExport(multisig: MultisigRow): string {
 						xfp: k.fingerprint
 					};
 				}),
-				startingAddressIndex: 0
+				// The wallet's real receive cursor so a backup→restore round-trip
+				// resumes handing out fresh addresses instead of reusing 0.. again
+				// (cairn-u161).
+				startingAddressIndex: multisig.receiveCursor
 			},
 			null,
 			2
@@ -152,6 +156,10 @@ export interface CaravanImport {
 	threshold: number;
 	totalKeys: number;
 	keys: { name: string; xpub: string; fingerprint: string; path: string }[];
+	/** Receive cursor to resume from (Caravan's startingAddressIndex), so a
+	 *  backup→restore round-trip doesn't reissue already-used addresses
+	 *  (cairn-u161). 0 when the file omits it. */
+	startingAddressIndex: number;
 }
 
 const ADDRESS_TYPE_TO_SCRIPT: Record<string, MultisigScriptType> = {
@@ -239,12 +247,33 @@ export function parseCaravanImport(text: string): CaravanImport {
 			'invalid_descriptor'
 		);
 	}
+	const seenXpubs = new Set<string>();
 	const keys = rawKeys.map((entry, i) => {
 		const k = (entry ?? {}) as Record<string, unknown>;
 		const xpub = typeof k.xpub === 'string' ? k.xpub.trim() : '';
 		if (!xpub) {
 			throw new MultisigError(`Key ${i + 1} in the wallet file has no xpub.`, 'invalid_descriptor');
 		}
+		// Validate each key inline (cairn-xxjf) so a garbage or wrong-network key
+		// (e.g. a tpub in a "mainnet" file) fails HERE with specific per-key
+		// attribution, not later during address derivation with a generic error.
+		try {
+			parseXpub(xpub);
+		} catch (e) {
+			throw new MultisigError(
+				`Key ${i + 1}: ${e instanceof Error ? e.message : 'invalid extended key'}`,
+				'invalid_key'
+			);
+		}
+		// Reject a duplicate xpub up front too, matching resolveMultisig's
+		// "every cosigner must be distinct" rule (cairn-xxjf).
+		if (seenXpubs.has(xpub)) {
+			throw new MultisigError(
+				`Key ${i + 1} repeats an earlier cosigner's xpub — every key in a multisig must be distinct.`,
+				'invalid_key'
+			);
+		}
+		seenXpubs.add(xpub);
 		const xfp = typeof k.xfp === 'string' ? k.xfp.trim() : '';
 		return {
 			name: typeof k.name === 'string' && k.name.trim() ? k.name.trim() : `Key ${i + 1}`,
@@ -268,12 +297,17 @@ export function parseCaravanImport(text: string): CaravanImport {
 		);
 	}
 
+	// startingAddressIndex is optional; accept a non-negative integer, else 0.
+	const rawStart = Number(root.startingAddressIndex);
+	const startingAddressIndex = Number.isInteger(rawStart) && rawStart >= 0 ? rawStart : 0;
+
 	return {
 		name: typeof root.name === 'string' ? root.name.trim() : '',
 		scriptType,
 		threshold,
 		totalKeys: keys.length,
-		keys
+		keys,
+		startingAddressIndex
 	};
 }
 

@@ -48,6 +48,8 @@
 	// True once a config has been imported — imports skip the mandatory-backup gate
 	// on the Done step (the user already has the file they uploaded).
 	let configImported = $state(false);
+	// Receive cursor carried from an imported config (cairn-u161); 0 for created.
+	let importedStartIndex = $state(0);
 	let importFileInput = $state<HTMLInputElement | null>(null);
 
 	const threshold = $derived(preset === '2of3' ? 2 : preset === '3of5' ? 3 : Number(customM));
@@ -484,6 +486,9 @@
 		threshold: number;
 		totalKeys: number;
 		keys: { name: string; xpub: string; fingerprint: string; path: string }[];
+		/** Receive cursor from the imported config, restored so we don't reissue
+		 *  already-used addresses (cairn-u161). */
+		startingAddressIndex?: number;
 	}
 
 	async function handleImport() {
@@ -510,6 +515,7 @@
 				...k
 			}));
 			importedNote = `Read an existing ${imported.threshold}-of-${imported.totalKeys} multisig wallet${imported.name ? ` ("${imported.name}")` : ''} — its keys are filled in on the next step.`;
+			importedStartIndex = imported.startingAddressIndex ?? 0;
 			// The user already holds this config — no mandatory backup on the Done step.
 			configImported = true;
 			showImport = false;
@@ -565,7 +571,8 @@
 				threshold: String(threshold),
 				scriptType,
 				keys: JSON.stringify(keys),
-				source: configImported ? 'imported' : 'created'
+				source: configImported ? 'imported' : 'created',
+				startingAddressIndex: String(configImported ? importedStartIndex : 0)
 			});
 			if (!res.ok) {
 				createError = res.error;

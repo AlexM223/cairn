@@ -56,6 +56,29 @@ export const POST: RequestHandler = async (event) => {
 	const body = await readJson<Record<string, unknown>>(event);
 	const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
 
+	// Cross-field guard (cairn-es32): refuse smtp_tls='none' when SMTP credentials
+	// are (or remain) configured — nodemailer would send AUTH and the message body
+	// in cleartext. Compute the EFFECTIVE values this save would leave in place
+	// (present-in-body wins; secrets: clear flag > provided > stored) and reject
+	// the unsafe combination before persisting anything.
+	const effectiveTls = 'smtpTls' in body ? str(body.smtpTls) : (getSetting('smtp_tls') ?? 'starttls');
+	const effectiveUser = 'smtpUser' in body ? str(body.smtpUser) : (getSetting('smtp_user') ?? '');
+	const effectivePass =
+		body.clearSmtpPass === true
+			? ''
+			: str(body.smtpPass) !== ''
+				? str(body.smtpPass)
+				: (getSetting('smtp_pass') ?? '');
+	if (effectiveTls === 'none' && (effectiveUser !== '' || effectivePass !== '')) {
+		return json(
+			{
+				error:
+					'Refusing TLS mode "none" while SMTP credentials are set — that would send your username, password, and message content in cleartext. Use STARTTLS or TLS, or clear the SMTP username/password first.'
+			},
+			{ status: 400 }
+		);
+	}
+
 	try {
 		if ('smtpHost' in body) setSetting('smtp_host', str(body.smtpHost));
 		if ('smtpPort' in body) {

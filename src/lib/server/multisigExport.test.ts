@@ -266,6 +266,41 @@ describe('parseCaravanImport', () => {
 		);
 	});
 
+	it('round-trips a non-zero receive cursor via startingAddressIndex (cairn-u161)', () => {
+		const multisig = makeMultisig({ receiveCursor: 50 });
+		const json = JSON.parse(caravanExport(multisig));
+		expect(json.startingAddressIndex).toBe(50);
+		expect(parseCaravanImport(caravanExport(multisig)).startingAddressIndex).toBe(50);
+		// A fresh (cursor 0) wallet still exports 0, and an omitted field parses to 0.
+		expect(JSON.parse(caravanExport(makeMultisig())).startingAddressIndex).toBe(0);
+		const noField = JSON.parse(caravanExport(makeMultisig()));
+		delete noField.startingAddressIndex;
+		expect(parseCaravanImport(JSON.stringify(noField)).startingAddressIndex).toBe(0);
+	});
+
+	it('rejects a duplicate xpub inline with key attribution (cairn-xxjf)', () => {
+		const blob = JSON.stringify({
+			addressType: 'P2WSH',
+			network: 'mainnet',
+			quorum: { requiredSigners: 2, totalSigners: 2 },
+			extendedPublicKeys: [
+				{ name: 'A', xpub: TV1, xfp: '3442193e', bip32Path: BIP48_PATH },
+				{ name: 'B', xpub: TV1, xfp: '3442193e', bip32Path: BIP48_PATH }
+			]
+		});
+		expect(() => parseCaravanImport(blob)).toThrow(/Key 2.*distinct/i);
+	});
+
+	it('rejects a garbage xpub inline with key attribution (cairn-xxjf)', () => {
+		const blob = JSON.stringify({
+			addressType: 'P2WSH',
+			network: 'mainnet',
+			quorum: { requiredSigners: 1, totalSigners: 1 },
+			extendedPublicKeys: [{ name: 'A', xpub: 'not-an-xpub', xfp: '3442193e' }]
+		});
+		expect(() => parseCaravanImport(blob)).toThrow(/Key 1/);
+	});
+
 	it('maps Caravan address types to multisig script types', () => {
 		for (const [addressType, scriptType] of [
 			['P2WSH', 'p2wsh'],

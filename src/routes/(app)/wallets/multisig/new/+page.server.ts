@@ -141,6 +141,10 @@ export const actions: Actions = {
 		// 'imported' when the wizard was pre-filled from an uploaded config (the
 		// user already has that file); 'created' when built key-by-key.
 		const source = String(form.get('source') ?? '') === 'imported' ? 'imported' : 'created';
+		// Carried through from an imported Caravan config so a restored wallet
+		// resumes at the right receive index instead of reusing 0.. (cairn-u161).
+		const startRaw = Number(form.get('startingAddressIndex'));
+		const receiveCursor = Number.isInteger(startRaw) && startRaw > 0 ? startRaw : 0;
 
 		let keys: NewMultisigKey[];
 		let threshold: number;
@@ -160,7 +164,14 @@ export const actions: Actions = {
 		}
 
 		try {
-			const multisig = createMultisig(locals.user!.id, { name, threshold, scriptType, keys, source });
+			const multisig = createMultisig(locals.user!.id, {
+				name,
+				threshold,
+				scriptType,
+				keys,
+				source,
+				receiveCursor
+			});
 			return { multisigId: multisig.id };
 		} catch (e) {
 			return fail(400, {

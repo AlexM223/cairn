@@ -206,7 +206,10 @@ export function instanceStats(): {
 	activeInvites: number;
 } {
 	const users = (db.prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number }).n;
-	const wallets = (db.prepare('SELECT COUNT(*) AS n FROM wallets').get() as { n: number }).n;
+	// Count single-sig AND multisig wallets, mirroring listUsers()'s per-user
+	// total — the Overview page previously omitted multisigs (cairn-xqfb).
+	const singleSig = (db.prepare('SELECT COUNT(*) AS n FROM wallets').get() as { n: number }).n;
+	const multisig = (db.prepare('SELECT COUNT(*) AS n FROM multisigs').get() as { n: number }).n;
 	const activeInvites = listInvites().filter((i) => i.status === 'active').length;
-	return { users, admins: adminCount(), wallets, activeInvites };
+	return { users, admins: adminCount(), wallets: singleSig + multisig, activeInvites };
 }
