@@ -1,9 +1,21 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// Wrap ./activity in call-through spies so notify()'s in-app write seam can be
+// forced to throw in the stage-isolation tests (cairn-potk) — recordActivity's
+// own contract is "never throws", so only a mock can exercise notify()'s guard.
+// Everything keeps its real implementation until a test overrides it, and
+// beforeEach's vi.restoreAllMocks() puts the real behavior back.
+vi.mock('./activity', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('./activity')>();
+	return { ...actual, recordActivity: vi.fn(actual.recordActivity) };
+});
+
 import { db } from './db';
 import { registerUser } from './auth';
 import { setUserAdmin } from './admin';
 import { setSetting } from './settings';
-import { resolveRecipients, DEFAULT_PREFERENCES, CHANNELS } from './notifications';
+import { notify, resolveRecipients, DEFAULT_PREFERENCES, CHANNELS } from './notifications';
+import { recordActivity } from './activity';
 import { _internals } from './notificationQueue';
 import type { NotificationPayload } from './notifyTypes';
 
@@ -131,6 +143,68 @@ describe('backoff schedule', () => {
 		// Clamps below and above the table.
 		expect(backoffMs(0)).toBe(BACKOFF_MS[0]);
 		expect(backoffMs(99)).toBe(BACKOFF_MS[BACKOFF_MS.length - 1]);
+	});
+});
+
+describe('notify() stage isolation (cairn-potk, fix cairn-s0p5)', () => {
+	// Pins the fix for cairn-s0p5: notify() used to run the in-app write and the
+	// external-channel enqueue inside ONE try/catch, so a failure in the in-app
+	// stage silently dropped ALL external delivery. Each stage is now guarded
+	// independently — a failure in one must never suppress the other.
+
+	function enableEmail(userId: number): void {
+		db.prepare(
+			`INSERT INTO notification_preferences (user_id, event_type, channel, enabled)
+			 VALUES (?, 'tx_received', 'email', 1)`
+		).run(userId);
+		vi.spyOn(CHANNELS.email, 'isConfigured').mockReturnValue(true);
+	}
+
+	it('an in-app write failure does not drop the external-channel enqueue', () => {
+		const u = makeUser('iso-a@example.com');
+		enableEmail(u.id);
+		// Registration itself may record activity — count only notify()'s call.
+		vi.mocked(recordActivity).mockClear();
+		vi.mocked(recordActivity).mockImplementation(() => {
+			throw new Error('events insert exploded');
+		});
+
+		expect(() => notify(payload({ userId: u.id }))).not.toThrow();
+
+		// The in-app stage WAS attempted (and blew up) …
+		expect(recordActivity).toHaveBeenCalledTimes(1);
+		// … yet the external delivery was still enqueued for the queue worker.
+		const rows = db
+			.prepare('SELECT user_id, channel, event_type FROM notification_queue')
+			.all() as { user_id: number; channel: string; event_type: string }[];
+		expect(rows).toEqual([{ user_id: u.id, channel: 'email', event_type: 'tx_received' }]);
+	});
+
+	it('an external-enqueue failure does not prevent the in-app write', async () => {
+		const u = makeUser('iso-b@example.com');
+		db.exec('DELETE FROM events'); // clear any signup noise before asserting
+		enableEmail(u.id);
+		// Pin the REAL in-app write (don't rely on restoreAllMocks reinstating the
+		// call-through implementation after the previous test's throw override).
+		const actual = await vi.importActual<typeof import('./activity')>('./activity');
+		vi.mocked(recordActivity).mockImplementation(actual.recordActivity);
+
+		// Break the enqueue stage at the DB level: the INSERT INTO
+		// notification_queue prepared inside notify() now throws.
+		db.exec('ALTER TABLE notification_queue RENAME TO notification_queue_hidden');
+		try {
+			expect(() => notify(payload({ userId: u.id }))).not.toThrow();
+		} finally {
+			db.exec('ALTER TABLE notification_queue_hidden RENAME TO notification_queue');
+		}
+
+		// The in-app activity-feed record still landed.
+		const events = db
+			.prepare('SELECT user_id, type, message FROM events WHERE user_id = ?')
+			.all(u.id) as { user_id: number; type: string; message: string }[];
+		expect(events).toHaveLength(1);
+		expect(events[0].type).toBe('tx_received');
+		expect(events[0].message).toContain('Payment received');
 	});
 });
 
