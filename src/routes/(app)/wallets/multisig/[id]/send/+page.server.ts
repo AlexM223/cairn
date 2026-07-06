@@ -4,11 +4,13 @@ import { getSignableMultisig } from '$lib/server/wallets/multisig';
 import {
 	getMultisigTransaction,
 	multisigTransactionProgress,
+	ownMultisigTxids,
 	type SavedMultisigTransaction
 } from '$lib/server/multisigTransactions';
 import { getRoster, type RosterMember } from '$lib/server/multisigRoster';
 import { getMultisigUtxos } from '$lib/server/multisigScan';
-import { summarizePsbt, type PsbtSummary } from '$lib/server/bitcoin/psbt';
+import { classifyUnconfirmedTrust } from '$lib/server/transactions';
+import { summarizePsbt, type PsbtSummary, type UnconfirmedTrust } from '$lib/server/bitcoin/psbt';
 import type { MultisigSigningProgress } from '$lib/server/bitcoin/multisigPsbt';
 import { getChain } from '$lib/server/chain';
 import type { FeeEstimates } from '$lib/types';
@@ -37,23 +39,38 @@ export const load: PageServerLoad = async (event) => {
 		fees = null;
 	}
 
-	// Confirmed spendable coins for the optional manual coin-control picker, largest
-	// first — the same UTXO set the /psbt build endpoint selects from, so what a
-	// user picks is exactly what the server spends (cairn-zcui). Best-effort: a scan
-	// failure just means coin control isn't offered this load; the default automatic
-	// flow is unaffected.
-	let utxos: { txid: string; vout: number; value: number; height: number; coinbase: boolean }[] = [];
+	// Spendable coins for the optional manual coin-control picker — confirmed first,
+	// then unconfirmed (each tagged own-change vs received) — the same UTXO set the
+	// /psbt build endpoint selects from, so what a user picks is exactly what the
+	// server spends (cairn-zcui). Best-effort: a scan failure just means coin control
+	// isn't offered this load; the default automatic flow is unaffected.
+	let utxos: {
+		txid: string;
+		vout: number;
+		value: number;
+		height: number;
+		coinbase: boolean;
+		unconfirmedTrust: UnconfirmedTrust | null;
+	}[] = [];
 	try {
-		utxos = (await getMultisigUtxos(multisig))
-			.filter((u) => u.height > 0) // the builder only auto-selects confirmed coins
+		// Include unconfirmed coins too (cairn-u9ob.6/.7), each classified own-change
+		// vs received so coin control can badge them — confirmed coins auto-select,
+		// received unconfirmed only when explicitly picked.
+		utxos = classifyUnconfirmedTrust(await getMultisigUtxos(multisig), ownMultisigTxids(id))
 			.map((u) => ({
 				txid: u.txid,
 				vout: u.vout,
 				value: u.value,
 				height: u.height,
-				coinbase: u.coinbase === true
+				coinbase: u.coinbase === true,
+				unconfirmedTrust: u.height > 0 ? null : u.unconfirmedTrust ?? 'received'
 			}))
-			.sort((a, b) => b.value - a.value);
+			.sort((a, b) => {
+				const ca = a.height > 0 ? 1 : 0;
+				const cb = b.height > 0 ? 1 : 0;
+				if (ca !== cb) return cb - ca;
+				return b.value - a.value;
+			});
 	} catch {
 		utxos = [];
 	}

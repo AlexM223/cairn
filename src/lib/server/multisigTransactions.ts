@@ -715,7 +715,7 @@ export async function bumpMultisigTransaction(
 
 /** Own txids this multisig broadcast — same own-change vs received signal the
  *  single-sig path uses (ownBroadcastTxids), against multisig_transactions. */
-function ownMultisigTxids(multisigId: number): Set<string> {
+export function ownMultisigTxids(multisigId: number): Set<string> {
 	const rows = db
 		.prepare(
 			"SELECT txid FROM multisig_transactions WHERE multisig_id = ? AND txid IS NOT NULL"

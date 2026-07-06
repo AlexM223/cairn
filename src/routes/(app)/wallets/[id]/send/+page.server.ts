@@ -2,7 +2,13 @@ import { error } from '@sveltejs/kit';
 import { requireFeature } from '$lib/server/api';
 import { getWallet, getWalletDetail } from '$lib/server/wallets';
 import { listSavedAddresses } from '$lib/server/addressBook';
-import { getTransaction, getWalletUtxos } from '$lib/server/transactions';
+import {
+	getTransaction,
+	getWalletUtxos,
+	ownBroadcastTxids,
+	classifyUnconfirmedTrust
+} from '$lib/server/transactions';
+import type { UnconfirmedTrust } from '$lib/server/bitcoin/psbt';
 import { summarizePsbt, type PsbtSummary } from '$lib/server/bitcoin/psbt';
 import { getChain } from '$lib/server/chain';
 import type { FeeEstimates } from '$lib/types';
@@ -26,24 +32,39 @@ export const load: PageServerLoad = async (event) => {
 	// from is exactly what the server will select from.
 	let confirmed: number | null = null;
 	let scanError: string | null = null;
-	let utxos: { txid: string; vout: number; value: number; height: number; coinbase: boolean }[] =
-		[];
+	let utxos: {
+		txid: string;
+		vout: number;
+		value: number;
+		height: number;
+		coinbase: boolean;
+		unconfirmedTrust: UnconfirmedTrust | null;
+	}[] = [];
 	try {
 		const detail = await getWalletDetail(locals.user!.id, id);
 		if (!detail) error(404, 'Wallet not found');
 		confirmed = detail.scan.confirmed;
-		utxos = (await getWalletUtxos(row.xpub))
-			.filter((u) => u.height > 0) // the builder only ever spends confirmed coins
-			// height + coinbase ride along so coin control can maturity-check mining
-			// rewards live against the block tip (see below) and badge/disable them.
+		// Include UNCONFIRMED coins too (cairn-u9ob.1/.7): the builder can spend our
+		// own unconfirmed change automatically and received unconfirmed coins when
+		// explicitly selected. classifyUnconfirmedTrust tags each so coin control can
+		// badge own-change (neutral) vs received (risky). height + coinbase ride along
+		// so coin control can maturity-check mining rewards live against the block tip.
+		utxos = classifyUnconfirmedTrust(await getWalletUtxos(row.xpub), ownBroadcastTxids(id))
 			.map((u) => ({
 				txid: u.txid,
 				vout: u.vout,
 				value: u.value,
 				height: u.height,
-				coinbase: u.coinbase === true
+				coinbase: u.coinbase === true,
+				unconfirmedTrust: u.height > 0 ? null : u.unconfirmedTrust ?? 'received'
 			}))
-			.sort((a, b) => b.value - a.value);
+			// Confirmed coins first (largest value), then unconfirmed (largest value).
+			.sort((a, b) => {
+				const ca = a.height > 0 ? 1 : 0;
+				const cb = b.height > 0 ? 1 : 0;
+				if (ca !== cb) return cb - ca;
+				return b.value - a.value;
+			});
 	} catch (e) {
 		if (e instanceof Error && e.cause === 'unreachable') {
 			scanError = e.message;
@@ -103,8 +124,9 @@ export const load: PageServerLoad = async (event) => {
 		scanError,
 		fees,
 		resume,
-		// Confirmed spendable coins for the optional coin-control picker,
-		// largest first. Empty when the scan failed or the wallet is empty.
+		// Spendable coins for the optional coin-control picker — confirmed first,
+		// then unconfirmed (each tagged own-change vs received for badging).
+		// Empty when the scan failed or the wallet is empty.
 		utxos,
 		// Current block tip — coin control maturity-checks coinbase coins against
 		// it, and the send page keeps it live via onNewBlock.

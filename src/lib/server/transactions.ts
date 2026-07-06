@@ -101,7 +101,7 @@ export async function getWalletUtxos(xpub: string): Promise<SpendableUtxo[]> {
  * unconfirmed coin that is our OWN change (safe to spend) from one received from
  * a stranger's still-unconfirmed tx (risky). See docs/CPFP-UNCONFIRMED-PLAN.md §6.
  */
-function ownBroadcastTxids(walletId: number): Set<string> {
+export function ownBroadcastTxids(walletId: number): Set<string> {
 	const rows = db
 		.prepare("SELECT txid FROM transactions WHERE wallet_id = ? AND txid IS NOT NULL")
 		.all(walletId) as { txid: string }[];

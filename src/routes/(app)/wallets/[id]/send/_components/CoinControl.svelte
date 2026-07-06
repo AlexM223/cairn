@@ -24,8 +24,14 @@
 		value: number; // sats
 		/** True when this coin is a coinbase (mining reward) output. */
 		coinbase?: boolean;
-		/** Block height the coin confirmed at — used for coinbase maturity. */
+		/** Block height the coin confirmed at — used for coinbase maturity.
+		 *  <= 0 means unconfirmed (still in the mempool). */
 		height?: number;
+		/** For an UNCONFIRMED coin (height <= 0): 'own-change' = our own prior send's
+		 *  change (low risk), 'received' = paid to us by someone else's still-
+		 *  unconfirmed tx (could still be replaced). Null/undefined for confirmed
+		 *  coins. See docs/CPFP-UNCONFIRMED-PLAN.md §6. */
+		unconfirmedTrust?: 'own-change' | 'received' | null;
 	}
 
 	let {
@@ -66,6 +72,23 @@
 		return m !== null && !m.mature;
 	};
 	const anyCoinbase = $derived(utxos.some((u) => u.coinbase === true));
+
+	// --- unconfirmed-coin trust (cairn-u9ob.7) ---------------------------
+	// A coin with height <= 0 is still in the mempool. We badge it by trust:
+	// own-change (our own send's change — low risk) vs received (someone paid us
+	// with a tx that hasn't confirmed and could still be replaced).
+	const isUnconfirmed = (u: CoinOption) => (u.height ?? 1) <= 0;
+	const anyUnconfirmed = $derived(utxos.some(isUnconfirmed));
+	const anyReceivedUnconfirmed = $derived(
+		utxos.some((u) => isUnconfirmed(u) && u.unconfirmedTrust === 'received')
+	);
+
+	/** Educational copy for the risky "received, unconfirmed" badge — the term
+	 *  "double-spend" lives here in the tooltip, never in the primary label. */
+	const RECEIVED_UNCONFIRMED_TIP =
+		'This payment is still waiting to confirm, and whoever sent it could still replace it with a different transaction that never pays you (a "double-spend"). If you spend it now and that happens, your new transaction fails too. Waiting for one confirmation removes this risk.';
+	const OWN_CHANGE_TIP =
+		'This is the change from one of your own recent sends. It is still waiting to confirm, but only you hold its keys, so it is safe to spend.';
 
 	// Keep an immature coinbase out of the selection. This runs whenever the set
 	// of immature coins changes — e.g. a coin selected while mature that somehow
@@ -166,6 +189,16 @@
 					spent. <Term tip={COINBASE_TIP}>Why?</Term>
 				</p>
 			{/if}
+			{#if anyReceivedUnconfirmed}
+				<!-- Only warn when a genuinely risky (received, unconfirmed) coin is present.
+				     Own unconfirmed change is safe and doesn't need a warning legend. -->
+				<p class="unconfirmed-legend">
+					Some coins are payments that haven't confirmed yet and could still be replaced by the
+					sender. Spending them now carries a small risk. <Term tip={RECEIVED_UNCONFIRMED_TIP}
+						>Why?</Term
+					>
+				</p>
+			{/if}
 			{#each utxos as u (keyOf(u))}
 				{@const mass = massByKey?.get(keyOf(u))}
 				{@const maturity = maturityOf(u)}
@@ -192,6 +225,17 @@
 						{:else}
 							<Term tip={COINBASE_TIP}>
 								<span class="coinbase-badge">Coinbase reward</span>
+							</Term>
+						{/if}
+					{/if}
+					{#if isUnconfirmed(u)}
+						{#if u.unconfirmedTrust === 'received'}
+							<Term tip={RECEIVED_UNCONFIRMED_TIP}>
+								<span class="unconfirmed-badge received">Unconfirmed · could still be replaced</span>
+							</Term>
+						{:else}
+							<Term tip={OWN_CHANGE_TIP}>
+								<span class="unconfirmed-badge own">Change · unconfirmed</span>
 							</Term>
 						{/if}
 					{/if}
@@ -321,6 +365,35 @@
 	}
 
 	.coinbase-badge.immature {
+		background: var(--warning-muted);
+		color: var(--warning);
+	}
+
+	/* --- unconfirmed-coin trust badges (cairn-u9ob.7) --- */
+	.unconfirmed-legend {
+		font-size: 12.5px;
+		line-height: 1.55;
+		color: var(--text-secondary);
+	}
+
+	.unconfirmed-badge {
+		font-size: 11px;
+		font-weight: 500;
+		line-height: 1.6;
+		padding: 1px 7px;
+		border-radius: 99px;
+		white-space: nowrap;
+	}
+
+	/* Own change — neutral tone: safe, informational only. */
+	.unconfirmed-badge.own {
+		background: var(--surface-elevated);
+		color: var(--text-secondary);
+	}
+
+	/* Received & unconfirmed — warning tone (never error-red): spendable, but the
+	   sender could still replace it. */
+	.unconfirmed-badge.received {
 		background: var(--warning-muted);
 		color: var(--warning);
 	}
