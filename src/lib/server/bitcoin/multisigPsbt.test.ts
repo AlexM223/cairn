@@ -4,7 +4,7 @@ import { base64 } from '@scure/base';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
 import { Transaction, NETWORK } from '@scure/btc-signer';
 import { deriveMultisigAddress, type MultisigConfig, type MultisigKeyDescriptor } from './multisig';
-import { summarizePsbt, RBF_SEQUENCE, type SpendableUtxo } from './psbt';
+import { summarizePsbt, RBF_SEQUENCE, PsbtError, type SpendableUtxo } from './psbt';
 import {
 	constructMultisigPsbt,
 	combineMultisigPsbts,
@@ -714,6 +714,51 @@ describe('quorum enforcement (3-of-5 p2wsh)', () => {
 		expect(multisigInputVsize('p2wsh', 3, 5)).toBe(140);
 		// A 15-of-15 witness script exceeds 252 bytes → 3-byte varint kicks in.
 		expect(multisigInputVsize('p2wsh', 15, 15)).toBe(41 + Math.ceil((2 + 15 * 73 + 3 + 513) / 4));
+	});
+});
+
+// ── exact-input reconstruction (RBF replacement) ─────────────────────────────
+describe('constructMultisigPsbt exactInputs (RBF replacement)', () => {
+	it('spends EVERY provided coin even when fewer would fund the send, taking the fee from change', async () => {
+		const cfg = MULTISIG_2OF3;
+		// Two coins; either alone would cover the 50k send — the greedy path would
+		// stop at one. exactInputs must use both (an RBF replacement conflicts with
+		// the original on every input).
+		const utxos = [
+			multisigUtxo(cfg, 200_000, { txid: 'a1'.repeat(32) }),
+			multisigUtxo(cfg, 180_000, { txid: 'b2'.repeat(32) })
+		];
+		const draft = await constructMultisigPsbt({
+			config: cfg,
+			utxos,
+			recipients: [{ address: RECIPIENT, amount: 50_000 }],
+			feeRate: 20,
+			changeIndex: 0,
+			exactInputs: true
+		});
+		expect(draft.inputs).toHaveLength(2);
+		const built = new Set(draft.inputs.map((i) => `${i.txid}:${i.vout}`));
+		expect(built.has(`${'a1'.repeat(32)}:0`)).toBe(true);
+		expect(built.has(`${'b2'.repeat(32)}:0`)).toBe(true);
+		// Change absorbs the fee: in + change + fee balance to the send amount.
+		expect(draft.change).not.toBeNull();
+		expect(draft.change!.value + draft.amount + draft.fee).toBe(380_000);
+	});
+
+	it('refuses when the change output cannot absorb the fee at the target rate', async () => {
+		const cfg = MULTISIG_2OF3;
+		// Almost all of the input goes to the recipient — no room for a higher fee.
+		const utxos = [multisigUtxo(cfg, 60_000)];
+		await expect(
+			constructMultisigPsbt({
+				config: cfg,
+				utxos,
+				recipients: [{ address: RECIPIENT, amount: 59_000 }],
+				feeRate: 50,
+				changeIndex: 0,
+				exactInputs: true
+			})
+		).rejects.toThrow(PsbtError);
 	});
 });
 

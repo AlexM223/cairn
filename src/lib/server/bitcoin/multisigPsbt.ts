@@ -159,6 +159,11 @@ export interface MultisigConstructParams {
 	/** Manual coin control: restrict selection to these coins (candidate
 	 *  allowlist, not a force-spend list). Ignored when empty. */
 	onlyUtxos?: { txid: string; vout: number }[];
+	/** RBF replacement: spend EXACTLY the provided utxos (no greedy selection, no
+	 *  eligibility/maturity filtering) so the replacement conflicts with the
+	 *  original on every input. The whole fee increase comes out of change; a
+	 *  change output is required. See bumpMultisigTransaction. */
+	exactInputs?: boolean;
 	/** Current chain tip height — enables coinbase maturity checking (an immature
 	 *  coinbase input is skipped in auto-selection, rejected if explicitly chosen). */
 	tipHeight?: number;
@@ -275,7 +280,11 @@ export async function constructMultisigPsbt(params: MultisigConstructParams): Pr
 	// coin. Confirmed coins are still preferred first (the sort below).
 	const coinControl = (params.onlyUtxos?.length ?? 0) > 0;
 	let spendable: SpendableUtxo[];
-	if (coinControl) {
+	if (params.exactInputs) {
+		// RBF replacement: the original's own inputs, spent verbatim (they were
+		// already confirmed when the original was built — no eligibility filtering).
+		spendable = params.utxos;
+	} else if (coinControl) {
 		const allow = new Set(params.onlyUtxos!.map((o) => `${o.txid}:${o.vout}`));
 		spendable = params.utxos.filter((u) => allow.has(`${u.txid}:${u.vout}`));
 		if (spendable.length === 0) {
@@ -294,8 +303,10 @@ export async function constructMultisigPsbt(params: MultisigConstructParams): Pr
 	}
 
 	// Coinbase maturity (100-confirmation consensus rule): skip immature mining
-	// rewards in auto-selection; reject an explicitly-chosen immature one.
-	if (params.tipHeight != null) {
+	// rewards in auto-selection; reject an explicitly-chosen immature one. An RBF
+	// replacement reuses inputs that already funded a broadcast tx, so they are
+	// necessarily mature — skip the check entirely.
+	if (params.tipHeight != null && !params.exactInputs) {
 		const tip = params.tipHeight;
 		const isImmature = (u: SpendableUtxo) => u.coinbase === true && isImmatureCoinbase(u.height, tip);
 		// Unverifiable coinbase-ness (chain hiccup, cairn-7fmd) inside the maturity
@@ -502,45 +513,66 @@ export async function constructMultisigPsbt(params: MultisigConstructParams): Pr
 	const changeAddress = changeDerived.address;
 	const changeVsize = outputVsize(changeAddress);
 
-	// Confirmed coins first (unconfirmed own-change only when confirmed can't
-	// cover the spend), then largest-value-first within each group.
-	const candidates = [...spendable].sort(
-		(a, b) => Number(b.height > 0) - Number(a.height > 0) || b.value - a.value
-	);
 	const chosen: SpendableUtxo[] = [];
 	let totalIn = 0;
 	let fee = 0;
 	let changeValue = 0;
 	let hasChange = false;
-	let funded = false;
-	for (const u of candidates) {
-		chosen.push(u);
-		totalIn += u.value;
+
+	if (params.exactInputs) {
+		// ---------------------------------------- exact inputs (RBF replacement)
+		// Spend every provided coin exactly as given so the replacement conflicts
+		// with the original on every input. Same recipients; the entire fee increase
+		// comes out of the change output (a changeless original has nowhere to take
+		// it from — the caller refuses that before reaching here).
+		chosen.push(...spendable);
+		totalIn = spendable.reduce((s, u) => s + u.value, 0);
 		const baseVsize = TX_OVERHEAD_VSIZE + chosen.length * inputVsize + recipientsVsize;
-		const feeWithChange = Math.ceil((baseVsize + changeVsize) * feeRate);
-		if (totalIn >= totalAmount + feeWithChange + DUST_SATS + 1) {
-			fee = feeWithChange;
-			changeValue = totalIn - totalAmount - fee;
-			hasChange = true;
-			funded = true;
-			break;
+		fee = Math.ceil((baseVsize + changeVsize) * feeRate);
+		changeValue = totalIn - totalAmount - fee;
+		if (changeValue < DUST_SATS) {
+			throw new PsbtError(
+				'The change output is too small to absorb the higher fee at this rate.',
+				'insufficient_funds'
+			);
 		}
-		const feeWithout = Math.ceil(baseVsize * feeRate);
-		if (totalIn >= totalAmount + feeWithout) {
-			// Changeless: whatever exceeds the computed fee (< dust + change cost)
-			// goes to the miner rather than creating an unspendable output.
-			fee = totalIn - totalAmount;
-			funded = true;
-			break;
-		}
-	}
-	if (!funded) {
-		throw new PsbtError(
-			coinControl
-				? "The selected coins don't cover that amount plus the network fee — select more coins or lower the amount."
-				: 'Not enough confirmed funds to cover that amount plus the network fee.',
-			'insufficient_funds'
+		hasChange = true;
+	} else {
+		// Confirmed coins first (unconfirmed own-change only when confirmed can't
+		// cover the spend), then largest-value-first within each group.
+		const candidates = [...spendable].sort(
+			(a, b) => Number(b.height > 0) - Number(a.height > 0) || b.value - a.value
 		);
+		let funded = false;
+		for (const u of candidates) {
+			chosen.push(u);
+			totalIn += u.value;
+			const baseVsize = TX_OVERHEAD_VSIZE + chosen.length * inputVsize + recipientsVsize;
+			const feeWithChange = Math.ceil((baseVsize + changeVsize) * feeRate);
+			if (totalIn >= totalAmount + feeWithChange + DUST_SATS + 1) {
+				fee = feeWithChange;
+				changeValue = totalIn - totalAmount - fee;
+				hasChange = true;
+				funded = true;
+				break;
+			}
+			const feeWithout = Math.ceil(baseVsize * feeRate);
+			if (totalIn >= totalAmount + feeWithout) {
+				// Changeless: whatever exceeds the computed fee (< dust + change cost)
+				// goes to the miner rather than creating an unspendable output.
+				fee = totalIn - totalAmount;
+				funded = true;
+				break;
+			}
+		}
+		if (!funded) {
+			throw new PsbtError(
+				coinControl
+					? "The selected coins don't cover that amount plus the network fee — select more coins or lower the amount."
+					: 'Not enough confirmed funds to cover that amount plus the network fee.',
+				'insufficient_funds'
+			);
+		}
 	}
 
 	// Deterministic input order (txid asc, vout asc — BIP-69).

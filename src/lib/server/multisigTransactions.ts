@@ -9,6 +9,9 @@
 // signatures across SEVERAL attach calls, merged by combineMultisigPsbts, and
 // broadcast refuses to proceed below the multisig's M-of-N quorum.
 
+import { Transaction } from '@scure/btc-signer';
+import { base64 } from '@scure/base';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import { db } from './db';
 import { getChain } from './chain';
 import {
@@ -18,6 +21,7 @@ import {
 	toMultisigConfig,
 	type MultisigRow
 } from './wallets/multisig';
+import { deriveMultisigAddress } from './bitcoin/multisig';
 import { getMultisigUtxos, nextMultisigChangeIndex } from './multisigScan';
 import {
 	freezeRosterAndNotify,
@@ -34,10 +38,20 @@ import {
 	type ConstructedMultisigPsbt,
 	type MultisigSigningProgress
 } from './bitcoin/multisigPsbt';
-import { PsbtError } from './bitcoin/psbt';
-import { normalizePsbt, InvalidPsbtError, BroadcastError, classifyUnconfirmedTrust } from './transactions';
+import { PsbtError, type SpendableUtxo } from './bitcoin/psbt';
+import {
+	normalizePsbt,
+	InvalidPsbtError,
+	BroadcastError,
+	BumpError,
+	classifyUnconfirmedTrust
+} from './transactions';
 
-export type MultisigTxStatus = 'draft' | 'awaiting_signature' | 'completed';
+export type MultisigTxStatus = 'draft' | 'awaiting_signature' | 'completed' | 'superseded';
+
+/** BIP-125 signaling threshold: any input sequence below this opts in to RBF.
+ *  Mirrors transactions.ts (the constant is module-private there). */
+const RBF_SIGNAL_MAX_SEQUENCE = 0xfffffffe;
 
 export interface SavedMultisigTransaction {
 	id: number;
@@ -55,6 +69,9 @@ export interface SavedMultisigTransaction {
 	fee: number;
 	feeRate: number;
 	changeIndex: number | null;
+	/** txid of the broadcast transaction this row was built to replace (RBF), or
+	 *  null for an ordinary draft. See bumpMultisigTransaction. */
+	replacesTxid: string | null;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -108,6 +125,7 @@ function mapRow(r: Record<string, unknown>): SavedMultisigTransaction {
 		fee: r.fee as number,
 		feeRate: r.fee_rate as number,
 		changeIndex: (r.change_index as number | null) ?? null,
+		replacesTxid: (r.replaces_txid as string | null) ?? null,
 		createdAt: r.created_at as string,
 		updatedAt: r.updated_at as string
 	};
@@ -451,5 +469,241 @@ export async function broadcastMultisigTransaction(
 		txid: broadcastTxid
 	});
 
+	// A broadcast RBF replacement supersedes the transaction it replaced: mark the
+	// original 'superseded' so the UI stops offering to sign/bump a tx the network
+	// has now replaced (mirrors transactions.ts). Best-effort — never fails the
+	// broadcast that already succeeded.
+	if (updated?.replacesTxid) {
+		try {
+			db.prepare(
+				`UPDATE multisig_transactions
+				 SET status = 'superseded', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+				 WHERE multisig_id = ? AND txid = ? AND status != 'superseded'`
+			).run(multisigId, updated.replacesTxid);
+		} catch {
+			/* superseded bookkeeping is cosmetic; the replacement is already sent */
+		}
+	}
+
 	return { txid: broadcastTxid, transaction: updated! };
+}
+
+/**
+ * Recover the exact coins a stored multisig PSBT spends, from the PSBT itself:
+ * txid/vout from each input, value from witnessUtxo (segwit) or the referenced
+ * output of the embedded nonWitnessUtxo (legacy p2sh), and the multisig
+ * chain/index from the bip32Derivation Cairn embeds for every key (all N share
+ * the same trailing chain/index). The address re-derives from the multisig
+ * config at that chain/index. Throws BumpError when an input lacks the data
+ * needed to rebuild it verbatim.
+ */
+function recoverMultisigPsbtInputs(
+	tx: Transaction,
+	config: ReturnType<typeof toMultisigConfig>
+): SpendableUtxo[] {
+	const utxos: SpendableUtxo[] = [];
+	for (let i = 0; i < tx.inputsLength; i++) {
+		const inp = tx.getInput(i);
+		if (!inp.txid || inp.index === undefined) {
+			throw new BumpError(
+				'The stored transaction is missing input data and cannot be reconstructed.',
+				'not_bumpable'
+			);
+		}
+		let value: number | null = null;
+		if (inp.witnessUtxo) {
+			value = Number(inp.witnessUtxo.amount);
+		} else if (inp.nonWitnessUtxo) {
+			const prev = inp.nonWitnessUtxo.outputs[inp.index];
+			if (prev) value = Number(prev.amount);
+		}
+		// Every multisig input carries one bip32Derivation per key; they all end in
+		// the same (chain, index), so the first entry is authoritative.
+		const path = inp.bip32Derivation?.[0]?.[1]?.path;
+		const chainSeg = path?.[path.length - 2];
+		const indexSeg = path?.[path.length - 1];
+		if (
+			value === null ||
+			!((chainSeg === 0 || chainSeg === 1) && typeof indexSeg === 'number' && indexSeg >= 0)
+		) {
+			throw new BumpError(
+				'The stored transaction does not carry enough coin data to rebuild it.',
+				'not_bumpable'
+			);
+		}
+		const chain = chainSeg as 0 | 1;
+		utxos.push({
+			txid: bytesToHex(inp.txid),
+			vout: inp.index,
+			value,
+			// Height is irrelevant under exactInputs (no eligibility filtering); these
+			// coins already funded a broadcast tx.
+			height: 1,
+			address: deriveMultisigAddress(config, chain, indexSeg).address,
+			chain,
+			index: indexSeg
+		});
+	}
+	return utxos;
+}
+
+/**
+ * Build a replace-by-fee (BIP-125) replacement for a broadcast-but-unconfirmed
+ * multisig transaction: identical inputs, same recipients and amounts, a higher
+ * fee taken entirely out of change. Saved as a fresh draft (replaces_txid → the
+ * original's txid) that re-enters the normal roster sign-and-broadcast flow; the
+ * original is marked 'superseded' only once the replacement actually broadcasts.
+ * Owner-only — like broadcast and draft-delete (mirrors bumpTransaction).
+ */
+export async function bumpMultisigTransaction(
+	userId: number,
+	multisigId: number,
+	txId: number,
+	newFeeRate: number
+): Promise<{ draft: SavedMultisigTransaction; details: ConstructedMultisigPsbt }> {
+	const multisig = getMultisig(userId, multisigId);
+	const tx = multisig ? getMultisigTransaction(userId, multisigId, txId) : null;
+	if (!multisig || !tx) throw new BumpError('Transaction not found.', 'not_found');
+
+	if (tx.status === 'superseded') {
+		throw new BumpError('This transaction was already replaced by a fee bump.', 'superseded');
+	}
+	if (tx.status !== 'completed' || !tx.txid) {
+		throw new BumpError(
+			'Only broadcast transactions can be fee-bumped — this one has not been sent yet.',
+			'not_bumpable'
+		);
+	}
+
+	// One live replacement per original: a second concurrent bump would produce
+	// two drafts fighting over the same inputs.
+	const existing = db
+		.prepare(
+			'SELECT id, status FROM multisig_transactions WHERE multisig_id = ? AND replaces_txid = ?'
+		)
+		.get(multisigId, tx.txid) as { id: number; status: string } | undefined;
+	if (existing) {
+		throw new BumpError(
+			existing.status === 'completed'
+				? 'This transaction was already replaced by a fee bump.'
+				: 'A replacement for this transaction is already in progress — finish or discard it first.',
+			'already_replaced'
+		);
+	}
+
+	// A confirmed transaction is final — no fee to bump. A failed lookup (mempool
+	// eviction, backend outage) does not block: a replacement draft is harmless.
+	let confirmed = false;
+	try {
+		confirmed = (await getChain().getTx(tx.txid)).confirmed;
+	} catch {
+		confirmed = false;
+	}
+	if (confirmed) {
+		throw new BumpError(
+			'This transaction has already confirmed — there is no fee to bump.',
+			'confirmed'
+		);
+	}
+
+	let stored: Transaction;
+	try {
+		stored = Transaction.fromPSBT(base64.decode(tx.psbt));
+	} catch {
+		throw new BumpError(
+			'The stored transaction could not be read, so it cannot be reconstructed.',
+			'not_bumpable'
+		);
+	}
+
+	// BIP-125 rule 1: every input must signal replaceability. constructMultisigPsbt
+	// sets RBF_SEQUENCE on all inputs, but a hand-imported PSBT might not — the
+	// network would silently ignore a replacement, so refuse up front.
+	for (let i = 0; i < stored.inputsLength; i++) {
+		if ((stored.getInput(i).sequence ?? 0xffffffff) >= RBF_SIGNAL_MAX_SEQUENCE) {
+			throw new BumpError(
+				"This transaction doesn't signal RBF (replace-by-fee), so the network won't accept a replacement — it can't be fee-bumped.",
+				'not_rbf'
+			);
+		}
+	}
+
+	// The fee increase comes out of change; a changeless original has nowhere to
+	// take it from without shortchanging a recipient.
+	if (tx.changeIndex === null) {
+		throw new BumpError(
+			'This transaction has no change output to absorb a higher fee, so it cannot be bumped.',
+			'no_change'
+		);
+	}
+
+	if (!Number.isFinite(newFeeRate) || newFeeRate <= tx.feeRate) {
+		throw new BumpError(
+			`The new fee rate must be higher than the original's effective ${tx.feeRate} sat/vB.`,
+			'fee_too_low'
+		);
+	}
+
+	const config = toMultisigConfig(multisig);
+	const utxos = recoverMultisigPsbtInputs(stored, config);
+
+	// Every recipient output is reproduced exactly (batch rows keep paying all N);
+	// the fee increase comes solely out of change, over the identical input set.
+	let details: ConstructedMultisigPsbt;
+	try {
+		details = await constructMultisigPsbt({
+			config,
+			utxos,
+			recipients: tx.recipients,
+			feeRate: newFeeRate,
+			changeIndex: tx.changeIndex,
+			fetchRawTx: (txid) => getChain().getTxHex(txid),
+			exactInputs: true
+		});
+	} catch (e) {
+		if (e instanceof PsbtError && e.code === 'insufficient_funds') {
+			throw new BumpError(
+				'The change output cannot absorb a fee increase at that rate — try a lower rate.',
+				'fee_too_low'
+			);
+		}
+		throw e;
+	}
+
+	// BIP-125 rule 4: the replacement must pay for its own relay — at least the
+	// original's fee plus (replacement vsize × 1 sat/vB incremental relay fee).
+	const minFee = tx.fee + details.vsize;
+	if (details.fee < minFee) {
+		const minRate = Math.ceil(minFee / details.vsize);
+		throw new BumpError(
+			`The replacement must pay at least ${minFee} sats (the original fee plus 1 sat/vB for its own size) — try ${minRate} sat/vB or more.`,
+			'fee_too_low'
+		);
+	}
+
+	const res = db
+		.prepare(
+			`INSERT INTO multisig_transactions (multisig_id, status, psbt, recipient, amount, fee, fee_rate, change_index, replaces_txid, recipients)
+			 VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?)`
+		)
+		.run(
+			multisigId,
+			details.psbtBase64,
+			details.recipient,
+			details.amount,
+			details.fee,
+			details.feeRate,
+			details.change?.index ?? null,
+			tx.txid,
+			recipientsJson(details.recipients)
+		);
+
+	const draft = getMultisigTransaction(userId, multisigId, Number(res.lastInsertRowid));
+	if (!draft) throw new BumpError('Replacement draft could not be saved.', 'not_bumpable');
+
+	// Freeze the roster and notify cosigners the replacement needs their signature —
+	// same as a fresh draft. For a solo multisig this notifies no one.
+	freezeRosterAndNotify(multisig, draft, userId);
+
+	return { draft, details };
 }

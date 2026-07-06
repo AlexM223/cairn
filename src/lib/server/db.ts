@@ -786,6 +786,19 @@ db.exec(`
 	}
 }
 
+// Multisig RBF: a replacement draft points at the txid it was built to replace;
+// the original row is marked 'superseded' when the replacement broadcasts —
+// mirroring the single-sig transactions.replaces_txid column. Guarded and
+// additive. See bumpMultisigTransaction in multisigTransactions.ts (cairn-mklv).
+{
+	const cols = (
+		db.prepare('PRAGMA table_info(multisig_transactions)').all() as { name: string }[]
+	).map((c) => c.name);
+	if (!cols.includes('replaces_txid')) {
+		db.exec('ALTER TABLE multisig_transactions ADD COLUMN replaces_txid TEXT');
+	}
+}
+
 db.exec(`
 	-- Instance-wide feature toggles. A row's ABSENCE means "use the registry
 	-- default" (FEATURE_FLAGS[].defaultEnabled, which is always true), so an

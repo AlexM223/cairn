@@ -17,9 +17,10 @@ import {
 	attachMultisigSignature,
 	deleteMultisigTransaction,
 	broadcastMultisigTransaction,
+	bumpMultisigTransaction,
 	multisigTransactionProgress
 } from './multisigTransactions';
-import { BroadcastError } from './transactions';
+import { BroadcastError, BumpError } from './transactions';
 
 // Only the network edges are faked: the chain source and the multisig scanner
 // (whose UTXOs would otherwise come from Electrum). Everything else — multisig
@@ -414,5 +415,90 @@ describe('broadcastMultisigTransaction', () => {
 			code: 'already_sent'
 		});
 		expect(broadcastMock).not.toHaveBeenCalled();
+	});
+});
+
+// ── RBF fee bump (cairn-mklv) ────────────────────────────────────────────────
+describe('bumpMultisigTransaction (RBF)', () => {
+	// A COMPLETED (broadcast) multisig tx whose stored PSBT carries a real,
+	// recoverable coin, so the bump can reconstruct it verbatim. getTxHexMock is
+	// primed with the coin's funding tx (the rebuild attaches it as nonWitnessUtxo).
+	async function seedBroadcast(userId: number, multisigId: number) {
+		const multisig = getMultisig(userId, multisigId)!;
+		const address = deriveMultisigAddress(toMultisigConfig(multisig), 0, 0).address;
+		const fundTx = new Transaction({ allowUnknownInputs: true, disableScriptCheck: true });
+		fundTx.addInput({ txid: '00'.repeat(32), index: 0 });
+		fundTx.addOutputAddress(address, 200_000n, NETWORK);
+		const details = await constructMultisigPsbt({
+			config: toMultisigConfig(multisig),
+			utxos: [
+				{ txid: fundTx.id, vout: 0, value: 200_000, height: 800_000, address, chain: 0, index: 0 }
+			],
+			recipients: [{ address: RECIPIENT, amount: 50_000 }],
+			feeRate: 5,
+			changeIndex: 0
+		});
+		const txid = 'aa'.repeat(32);
+		const res = db
+			.prepare(
+				`INSERT INTO multisig_transactions (multisig_id, status, psbt, recipient, amount, fee, fee_rate, change_index, txid)
+				 VALUES (?, 'completed', ?, ?, ?, ?, ?, ?, ?)`
+			)
+			.run(multisigId, details.psbtBase64, RECIPIENT, 50_000, details.fee, details.feeRate, 0, txid);
+		getTxHexMock.mockResolvedValue(fundTx.hex);
+		return { txId: Number(res.lastInsertRowid), txid, fee: details.fee, rate: details.feeRate, fundTx };
+	}
+
+	it('builds a higher-fee replacement: same inputs/recipients, replaces_txid set', async () => {
+		const { userId, multisigId } = seedMultisig('bump@example.com');
+		const orig = await seedBroadcast(userId, multisigId);
+		const { draft, details } = await bumpMultisigTransaction(userId, multisigId, orig.txId, 25);
+		expect(draft.status).toBe('draft');
+		expect(draft.replacesTxid).toBe(orig.txid);
+		expect(draft.recipient).toBe(RECIPIENT);
+		expect(draft.amount).toBe(50_000);
+		expect(details.fee).toBeGreaterThan(orig.fee);
+		// Exactly the original's single input, reproduced.
+		expect(details.inputs).toHaveLength(1);
+		expect(details.inputs[0].txid).toBe(orig.fundTx.id);
+	});
+
+	it('rejects a fee rate not higher than the original', async () => {
+		const { userId, multisigId } = seedMultisig('low@example.com');
+		const orig = await seedBroadcast(userId, multisigId);
+		await expect(
+			bumpMultisigTransaction(userId, multisigId, orig.txId, orig.rate)
+		).rejects.toThrow(BumpError);
+	});
+
+	it('refuses to bump a draft that was never broadcast', async () => {
+		const { userId, multisigId } = seedMultisig('draft@example.com');
+		const { txId } = await seedDraft(userId, multisigId);
+		await expect(bumpMultisigTransaction(userId, multisigId, txId, 25)).rejects.toMatchObject({
+			code: 'not_bumpable'
+		});
+	});
+
+	it('allows only one live replacement per original', async () => {
+		const { userId, multisigId } = seedMultisig('dup@example.com');
+		const orig = await seedBroadcast(userId, multisigId);
+		await bumpMultisigTransaction(userId, multisigId, orig.txId, 25);
+		await expect(bumpMultisigTransaction(userId, multisigId, orig.txId, 40)).rejects.toMatchObject({
+			code: 'already_replaced'
+		});
+	});
+
+	it('marks the original superseded once the replacement broadcasts', async () => {
+		const { userId, multisigId } = seedMultisig('sup@example.com');
+		const orig = await seedBroadcast(userId, multisigId);
+		const { draft } = await bumpMultisigTransaction(userId, multisigId, orig.txId, 25);
+		// Sign the replacement to quorum and broadcast it honestly.
+		const first = attachMultisigSignature(userId, multisigId, draft.id, signWith(draft.psbt, 0))!;
+		attachMultisigSignature(userId, multisigId, draft.id, signWith(first.transaction.psbt, 1));
+		broadcastMock.mockImplementation(async (rawHex: string) =>
+			Transaction.fromRaw(hexToBytes(rawHex), { allowUnknownInputs: true, disableScriptCheck: true }).id
+		);
+		await broadcastMultisigTransaction(userId, multisigId, draft.id);
+		expect(getMultisigTransaction(userId, multisigId, orig.txId)?.status).toBe('superseded');
 	});
 });
