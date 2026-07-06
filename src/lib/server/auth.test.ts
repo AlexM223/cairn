@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
 import type { Cookies } from '@sveltejs/kit';
 import { db } from './db';
 import {
 	registerUser,
 	setSessionCookie,
+	cookieSecure,
 	SESSION_COOKIE,
 	createSession,
 	getSessionUser,
@@ -424,5 +425,41 @@ describe('setSessionCookie', () => {
 				expires: expiresAt
 			});
 		}
+	});
+});
+
+// The request URL's protocol can LIE: adapter-node assumes https whenever
+// neither ORIGIN nor PROTOCOL_HEADER is configured, so a plain-HTTP deployment
+// behind Umbrel's app_proxy sees https request URLs while the browser is on
+// http://umbrel.local — and a Secure cookie there is silently dropped (login
+// 200s but the session never sticks). A declared plain-HTTP CAIRN_ORIGIN must
+// therefore veto the Secure flag.
+describe('cookieSecure', () => {
+	const ORIGINAL = process.env.CAIRN_ORIGIN;
+	afterEach(() => {
+		if (ORIGINAL === undefined) delete process.env.CAIRN_ORIGIN;
+		else process.env.CAIRN_ORIGIN = ORIGINAL;
+	});
+
+	it('declared http origin vetoes Secure even when the request URL claims https (Umbrel behind app_proxy)', () => {
+		process.env.CAIRN_ORIGIN = 'http://umbrel.local:3211';
+		expect(cookieSecure(new URL('https://umbrel.local:3211/login'))).toBe(false);
+	});
+
+	it('declared https origin keeps following the request protocol', () => {
+		process.env.CAIRN_ORIGIN = 'https://cairn.example.com';
+		expect(cookieSecure(new URL('https://cairn.example.com/login'))).toBe(true);
+		expect(cookieSecure(new URL('http://umbrel.local/login'))).toBe(false);
+	});
+
+	it('no declared origin: follows the request protocol', () => {
+		delete process.env.CAIRN_ORIGIN;
+		expect(cookieSecure(new URL('https://cairn.example.com/login'))).toBe(true);
+		expect(cookieSecure(new URL('http://umbrel.local/login'))).toBe(false);
+	});
+
+	it('malformed CAIRN_ORIGIN falls back to the request protocol', () => {
+		process.env.CAIRN_ORIGIN = 'not a url';
+		expect(cookieSecure(new URL('https://cairn.example.com/login'))).toBe(true);
 	});
 });

@@ -19,6 +19,7 @@ import {
 	verifyAuthenticationResponse
 } from '@simplewebauthn/server';
 import { notify } from './notifications';
+import { cookieSecure } from './auth';
 import { childLogger } from './logger';
 import type {
 	AuthenticatorTransportFuture,
@@ -168,7 +169,7 @@ function cookieOpts(event: RequestEvent) {
 		path: '/',
 		httpOnly: true,
 		sameSite: 'lax' as const,
-		secure: event.url.protocol === 'https:',
+		secure: cookieSecure(event.url),
 		maxAge: CEREMONY_TTL_S
 	};
 }
