@@ -11,6 +11,10 @@
 	import KeyHealthRow from '../_components/KeyHealthRow.svelte';
 	import AddressScriptDetails from '../_components/AddressScriptDetails.svelte';
 	import { KEY_CATEGORY_LABELS, DEVICE_LABELS, MULTISIG_SCRIPT_LABELS } from '../labels';
+	// Layout/styling shared with the single-sig detail page (namespaced under
+	// the root's .wallet-detail class); this page's style block keeps only what
+	// differs.
+	import '$lib/styles/wallet-detail.css';
 
 	let { data, form } = $props();
 
@@ -303,7 +307,7 @@
 	<title>{data.multisig.name} — Cairn</title>
 </svelte:head>
 
-<div class="detail fade-in">
+<div class="detail wallet-detail fade-in">
 	<a href="/wallets" class="back-link">
 		<Icon name="chevron-left" size={14} />
 		Wallets
@@ -987,66 +991,12 @@
 </div>
 
 <style>
-	.detail {
-		display: flex;
-		flex-direction: column;
-	}
-
-	.back-link {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		font-size: 12.5px;
-		color: var(--text-secondary);
-		margin-bottom: 14px;
-		align-self: flex-start;
-	}
-
-	.back-link:hover {
-		color: var(--accent);
-	}
-
-	.created-banner {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		padding: 10px 14px;
-		margin-bottom: 16px;
-		font-size: 13px;
-		color: var(--success);
-		background: var(--success-muted);
-		border: 1px solid rgba(107, 191, 107, 0.3);
-		border-radius: var(--radius-control);
-	}
-
-	.banner-dismiss {
-		display: flex;
-		align-items: center;
-		background: none;
-		border: none;
-		color: inherit;
-		cursor: pointer;
-		padding: 2px;
-		opacity: 0.7;
-	}
-
-	.banner-dismiss:hover,
-	.banner-dismiss:focus-visible {
-		opacity: 1;
-	}
+	/* Shared layout (header, grid, tabs, tables, labels) comes from
+	   $lib/styles/wallet-detail.css; only what differs from the single-sig
+	   detail page lives here. */
 
 	.head {
 		gap: 10px;
-		flex-wrap: wrap;
-	}
-
-	/* On narrow viewports the title owns the first row outright — otherwise
-	   the shrinkable title group absorbs all the squeeze from its rigid
-	   button siblings and the wallet name collapses to nothing. */
-	@media (max-width: 640px) {
-		.head .head-title {
-			flex-basis: 100%;
-		}
 	}
 
 	.quorum-badge {
@@ -1067,29 +1017,6 @@
 		flex-shrink: 0;
 	}
 
-	.watch-note {
-		display: inline-flex;
-		align-items: center;
-		gap: 5px;
-		margin: 6px 0 18px;
-	}
-
-	.delete-trigger:hover {
-		color: var(--error);
-		background: var(--error-muted);
-	}
-
-	.confirm-text {
-		font-size: 12.5px;
-		color: var(--error);
-	}
-
-	.delete-confirm {
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-	}
-
 	.delete-backup-warning {
 		display: flex;
 		align-items: flex-start;
@@ -1107,17 +1034,6 @@
 	.delete-backup-warning :global(svg) {
 		flex-shrink: 0;
 		margin-top: 1px;
-	}
-
-	.scan-error {
-		display: flex;
-		align-items: center;
-		gap: 14px;
-		color: var(--warning);
-	}
-
-	.scan-error .hint {
-		color: var(--text-muted);
 	}
 
 	/* --- keys --- */
@@ -1207,117 +1123,19 @@
 	/* --- top grid --- */
 
 	.top-grid {
-		display: grid;
-		grid-template-columns: 1fr 1.2fr;
-		gap: 14px;
 		margin-bottom: 14px;
-	}
-
-	.top-grid > :global(*) {
-		min-width: 0;
-	}
-
-	@media (max-width: 860px) {
-		.top-grid {
-			grid-template-columns: 1fr;
-		}
-	}
-
-	@media (max-width: 480px) {
-		.receive-body {
-			flex-direction: column;
-			align-items: center;
-		}
-	}
-
-	.balance-card {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-	}
-
-	.balance-line {
-		display: flex;
-		align-items: baseline;
-		gap: 8px;
-	}
-
-	.balance-btc {
-		font-size: 40px;
-	}
-
-	.balance-unit {
-		font-size: 14px;
-		color: var(--text-muted);
-	}
-
-	.receive-card {
-		display: flex;
-		flex-direction: column;
-		gap: 14px;
-	}
-
-	.receive-body {
-		display: flex;
-		gap: 16px;
-		align-items: flex-start;
-	}
-
-	.qr {
-		flex-shrink: 0;
-		border-radius: var(--radius-control);
-		background: var(--bg);
-		border: 1px solid var(--border-subtle);
-		padding: 6px;
-	}
-
-	.receive-meta {
-		display: flex;
-		flex-direction: column;
-		gap: 9px;
-		min-width: 0;
-		flex: 1;
-	}
-
-	.receive-addr {
-		font-size: 13.5px;
 	}
 
 	/* --- backup --- */
 
 	.backup-card {
-		display: flex;
-		flex-direction: column;
-		gap: 12px;
-		margin-bottom: 18px;
 		border-color: var(--accent-border);
-	}
-
-	.backup-copy {
-		font-size: 13px;
-		line-height: 1.65;
-		color: var(--text-secondary);
-	}
-
-	.backup-copy strong {
-		color: var(--text);
 	}
 
 	.backup-notes {
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
-		border-top: 1px solid var(--border-subtle);
-		padding-top: 10px;
-	}
-
-	.backup-notes .hint {
-		line-height: 1.6;
-	}
-
-	.backup-notes strong {
-		color: var(--text-secondary);
-		font-weight: 500;
 	}
 
 	.descriptor-line {
@@ -1326,164 +1144,6 @@
 		gap: 8px;
 		font-size: 12.5px;
 		min-width: 0;
-	}
-
-	/* --- tabs --- */
-
-	.tabs {
-		display: flex;
-		gap: 4px;
-		border-bottom: 1px solid var(--border-subtle);
-		margin-bottom: 14px;
-	}
-
-	.tab {
-		display: inline-flex;
-		align-items: center;
-		gap: 7px;
-		padding: 8px 14px;
-		background: none;
-		border: none;
-		border-bottom: 2px solid transparent;
-		margin-bottom: -1px;
-		color: var(--text-secondary);
-		font: inherit;
-		font-size: 13.5px;
-		font-weight: 500;
-		cursor: pointer;
-		transition: color 120ms var(--ease);
-	}
-
-	.tab:hover {
-		color: var(--text);
-	}
-
-	.tab.active {
-		color: var(--accent);
-		border-bottom-color: var(--accent);
-	}
-
-	.tab-count {
-		font-size: 11px;
-		padding: 1px 7px;
-		border-radius: 99px;
-		background: var(--surface-elevated);
-		color: var(--text-muted);
-		font-variant-numeric: tabular-nums;
-	}
-
-	.tab.active .tab-count {
-		background: var(--accent-muted);
-		color: var(--accent);
-	}
-
-	/* --- transactions --- */
-
-	.dir {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-		font-size: 12.5px;
-	}
-
-	.dir.in,
-	.delta.in {
-		color: var(--success);
-	}
-
-	.dir.out,
-	.delta.out {
-		color: var(--error);
-	}
-
-	.delta {
-		font-weight: 500;
-	}
-
-	/* --- addresses --- */
-
-	.chips {
-		display: flex;
-		gap: 8px;
-		padding: 14px 14px 4px;
-	}
-
-	.chip {
-		padding: 4px 12px;
-		border-radius: 99px;
-		border: 1px solid var(--border);
-		background: transparent;
-		color: var(--text-secondary);
-		font: inherit;
-		font-size: 12px;
-		font-weight: 500;
-		cursor: pointer;
-		font-variant-numeric: tabular-nums;
-		transition:
-			background 120ms var(--ease),
-			color 120ms var(--ease),
-			border-color 120ms var(--ease);
-	}
-
-	.chip:hover {
-		color: var(--text);
-	}
-
-	.chip.active {
-		background: var(--accent-muted);
-		border-color: transparent;
-		color: var(--accent);
-	}
-
-	.addr-cell {
-		max-width: 320px;
-	}
-
-	/* --- address labels (cairn-nbsx) --- */
-	.addr-label-cell {
-		max-width: 200px;
-	}
-
-	.addr-label-btn {
-		background: none;
-		border: none;
-		padding: 2px 4px;
-		margin: -2px -4px;
-		border-radius: var(--radius-chip);
-		font-family: var(--font-ui);
-		font-size: 12.5px;
-		text-align: left;
-		cursor: pointer;
-		max-width: 100%;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.addr-label-btn.has-label {
-		color: var(--text);
-	}
-
-	.addr-label-btn.has-label:hover {
-		background: var(--surface-elevated);
-	}
-
-	.addr-label-btn.add-label {
-		color: var(--text-muted);
-		opacity: 0;
-		transition: opacity 120ms var(--ease);
-	}
-
-	tr:hover .addr-label-btn.add-label,
-	.addr-label-btn.add-label:focus-visible {
-		opacity: 1;
-	}
-
-	.addr-label-input {
-		font-size: 12.5px;
-		padding: 3px 6px;
-		width: 100%;
-		max-width: 190px;
 	}
 
 	/* --- address transparency (cairn-h73) --- */
