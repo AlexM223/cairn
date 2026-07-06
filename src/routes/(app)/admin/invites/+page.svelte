@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import { copyToClipboard } from '$lib/clipboard';
 	import Icon from '$lib/components/Icon.svelte';
 	import { timeAgo } from '$lib/format';
 
@@ -8,7 +9,7 @@
 	let copied = $state<string | null>(null);
 
 	async function copy(code: string) {
-		await navigator.clipboard.writeText(code);
+		if (!(await copyToClipboard(code))) return;
 		copied = code;
 		setTimeout(() => (copied = null), 1500);
 	}

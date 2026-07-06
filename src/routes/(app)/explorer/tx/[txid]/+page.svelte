@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { copyToClipboard } from '$lib/clipboard';
 	import Icon from '$lib/components/Icon.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import Term from '$lib/components/Term.svelte';
@@ -68,7 +69,7 @@
 
 	async function copyRawHex() {
 		if (!data.rawHex) return;
-		await navigator.clipboard.writeText(data.rawHex);
+		if (!(await copyToClipboard(data.rawHex))) return;
 		hexCopied = true;
 		setTimeout(() => (hexCopied = false), 1500);
 	}

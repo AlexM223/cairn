@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Icon from './Icon.svelte';
+	import { copyToClipboard } from '$lib/clipboard';
 	import { truncateMiddle } from '$lib/format';
 
 	let {
@@ -19,7 +20,7 @@
 	let copied = $state(false);
 
 	async function copy() {
-		await navigator.clipboard.writeText(value);
+		if (!(await copyToClipboard(value))) return;
 		copied = true;
 		setTimeout(() => (copied = false), 1500);
 	}
