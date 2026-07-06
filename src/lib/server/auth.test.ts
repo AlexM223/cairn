@@ -1,8 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createHash } from 'node:crypto';
+import type { Cookies } from '@sveltejs/kit';
 import { db } from './db';
 import {
 	registerUser,
+	setSessionCookie,
+	SESSION_COOKIE,
 	createSession,
 	getSessionUser,
 	destroySession,
@@ -370,5 +373,56 @@ describe('sessions', () => {
 		destroyUserSessions(admin.id);
 		expect(getSessionUser(a.token)).toBeNull();
 		expect(getSessionUser(b.token)).toBeNull();
+	});
+});
+
+// cairn-jtfa — pins the fix for cairn-gy4: the session cookie's `secure` flag
+// deliberately FOLLOWS the request protocol rather than being hard-coded true.
+// A plain-HTTP LAN deployment (Umbrel on http://umbrel.local) must be able to
+// log in — an always-secure cookie is silently dropped there — while an HTTPS
+// deployment stays locked to HTTPS.
+describe('setSessionCookie', () => {
+	function captureCookies() {
+		const jar: { name: string; value: string; opts: Record<string, unknown> }[] = [];
+		const cookies = {
+			set: (name: string, value: string, opts: Record<string, unknown>) => {
+				jar.push({ name, value, opts });
+			}
+		} as unknown as Cookies;
+		return { cookies, jar };
+	}
+
+	const expiresAt = new Date(Date.now() + 60_000);
+
+	it('plain HTTP (Umbrel LAN) gets secure:false so the browser keeps the cookie', () => {
+		const { cookies, jar } = captureCookies();
+		setSessionCookie(cookies, 'tok-http', expiresAt, new URL('http://umbrel.local/login'));
+
+		expect(jar).toHaveLength(1);
+		expect(jar[0].name).toBe(SESSION_COOKIE);
+		expect(jar[0].value).toBe('tok-http');
+		expect(jar[0].opts.secure).toBe(false);
+	});
+
+	it('HTTPS gets secure:true', () => {
+		const { cookies, jar } = captureCookies();
+		setSessionCookie(cookies, 'tok-https', expiresAt, new URL('https://cairn.example.com/login'));
+
+		expect(jar).toHaveLength(1);
+		expect(jar[0].name).toBe(SESSION_COOKIE);
+		expect(jar[0].opts.secure).toBe(true);
+	});
+
+	it('always sets the hardening basics regardless of protocol', () => {
+		for (const url of ['http://umbrel.local/login', 'https://cairn.example.com/login']) {
+			const { cookies, jar } = captureCookies();
+			setSessionCookie(cookies, 'tok', expiresAt, new URL(url));
+			expect(jar[0].opts).toMatchObject({
+				httpOnly: true,
+				path: '/',
+				sameSite: 'lax',
+				expires: expiresAt
+			});
+		}
 	});
 });

@@ -205,6 +205,16 @@ const REDACT_KEYS = [
 ];
 
 /**
+ * The exact redact options handed to pino below — exported so tests can build a
+ * capturing logger with the SAME configuration and pin the redaction behavior
+ * (cairn-5tp3). Covers each key at the top level and one nesting down.
+ */
+export const REDACT_OPTIONS = {
+	paths: REDACT_KEYS.flatMap((k) => [k, `*.${k}`]),
+	censor: '[redacted]'
+};
+
+/**
  * The base logger. Prefer {@link childLogger} to tag a subsystem, and always
  * pass structured context as the first arg:
  *   logger.error({ err, walletId }, 'scan failed')
@@ -223,10 +233,7 @@ export const logger = pino(
 		// it. Covers common secret-bearing keys at the top level and one nesting
 		// down (e.g. { config: { pass } }, { smtp: { accessToken } }). Values are
 		// replaced with [redacted]; `err` is intentionally NOT redacted.
-		redact: {
-			paths: REDACT_KEYS.flatMap((k) => [k, `*.${k}`]),
-			censor: '[redacted]'
-		}
+		redact: REDACT_OPTIONS
 	},
 	pino.multistream(buildStreams())
 );
