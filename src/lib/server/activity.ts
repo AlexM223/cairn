@@ -265,6 +265,14 @@ export interface AdminActivityFilters {
 	search?: string;
 	limit?: number;
 	offset?: number;
+	/**
+	 * Include each event's raw `detail` JSON (full txids, wallet ids, ...).
+	 * OFF by default (cairn-o1dp.5): the admin UI only renders the message, and
+	 * the unfiltered detail stream is more cross-user visibility than any admin
+	 * needs by default on a multi-admin instance. Pass true (API:
+	 * ?includeDetail=true) for a genuine support/debugging session.
+	 */
+	includeDetail?: boolean;
 }
 
 /**
@@ -321,6 +329,8 @@ export function listAllActivity(filters: AdminActivityFilters = {}): {
 
 	const events = rows.map((r) => ({
 		...mapRow(r),
+		// The raw detail payload is opt-in only — see AdminActivityFilters.
+		...(filters.includeDetail ? {} : { detail: null }),
 		userId: r.user_id,
 		userEmail: r.user_email,
 		userName: r.user_name

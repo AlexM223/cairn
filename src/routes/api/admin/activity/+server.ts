@@ -19,6 +19,9 @@ export const GET: RequestHandler = (event) => {
 	if (p.get('search')) filters.search = p.get('search')!;
 	if (p.get('limit')) filters.limit = Number(p.get('limit'));
 	if (p.get('offset')) filters.offset = Number(p.get('offset'));
+	// Raw event detail is opt-in (cairn-o1dp.5) — the UI never renders it, so the
+	// default response matches what the page shows.
+	if (p.get('includeDetail') === 'true') filters.includeDetail = true;
 
 	return json(listAllActivity(filters));
 };

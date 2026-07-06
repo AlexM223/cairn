@@ -88,6 +88,27 @@ describe('activity user feed vs admin log split', () => {
 		expect(blockRow?.userId).toBeNull();
 	});
 
+	it('admin log withholds raw detail by default; includeDetail restores it (cairn-o1dp.5)', () => {
+		const alice = makeUser('alice@example.com');
+		clearEvents();
+		recordActivity({
+			type: 'broadcast',
+			userId: alice.id,
+			message: 'Transaction sent',
+			detail: { txid: 'a'.repeat(64), multisigId: 7 }
+		});
+
+		// Default shape matches what the admin UI renders: message only, no detail.
+		const dflt = listAllActivity();
+		expect(dflt.events[0].message).toBe('Transaction sent');
+		expect(dflt.events[0].detail).toBeNull();
+		expect(JSON.stringify(dflt.events)).not.toContain('a'.repeat(64));
+
+		// Explicit support/debugging opt-in restores the full payload.
+		const full = listAllActivity({ includeDetail: true });
+		expect(full.events[0].detail).toEqual({ txid: 'a'.repeat(64), multisigId: 7 });
+	});
+
 	it('admin log filters by type, level, user, and message search', () => {
 		const alice = makeUser('alice@example.com');
 		const bob = makeUser('bob@example.com');
