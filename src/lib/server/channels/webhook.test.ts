@@ -230,7 +230,12 @@ describe('isBlockedAddress ranges', () => {
 			'fd12::1',
 			'fe80::1',
 			'::ffff:127.0.0.1',
-			'::ffff:10.0.0.1'
+			'::ffff:10.0.0.1',
+			// Compressed-hex IPv4-mapped forms — a naive dotted-quad regex misses
+			// these, letting ::ffff:7f00:1 (127.0.0.1) through (cairn-7bsc).
+			'::ffff:7f00:1', // 127.0.0.1
+			'::ffff:0a00:1', // 10.0.0.1
+			'::ffff:a9fe:a9fe' // 169.254.169.254 cloud metadata
 		]) {
 			expect(_internals.isBlockedAddress(ip), `${ip} should be blocked`).toBe(true);
 		}

@@ -21,6 +21,7 @@
 import { db } from '../db';
 import { childLogger } from '../logger';
 import { getSetting } from '../settings';
+import { safeFetch, type SafeResponse } from './ssrf';
 import type {
 	ChannelSendResult,
 	NotificationChannelPlugin,
@@ -100,14 +101,22 @@ async function publish(
 	};
 	if (payload.link) body.click = payload.link;
 
-	let res: Response;
+	// safeFetch enforces the SSRF policy on the user-supplied `server` URL and
+	// pins the socket to a validated IP (cairn-iiuh, cairn-335b): a user could
+	// otherwise aim ntfy at cloud metadata / LAN / localhost. An SSRF rejection
+	// throws with `.ssrf` and is not retryable.
+	let res: SafeResponse;
 	try {
-		res = await fetch(normalizeServer(cfg.server), {
+		res = await safeFetch(normalizeServer(cfg.server), {
 			method: 'POST',
 			headers,
 			body: JSON.stringify(body)
 		});
 	} catch (err) {
+		if ((err as { ssrf?: boolean }).ssrf) {
+			log.warn({ reason: (err as Error).message, topic: cfg.topic }, 'ntfy target rejected by SSRF guard');
+			return { ok: false, error: (err as Error).message, retryable: false };
+		}
 		// Network-level failure — the user's own ntfy box being briefly down is
 		// exactly the transient case retries exist for.
 		log.warn({ err, topic: cfg.topic }, 'ntfy request failed at network level');

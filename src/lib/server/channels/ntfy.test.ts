@@ -2,6 +2,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { db } from '../db';
 import { registerUser } from '../auth';
 import { setSetting } from '../settings';
+
+// Mock DNS so the SSRF gate (checkTargetUrl in ./ssrf) is deterministic and
+// never does a real lookup for the example hostnames used below.
+const lookupMock = vi.fn();
+vi.mock('node:dns/promises', () => ({
+	lookup: (...args: unknown[]) => lookupMock(...args)
+}));
+
 import ntfyChannel from './ntfy';
 import type { NotificationPayload } from '../notifyTypes';
 
@@ -42,6 +50,8 @@ function configureUser(cfg: Record<string, unknown>): void {
 beforeEach(() => {
 	wipe();
 	vi.clearAllMocks();
+	// Default DNS: a public address so hostname targets pass the SSRF gate.
+	lookupMock.mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
 	vi.stubGlobal('fetch', fetchMock);
 	setSetting('registration_mode', 'open');
 	userId = registerUser({

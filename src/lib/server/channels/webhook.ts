@@ -58,12 +58,16 @@
 //   fixes a URL pointed at 127.0.0.1.
 
 import { createHmac } from 'node:crypto';
-import { lookup } from 'node:dns/promises';
-import { isIP } from 'node:net';
 
 import { db } from '../db';
 import { childLogger } from '../logger';
-import { getSetting } from '../settings';
+import {
+	checkTargetUrl,
+	isBlockedAddress,
+	isBlockedIPv4,
+	safeFetch,
+	type SafeResponse
+} from './ssrf';
 import type {
 	ChannelSendResult,
 	NotificationChannelPlugin,
@@ -119,101 +123,6 @@ function readUserConfig(userId: number): WebhookUserConfig | null {
 	}
 }
 
-/**
- * Is `ip` (a numeric IPv4 or IPv6 literal) inside a blocked private/loopback/
- * link-local range? IPv4-mapped IPv6 (::ffff:a.b.c.d) is unwrapped first.
- */
-function isBlockedAddress(ip: string): boolean {
-	const family = isIP(ip);
-	if (family === 4) return isBlockedIPv4(ip);
-	if (family === 6) {
-		const lower = ip.toLowerCase();
-		// IPv4-mapped IPv6 — unwrap and re-check as IPv4.
-		const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-		if (mapped) return isBlockedIPv4(mapped[1]);
-		if (lower === '::1' || lower === '::') return true; // loopback / unspecified
-		// fc00::/7 (unique-local: fc.. and fd..) and fe80::/10 (link-local).
-		if (/^f[cd]/.test(lower)) return true;
-		if (/^fe[89ab]/.test(lower)) return true;
-		return false;
-	}
-	// Not a recognizable IP literal — treat as blocked (fail closed).
-	return true;
-}
-
-function isBlockedIPv4(ip: string): boolean {
-	const parts = ip.split('.').map((p) => Number(p));
-	if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
-		return true; // malformed — fail closed
-	}
-	const [a, b] = parts;
-	if (a === 127) return true; // 127.0.0.0/8 loopback
-	if (a === 10) return true; // 10.0.0.0/8 private
-	if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12 private
-	if (a === 192 && b === 168) return true; // 192.168.0.0/16 private
-	if (a === 169 && b === 254) return true; // 169.254.0.0/16 link-local (cloud metadata)
-	if (a === 0) return true; // 0.0.0.0/8 "this host"
-	return false;
-}
-
-/** Result of the SSRF gate: either an allowed parsed URL, or a rejection reason. */
-type UrlCheck = { ok: true; url: URL } | { ok: false; error: string };
-
-/**
- * Validate a webhook target URL against the SSRF policy. Rejects non-http(s)
- * schemes always; rejects resolution to a blocked IP range unless the admin
- * escape hatch is on. Performs DNS resolution (async) for hostnames.
- */
-async function checkTargetUrl(rawUrl: string): Promise<UrlCheck> {
-	let url: URL;
-	try {
-		url = new URL(rawUrl);
-	} catch {
-		return { ok: false, error: 'Invalid URL' };
-	}
-
-	if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-		return { ok: false, error: `Unsupported URL scheme: ${url.protocol}` };
-	}
-
-	const allowPrivate = getSetting('webhook_allow_private_targets') === 'true';
-	if (allowPrivate) return { ok: true, url };
-
-	const host = url.hostname;
-
-	// A literal IP host is checked directly (no DNS). URL wraps IPv6 in brackets.
-	const literal = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
-	if (isIP(literal)) {
-		if (isBlockedAddress(literal)) {
-			return { ok: false, error: `Blocked private/loopback address: ${literal}` };
-		}
-		return { ok: true, url };
-	}
-
-	// Hostname — resolve to every address and reject if ANY is blocked. Checking
-	// all results (not just the first) avoids a DNS-rebinding-style bypass where
-	// one A record is public and another is internal.
-	let addresses: { address: string }[];
-	try {
-		addresses = await lookup(host, { all: true });
-	} catch (e) {
-		log.warn({ err: e, host }, 'DNS resolution failed for webhook target');
-		return { ok: false, error: `Could not resolve host: ${host}` };
-	}
-	if (addresses.length === 0) {
-		return { ok: false, error: `Could not resolve host: ${host}` };
-	}
-	for (const { address } of addresses) {
-		if (isBlockedAddress(address)) {
-			return {
-				ok: false,
-				error: `Blocked private/loopback address: ${address} (resolved from ${host})`
-			};
-		}
-	}
-	return { ok: true, url };
-}
-
 /** Build the exact JSON body we POST for a given payload/type. */
 function buildBody(payload: NotificationPayload, typeOverride?: string): WebhookBody {
 	return {
@@ -235,13 +144,6 @@ async function postWebhook(
 	config: WebhookUserConfig,
 	body: WebhookBody
 ): Promise<ChannelSendResult> {
-	const check = await checkTargetUrl(config.url);
-	if (!check.ok) {
-		// SSRF / bad-scheme / unresolvable — none of these are fixed by retrying.
-		log.warn({ reason: check.error }, 'webhook target rejected');
-		return { ok: false, error: check.error, retryable: false };
-	}
-
 	// Serialize ONCE and sign those exact bytes, so the HMAC matches what we send.
 	const rawBody = JSON.stringify(body);
 	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -250,16 +152,22 @@ async function postWebhook(
 		headers['X-Cairn-Signature'] = `sha256=${signature}`;
 	}
 
-	let response: Response;
+	// safeFetch runs the SSRF gate and pins the socket to a validated IP (no
+	// rebinding window). An SSRF/bad-scheme/unresolvable rejection throws with
+	// `.ssrf` and is never fixed by retrying; any other throw is transport-level.
+	let response: SafeResponse;
 	try {
-		response = await fetch(check.url.toString(), {
+		response = await safeFetch(config.url, {
 			method: 'POST',
 			headers,
 			body: rawBody,
-			signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-			redirect: 'manual' // don't let a 3xx bounce us past the SSRF check
+			timeoutMs: REQUEST_TIMEOUT_MS
 		});
 	} catch (e) {
+		if ((e as { ssrf?: boolean }).ssrf) {
+			log.warn({ reason: (e as Error).message }, 'webhook target rejected');
+			return { ok: false, error: (e as Error).message, retryable: false };
+		}
 		// Network error / timeout — transient, worth a retry.
 		log.warn({ err: e }, 'webhook POST failed at the transport level');
 		return { ok: false, error: `Request failed: ${(e as Error).message}`, retryable: true };
