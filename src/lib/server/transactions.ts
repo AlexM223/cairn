@@ -15,7 +15,6 @@ import {
 	PsbtMismatchError,
 	DEFAULT_ORIGIN_PATH,
 	PsbtError,
-	MAX_FEE_RATE,
 	estimateTxVsize,
 	type ConstructedPsbt,
 	type SpendableUtxo,
@@ -23,14 +22,21 @@ import {
 } from './bitcoin/psbt';
 import { annotateCoinbase } from './bitcoin/coinbaseScan';
 import { parseXpub, deriveAddress, addressToScripthash } from './bitcoin/xpub';
-import {
-	checkUnconfirmedChainDepth,
-	checkSelectedInputsChainDepth,
-	type ChainDepthWarning
-} from './chainDepth';
+import { checkSelectedInputsChainDepth, type ChainDepthWarning } from './chainDepth';
 import { broadcastPackage } from './packageRelay';
+import {
+	BumpError,
+	CpfpError,
+	executeCpfpDraft,
+	executeRbfBump
+} from './feeBump';
 import { childLogger } from './logger';
 import type { ScriptType } from '$lib/types';
+
+// The shared fee-bump engine (RBF + CPFP rules, error classes, package fee
+// math) lives in feeBump.ts; re-exported so existing importers — the bump/cpfp
+// routes and multisigTransactions.ts — keep working unchanged.
+export { BumpError, CpfpError, cpfpChildFee } from './feeBump';
 
 const log = childLogger('transactions');
 
@@ -681,69 +687,11 @@ export async function broadcastTransaction(
 }
 
 // ------------------------------------------------------------ RBF fee bumping
-
-/** BIP-125 signaling threshold: any input sequence below this opts in to RBF. */
-const RBF_SIGNAL_MAX_SEQUENCE = 0xfffffffe;
-
-export class BumpError extends Error {
-	constructor(
-		message: string,
-		public readonly code:
-			| 'not_found'
-			| 'not_bumpable'
-			| 'confirmed'
-			| 'superseded'
-			| 'already_replaced'
-			| 'not_rbf'
-			| 'no_change'
-			| 'fee_too_low'
-	) {
-		super(message);
-		this.name = 'BumpError';
-	}
-}
-
-export class CpfpError extends Error {
-	constructor(
-		message: string,
-		public readonly code:
-			| 'not_found'
-			| 'no_unconfirmed_output'
-			| 'already_confirmed'
-			| 'parent_unavailable'
-			| 'parent_fee_unknown'
-			| 'not_needed'
-			| 'coin_too_small'
-	) {
-		super(message);
-		this.name = 'CpfpError';
-	}
-}
-
-/**
- * The CPFP fee math (docs/CPFP-UNCONFIRMED-PLAN.md §3). Given the stuck parent's
- * own vsize + fee and the child's estimated vsize, the child must pay enough
- * that the whole PACKAGE (parent + child) averages `targetRate`:
- *
- *   child_fee = ceil(targetRate * (parent_vsize + child_vsize)) - parent_fee
- *
- * Returns the child fee in sats, floored to the child's own minimum-relay
- * requirement (1 sat/vB over its own size). A result <= 0 means the parent
- * already meets the target on its own — the caller surfaces "not needed".
- */
-export function cpfpChildFee(
-	targetRate: number,
-	parentVsize: number,
-	parentFee: number,
-	childVsize: number
-): number {
-	const packageFee = Math.ceil(targetRate * (parentVsize + childVsize));
-	const childFee = packageFee - parentFee;
-	// The child must independently clear the 1 sat/vB relay floor even if the
-	// formula returns something tiny (rare, but possible when the parent already
-	// paid most of the way there).
-	return Math.max(childFee, childVsize);
-}
+//
+// The rules, fee math, and persistence shape for RBF and CPFP live in the
+// shared feeBump.ts engine (they are identical for single-sig and multisig);
+// these two functions supply only what is wallet-specific — access, input
+// recovery, change derivation, and constructPsbt.
 
 /**
  * Build a child-pays-for-parent (CPFP) transaction that accelerates a stuck,
@@ -769,139 +717,51 @@ export async function buildCpfpDraft(
 }> {
 	const wallet = ownedWallet(userId, walletId);
 	if (!wallet) throw new CpfpError('Wallet not found.', 'not_found');
-
-	// Cap the target at the same ceiling constructPsbt enforces — the CPFP builder
-	// is a caller of it, not a bypass of its validation.
-	const targetRate = Math.min(
-		Number.isFinite(targetFeeRate) ? targetFeeRate : 0,
-		MAX_FEE_RATE
-	);
-	if (targetRate < 1) {
-		throw new CpfpError('The target fee rate must be at least 1 sat/vB.', 'not_needed');
-	}
-
-	// The qualifying coins: this wallet's own UNCONFIRMED outputs on the parent.
 	const scriptType = wallet.script_type as ScriptType;
-	const qualifying = (await getWalletUtxos(wallet.xpub)).filter(
-		(u) => u.txid.toLowerCase() === parentTxid.toLowerCase() && u.height <= 0
-	);
-	if (qualifying.length === 0) {
-		throw new CpfpError(
-			'This wallet has no unconfirmed output on that transaction to bump — CPFP needs a coin you can spend from the stuck transaction.',
-			'no_unconfirmed_output'
-		);
-	}
 
-	// The parent's real vsize + fee (esplora provides both — no mempool.space-only
-	// dependency). A confirmed parent has nothing left to accelerate.
-	let parentVsize: number;
-	let parentFee: number;
-	try {
-		const parent = await getChain().getTx(parentTxid);
-		if (parent.confirmed) {
-			throw new CpfpError('That transaction has already confirmed — no CPFP needed.', 'already_confirmed');
-		}
-		if (parent.fee == null) {
-			throw new CpfpError(
-				"The parent transaction's fee is unknown, so the CPFP fee can't be computed.",
-				'parent_fee_unknown'
-			);
-		}
-		parentVsize = parent.vsize;
-		parentFee = parent.fee;
-	} catch (e) {
-		if (e instanceof CpfpError) throw e;
-		throw new CpfpError(
-			'The parent transaction could not be looked up right now — try again in a moment.',
-			'parent_unavailable'
-		);
-	}
-
-	// Child = the qualifying coins swept to the wallet's own change address.
-	const parsed = parseXpub(wallet.xpub);
-	const changeIndex = await findNextUnusedIndex(wallet.xpub, 1);
-	const changeAddress = deriveAddress(parsed, 1, changeIndex).address;
-	const childVsize = estimateTxVsize(scriptType, qualifying.length, [changeAddress]);
-
-	const childFee = cpfpChildFee(targetRate, parentVsize, parentFee, childVsize);
-	// A non-positive raw child fee means the parent already meets the target.
-	if (Math.ceil(targetRate * (parentVsize + childVsize)) - parentFee <= 0) {
-		throw new CpfpError(
-			`That transaction already pays about ${Math.round(parentFee / parentVsize)} sat/vB, which meets your ${Math.round(targetRate)} sat/vB target — no CPFP is needed.`,
-			'not_needed'
-		);
-	}
-
-	// The child's OWN rate (fee over its own size) is what constructPsbt prices
-	// with; clamp to [1, MAX_FEE_RATE]. Because estimateTxVsize uses the same
-	// tables constructPsbt does, the swept tx's vsize matches childVsize, so the
-	// fee it computes lands on childFee.
-	const childRate = Math.min(Math.max(childFee / childVsize, 1), MAX_FEE_RATE);
-
-	const origin = wallet.master_fingerprint
-		? {
-				fingerprint: wallet.master_fingerprint,
-				path: wallet.derivation_path ?? DEFAULT_ORIGIN_PATH[scriptType]
-			}
-		: null;
-
-	let details: ConstructedPsbt;
-	try {
-		details = await constructPsbt({
-			xpub: wallet.xpub,
-			utxos: qualifying,
-			// Send-max sweeps exactly the coin-controlled set (the qualifying coins)
-			// back to our own address, minus the CPFP fee.
-			recipients: [{ address: changeAddress, amount: 'max' }],
-			feeRate: childRate,
-			changeAddress,
-			changeIndex,
-			origin,
-			fetchRawTx: (txid) => getChain().getTxHex(txid),
-			onlyUtxos: qualifying.map((u) => ({ txid: u.txid, vout: u.vout }))
-		});
-	} catch (e) {
-		// The commonest failure: the qualifying coin can't cover the CPFP fee plus
-		// a non-dust output — the plan's "this coin isn't big enough" outcome.
-		if (e instanceof PsbtError && (e.code === 'insufficient_funds' || e.code === 'no_utxos')) {
-			throw new CpfpError(
-				'That unconfirmed coin is too small to pay the fee needed to accelerate the parent at this rate — lower the target rate or wait for a confirmation.',
-				'coin_too_small'
-			);
-		}
-		throw e;
-	}
-
-	const res = db
-		.prepare(
-			`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate, change_index, recipients)
-			 VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?)`
-		)
-		.run(
-			walletId,
-			details.psbtBase64,
-			details.recipient,
-			details.amount,
-			details.fee,
-			details.feeRate,
-			details.change?.index ?? null,
-			recipientsJson(details.recipients)
-		);
-
-	const draft = getTransaction(userId, walletId, Number(res.lastInsertRowid));
-	if (!draft) throw new PsbtError('CPFP draft could not be saved.', 'construction_failed');
-
-	// A CPFP child always spends the unconfirmed parent, so its chain is exactly
-	// what §5 wants checked — warn (never block) if the parent's ancestor chain is
-	// near the limit, which would make even this fee-bumping child likely to be
-	// rejected. Degrades silently without the v1 CPFP endpoint.
-	const chainDepthWarning = await checkUnconfirmedChainDepth([parentTxid]);
-	return {
-		draft,
-		details,
-		cpfp: { parentVsize, parentFee, childFee: details.fee, targetRate },
-		chainDepthWarning
-	};
+	return executeCpfpDraft<SavedTransaction, ConstructedPsbt>({
+		spec: { table: 'transactions', ownerColumn: 'wallet_id' },
+		ownerId: walletId,
+		parentTxid,
+		targetFeeRate,
+		walletNoun: 'wallet',
+		getUtxos: () => getWalletUtxos(wallet.xpub),
+		prepareChild: async (qualifying) => {
+			const parsed = parseXpub(wallet.xpub);
+			const changeIndex = await findNextUnusedIndex(wallet.xpub, 1);
+			const changeAddress = deriveAddress(parsed, 1, changeIndex).address;
+			return {
+				changeAddress,
+				changeIndex,
+				childVsize: estimateTxVsize(scriptType, qualifying.length, [changeAddress])
+			};
+		},
+		buildChild: ({ qualifying, changeAddress, changeIndex, childRate }) => {
+			const origin = wallet.master_fingerprint
+				? {
+						fingerprint: wallet.master_fingerprint,
+						path: wallet.derivation_path ?? DEFAULT_ORIGIN_PATH[scriptType]
+					}
+				: null;
+			return constructPsbt({
+				xpub: wallet.xpub,
+				utxos: qualifying,
+				// Send-max sweeps exactly the coin-controlled set (the qualifying coins)
+				// back to our own address, minus the CPFP fee.
+				recipients: [{ address: changeAddress, amount: 'max' }],
+				feeRate: childRate,
+				changeAddress,
+				changeIndex,
+				origin,
+				fetchRawTx: (txid) => getChain().getTxHex(txid),
+				onlyUtxos: qualifying.map((u) => ({ txid: u.txid, vout: u.vout }))
+			});
+		},
+		isCoinTooSmall: (e) =>
+			e instanceof PsbtError && (e.code === 'insufficient_funds' || e.code === 'no_utxos'),
+		reloadDraft: (rowId) => getTransaction(userId, walletId, rowId),
+		draftSaveError: () => new PsbtError('CPFP draft could not be saved.', 'construction_failed')
+	});
 }
 
 /**
@@ -996,164 +856,57 @@ export async function bumpTransaction(
 	const tx = wallet ? getTransaction(userId, walletId, txId) : null;
 	if (!wallet || !tx) throw new BumpError('Transaction not found.', 'not_found');
 
-	if (tx.status === 'superseded') {
-		throw new BumpError(
-			'This transaction was already replaced by a fee bump.',
-			'superseded'
-		);
-	}
-	if (tx.status !== 'completed' || !tx.txid) {
-		throw new BumpError(
-			'Only broadcast transactions can be fee-bumped — this one has not been sent yet.',
-			'not_bumpable'
-		);
-	}
+	return executeRbfBump<SavedTransaction, ConstructedPsbt>({
+		spec: { table: 'transactions', ownerColumn: 'wallet_id' },
+		ownerId: walletId,
+		tx,
+		newFeeRate,
+		buildReplacement: (stored, changeIndex) => {
+			const { utxos, derivationKnown } = recoverPsbtInputs(stored);
 
-	// One live replacement per original: a second concurrent bump would produce
-	// two drafts fighting over the same inputs.
-	const existing = db
-		.prepare('SELECT id, status FROM transactions WHERE wallet_id = ? AND replaces_txid = ?')
-		.get(walletId, tx.txid) as { id: number; status: string } | undefined;
-	if (existing) {
-		throw new BumpError(
-			existing.status === 'completed'
-				? 'This transaction was already replaced by a fee bump.'
-				: 'A replacement for this transaction is already in progress — finish or discard it first.',
-			'already_replaced'
-		);
-	}
+			const scriptType = wallet.script_type as ScriptType;
+			// Rebuilding a wrapped-segwit spend needs each input's redeem script, which
+			// is derived from the exact child key — unrecoverable without paths.
+			if (!derivationKnown && scriptType === 'p2sh-p2wpkh') {
+				throw new BumpError(
+					'The stored transaction is missing the derivation data needed to rebuild it.',
+					'not_bumpable'
+				);
+			}
 
-	// A confirmed transaction is final; there is no fee left to bump. A failed
-	// lookup (mempool eviction, backend outage) does NOT block the bump — a
-	// replacement draft is harmless either way, and the network will simply
-	// treat it as a fresh transaction if the original is truly gone.
-	let confirmed = false;
-	try {
-		confirmed = (await getChain().getTx(tx.txid)).confirmed;
-	} catch {
-		confirmed = false;
-	}
-	if (confirmed) {
-		throw new BumpError(
-			'This transaction has already confirmed — there is no fee to bump.',
-			'confirmed'
-		);
-	}
+			// Same change destination as the original: the row stores the change-chain
+			// index, and the address re-derives deterministically from the xpub.
+			const parsed = parseXpub(wallet.xpub);
+			const changeAddress = deriveAddress(parsed, 1, changeIndex).address;
 
-	let stored: Transaction;
-	try {
-		stored = Transaction.fromPSBT(base64.decode(tx.psbt));
-	} catch {
-		throw new BumpError(
-			'The stored transaction could not be read, so it cannot be reconstructed.',
-			'not_bumpable'
-		);
-	}
+			// Embed derivation metadata only when it is both known for the wallet AND
+			// was recoverable from the original's inputs (see recoverPsbtInputs).
+			const origin =
+				derivationKnown && wallet.master_fingerprint
+					? {
+							fingerprint: wallet.master_fingerprint,
+							path: wallet.derivation_path ?? DEFAULT_ORIGIN_PATH[scriptType]
+						}
+					: null;
 
-	// BIP-125 rule 1: every input must signal replaceability. Transactions
-	// built before Cairn set RBF_SEQUENCE on all inputs may not — the network
-	// would silently ignore a replacement, so refuse up front.
-	for (let i = 0; i < stored.inputsLength; i++) {
-		if ((stored.getInput(i).sequence ?? 0xffffffff) >= RBF_SIGNAL_MAX_SEQUENCE) {
-			throw new BumpError(
-				"This transaction doesn't signal RBF (replace-by-fee), so the network won't accept a replacement — it can't be fee-bumped.",
-				'not_rbf'
-			);
-		}
-	}
-
-	// The fee increase comes out of change; a changeless original has nowhere
-	// to take it from without shortchanging the recipient.
-	if (tx.changeIndex === null) {
-		throw new BumpError(
-			'This transaction has no change output to absorb a higher fee, so it cannot be bumped.',
-			'no_change'
-		);
-	}
-
-	if (!Number.isFinite(newFeeRate) || newFeeRate <= tx.feeRate) {
-		throw new BumpError(
-			`The new fee rate must be higher than the original's effective ${tx.feeRate} sat/vB.`,
-			'fee_too_low'
-		);
-	}
-
-	const { utxos, derivationKnown } = recoverPsbtInputs(stored);
-
-	const scriptType = wallet.script_type as ScriptType;
-	// Rebuilding a wrapped-segwit spend needs each input's redeem script, which
-	// is derived from the exact child key — unrecoverable without paths.
-	if (!derivationKnown && scriptType === 'p2sh-p2wpkh') {
-		throw new BumpError(
-			'The stored transaction is missing the derivation data needed to rebuild it.',
-			'not_bumpable'
-		);
-	}
-
-	// Same change destination as the original: the row stores the change-chain
-	// index, and the address re-derives deterministically from the xpub.
-	const parsed = parseXpub(wallet.xpub);
-	const changeAddress = deriveAddress(parsed, 1, tx.changeIndex).address;
-
-	// Embed derivation metadata only when it is both known for the wallet AND
-	// was recoverable from the original's inputs (see recoverPsbtInputs).
-	const origin =
-		derivationKnown && wallet.master_fingerprint
-			? {
-					fingerprint: wallet.master_fingerprint,
-					path: wallet.derivation_path ?? DEFAULT_ORIGIN_PATH[scriptType]
-				}
-			: null;
-
-	// Every recipient output is reproduced exactly — for batch rows the stored
-	// per-recipient breakdown drives this, so a bumped batch keeps paying all N
-	// destinations; the fee increase still comes solely out of change.
-	const details = await constructPsbt({
-		xpub: wallet.xpub,
-		utxos,
-		recipients: tx.recipients,
-		feeRate: newFeeRate,
-		changeAddress,
-		changeIndex: tx.changeIndex,
-		origin,
-		fetchRawTx: (txid) => getChain().getTxHex(txid),
-		exactInputs: true
+			// Every recipient output is reproduced exactly — for batch rows the stored
+			// per-recipient breakdown drives this, so a bumped batch keeps paying all N
+			// destinations; the fee increase still comes solely out of change.
+			return constructPsbt({
+				xpub: wallet.xpub,
+				utxos,
+				recipients: tx.recipients,
+				feeRate: newFeeRate,
+				changeAddress,
+				changeIndex,
+				origin,
+				fetchRawTx: (txid) => getChain().getTxHex(txid),
+				exactInputs: true
+			});
+		},
+		reloadDraft: (rowId) => getTransaction(userId, walletId, rowId),
+		draftSaveError: () => new PsbtError('Draft could not be saved.', 'construction_failed')
 	});
-
-	// BIP-125 rule 4: the replacement must pay for its own relay — at least the
-	// original's fee plus (replacement vsize × 1 sat/vB), 1 sat/vB being the
-	// default incremental relay fee. Our vsize is the same estimator used for
-	// fee pricing, which slightly over-approximates real size — erring toward a
-	// marginally higher minimum, never an under-paying replacement.
-	const minFee = tx.fee + details.vsize;
-	if (details.fee < minFee) {
-		const minRate = Math.ceil(minFee / details.vsize);
-		throw new BumpError(
-			`The replacement must pay at least ${minFee} sats (the original fee plus 1 sat/vB for its own size) — try ${minRate} sat/vB or more.`,
-			'fee_too_low'
-		);
-	}
-
-	const res = db
-		.prepare(
-			`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate, change_index, replaces_txid, recipients)
-			 VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?)`
-		)
-		.run(
-			walletId,
-			details.psbtBase64,
-			details.recipient,
-			details.amount,
-			details.fee,
-			details.feeRate,
-			details.change?.index ?? null,
-			tx.txid,
-			recipientsJson(details.recipients)
-		);
-
-	const draft = getTransaction(userId, walletId, Number(res.lastInsertRowid));
-	if (!draft) throw new PsbtError('Draft could not be saved.', 'construction_failed');
-	return { draft, details };
 }
 
 export function deleteTransaction(userId: number, walletId: number, txId: number): boolean {

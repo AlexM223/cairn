@@ -39,30 +39,20 @@ import {
 	type ConstructedMultisigPsbt,
 	type MultisigSigningProgress
 } from './bitcoin/multisigPsbt';
-import { PsbtError, MAX_FEE_RATE, type SpendableUtxo } from './bitcoin/psbt';
+import { PsbtError, type SpendableUtxo } from './bitcoin/psbt';
 import {
 	normalizePsbt,
 	InvalidPsbtError,
 	BroadcastError,
-	BumpError,
-	CpfpError,
-	cpfpChildFee,
 	detectUnconfirmedInflows,
 	classifyUnconfirmedTrust,
 	tryPackageRescue,
 	type UnconfirmedInflow
 } from './transactions';
-import {
-	checkUnconfirmedChainDepth,
-	checkSelectedInputsChainDepth,
-	type ChainDepthWarning
-} from './chainDepth';
+import { BumpError, CpfpError, executeCpfpDraft, executeRbfBump } from './feeBump';
+import { checkSelectedInputsChainDepth, type ChainDepthWarning } from './chainDepth';
 
 export type MultisigTxStatus = 'draft' | 'awaiting_signature' | 'completed' | 'superseded';
-
-/** BIP-125 signaling threshold: any input sequence below this opts in to RBF.
- *  Mirrors transactions.ts (the constant is module-private there). */
-const RBF_SIGNAL_MAX_SEQUENCE = 0xfffffffe;
 
 export interface SavedMultisigTransaction {
 	id: number;
@@ -590,147 +580,44 @@ export async function bumpMultisigTransaction(
 	const tx = multisig ? getMultisigTransaction(userId, multisigId, txId) : null;
 	if (!multisig || !tx) throw new BumpError('Transaction not found.', 'not_found');
 
-	if (tx.status === 'superseded') {
-		throw new BumpError('This transaction was already replaced by a fee bump.', 'superseded');
-	}
-	if (tx.status !== 'completed' || !tx.txid) {
-		throw new BumpError(
-			'Only broadcast transactions can be fee-bumped — this one has not been sent yet.',
-			'not_bumpable'
-		);
-	}
+	return executeRbfBump<SavedMultisigTransaction, ConstructedMultisigPsbt>({
+		spec: { table: 'multisig_transactions', ownerColumn: 'multisig_id' },
+		ownerId: multisigId,
+		tx,
+		newFeeRate,
+		buildReplacement: async (stored, changeIndex) => {
+			const config = toMultisigConfig(multisig);
+			const utxos = recoverMultisigPsbtInputs(stored, config);
 
-	// One live replacement per original: a second concurrent bump would produce
-	// two drafts fighting over the same inputs.
-	const existing = db
-		.prepare(
-			'SELECT id, status FROM multisig_transactions WHERE multisig_id = ? AND replaces_txid = ?'
-		)
-		.get(multisigId, tx.txid) as { id: number; status: string } | undefined;
-	if (existing) {
-		throw new BumpError(
-			existing.status === 'completed'
-				? 'This transaction was already replaced by a fee bump.'
-				: 'A replacement for this transaction is already in progress — finish or discard it first.',
-			'already_replaced'
-		);
-	}
-
-	// A confirmed transaction is final — no fee to bump. A failed lookup (mempool
-	// eviction, backend outage) does not block: a replacement draft is harmless.
-	let confirmed = false;
-	try {
-		confirmed = (await getChain().getTx(tx.txid)).confirmed;
-	} catch {
-		confirmed = false;
-	}
-	if (confirmed) {
-		throw new BumpError(
-			'This transaction has already confirmed — there is no fee to bump.',
-			'confirmed'
-		);
-	}
-
-	let stored: Transaction;
-	try {
-		stored = Transaction.fromPSBT(base64.decode(tx.psbt));
-	} catch {
-		throw new BumpError(
-			'The stored transaction could not be read, so it cannot be reconstructed.',
-			'not_bumpable'
-		);
-	}
-
-	// BIP-125 rule 1: every input must signal replaceability. constructMultisigPsbt
-	// sets RBF_SEQUENCE on all inputs, but a hand-imported PSBT might not — the
-	// network would silently ignore a replacement, so refuse up front.
-	for (let i = 0; i < stored.inputsLength; i++) {
-		if ((stored.getInput(i).sequence ?? 0xffffffff) >= RBF_SIGNAL_MAX_SEQUENCE) {
-			throw new BumpError(
-				"This transaction doesn't signal RBF (replace-by-fee), so the network won't accept a replacement — it can't be fee-bumped.",
-				'not_rbf'
-			);
-		}
-	}
-
-	// The fee increase comes out of change; a changeless original has nowhere to
-	// take it from without shortchanging a recipient.
-	if (tx.changeIndex === null) {
-		throw new BumpError(
-			'This transaction has no change output to absorb a higher fee, so it cannot be bumped.',
-			'no_change'
-		);
-	}
-
-	if (!Number.isFinite(newFeeRate) || newFeeRate <= tx.feeRate) {
-		throw new BumpError(
-			`The new fee rate must be higher than the original's effective ${tx.feeRate} sat/vB.`,
-			'fee_too_low'
-		);
-	}
-
-	const config = toMultisigConfig(multisig);
-	const utxos = recoverMultisigPsbtInputs(stored, config);
-
-	// Every recipient output is reproduced exactly (batch rows keep paying all N);
-	// the fee increase comes solely out of change, over the identical input set.
-	let details: ConstructedMultisigPsbt;
-	try {
-		details = await constructMultisigPsbt({
-			config,
-			utxos,
-			recipients: tx.recipients,
-			feeRate: newFeeRate,
-			changeIndex: tx.changeIndex,
-			fetchRawTx: (txid) => getChain().getTxHex(txid),
-			exactInputs: true
-		});
-	} catch (e) {
-		if (e instanceof PsbtError && e.code === 'insufficient_funds') {
-			throw new BumpError(
-				'The change output cannot absorb a fee increase at that rate — try a lower rate.',
-				'fee_too_low'
-			);
-		}
-		throw e;
-	}
-
-	// BIP-125 rule 4: the replacement must pay for its own relay — at least the
-	// original's fee plus (replacement vsize × 1 sat/vB incremental relay fee).
-	const minFee = tx.fee + details.vsize;
-	if (details.fee < minFee) {
-		const minRate = Math.ceil(minFee / details.vsize);
-		throw new BumpError(
-			`The replacement must pay at least ${minFee} sats (the original fee plus 1 sat/vB for its own size) — try ${minRate} sat/vB or more.`,
-			'fee_too_low'
-		);
-	}
-
-	const res = db
-		.prepare(
-			`INSERT INTO multisig_transactions (multisig_id, status, psbt, recipient, amount, fee, fee_rate, change_index, replaces_txid, recipients)
-			 VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?)`
-		)
-		.run(
-			multisigId,
-			details.psbtBase64,
-			details.recipient,
-			details.amount,
-			details.fee,
-			details.feeRate,
-			details.change?.index ?? null,
-			tx.txid,
-			recipientsJson(details.recipients)
-		);
-
-	const draft = getMultisigTransaction(userId, multisigId, Number(res.lastInsertRowid));
-	if (!draft) throw new BumpError('Replacement draft could not be saved.', 'not_bumpable');
-
-	// Freeze the roster and notify cosigners the replacement needs their signature —
-	// same as a fresh draft. For a solo multisig this notifies no one.
-	freezeRosterAndNotify(multisig, draft, userId);
-
-	return { draft, details };
+			// Every recipient output is reproduced exactly (batch rows keep paying all
+			// N); the fee increase comes solely out of change, over the identical
+			// input set.
+			try {
+				return await constructMultisigPsbt({
+					config,
+					utxos,
+					recipients: tx.recipients,
+					feeRate: newFeeRate,
+					changeIndex,
+					fetchRawTx: (txid) => getChain().getTxHex(txid),
+					exactInputs: true
+				});
+			} catch (e) {
+				if (e instanceof PsbtError && e.code === 'insufficient_funds') {
+					throw new BumpError(
+						'The change output cannot absorb a fee increase at that rate — try a lower rate.',
+						'fee_too_low'
+					);
+				}
+				throw e;
+			}
+		},
+		reloadDraft: (rowId) => getMultisigTransaction(userId, multisigId, rowId),
+		draftSaveError: () => new BumpError('Replacement draft could not be saved.', 'not_bumpable'),
+		// Freeze the roster and notify cosigners the replacement needs their
+		// signature — same as a fresh draft. For a solo multisig this notifies no one.
+		onDraftSaved: (draft) => freezeRosterAndNotify(multisig, draft, userId)
+	});
 }
 
 /** Own txids this multisig broadcast — same own-change vs received signal the
@@ -781,127 +668,47 @@ export async function buildMultisigCpfpDraft(
 	// as buildMultisigDraft — a CPFP child is just another spend to be signed.
 	const multisig = getSignableMultisig(userId, multisigId);
 	if (!multisig) throw new CpfpError('Multisig not found.', 'not_found');
-
-	// Cap the target at constructMultisigPsbt's ceiling — this builder is a caller
-	// of it, not a bypass of its validation.
-	const targetRate = Math.min(Number.isFinite(targetFeeRate) ? targetFeeRate : 0, MAX_FEE_RATE);
-	if (targetRate < 1) {
-		throw new CpfpError('The target fee rate must be at least 1 sat/vB.', 'not_needed');
-	}
-
-	// The qualifying coins: this vault's own UNCONFIRMED outputs on the parent.
-	const qualifying = (await getMultisigUtxos(multisig)).filter(
-		(u) => u.txid.toLowerCase() === parentTxid.toLowerCase() && u.height <= 0
-	);
-	if (qualifying.length === 0) {
-		throw new CpfpError(
-			'This vault has no unconfirmed output on that transaction to bump — CPFP needs a coin you can spend from the stuck transaction.',
-			'no_unconfirmed_output'
-		);
-	}
-
-	// The parent's real vsize + fee (esplora provides both). A confirmed parent has
-	// nothing left to accelerate.
-	let parentVsize: number;
-	let parentFee: number;
-	try {
-		const parent = await getChain().getTx(parentTxid);
-		if (parent.confirmed) {
-			throw new CpfpError('That transaction has already confirmed — no CPFP needed.', 'already_confirmed');
-		}
-		if (parent.fee == null) {
-			throw new CpfpError(
-				"The parent transaction's fee is unknown, so the CPFP fee can't be computed.",
-				'parent_fee_unknown'
-			);
-		}
-		parentVsize = parent.vsize;
-		parentFee = parent.fee;
-	} catch (e) {
-		if (e instanceof CpfpError) throw e;
-		throw new CpfpError(
-			'The parent transaction could not be looked up right now — try again in a moment.',
-			'parent_unavailable'
-		);
-	}
-
 	const config = toMultisigConfig(multisig);
-	const changeIndex = await nextMultisigChangeIndex(multisig);
-	const changeAddress = deriveMultisigAddress(config, 1, changeIndex).address;
-	const childVsize = estimateMultisigTxVsize(
-		config.scriptType,
-		config.threshold,
-		config.keys.length,
-		qualifying.length,
-		[changeAddress]
-	);
 
-	const childFee = cpfpChildFee(targetRate, parentVsize, parentFee, childVsize);
-	// A non-positive raw child fee means the parent already meets the target.
-	if (Math.ceil(targetRate * (parentVsize + childVsize)) - parentFee <= 0) {
-		throw new CpfpError(
-			`That transaction already pays about ${Math.round(parentFee / parentVsize)} sat/vB, which meets your ${Math.round(targetRate)} sat/vB target — no CPFP is needed.`,
-			'not_needed'
-		);
-	}
-
-	// The child's OWN rate is what constructMultisigPsbt prices with; clamp to
-	// [1, MAX_FEE_RATE]. Because estimateMultisigTxVsize uses the same tables the
-	// builder does, the swept tx's vsize matches childVsize, so the fee lands on childFee.
-	const childRate = Math.min(Math.max(childFee / childVsize, 1), MAX_FEE_RATE);
-
-	let details: ConstructedMultisigPsbt;
-	try {
-		details = await constructMultisigPsbt({
-			config,
-			utxos: qualifying,
-			// Send-max sweeps exactly the coin-controlled set back to our own change.
-			recipients: [{ address: changeAddress, amount: 'max' }],
-			feeRate: childRate,
-			changeIndex,
-			fetchRawTx: (txid) => getChain().getTxHex(txid),
-			onlyUtxos: qualifying.map((u) => ({ txid: u.txid, vout: u.vout }))
-		});
-	} catch (e) {
-		if (e instanceof PsbtError && (e.code === 'insufficient_funds' || e.code === 'no_utxos')) {
-			throw new CpfpError(
-				'That unconfirmed coin is too small to pay the fee needed to accelerate the parent at this rate — lower the target rate or wait for a confirmation.',
-				'coin_too_small'
-			);
-		}
-		throw e;
-	}
-
-	const res = db
-		.prepare(
-			`INSERT INTO multisig_transactions (multisig_id, status, psbt, recipient, amount, fee, fee_rate, change_index, recipients)
-			 VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?)`
-		)
-		.run(
-			multisigId,
-			details.psbtBase64,
-			details.recipient,
-			details.amount,
-			details.fee,
-			details.feeRate,
-			details.change?.index ?? null,
-			recipientsJson(details.recipients)
-		);
-
-	const draft = getMultisigTransaction(userId, multisigId, Number(res.lastInsertRowid));
-	if (!draft) throw new CpfpError('CPFP draft could not be saved.', 'not_found');
-
-	// A CPFP child still needs the vault quorum to sign — freeze the roster and
-	// notify, same as any other draft.
-	freezeRosterAndNotify(multisig, draft, userId);
-
-	// A CPFP child always spends the unconfirmed parent — warn (never block) if the
-	// parent's chain is near the limit (cairn-u9ob.5). Silent without v1 CPFP data.
-	const chainDepthWarning = await checkUnconfirmedChainDepth([parentTxid]);
-	return {
-		draft,
-		details,
-		cpfp: { parentVsize, parentFee, childFee: details.fee, targetRate },
-		chainDepthWarning
-	};
+	return executeCpfpDraft<SavedMultisigTransaction, ConstructedMultisigPsbt>({
+		spec: { table: 'multisig_transactions', ownerColumn: 'multisig_id' },
+		ownerId: multisigId,
+		parentTxid,
+		targetFeeRate,
+		walletNoun: 'vault',
+		getUtxos: () => getMultisigUtxos(multisig),
+		prepareChild: async (qualifying) => {
+			const changeIndex = await nextMultisigChangeIndex(multisig);
+			const changeAddress = deriveMultisigAddress(config, 1, changeIndex).address;
+			return {
+				changeAddress,
+				changeIndex,
+				childVsize: estimateMultisigTxVsize(
+					config.scriptType,
+					config.threshold,
+					config.keys.length,
+					qualifying.length,
+					[changeAddress]
+				)
+			};
+		},
+		buildChild: ({ qualifying, changeAddress, changeIndex, childRate }) =>
+			constructMultisigPsbt({
+				config,
+				utxos: qualifying,
+				// Send-max sweeps exactly the coin-controlled set back to our own change.
+				recipients: [{ address: changeAddress, amount: 'max' }],
+				feeRate: childRate,
+				changeIndex,
+				fetchRawTx: (txid) => getChain().getTxHex(txid),
+				onlyUtxos: qualifying.map((u) => ({ txid: u.txid, vout: u.vout }))
+			}),
+		isCoinTooSmall: (e) =>
+			e instanceof PsbtError && (e.code === 'insufficient_funds' || e.code === 'no_utxos'),
+		reloadDraft: (rowId) => getMultisigTransaction(userId, multisigId, rowId),
+		draftSaveError: () => new CpfpError('CPFP draft could not be saved.', 'not_found'),
+		// A CPFP child still needs the vault quorum to sign — freeze the roster and
+		// notify, same as any other draft.
+		onDraftSaved: (draft) => freezeRosterAndNotify(multisig, draft, userId)
+	});
 }
