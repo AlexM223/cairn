@@ -32,9 +32,20 @@ TRANSACTIONS ARE IRREVERSIBLE. Once you sign and broadcast a transaction it cann
 
 THE OPERATOR IS NOT RESPONSIBLE FOR YOUR FUNDS. This instance is run by an individual or organization providing infrastructure — not a bank, exchange, or financial service. The operator is not responsible for lost keys, lost backups, lost funds, mistaken transactions, or any financial loss. The operator does not guarantee the service will be available and may take it offline at any time.
 
+WHAT THIS SERVER LOGS, AND WHO CAN SEE IT. To operate, this server keeps records on the server itself: your account email; the IP address you sign in from and the one you accept this agreement from; an activity feed of wallet events (transactions detected, broadcasts, scans); delivery records for any notification channels you set up; and operational server logs. Every administrator of this instance — not only the operator — can view the server logs and the cross-user activity log, and can generate a full-instance backup that includes every user's wallet configuration: public keys, addresses, labels, and address book. None of this ever includes private keys or anything that can spend your funds. Old records are cleaned up automatically: expired sessions are deleted, delivered notifications are purged after 30 days, and balance history is thinned after 30 days and removed after roughly 13 months. If you are not comfortable with the operator and admins of this instance seeing this information, do not use this instance.
+
 NO FINANCIAL ADVICE. Nothing here is investment, financial, legal, or tax advice.
 
 YOU ACCEPT ALL RISK. You alone are responsible for the security of your keys and backups, for verifying every transaction, and for any loss that results. If you do not agree, do not use this service.`;
+
+/**
+ * Version of DEFAULT_USER_AGREEMENT itself. Bump this alongside any edit to the
+ * default text above so instances still running the stock agreement re-prompt
+ * their users (see ensureDefaultAgreementVersion). History:
+ *   1 — original custody/liability text
+ *   2 — added the "What this server logs" data-handling section (cairn-5u2i.1)
+ */
+export const DEFAULT_AGREEMENT_VERSION = 2;
 
 /**
  * The operator-facing disclosure, shown once during first-run before the admin
@@ -65,6 +76,22 @@ export function getUserAgreement(): UserAgreement {
 	const operator = getSetting(K_OPERATOR) ?? DEFAULT_OPERATOR;
 	const version = Number(getSetting(K_VERSION) ?? '1') || 1;
 	return { text, operator, version };
+}
+
+/**
+ * Startup migration (called from hooks.server.ts): an instance still on the
+ * STOCK agreement (no customized text saved) picks up edits to
+ * DEFAULT_USER_AGREEMENT automatically — but the stored version must bump too,
+ * or users who accepted the old default would never be re-prompted. A
+ * customized agreement is left entirely alone: its operator's own edits drive
+ * the version via setUserAgreement.
+ */
+export function ensureDefaultAgreementVersion(): void {
+	if (getSetting(K_TEXT) !== null) return;
+	const stored = Number(getSetting(K_VERSION) ?? '1') || 1;
+	if (stored < DEFAULT_AGREEMENT_VERSION) {
+		setSetting(K_VERSION, String(DEFAULT_AGREEMENT_VERSION));
+	}
 }
 
 /**

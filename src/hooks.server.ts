@@ -11,6 +11,8 @@ import { startBackupHealthWatcher } from '$lib/server/backupHealth';
 import { startPortfolioWarm } from '$lib/server/portfolioWarm';
 import { startRetentionSweep } from '$lib/server/dataRetention';
 import { migratePlaintextSecretsAtRest } from '$lib/server/secretsMigration';
+import { migrateInstanceMode } from '$lib/server/instanceModeMigration';
+import { ensureDefaultAgreementVersion } from '$lib/server/disclosures';
 
 const httpLog = childLogger('http');
 const errLog = childLogger('error');
@@ -23,6 +25,14 @@ try {
 	errLog.error({ err: e }, 'admin bootstrap from env failed');
 }
 
+// Decide instanceMode ('solo' | 'team') for installs that predate the setting.
+// Runs after bootstrap so a freshly-created single admin is counted correctly.
+try {
+	migrateInstanceMode();
+} catch (e) {
+	errLog.error({ err: e }, 'instance mode migration failed');
+}
+
 // Re-encrypt any secrets still stored in plaintext by older releases
 // (cairn-e9mz). Idempotent; runs before the queue worker so channel sends only
 // ever see the encrypted shape.
@@ -30,6 +40,15 @@ try {
 	migratePlaintextSecretsAtRest();
 } catch (e) {
 	errLog.error({ err: e }, 'plaintext-secret migration failed');
+}
+
+// Instances on the STOCK user agreement pick up default-text revisions (e.g.
+// the cairn-5u2i.1 data-handling section) — bump the stored version once so
+// already-accepted users are re-prompted. Customized agreements are untouched.
+try {
+	ensureDefaultAgreementVersion();
+} catch (e) {
+	errLog.error({ err: e }, 'agreement version migration failed');
 }
 
 // Start the outbound notification delivery worker (idempotent, unref'd — it
