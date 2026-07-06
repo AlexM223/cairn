@@ -25,7 +25,7 @@
 
 import { db } from './db';
 import { getChain } from './chain/index';
-import { parseXpub, deriveAddress, addressToScripthash } from './bitcoin/xpub';
+import { parseXpub, deriveAddress, addressToScripthash, scriptPubKeyHex } from './bitcoin/xpub';
 import { deriveMultisigAddress } from './bitcoin/multisig';
 import { toMultisigConfig, type MultisigRow, type MultisigKeyRow } from './wallets/multisig';
 import { notify } from './notifications';
@@ -376,15 +376,20 @@ async function handleScripthashChange(scripthash: string): Promise<void> {
 			// legitimate event can still be picked up.
 			if (!(await spvVerifyConfirmed(txid, item.height))) continue;
 
-			// Compute the inbound value to THIS wallet's addresses. We attribute a
-			// tx to the wallet by output address membership against the watched set,
-			// summing outputs paying any of this wallet's addresses.
+			// Compute the inbound value to THIS wallet's addresses. Attribute a tx to
+			// the wallet by scriptPubKey membership, NOT by address string: the chain
+			// backend reports addresses in its own network encoding (bcrt1…/tb1… on
+			// regtest/testnet) which never equals Cairn's mainnet-derived address
+			// strings, silently zeroing every deposit. scriptPubKey is
+			// network-independent — same fix as walletScan/multisigScan (cairn-v13r,
+			// cairn-j6fv).
 			let receivedSats = 0;
 			try {
 				const tx = await chain.getTx(txid);
-				const walletAddrs = walletAddressSet(w);
+				const walletScripts = walletScriptSet(w);
 				for (const out of tx.vout) {
-					if (out.address && walletAddrs.has(out.address)) receivedSats += out.value;
+					if (out.scriptPubKey && walletScripts.has(out.scriptPubKey.toLowerCase()))
+						receivedSats += out.value;
 				}
 			} catch (e) {
 				log.warn({ err: e, txid }, 'tx detail fetch failed; recording without amount');
@@ -446,14 +451,21 @@ async function handleScripthashChange(scripthash: string): Promise<void> {
 }
 
 /**
- * All watched addresses belonging to the same wallet as `w`. Used to attribute
- * a tx's outputs to the wallet. Small (WATCH_WINDOW × 2), so a linear pass over
- * the map is fine and avoids a second index.
+ * The scriptPubKey hexes (lowercased) of all watched addresses belonging to the
+ * same wallet as `w`. Used to attribute a tx's outputs to the wallet by
+ * scriptPubKey rather than by network-dependent address string (cairn-v13r).
+ * Small (WATCH_WINDOW × 2), so a linear pass over the map is fine.
  */
-function walletAddressSet(w: Watched): Set<string> {
+function walletScriptSet(w: Watched): Set<string> {
 	const set = new Set<string>();
 	for (const watched of state.byScripthash.values()) {
-		if (watched.kind === w.kind && watched.walletId === w.walletId) set.add(watched.address);
+		if (watched.kind === w.kind && watched.walletId === w.walletId) {
+			try {
+				set.add(scriptPubKeyHex(watched.address).toLowerCase());
+			} catch {
+				// An address we can't re-encode to a scriptPubKey is simply not matched.
+			}
+		}
 	}
 	return set;
 }
