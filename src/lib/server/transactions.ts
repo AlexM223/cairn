@@ -15,6 +15,8 @@ import {
 	PsbtMismatchError,
 	DEFAULT_ORIGIN_PATH,
 	PsbtError,
+	MAX_FEE_RATE,
+	estimateTxVsize,
 	type ConstructedPsbt,
 	type SpendableUtxo,
 	type UnconfirmedTrust
@@ -517,6 +519,195 @@ export class BumpError extends Error {
 		super(message);
 		this.name = 'BumpError';
 	}
+}
+
+export class CpfpError extends Error {
+	constructor(
+		message: string,
+		public readonly code:
+			| 'not_found'
+			| 'no_unconfirmed_output'
+			| 'already_confirmed'
+			| 'parent_unavailable'
+			| 'parent_fee_unknown'
+			| 'not_needed'
+			| 'coin_too_small'
+	) {
+		super(message);
+		this.name = 'CpfpError';
+	}
+}
+
+/**
+ * The CPFP fee math (docs/CPFP-UNCONFIRMED-PLAN.md §3). Given the stuck parent's
+ * own vsize + fee and the child's estimated vsize, the child must pay enough
+ * that the whole PACKAGE (parent + child) averages `targetRate`:
+ *
+ *   child_fee = ceil(targetRate * (parent_vsize + child_vsize)) - parent_fee
+ *
+ * Returns the child fee in sats, floored to the child's own minimum-relay
+ * requirement (1 sat/vB over its own size). A result <= 0 means the parent
+ * already meets the target on its own — the caller surfaces "not needed".
+ */
+export function cpfpChildFee(
+	targetRate: number,
+	parentVsize: number,
+	parentFee: number,
+	childVsize: number
+): number {
+	const packageFee = Math.ceil(targetRate * (parentVsize + childVsize));
+	const childFee = packageFee - parentFee;
+	// The child must independently clear the 1 sat/vB relay floor even if the
+	// formula returns something tiny (rare, but possible when the parent already
+	// paid most of the way there).
+	return Math.max(childFee, childVsize);
+}
+
+/**
+ * Build a child-pays-for-parent (CPFP) transaction that accelerates a stuck,
+ * still-unconfirmed parent by spending the wallet's own unconfirmed output on it
+ * and attaching a high fee, so the parent+child package averages `targetRate`.
+ *
+ * Unlike RBF this creates a genuinely NEW transaction (no replaces_txid) — the
+ * parent stays exactly as broadcast. The qualifying unconfirmed output(s) are
+ * forced as inputs via coin control and swept back to the wallet's own change
+ * address; the whole thing routes through constructPsbt, not a second builder.
+ * See docs/CPFP-UNCONFIRMED-PLAN.md §3.
+ */
+export async function buildCpfpDraft(
+	userId: number,
+	walletId: number,
+	parentTxid: string,
+	targetFeeRate: number
+): Promise<{
+	draft: SavedTransaction;
+	details: ConstructedPsbt;
+	cpfp: { parentVsize: number; parentFee: number; childFee: number; targetRate: number };
+}> {
+	const wallet = ownedWallet(userId, walletId);
+	if (!wallet) throw new CpfpError('Wallet not found.', 'not_found');
+
+	// Cap the target at the same ceiling constructPsbt enforces — the CPFP builder
+	// is a caller of it, not a bypass of its validation.
+	const targetRate = Math.min(
+		Number.isFinite(targetFeeRate) ? targetFeeRate : 0,
+		MAX_FEE_RATE
+	);
+	if (targetRate < 1) {
+		throw new CpfpError('The target fee rate must be at least 1 sat/vB.', 'not_needed');
+	}
+
+	// The qualifying coins: this wallet's own UNCONFIRMED outputs on the parent.
+	const scriptType = wallet.script_type as ScriptType;
+	const qualifying = (await getWalletUtxos(wallet.xpub)).filter(
+		(u) => u.txid.toLowerCase() === parentTxid.toLowerCase() && u.height <= 0
+	);
+	if (qualifying.length === 0) {
+		throw new CpfpError(
+			'This wallet has no unconfirmed output on that transaction to bump — CPFP needs a coin you can spend from the stuck transaction.',
+			'no_unconfirmed_output'
+		);
+	}
+
+	// The parent's real vsize + fee (esplora provides both — no mempool.space-only
+	// dependency). A confirmed parent has nothing left to accelerate.
+	let parentVsize: number;
+	let parentFee: number;
+	try {
+		const parent = await getChain().getTx(parentTxid);
+		if (parent.confirmed) {
+			throw new CpfpError('That transaction has already confirmed — no CPFP needed.', 'already_confirmed');
+		}
+		if (parent.fee == null) {
+			throw new CpfpError(
+				"The parent transaction's fee is unknown, so the CPFP fee can't be computed.",
+				'parent_fee_unknown'
+			);
+		}
+		parentVsize = parent.vsize;
+		parentFee = parent.fee;
+	} catch (e) {
+		if (e instanceof CpfpError) throw e;
+		throw new CpfpError(
+			'The parent transaction could not be looked up right now — try again in a moment.',
+			'parent_unavailable'
+		);
+	}
+
+	// Child = the qualifying coins swept to the wallet's own change address.
+	const parsed = parseXpub(wallet.xpub);
+	const changeIndex = await findNextUnusedIndex(wallet.xpub, 1);
+	const changeAddress = deriveAddress(parsed, 1, changeIndex).address;
+	const childVsize = estimateTxVsize(scriptType, qualifying.length, [changeAddress]);
+
+	const childFee = cpfpChildFee(targetRate, parentVsize, parentFee, childVsize);
+	// A non-positive raw child fee means the parent already meets the target.
+	if (Math.ceil(targetRate * (parentVsize + childVsize)) - parentFee <= 0) {
+		throw new CpfpError(
+			`That transaction already pays about ${Math.round(parentFee / parentVsize)} sat/vB, which meets your ${Math.round(targetRate)} sat/vB target — no CPFP is needed.`,
+			'not_needed'
+		);
+	}
+
+	// The child's OWN rate (fee over its own size) is what constructPsbt prices
+	// with; clamp to [1, MAX_FEE_RATE]. Because estimateTxVsize uses the same
+	// tables constructPsbt does, the swept tx's vsize matches childVsize, so the
+	// fee it computes lands on childFee.
+	const childRate = Math.min(Math.max(childFee / childVsize, 1), MAX_FEE_RATE);
+
+	const origin = wallet.master_fingerprint
+		? {
+				fingerprint: wallet.master_fingerprint,
+				path: wallet.derivation_path ?? DEFAULT_ORIGIN_PATH[scriptType]
+			}
+		: null;
+
+	let details: ConstructedPsbt;
+	try {
+		details = await constructPsbt({
+			xpub: wallet.xpub,
+			utxos: qualifying,
+			// Send-max sweeps exactly the coin-controlled set (the qualifying coins)
+			// back to our own address, minus the CPFP fee.
+			recipients: [{ address: changeAddress, amount: 'max' }],
+			feeRate: childRate,
+			changeAddress,
+			changeIndex,
+			origin,
+			fetchRawTx: (txid) => getChain().getTxHex(txid),
+			onlyUtxos: qualifying.map((u) => ({ txid: u.txid, vout: u.vout }))
+		});
+	} catch (e) {
+		// The commonest failure: the qualifying coin can't cover the CPFP fee plus
+		// a non-dust output — the plan's "this coin isn't big enough" outcome.
+		if (e instanceof PsbtError && (e.code === 'insufficient_funds' || e.code === 'no_utxos')) {
+			throw new CpfpError(
+				'That unconfirmed coin is too small to pay the fee needed to accelerate the parent at this rate — lower the target rate or wait for a confirmation.',
+				'coin_too_small'
+			);
+		}
+		throw e;
+	}
+
+	const res = db
+		.prepare(
+			`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate, change_index, recipients)
+			 VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?)`
+		)
+		.run(
+			walletId,
+			details.psbtBase64,
+			details.recipient,
+			details.amount,
+			details.fee,
+			details.feeRate,
+			details.change?.index ?? null,
+			recipientsJson(details.recipients)
+		);
+
+	const draft = getTransaction(userId, walletId, Number(res.lastInsertRowid));
+	if (!draft) throw new PsbtError('CPFP draft could not be saved.', 'construction_failed');
+	return { draft, details, cpfp: { parentVsize, parentFee, childFee: details.fee, targetRate } };
 }
 
 /**

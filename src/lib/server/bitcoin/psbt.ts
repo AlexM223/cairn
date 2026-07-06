@@ -203,6 +203,30 @@ function outputVsize(address: string): number {
 }
 
 /**
+ * Estimated vsize of a transaction with `numInputs` inputs of the given
+ * single-sig script type and outputs paying `outputAddresses`. Uses the exact
+ * same per-input/overhead/output tables the coin selector prices fees with, so a
+ * caller (e.g. the CPFP builder) computing a fee from this number and then
+ * building the real tell through constructPsbt gets a matching vsize back.
+ * Throws for a script type the input table doesn't cover.
+ */
+export function estimateTxVsize(
+	scriptType: string,
+	numInputs: number,
+	outputAddresses: string[]
+): number {
+	const perInput = INPUT_VSIZE[scriptType];
+	if (perInput == null) {
+		throw new PsbtError(`Cannot size inputs for ${scriptType} wallets.`, 'construction_failed');
+	}
+	return (
+		TX_OVERHEAD_VSIZE +
+		numInputs * perInput +
+		outputAddresses.reduce((s, a) => s + outputVsize(a), 0)
+	);
+}
+
+/**
  * Build an unsigned PSBT. Pure with respect to the chain: every external
  * datum (UTXOs, prev txs) comes in through params, which keeps this
  * deterministic and unit-testable.
