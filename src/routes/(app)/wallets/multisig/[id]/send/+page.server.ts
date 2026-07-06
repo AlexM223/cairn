@@ -7,6 +7,7 @@ import {
 	type SavedMultisigTransaction
 } from '$lib/server/multisigTransactions';
 import { getRoster, type RosterMember } from '$lib/server/multisigRoster';
+import { getMultisigUtxos } from '$lib/server/multisigScan';
 import { summarizePsbt, type PsbtSummary } from '$lib/server/bitcoin/psbt';
 import type { MultisigSigningProgress } from '$lib/server/bitcoin/multisigPsbt';
 import { getChain } from '$lib/server/chain';
@@ -34,6 +35,35 @@ export const load: PageServerLoad = async (event) => {
 		fees = await getChain().getFeeEstimates();
 	} catch {
 		fees = null;
+	}
+
+	// Confirmed spendable coins for the optional manual coin-control picker, largest
+	// first — the same UTXO set the /psbt build endpoint selects from, so what a
+	// user picks is exactly what the server spends (cairn-zcui). Best-effort: a scan
+	// failure just means coin control isn't offered this load; the default automatic
+	// flow is unaffected.
+	let utxos: { txid: string; vout: number; value: number; height: number; coinbase: boolean }[] = [];
+	try {
+		utxos = (await getMultisigUtxos(multisig))
+			.filter((u) => u.height > 0) // the builder only auto-selects confirmed coins
+			.map((u) => ({
+				txid: u.txid,
+				vout: u.vout,
+				value: u.value,
+				height: u.height,
+				coinbase: u.coinbase === true
+			}))
+			.sort((a, b) => b.value - a.value);
+	} catch {
+		utxos = [];
+	}
+
+	// Block tip seeds coin control's coinbase-maturity check; the page keeps it live.
+	let tipHeight = 0;
+	try {
+		tipHeight = (await getChain().getTip()).height;
+	} catch {
+		tipHeight = 0;
 	}
 
 	// ?tx=N resumes a saved multisig transaction at the step its status implies —
@@ -99,6 +129,10 @@ export const load: PageServerLoad = async (event) => {
 			}))
 		},
 		fees,
-		resume
+		resume,
+		// Confirmed spendable coins for the optional coin-control picker (empty when
+		// the scan failed or the wallet is empty), plus the tip for maturity checks.
+		utxos,
+		tipHeight
 	};
 };

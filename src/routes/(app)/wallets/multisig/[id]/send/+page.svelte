@@ -24,6 +24,8 @@
 	import MultisigLedgerSigner from './_components/MultisigLedgerSigner.svelte';
 	import MultisigBitboxSigner from './_components/MultisigBitboxSigner.svelte';
 	import MultisigJadeUsbSigner from './_components/MultisigJadeUsbSigner.svelte';
+	import CoinControl from '../../../[id]/send/_components/CoinControl.svelte';
+	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
 
 	let { data } = $props();
 
@@ -161,6 +163,9 @@
 	let building = $state(false);
 	let buildError = $state<string | null>(null);
 
+	// Manual coin control (optional): selected "txid:vout" keys, empty = automatic.
+	let selectedCoins = $state<string[]>([]);
+
 	async function build() {
 		if (!canBuild || building) return;
 		building = true;
@@ -169,11 +174,20 @@
 			address: r.address.trim(),
 			amount: (isMax ? 'max' : Math.round(Number(r.amountBtc) * SATS_PER_BTC)) as number | 'max'
 		}));
+		// Restrict selection to the chosen coins only when some are actually picked.
+		const onlyUtxos = selectedCoins.map((k) => {
+			const [txid, vout] = k.split(':');
+			return { txid, vout: Number(vout) };
+		});
 		try {
 			const res = await fetch(`/api/wallets/multisig/${multisigId}/psbt`, {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ recipients, feeRate })
+				body: JSON.stringify({
+					recipients,
+					feeRate,
+					...(onlyUtxos.length > 0 ? { onlyUtxos } : {})
+				})
 			});
 			const body = await res.json();
 			if (!res.ok) {
@@ -848,6 +862,31 @@
 						signatures per coin), so the same fee rate costs a little more in total fees.
 					</p>
 				</div>
+
+				{#if data.utxos.length > 0}
+					{#if data.flags?.coin_control === false}
+						<!-- Coin control disabled by an admin: explain why rather than silently
+						     dropping the picker; selection stays empty so the send uses automatic
+						     coin selection (parity with the single-sig flow, cairn-zcui). -->
+						<FeatureDisabled
+							block
+							message="Choosing specific coins to spend has been disabled by your administrator."
+						/>
+					{:else}
+						<!-- Optional manual coin control — collapsed so the default flow stays clean.
+						     Same component as the single-sig send; the signing-mass chips point at
+						     this multisig's own utxo-mass endpoint. -->
+						<div class="field">
+							<CoinControl
+								walletId={multisigId}
+								utxos={data.utxos}
+								bind:selected={selectedCoins}
+								tipHeight={data.tipHeight}
+								massEndpoint={`/api/wallets/multisig/${multisigId}/utxo-mass`}
+							/>
+						</div>
+					{/if}
+				{/if}
 
 				{#if buildError}
 					<div class="form-error" role="alert">{buildError}</div>

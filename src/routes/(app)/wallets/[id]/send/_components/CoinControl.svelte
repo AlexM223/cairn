@@ -33,7 +33,8 @@
 		utxos,
 		selected = $bindable(),
 		tipHeight,
-		initialOpen = false
+		initialOpen = false,
+		massEndpoint
 	}: {
 		/** Wallet id — the per-coin signing-mass lookup is scoped to it. */
 		walletId: number;
@@ -45,6 +46,9 @@
 		tipHeight: number;
 		/** Start disclosed — used by the consolidation handoff so preselected coins are visible. */
 		initialOpen?: boolean;
+		/** Override the signing-mass endpoint (the multisig send flow points this at
+		 *  its own /api/wallets/multisig/:id/utxo-mass). Defaults to the single-sig one. */
+		massEndpoint?: string;
 	} = $props();
 
 	const keyOf = (u: CoinOption) => `${u.txid}:${u.vout}`;
@@ -95,7 +99,7 @@
 		if (!open || massRequested) return;
 		massRequested = true;
 		massLoading = true;
-		void fetchUtxoMass(walletId)
+		void fetchUtxoMass(walletId, massEndpoint)
 			.then((m) => (masses = m))
 			.finally(() => (massLoading = false));
 	});

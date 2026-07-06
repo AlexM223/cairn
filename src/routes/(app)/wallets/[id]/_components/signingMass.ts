@@ -134,9 +134,14 @@ export function perDeviceLine(perDevice: SigningMass['perDevice']): string {
 // ---------------------------------------------------------------- fetching
 
 /** Lazy per-coin mass lookup. Null = unknown (endpoint missing, offline, …) — callers show nothing. */
-export async function fetchUtxoMass(walletId: number): Promise<UtxoMass[] | null> {
+export async function fetchUtxoMass(
+	walletId: number,
+	endpoint?: string
+): Promise<UtxoMass[] | null> {
 	try {
-		const res = await fetch(`/api/wallets/${walletId}/utxo-mass`);
+		// The multisig send flow reuses this with its own /api/wallets/multisig/:id/
+		// utxo-mass endpoint (same { masses } response shape), so callers can override.
+		const res = await fetch(endpoint ?? `/api/wallets/${walletId}/utxo-mass`);
 		if (!res.ok) return null;
 		const body = (await res.json()) as UtxoMassResponse;
 		return Array.isArray(body?.masses) ? body.masses : null;
