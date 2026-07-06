@@ -18,17 +18,20 @@ import {
 	deleteMultisigTransaction,
 	broadcastMultisigTransaction,
 	bumpMultisigTransaction,
+	buildMultisigCpfpDraft,
+	detectMultisigUnconfirmedInflows,
 	multisigTransactionProgress
 } from './multisigTransactions';
-import { BroadcastError, BumpError } from './transactions';
+import { BroadcastError, BumpError, CpfpError } from './transactions';
 
 // Only the network edges are faked: the chain source and the multisig scanner
 // (whose UTXOs would otherwise come from Electrum). Everything else — multisig
 // rows, PSBT construction, signature merging, quorum math, the broadcast
 // claim — runs the real code path.
-const { broadcastMock, getTxHexMock, utxosMock, changeIndexMock } = vi.hoisted(() => ({
+const { broadcastMock, getTxHexMock, getTxMock, utxosMock, changeIndexMock } = vi.hoisted(() => ({
 	broadcastMock: vi.fn(),
 	getTxHexMock: vi.fn(),
+	getTxMock: vi.fn(),
 	utxosMock: vi.fn(),
 	changeIndexMock: vi.fn()
 }));
@@ -36,6 +39,7 @@ vi.mock('./chain', () => ({
 	getChain: () => ({
 		electrum: { broadcast: broadcastMock },
 		getTxHex: getTxHexMock,
+		getTx: getTxMock,
 		// buildMultisigDraft reads the tip for the coinbase-maturity guard.
 		getTip: async () => ({ height: 900_000, hash: '00'.repeat(32) })
 	})
@@ -55,6 +59,7 @@ beforeEach(() => {
 	wipe();
 	broadcastMock.mockReset();
 	getTxHexMock.mockReset();
+	getTxMock.mockReset();
 	utxosMock.mockReset();
 	changeIndexMock.mockReset();
 	changeIndexMock.mockResolvedValue(0);
@@ -500,5 +505,82 @@ describe('bumpMultisigTransaction (RBF)', () => {
 		);
 		await broadcastMultisigTransaction(userId, multisigId, draft.id);
 		expect(getMultisigTransaction(userId, multisigId, orig.txId)?.status).toBe('superseded');
+	});
+});
+
+describe('buildMultisigCpfpDraft (CPFP parity, cairn-u9ob.6)', () => {
+	/** An UNCONFIRMED coin on the multisig's 0/0 address, funded by a REAL parent
+	 *  tx (so the CPFP builder can attach its nonWitnessUtxo). Primes getTxHexMock
+	 *  with the parent hex and returns its real txid. */
+	function stubUnconfirmedParent(
+		userId: number,
+		multisigId: number,
+		value = 200_000
+	): { parentTxid: string; utxos: SpendableUtxo[] } {
+		const multisig = getMultisig(userId, multisigId)!;
+		const address = deriveMultisigAddress(toMultisigConfig(multisig), 0, 0).address;
+		const fundTx = new Transaction({ allowUnknownInputs: true, disableScriptCheck: true });
+		fundTx.addInput({ txid: '00'.repeat(32), index: 0 });
+		fundTx.addOutputAddress(address, BigInt(value), NETWORK);
+		getTxHexMock.mockResolvedValue(fundTx.hex);
+		return {
+			parentTxid: fundTx.id,
+			utxos: [{ txid: fundTx.id, vout: 0, value, height: 0, address, chain: 0, index: 0 }]
+		};
+	}
+
+	it('forces the stuck output as input and prices the package at the target rate', async () => {
+		const { userId, multisigId } = seedMultisig('cpfp@example.com');
+		const { parentTxid, utxos } = stubUnconfirmedParent(userId, multisigId);
+		utxosMock.mockResolvedValue(utxos);
+		// Parent: 200 vB @ 200 sat (1 sat/vB), still unconfirmed.
+		getTxMock.mockResolvedValue({ confirmed: false, rbf: true, vsize: 200, fee: 200 });
+
+		const { draft, details, cpfp } = await buildMultisigCpfpDraft(userId, multisigId, parentTxid, 10);
+
+		// The child spends exactly the qualifying unconfirmed output.
+		expect(details.inputs).toHaveLength(1);
+		expect(details.inputs[0].txid).toBe(parentTxid);
+		// Package (parent + child) averages the 10 sat/vB target.
+		expect((cpfp.parentFee + details.fee) / (cpfp.parentVsize + details.vsize)).toBeCloseTo(10, 1);
+		// Persisted as a fresh draft (no replaces_txid — CPFP is not a replacement).
+		expect(draft.replacesTxid).toBeNull();
+		expect(draft.status).toBe('draft');
+	});
+
+	it('refuses when the vault has no unconfirmed output on that transaction', async () => {
+		const { userId, multisigId } = seedMultisig('cpfp-none@example.com');
+		const PARENT = 'ac'.repeat(32);
+		// The only coin is CONFIRMED — nothing to CPFP.
+		utxosMock.mockResolvedValue(multisigUtxos(userId, multisigId));
+		getTxMock.mockResolvedValue({ confirmed: false, rbf: true, vsize: 200, fee: 200 });
+		await expect(
+			buildMultisigCpfpDraft(userId, multisigId, PARENT, 10)
+		).rejects.toMatchObject({ code: 'no_unconfirmed_output' });
+	});
+
+	it('refuses to CPFP an already-confirmed parent', async () => {
+		const { userId, multisigId } = seedMultisig('cpfp-conf@example.com');
+		const { parentTxid, utxos } = stubUnconfirmedParent(userId, multisigId);
+		utxosMock.mockResolvedValue(utxos);
+		getTxMock.mockResolvedValue({ confirmed: true, rbf: true, vsize: 200, fee: 200 });
+		await expect(
+			buildMultisigCpfpDraft(userId, multisigId, parentTxid, 10)
+		).rejects.toBeInstanceOf(CpfpError);
+	});
+
+	it('detects the unconfirmed inflow and routes our own tx to RBF', async () => {
+		const { userId, multisigId } = seedMultisig('cpfp-detect@example.com');
+		const { parentTxid, utxos } = stubUnconfirmedParent(userId, multisigId);
+		utxosMock.mockResolvedValue(utxos);
+		getTxMock.mockResolvedValue({ confirmed: false, rbf: true, vsize: 200, fee: 200 });
+		// Record the parent as a tx this vault broadcast, so it's our own change.
+		db.prepare(
+			"INSERT INTO multisig_transactions (multisig_id, status, psbt, txid, recipient, amount, fee, fee_rate) VALUES (?, 'completed', '', ?, ?, 1, 1, 1)"
+		).run(multisigId, parentTxid, RECIPIENT);
+		const inflows = (await detectMultisigUnconfirmedInflows(userId, multisigId))!;
+		expect(inflows).toHaveLength(1);
+		expect(inflows[0].txid).toBe(parentTxid);
+		expect(inflows[0].action).toBe('rbf'); // ours + signals RBF
 	});
 });

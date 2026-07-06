@@ -29,8 +29,13 @@ vi.mock('./bitcoin/walletScan', async (orig) => {
 	return { ...actual, scanWallet: scanWalletMock, findNextUnusedIndex: findNextUnusedIndexMock };
 });
 
-import { buildCpfpDraft, cpfpChildFee, CpfpError } from './transactions';
-import { estimateTxVsize } from './bitcoin/psbt';
+import {
+	buildCpfpDraft,
+	cpfpChildFee,
+	CpfpError,
+	detectUnconfirmedInflows
+} from './transactions';
+import { estimateTxVsize, type SpendableUtxo } from './bitcoin/psbt';
 
 const ZPUB =
 	'zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs';
@@ -105,6 +110,80 @@ describe('estimateTxVsize', () => {
 		// p2wpkh: 11 overhead + 68/input + 31 per p2wpkh output.
 		expect(estimateTxVsize('p2wpkh', 1, [CHANGE_0])).toBe(110);
 		expect(estimateTxVsize('p2wpkh', 2, [CHANGE_0])).toBe(178);
+	});
+});
+
+describe('detectUnconfirmedInflows (stuck-tx detection §4, cairn-u9ob.2)', () => {
+	const coin = (txid: string, vout: number, height: number): SpendableUtxo => ({
+		txid,
+		vout,
+		value: 50_000,
+		height,
+		address: RECEIVE_0,
+		chain: 0,
+		index: 0
+	});
+
+	it('routes our own RBF-signaling tx to RBF and a received tx to CPFP', async () => {
+		const OURS = 'aa'.repeat(32);
+		const THEIRS = 'bb'.repeat(32);
+		getTxMock.mockImplementation(async (txid: string) => ({
+			confirmed: false,
+			rbf: true, // both signal RBF
+			vsize: 200,
+			fee: 200
+		}));
+
+		const inflows = await detectUnconfirmedInflows(
+			[coin(OURS, 0, 0), coin(THEIRS, 1, 0)],
+			new Set([OURS]) // we broadcast OURS, not THEIRS
+		);
+
+		const ours = inflows.find((i) => i.txid === OURS)!;
+		const theirs = inflows.find((i) => i.txid === THEIRS)!;
+		expect(ours.action).toBe('rbf'); // ours + signals RBF → replace it
+		expect(ours.trust).toBe('own-change');
+		expect(theirs.action).toBe('cpfp'); // not ours → can only child-pay
+		expect(theirs.trust).toBe('received');
+	});
+
+	it('routes our own tx that no longer signals RBF to CPFP', async () => {
+		const OURS = 'cc'.repeat(32);
+		getTxMock.mockResolvedValue({ confirmed: false, rbf: false, vsize: 200, fee: 200 });
+		const [inflow] = await detectUnconfirmedInflows([coin(OURS, 0, 0)], new Set([OURS]));
+		expect(inflow.action).toBe('cpfp');
+		expect(inflow.signalsRbf).toBe(false);
+	});
+
+	it('ignores confirmed coins and drops a tx that has since confirmed', async () => {
+		const UNCONF = 'dd'.repeat(32);
+		const CONF = 'ee'.repeat(32);
+		const RACED = 'ff'.repeat(32);
+		getTxMock.mockImplementation(async (txid: string) => ({
+			confirmed: txid === RACED, // RACED confirmed out from under us
+			rbf: true,
+			vsize: 200,
+			fee: 200
+		}));
+		const inflows = await detectUnconfirmedInflows(
+			[coin(UNCONF, 0, 0), coin(CONF, 0, 800_000), coin(RACED, 0, 0)],
+			new Set([UNCONF, RACED])
+		);
+		expect(inflows.map((i) => i.txid)).toEqual([UNCONF]); // CONF confirmed, RACED raced
+	});
+
+	it('aggregates several of our outputs on one tx and defaults RBF on lookup failure', async () => {
+		const OURS = '11'.repeat(32);
+		getTxMock.mockRejectedValue(new Error('backend down'));
+		const [inflow] = await detectUnconfirmedInflows(
+			[coin(OURS, 0, 0), coin(OURS, 2, 0)],
+			new Set([OURS])
+		);
+		expect(inflow.ourValueSats).toBe(100_000); // 50k + 50k
+		expect(inflow.vouts).toEqual([0, 2]);
+		// Cairn always sets RBF_SEQUENCE on its own txs, so an unreachable backend
+		// defaults our own tx to RBF-capable rather than the costlier CPFP.
+		expect(inflow.action).toBe('rbf');
 	});
 });
 

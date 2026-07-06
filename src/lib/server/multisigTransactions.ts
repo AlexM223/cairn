@@ -34,17 +34,22 @@ import {
 	combineMultisigPsbts,
 	multisigPsbtProgress,
 	finalizeMultisigPsbt,
+	estimateMultisigTxVsize,
 	MultisigPsbtError,
 	type ConstructedMultisigPsbt,
 	type MultisigSigningProgress
 } from './bitcoin/multisigPsbt';
-import { PsbtError, type SpendableUtxo } from './bitcoin/psbt';
+import { PsbtError, MAX_FEE_RATE, type SpendableUtxo } from './bitcoin/psbt';
 import {
 	normalizePsbt,
 	InvalidPsbtError,
 	BroadcastError,
 	BumpError,
-	classifyUnconfirmedTrust
+	CpfpError,
+	cpfpChildFee,
+	detectUnconfirmedInflows,
+	classifyUnconfirmedTrust,
+	type UnconfirmedInflow
 } from './transactions';
 
 export type MultisigTxStatus = 'draft' | 'awaiting_signature' | 'completed' | 'superseded';
@@ -706,4 +711,168 @@ export async function bumpMultisigTransaction(
 	freezeRosterAndNotify(multisig, draft, userId);
 
 	return { draft, details };
+}
+
+/** Own txids this multisig broadcast — same own-change vs received signal the
+ *  single-sig path uses (ownBroadcastTxids), against multisig_transactions. */
+function ownMultisigTxids(multisigId: number): Set<string> {
+	const rows = db
+		.prepare(
+			"SELECT txid FROM multisig_transactions WHERE multisig_id = ? AND txid IS NOT NULL"
+		)
+		.all(multisigId) as { txid: string }[];
+	return new Set(rows.map((r) => r.txid.toLowerCase()));
+}
+
+/** Wallet-scoped stuck/incoming-tx detection (cairn-u9ob.2), multisig side.
+ *  Viewer-reachable: seeing which of a vault's txs are stuck is a read. */
+export async function detectMultisigUnconfirmedInflows(
+	userId: number,
+	multisigId: number
+): Promise<UnconfirmedInflow[] | null> {
+	const multisig = getViewableMultisig(userId, multisigId);
+	if (!multisig) return null;
+	const utxos = await getMultisigUtxos(multisig);
+	return detectUnconfirmedInflows(utxos, ownMultisigTxids(multisigId));
+}
+
+/**
+ * Multisig child-pays-for-parent (cairn-u9ob.6, parity with single-sig
+ * buildCpfpDraft). Spends the vault's own unconfirmed output on a stuck parent,
+ * sweeping it back to the vault's change address at a fee high enough that the
+ * parent+child package averages `targetFeeRate`. A genuinely new draft (no
+ * replaces_txid) that re-enters the normal roster sign/broadcast flow — the
+ * parent stays exactly as broadcast. Fee math and guardrails are identical to
+ * the single-sig path (docs/CPFP-UNCONFIRMED-PLAN.md §3), only the builder and
+ * vsize table differ (multisig inputs are larger).
+ */
+export async function buildMultisigCpfpDraft(
+	userId: number,
+	multisigId: number,
+	parentTxid: string,
+	targetFeeRate: number
+): Promise<{
+	draft: SavedMultisigTransaction;
+	details: ConstructedMultisigPsbt;
+	cpfp: { parentVsize: number; parentFee: number; childFee: number; targetRate: number };
+}> {
+	// Building a spend is cosigner-reachable (owner or role='cosigner'), same gate
+	// as buildMultisigDraft — a CPFP child is just another spend to be signed.
+	const multisig = getSignableMultisig(userId, multisigId);
+	if (!multisig) throw new CpfpError('Multisig not found.', 'not_found');
+
+	// Cap the target at constructMultisigPsbt's ceiling — this builder is a caller
+	// of it, not a bypass of its validation.
+	const targetRate = Math.min(Number.isFinite(targetFeeRate) ? targetFeeRate : 0, MAX_FEE_RATE);
+	if (targetRate < 1) {
+		throw new CpfpError('The target fee rate must be at least 1 sat/vB.', 'not_needed');
+	}
+
+	// The qualifying coins: this vault's own UNCONFIRMED outputs on the parent.
+	const qualifying = (await getMultisigUtxos(multisig)).filter(
+		(u) => u.txid.toLowerCase() === parentTxid.toLowerCase() && u.height <= 0
+	);
+	if (qualifying.length === 0) {
+		throw new CpfpError(
+			'This vault has no unconfirmed output on that transaction to bump — CPFP needs a coin you can spend from the stuck transaction.',
+			'no_unconfirmed_output'
+		);
+	}
+
+	// The parent's real vsize + fee (esplora provides both). A confirmed parent has
+	// nothing left to accelerate.
+	let parentVsize: number;
+	let parentFee: number;
+	try {
+		const parent = await getChain().getTx(parentTxid);
+		if (parent.confirmed) {
+			throw new CpfpError('That transaction has already confirmed — no CPFP needed.', 'already_confirmed');
+		}
+		if (parent.fee == null) {
+			throw new CpfpError(
+				"The parent transaction's fee is unknown, so the CPFP fee can't be computed.",
+				'parent_fee_unknown'
+			);
+		}
+		parentVsize = parent.vsize;
+		parentFee = parent.fee;
+	} catch (e) {
+		if (e instanceof CpfpError) throw e;
+		throw new CpfpError(
+			'The parent transaction could not be looked up right now — try again in a moment.',
+			'parent_unavailable'
+		);
+	}
+
+	const config = toMultisigConfig(multisig);
+	const changeIndex = await nextMultisigChangeIndex(multisig);
+	const changeAddress = deriveMultisigAddress(config, 1, changeIndex).address;
+	const childVsize = estimateMultisigTxVsize(
+		config.scriptType,
+		config.threshold,
+		config.keys.length,
+		qualifying.length,
+		[changeAddress]
+	);
+
+	const childFee = cpfpChildFee(targetRate, parentVsize, parentFee, childVsize);
+	// A non-positive raw child fee means the parent already meets the target.
+	if (Math.ceil(targetRate * (parentVsize + childVsize)) - parentFee <= 0) {
+		throw new CpfpError(
+			`That transaction already pays about ${Math.round(parentFee / parentVsize)} sat/vB, which meets your ${Math.round(targetRate)} sat/vB target — no CPFP is needed.`,
+			'not_needed'
+		);
+	}
+
+	// The child's OWN rate is what constructMultisigPsbt prices with; clamp to
+	// [1, MAX_FEE_RATE]. Because estimateMultisigTxVsize uses the same tables the
+	// builder does, the swept tx's vsize matches childVsize, so the fee lands on childFee.
+	const childRate = Math.min(Math.max(childFee / childVsize, 1), MAX_FEE_RATE);
+
+	let details: ConstructedMultisigPsbt;
+	try {
+		details = await constructMultisigPsbt({
+			config,
+			utxos: qualifying,
+			// Send-max sweeps exactly the coin-controlled set back to our own change.
+			recipients: [{ address: changeAddress, amount: 'max' }],
+			feeRate: childRate,
+			changeIndex,
+			fetchRawTx: (txid) => getChain().getTxHex(txid),
+			onlyUtxos: qualifying.map((u) => ({ txid: u.txid, vout: u.vout }))
+		});
+	} catch (e) {
+		if (e instanceof PsbtError && (e.code === 'insufficient_funds' || e.code === 'no_utxos')) {
+			throw new CpfpError(
+				'That unconfirmed coin is too small to pay the fee needed to accelerate the parent at this rate — lower the target rate or wait for a confirmation.',
+				'coin_too_small'
+			);
+		}
+		throw e;
+	}
+
+	const res = db
+		.prepare(
+			`INSERT INTO multisig_transactions (multisig_id, status, psbt, recipient, amount, fee, fee_rate, change_index, recipients)
+			 VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?)`
+		)
+		.run(
+			multisigId,
+			details.psbtBase64,
+			details.recipient,
+			details.amount,
+			details.fee,
+			details.feeRate,
+			details.change?.index ?? null,
+			recipientsJson(details.recipients)
+		);
+
+	const draft = getMultisigTransaction(userId, multisigId, Number(res.lastInsertRowid));
+	if (!draft) throw new CpfpError('CPFP draft could not be saved.', 'not_found');
+
+	// A CPFP child still needs the vault quorum to sign — freeze the roster and
+	// notify, same as any other draft.
+	freezeRosterAndNotify(multisig, draft, userId);
+
+	return { draft, details, cpfp: { parentVsize, parentFee, childFee: details.fee, targetRate } };
 }

@@ -139,6 +139,28 @@ function outputVsize(address: string): number {
 // rounded up — matches psbt.ts's constant.
 const TX_OVERHEAD_VSIZE = 11;
 
+/**
+ * Estimated vsize of a multisig transaction with `numInputs` inputs of this
+ * config's script type/quorum and outputs paying `outputAddresses`. Uses the
+ * exact same per-input/overhead/output tables constructMultisigPsbt prices fees
+ * with, so the multisig CPFP builder can compute a child fee from this number
+ * and get a matching vsize back when it builds the real tx. Mirrors
+ * psbt.ts's estimateTxVsize (single-sig). See docs/CPFP-UNCONFIRMED-PLAN.md §3.
+ */
+export function estimateMultisigTxVsize(
+	scriptType: MultisigScriptType,
+	m: number,
+	n: number,
+	numInputs: number,
+	outputAddresses: string[]
+): number {
+	return (
+		TX_OVERHEAD_VSIZE +
+		numInputs * multisigInputVsize(scriptType, m, n) +
+		outputAddresses.reduce((s, a) => s + outputVsize(a), 0)
+	);
+}
+
 // ---------------------------------------------------------------- construction
 
 export interface MultisigConstructParams {

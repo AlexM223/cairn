@@ -124,6 +124,99 @@ export function classifyUnconfirmedTrust(
 	});
 }
 
+/**
+ * One unconfirmed transaction the wallet has spendable coins on, classified for
+ * the "Speed up" decision (docs/CPFP-UNCONFIRMED-PLAN.md §4). This is the
+ * backend half of stuck/incoming-tx detection (cairn-u9ob.2) — it builds no UI,
+ * it just answers "which of my unconfirmed transactions can be sped up, and how."
+ */
+export interface UnconfirmedInflow {
+	txid: string;
+	/** We broadcast this transaction ourselves (it's in our own tx table). */
+	ours: boolean;
+	/** Own-change (safe) vs received-from-elsewhere (risky) — mirrors coin trust. */
+	trust: UnconfirmedTrust;
+	/** The tx still signals BIP-125 replaceability (needed for the RBF path). */
+	signalsRbf: boolean;
+	/** Total sats of OUR spendable unconfirmed outputs on this tx. */
+	ourValueSats: number;
+	/** Which of our outputs (vout indices) are unconfirmed and spendable. */
+	vouts: number[];
+	/**
+	 * Recommended acceleration per §4's decision table: RBF when we originated
+	 * the tx AND it still signals replaceability (we hold every input and can
+	 * replace it more cheaply); CPFP otherwise (received funds, or our own tx
+	 * that no longer signals RBF — e.g. externally-built change).
+	 */
+	action: 'rbf' | 'cpfp';
+}
+
+/**
+ * Given a wallet's live coins and the set of txids it broadcast itself, return
+ * one entry per unconfirmed transaction the wallet can accelerate. Confirmed
+ * coins are ignored; a tx that has since confirmed (or can't be looked up) is
+ * dropped rather than offered. Chain lookups are deduplicated per txid.
+ *
+ * Shared by single-sig and multisig callers — the only per-wallet-type inputs
+ * are the coin set and the "our own txids" set, both supplied by the caller.
+ */
+export async function detectUnconfirmedInflows(
+	utxos: SpendableUtxo[],
+	ownTxids: Set<string>
+): Promise<UnconfirmedInflow[]> {
+	// Group this wallet's UNCONFIRMED coins by the tx that created them.
+	const byTxid = new Map<string, { value: number; vouts: number[] }>();
+	for (const u of utxos) {
+		if (u.height > 0) continue; // confirmed — nothing to speed up
+		const key = u.txid.toLowerCase();
+		const agg = byTxid.get(key) ?? { value: 0, vouts: [] };
+		agg.value += u.value;
+		agg.vouts.push(u.vout);
+		byTxid.set(key, agg);
+	}
+	if (byTxid.size === 0) return [];
+
+	const chain = getChain();
+	const out: UnconfirmedInflow[] = [];
+	for (const [txid, agg] of byTxid) {
+		const ours = ownTxids.has(txid);
+		// The tx's live replaceability + confirmation state. On a lookup failure we
+		// keep the row (the coin is real and spendable) but fall back to CPFP, which
+		// works regardless of RBF signaling — except for our own constructions,
+		// which Cairn always builds with RBF_SEQUENCE set (§0), so default those to
+		// RBF-capable rather than needlessly steering them to the costlier CPFP.
+		let signalsRbf = ours;
+		try {
+			const detail = await chain.getTx(txid);
+			if (detail.confirmed) continue; // raced a confirmation — no longer stuck
+			signalsRbf = detail.rbf;
+		} catch {
+			/* keep the fallback above */
+		}
+		out.push({
+			txid,
+			ours,
+			trust: ours ? 'own-change' : 'received',
+			signalsRbf,
+			ourValueSats: agg.value,
+			vouts: agg.vouts.sort((a, b) => a - b),
+			action: ours && signalsRbf ? 'rbf' : 'cpfp'
+		});
+	}
+	return out;
+}
+
+/** Wallet-scoped stuck/incoming-tx detection (cairn-u9ob.2), single-sig. */
+export async function detectWalletUnconfirmedInflows(
+	userId: number,
+	walletId: number
+): Promise<UnconfirmedInflow[] | null> {
+	const wallet = ownedWallet(userId, walletId);
+	if (!wallet) return null;
+	const utxos = await getWalletUtxos(wallet.xpub);
+	return detectUnconfirmedInflows(utxos, ownBroadcastTxids(walletId));
+}
+
 export interface BuildDraftInput {
 	/** One or more outputs; 'max' only as the sole recipient's amount. */
 	recipients: { address: string; amount: number | 'max' }[];
