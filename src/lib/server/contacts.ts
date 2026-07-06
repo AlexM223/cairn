@@ -12,6 +12,7 @@
 // emails have accounts here.
 
 import { db } from './db';
+import { revokeAllSharesBetween } from './multisigShares';
 
 export class ContactError extends Error {
 	code: 'self' | 'invalid_email';
@@ -137,12 +138,26 @@ export function respondToContact(userId: number, contactId: number, accept: bool
  * row doesn't exist or doesn't involve the caller.
  */
 export function removeContact(userId: number, contactId: number): boolean {
-	const res = db
+	const row = db
 		.prepare(
-			`DELETE FROM contacts WHERE id = ? AND (user_id = ? OR contact_user_id = ?)`
+			`SELECT user_id, contact_user_id FROM contacts
+			  WHERE id = ? AND (user_id = ? OR contact_user_id = ?)`
 		)
-		.run(contactId, userId, userId);
-	return Number(res.changes) > 0;
+		.get(contactId, userId, userId) as
+		| { user_id: number; contact_user_id: number | null }
+		| undefined;
+	if (!row) return false;
+
+	db.prepare('DELETE FROM contacts WHERE id = ?').run(contactId);
+
+	// Ending the contact relationship also ends any multisig access it enabled:
+	// sharing requires an accepted contact, so revoke shares in BOTH directions
+	// between the two users (cairn-2oex). A pending, not-yet-linked contact
+	// (contact_user_id NULL) can have no shares.
+	if (row.contact_user_id != null) {
+		revokeAllSharesBetween(row.user_id, row.contact_user_id);
+	}
+	return true;
 }
 
 /** True when the two users are ACCEPTED contacts (either direction). */

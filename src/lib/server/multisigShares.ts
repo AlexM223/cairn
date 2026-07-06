@@ -159,6 +159,35 @@ export function revokeMultisigShare(ownerId: number, shareId: number): boolean {
 	return true;
 }
 
+/**
+ * Revoke every multisig share BETWEEN two users, in both directions (A owns and
+ * shared with B, and B owns and shared with A), unassigning any keys. Used when
+ * the contact relationship that authorized the sharing ends (cairn-2oex).
+ * Returns the number of shares revoked.
+ */
+export function revokeAllSharesBetween(userA: number, userB: number): number {
+	const shares = db
+		.prepare(
+			`SELECT id, multisig_id, shared_with_id FROM multisig_shares
+			  WHERE (owner_id = ? AND shared_with_id = ?)
+			     OR (owner_id = ? AND shared_with_id = ?)`
+		)
+		.all(userA, userB, userB, userA) as {
+		id: number;
+		multisig_id: number;
+		shared_with_id: number;
+	}[];
+
+	for (const s of shares) {
+		// Same teardown as revokeMultisigShare: unassign keys, then drop the share.
+		db.prepare(
+			'UPDATE multisig_keys SET assigned_user_id = NULL WHERE multisig_id = ? AND assigned_user_id = ?'
+		).run(s.multisig_id, s.shared_with_id);
+		db.prepare('DELETE FROM multisig_shares WHERE id = ?').run(s.id);
+	}
+	return shares.length;
+}
+
 /** Everyone this wallet is shared with, with their assigned keys (owner view). */
 export function listCollaborators(ownerId: number, multisigId: number): Collaborator[] {
 	requireOwned(ownerId, multisigId);
