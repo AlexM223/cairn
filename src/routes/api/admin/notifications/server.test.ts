@@ -9,11 +9,13 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { db } from '$lib/server/db';
 import { registerUser } from '$lib/server/auth';
-import { setSetting, getSetting } from '$lib/server/settings';
+import { setSetting, getSetting, readSecretSetting } from '$lib/server/settings';
 import { POST } from './+server';
 
 function wipe(): void {
-	db.exec('DELETE FROM events; DELETE FROM sessions; DELETE FROM users; DELETE FROM settings;');
+	db.exec(
+		'DELETE FROM events; DELETE FROM sessions; DELETE FROM users; DELETE FROM settings; DELETE FROM instance_secrets;'
+	);
 }
 
 const PASSWORD = 'correct horse battery';
@@ -75,14 +77,14 @@ describe('SMTP cleartext cross-field validation (cairn-uhc6)', () => {
 		db.exec("DELETE FROM settings WHERE key IN ('smtp_user', 'smtp_pass')");
 		const { status } = await post({ smtpPass: 'fresh-secret', smtpTls: 'none' });
 		expect(status).toBe(400);
-		expect(getSetting('smtp_pass')).toBeNull();
+		expect(readSecretSetting('smtp_pass')).toBeNull();
 	});
 
 	it('clearing credentials first, then setting tls "none", succeeds', async () => {
 		const cleared = await post({ smtpUser: '', clearSmtpPass: true });
 		expect(cleared.status).toBe(200);
 		expect(getSetting('smtp_user')).toBe('');
-		expect(getSetting('smtp_pass')).toBe('');
+		expect(readSecretSetting('smtp_pass')).toBe('');
 
 		const tlsOff = await post({ smtpTls: 'none' });
 		expect(tlsOff.status).toBe(200);
@@ -94,6 +96,6 @@ describe('SMTP cleartext cross-field validation (cairn-uhc6)', () => {
 		expect(status).toBe(200);
 		expect(body.settings.smtpTls).toBe('none');
 		expect(getSetting('smtp_tls')).toBe('none');
-		expect(getSetting('smtp_pass')).toBe('');
+		expect(readSecretSetting('smtp_pass')).toBe('');
 	});
 });

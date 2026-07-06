@@ -20,8 +20,16 @@ import { isSecretEnvelope } from './secretKey';
 const SECRET = 'super-secret-rpc-pass';
 
 beforeEach(() => {
-	db.exec('DELETE FROM settings;');
+	db.exec('DELETE FROM settings; DELETE FROM instance_secrets;');
 });
+
+/** What actually sits at rest for a secret key (instance_secrets.value_enc). */
+function rawInstanceSecret(key: string): string | null {
+	const row = db.prepare('SELECT value_enc FROM instance_secrets WHERE key = ?').get(key) as
+		| { value_enc: string }
+		| undefined;
+	return row?.value_enc ?? null;
+}
 
 describe('getPublicInstanceSettings — Core RPC password redaction', () => {
 	it('reports hasCoreRpcPass: false and no coreRpcPass key when unset', () => {
@@ -54,10 +62,19 @@ describe('setSecretSetting / readSecretSetting — encrypted at rest', () => {
 
 	it.each(KEYS)('%s round-trips through an envelope, plaintext never stored', (key) => {
 		setSecretSetting(key, SECRET);
-		const raw = getSetting(key)!; // what actually sits in the settings table
+		const raw = rawInstanceSecret(key)!; // what actually sits in instance_secrets
 		expect(raw).not.toContain(SECRET);
 		expect(isSecretEnvelope(raw)).toBe(true);
 		expect(readSecretSetting(key)).toBe(SECRET);
+		// The plain settings table never sees the secret (cairn-e9mz.4).
+		expect(getSetting(key)).toBeNull();
+	});
+
+	it('writing a secret removes any stale legacy copy from the settings table', () => {
+		setSetting('smtp_pass', 'legacy-plaintext');
+		setSecretSetting('smtp_pass', SECRET);
+		expect(getSetting('smtp_pass')).toBeNull(); // legacy row gone
+		expect(readSecretSetting('smtp_pass')).toBe(SECRET);
 	});
 
 	it('getInstanceSettings decrypts an encrypted core_rpc_pass', () => {
@@ -77,7 +94,7 @@ describe('setSecretSetting / readSecretSetting — encrypted at rest', () => {
 	it("'' clears: stored as '' so presence checks stay falsy", () => {
 		setSecretSetting('smtp_pass', SECRET);
 		setSecretSetting('smtp_pass', '');
-		expect(getSetting('smtp_pass')).toBe('');
+		expect(rawInstanceSecret('smtp_pass')).toBe('');
 		expect(readSecretSetting('smtp_pass')).toBe('');
 	});
 

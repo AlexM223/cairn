@@ -279,6 +279,14 @@ export interface AdminUserInfo {
 
 export type RegistrationMode = 'open' | 'invite' | 'closed';
 
+/**
+ * 'solo' hides every multi-user management surface (admin users/invites,
+ * contacts, multisig wallet sharing) — a fresh instance is a single-user
+ * appliance until an admin explicitly unlocks 'team'. See
+ * docs/SOLO-MODE-UMBREL-AUTOADMIN-PLAN.md Part 2.
+ */
+export type InstanceMode = 'solo' | 'team';
+
 /** Aggregate balance across a user's wallets (dashboard portfolio card). */
 export interface PortfolioSummary {
 	walletCount: number;
@@ -340,6 +348,7 @@ export interface PortfolioDetail {
 
 export interface InstanceSettings {
 	registrationMode: RegistrationMode;
+	instanceMode: InstanceMode;
 	connectionMode: 'public' | 'custom';
 	electrumHost: string;
 	electrumPort: number;

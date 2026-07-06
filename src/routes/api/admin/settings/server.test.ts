@@ -13,7 +13,7 @@ import { setSetting, getSetting } from '$lib/server/settings';
 import { GET, PUT } from './+server';
 
 function wipe(): void {
-	db.exec('DELETE FROM sessions; DELETE FROM users; DELETE FROM settings;');
+	db.exec('DELETE FROM sessions; DELETE FROM users; DELETE FROM settings; DELETE FROM instance_secrets;');
 }
 
 const PASSWORD = 'correct horse battery';

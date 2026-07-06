@@ -41,8 +41,7 @@ import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 
 import { db } from '../db';
 import { childLogger } from '../logger';
-import { getSetting, setSetting } from '../settings';
-import { encryptSecret, decryptSecret } from '../secretKey';
+import { getSetting, setSecretSetting, readSecretSetting, hasSecretSetting } from '../settings';
 import type {
 	ChannelSendResult,
 	NotificationChannelPlugin,
@@ -122,14 +121,13 @@ function normalizePubkey(input: string): string | null {
 /**
  * Persist a secret key encrypted at rest. The Nostr instance key is a permanent
  * signing/identity key (it derives NIP-44 conversation keys and signs events),
- * so — unlike a rotatable relay password — a plaintext copy in the settings DB
- * lets anyone who reads the file impersonate this instance's Nostr identity
- * forever. Stored via encryptSecret so a leaked DB copy is inert without the
- * instance key file (cairn-o6y5). Mirrors the per-user SMTP-password at-rest
- * scheme.
+ * so — unlike a rotatable relay password — a plaintext copy in the DB lets
+ * anyone who reads the file impersonate this instance's Nostr identity forever.
+ * Stored via setSecretSetting (instance_secrets, secretKey.ts envelope) so a
+ * leaked DB copy is inert without the instance key file (cairn-o6y5).
  */
 function persistSenderSecretKey(sk: Uint8Array): void {
-	setSetting('nostr_sender_privkey', encryptSecret(bytesToHex(sk)));
+	setSecretSetting('nostr_sender_privkey', bytesToHex(sk));
 }
 
 /**
@@ -138,45 +136,24 @@ function persistSenderSecretKey(sk: Uint8Array): void {
  * setting is absent. This key never leaves the server and there is no legitimate
  * reason to export it. Returns null only if persistence itself failed.
  *
- * Backward-compatible: a legacy PLAINTEXT 64-hex value (written before at-rest
- * encryption) is accepted once and transparently re-persisted in encrypted form,
- * so existing instances keep their identity and silently upgrade on next use.
+ * Backward-compatible: readSecretSetting transparently reads a legacy PLAINTEXT
+ * 64-hex value (written before at-rest encryption) or a not-yet-moved legacy
+ * `settings` row; the startup migration (secretsMigration.ts) rewrites those
+ * into instance_secrets so existing instances keep their identity.
  */
 function getOrCreateSenderSecretKey(): Uint8Array | null {
-	const existing = getSetting('nostr_sender_privkey');
+	const existing = readSecretSetting('nostr_sender_privkey');
 	if (existing) {
-		const trimmed = existing.trim();
-		// Legacy plaintext form: a bare 64-hex key. Adopt it, then migrate to the
-		// encrypted envelope so the plaintext copy stops living in the DB.
-		if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
-			try {
-				const sk = hexToBytes(trimmed.toLowerCase());
-				try {
-					persistSenderSecretKey(sk);
-					log.info('migrated the instance Nostr identity to encrypted-at-rest storage');
-				} catch (e) {
-					// Migration is best-effort — the key still works this run even if the
-					// re-encrypt write fails; it'll retry next time.
-					log.warn({ err: e }, 'failed to migrate Nostr identity to encrypted storage');
-				}
-				return sk;
-			} catch {
-				// fall through to regenerate — a corrupt stored key is unusable
-			}
-		} else {
-			// Encrypted envelope form.
-			try {
-				const hex = decryptSecret(trimmed).trim().toLowerCase();
-				if (/^[0-9a-fA-F]{64}$/.test(hex)) return hexToBytes(hex);
-				log.error('decrypted Nostr identity is not a valid 64-hex key');
-			} catch (e) {
-				log.error({ err: e }, 'failed to decrypt the stored Nostr identity');
-			}
-			// A present-but-undecryptable key must NOT be silently replaced — that
-			// would change the instance's Nostr identity and orphan prior DMs. Fail
-			// closed so an operator investigates (e.g. a lost/rotated instance key).
-			return null;
-		}
+		const hex = existing.trim().toLowerCase();
+		if (/^[0-9a-f]{64}$/.test(hex)) return hexToBytes(hex);
+		log.error('stored Nostr identity is not a valid 64-hex key');
+		return null;
+	}
+	if (hasSecretSetting('nostr_sender_privkey')) {
+		// A present-but-undecryptable key must NOT be silently replaced — that
+		// would change the instance's Nostr identity and orphan prior DMs. Fail
+		// closed so an operator investigates (e.g. a lost/rotated instance key).
+		return null;
 	}
 	try {
 		const sk = generateSecretKey();

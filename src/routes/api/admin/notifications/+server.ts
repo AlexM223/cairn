@@ -7,7 +7,7 @@
 
 import { json, readJson, requireAdmin } from '$lib/server/api';
 import { childLogger } from '$lib/server/logger';
-import { getSetting, setSetting, setSecretSetting } from '$lib/server/settings';
+import { getSetting, setSetting, setSecretSetting, readSecretSetting } from '$lib/server/settings';
 import { getPublicInstanceNotificationSettings } from '$lib/server/notifyConfig';
 import { notify } from '$lib/server/notifications';
 import type { RequestHandler } from './$types';
@@ -54,7 +54,7 @@ export const POST: RequestHandler = async (event) => {
 			? ''
 			: str(body.smtpPass) !== ''
 				? str(body.smtpPass)
-				: (getSetting('smtp_pass') ?? '');
+				: (readSecretSetting('smtp_pass') ?? '');
 	if (effectiveTls === 'none' && (effectiveUser !== '' || effectivePass !== '')) {
 		return json(
 			{

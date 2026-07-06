@@ -17,7 +17,7 @@
 // getPublicInstanceSettings()/hasCoreRpcPass pattern. Add a new secret field HERE
 // and every call site inherits the redaction.
 
-import { getSetting } from './settings';
+import { getSetting, readSecretSetting } from './settings';
 import type { NotificationChannelId } from './notifyTypes';
 
 /** Channels that carry per-user connection config (everything but in-app). */
@@ -105,9 +105,9 @@ export function getPublicInstanceNotificationSettings(): PublicInstanceNotificat
 		smtpUser: getSetting('smtp_user') ?? '',
 		smtpFrom: getSetting('smtp_from') ?? '',
 		smtpTls: tls,
-		hasSmtpPass: !!getSetting('smtp_pass'),
+		hasSmtpPass: !!readSecretSetting('smtp_pass'),
 		telegramBotToken: '',
-		hasTelegramBotToken: !!getSetting('telegram_bot_token'),
+		hasTelegramBotToken: !!readSecretSetting('telegram_bot_token'),
 		ntfyDefaultServer: getSetting('ntfy_default_server') ?? '',
 		nostrDefaultRelays: parseRelays(getSetting('nostr_default_relays')),
 		webhookAllowPrivateTargets: getSetting('webhook_allow_private_targets') === 'true'

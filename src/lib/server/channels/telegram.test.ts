@@ -7,7 +7,7 @@ import type { NotificationPayload } from '../notifyTypes';
 
 function wipe(): void {
 	db.exec(
-		'DELETE FROM notification_channel_config; DELETE FROM sessions; DELETE FROM users; DELETE FROM settings;'
+		'DELETE FROM notification_channel_config; DELETE FROM sessions; DELETE FROM users; DELETE FROM settings; DELETE FROM instance_secrets;'
 	);
 }
 

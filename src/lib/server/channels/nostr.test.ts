@@ -27,11 +27,20 @@ vi.mock('nostr-tools/pool', () => ({
 import nostrChannel, { _internals, rotateSenderSecretKey } from './nostr';
 import { bytesToHex } from 'nostr-tools/utils';
 import { decryptSecret } from '../secretKey';
+import { migratePlaintextSecretsAtRest } from '../secretsMigration';
 
 function wipe(): void {
 	db.exec(
-		'DELETE FROM notification_channel_config; DELETE FROM sessions; DELETE FROM users; DELETE FROM settings;'
+		'DELETE FROM notification_channel_config; DELETE FROM sessions; DELETE FROM users; DELETE FROM settings; DELETE FROM instance_secrets;'
 	);
+}
+
+/** Raw at-rest form of the sender identity (instance_secrets since cairn-e9mz.4). */
+function storedSenderKey(): string | null {
+	const row = db
+		.prepare("SELECT value_enc FROM instance_secrets WHERE key = 'nostr_sender_privkey'")
+		.get() as { value_enc: string } | undefined;
+	return row?.value_enc ?? null;
 }
 
 const PASSWORD = 'correct horse battery staple';
@@ -110,43 +119,52 @@ describe('normalizePubkey', () => {
 
 describe('instance sender identity', () => {
 	it('generates and persists a sender key ENCRYPTED at rest on first use (cairn-o6y5)', () => {
-		expect(getSetting('nostr_sender_privkey')).toBeNull();
+		expect(storedSenderKey()).toBeNull();
 		const sk = _internals.getOrCreateSenderSecretKey();
 		expect(sk).not.toBeNull();
-		const stored = getSetting('nostr_sender_privkey')!;
-		// The raw private key must NOT sit in the settings table in plaintext.
+		const stored = storedSenderKey()!;
+		// The raw private key must NOT sit in the DB in plaintext — and never in
+		// the plain settings table at all (cairn-e9mz.4).
 		expect(stored).not.toMatch(/^[0-9a-f]{64}$/);
+		expect(getSetting('nostr_sender_privkey')).toBeNull();
 		// It's a versioned encrypted envelope that decrypts back to the key hex.
 		expect(decryptSecret(stored)).toBe(bytesToHex(sk!));
 		// Stable across calls, no needless re-write.
 		const again = _internals.getOrCreateSenderSecretKey();
-		expect(getSetting('nostr_sender_privkey')).toBe(stored);
+		expect(storedSenderKey()).toBe(stored);
 		expect(Array.from(again!)).toEqual(Array.from(sk!));
 	});
 
-	it('transparently migrates a legacy PLAINTEXT key to encrypted storage', () => {
-		// Simulate a pre-encryption instance: a bare 64-hex key in the DB.
+	it('keeps working from a legacy PLAINTEXT settings row; startup migration encrypts + moves it', () => {
+		// Simulate a pre-encryption instance: a bare 64-hex key in `settings`.
 		const legacyHex = 'b'.repeat(64);
 		setSetting('nostr_sender_privkey', legacyHex);
 		const sk = _internals.getOrCreateSenderSecretKey();
 		expect(sk).not.toBeNull();
 		expect(bytesToHex(sk!)).toBe(legacyHex); // identity preserved
-		const stored = getSetting('nostr_sender_privkey')!;
-		expect(stored).not.toBe(legacyHex); // plaintext no longer in the DB
-		expect(decryptSecret(stored)).toBe(legacyHex); // now encrypted at rest
+
+		// The startup migration relocates + encrypts it (nostr.ts no longer does
+		// this lazily — secretsMigration.ts owns legacy upgrades).
+		migratePlaintextSecretsAtRest();
+		expect(getSetting('nostr_sender_privkey')).toBeNull();
+		expect(decryptSecret(storedSenderKey()!)).toBe(legacyHex);
+		const after = _internals.getOrCreateSenderSecretKey();
+		expect(bytesToHex(after!)).toBe(legacyHex); // identity survives the move
 	});
 
 	it('fails closed on an undecryptable stored key rather than silently changing identity', () => {
-		setSetting('nostr_sender_privkey', JSON.stringify({ v: 1, iv: 'x', tag: 'y', data: 'z' }));
+		db.prepare("INSERT INTO instance_secrets (key, value_enc) VALUES ('nostr_sender_privkey', ?)").run(
+			JSON.stringify({ v: 1, iv: 'x', tag: 'y', data: 'z' })
+		);
 		expect(_internals.getOrCreateSenderSecretKey()).toBeNull();
 	});
 
 	it('rotate generates a NEW encrypted identity and reports the new pubkey', () => {
 		const first = _internals.getOrCreateSenderSecretKey();
-		const before = getSetting('nostr_sender_privkey');
+		const before = storedSenderKey();
 		const result = rotateSenderSecretKey();
 		expect(result?.pubkey).toMatch(/^[0-9a-f]{64}$/);
-		const after = getSetting('nostr_sender_privkey')!;
+		const after = storedSenderKey()!;
 		expect(after).not.toBe(before); // a new key was written
 		expect(after).not.toMatch(/^[0-9a-f]{64}$/); // still encrypted
 		const rotated = _internals.getOrCreateSenderSecretKey();

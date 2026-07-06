@@ -6,15 +6,23 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { db } from './db';
 import { registerUser } from './auth';
 import { setSetting, getSetting } from './settings';
-import { decryptSecret } from './secretKey';
+import { encryptSecret, decryptSecret } from './secretKey';
 import { migratePlaintextSecretsAtRest } from './secretsMigration';
 
 let userId: number;
 
 function wipe(): void {
 	db.exec(
-		'DELETE FROM notification_channel_config; DELETE FROM sessions; DELETE FROM users; DELETE FROM settings;'
+		'DELETE FROM notification_channel_config; DELETE FROM sessions; DELETE FROM users; DELETE FROM settings; DELETE FROM instance_secrets;'
 	);
+}
+
+/** Raw at-rest form in the typed secrets table (null = no row). */
+function rawInstanceSecret(key: string): string | null {
+	const row = db.prepare('SELECT value_enc FROM instance_secrets WHERE key = ?').get(key) as
+		| { value_enc: string }
+		| undefined;
+	return row?.value_enc ?? null;
 }
 
 function saveChannelConfig(channel: string, cfg: Record<string, unknown>): void {
@@ -90,30 +98,48 @@ describe('migratePlaintextSecretsAtRest — ntfy access token', () => {
 	});
 });
 
-describe('migratePlaintextSecretsAtRest — instance settings secrets (cairn-e9mz.3)', () => {
-	const KEYS = ['smtp_pass', 'core_rpc_pass', 'telegram_bot_token'];
+describe('migratePlaintextSecretsAtRest — settings → instance_secrets move (cairn-e9mz.3/.4)', () => {
+	const KEYS = ['smtp_pass', 'core_rpc_pass', 'telegram_bot_token', 'nostr_sender_privkey'];
 
-	it.each(KEYS)('re-encrypts a legacy plaintext %s', (key) => {
+	it.each(KEYS)('moves a legacy plaintext %s into instance_secrets, encrypted', (key) => {
 		setSetting(key, 'legacy-secret-value');
 
 		migratePlaintextSecretsAtRest();
 
-		const raw = getSetting(key)!;
-		expect(raw).not.toBe('legacy-secret-value');
+		expect(getSetting(key)).toBeNull(); // gone from the plain settings table
+		const raw = rawInstanceSecret(key)!;
+		expect(raw).not.toContain('legacy-secret-value');
 		expect(decryptSecret(raw)).toBe('legacy-secret-value');
 	});
 
-	it('is idempotent and leaves cleared/absent values alone', () => {
-		setSetting('smtp_pass', ''); // explicit-clear sentinel
+	it('moves an already-encrypted legacy envelope without re-wrapping it', () => {
+		// Exactly what the pre-split (cairn-e9mz.3-era) code stored in `settings`.
+		setSetting('smtp_pass', encryptSecret('relay-secret'));
 		migratePlaintextSecretsAtRest();
-		expect(getSetting('smtp_pass')).toBe('');
-		expect(getSetting('core_rpc_pass')).toBeNull();
+		expect(getSetting('smtp_pass')).toBeNull();
+		expect(decryptSecret(rawInstanceSecret('smtp_pass')!)).toBe('relay-secret');
+	});
+
+	it('is idempotent, keeps the clear sentinel, and never clobbers a newer instance_secrets row', () => {
+		setSetting('smtp_pass', ''); // explicit-clear sentinel, legacy location
+		migratePlaintextSecretsAtRest();
+		expect(getSetting('smtp_pass')).toBeNull();
+		expect(rawInstanceSecret('smtp_pass')).toBe('');
 
 		setSetting('telegram_bot_token', 'BOT:token');
 		migratePlaintextSecretsAtRest();
-		const first = getSetting('telegram_bot_token');
+		const first = rawInstanceSecret('telegram_bot_token');
 		migratePlaintextSecretsAtRest();
-		expect(getSetting('telegram_bot_token')).toBe(first);
+		expect(rawInstanceSecret('telegram_bot_token')).toBe(first);
+
+		// A stale legacy row must not overwrite a value written post-split.
+		setSetting('core_rpc_pass', 'stale-old-password');
+		db.prepare("INSERT INTO instance_secrets (key, value_enc) VALUES ('core_rpc_pass', ?)").run(
+			encryptSecret('current-password')
+		);
+		migratePlaintextSecretsAtRest();
+		expect(getSetting('core_rpc_pass')).toBeNull(); // legacy row still removed
+		expect(decryptSecret(rawInstanceSecret('core_rpc_pass')!)).toBe('current-password');
 	});
 
 	it('does not touch non-secret settings keys', () => {

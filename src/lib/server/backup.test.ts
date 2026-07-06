@@ -37,7 +37,7 @@ import { buildBackup, encryptBackup, decryptBackup, restoreBackup, BackupError }
 
 function wipe(): void {
 	db.exec(
-		'DELETE FROM sessions; DELETE FROM tx_labels; DELETE FROM saved_addresses; DELETE FROM wallets; DELETE FROM invites; DELETE FROM users; DELETE FROM settings;'
+		'DELETE FROM sessions; DELETE FROM tx_labels; DELETE FROM saved_addresses; DELETE FROM wallets; DELETE FROM invites; DELETE FROM users; DELETE FROM settings; DELETE FROM instance_secrets;'
 	);
 }
 
@@ -98,6 +98,18 @@ describe('encrypt / decrypt', () => {
 		const data = buildBackup('t');
 		expect(data.settings.some((s) => s.key === 'core_rpc_pass')).toBe(false);
 		expect(JSON.stringify(data)).not.toContain('supersecret');
+	});
+
+	it('excludes instance_secrets by construction — even an innocently-named key (cairn-e9mz.4)', () => {
+		registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+		// A key the SENSITIVE_SETTING regex would NOT catch: exclusion must come
+		// from the table never being exported, not from name-based filtering.
+		db.prepare(
+			"INSERT INTO instance_secrets (key, value_enc) VALUES ('harmless_looking', 'bogus-envelope-material')"
+		).run();
+		const data = buildBackup('t');
+		expect(JSON.stringify(data)).not.toContain('bogus-envelope-material');
+		expect(JSON.stringify(data)).not.toContain('instance_secrets');
 	});
 });
 

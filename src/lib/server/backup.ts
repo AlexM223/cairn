@@ -43,6 +43,10 @@ function all(sql: string): Row[] {
 
 // Setting keys that hold a secret (e.g. the Bitcoin Core RPC password) are
 // excluded from backups — the operator re-enters them after a restore.
+// Credential material itself lives in the separate instance_secrets table
+// (cairn-e9mz.4), which buildBackup never selects from AT ALL — exclusion by
+// construction; this regex is defense-in-depth for any secret-ish key that
+// still lands in the plain settings table.
 const SENSITIVE_SETTING = /pass|secret|token|pin|key/i;
 
 /** Snapshot the instance's durable config (no credentials/tokens/keys). */

@@ -952,3 +952,18 @@ db.exec(`
 		updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 	);
 `);
+
+// Instance credential material (cairn-e9mz.4), split out of the plain `settings`
+// k/v table so "what's sensitive here" is visible in the schema instead of
+// needing a code audit: value_enc is ALWAYS a secretKey.ts envelope (or '' for
+// an explicitly cleared secret), written only via settings.ts's
+// setSecretSetting. backup.ts excludes this table from exports by construction.
+// Current keys: smtp_pass, core_rpc_pass, telegram_bot_token,
+// nostr_sender_privkey (migrated out of `settings` at startup).
+db.exec(`
+	CREATE TABLE IF NOT EXISTS instance_secrets (
+		key        TEXT PRIMARY KEY,
+		value_enc  TEXT NOT NULL,
+		updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+	);
+`);

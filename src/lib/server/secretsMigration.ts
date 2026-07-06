@@ -12,20 +12,41 @@
 import { db } from './db';
 import { childLogger } from './logger';
 import { encryptSecret, isSecretEnvelope } from './secretKey';
-import { getSetting, setSetting } from './settings';
 
 const log = childLogger('secrets-migration');
 
-/** Instance-wide `settings` keys that must hold envelopes, not plaintext. */
-const SECRET_SETTINGS_KEYS = ['smtp_pass', 'core_rpc_pass', 'telegram_bot_token'];
+/** Credential keys that historically lived in the plain `settings` k/v table.
+ *  They now live in the typed instance_secrets table (cairn-e9mz.4); any row
+ *  still found under `settings` is moved (encrypting if it's pre-encryption
+ *  plaintext) and the settings copy deleted. */
+const SECRET_SETTINGS_KEYS = [
+	'smtp_pass',
+	'core_rpc_pass',
+	'telegram_bot_token',
+	'nostr_sender_privkey'
+];
 
 function migrateSecretSettings(): void {
 	for (const key of SECRET_SETTINGS_KEYS) {
 		try {
-			const raw = getSetting(key);
-			if (!raw || isSecretEnvelope(raw)) continue;
-			setSetting(key, encryptSecret(raw));
-			log.info({ key }, 'migrated settings secret to encrypted-at-rest storage');
+			const legacy = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
+				| { value: string }
+				| undefined;
+			if (!legacy) continue;
+
+			// Never clobber an instance_secrets row — anything there was written by
+			// setSecretSetting AFTER the split, so it is strictly newer.
+			const already = db.prepare('SELECT 1 FROM instance_secrets WHERE key = ?').get(key);
+			if (!already) {
+				const raw = legacy.value;
+				const valueEnc = raw === '' || isSecretEnvelope(raw) ? raw : encryptSecret(raw);
+				db.prepare(
+					`INSERT INTO instance_secrets (key, value_enc, updated_at)
+					 VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`
+				).run(key, valueEnc);
+			}
+			db.prepare('DELETE FROM settings WHERE key = ?').run(key);
+			log.info({ key }, 'moved settings secret into instance_secrets');
 		} catch (e) {
 			log.error({ err: e, key }, 'failed to migrate a settings secret — value left as-is');
 		}

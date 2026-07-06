@@ -1,12 +1,16 @@
 import { db } from './db';
 import { childLogger } from './logger';
 import { encryptSecret, decryptSecret, isSecretEnvelope } from './secretKey';
-import type { InstanceSettings, RegistrationMode } from '$lib/types';
+import type { InstanceMode, InstanceSettings, RegistrationMode } from '$lib/types';
 
 const log = childLogger('settings');
 
 const DEFAULTS: InstanceSettings = {
 	registrationMode: 'invite',
+	// New installs start narrow (docs/SOLO-MODE-UMBREL-AUTOADMIN-PLAN.md Part 2);
+	// existing installs get an explicit 'instance_mode' row written once by
+	// instanceModeMigration.ts, based on evidence of prior multi-user usage.
+	instanceMode: 'solo',
 	connectionMode: 'public',
 	electrumHost: 'electrum.blockstream.info',
 	electrumPort: 50002,
@@ -43,23 +47,50 @@ export function setSetting(key: string, value: string): void {
 }
 
 /**
- * Store a SECRET setting encrypted at rest (secretKey.ts envelope), so a leaked
- * copy of cairn.db doesn't carry it in the clear (cairn-e9mz.3). An empty value
- * is stored as-is — '' is the explicit-clear convention and must stay falsy for
- * the presence checks built on getSetting().
+ * Store a SECRET setting encrypted at rest (secretKey.ts envelope) in the
+ * dedicated instance_secrets table (cairn-e9mz.3/.4), so a leaked copy of
+ * cairn.db doesn't carry it in the clear and the schema itself shows what's
+ * sensitive. An empty value is stored as '' — the explicit-clear convention —
+ * and must stay falsy for presence checks. Any legacy copy of the key still in
+ * the plain `settings` table is removed so a stale plaintext row can't linger.
  */
 export function setSecretSetting(key: string, value: string): void {
-	setSetting(key, value === '' ? '' : encryptSecret(value));
+	db.prepare(
+		`INSERT INTO instance_secrets (key, value_enc, updated_at)
+		 VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		 ON CONFLICT(key) DO UPDATE SET value_enc = excluded.value_enc,
+		                                updated_at = excluded.updated_at`
+	).run(key, value === '' ? '' : encryptSecret(value));
+	db.prepare('DELETE FROM settings WHERE key = ?').run(key);
+}
+
+/** The stored form of a secret setting: instance_secrets first, falling back to
+ *  a not-yet-migrated legacy row in `settings`. Null when neither exists. */
+function rawSecretSetting(key: string): string | null {
+	const row = db.prepare('SELECT value_enc FROM instance_secrets WHERE key = ?').get(key) as
+		| { value_enc: string }
+		| undefined;
+	if (row) return row.value_enc;
+	return getSetting(key);
+}
+
+/** Whether ANY stored value exists for this secret (even one that fails to
+ *  decrypt) — lets callers fail closed instead of regenerating over a value
+ *  they can no longer read (e.g. the Nostr identity key). */
+export function hasSecretSetting(key: string): boolean {
+	const raw = rawSecretSetting(key);
+	return raw !== null && raw !== '';
 }
 
 /**
  * Read a secret setting written by {@link setSecretSetting}. Legacy plaintext
- * values (written before at-rest encryption; re-encrypted by the startup
- * migration) pass through unchanged. An undecryptable envelope logs and returns
- * null — fail closed rather than handing a ciphertext blob to a consumer.
+ * values (written before at-rest encryption; moved + re-encrypted by the
+ * startup migration) pass through unchanged. An undecryptable envelope logs and
+ * returns null — fail closed rather than handing a ciphertext blob to a
+ * consumer.
  */
 export function readSecretSetting(key: string): string | null {
-	const raw = getSetting(key);
+	const raw = rawSecretSetting(key);
 	if (!raw) return raw;
 	if (!isSecretEnvelope(raw)) return raw;
 	try {
@@ -81,6 +112,7 @@ export function getInstanceSettings(): InstanceSettings {
 	const str = (k: string) => map.get(k);
 
 	if (str('registration_mode')) s.registrationMode = str('registration_mode') as RegistrationMode;
+	if (str('instance_mode')) s.instanceMode = str('instance_mode') as InstanceMode;
 	if (str('connection_mode')) s.connectionMode = str('connection_mode') as 'public' | 'custom';
 	if (str('electrum_host')) s.electrumHost = str('electrum_host')!;
 	if (str('electrum_port')) s.electrumPort = parseInt(str('electrum_port')!, 10);
@@ -98,7 +130,9 @@ export function getInstanceSettings(): InstanceSettings {
 	}
 	if (str('core_rpc_url')) s.coreRpcUrl = str('core_rpc_url')!;
 	if (str('core_rpc_user')) s.coreRpcUser = str('core_rpc_user')!;
-	if (str('core_rpc_pass')) s.coreRpcPass = readSecretSetting('core_rpc_pass');
+	// Lives in instance_secrets (with a legacy `settings` fallback), not the map.
+	const rpcPass = readSecretSetting('core_rpc_pass');
+	if (rpcPass) s.coreRpcPass = rpcPass;
 
 	return s;
 }
