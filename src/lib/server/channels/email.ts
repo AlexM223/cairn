@@ -25,7 +25,7 @@ import nodemailer from 'nodemailer';
 import * as openpgp from 'openpgp';
 import { db } from '../db';
 import { childLogger } from '../logger';
-import { getSetting } from '../settings';
+import { getSetting, readSecretSetting } from '../settings';
 import { decryptSecret } from '../secretKey';
 import { absoluteNotificationLink } from '../notifyLinks';
 import { renderEmail, renderText } from './emailTemplate';
@@ -92,7 +92,7 @@ function readInstanceSmtpConfig(): SmtpConfig | null {
 		host,
 		port: Number.isFinite(port) && port > 0 ? port : 587,
 		user: getSetting('smtp_user'),
-		pass: getSetting('smtp_pass'),
+		pass: readSecretSetting('smtp_pass'),
 		from,
 		tls
 	};

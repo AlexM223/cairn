@@ -1,5 +1,5 @@
 import { fail, redirect } from '@sveltejs/kit';
-import { getPublicInstanceSettings, setSetting } from '$lib/server/settings';
+import { getPublicInstanceSettings, setSetting, setSecretSetting } from '$lib/server/settings';
 import { reconfigureChain, testElectrum, testEsplora } from '$lib/server/chain';
 import { resetInstance } from '$lib/server/admin';
 import { invalidateWalletCache } from '$lib/server/bitcoin/walletScan';
@@ -109,9 +109,10 @@ export const actions: Actions = {
 			setSetting('core_rpc_url', String(form.get('coreRpcUrl') ?? '').trim());
 			setSetting('core_rpc_user', String(form.get('coreRpcUser') ?? '').trim());
 			// Blank means "keep the stored password" — the secret is never echoed
-			// back to the form, so an untouched field must not clear it.
+			// back to the form, so an untouched field must not clear it. Stored
+			// encrypted at rest (cairn-e9mz.3).
 			const rpcPass = String(form.get('coreRpcPass') ?? '');
-			if (rpcPass !== '') setSetting('core_rpc_pass', rpcPass);
+			if (rpcPass !== '') setSecretSetting('core_rpc_pass', rpcPass);
 			if (form.get('clearCoreRpcPass') === 'on') setSetting('core_rpc_pass', '');
 		}
 

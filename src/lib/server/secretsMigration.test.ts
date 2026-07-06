@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { db } from './db';
 import { registerUser } from './auth';
-import { setSetting } from './settings';
+import { setSetting, getSetting } from './settings';
 import { decryptSecret } from './secretKey';
 import { migratePlaintextSecretsAtRest } from './secretsMigration';
 
@@ -87,5 +87,38 @@ describe('migratePlaintextSecretsAtRest — ntfy access token', () => {
 		).run(userId, 'not json{');
 		expect(() => migratePlaintextSecretsAtRest()).not.toThrow();
 		expect(rawChannelConfig('ntfy')).toBe('not json{');
+	});
+});
+
+describe('migratePlaintextSecretsAtRest — instance settings secrets (cairn-e9mz.3)', () => {
+	const KEYS = ['smtp_pass', 'core_rpc_pass', 'telegram_bot_token'];
+
+	it.each(KEYS)('re-encrypts a legacy plaintext %s', (key) => {
+		setSetting(key, 'legacy-secret-value');
+
+		migratePlaintextSecretsAtRest();
+
+		const raw = getSetting(key)!;
+		expect(raw).not.toBe('legacy-secret-value');
+		expect(decryptSecret(raw)).toBe('legacy-secret-value');
+	});
+
+	it('is idempotent and leaves cleared/absent values alone', () => {
+		setSetting('smtp_pass', ''); // explicit-clear sentinel
+		migratePlaintextSecretsAtRest();
+		expect(getSetting('smtp_pass')).toBe('');
+		expect(getSetting('core_rpc_pass')).toBeNull();
+
+		setSetting('telegram_bot_token', 'BOT:token');
+		migratePlaintextSecretsAtRest();
+		const first = getSetting('telegram_bot_token');
+		migratePlaintextSecretsAtRest();
+		expect(getSetting('telegram_bot_token')).toBe(first);
+	});
+
+	it('does not touch non-secret settings keys', () => {
+		setSetting('smtp_host', 'smtp.example.com');
+		migratePlaintextSecretsAtRest();
+		expect(getSetting('smtp_host')).toBe('smtp.example.com');
 	});
 });

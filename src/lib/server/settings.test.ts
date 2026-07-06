@@ -7,7 +7,15 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { db } from './db';
-import { setSetting, getInstanceSettings, getPublicInstanceSettings } from './settings';
+import {
+	setSetting,
+	getSetting,
+	setSecretSetting,
+	readSecretSetting,
+	getInstanceSettings,
+	getPublicInstanceSettings
+} from './settings';
+import { isSecretEnvelope } from './secretKey';
 
 const SECRET = 'super-secret-rpc-pass';
 
@@ -34,5 +42,47 @@ describe('getPublicInstanceSettings — Core RPC password redaction', () => {
 	it('the server-internal getInstanceSettings still sees the password (redaction is the public boundary)', () => {
 		setSetting('core_rpc_pass', SECRET);
 		expect(getInstanceSettings().coreRpcPass).toBe(SECRET);
+	});
+});
+
+// cairn-e9mz.3 — smtp_pass / core_rpc_pass / telegram_bot_token must be stored
+// as encryptSecret() envelopes, never raw text, while every reader still gets
+// the plaintext back (and legacy plaintext rows keep working until the startup
+// migration rewrites them).
+describe('setSecretSetting / readSecretSetting — encrypted at rest', () => {
+	const KEYS = ['smtp_pass', 'core_rpc_pass', 'telegram_bot_token'];
+
+	it.each(KEYS)('%s round-trips through an envelope, plaintext never stored', (key) => {
+		setSecretSetting(key, SECRET);
+		const raw = getSetting(key)!; // what actually sits in the settings table
+		expect(raw).not.toContain(SECRET);
+		expect(isSecretEnvelope(raw)).toBe(true);
+		expect(readSecretSetting(key)).toBe(SECRET);
+	});
+
+	it('getInstanceSettings decrypts an encrypted core_rpc_pass', () => {
+		setSecretSetting('core_rpc_pass', SECRET);
+		expect(getInstanceSettings().coreRpcPass).toBe(SECRET);
+		// And the public shape still only carries the presence flag.
+		const pub = getPublicInstanceSettings();
+		expect(pub.hasCoreRpcPass).toBe(true);
+		expect(JSON.stringify(pub)).not.toContain(SECRET);
+	});
+
+	it('reads legacy plaintext values through unchanged', () => {
+		setSetting('smtp_pass', SECRET); // pre-encryption row
+		expect(readSecretSetting('smtp_pass')).toBe(SECRET);
+	});
+
+	it("'' clears: stored as '' so presence checks stay falsy", () => {
+		setSecretSetting('smtp_pass', SECRET);
+		setSecretSetting('smtp_pass', '');
+		expect(getSetting('smtp_pass')).toBe('');
+		expect(readSecretSetting('smtp_pass')).toBe('');
+	});
+
+	it('fails closed (null) on an undecryptable envelope', () => {
+		setSetting('core_rpc_pass', JSON.stringify({ v: 1, iv: 'AAAA', tag: 'AAAA', data: 'AAAA' }));
+		expect(readSecretSetting('core_rpc_pass')).toBeNull();
 	});
 });

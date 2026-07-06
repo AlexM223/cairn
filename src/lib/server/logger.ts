@@ -185,6 +185,8 @@ const REDACT_KEYS = [
 	'oldPassword',
 	'smtpPass',
 	'smtp_pass',
+	'core_rpc_pass',
+	'coreRpcPass',
 	'secret',
 	'token',
 	'accessToken',

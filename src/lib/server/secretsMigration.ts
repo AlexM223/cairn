@@ -11,9 +11,26 @@
 
 import { db } from './db';
 import { childLogger } from './logger';
-import { encryptSecret } from './secretKey';
+import { encryptSecret, isSecretEnvelope } from './secretKey';
+import { getSetting, setSetting } from './settings';
 
 const log = childLogger('secrets-migration');
+
+/** Instance-wide `settings` keys that must hold envelopes, not plaintext. */
+const SECRET_SETTINGS_KEYS = ['smtp_pass', 'core_rpc_pass', 'telegram_bot_token'];
+
+function migrateSecretSettings(): void {
+	for (const key of SECRET_SETTINGS_KEYS) {
+		try {
+			const raw = getSetting(key);
+			if (!raw || isSecretEnvelope(raw)) continue;
+			setSetting(key, encryptSecret(raw));
+			log.info({ key }, 'migrated settings secret to encrypted-at-rest storage');
+		} catch (e) {
+			log.error({ err: e, key }, 'failed to migrate a settings secret — value left as-is');
+		}
+	}
+}
 
 /** channel → { plaintext field → encrypted field } in notification_channel_config. */
 const CHANNEL_SECRET_FIELDS: Record<string, Record<string, string>> = {
@@ -70,5 +87,10 @@ export function migratePlaintextSecretsAtRest(): void {
 		migrateChannelConfigs();
 	} catch (e) {
 		log.error({ err: e }, 'channel-config secret migration failed');
+	}
+	try {
+		migrateSecretSettings();
+	} catch (e) {
+		log.error({ err: e }, 'settings-table secret migration failed');
 	}
 }

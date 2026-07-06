@@ -1,5 +1,9 @@
 import { db } from './db';
+import { childLogger } from './logger';
+import { encryptSecret, decryptSecret, isSecretEnvelope } from './secretKey';
 import type { InstanceSettings, RegistrationMode } from '$lib/types';
+
+const log = childLogger('settings');
 
 const DEFAULTS: InstanceSettings = {
 	registrationMode: 'invite',
@@ -38,6 +42,34 @@ export function setSetting(key: string, value: string): void {
 	).run(key, value);
 }
 
+/**
+ * Store a SECRET setting encrypted at rest (secretKey.ts envelope), so a leaked
+ * copy of cairn.db doesn't carry it in the clear (cairn-e9mz.3). An empty value
+ * is stored as-is — '' is the explicit-clear convention and must stay falsy for
+ * the presence checks built on getSetting().
+ */
+export function setSecretSetting(key: string, value: string): void {
+	setSetting(key, value === '' ? '' : encryptSecret(value));
+}
+
+/**
+ * Read a secret setting written by {@link setSecretSetting}. Legacy plaintext
+ * values (written before at-rest encryption; re-encrypted by the startup
+ * migration) pass through unchanged. An undecryptable envelope logs and returns
+ * null — fail closed rather than handing a ciphertext blob to a consumer.
+ */
+export function readSecretSetting(key: string): string | null {
+	const raw = getSetting(key);
+	if (!raw) return raw;
+	if (!isSecretEnvelope(raw)) return raw;
+	try {
+		return decryptSecret(raw);
+	} catch (e) {
+		log.error({ key, err: e }, 'failed to decrypt secret setting');
+		return null;
+	}
+}
+
 export function getInstanceSettings(): InstanceSettings {
 	const s = { ...DEFAULTS };
 	const rows = db.prepare('SELECT key, value FROM settings').all() as {
@@ -66,7 +98,7 @@ export function getInstanceSettings(): InstanceSettings {
 	}
 	if (str('core_rpc_url')) s.coreRpcUrl = str('core_rpc_url')!;
 	if (str('core_rpc_user')) s.coreRpcUser = str('core_rpc_user')!;
-	if (str('core_rpc_pass')) s.coreRpcPass = str('core_rpc_pass')!;
+	if (str('core_rpc_pass')) s.coreRpcPass = readSecretSetting('core_rpc_pass');
 
 	return s;
 }

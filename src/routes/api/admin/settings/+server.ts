@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { requireAdmin, readJson } from '$lib/server/api';
-import { getPublicInstanceSettings, setSetting } from '$lib/server/settings';
+import { getPublicInstanceSettings, setSetting, setSecretSetting } from '$lib/server/settings';
 import { reconfigureChain } from '$lib/server/chain';
 import type { RequestHandler } from './$types';
 
@@ -76,8 +76,12 @@ export const PUT: RequestHandler = async (event) => {
 	for (const [key, dbKey] of Object.entries(KEY_MAP)) {
 		if (!(key in body)) continue;
 		// An empty password means "keep the stored one" — it is never echoed
-		// back to clients, so callers can't meaningfully resubmit it.
-		if (key === 'coreRpcPass' && String(body[key]) === '') continue;
+		// back to clients, so callers can't meaningfully resubmit it. A new
+		// value is stored encrypted at rest (cairn-e9mz.3).
+		if (key === 'coreRpcPass') {
+			if (String(body[key]) !== '') setSecretSetting(dbKey, String(body[key]));
+			continue;
+		}
 		setSetting(dbKey, String(body[key]));
 	}
 	reconfigureChain();

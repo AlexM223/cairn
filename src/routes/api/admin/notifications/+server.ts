@@ -7,7 +7,7 @@
 
 import { json, readJson, requireAdmin } from '$lib/server/api';
 import { childLogger } from '$lib/server/logger';
-import { getSetting, setSetting } from '$lib/server/settings';
+import { getSetting, setSetting, setSecretSetting } from '$lib/server/settings';
 import { getPublicInstanceNotificationSettings } from '$lib/server/notifyConfig';
 import { notify } from '$lib/server/notifications';
 import type { RequestHandler } from './$types';
@@ -87,12 +87,14 @@ export const POST: RequestHandler = async (event) => {
 			if (!TLS_MODES.has(mode)) return json({ error: 'Invalid TLS mode.' }, { status: 400 });
 			setSetting('smtp_tls', mode);
 		}
-		// Secrets: blank = keep; explicit clear flag = wipe.
-		if (body.clearSmtpPass === true) setSetting('smtp_pass', '');
-		else if (str(body.smtpPass) !== '') setSetting('smtp_pass', str(body.smtpPass));
+		// Secrets: blank = keep; explicit clear flag = wipe. New values are stored
+		// encrypted at rest (cairn-e9mz.3); '' clears via the same helper.
+		if (body.clearSmtpPass === true) setSecretSetting('smtp_pass', '');
+		else if (str(body.smtpPass) !== '') setSecretSetting('smtp_pass', str(body.smtpPass));
 
-		if (body.clearTelegramBotToken === true) setSetting('telegram_bot_token', '');
-		else if (str(body.telegramBotToken) !== '') setSetting('telegram_bot_token', str(body.telegramBotToken));
+		if (body.clearTelegramBotToken === true) setSecretSetting('telegram_bot_token', '');
+		else if (str(body.telegramBotToken) !== '')
+			setSecretSetting('telegram_bot_token', str(body.telegramBotToken));
 
 		if ('ntfyDefaultServer' in body) {
 			const server = str(body.ntfyDefaultServer);

@@ -16,7 +16,7 @@
 
 import { db } from '../db';
 import { childLogger } from '../logger';
-import { getSetting } from '../settings';
+import { getSetting, readSecretSetting } from '../settings';
 import type {
 	ChannelSendResult,
 	NotificationChannelPlugin,
@@ -126,7 +126,7 @@ async function callSendMessage(
 
 /** Read the bot token + user's chat id, or return a terminal config error. */
 function preflight(userId: number): { token: string; chatId: string } | ChannelSendResult {
-	const token = getSetting('telegram_bot_token');
+	const token = readSecretSetting('telegram_bot_token');
 	if (!token) {
 		return { ok: false, error: 'Telegram is not configured on this instance.', retryable: false };
 	}
@@ -143,7 +143,7 @@ const telegramChannel: NotificationChannelPlugin = {
 
 	/** Configured when the instance has a bot token AND this user has a chat id. */
 	isConfigured(userId: number): boolean {
-		return getSetting('telegram_bot_token') !== null && readChatId(userId) !== null;
+		return readSecretSetting('telegram_bot_token') !== null && readChatId(userId) !== null;
 	},
 
 	async send(userId: number, payload: NotificationPayload): Promise<ChannelSendResult> {
