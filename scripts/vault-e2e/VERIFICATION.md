@@ -142,3 +142,35 @@ taproot/bech32m (bc1p-equivalent) destination, and confirmation.
 6. Re-importing an already-active descriptor into the same watch wallet →
    `new range must include current range` → verify-quorum uses a unique
    wallet name per run.
+
+## Vault E2E through Cairn's OWN code (bead cairn-a4k) — PASSED 2026-07-06
+
+The rehearsal above proves the *stack*; this run proves **Cairn's real modules**
+drive the whole journey. Test: `src/lib/server/bitcoin/vaultRegtestE2E.test.ts`
+(gated behind `VAULT_E2E=1`, inert in normal CI).
+
+```
+VAULT_E2E=1 npx vitest run src/lib/server/bitcoin/vaultRegtestE2E.test.ts
+  ✓ vault 2-of-3 regtest E2E through Cairn multisig code (cairn-a4k)
+  a4k: broadcast txid c367f9b925c269b950bff0bf1b750a4fbab166af3c9b5487a6689a419c06df17, confirmations 1
+```
+
+What ran through Cairn's actual code (not a parallel re-implementation):
+- `createMultisig` / `toMultisigConfig` — 2-of-3 p2wsh vault from three real
+  BIP48 cosigners (two Core signers + the known-mnemonic ColdCard key).
+- `deriveMultisigAddress` — Cairn's derived scriptPubKey asserted **byte-equal**
+  to Bitcoin Core's `deriveaddresses` for the same index (mainnet-xpub vs
+  regtest-tpub derivation agree, as they must — pubkey derivation is
+  version-byte-independent).
+- `constructMultisigPsbt` — built the actual spend PSBT from the funded UTXO.
+- Quorum enforced: one `descriptorprocesspsbt` signature does **not** finalize;
+  the second completes it (matches the real 2-of-3 policy).
+- Broadcast + confirmed on regtest (txid above).
+- `caravanExport` → `parseCaravanImport` round-trip: threshold + all three
+  fingerprints preserved; descriptor is `wsh(sortedmulti(2,...))`.
+
+Signing here uses Core-wallet cosigners (deterministic, CI-able) rather than the
+Trezor/Speculos emulators; the emulators' own signing paths are already proven
+against Cairn's exact `trezor.ts`/`ledger.ts` translation code in `.hw-emu-test`
+(single-sig) — this test closes the remaining gap: Cairn's **multisig** builder
+and export in a live fund→spend→broadcast loop.
