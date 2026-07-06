@@ -9,6 +9,7 @@ import { startAddressWatcher } from '$lib/server/addressWatcher';
 import { startKeyHealthWatcher } from '$lib/server/keyHealth';
 import { startBackupHealthWatcher } from '$lib/server/backupHealth';
 import { startPortfolioWarm } from '$lib/server/portfolioWarm';
+import { startRetentionSweep } from '$lib/server/dataRetention';
 import { migratePlaintextSecretsAtRest } from '$lib/server/secretsMigration';
 
 const httpLog = childLogger('http');
@@ -53,6 +54,13 @@ try {
 	startKeyHealthWatcher();
 } catch (e) {
 	errLog.error({ err: e }, 'key health watcher start failed');
+}
+// Daily retention sweep (cairn-zui7): purges aged/orphaned rows from the
+// unbounded tables. Idempotent, unref'd, best-effort like the watchers above.
+try {
+	startRetentionSweep();
+} catch (e) {
+	errLog.error({ err: e }, 'retention sweep start failed');
 }
 // Backup-health scan (cairn-evp9): fires backup_missing for never-backed-up
 // wallets and backup_stale when the instance backup ages past the reminder
