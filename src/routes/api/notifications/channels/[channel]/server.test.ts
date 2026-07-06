@@ -192,6 +192,50 @@ describe('ntfy channel config — encrypted access token (cairn-e9mz.1)', () => 
 	});
 });
 
+describe('webhook channel config — encrypted signing secret (cairn-e9mz.2)', () => {
+	const SECRET = 'a-sixteen-char-plus-secret';
+
+	it('stores the secret ENCRYPTED (plaintext never stored) and redacts it', async () => {
+		const { status, body } = await put('webhook', { url: 'https://example.com/hook', secret: SECRET });
+		expect(status).toBe(200);
+		expect(body.config.secret).toBeUndefined();
+		expect(body.config.secretEnc).toBeUndefined();
+		expect(body.config.hasSecret).toBe(true);
+
+		const raw = rawStoredConfigFor('webhook');
+		expect(raw).not.toContain(SECRET);
+		const stored = JSON.parse(raw);
+		expect(stored.secret).toBeUndefined();
+		expect(decryptSecret(stored.secretEnc)).toBe(SECRET);
+	});
+
+	it('still rejects a too-short secret (validated on the raw value)', async () => {
+		const { status } = await put('webhook', { url: 'https://example.com/hook', secret: 'short' });
+		expect(status).toBe(400);
+	});
+
+	it('keeps the stored encrypted secret when secret is blank on a later save', async () => {
+		await put('webhook', { url: 'https://example.com/hook', secret: SECRET });
+		const firstEnc = JSON.parse(rawStoredConfigFor('webhook')).secretEnc;
+
+		await put('webhook', { url: 'https://example.com/hook2', secret: '' });
+		const stored = JSON.parse(rawStoredConfigFor('webhook'));
+		expect(stored.secretEnc).toBe(firstEnc); // unchanged
+		expect(stored.url).toBe('https://example.com/hook2');
+	});
+
+	it('upgrades a legacy plaintext secret to the envelope on re-save', async () => {
+		db.prepare(
+			`INSERT INTO notification_channel_config (user_id, channel, config) VALUES (?, 'webhook', ?)`
+		).run(userId, JSON.stringify({ url: 'https://example.com/hook', secret: 'legacy-secret' }));
+
+		await put('webhook', { url: 'https://example.com/hook', secret: '' });
+		const raw = rawStoredConfigFor('webhook');
+		expect(raw).not.toContain('legacy-secret');
+		expect(decryptSecret(JSON.parse(raw).secretEnc)).toBe('legacy-secret');
+	});
+});
+
 describe('other channels unaffected', () => {
 
 	it('DELETE clears the channel config row', async () => {

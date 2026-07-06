@@ -17,7 +17,8 @@ const log = childLogger('secrets-migration');
 
 /** channel → { plaintext field → encrypted field } in notification_channel_config. */
 const CHANNEL_SECRET_FIELDS: Record<string, Record<string, string>> = {
-	ntfy: { accessToken: 'accessTokenEnc' }
+	ntfy: { accessToken: 'accessTokenEnc' },
+	webhook: { secret: 'secretEnc' }
 };
 
 function migrateChannelConfigs(): void {

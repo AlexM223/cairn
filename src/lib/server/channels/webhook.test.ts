@@ -11,6 +11,7 @@ vi.mock('node:dns/promises', () => ({
 }));
 
 import webhookChannel, { _internals } from './webhook';
+import { encryptSecret } from '../secretKey';
 import { _transport } from './ssrf';
 
 /** A SafeResponse-shaped result for the pinned transport mock. */
@@ -133,6 +134,30 @@ describe('send() — success + signing', () => {
 		// Recompute over the EXACT bytes we sent — must match.
 		const expected = 'sha256=' + createHmac('sha256', secret).update(init.body!, 'utf8').digest('hex');
 		expect(sig).toBe(expected);
+	});
+
+	it('signs with an encrypted-at-rest secret (secretEnc, cairn-e9mz.2)', async () => {
+		const u = makeUser('f2@example.com');
+		const secret = 'a-much-longer-signing-secret';
+		saveConfig(u, { url: 'https://example.com/hook', secretEnc: encryptSecret(secret) });
+
+		await webhookChannel.send(u, payload);
+		const init = sendMock.mock.calls[0][2];
+		const expected = 'sha256=' + createHmac('sha256', secret).update(init.body!, 'utf8').digest('hex');
+		expect(init.headers!['X-Cairn-Signature']).toBe(expected);
+	});
+
+	it('fails closed (no unsigned POST) when the stored secret cannot be decrypted', async () => {
+		const u = makeUser('f3@example.com');
+		saveConfig(u, {
+			url: 'https://example.com/hook',
+			secretEnc: JSON.stringify({ v: 1, iv: 'AAAA', tag: 'AAAA', data: 'AAAA' })
+		});
+
+		const res = await webhookChannel.send(u, payload);
+		expect(res.ok).toBe(false);
+		expect(res.retryable).toBe(false);
+		expect(sendMock).not.toHaveBeenCalled();
 	});
 });
 

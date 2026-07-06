@@ -240,12 +240,17 @@ function buildConfig(
 			// A newly-set secret must be long enough to be a meaningful HMAC key —
 			// a 1-char secret makes X-Cairn-Signature trivially forgeable (cairn-45a2).
 			// Blank means keep the stored one (existing secrets are grandfathered).
+			// The length check runs on the RAW value; storage is the encrypted
+			// envelope (secretEnc), with legacy plaintext upgraded on the way through.
 			if (body.secret != null && str(body.secret) !== '' && str(body.secret).length < 16) {
 				throw new Error('The signing secret must be at least 16 characters.');
 			}
-			const secret = body.secret == null || str(body.secret) === '' ? prev.secret : str(body.secret);
+			const secretEnc =
+				body.secret == null || str(body.secret) === ''
+					? (prev.secretEnc ?? (str(prev.secret) ? encryptSecret(str(prev.secret)) : undefined))
+					: encryptSecret(str(body.secret));
 			const cfg: Record<string, unknown> = { url };
-			if (secret) cfg.secret = secret;
+			if (secretEnc) cfg.secretEnc = secretEnc;
 			return cfg;
 		}
 		default:

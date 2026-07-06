@@ -68,6 +68,19 @@ describe('migratePlaintextSecretsAtRest — ntfy access token', () => {
 		expect(JSON.parse(rawChannelConfig('ntfy'))).toEqual({ topic: 'no-token' });
 	});
 
+	it('re-encrypts a legacy plaintext webhook secret (cairn-e9mz.2)', () => {
+		saveChannelConfig('webhook', { url: 'https://example.com/hook', secret: 'legacy-hmac-key' });
+
+		migratePlaintextSecretsAtRest();
+
+		const raw = rawChannelConfig('webhook');
+		expect(raw).not.toContain('legacy-hmac-key');
+		const cfg = JSON.parse(raw);
+		expect(cfg.secret).toBeUndefined();
+		expect(decryptSecret(cfg.secretEnc)).toBe('legacy-hmac-key');
+		expect(cfg.url).toBe('https://example.com/hook');
+	});
+
 	it('skips (and survives) a corrupt config row', () => {
 		db.prepare(
 			`INSERT INTO notification_channel_config (user_id, channel, config) VALUES (?, 'ntfy', ?)`

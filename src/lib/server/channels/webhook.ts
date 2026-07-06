@@ -63,6 +63,7 @@ import { createHmac } from 'node:crypto';
 
 import { db } from '../db';
 import { childLogger } from '../logger';
+import { decryptSecret } from '../secretKey';
 import {
 	checkTargetUrl,
 	isBlockedAddress,
@@ -84,7 +85,18 @@ const REQUEST_TIMEOUT_MS = 10_000;
 
 interface WebhookUserConfig {
 	url: string;
+	/** HMAC signing secret, decrypted and ready to key createHmac with. */
 	secret?: string;
+}
+
+/** Raw shape of the stored config JSON (secret encrypted at rest). */
+interface StoredWebhookConfig {
+	url?: unknown;
+	/** Encrypted (secretKey.ts envelope) signing secret. */
+	secretEnc?: unknown;
+	/** Legacy plaintext secret from pre-encryption rows — re-encrypted by the
+	 *  startup migration; honored here so an unmigrated row keeps signing. */
+	secret?: unknown;
 }
 
 /** The exact JSON body shape we POST (documented in the file header). */
@@ -119,16 +131,27 @@ function readUserConfig(userId: number): WebhookUserConfig | null {
 		return null;
 	}
 	if (!raw) return null;
+	let parsed: StoredWebhookConfig;
 	try {
-		const parsed = JSON.parse(raw) as Partial<WebhookUserConfig>;
-		if (!parsed || typeof parsed.url !== 'string' || parsed.url.trim().length === 0) return null;
-		const secret =
-			typeof parsed.secret === 'string' && parsed.secret.length > 0 ? parsed.secret : undefined;
-		return { url: parsed.url.trim(), secret };
+		parsed = JSON.parse(raw) as StoredWebhookConfig;
 	} catch (e) {
 		log.error({ err: e, userId }, 'webhook channel config is not valid JSON');
 		return null;
 	}
+	if (!parsed || typeof parsed.url !== 'string' || parsed.url.trim().length === 0) return null;
+	let secret =
+		typeof parsed.secret === 'string' && parsed.secret.length > 0 ? parsed.secret : undefined;
+	if (typeof parsed.secretEnc === 'string' && parsed.secretEnc.length > 0) {
+		try {
+			secret = decryptSecret(parsed.secretEnc) || undefined;
+		} catch (e) {
+			// Fail closed: the user asked for signed webhooks — POSTing unsigned (or
+			// mis-signed) payloads instead would defeat the receiver's verification.
+			log.error({ err: e, userId }, 'failed to decrypt webhook signing secret');
+			return null;
+		}
+	}
+	return { url: parsed.url.trim(), secret };
 }
 
 /** Build the exact JSON body we POST for a given payload/type. */

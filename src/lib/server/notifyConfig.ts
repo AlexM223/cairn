@@ -42,8 +42,10 @@ export function redactChannelConfig(
 			return { ...rest, hasAccessToken: !!(accessTokenEnc || accessToken) };
 		}
 		case 'webhook': {
-			const { secret, ...rest } = cfg;
-			return { ...rest, hasSecret: !!secret };
+			// secretEnc is the encrypted-at-rest form; secret only appears on legacy
+			// rows the startup migration hasn't rewritten yet.
+			const { secret, secretEnc, ...rest } = cfg;
+			return { ...rest, hasSecret: !!(secretEnc || secret) };
 		}
 		case 'email': {
 			// Personal SMTP: strip the encrypted password envelope, expose presence
