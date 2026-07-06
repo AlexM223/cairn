@@ -12,12 +12,14 @@ import { registerUser } from '$lib/server/auth';
 import { setSetting } from '$lib/server/settings';
 import { recordAdminDisclosure, recordUserAgreement } from '$lib/server/disclosures';
 import { generateRecoveryPhrase, generateRecoveryCodes } from '$lib/server/recovery';
+import { createAnnouncement, dismissAnnouncement } from '$lib/server/announcements';
 import { load } from './+layout.server';
 
 function wipe(): void {
 	db.exec(
 		'DELETE FROM account_recovery_codes; DELETE FROM account_recovery_phrases; ' +
 			'DELETE FROM admin_disclosure_acceptances; DELETE FROM user_agreement_acceptances; ' +
+			'DELETE FROM announcement_dismissals; DELETE FROM announcements; ' +
 			'DELETE FROM wallet_backups; DELETE FROM backup_reminders; DELETE FROM multisigs; ' +
 			'DELETE FROM wallets; DELETE FROM sessions; DELETE FROM users; DELETE FROM settings;'
 	);
@@ -82,5 +84,42 @@ describe('(app) layout recovery-setup gate (cairn-8u9j)', () => {
 	it('stops redirecting once the admin completes recovery setup', async () => {
 		completeRecovery(admin.id);
 		expect(await runLoad(admin, '/wallets')).toEqual({ redirected: null });
+	});
+});
+
+// Announcement banners are loaded by this same layout load, gated on the
+// announcement_banners feature flag as resolved in locals.flags (populated by
+// hooks.server.ts). Flag off must mean ZERO banners in the returned data —
+// the client renders whatever the load hands it.
+describe('(app) layout announcement banners (flag-gated)', () => {
+	/** Run the layout load for a member (no gates fire) and return its data.
+	 *  (The load's return type unions with void — for a member on /wallets it
+	 *  always returns data, so narrow it.) */
+	type LayoutData = Exclude<Awaited<ReturnType<typeof load>>, void>;
+	async function loadData(flags: Record<string, boolean>): Promise<LayoutData> {
+		const event = {
+			locals: { user: member, flags },
+			url: new URL('http://localhost/wallets')
+		} as unknown as Parameters<typeof load>[0];
+		return (await load(event)) as LayoutData;
+	}
+
+	it('loads active announcements when the flag is on (default: absent ≠ false)', async () => {
+		const a = createAnnouncement({ type: 'info', title: 'Hello', body: 'A test banner.' });
+		const data = await loadData({});
+		expect(data.announcements.map((x: { id: number }) => x.id)).toEqual([a.id]);
+	});
+
+	it('returns zero announcements when announcement_banners is off', async () => {
+		createAnnouncement({ type: 'info', title: 'Hello', body: 'A test banner.' });
+		const data = await loadData({ announcement_banners: false });
+		expect(data.announcements).toEqual([]);
+	});
+
+	it("excludes this user's dismissed announcements", async () => {
+		const a = createAnnouncement({ type: 'info', title: 'Hello', body: 'A test banner.' });
+		dismissAnnouncement(member.id, a.id);
+		const data = await loadData({});
+		expect(data.announcements).toEqual([]);
 	});
 });

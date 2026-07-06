@@ -5,6 +5,7 @@ import {
 } from '$lib/server/disclosures';
 import { hasRecoverySetup } from '$lib/server/recovery';
 import { listUnbackedWallets, shouldShowBackupReminder } from '$lib/server/backups';
+import { listActiveAnnouncementsFor } from '$lib/server/announcements';
 import type { LayoutServerLoad } from './$types';
 
 export const load: LayoutServerLoad = async ({ locals, url }) => {
@@ -50,6 +51,13 @@ export const load: LayoutServerLoad = async ({ locals, url }) => {
 		// what lets the UI hide/grey features the user can't use.
 		flags: locals.flags,
 		unbackedWallets: listUnbackedWallets(locals.user.id),
-		showBackupReminder: shouldShowBackupReminder(locals.user.id)
+		showBackupReminder: shouldShowBackupReminder(locals.user.id),
+		// Instance-wide admin announcements (active, unexpired, not dismissed by
+		// this user). Gated on the announcement_banners flag: off → none load, so
+		// nothing renders no matter what the client bundle thinks.
+		announcements:
+			locals.flags?.announcement_banners !== false
+				? listActiveAnnouncementsFor(locals.user.id)
+				: []
 	};
 };

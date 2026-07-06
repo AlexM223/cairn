@@ -3,6 +3,7 @@
 	import Logo from '$lib/components/Logo.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import NotificationPanel from '$lib/components/NotificationPanel.svelte';
+	import AnnouncementBanner from '$lib/components/AnnouncementBanner.svelte';
 
 	let { data, children } = $props();
 
@@ -88,6 +89,12 @@
 	</aside>
 
 	<main class="main">
+		{#each data.announcements ?? [] as announcement (announcement.id)}
+			<!-- Instance-wide admin announcements, above the backup nudges (an urgent
+			     maintenance notice outranks a routine reminder). Server already
+			     filtered by flag, expiry and this user's dismissals. -->
+			<AnnouncementBanner {announcement} />
+		{/each}
 		{#if unbacked.length > 0 && !backupDismissed}
 			<div class="backup-banner" role="status">
 				<Icon name="alert-triangle" size={16} />
