@@ -71,12 +71,12 @@ export const POST: RequestHandler = async (event) => {
 	if (recipients.length > 1) requireFeature(event, 'batch_transactions');
 
 	try {
-		const { draft, details } = await buildDraft(user.id, walletId, {
+		const { draft, details, chainDepthWarning } = await buildDraft(user.id, walletId, {
 			recipients,
 			feeRate: Number(body.feeRate),
 			onlyUtxos: onlyUtxos && onlyUtxos.length > 0 ? onlyUtxos : undefined
 		});
-		return json({ draft, details }, { status: 201 });
+		return json({ draft, details, chainDepthWarning }, { status: 201 });
 	} catch (e) {
 		if (e instanceof PsbtError) {
 			const status = e.code === 'construction_failed' ? 404 : 400;

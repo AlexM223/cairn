@@ -51,6 +51,11 @@ import {
 	classifyUnconfirmedTrust,
 	type UnconfirmedInflow
 } from './transactions';
+import {
+	checkUnconfirmedChainDepth,
+	checkSelectedInputsChainDepth,
+	type ChainDepthWarning
+} from './chainDepth';
 
 export type MultisigTxStatus = 'draft' | 'awaiting_signature' | 'completed' | 'superseded';
 
@@ -191,7 +196,11 @@ export async function buildMultisigDraft(
 	userId: number,
 	multisigId: number,
 	input: BuildMultisigDraftInput
-): Promise<{ draft: SavedMultisigTransaction; details: ConstructedMultisigPsbt }> {
+): Promise<{
+	draft: SavedMultisigTransaction;
+	details: ConstructedMultisigPsbt;
+	chainDepthWarning: ChainDepthWarning | null;
+}> {
 	// A wallet-level cosigner (or the owner) may initiate a spend; the roster
 	// frozen just below records who is then expected to sign it.
 	const multisig = signableMultisig(userId, multisigId);
@@ -257,7 +266,11 @@ export async function buildMultisigDraft(
 	// this notifies no one and costs a single cheap insert.
 	freezeRosterAndNotify(multisig, draft, userId);
 
-	return { draft, details };
+	// Warn (never block) if this draft spends an unconfirmed coin whose mempool
+	// chain is near the limit (cairn-u9ob.5). Network cost only when an
+	// unconfirmed coin was actually selected; silent without the v1 CPFP endpoint.
+	const chainDepthWarning = await checkSelectedInputsChainDepth(details.inputs, utxos);
+	return { draft, details, chainDepthWarning };
 }
 
 /** Raw lifecycle setter — the attach/broadcast paths below use it. */
@@ -755,6 +768,7 @@ export async function buildMultisigCpfpDraft(
 	draft: SavedMultisigTransaction;
 	details: ConstructedMultisigPsbt;
 	cpfp: { parentVsize: number; parentFee: number; childFee: number; targetRate: number };
+	chainDepthWarning: ChainDepthWarning | null;
 }> {
 	// Building a spend is cosigner-reachable (owner or role='cosigner'), same gate
 	// as buildMultisigDraft — a CPFP child is just another spend to be signed.
@@ -874,5 +888,13 @@ export async function buildMultisigCpfpDraft(
 	// notify, same as any other draft.
 	freezeRosterAndNotify(multisig, draft, userId);
 
-	return { draft, details, cpfp: { parentVsize, parentFee, childFee: details.fee, targetRate } };
+	// A CPFP child always spends the unconfirmed parent — warn (never block) if the
+	// parent's chain is near the limit (cairn-u9ob.5). Silent without v1 CPFP data.
+	const chainDepthWarning = await checkUnconfirmedChainDepth([parentTxid]);
+	return {
+		draft,
+		details,
+		cpfp: { parentVsize, parentFee, childFee: details.fee, targetRate },
+		chainDepthWarning
+	};
 }

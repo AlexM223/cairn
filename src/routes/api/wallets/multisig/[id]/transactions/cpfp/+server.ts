@@ -30,13 +30,13 @@ export const POST: RequestHandler = async (event) => {
 	}
 
 	try {
-		const { draft, cpfp } = await buildMultisigCpfpDraft(
+		const { draft, cpfp, chainDepthWarning } = await buildMultisigCpfpDraft(
 			user.id,
 			multisigId,
 			parentTxid,
 			feeRate
 		);
-		return json({ id: draft.id, transaction: draft, cpfp });
+		return json({ id: draft.id, transaction: draft, cpfp, chainDepthWarning });
 	} catch (e) {
 		if (e instanceof CpfpError) {
 			const status = e.code === 'not_found' ? 404 : e.code === 'already_confirmed' ? 409 : 400;

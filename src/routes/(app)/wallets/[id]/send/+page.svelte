@@ -313,10 +313,16 @@
 	let building = $state(false);
 	let buildError = $state<string | null>(null);
 
+	// A non-blocking warning when the draft spends an unconfirmed coin whose
+	// mempool chain is near the network's ancestor/descendant limit (cairn-u9ob.5).
+	// Shown on the Review step; never prevents signing/broadcast.
+	let chainDepthWarning = $state<{ message: string } | null>(null);
+
 	async function build() {
 		if (!canBuild || building) return;
 		building = true;
 		buildError = null;
+		chainDepthWarning = null;
 		const recipients = rows.map((r) => ({
 			address: r.address.trim(),
 			amount: (isMax ? 'max' : Math.round(Number(r.amountBtc) * SATS_PER_BTC)) as number | 'max'
@@ -347,6 +353,7 @@
 			}
 			draft = body.draft as SavedTransaction;
 			details = body.details as ConstructedPsbt;
+			chainDepthWarning = body.chainDepthWarning ?? null;
 			signedComplete = false;
 			for (const r of recipients) touchSavedAddress(r.address);
 			syncTxParam(draft.id);
@@ -1062,6 +1069,13 @@
 				Check every detail. Once you sign and broadcast, this transaction
 				<strong>cannot be reversed.</strong>
 			</p>
+
+			{#if chainDepthWarning}
+				<div class="chain-depth-warning" role="status">
+					<Icon name="alert-triangle" size={16} />
+					<span>{chainDepthWarning.message}</span>
+				</div>
+			{/if}
 
 			<div class="card review-hero">
 				{#if review.recipients.length === 1}
@@ -2131,6 +2145,27 @@
 	.mass-panel.red {
 		background: var(--error-muted);
 		border: 1px solid var(--error-border);
+	}
+
+	/* Non-blocking unconfirmed-chain-depth warning (cairn-u9ob.5). */
+	.chain-depth-warning {
+		display: flex;
+		align-items: flex-start;
+		gap: 10px;
+		background: var(--warning-muted);
+		border: 1px solid var(--warning-border);
+		border-radius: var(--radius-card);
+		padding: 12px 14px;
+		margin-bottom: 16px;
+		font-size: 13px;
+		line-height: 1.5;
+		color: var(--text);
+	}
+
+	.chain-depth-warning :global(svg) {
+		color: var(--warning);
+		flex-shrink: 0;
+		margin-top: 1px;
 	}
 
 	.mass-panel.red :global(svg) {

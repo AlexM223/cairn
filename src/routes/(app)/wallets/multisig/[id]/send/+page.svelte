@@ -163,6 +163,10 @@
 	let building = $state(false);
 	let buildError = $state<string | null>(null);
 
+	// Non-blocking warning when a draft spends an unconfirmed coin whose mempool
+	// chain is near the network limit (cairn-u9ob.5). Shown on Review; never blocks.
+	let chainDepthWarning = $state<{ message: string } | null>(null);
+
 	// Manual coin control (optional): selected "txid:vout" keys, empty = automatic.
 	let selectedCoins = $state<string[]>([]);
 
@@ -170,6 +174,7 @@
 		if (!canBuild || building) return;
 		building = true;
 		buildError = null;
+		chainDepthWarning = null;
 		const recipients = rows.map((r) => ({
 			address: r.address.trim(),
 			amount: (isMax ? 'max' : Math.round(Number(r.amountBtc) * SATS_PER_BTC)) as number | 'max'
@@ -197,6 +202,7 @@
 			}
 			draft = body.draft as SavedMultisigTransaction;
 			details = body.details as ConstructedMultisigPsbt;
+			chainDepthWarning = body.chainDepthWarning ?? null;
 			progress = (body.progress as MultisigSigningProgress) ?? null;
 			activeKeyId = null;
 			signFlash = null;
@@ -912,6 +918,13 @@
 				transaction, and once broadcast it <strong>cannot be reversed.</strong>
 			</p>
 
+			{#if chainDepthWarning}
+				<div class="chain-depth-warning" role="status">
+					<Icon name="alert-triangle" size={16} />
+					<span>{chainDepthWarning.message}</span>
+				</div>
+			{/if}
+
 			<div class="card review-hero">
 				{#if review.recipients.length === 1}
 					<div class="review-line">
@@ -1548,6 +1561,26 @@
 		font-size: 14px;
 		color: var(--text-secondary);
 		line-height: 1.6;
+	}
+
+	/* Non-blocking unconfirmed-chain-depth warning (cairn-u9ob.5). */
+	.chain-depth-warning {
+		display: flex;
+		align-items: flex-start;
+		gap: 10px;
+		background: var(--warning-muted);
+		border: 1px solid var(--warning-border);
+		border-radius: var(--radius-card);
+		padding: 12px 14px;
+		font-size: 13px;
+		line-height: 1.5;
+		color: var(--text);
+	}
+
+	.chain-depth-warning :global(svg) {
+		color: var(--warning);
+		flex-shrink: 0;
+		margin-top: 1px;
 	}
 
 	.step-lead strong {

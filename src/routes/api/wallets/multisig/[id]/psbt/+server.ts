@@ -72,7 +72,7 @@ export const POST: RequestHandler = async (event) => {
 	if (recipients.length > 1) requireFeature(event, 'batch_transactions');
 
 	try {
-		const { draft, details } = await buildMultisigDraft(user.id, multisigId, {
+		const { draft, details, chainDepthWarning } = await buildMultisigDraft(user.id, multisigId, {
 			recipients,
 			feeRate: Number(body.feeRate),
 			onlyUtxos: onlyUtxos && onlyUtxos.length > 0 ? onlyUtxos : undefined
@@ -85,7 +85,10 @@ export const POST: RequestHandler = async (event) => {
 			message: `Signing session started for wallet “${multisig.name}”`,
 			detail: { multisigId, threshold: multisig.threshold, keys: multisig.keys.length }
 		});
-		return json({ draft, details, progress: multisigTransactionProgress(multisig, draft) }, { status: 201 });
+		return json(
+			{ draft, details, progress: multisigTransactionProgress(multisig, draft), chainDepthWarning },
+			{ status: 201 }
+		);
 	} catch (e) {
 		if (e instanceof PsbtError) {
 			const status = e.code === 'construction_failed' ? 404 : 400;

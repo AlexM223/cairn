@@ -30,8 +30,13 @@ export const POST: RequestHandler = async (event) => {
 	}
 
 	try {
-		const { draft, cpfp } = await buildCpfpDraft(user.id, walletId, parentTxid, feeRate);
-		return json({ id: draft.id, transaction: draft, cpfp });
+		const { draft, cpfp, chainDepthWarning } = await buildCpfpDraft(
+			user.id,
+			walletId,
+			parentTxid,
+			feeRate
+		);
+		return json({ id: draft.id, transaction: draft, cpfp, chainDepthWarning });
 	} catch (e) {
 		if (e instanceof CpfpError) {
 			const status = e.code === 'not_found' ? 404 : e.code === 'already_confirmed' ? 409 : 400;

@@ -23,6 +23,11 @@ import {
 } from './bitcoin/psbt';
 import { annotateCoinbase } from './bitcoin/coinbaseScan';
 import { parseXpub, deriveAddress, addressToScripthash } from './bitcoin/xpub';
+import {
+	checkUnconfirmedChainDepth,
+	checkSelectedInputsChainDepth,
+	type ChainDepthWarning
+} from './chainDepth';
 import type { ScriptType } from '$lib/types';
 
 export type TxStatus = 'draft' | 'awaiting_signature' | 'completed' | 'superseded';
@@ -246,7 +251,11 @@ export async function buildDraft(
 	userId: number,
 	walletId: number,
 	input: BuildDraftInput
-): Promise<{ draft: SavedTransaction; details: ConstructedPsbt }> {
+): Promise<{
+	draft: SavedTransaction;
+	details: ConstructedPsbt;
+	chainDepthWarning: ChainDepthWarning | null;
+}> {
 	const wallet = ownedWallet(userId, walletId);
 	if (!wallet) throw new PsbtError('Wallet not found.', 'construction_failed');
 
@@ -315,7 +324,13 @@ export async function buildDraft(
 
 	const draft = getTransaction(userId, walletId, Number(res.lastInsertRowid));
 	if (!draft) throw new PsbtError('Draft could not be saved.', 'construction_failed');
-	return { draft, details };
+
+	// If this draft actually spends an unconfirmed coin, warn (never block) when
+	// its mempool chain is near the ancestor/descendant limit (cairn-u9ob.5).
+	// Only touches the network when an unconfirmed coin was selected; degrades
+	// silently on backends without the v1 CPFP endpoint.
+	const chainDepthWarning = await checkSelectedInputsChainDepth(details.inputs, utxos);
+	return { draft, details, chainDepthWarning };
 }
 
 /** Parse the batch `recipients` JSON column; null/garbage falls back to single-recipient. */
@@ -676,6 +691,7 @@ export async function buildCpfpDraft(
 	draft: SavedTransaction;
 	details: ConstructedPsbt;
 	cpfp: { parentVsize: number; parentFee: number; childFee: number; targetRate: number };
+	chainDepthWarning: ChainDepthWarning | null;
 }> {
 	const wallet = ownedWallet(userId, walletId);
 	if (!wallet) throw new CpfpError('Wallet not found.', 'not_found');
@@ -800,7 +816,18 @@ export async function buildCpfpDraft(
 
 	const draft = getTransaction(userId, walletId, Number(res.lastInsertRowid));
 	if (!draft) throw new PsbtError('CPFP draft could not be saved.', 'construction_failed');
-	return { draft, details, cpfp: { parentVsize, parentFee, childFee: details.fee, targetRate } };
+
+	// A CPFP child always spends the unconfirmed parent, so its chain is exactly
+	// what §5 wants checked — warn (never block) if the parent's ancestor chain is
+	// near the limit, which would make even this fee-bumping child likely to be
+	// rejected. Degrades silently without the v1 CPFP endpoint.
+	const chainDepthWarning = await checkUnconfirmedChainDepth([parentTxid]);
+	return {
+		draft,
+		details,
+		cpfp: { parentVsize, parentFee, childFee: details.fee, targetRate },
+		chainDepthWarning
+	};
 }
 
 /**
