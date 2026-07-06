@@ -1,8 +1,8 @@
 // Multisig scanning: gap-limit address discovery over Electrum for M-of-N
 // multisig multisigs. A multisig's p2wsh addresses hash to scripthashes exactly like
-// single-sig addresses, so this mirrors walletScan.ts's BIP44-style discovery
-// (same gap limit, batching, caching) with derivation swapped for
-// deriveMultisigAddress over the multisig's key set.
+// single-sig addresses, so the discovery/attribution/caching engine is the
+// shared bitcoin/gapLimitScanner.ts (also used by walletScan.ts), with
+// derivation swapped for deriveMultisigAddress over the multisig's key set.
 //
 // Contract consumed by the multisig send flow (do not rename):
 //   getMultisigUtxos(multisig)      → Promise<SpendableUtxo[]>
@@ -14,9 +14,10 @@
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { deriveMultisigAddress, multisigToDescriptor } from './bitcoin/multisig';
 import { annotateCoinbase } from './bitcoin/coinbaseScan';
-import { addressToScripthash, scriptPubKeyHex } from './bitcoin/xpub';
+import { addressToScripthash } from './bitcoin/xpub';
 import { getChain } from './chain/index';
-import type { ElectrumBalance, ElectrumHistoryItem } from './electrum/client';
+import { GAP_LIMIT, runGapScan, ScanCache, type GapScannedFields } from './bitcoin/gapLimitScanner';
+import type { ElectrumHistoryItem } from './electrum/client';
 import type { SpendableUtxo } from './bitcoin/psbt';
 import {
 	toMultisigConfig,
@@ -27,13 +28,6 @@ import {
 } from './wallets/multisig';
 import { listSharedMultisigs, type ShareRole } from './multisigShares';
 import { persistScanResult, deletePersistedScan, clearPersistedScans } from './scanCachePersist';
-
-const GAP_LIMIT = 20;
-const BATCH_SIZE = 20;
-const HARD_CAP = 400; // per chain (receive / change)
-const TX_DETAIL_CAP = 50;
-const TX_FETCH_CONCURRENCY = 8;
-const CACHE_TTL_MS = 60_000;
 
 /** One scanned multisig address. Superset of the send-flow contract's
  *  `{ address, chain, index, used }` — balance/txCount feed the detail page. */
@@ -71,11 +65,7 @@ export interface MultisigDetail {
 	history: MultisigTx[];
 }
 
-interface ScannedAddress extends MultisigScanAddress {
-	history: ElectrumHistoryItem[];
-	confirmedSats: number;
-	unconfirmedSats: number;
-}
+type ScannedAddress = MultisigScanAddress & GapScannedFields & { history: ElectrumHistoryItem[] };
 
 // ----------------------------------------------------------------- derivation
 
@@ -149,147 +139,29 @@ export function multisigAddressDetailAt(
 
 // ------------------------------------------------------------------- scanning
 
-async function scanChainOf(multisig: MultisigRow, chain: 0 | 1): Promise<ScannedAddress[]> {
-	const chainSvc = getChain();
-	const out: ScannedAddress[] = [];
-	let consecutiveUnused = 0;
-	let index = 0;
+async function doScan(
+	multisig: MultisigRow
+): Promise<MultisigScanResult & { scanned: ScannedAddress[] }> {
+	const scan = await runGapScan((chain, index) => ({
+		address: multisigAddressAt(multisig, chain, index),
+		chain
+	}));
 
-	while (consecutiveUnused < GAP_LIMIT && index < HARD_CAP) {
-		const batch: { address: string; index: number }[] = [];
-		for (let i = 0; i < BATCH_SIZE && index + i < HARD_CAP; i++) {
-			batch.push({ address: multisigAddressAt(multisig, chain, index + i), index: index + i });
-		}
-		const scripthashes = batch.map((b) => addressToScripthash(b.address));
-
-		const [histories, balances] = await Promise.all([
-			chainSvc.electrum.batchRequest(
-				scripthashes.map((sh) => ({ method: 'blockchain.scripthash.get_history', params: [sh] }))
-			) as Promise<ElectrumHistoryItem[][]>,
-			chainSvc.electrum.batchRequest(
-				scripthashes.map((sh) => ({ method: 'blockchain.scripthash.get_balance', params: [sh] }))
-			) as Promise<ElectrumBalance[]>
-		]);
-
-		for (let i = 0; i < batch.length; i++) {
-			const history = histories[i] ?? [];
-			const balance = balances[i] ?? { confirmed: 0, unconfirmed: 0 };
-			const used = history.length > 0;
-			consecutiveUnused = used ? 0 : consecutiveUnused + 1;
-			out.push({
-				address: batch[i].address,
-				chain,
-				index: batch[i].index,
-				used,
-				balance: balance.confirmed + balance.unconfirmed,
-				txCount: history.length,
-				history,
-				confirmedSats: balance.confirmed,
-				unconfirmedSats: balance.unconfirmed
-			});
-			if (consecutiveUnused >= GAP_LIMIT) break;
-		}
-		index += batch.length;
-	}
-
-	// Trim the unused tail to exactly the gap window after the last used address.
-	let lastUsed = -1;
-	for (const a of out) if (a.used) lastUsed = Math.max(lastUsed, a.index);
-	return out.filter((a) => a.index <= lastUsed + GAP_LIMIT);
-}
-
-async function collectMultisigTxs(scanned: ScannedAddress[]): Promise<MultisigTx[]> {
-	const chainSvc = getChain();
-	// Match by scriptPubKey, not address string — network-independent, so it
-	// works even when the explorer reports a different network's encoding than
-	// Cairn's mainnet-only derivation. See scriptPubKeyHex / walletScan.ts.
-	const multisigScripts = new Set<string>();
-	for (const a of scanned) {
-		try {
-			multisigScripts.add(scriptPubKeyHex(a.address).toLowerCase());
-		} catch {
-			/* skip an address we can't decode */
-		}
-	}
-
-	// Merge + dedupe histories; prefer a confirmed height over a mempool one.
-	const heights = new Map<string, number>();
-	for (const a of scanned) {
-		for (const h of a.history) {
-			const prev = heights.get(h.tx_hash);
-			if (prev === undefined || (prev <= 0 && h.height > 0)) {
-				heights.set(h.tx_hash, h.height);
-			}
-		}
-	}
-
-	// Newest first: unconfirmed (height <= 0) first, then by height descending.
-	const ordered = [...heights.entries()].sort((a, b) => {
-		const ha = a[1] <= 0 ? Number.MAX_SAFE_INTEGER : a[1];
-		const hb = b[1] <= 0 ? Number.MAX_SAFE_INTEGER : b[1];
-		return hb - ha;
-	});
-	const recent = ordered.slice(0, TX_DETAIL_CAP);
-
-	const txs: MultisigTx[] = [];
-	for (let i = 0; i < recent.length; i += TX_FETCH_CONCURRENCY) {
-		const chunk = recent.slice(i, i + TX_FETCH_CONCURRENCY);
-		const results = await Promise.all(
-			chunk.map(async ([txid, height]): Promise<MultisigTx | null> => {
-				try {
-					const tx = await chainSvc.getTx(txid);
-					let delta = 0;
-					for (const out of tx.vout) {
-						if (out.scriptPubKey && multisigScripts.has(out.scriptPubKey.toLowerCase())) {
-							delta += out.value;
-						}
-					}
-					for (const vin of tx.vin) {
-						if (
-							!vin.coinbase &&
-							vin.prevScriptPubKey &&
-							multisigScripts.has(vin.prevScriptPubKey.toLowerCase())
-						) {
-							delta -= vin.value ?? 0;
-						}
-					}
-					return { txid, height, time: tx.blockTime, delta, fee: tx.fee };
-				} catch {
-					// Detail fetch failed (esplora hiccup) — omit rather than guess.
-					return null;
-				}
-			})
-		);
-		for (const r of results) if (r) txs.push(r);
-	}
-	return txs;
-}
-
-async function doScan(multisig: MultisigRow): Promise<MultisigScanResult & { scanned: ScannedAddress[] }> {
-	const [receive, change] = await Promise.all([scanChainOf(multisig, 0), scanChainOf(multisig, 1)]);
-	const scanned = [...receive, ...change];
-
-	const txs = await collectMultisigTxs(scanned);
-
-	let confirmed = 0;
-	let unconfirmed = 0;
-	for (const a of scanned) {
-		confirmed += a.confirmedSats;
-		unconfirmed += a.unconfirmedSats;
-	}
-
-	const addresses: MultisigScanAddress[] = scanned.map(
-		({ history: _h, confirmedSats: _c, unconfirmedSats: _u, ...addr }) => addr
-	);
 	// Persist ONLY the public result (never the heavy per-address `scanned`
 	// histories) so a cold restart can serve it instantly. One write, best-effort.
 	persistScanResult('multisig', multisigToDescriptor(toMultisigConfig(multisig)), {
-		addresses,
-		txs,
-		confirmed,
-		unconfirmed
+		addresses: scan.addresses,
+		txs: scan.txs,
+		confirmed: scan.confirmed,
+		unconfirmed: scan.unconfirmed
 	});
-	return { addresses, txs, confirmed, unconfirmed, scanned };
+	return {
+		addresses: scan.addresses,
+		txs: scan.txs,
+		confirmed: scan.confirmed,
+		unconfirmed: scan.unconfirmed,
+		scanned: scan.scanned
+	};
 }
 
 // ---------------------------------------------------------------------- cache
@@ -298,10 +170,7 @@ async function doScan(multisig: MultisigRow): Promise<MultisigScanResult & { sca
 // threshold, and script type, so any config difference is a different cache
 // entry (and two multisigs with identical configs share one scan — correctly,
 // since they'd share addresses too).
-const scanCache = new Map<
-	string,
-	{ expires: number; promise: Promise<MultisigScanResult & { scanned: ScannedAddress[] }> }
->();
+const scanCache = new ScanCache<MultisigScanResult & { scanned: ScannedAddress[] }>();
 
 function cacheKey(multisig: MultisigRow): string {
 	return multisigToDescriptor(toMultisigConfig(multisig));
@@ -314,20 +183,7 @@ export function scanMultisig(
 	multisig: MultisigRow,
 	opts: { forceRefresh?: boolean } = {}
 ): Promise<MultisigScanResult> {
-	const key = cacheKey(multisig);
-	const now = Date.now();
-	if (!opts.forceRefresh) {
-		const hit = scanCache.get(key);
-		if (hit && hit.expires > now) return hit.promise;
-	}
-
-	const promise = doScan(multisig);
-	scanCache.set(key, { expires: now + CACHE_TTL_MS, promise });
-	promise.catch(() => {
-		// Never cache failures (and never leave an unhandled rejection).
-		if (scanCache.get(key)?.promise === promise) scanCache.delete(key);
-	});
-	return promise;
+	return scanCache.fetch(cacheKey(multisig), () => doScan(multisig), opts);
 }
 
 /**
@@ -338,13 +194,7 @@ export function scanMultisig(
  * it). The warm pass force-refreshes shortly after.
  */
 export function primeMultisigScanCache(descriptorKey: string, result: MultisigScanResult): void {
-	const now = Date.now();
-	const hit = scanCache.get(descriptorKey);
-	if (hit && hit.expires > now) return;
-	scanCache.set(descriptorKey, {
-		expires: now + CACHE_TTL_MS,
-		promise: Promise.resolve({ ...result, scanned: [] })
-	});
+	scanCache.prime(descriptorKey, { ...result, scanned: [] });
 }
 
 /** Drop cached scan results for one multisig, or all when omitted. Also removes
