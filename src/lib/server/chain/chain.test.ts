@@ -28,6 +28,7 @@ vi.mock('../activity', () => ({ recordActivity: vi.fn() }));
 
 import { ChainService } from './index';
 import { EsploraApi } from './esplora';
+import { resetChainCaches, invalidateTipCache } from './cache';
 
 // ---- fixtures -----------------------------------------------------------------
 
@@ -149,6 +150,9 @@ function makeService(stub: EsploraStub): ChainService {
 
 afterEach(() => {
 	vi.unstubAllGlobals();
+	// The tip/fee TTL caches are module-level and outlive a single service, so
+	// clear them between tests to keep cases isolated (cairn-vknb.5).
+	resetChainCaches();
 });
 
 // ---- tip ------------------------------------------------------------------------
@@ -157,6 +161,29 @@ describe('getTip', () => {
 	it('combines tip height and hash from the backend', async () => {
 		const svc = makeService(makeEsploraStub());
 		await expect(svc.getTip()).resolves.toEqual({ height: TIP_HEIGHT, hash: TIP_HASH });
+	});
+
+	it('serves a second lookup from the TTL cache without re-hitting the backend', async () => {
+		const stub = makeEsploraStub();
+		const svc = makeService(stub);
+
+		await svc.getTip();
+		await svc.getTip();
+
+		// One navigation (or several tabs) shares a single slow esplora round-trip.
+		expect(stub.getTipHeight).toHaveBeenCalledTimes(1);
+		expect(stub.getTipHash).toHaveBeenCalledTimes(1);
+	});
+
+	it('re-fetches after invalidateTipCache (the new-block signal)', async () => {
+		const stub = makeEsploraStub();
+		const svc = makeService(stub);
+
+		await svc.getTip();
+		invalidateTipCache(); // fired from the chainEvents 'header' handler on a new block
+		await svc.getTip();
+
+		expect(stub.getTipHeight).toHaveBeenCalledTimes(2);
 	});
 });
 
