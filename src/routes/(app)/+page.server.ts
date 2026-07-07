@@ -44,11 +44,18 @@ async function loadChainSnapshot(): Promise<ChainSnapshot> {
 	}
 }
 
-export const load: PageServerLoad = async ({ locals, depends }) => {
+export const load: PageServerLoad = async ({ locals, depends, parent }) => {
 	// New-block SSE events invalidate this tag only — the portfolio is fetched
 	// client-side from /api/portfolio so wallet scans aren't retriggered by
 	// every block (see the portfolio endpoint).
 	depends('cairn:chain');
+
+	// The layout's load() redirects to /login when locals.user is null, but
+	// SvelteKit runs layout and page loads concurrently unless the page
+	// explicitly depends on the layout — without this, an anonymous/expired
+	// request can hit the locals.user!.id assertion below before the layout's
+	// redirect takes effect, 500ing instead of redirecting (cairn-ydxi).
+	await parent();
 
 	// Either flavor counts — a multisig-only user still has a portfolio.
 	const hasWallets =
