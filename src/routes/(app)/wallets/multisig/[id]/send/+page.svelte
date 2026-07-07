@@ -5,7 +5,13 @@
 	import Banner from '$lib/components/Banner.svelte';
 	import Toasts from '$lib/components/Toasts.svelte';
 	import { toast } from '$lib/components/toast.svelte';
-	import Stepper from '$lib/components/Stepper.svelte';
+	import GroveField from '$lib/components/heartwood/GroveField.svelte';
+	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
+	import QuorumArc from '$lib/components/heartwood/QuorumArc.svelte';
+	import BurialRings from '$lib/components/heartwood/BurialRings.svelte';
+	import Modal from '$lib/components/heartwood/Modal.svelte';
+	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
+	import AtTipPill from '$lib/components/heartwood/AtTipPill.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
@@ -152,6 +158,14 @@
 		return Math.max(1, fallback);
 	});
 
+	// "next ring ≈ N min" — the brand way to say confirmation ETA per tier.
+	const feeEta = $derived.by(() => {
+		if (feeChoice === 'fast') return 'next ring ≈ 10 min';
+		if (feeChoice === 'normal') return 'next ring ≈ 30 min';
+		if (feeChoice === 'economy') return 'next ring ≈ 1 hr or more';
+		return 'custom rate — timing depends on the mempool';
+	});
+
 	const looksLikeAddress = (a: string) => /^(bc1|[13])[a-zA-HJ-NP-Z0-9]{6,90}$/.test(a.trim());
 	const isMax = $derived(amountMode === 'max' && rows.length === 1);
 	const rowsValid = $derived(
@@ -211,7 +225,7 @@
 			syncTxParam(draft.id);
 			step = 'review';
 		} catch {
-			buildError = 'Could not reach Cairn to build the transaction.';
+			buildError = 'Could not reach Heartwood to build the transaction.';
 		} finally {
 			building = false;
 		}
@@ -562,7 +576,7 @@
 					'That PSBT was read, but it added no new signature — it may already be counted, or the wrong device signed. Pick the next key and sign the freshly downloaded file.';
 			}
 		} catch {
-			signError = 'Could not reach Cairn to attach the signed transaction.';
+			signError = 'Could not reach Heartwood to attach the signed transaction.';
 		} finally {
 			attaching = false;
 		}
@@ -599,6 +613,9 @@
 	// ------------------------------------------------------------ CONFIRM step
 	let broadcasting = $state(false);
 	let broadcastError = $state<string | null>(null);
+	// The irreversible-act modal ("Once it takes a ring, there is no undo.") —
+	// broadcast() only runs from its confirm.
+	let confirmOpen = $state(false);
 	// svelte-ignore state_referenced_locally — intentional per-load seed
 	let sentTxid = $state<string | null>(resumeTx?.txid ?? null);
 
@@ -626,7 +643,7 @@
 			draft = body.transaction as SavedMultisigTransaction;
 			step = 'sent';
 		} catch {
-			broadcastError = 'Could not reach Cairn to broadcast.';
+			broadcastError = 'Could not reach Heartwood to broadcast.';
 		} finally {
 			broadcasting = false;
 		}
@@ -653,6 +670,16 @@
 
 	const explorerUrl = $derived(sentTxid ? `/explorer/tx/${sentTxid}` : '#');
 	const quorum = quorumLabel(required, keys.length);
+
+	// The eyebrow's current descriptor tracks the step; Create carries the
+	// quorum shape (`SEND · 2-OF-3`).
+	const crumbCurrent = $derived.by(() => {
+		if (step === 'create') return `Send · ${quorum}`;
+		if (step === 'review') return 'Send · review';
+		if (step === 'sign') return 'Send · sign';
+		if (step === 'confirm') return 'Send · broadcast';
+		return 'Sent';
+	});
 </script>
 
 <!-- Signing-mass advisory panel (Review + Sign). Advisory only — it never
@@ -700,50 +727,50 @@
 {/snippet}
 
 <svelte:head>
-	<title>Send · {data.multisig.name} · Cairn</title>
+	<title>Send · {data.multisig.name} · Heartwood</title>
 </svelte:head>
 
-<div class="send-page" bind:this={pageEl}>
-	<header class="page-head">
-		<a class="back" href={`/wallets/multisig/${multisigId}`}>
-			<Icon name="chevron-left" size={15} />
-			<span>{data.multisig.name}</span>
-		</a>
-		<h1 class="page-title">Send from your wallet</h1>
-		<p class="quorum-line text-secondary">
-			{quorum} multisig — this spend needs signatures from {required}
-			{required === 1 ? 'key' : 'different keys'}.
-		</p>
+<div class="send-page hw-owns-header" bind:this={pageEl}>
+	<GroveField volume={step === 'sent' ? 'grove' : 'present'} />
+
+	<div class="page-content">
+	<!-- Mobile flow header (8b/8c): back circle + centered eyebrow + spacer.
+	     The Sign step carries the quorum arc in the eyebrow (8c); the Sent
+	     moment (8k) drops the back circle. -->
+	<header class="flow-header">
+		{#if step === 'sent'}
+			<span class="flow-spacer"></span>
+		{:else}
+			<BackCircle href={`/wallets/multisig/${multisigId}`} />
+		{/if}
+		<span class="flow-eyebrow">
+			{#if step === 'sign'}
+				Sign
+				<QuorumArc total={required} {collected} active={!quorumMet} size={18} />
+				{collected} of {required}
+			{:else if step === 'sent'}
+				Sent
+			{:else}
+				Send · {data.multisig.name}
+			{/if}
+		</span>
+		<span class="flow-spacer"></span>
 	</header>
 
-	<div class="stepper-wrap card card-pad">
-		<Stepper steps={STEPS} current={step} />
+	<div class="eyebrow-row">
+		<EyebrowBreadcrumb path={[data.multisig.name]} current={crumbCurrent} />
+		<AtTipPill height={data.tipHeight} />
 	</div>
 
 	<!-- ============================================================ CREATE -->
 	{#if step === 'create'}
 		<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
-			<HowItWorks id="multisig-send-psbt">
-				<p>
-					Cairn builds an <Term
-						tip="A Partially Signed Bitcoin Transaction — an unsigned proposal each of your signing devices reviews and signs in turn. Private keys never touch Cairn's server."
-						>unsigned transaction (a PSBT)</Term
-					> describing exactly what will be sent. Because this wallet is {quorum} multisig, no single
-					device can authorize it — you'll walk the same PSBT through {required} of your keys, one at
-					a time, and Cairn merges the signatures.
-				</p>
-				<p>
-					<strong>That's the point of a multisig wallet:</strong> a thief (or a bug) with one key gets nothing.
-					Verify the destination and amount on each device's own screen as you go.
-				</p>
-			</HowItWorks>
-
-			<div class="card card-pad stack" style="gap: 18px">
+			<div class="recipient-blocks">
 				{#each rows as row, i (row.key)}
-					<div class="recipient-block" class:multi={rows.length > 1}>
+					<div class="recipient-block">
 						{#if rows.length > 1}
 							<div class="row recipient-block-head">
-								<span class="label">Recipient {i + 1}</span>
+								<span class="sec-label">Recipient {i + 1}</span>
 								<button
 									type="button"
 									class="row-remove"
@@ -756,37 +783,40 @@
 						{/if}
 						<div class="field">
 							{#if rows.length === 1}
-								<label class="label" for={`recipient-${row.key}`}>Recipient address</label>
+								<label class="sec-label" for={`recipient-${row.key}`}>To</label>
 							{/if}
 							<input
 								id={`recipient-${row.key}`}
-								class="input mono"
+								class="to-input mono"
 								placeholder="bc1q…"
 								bind:value={row.address}
 								autocomplete="off"
 								spellcheck="false"
+								aria-label={rows.length > 1 ? `Recipient ${i + 1} address` : undefined}
 							/>
 							{#if row.address.length > 0 && !looksLikeAddress(row.address)}
-								<p class="hint" style="color: var(--warning)">
-									That doesn't look like a Bitcoin address yet.
+								<p class="field-line attention">That doesn't look like a Bitcoin address yet.</p>
+							{:else if looksLikeAddress(row.address)}
+								<p class="field-line sage">
+									<Icon name="check" size={12} strokeWidth={2.5} /> Valid Bitcoin address
 								</p>
 							{/if}
 						</div>
 
 						<div class="field">
 							<div class="row amount-head">
-								<span class="label" id={`amount-label-${row.key}`}>Amount</span>
+								<span class="sec-label" id={`amount-label-${row.key}`}>Amount</span>
 								{#if rows.length === 1}
-									<div class="seg" role="group" aria-label="Amount mode">
+									<div class="mode-toggles" role="group" aria-label="Amount mode">
 										<button
 											type="button"
-											class="seg-btn"
+											class="txt-toggle"
 											class:active={amountMode === 'btc'}
-											onclick={() => (amountMode = 'btc')}>BTC</button
+											onclick={() => (amountMode = 'btc')}>Amount</button
 										>
 										<button
 											type="button"
-											class="seg-btn"
+											class="txt-toggle"
 											class:active={amountMode === 'max'}
 											onclick={() => (amountMode = 'max')}
 											title="Sweep the whole spendable balance">Max</button
@@ -797,16 +827,16 @@
 							{#if !isMax}
 								<div class="amount-input">
 									<input
-										class="input tabular"
+										class="amount-field tabular"
 										inputmode="decimal"
 										placeholder="0.00000000"
 										bind:value={row.amountBtc}
 										aria-labelledby={`amount-label-${row.key}`}
 									/>
-									<span class="unit">BTC</span>
+									<span class="unit-inline">BTC</span>
 								</div>
 								{#if Number(row.amountBtc) > 0}
-									<p class="hint tabular">
+									<p class="field-line tabular muted">
 										{formatSats(Math.round(Number(row.amountBtc) * SATS_PER_BTC))} sats
 									</p>
 								{/if}
@@ -819,150 +849,157 @@
 						</div>
 					</div>
 				{/each}
+			</div>
 
-				<div class="row batch-row">
-					<button type="button" class="btn btn-ghost btn-sm" onclick={addRow}>
-						<Icon name="plus" size={14} /> Add another recipient
-					</button>
+			<div class="row batch-row">
+				<button type="button" class="btn btn-ghost btn-sm" onclick={addRow}>
+					<Icon name="plus" size={14} /> Add another recipient
+				</button>
+			</div>
+
+			<!-- FEE: text toggles, not a dropdown. Label left, live rate + "next
+			     ring" ETA right (5a). -->
+			<div class="fee-section">
+				<div class="fee-head">
+					<span class="sec-label">Fee</span>
+					<span class="fee-caption">{formatFeeRate(feeRate)} · {feeEta}</span>
 				</div>
-
-				<div class="field">
-					<span class="label">Fee rate</span>
-					<div class="fee-grid">
-						{#each [{ k: 'fast', label: 'Fast', rate: data.fees?.fastest, eta: '~10 min' }, { k: 'normal', label: 'Normal', rate: data.fees?.halfHour, eta: '~30 min' }, { k: 'economy', label: 'Economy', rate: data.fees?.economy, eta: '~1 hr+' }] as opt (opt.k)}
-							<button
-								type="button"
-								class="fee-card"
-								class:active={feeChoice === opt.k}
-								onclick={() => (feeChoice = opt.k as FeeChoice)}
-							>
-								<span class="fee-label">{opt.label}</span>
-								<span class="fee-rate tabular">
-									{opt.rate != null ? formatFeeRate(opt.rate) : '—'}
-								</span>
-								<span class="fee-eta">{opt.eta}</span>
-							</button>
-						{/each}
+				<div class="fee-toggles" role="group" aria-label="Fee rate">
+					{#each [{ k: 'economy', label: 'Low', rate: data.fees?.economy }, { k: 'normal', label: 'Medium', rate: data.fees?.halfHour }, { k: 'fast', label: 'High', rate: data.fees?.fastest }] as opt (opt.k)}
 						<button
 							type="button"
-							class="fee-card custom"
-							class:active={feeChoice === 'custom'}
-							onclick={() => (feeChoice = 'custom')}
+							class="txt-toggle"
+							class:active={feeChoice === opt.k}
+							onclick={() => (feeChoice = opt.k as FeeChoice)}
 						>
-							<span class="fee-label">Custom</span>
-							<div class="custom-input" role="presentation">
-								<input
-									class="input tabular"
-									inputmode="decimal"
-									bind:value={customFee}
-									onfocus={() => (feeChoice = 'custom')}
-									aria-label="Custom fee rate in sat/vB"
-								/>
-								<span class="unit-sm">sat/vB</span>
-							</div>
+							{opt.label}{#if opt.rate != null}<span class="toggle-rate tabular"
+									>&nbsp;· {opt.rate < 10 ? Number(opt.rate.toFixed(1)) : Math.round(opt.rate)}</span
+								>{/if}
 						</button>
-					</div>
-					{#if !data.fees}
-						<p class="hint">Live fee estimates are unavailable — set a custom sat/vB rate.</p>
-					{/if}
-					<p class="hint">
-						Multisig inputs are larger than single-signature ones ({quorum} needs {required}
-						signatures per coin), so the same fee rate costs a little more in total fees.
-					</p>
-				</div>
-
-				{#if data.utxos.length > 0}
-					{#if data.flags?.coin_control === false}
-						<!-- Coin control disabled by an admin: explain why rather than silently
-						     dropping the picker; selection stays empty so the send uses automatic
-						     coin selection (parity with the single-sig flow, cairn-zcui). -->
-						<FeatureDisabled
-							block
-							message="Choosing specific coins to spend has been disabled by your administrator."
-						/>
-					{:else}
-						<!-- Optional manual coin control — collapsed so the default flow stays clean.
-						     Same component as the single-sig send; the signing-mass chips point at
-						     this multisig's own utxo-mass endpoint. -->
-						<div class="field">
-							<CoinControl
-								walletId={multisigId}
-								utxos={data.utxos}
-								bind:selected={selectedCoins}
-								tipHeight={data.tipHeight}
-								massEndpoint={`/api/wallets/multisig/${multisigId}/utxo-mass`}
-							/>
-						</div>
-					{/if}
-				{/if}
-
-				{#if buildError}
-					<Banner variant="error">{buildError}</Banner>
-				{/if}
-
-				<div class="row" style="justify-content: flex-end; gap: 10px">
-					<a class="btn btn-ghost" href={`/wallets/multisig/${multisigId}`}>Cancel</a>
-					<button class="btn btn-primary" onclick={build} disabled={!canBuild || building}>
-						{#if building}<span class="spinner"></span> Building…{:else}Review transaction<Icon
-								name="arrow-right"
-								size={15}
-							/>{/if}
+					{/each}
+					<button
+						type="button"
+						class="txt-toggle"
+						class:active={feeChoice === 'custom'}
+						onclick={() => (feeChoice = 'custom')}
+					>
+						Custom
 					</button>
 				</div>
+				{#if feeChoice === 'custom'}
+					<div class="custom-fee">
+						<input
+							class="custom-fee-input tabular"
+							inputmode="decimal"
+							bind:value={customFee}
+							aria-label="Custom fee rate in sat/vB"
+						/>
+						<span class="unit-sm">sat/vB</span>
+					</div>
+				{/if}
+				{#if !data.fees}
+					<p class="fee-caption">Live fee estimates are unavailable — set a custom sat/vB rate.</p>
+				{/if}
+				<p class="fee-caption">
+					Multisig inputs are larger than single-signature ones ({quorum} needs {required}
+					signatures per coin), so the same fee rate costs a little more in total fees.
+				</p>
 			</div>
+
+			{#if data.utxos.length > 0}
+				{#if data.flags?.coin_control === false}
+					<!-- Coin control disabled by an admin: explain why rather than silently
+					     dropping the picker; selection stays empty so the send uses automatic
+					     coin selection (parity with the single-sig flow, cairn-zcui). -->
+					<FeatureDisabled
+						block
+						message="Choosing specific coins to spend has been disabled by your administrator."
+					/>
+				{:else}
+					<!-- Optional manual coin control — collapsed so the default flow stays clean.
+					     Same component as the single-sig send; the signing-mass chips point at
+					     this multisig's own utxo-mass endpoint. -->
+					<div class="field">
+						<CoinControl
+							walletId={multisigId}
+							utxos={data.utxos}
+							bind:selected={selectedCoins}
+							tipHeight={data.tipHeight}
+							massEndpoint={`/api/wallets/multisig/${multisigId}/utxo-mass`}
+						/>
+					</div>
+				{/if}
+			{/if}
+
+			<HowItWorks id="multisig-send-psbt">
+				<p>
+					Heartwood builds an <Term
+						tip="A Partially Signed Bitcoin Transaction — an unsigned proposal each of your signing devices reviews and signs in turn. Private keys never touch Heartwood's server."
+						>unsigned transaction (a PSBT)</Term
+					> describing exactly what will be sent. Because this wallet is {quorum} multisig, no single
+					device can authorize it — you'll walk the same PSBT through {required} of your keys, one at
+					a time, and Heartwood merges the signatures.
+				</p>
+				<p>
+					<strong>That's the point of a multisig wallet:</strong> a thief (or a bug) with one key gets nothing.
+					Verify the destination and amount on each device's own screen as you go.
+				</p>
+			</HowItWorks>
+
+			{#if buildError}
+				<div class="form-error" role="alert">{buildError}</div>
+			{/if}
+
+			<div class="row step-actions" style="justify-content: flex-end">
+				<a class="btn btn-ghost" href={`/wallets/multisig/${multisigId}`}>Cancel</a>
+				<button class="btn btn-primary pill-lg" onclick={build} disabled={!canBuild || building}>
+					{#if building}<span class="spinner"></span> Building…{:else}Review send<Icon
+							name="arrow-right"
+							size={15}
+						/>{/if}
+				</button>
+			</div>
+			<p class="quorum-note">
+				{required} of {keys.length} devices will sign — collect signatures over days if you like.
+			</p>
 		</section>
 
 	<!-- ============================================================ REVIEW -->
 	{:else if step === 'review' && review}
 		<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
+			<div class="review-hero">
+				<span class="hero-amount">{formatBtc(review.amount)} <em>BTC</em></span>
+				{#if review.recipients.length === 1}
+					<span class="hero-sub tabular">{formatSats(review.amount)} sats</span>
+					<span class="recipient mono">{review.recipient}</span>
+				{:else}
+					<span class="hero-sub tabular"
+						>{formatSats(review.amount)} sats · {review.recipients.length} recipients</span
+					>
+					<div class="review-recipients">
+						{#each review.recipients as r, i (i)}
+							<div class="review-recipient-row">
+								<span class="tabular batch-amt">{formatBtc(r.amount)} BTC</span>
+								<span class="recipient mono">{r.address}</span>
+							</div>
+						{/each}
+					</div>
+				{/if}
+			</div>
+
 			<p class="step-lead">
 				Check every detail now — after this, {required} devices will each confirm this exact
 				transaction, and once broadcast it <strong>cannot be reversed.</strong>
 			</p>
 
 			{#if chainDepthWarning}
-				<div class="chain-depth-warning" role="status">
+				<div class="attention-panel" role="status">
 					<Icon name="alert-triangle" size={16} />
 					<span>{chainDepthWarning.message}</span>
 				</div>
 			{/if}
 
-			<div class="card review-hero">
-				{#if review.recipients.length === 1}
-					<div class="review-line">
-						<span class="overline">Sending</span>
-						<span class="hero-number send-amount">{formatBtc(review.amount)} <em>BTC</em></span>
-						<span class="text-muted tabular">{formatSats(review.amount)} sats</span>
-					</div>
-					<div class="review-arrow"><Icon name="arrow-down-left" size={20} /></div>
-					<div class="review-line">
-						<span class="overline">To recipient</span>
-						<span class="recipient mono">{review.recipient}</span>
-					</div>
-				{:else}
-					<div class="review-line">
-						<span class="overline">Sending total</span>
-						<span class="hero-number send-amount">{formatBtc(review.amount)} <em>BTC</em></span>
-						<span class="text-muted tabular"
-							>{formatSats(review.amount)} sats · {review.recipients.length} recipients</span
-						>
-					</div>
-					<div class="review-arrow"><Icon name="arrow-down-left" size={20} /></div>
-					<div class="review-line">
-						<span class="overline">To recipients</span>
-						<div class="review-recipients">
-							{#each review.recipients as r, i (i)}
-								<div class="review-recipient-row">
-									<span class="tabular batch-amt">{formatBtc(r.amount)} BTC</span>
-									<span class="recipient mono">{r.address}</span>
-								</div>
-							{/each}
-						</div>
-					</div>
-				{/if}
-			</div>
-
-			<div class="card card-pad detail-list">
+			<div class="detail-list">
 				<div class="detail-row">
 					<span class="text-secondary">Network fee</span>
 					<span class="detail-val tabular">
@@ -1065,129 +1102,153 @@
 				<button class="btn btn-secondary" onclick={() => (step = 'create')}>
 					<Icon name="chevron-left" size={15} /> Back &amp; edit
 				</button>
-				<button class="btn btn-primary" onclick={() => (step = 'sign')}>
+				<button class="btn btn-primary pill-lg" onclick={() => (step = 'sign')}>
 					Looks good — collect signatures <Icon name="arrow-right" size={15} />
 				</button>
 			</div>
 		</section>
 
-	<!-- ============================================================== SIGN -->
+	<!-- ====================================================== SIGN (5b/8c) -->
 	{:else if step === 'sign'}
-		<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
-			<div class="key-frame">
-				<span class="badge badge-accent">Key {Math.min(collected + 1, required)} of {required}</span>
-				<span class="text-secondary">
-					Each signature comes from a different device — that's what makes it a multisig wallet.
-				</span>
-			</div>
-
-			{#if signingMass}
-				{@render massPanel(signingMass)}
+		<section class="step-body sign-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
+			{#if review}
+				<div class="sign-hero">
+					<span class="hero-amount">{formatBtc(review.amount)} <em>BTC</em></span>
+					<p class="sign-sub">
+						to
+						{#if review.recipients.length === 1}
+							<span class="mono sub-addr">{truncateMiddle(review.recipient, 9, 4)}</span>
+						{:else}
+							{review.recipients.length} recipients
+						{/if}
+						· fee {formatFeeRate(review.feeRate)} · draft saved on your node
+					</p>
+				</div>
 			{/if}
 
-			<!-- Live quorum progress, straight from the server's PSBT inspection.
-			     role="status" + explicit aria-live: screen-reader users collecting
-			     signatures over time must HEAR each quorum change, and the implicit
-			     politeness of role="status" alone is inconsistently honored. -->
-			<div class="card card-pad quorum-card">
-				<div class="quorum-head" role="status" aria-live="polite">
-					<span class="quorum-count tabular"
-						>{collected} of {required} signatures collected</span
-					>
-					{#if remainingNeeded > 0}
-						<span class="text-muted"
-							>· {remainingNeeded} more {remainingNeeded === 1 ? 'signature' : 'signatures'} needed</span
-						>
+			<div class="sign-grid">
+				<div class="sign-col">
+					<!-- Live quorum progress, straight from the server's PSBT inspection.
+					     role="status" + explicit aria-live: screen-reader users collecting
+					     signatures over time must HEAR each quorum change, and the implicit
+					     politeness of role="status" alone is inconsistently honored. -->
+					<div class="sig-head" role="status" aria-live="polite">
+						<h2 class="section-title">Signatures</h2>
+						<QuorumArc total={required} {collected} active={!quorumMet} size={26} />
+						<span class="sig-count">
+							{collected} of {required} collected{#if remainingNeeded > 0}&nbsp;· {remainingNeeded}
+								more needed{/if}
+						</span>
+					</div>
+
+					{#if signingMass}
+						{@render massPanel(signingMass)}
 					{/if}
-				</div>
-				<div class="quorum-bar" role="progressbar" aria-valuemin={0} aria-valuemax={required} aria-valuenow={collected} aria-label="Signatures collected">
-					<div class="quorum-bar-fill" style={`width:${Math.min(100, (collected / required) * 100)}%`}></div>
-				</div>
 
-				{#if roster}
-					<!-- Shared-wallet signer roster: who has contributed a signature and
-					     who is still owed one, by person (the key chips below show it by
-					     key). Reconciled server-side against the real PSBT. -->
-					<ul class="signer-roster" aria-label="Signers">
-						{#each roster as member (member.userId)}
-							<li class="signer-row" class:signed={member.hasSigned}>
-								<span class="signer-state" aria-hidden="true">
-									{#if member.hasSigned}
-										<Icon name="check" size={13} strokeWidth={2.5} />
-									{:else}
-										<Icon name="clock" size={13} />
-									{/if}
-								</span>
-								<span class="signer-name">
-									{member.displayName}{#if member.isOwner}<span class="signer-tag">owner</span>{/if}
-								</span>
-								<span class="signer-status">{member.hasSigned ? 'Signed' : 'Waiting'}</span>
-							</li>
-						{/each}
-					</ul>
-				{/if}
+					{#if roster}
+						<!-- Shared-wallet signer roster: who has contributed a signature and
+						     who is still owed one, by person (the key rows below show it by
+						     key). Reconciled server-side against the real PSBT. -->
+						<ul class="signer-roster" aria-label="Signers">
+							{#each roster as member (member.userId)}
+								<li class="signer-row" class:signed={member.hasSigned}>
+									<span class="signer-state" aria-hidden="true">
+										{#if member.hasSigned}
+											<Icon name="check" size={13} strokeWidth={2.5} />
+										{:else}
+											<Icon name="clock" size={13} />
+										{/if}
+									</span>
+									<span class="signer-name">
+										{member.displayName}{#if member.isOwner}<span class="signer-tag">owner</span>{/if}
+									</span>
+									<span class="signer-status">{member.hasSigned ? 'Signed' : 'Waiting'}</span>
+								</li>
+							{/each}
+						</ul>
+					{/if}
 
-				<!-- Per-key chips: signed / active / queued / spare. Unsigned chips are
-				     buttons — clicking one makes it the active key ("use this key
-				     instead", the signer-cursor reorder). -->
-				<div class="key-chips">
-					{#each keys as key (key.id)}
-						{@const signed = isSigned(key)}
-						{@const active = !quorumMet && activeKey?.id === key.id}
-						{@const spare = !signed && !active && isSpare(key)}
-						{#if signed}
-							<div class="key-chip signed">
-								<Icon name="check" size={13} strokeWidth={2.5} />
-								<span class="chip-name">{key.name}</span>
-								<span class="chip-meta">{KEY_CATEGORY_LABELS[key.category]} · <span class="mono">{key.fingerprint}</span></span>
-							</div>
-						{:else if quorumMet}
-							<!-- Quorum met, but this key's attribution is unknown (a
-							     finalized PSBT strips per-input data) — a neutral chip,
-							     never a false "signed" or a next-signer CTA. -->
-							<div class="key-chip">
-								<span class="chip-dot" aria-hidden="true"></span>
-								<span class="chip-name">{key.name}</span>
-								<span class="chip-meta">{KEY_CATEGORY_LABELS[key.category]} · <span class="mono">{key.fingerprint}</span></span>
-								<span class="chip-badge">Not needed — quorum met</span>
-							</div>
-						{:else}
-							{@const chipEstimate = deviceEstimate(key)}
-							<button
-								type="button"
-								class="key-chip"
-								class:active
-								class:spare
-								onclick={() => chooseKey(key.id)}
-								title={active ? 'Currently signing with this key' : 'Sign with this key instead'}
-							>
-								<span class="chip-dot" aria-hidden="true"></span>
-								<span class="chip-name">{key.name}</span>
-								<span class="chip-meta">{KEY_CATEGORY_LABELS[key.category]} · <span class="mono">{key.fingerprint}</span></span>
-								{#if chipEstimate}
-									<span
-										class="chip-time"
-										title="Estimated signing time on this device — it never changes the network fee."
-										>{chipEstimate}</span
+					<!-- Per-key hairline rows (5b): signed / active / queued / spare.
+					     Unsigned rows are buttons — clicking one makes it the active key
+					     ("use this key instead", the signer-cursor reorder). -->
+					<div class="key-rows">
+						{#each keys as key (key.id)}
+							{@const signed = isSigned(key)}
+							{@const active = !quorumMet && activeKey?.id === key.id}
+							{@const spare = !signed && !active && !quorumMet && isSpare(key)}
+							{#if signed}
+								<div class="key-row">
+									<span class="key-icon" aria-hidden="true">
+										<svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="2.5" width="12" height="15" rx="2"></rect><circle cx="10" cy="7" r="2"></circle><path d="M10 9 V12" stroke-linecap="round"></path></svg>
+									</span>
+									<span class="key-main">
+										<span class="key-name">{key.name}</span>
+										<span class="key-meta">{KEY_CATEGORY_LABELS[key.category]} · <span class="mono">{key.fingerprint}</span></span>
+									</span>
+									<span class="key-state signed"
+										><Icon name="check" size={13} strokeWidth={2.5} /> Signed</span
 									>
-								{/if}
-								{#if spare}
-									<span class="chip-badge">Not needed — {quorum} is enough</span>
-								{:else if !active}
-									<span class="chip-badge cta">Use this key instead</span>
-								{/if}
-							</button>
-						{/if}
-					{/each}
-				</div>
-				{#if hasUnattributableKey}
-					<p class="hint">
-						Keys that share both a master fingerprint and a derivation path can't be individually
-						ticked off — the signature count above is still exact, straight from the transaction
-						itself.
+								</div>
+							{:else if quorumMet}
+								<!-- Quorum met, but this key's attribution is unknown (a
+								     finalized PSBT strips per-input data) — a neutral row,
+								     never a false "signed" or a next-signer CTA. -->
+								<div class="key-row dim">
+									<span class="key-icon" aria-hidden="true">
+										<svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="2.5" width="12" height="15" rx="2"></rect><circle cx="10" cy="7" r="2"></circle><path d="M10 9 V12" stroke-linecap="round"></path></svg>
+									</span>
+									<span class="key-main">
+										<span class="key-name">{key.name}</span>
+										<span class="key-meta">{KEY_CATEGORY_LABELS[key.category]} · <span class="mono">{key.fingerprint}</span></span>
+									</span>
+									<span class="key-state muted">Not needed — quorum met</span>
+								</div>
+							{:else}
+								{@const chipEstimate = deviceEstimate(key)}
+								<button
+									type="button"
+									class="key-row selectable"
+									class:active
+									class:dim={spare}
+									onclick={() => chooseKey(key.id)}
+									title={active ? 'Currently signing with this key' : 'Sign with this key instead'}
+								>
+									<span class="key-icon" aria-hidden="true">
+										<svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="2.5" width="12" height="15" rx="2"></rect><circle cx="10" cy="7" r="2"></circle><path d="M10 9 V12" stroke-linecap="round"></path></svg>
+									</span>
+									<span class="key-main">
+										<span class="key-name">{key.name}</span>
+										<span class="key-meta">
+											{KEY_CATEGORY_LABELS[key.category]} · <span class="mono">{key.fingerprint}</span>{#if chipEstimate}<span
+													class="key-est tabular"
+													title="Estimated signing time on this device — it never changes the network fee."
+													>&nbsp;· {chipEstimate}</span
+												>{/if}
+										</span>
+									</span>
+									{#if active}
+										<span class="key-state pending">Sign below</span>
+									{:else if spare}
+										<span class="key-state muted">Not needed</span>
+									{:else}
+										<span class="key-cta">Sign now</span>
+									{/if}
+								</button>
+							{/if}
+						{/each}
+					</div>
+					{#if hasUnattributableKey}
+						<p class="never-line">
+							Keys that share both a master fingerprint and a derivation path can't be individually
+							ticked off — the signature count above is still exact, straight from the transaction
+							itself.
+						</p>
+					{/if}
+
+					<p class="never-line">
+						Approval happens on the device's own screen. Heartwood never sees a key — it only
+						carries the PSBT between signers.
 					</p>
-				{/if}
-			</div>
 
 			{#if quorumMet}
 				<!-- Reached via "Back" from Confirm (attach jumps there directly).
@@ -1347,19 +1408,68 @@
 					{/snippet}
 				</Banner>
 			{/if}
+				</div>
+
+				<!-- 5b right column: what the device screens must show. -->
+				<aside class="verify-col">
+					{#if review}
+						<h2 class="section-title">Verify on device</h2>
+						<div class="verify-list">
+							<div class="verify-row">
+								<span class="verify-key">To</span>
+								<span class="verify-val mono">
+									{#if review.recipients.length === 1}
+										{truncateMiddle(review.recipient, 12, 10)}
+									{:else}
+										{review.recipients.length} recipients
+									{/if}
+								</span>
+							</div>
+							<div class="verify-row">
+								<span class="verify-key">Amount</span>
+								<span class="verify-val tabular">{formatBtc(review.amount)} BTC</span>
+							</div>
+							<div class="verify-row">
+								<span class="verify-key">Fee</span>
+								<span class="verify-val tabular"
+									>{formatSats(review.fee)} sats · {formatFeeRate(review.feeRate)}</span
+								>
+							</div>
+							{#if review.change}
+								<div class="verify-row">
+									<span class="verify-key">Change</span>
+									<span class="verify-val tabular">
+										{formatSats(review.change.value)} sats
+										<span class="back-badge">Back to you</span>
+									</span>
+								</div>
+							{/if}
+						</div>
+						<p class="verify-note">
+							Every device screen is the truth — each signer approves only if it shows exactly this.
+						</p>
+					{/if}
+					<div class="verify-actions">
+						<a class="btn btn-secondary" href={currentPsbtUrl} download>
+							<Icon name="arrow-down-left" size={14} /> Export PSBT
+						</a>
+						<a class="btn btn-ghost" href={`/wallets/multisig/${multisigId}`}>Finish later</a>
+					</div>
+					<p class="verify-note">
+						Signatures are saved on your node — leave anytime and this page resumes where you left
+						off.
+					</p>
+				</aside>
+			</div>
 
 			<div class="row step-actions">
 				<button class="btn btn-secondary" onclick={() => (step = 'review')}>
 					<Icon name="chevron-left" size={15} /> Back to review
 				</button>
 				{#if quorumMet}
-					<button class="btn btn-primary" onclick={() => (step = 'confirm')}>
+					<button class="btn btn-primary pill-lg" onclick={() => (step = 'confirm')}>
 						Continue to broadcast <Icon name="arrow-right" size={15} />
 					</button>
-				{:else}
-					<span class="hint resume-hint">
-						You can leave anytime — signatures are saved, and this page resumes where you left off.
-					</span>
 				{/if}
 			</div>
 		</section>
@@ -1367,34 +1477,22 @@
 	<!-- =========================================================== CONFIRM -->
 	{:else if step === 'confirm' && review}
 		<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
-			<div class="quorum-done" role="status" aria-live="polite">
-				<Icon name="check" size={16} strokeWidth={2.5} />
-				<span>
-					<strong>{collected >= required ? `${required} of ${required}` : quorum} signatures collected.</strong>
-					The quorum is met — this transaction is fully authorized and ready to broadcast.
+			<div class="review-hero">
+				<span class="hero-amount sm">{formatBtc(review.amount)} <em>BTC</em></span>
+				<span class="hero-sub">
+					{collected >= required ? `${required} of ${required}` : quorum} signatures collected — fully
+					authorized and ready to broadcast
 				</span>
 			</div>
 
-			<div class="confirm-warning" role="alert">
-				<Icon name="alert-triangle" size={18} />
-				<div>
-					<strong>You are about to broadcast this transaction.</strong>
-					Broadcasting is <em>irreversible</em> — once the network accepts it, the coins are gone.
-				</div>
-			</div>
-
-			<div class="card card-pad confirm-summary">
-				<div class="confirm-row">
-					<span class="text-secondary">Sending</span>
-					<span class="detail-val tabular">{formatBtc(review.amount)} BTC</span>
-				</div>
+			<div class="detail-list">
 				{#if review.recipients.length === 1}
-					<div class="confirm-row">
+					<div class="detail-row">
 						<span class="text-secondary">To</span>
 						<span class="mono confirm-recipient">{review.recipient}</span>
 					</div>
 				{:else}
-					<div class="confirm-row confirm-batch">
+					<div class="detail-row confirm-batch">
 						<span class="text-secondary">To {review.recipients.length} recipients</span>
 						<div class="confirm-batch-list">
 							{#each review.recipients as r, i (i)}
@@ -1405,17 +1503,21 @@
 						</div>
 					</div>
 				{/if}
-				<div class="confirm-row">
+				<div class="detail-row">
 					<span class="text-secondary">Fee</span>
 					<span class="detail-val tabular"
 						>{formatSats(review.fee)} sats · {formatFeeRate(review.feeRate)}</span
 					>
 				</div>
-				<div class="confirm-row">
+				<div class="detail-row">
 					<span class="text-secondary">Authorized by</span>
 					<span class="detail-val">{quorum} keys</span>
 				</div>
 			</div>
+
+			<p class="step-lead">
+				Broadcasting hands this transaction to the network. Once it takes a ring, there is no undo.
+			</p>
 
 			{#if broadcastError}
 				<Banner variant="error">
@@ -1433,11 +1535,13 @@
 				<button class="btn btn-secondary" onclick={() => (step = 'sign')} disabled={broadcasting}>
 					<Icon name="chevron-left" size={15} /> Back
 				</button>
-				<button class="btn btn-primary" onclick={broadcast} disabled={broadcasting}>
-					{#if broadcasting}<span class="spinner"></span> Broadcasting…{:else}<Icon
-							name="zap"
-							size={15}
-						/> Broadcast transaction{/if}
+				<button
+					class="btn btn-primary pill-lg"
+					onclick={() => (confirmOpen = true)}
+					disabled={broadcasting}
+				>
+					{#if broadcasting}<span class="spinner"></span> Broadcasting…{:else}Broadcast
+						transaction{/if}
 				</button>
 			</div>
 		</section>
@@ -1445,106 +1549,133 @@
 	<!-- ============================================================== SENT -->
 	{:else if step === 'sent'}
 		<section class="step-body fade-in sent-body" tabindex="-1" aria-label={stepAriaLabel}>
-			<div class="sent-check">
-				<Icon name="check" size={30} strokeWidth={2.5} />
+			<!-- One-off send-stepper moment (4a): flow name left, steps right,
+			     Broadcast lit. Desktop only — 8k keeps just the SENT eyebrow. -->
+			<div class="sent-topline" aria-hidden="true">
+				<span class="sent-flow-name">Send bitcoin</span>
+				<span class="sent-steps">
+					<span class="sent-step">Amount</span><span class="sent-dot">·</span>
+					<span class="sent-step">Review</span><span class="sent-dot">·</span>
+					<span class="sent-step">Sign</span><span class="sent-dot">·</span>
+					<span class="sent-step lit">Broadcast</span>
+				</span>
 			</div>
-			<h2 class="sent-title">Broadcast!</h2>
-			<p class="text-secondary">
-				Your {quorum} multisig transaction is on its way to the network.
+
+			<!-- The ring-sweep moment: two cream sweeps (once), a dashed mempool
+			     ring pulsing underneath — the transaction waiting for its first ring. -->
+			<div class="sweep-stage">
+				<span class="sweep s1"></span>
+				<span class="sweep s2"></span>
+				<BurialRings confirmations={0} direction="out" size={64} />
+			</div>
+
+			{#if review}
+				<h2 class="sent-title">{formatBtc(review.amount)} BTC is on its way</h2>
+			{:else}
+				<h2 class="sent-title">Your bitcoin is on its way</h2>
+			{/if}
+			<p class="sent-sub">
+				From {data.multisig.name} · authorized by {quorum} keys · in the mempool, waiting for its
+				first ring{#if review}
+					· {formatFeeRate(review.feeRate)}{/if}
 			</p>
 
 			{#if sentTxid}
-				<a class="sent-txid mono" href={explorerUrl}>
-					{truncateMiddle(sentTxid, 12, 12)}
-					<Icon name="arrow-up-right" size={15} />
-				</a>
-				<div class="sent-copy">
-					<CopyText value={sentTxid} display="Copy transaction ID" mono={false} />
-				</div>
-			{/if}
-
-			{#if review}
-				<div class="card card-pad sent-summary">
-					<div class="confirm-row">
-						<span class="text-secondary">Sent</span>
-						<span class="detail-val tabular">{formatBtc(review.amount)} BTC</span>
-					</div>
-					{#if review.recipients.length === 1}
-						<div class="confirm-row">
-							<span class="text-secondary">To</span>
-							<span class="mono confirm-recipient">{truncateMiddle(review.recipient, 14, 12)}</span>
-						</div>
-					{:else}
-						<div class="confirm-row confirm-batch">
-							<span class="text-secondary">To {review.recipients.length} recipients</span>
-							<div class="confirm-batch-list">
-								{#each review.recipients as r, i (i)}
-									<span class="mono confirm-recipient tabular"
-										>{formatBtc(r.amount)} BTC → {truncateMiddle(r.address, 12, 10)}</span
-									>
-								{/each}
-							</div>
-						</div>
-					{/if}
-					<div class="confirm-row">
-						<span class="text-secondary">Fee</span>
-						<span class="detail-val tabular">{formatSats(review.fee)} sats</span>
-					</div>
+				<div class="txid-pill">
+					<span class="mono">{truncateMiddle(sentTxid, 12, 12)}</span>
+					<CopyText value={sentTxid} display="Copy" mono={false} />
 				</div>
 			{/if}
 
 			<div class="row step-actions" style="justify-content: center">
-				<a class="btn btn-secondary" href={`/wallets/multisig/${multisigId}`}>Back to wallet</a>
-				<a class="btn btn-primary" href={`/wallets/multisig/${multisigId}/send`} data-sveltekit-reload
-					>Send another</a
-				>
+				<a class="btn btn-primary pill-lg" href={explorerUrl}>Watch it get buried</a>
+				<a class="btn btn-secondary" href={`/wallets/multisig/${multisigId}`}>Done</a>
 			</div>
+			<p class="sent-caption">We'll nudge you at the first ring — and at six.</p>
+			<a class="sent-again" href={`/wallets/multisig/${multisigId}/send`} data-sveltekit-reload
+				>Send another</a
+			>
 		</section>
 	{/if}
+	</div>
 </div>
+
+<Modal
+	bind:open={confirmOpen}
+	title="Broadcast this transaction?"
+	message="Once it takes a ring, there is no undo."
+	confirmLabel="Broadcast"
+	onConfirm={() => void broadcast()}
+/>
 
 <Toasts />
 
 <style>
 	.send-page {
+		position: relative;
+		/* Bleed the grove field across the shell's content padding so the
+		   atmosphere isn't a visible 940px box. */
+		margin: -54px -52px -44px;
+		padding: 54px 52px 44px;
+		min-height: 100%;
+	}
+
+	.page-content {
+		position: relative;
+		z-index: 1;
 		max-width: 680px;
 		margin: 0 auto;
 	}
 
-	.page-head {
-		margin-bottom: 18px;
+	.eyebrow-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 14px;
+		margin-bottom: 26px;
 	}
 
-	.back {
+	/* Mobile flow header (8b/8c/8k) — this page composes its own back circle +
+	   centered eyebrow + spacer, so the shell's bare fallback is suppressed. */
+	:global(body:has(.hw-owns-header) .mobile-flow-header) {
+		display: none;
+	}
+
+	.flow-header {
+		display: none;
+	}
+
+	.flow-eyebrow {
 		display: inline-flex;
 		align-items: center;
-		gap: 3px;
-		color: var(--text-secondary);
-		font-size: 13px;
-		font-weight: 500;
-		margin-bottom: 8px;
+		justify-content: center;
+		gap: 7px;
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.2em;
+		text-transform: uppercase;
+		color: var(--eyebrow);
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
-	.back:hover {
-		color: var(--accent);
-	}
-
-	.quorum-line {
-		font-size: 13px;
-		margin-top: 4px;
-	}
-
-	.stepper-wrap {
-		padding: 22px 24px;
-		margin-bottom: 24px;
+	.flow-spacer {
+		width: 32px;
+		height: 32px;
+		flex-shrink: 0;
 	}
 
 	.step-body {
 		display: flex;
 		flex-direction: column;
-		gap: 18px;
+		gap: 22px;
 	}
 
+	/* Step sections receive programmatic focus on every step change (so screen
+	   readers announce the new step) — no ring for that, only when the global
+	   :focus-visible convention applies (keyboard). */
 	.step-body:focus:not(:focus-visible) {
 		outline: none;
 	}
@@ -1555,26 +1686,6 @@
 		line-height: 1.6;
 	}
 
-	/* Non-blocking unconfirmed-chain-depth warning (cairn-u9ob.5). */
-	.chain-depth-warning {
-		display: flex;
-		align-items: flex-start;
-		gap: 10px;
-		background: var(--warning-muted);
-		border: 1px solid var(--warning-border);
-		border-radius: var(--radius-card);
-		padding: 12px 14px;
-		font-size: 13px;
-		line-height: 1.5;
-		color: var(--text);
-	}
-
-	.chain-depth-warning :global(svg) {
-		color: var(--warning);
-		flex-shrink: 0;
-		margin-top: 1px;
-	}
-
 	.step-lead strong {
 		color: var(--text);
 	}
@@ -1582,26 +1693,70 @@
 	.step-actions {
 		justify-content: space-between;
 		gap: 10px;
-		align-items: center;
 	}
 
-	.resume-hint {
-		text-align: right;
-		max-width: 300px;
+	.pill-lg {
+		padding: 13px 26px;
+		font-size: 15px;
+		border-radius: var(--radius-pill);
 	}
 
-	/* ---- Create ---- */
+	/* Tracked-caps section labels — the eyebrow grammar inside the page. */
+	.sec-label {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.18em;
+		text-transform: uppercase;
+		color: var(--eyebrow-path);
+	}
+
+	/* The toggle grammar: active bright copper on a copper tint, radius 14. */
+	.txt-toggle {
+		background: transparent;
+		border: none;
+		border-radius: 14px;
+		padding: 6px 13px;
+		font-family: var(--font-ui);
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--eyebrow-path);
+		cursor: pointer;
+		transition:
+			background 120ms var(--ease),
+			color 120ms var(--ease);
+	}
+
+	.txt-toggle:hover {
+		color: var(--text-secondary);
+	}
+
+	.txt-toggle.active {
+		background: rgba(232, 147, 90, 0.1);
+		color: var(--accent-bright);
+	}
+
+	.toggle-rate {
+		font-weight: 400;
+	}
+
+	/* ---- Create: per-recipient hairline blocks (multisig never gets the
+	     single-recipient hero amount input — every row, including the sole
+	     one, is the same hairline block per §5a's multisig note). ---- */
+	.recipient-blocks {
+		display: flex;
+		flex-direction: column;
+	}
+
 	.recipient-block {
 		display: flex;
 		flex-direction: column;
-		gap: 18px;
+		gap: 14px;
+		padding: 16px 0;
+		border-bottom: 1px solid var(--hairline);
 	}
 
-	.recipient-block.multi {
-		gap: 14px;
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		padding: 14px;
+	.recipient-block:first-child {
+		padding-top: 0;
 	}
 
 	.recipient-block-head {
@@ -1617,14 +1772,14 @@
 		flex-shrink: 0;
 		background: none;
 		border: none;
-		border-radius: var(--radius-chip);
+		border-radius: var(--radius-badge);
 		color: var(--text-muted);
 		cursor: pointer;
 	}
 
 	.row-remove:hover {
-		color: var(--danger, var(--text));
-		background: var(--bg);
+		color: var(--text);
+		background: var(--bg-input);
 	}
 
 	.batch-row {
@@ -1636,53 +1791,101 @@
 		justify-content: space-between;
 	}
 
-	.seg {
-		display: inline-flex;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-control);
-		padding: 2px;
+	.mode-toggles {
+		display: flex;
+		gap: 4px;
 	}
 
-	.seg-btn {
+	/* The address field: a plain hairline-boxed input (no giant hero — the
+	   amount hero grammar is single-sig only). */
+	.to-input {
+		width: 100%;
+		padding: 11px 14px;
+		background: var(--bg-input);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-icon-btn);
+		color: var(--text);
+		caret-color: var(--accent);
+		font-family: var(--font-ui);
+		font-size: 14px;
+		line-height: 1.45;
+		transition:
+			border-color 120ms var(--ease),
+			box-shadow 120ms var(--ease);
+	}
+
+	.to-input::placeholder {
+		color: var(--text-muted);
+	}
+
+	.to-input:focus {
+		outline: none;
+		border-color: var(--accent);
+		box-shadow: 0 0 0 3px rgba(232, 147, 90, 0.12);
+	}
+
+	.field-line {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		font-size: 12.5px;
+		line-height: 1.5;
+	}
+
+	.field-line.attention {
+		color: var(--attention);
+	}
+
+	.field-line.sage {
+		color: var(--sage);
+	}
+
+	.field-line.muted {
+		color: var(--text-muted);
+	}
+
+	/* The per-row amount: a hairline-bottom serif field, same idiom as the
+	   single-sig batch rows — just always shown (multisig has no single-hero
+	   layout). */
+	.amount-input {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		border-bottom: 1px solid var(--border-subtle);
+		padding-bottom: 6px;
+	}
+
+	.amount-field {
+		flex: 1;
+		min-width: 0;
+		background: transparent;
+		border: none;
+		outline: none;
+		padding: 4px 0;
+		font-family: var(--font-serif);
+		font-weight: 600;
+		font-size: 22px;
+		color: var(--text-hero);
+		caret-color: var(--accent);
+	}
+
+	.amount-field::placeholder {
+		color: var(--text-faint);
+	}
+
+	.unit-inline {
 		background: none;
 		border: none;
-		color: var(--text-muted);
+		padding: 2px 4px;
 		font-family: var(--font-ui);
 		font-size: 12px;
 		font-weight: 600;
-		padding: 4px 12px;
-		border-radius: var(--radius-chip);
-		cursor: pointer;
-		transition:
-			background 120ms var(--ease),
-			color 120ms var(--ease);
-	}
-
-	.seg-btn.active {
-		background: var(--accent-muted);
-		color: var(--accent);
-	}
-
-	.amount-input {
-		position: relative;
-	}
-
-	.amount-input .input {
-		padding-right: 52px;
-		font-size: 18px;
-		font-family: var(--font-serif);
-		font-variation-settings: 'opsz' 40;
-	}
-
-	.amount-input .unit {
-		position: absolute;
-		right: 12px;
-		top: 50%;
-		transform: translateY(-50%);
 		color: var(--text-muted);
-		font-size: 12px;
-		font-weight: 600;
+		cursor: pointer;
+	}
+
+	.unit-inline:hover {
+		color: var(--accent);
 	}
 
 	.max-note {
@@ -1691,72 +1894,54 @@
 		gap: 8px;
 		color: var(--accent);
 		background: var(--accent-muted);
-		border-radius: var(--radius-control);
+		border-radius: var(--radius-icon-btn);
 		padding: 10px 12px;
 		font-size: 13px;
 	}
 
-	.fee-grid {
-		display: grid;
-		grid-template-columns: repeat(2, 1fr);
-		gap: 8px;
-	}
-
-	.fee-card {
+	/* ---- Create: fee text toggles ---- */
+	.fee-section {
 		display: flex;
 		flex-direction: column;
-		align-items: flex-start;
-		gap: 2px;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-control);
-		padding: 10px 12px;
-		cursor: pointer;
-		text-align: left;
-		transition:
-			border-color 120ms var(--ease),
-			background 120ms var(--ease);
+		gap: 10px;
+		border-top: 1px solid var(--hairline);
+		padding-top: 18px;
 	}
 
-	.fee-card:hover {
-		border-color: var(--text-muted);
-	}
-
-	.fee-card.active {
-		border-color: var(--accent);
-		background: var(--accent-muted);
-	}
-
-	.fee-label {
-		font-size: 12px;
-		font-weight: 600;
-		color: var(--text);
-	}
-
-	.fee-rate {
-		font-size: 13.5px;
-		color: var(--text-secondary);
-	}
-
-	.fee-eta {
-		font-size: 11px;
-		color: var(--text-muted);
-	}
-
-	.fee-card.custom {
-		gap: 6px;
-	}
-
-	.custom-input {
+	.fee-head {
 		display: flex;
-		align-items: center;
-		gap: 6px;
-		width: 100%;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 12px;
 	}
 
-	.custom-input .input {
-		padding: 5px 8px;
-		font-size: 13px;
+	.fee-toggles {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+	}
+
+	.custom-fee {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		max-width: 180px;
+		border-bottom: 1px solid var(--border-subtle);
+		padding-bottom: 4px;
+	}
+
+	.custom-fee-input {
+		flex: 1;
+		min-width: 0;
+		background: transparent;
+		border: none;
+		outline: none;
+		padding: 4px 0;
+		font-family: var(--font-serif);
+		font-weight: 600;
+		font-size: 17px;
+		color: var(--text-hero);
+		caret-color: var(--accent);
 	}
 
 	.unit-sm {
@@ -1765,38 +1950,80 @@
 		white-space: nowrap;
 	}
 
-	/* ---- Review ---- */
-	.review-hero {
-		padding: 24px;
-		display: flex;
-		flex-direction: column;
-		gap: 12px;
-		align-items: center;
+	.fee-caption {
+		font-size: 11.5px;
+		color: var(--eyebrow-path);
+	}
+
+	.quorum-note {
+		font-size: 12px;
+		color: var(--text-muted);
 		text-align: center;
 	}
 
-	.review-line {
+	/* Attention (never red) panels: chain-depth notes. */
+	.attention-panel {
+		display: flex;
+		gap: 10px;
+		align-items: flex-start;
+		background: var(--attention-muted);
+		border: 1px solid var(--warning-border);
+		border-radius: var(--radius-icon-btn);
+		padding: 12px 14px;
+		font-size: 13px;
+		line-height: 1.55;
+		color: var(--text);
+	}
+
+	.attention-panel :global(svg) {
+		color: var(--attention);
+		flex-shrink: 0;
+		margin-top: 1px;
+	}
+
+	/* ---- Review ---- */
+	.review-hero {
 		display: flex;
 		flex-direction: column;
-		align-items: center;
-		gap: 5px;
-		width: 100%;
-		min-width: 0;
+		gap: 8px;
 	}
 
-	.send-amount {
-		font-size: 34px;
+	.hero-amount {
+		font-family: var(--font-serif);
+		font-weight: 600;
+		font-size: 64px;
+		line-height: 0.96;
+		letter-spacing: -0.015em;
+		font-variant-numeric: tabular-nums;
+		color: var(--text-hero);
 	}
 
-	.send-amount em {
+	.hero-amount.sm {
+		font-size: 44px;
+	}
+
+	.hero-amount em {
 		font-style: normal;
-		font-size: 0.5em;
+		font-size: 0.42em;
 		color: var(--text-secondary);
 		font-weight: 500;
 	}
 
-	.review-arrow {
-		color: var(--text-muted);
+	.hero-sub {
+		font-size: 15px;
+		color: var(--text-secondary);
+	}
+
+	/* 5b sub-line: "to bc1q… · fee 12 sat/vB · draft saved on your node". */
+	.sign-sub {
+		margin-top: 14px;
+		font-size: 15px;
+		color: var(--text-secondary);
+	}
+
+	.sub-addr {
+		font-size: 13.5px;
+		color: var(--on-accent-ghost);
 	}
 
 	.review-recipients {
@@ -1809,7 +2036,6 @@
 	.review-recipient-row {
 		display: flex;
 		flex-direction: column;
-		align-items: center;
 		gap: 4px;
 	}
 
@@ -1820,14 +2046,10 @@
 	}
 
 	.recipient {
-		font-size: 13.5px;
+		font-size: 14px;
 		word-break: break-all;
 		max-width: 100%;
-		color: var(--text);
-		background: var(--bg);
-		padding: 8px 12px;
-		border-radius: var(--radius-control);
-		border: 1px solid var(--border-subtle);
+		color: var(--text-rows);
 	}
 
 	.detail-list {
@@ -1841,17 +2063,17 @@
 		justify-content: space-between;
 		align-items: baseline;
 		gap: 12px;
-		padding: 11px 0;
-		border-bottom: 1px solid var(--border-subtle);
+		padding: 14px 0;
+		border-bottom: 1px solid var(--hairline);
 		font-size: 13.5px;
 	}
 
 	.detail-row:first-child {
-		padding-top: 0;
+		border-top: 1px solid var(--hairline);
 	}
 
 	.detail-val {
-		color: var(--text);
+		color: var(--text-rows);
 		font-weight: 500;
 		text-align: right;
 	}
@@ -1866,7 +2088,7 @@
 		font-family: var(--font-ui);
 		font-size: 13px;
 		font-weight: 500;
-		padding: 11px 0 0;
+		padding: 12px 0 0;
 		cursor: pointer;
 	}
 
@@ -1877,18 +2099,22 @@
 	.utxo-list {
 		display: flex;
 		flex-direction: column;
-		gap: 6px;
-		padding-top: 10px;
+		gap: 8px;
+		padding-top: 8px;
 	}
 
 	.utxo-row {
 		display: flex;
 		justify-content: space-between;
+		align-items: baseline;
 		gap: 10px;
 		font-size: 12.5px;
-		padding: 7px 10px;
-		background: var(--bg);
-		border-radius: var(--radius-chip);
+		padding: 8px 0;
+		border-bottom: 1px solid var(--hairline);
+	}
+
+	.utxo-row:last-child {
+		border-bottom: none;
 	}
 
 	.utxo-row-right {
@@ -1911,7 +2137,7 @@
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
-		border-radius: var(--radius-chip);
+		border-radius: var(--radius-badge);
 		padding: 1px 7px;
 		white-space: nowrap;
 	}
@@ -1935,7 +2161,7 @@
 		display: flex;
 		gap: 10px;
 		align-items: flex-start;
-		border-radius: var(--radius-card);
+		border-radius: var(--radius-icon-btn);
 		padding: 12px 14px;
 		font-size: 13px;
 		line-height: 1.55;
@@ -1952,12 +2178,12 @@
 	}
 
 	.mass-panel.amber {
-		background: var(--warning-muted);
+		background: var(--attention-muted);
 		border: 1px solid var(--warning-border);
 	}
 
 	.mass-panel.amber :global(svg) {
-		color: var(--warning);
+		color: var(--attention);
 	}
 
 	.mass-panel.red {
@@ -1976,28 +2202,50 @@
 		color: var(--text-secondary);
 	}
 
-	.chip-time {
-		font-size: 11px;
-		color: var(--text-secondary);
-		background: var(--surface-elevated);
-		border-radius: var(--radius-chip);
-		padding: 2px 8px;
-		white-space: nowrap;
-		font-variant-numeric: tabular-nums;
-	}
-
-	/* ---- Sign: quorum progress + per-key chips ---- */
-	.key-frame {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		font-size: 13.5px;
-	}
-
-	.quorum-card {
+	/* ---- Sign ---- */
+	.sign-hero {
 		display: flex;
 		flex-direction: column;
+	}
+
+	.sign-grid {
+		display: grid;
+		grid-template-columns: 1fr;
+		gap: 36px;
+	}
+
+	@media (min-width: 900px) {
+		.sign-grid {
+			grid-template-columns: 1.35fr 1fr;
+			gap: 48px;
+			align-items: start;
+		}
+	}
+
+	.sign-col {
+		display: flex;
+		flex-direction: column;
+		gap: 18px;
+		min-width: 0;
+	}
+
+	.sig-head {
+		display: flex;
+		align-items: center;
 		gap: 12px;
+		flex-wrap: wrap;
+	}
+
+	.section-title {
+		font-size: 17px;
+		font-weight: 600;
+		color: var(--text);
+		letter-spacing: -0.01em;
+	}
+
+	.sig-count {
+		font-size: 13px;
+		color: var(--text-secondary);
 	}
 
 	/* Shared-wallet signer roster (person view). */
@@ -2008,8 +2256,9 @@
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
-		background: var(--surface-elevated);
-		border-radius: var(--radius-control);
+		background: var(--bg-input);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-icon-btn);
 	}
 
 	.signer-row {
@@ -2030,7 +2279,7 @@
 	}
 
 	.signer-row.signed .signer-state {
-		color: var(--success);
+		color: var(--sage);
 	}
 
 	.signer-name {
@@ -2056,134 +2305,146 @@
 	}
 
 	.signer-row.signed .signer-status {
-		color: var(--success);
+		color: var(--sage);
 	}
 
-	.quorum-head {
-		display: flex;
-		align-items: baseline;
-		gap: 6px;
-		font-size: 13.5px;
-		flex-wrap: wrap;
-	}
-
-	.quorum-count {
-		font-weight: 600;
-		color: var(--text);
-	}
-
-	.quorum-bar {
-		width: 100%;
-		height: 8px;
-		background: var(--surface-elevated);
-		border-radius: 4px;
-		overflow: hidden;
-	}
-
-	.quorum-bar-fill {
-		height: 100%;
-		background: var(--accent);
-		border-radius: 4px;
-		transition: width 300ms var(--ease);
-	}
-
-	.key-chips {
+	/* Per-key hairline rows (5b): signed / active / queued / spare. The list
+	   wrapper carries the top hairline so adjacent rows don't double it. */
+	.key-rows {
 		display: flex;
 		flex-direction: column;
-		gap: 8px;
 	}
 
-	.key-chip {
+	.key-rows > :first-child {
+		border-top: 1px solid var(--hairline);
+	}
+
+	.key-row {
 		display: flex;
 		align-items: center;
-		gap: 10px;
-		flex-wrap: wrap;
+		gap: 12px;
+		padding: 14px 0;
+		border-bottom: 1px solid var(--hairline);
+	}
+
+	button.key-row.selectable {
 		width: 100%;
+		background: none;
+		border: none;
+		border-bottom: 1px solid var(--hairline);
 		text-align: left;
-		background: var(--bg);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		padding: 10px 12px;
 		font-family: var(--font-ui);
-		font-size: 13px;
-		color: var(--text);
-	}
-
-	button.key-chip {
 		cursor: pointer;
-		transition: border-color 120ms var(--ease);
+		transition: background-color 120ms var(--ease);
 	}
 
-	button.key-chip:hover {
-		border-color: var(--accent);
+	button.key-row.selectable:hover {
+		background: rgba(255, 255, 255, 0.018);
 	}
 
-	.key-chip.active {
-		border-color: var(--accent);
-		background: var(--accent-muted);
+	.key-row.dim {
+		opacity: 0.6;
 	}
 
-	.key-chip.signed {
-		border-color: transparent;
-		background: var(--success-muted);
-		color: var(--success);
+	.key-icon {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 36px;
+		height: 36px;
+		flex-shrink: 0;
+		border-radius: var(--radius-icon-btn);
+		background: var(--surface-elevated);
+		/* Decorative (the name + meta line identify the key) — faint is allowed. */
+		color: var(--text-faint);
 	}
 
-	.key-chip.signed .chip-meta {
-		color: var(--success);
-		opacity: 0.8;
+	.key-main {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
+		flex: 1;
 	}
 
-	.key-chip.spare {
-		opacity: 0.85;
+	.key-name {
+		font-size: 14.5px;
+		font-weight: 500;
+		color: var(--text-rows);
 	}
 
-	.chip-dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: var(--border);
+	.key-meta {
+		font-size: 12px;
+		color: var(--text-muted);
+	}
+
+	.key-est {
+		color: var(--text-muted);
+	}
+
+	.key-state {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		font-size: 13px;
+		font-weight: 500;
 		flex-shrink: 0;
 	}
 
-	.key-chip.active .chip-dot {
-		background: var(--accent);
+	/* Spec 5b: a collected signature reads bright copper, not sage. */
+	.key-state.signed {
+		color: var(--accent-bright);
 	}
 
-	.chip-name {
+	.key-state.pending {
+		color: var(--accent-bright);
+	}
+
+	.key-state.muted {
+		color: var(--text-muted);
+		font-weight: 400;
+	}
+
+	.key-cta {
+		font-size: 13px;
 		font-weight: 600;
-	}
-
-	.chip-meta {
-		font-size: 11.5px;
-		color: var(--text-muted);
-	}
-
-	.chip-badge {
-		margin-left: auto;
-		font-size: 11px;
-		color: var(--text-muted);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-chip);
-		padding: 2px 8px;
-		white-space: nowrap;
-	}
-
-	.chip-badge.cta {
 		color: var(--accent);
-		border-color: var(--accent-muted);
+		flex-shrink: 0;
+	}
+
+	.never-line {
+		font-size: 12.5px;
+		color: var(--text-muted);
+	}
+
+	.quorum-done {
+		display: flex;
+		gap: 10px;
+		align-items: flex-start;
+		background: var(--success-muted);
+		border-radius: var(--radius-icon-btn);
+		padding: 14px 16px;
+		font-size: 13.5px;
+		line-height: 1.55;
+		color: var(--text);
+	}
+
+	.quorum-done :global(svg) {
+		color: var(--sage);
+		flex-shrink: 0;
+		margin-top: 2px;
 	}
 
 	/* ---- registration callout (QR variant; the ColdCard one lives in
-	       MultisigFileSigner). Warning-toned: registration is a hard prerequisite
-	       — the device refuses to sign without it. ---- */
+	       MultisigFileSigner). Warning-toned: registration is a hard
+	       prerequisite — the device refuses to sign without it. ---- */
 	.register-callout {
 		display: flex;
 		gap: 10px;
 		align-items: flex-start;
 		background: var(--warning-muted);
 		border: 1px solid var(--warning-border);
-		border-radius: var(--radius-card);
+		border-radius: var(--radius-icon-btn);
 		padding: 12px 14px;
 		font-size: 13px;
 		line-height: 1.55;
@@ -2209,69 +2470,78 @@
 		gap: 8px;
 		font-size: 13px;
 		color: var(--text-secondary);
-		background: var(--surface-elevated);
+		background: var(--bg-input);
 		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
+		border-radius: var(--radius-icon-btn);
 		padding: 12px 14px;
 	}
 
-	/* ---- Confirm ---- */
-	.quorum-done {
-		display: flex;
-		gap: 10px;
-		align-items: flex-start;
-		background: var(--success-muted);
-		border-radius: var(--radius-card);
-		padding: 14px 16px;
-		font-size: 13.5px;
-		line-height: 1.55;
-		color: var(--text);
-	}
-
-	.quorum-done :global(svg) {
-		color: var(--success);
-		flex-shrink: 0;
-		margin-top: 2px;
-	}
-
-	.confirm-warning {
-		display: flex;
-		gap: 10px;
-		align-items: flex-start;
-		background: var(--warning-muted);
-		border: 1px solid var(--warning-border);
-		border-radius: var(--radius-card);
-		padding: 14px 16px;
-		font-size: 13.5px;
-		line-height: 1.55;
-		color: var(--text);
-	}
-
-	.confirm-warning :global(svg) {
-		color: var(--warning);
-		flex-shrink: 0;
-		margin-top: 1px;
-	}
-
-	.confirm-warning strong {
-		display: block;
-	}
-
-	.confirm-summary,
-	.sent-summary {
+	/* ---- Sign: verify-on-device panel ---- */
+	.verify-col {
 		display: flex;
 		flex-direction: column;
-		gap: 10px;
+		gap: 14px;
+		min-width: 0;
 	}
 
-	.confirm-row {
+	.verify-list {
+		display: flex;
+		flex-direction: column;
+	}
+
+	.verify-row {
 		display: flex;
 		justify-content: space-between;
-		gap: 12px;
 		align-items: baseline;
+		gap: 12px;
+		padding: 12px 0;
+		border-bottom: 1px solid var(--hairline);
 		font-size: 13.5px;
 	}
 
+	.verify-row:first-child {
+		border-top: 1px solid var(--hairline);
+	}
+
+	.verify-key {
+		color: var(--text-secondary);
+	}
+
+	.verify-val {
+		color: var(--text-rows);
+		font-weight: 500;
+		text-align: right;
+		word-break: break-all;
+	}
+
+	.back-badge {
+		display: inline-block;
+		margin-left: 6px;
+		padding: 2px 7px;
+		border-radius: var(--radius-badge);
+		background: var(--sage-muted);
+		color: var(--sage);
+		font-family: var(--font-ui);
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		white-space: nowrap;
+	}
+
+	.verify-note {
+		font-size: 12px;
+		color: var(--text-muted);
+		line-height: 1.5;
+	}
+
+	.verify-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+
+	/* ---- Confirm ---- */
 	.confirm-recipient {
 		word-break: break-all;
 		text-align: right;
@@ -2293,87 +2563,190 @@
 		max-width: 100%;
 	}
 
-	/* ---- Sent ---- */
+	/* ---- Sent: the grove moment ---- */
 	.sent-body {
 		align-items: center;
 		text-align: center;
-		padding-top: 12px;
+		padding-top: 8px;
+		gap: 16px;
 	}
 
-	.sent-check {
-		width: 60px;
-		height: 60px;
-		border-radius: 50%;
-		background: var(--success-muted);
-		color: var(--success);
+	/* 4a topline: flow name left, quiet stepper right, Broadcast lit. */
+	.sent-topline {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 12px;
+		width: 100%;
+	}
+
+	.sent-flow-name {
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--text-muted);
+	}
+
+	.sent-steps {
+		display: inline-flex;
+		align-items: baseline;
+		gap: 9px;
+		font-size: 12px;
+		font-weight: 500;
+		color: var(--text-faint);
+	}
+
+	.sent-step.lit {
+		color: var(--accent-bright);
+	}
+
+	.sweep-stage {
+		position: relative;
+		width: 180px;
+		height: 180px;
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		margin-bottom: 4px;
+		margin: 4px 0;
+	}
+
+	/* Two cream ring sweeps — hwSweepOnce plays ONCE (no infinite), staggered.
+	   Base opacity 0 keeps them invisible during their delay and after. */
+	.sweep {
+		position: absolute;
+		inset: 0;
+		border-radius: 50%;
+		border: 1.5px solid var(--accent-glow-strong);
+		opacity: 0;
+		transform: scale(0.18);
+		animation: hwSweepOnce 2.4s ease-out forwards;
+		pointer-events: none;
+	}
+
+	.sweep.s1 {
+		animation-delay: 0.2s;
+	}
+
+	.sweep.s2 {
+		animation-delay: 1s;
 	}
 
 	.sent-title {
 		font-family: var(--font-serif);
-		font-variation-settings: 'opsz' 48;
-		font-size: 26px;
-		font-weight: 560;
+		font-weight: 600;
+		font-size: 40px;
+		line-height: 1.1;
+		letter-spacing: -0.015em;
+		font-variant-numeric: tabular-nums;
+		color: var(--text-hero);
 	}
 
-	.sent-txid {
+	.sent-sub {
+		font-size: 13.5px;
+		color: var(--text-secondary);
+	}
+
+	.txid-pill {
 		display: inline-flex;
 		align-items: center;
-		gap: 6px;
-		font-size: 14px;
-		padding: 10px 16px;
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-control);
+		gap: 10px;
+		font-size: 13.5px;
+		padding: 9px 16px;
+		background: rgba(255, 255, 255, 0.025);
+		border: 1px solid var(--hairline);
+		border-radius: var(--radius-status-pill);
+		color: var(--text-rows);
 	}
 
-	.sent-copy {
+	.sent-caption {
+		font-size: 11.5px;
+		color: var(--eyebrow-path);
+	}
+
+	.sent-again {
 		font-size: 12.5px;
 	}
 
-	.sent-summary {
-		width: 100%;
-		text-align: left;
-		margin-top: 8px;
-	}
-
-	@media (max-width: 520px) {
-		.fee-grid {
-			grid-template-columns: 1fr;
+	/* ---- Mobile (≤900px): flow-page composition ---- */
+	@media (max-width: 900px) {
+		.send-page {
+			margin: -20px -18px -48px;
+			padding: 16px 18px 48px;
 		}
 
-		.send-amount {
+		/* Flow-page header: back circle + centered eyebrow + spacer (8b/8c/8k);
+		   the desktop eyebrow/at-tip row retires. */
+		.flow-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 10px;
+			margin-bottom: 24px;
+		}
+
+		.eyebrow-row {
+			display: none;
+		}
+
+		.review-hero {
+			align-items: center;
+			text-align: center;
+		}
+
+		.hero-amount {
+			font-size: 38px;
+		}
+
+		.hero-amount.sm {
+			font-size: 32px;
+		}
+
+		.sign-hero {
+			align-items: center;
+			text-align: center;
+		}
+
+		.sign-sub {
+			margin-top: 8px;
+			font-size: 11.5px;
+		}
+
+		.sub-addr {
+			font-size: 10.5px;
+		}
+
+		.sig-head {
+			justify-content: center;
+		}
+
+		/* 8k keeps only the SENT eyebrow — no stepper. */
+		.sent-topline {
+			display: none;
+		}
+
+		.sent-title {
 			font-size: 28px;
 		}
 
-		.confirm-recipient {
-			max-width: 60%;
+		.step-actions {
+			flex-direction: column-reverse;
+			align-items: stretch;
 		}
 
-		.chip-badge {
-			margin-left: 0;
-		}
-
-		.resume-hint {
-			display: none;
+		.step-actions :global(.btn) {
+			width: 100%;
+			min-height: 46px;
 		}
 	}
 
+	/* Touch targets: text toggles and selectable key rows are tap targets —
+	   give them the full ≥44px hit area on touch screens and narrow viewports. */
 	@media (max-width: 520px), (pointer: coarse) {
-		.seg-btn {
+		.txt-toggle {
 			min-height: 44px;
 			padding: 10px 16px;
 		}
 
-		.fee-card {
-			min-height: 44px;
-			padding: 12px 14px;
-		}
-
-		.key-chip {
+		button.key-row.selectable {
 			min-height: 44px;
 		}
 	}

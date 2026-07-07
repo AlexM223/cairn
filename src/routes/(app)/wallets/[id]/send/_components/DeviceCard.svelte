@@ -30,7 +30,7 @@
 </script>
 
 {#if !disabled && onselect}
-	<button type="button" class="card card-pad device-card selectable" onclick={onselect}>
+	<button type="button" class="device-card selectable" onclick={onselect}>
 		<div class="device-head">
 			<span class="device-icon live"><Icon name={icon} size={18} /></span>
 			<div class="grow">
@@ -41,7 +41,7 @@
 		</div>
 	</button>
 {:else}
-	<div class="card card-pad device-card" aria-disabled="true">
+	<div class="device-card" aria-disabled="true">
 		<div class="device-head">
 			<span class="device-icon"><Icon name={icon} size={18} /></span>
 			<div class="grow">
@@ -54,26 +54,29 @@
 {/if}
 
 <style>
+	/* Hairline row — same grammar as the sibling .method-active tile in the
+	   Sign step's method-grid, not a boxed card. */
 	.device-card {
-		/* Muted with color tokens, not a blanket opacity — opacity: 0.6 dragged
-		   the hint text below WCAG AA. The title/hint keep their AA-passing
-		   tokens (--text-secondary / --text-muted); the "unavailable" reading
-		   comes from the receded background and the faint decorative icon. */
+		display: block;
+		width: 100%;
+		padding: 14px 0;
+		border-bottom: 1px solid var(--hairline);
 		background: transparent;
+		border-left: none;
+		border-right: none;
+		border-top: none;
 		cursor: not-allowed;
 	}
 
 	.device-card.selectable {
-		background: var(--surface);
 		cursor: pointer;
-		width: 100%;
 		text-align: left;
 		font-family: var(--font-ui);
-		transition: border-color 120ms var(--ease);
+		transition: background-color 120ms var(--ease);
 	}
 
 	.device-card.selectable:hover {
-		border-color: var(--accent);
+		background: rgba(255, 255, 255, 0.018);
 	}
 
 	.device-head {
@@ -89,7 +92,7 @@
 		width: 36px;
 		height: 36px;
 		flex-shrink: 0;
-		border-radius: var(--radius-control);
+		border-radius: var(--radius-icon-btn);
 		background: var(--surface-elevated);
 		/* Decorative (the title names the method) — faint is allowed here. */
 		color: var(--text-faint);
