@@ -15,6 +15,7 @@
 	import { formatBtc, formatSats, timeAgo, truncateMiddle } from '$lib/format';
 	import KeyHealthRow from '../_components/KeyHealthRow.svelte';
 	import AddressScriptDetails from '../_components/AddressScriptDetails.svelte';
+	import MultisigCollaborators from '../_components/MultisigCollaborators.svelte';
 	import { MULTISIG_SCRIPT_LABELS } from '../labels';
 	// Layout/styling shared with the single-sig detail page (namespaced under
 	// the root's .wallet-detail class); this page's style block keeps only what
@@ -614,6 +615,20 @@
 				</div>
 			{/if}
 		</section>
+
+		<!-- ------------------------------------------- collaborators (owner-only) -->
+		<!-- Share this wallet with a contact (viewer/cosigner). Gated on owner +
+		     team mode server-side (data.canManageShares); independent of the scan,
+		     so it renders even when the balance scan above failed. -->
+		{#if data.canManageShares}
+			<MultisigCollaborators
+				multisigId={data.multisig.id}
+				keys={data.multisig.keys.map((k) => ({ id: k.id, name: k.name }))}
+				threshold={data.multisig.threshold}
+				contacts={data.shareableContacts}
+				initialCollaborators={data.collaborators}
+			/>
+		{/if}
 
 		{#if data.detail}
 			<!-- ------------------------------------------- tabs -->
