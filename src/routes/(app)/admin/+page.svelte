@@ -5,11 +5,28 @@
 	let { data } = $props();
 
 	const notice = $derived(data.updateNotice ?? null);
-	const connected = $derived(data.node.connected && data.node.tipHeight !== null);
+
+	// Node info is STREAMED (cairn-2zxt.3): the page chrome + every setting-derived
+	// row paint instantly; the health pill, tip height, and backend rows fill in
+	// when the Electrum round-trip resolves. loadNodeInfo never rejects.
+	type NodeData = Awaited<(typeof data)['node']>;
+	let node = $state<NodeData | null>(null);
+	$effect(() => {
+		const promise = data.node;
+		let stale = false;
+		void promise.then((n) => {
+			if (!stale) node = n;
+		});
+		return () => {
+			stale = true;
+		};
+	});
+	const nodeLoading = $derived(node === null);
+	const connected = $derived(node !== null && node.connected && node.tipHeight !== null);
 
 	// Forming-ring math (spec 5g): N = floor(h/2016); ring N+1 is forming;
 	// progress = laid/2016; close ETA = blocks left × 10 min.
-	const tip = $derived(data.node.tipHeight ?? null);
+	const tip = $derived(node?.tipHeight ?? null);
 	const ringNumber = $derived(tip !== null ? Math.floor(tip / 2016) + 1 : null);
 	const ringLaid = $derived(tip !== null ? tip % 2016 : 0);
 	const ringProgress = $derived(ringLaid / 2016);
@@ -64,7 +81,9 @@
 
 <!-- status pill row (the layout renders the NODE eyebrow above the tabs) -->
 <div class="status-row fade-in">
-	{#if connected}
+	{#if nodeLoading}
+		<span class="status checking"><span class="dot blink"></span>Checking connection…</span>
+	{:else if connected}
 		<span class="status healthy"><span class="dot blink"></span>Healthy</span>
 	{:else}
 		<span class="status behind"><span class="dot"></span>Can't reach chain data</span>
@@ -74,7 +93,13 @@
 <!-- hero: tip height + large epoch dial -->
 <div class="hero fade-in">
 	<div class="hero-main">
-		{#if tip !== null}
+		{#if nodeLoading}
+			<div class="hero-row">
+				<span class="hero-number hero-height skeleton">000,000</span>
+				<span class="hero-sub">at the tip</span>
+			</div>
+			<div class="hero-ring skeleton skeleton-line">ring 000 forming — 0,000 of 2,016 laid</div>
+		{:else if tip !== null}
 			<div class="hero-row">
 				<span class="hero-number hero-height">{formatNumber(tip)}</span>
 				<span class="hero-sub">at the tip</span>
@@ -88,7 +113,7 @@
 				<span class="hero-number hero-height dim">—</span>
 			</div>
 			<div class="hero-ring attention-text">
-				{data.node.error ?? 'No connection to the configured chain sources.'}
+				{node?.error ?? 'No connection to the configured chain sources.'}
 				<a href="/admin/settings">Check the connection →</a>
 			</div>
 		{/if}
@@ -107,12 +132,20 @@
 <div class="kv-grid fade-in">
 	<div class="kv">
 		<span class="k">Backend</span>
-		<span class="v">Electrum · {data.node.mode === 'public' ? 'public servers' : 'yours'}</span>
-		<span class="dot-badge" class:sage={connected} class:amber={!connected}></span>
+		{#if node}
+			<span class="v">Electrum · {node.mode === 'public' ? 'public servers' : 'yours'}</span>
+			<span class="dot-badge" class:sage={connected} class:amber={!connected}></span>
+		{:else}
+			<span class="v skeleton">Electrum · public servers</span>
+		{/if}
 	</div>
 	<div class="kv">
 		<span class="k">Server</span>
-		<span class="v mono server">{data.node.server}</span>
+		{#if node}
+			<span class="v mono server">{node.server}</span>
+		{:else}
+			<span class="v mono server skeleton">host.example:50002</span>
+		{/if}
 	</div>
 	<div class="kv">
 		<span class="k">Users</span>
@@ -230,6 +263,18 @@
 		color: var(--attention);
 		background: var(--attention-muted);
 		border: 1px solid var(--warning-border);
+	}
+
+	.status.checking {
+		color: var(--text-muted);
+		background: var(--bg-input);
+		border: 1px solid var(--hairline);
+	}
+
+	/* Constrain the streamed-in hero sub-line skeleton to its text width rather
+	   than the full column. */
+	.hero-ring.skeleton-line {
+		display: inline-block;
 	}
 
 	.dot {

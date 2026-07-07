@@ -158,7 +158,7 @@ const telegramChannel: NotificationChannelPlugin = {
 		const result = await callSendMessage(
 			pre.token,
 			pre.chatId,
-			'✅ Cairn is connected to Telegram.'
+			'✅ Heartwood is connected to Telegram.'
 		);
 		// The single most common real-world test failure: the user hasn't pressed
 		// Start on the bot yet, so Telegram returns 403. Give a friendly nudge.

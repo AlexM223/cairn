@@ -519,7 +519,7 @@ export function multisigAccountPath(scriptType: MultisigScriptType, account = 0)
  */
 export function sanitizeMultisigPolicyName(raw: string): string {
 	// eslint-disable-next-line no-control-regex
-	const ascii = (raw || '').replace(/[^\x20-\x7e]/g, '').trim() || 'Cairn multisig';
+	const ascii = (raw || '').replace(/[^\x20-\x7e]/g, '').trim() || 'Heartwood multisig';
 	return ascii.length > 64 ? `${ascii.slice(0, 61).trim()}...` : ascii;
 }
 

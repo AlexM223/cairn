@@ -1,9 +1,11 @@
-// The "break glass in a safe" physical backup: a single-sheet, black-and-white
-// PDF that holds everything needed to reconstruct a multisig — the quorum, every
-// key (fingerprint / path / xpub), the full receive descriptor, and a large QR
-// of the exact Caravan config the JSON download emits. It is deliberately paper-
-// first: no colour (prints on any laser/inkjet), monospace for anything a human
-// might transcribe, and a big low-density QR that scans off a printed page.
+// The "break glass in a safe" physical backup: a single-sheet PDF that holds
+// everything needed to reconstruct a multisig — the quorum, every key
+// (fingerprint / path / xpub), the full receive descriptor, and a large QR of the
+// exact Caravan config the JSON download emits. It is deliberately paper-first: a
+// single copper accent for the Heartwood wordmark, ring mark and rules, but the
+// body text and the QR stay black-on-white (prints on any laser/inkjet), monospace
+// for anything a human might transcribe, and a big low-density QR that scans off a
+// printed page.
 //
 // Pure given a MultisigRow — no network, no clock reads beyond formatting the
 // stored createdAt — so it is fully testable. jsPDF runs in Node via its
@@ -35,6 +37,35 @@ const CONTENT_W = PAGE_W - MARGIN * 2;
 const QR_SIZE = 168;
 const QR_PX = 600;
 
+// Heartwood copper accent — src/app.css `--accent: #e8935a` as a 0–255 RGB triple
+// for jsPDF's colour setters. Chrome only (wordmark, ring mark, section headings,
+// header/footer rules); body text, the key table, the descriptor and the QR
+// modules stay black-on-white so the sheet prints and scans on any device.
+const COPPER: [number, number, number] = [232, 147, 90];
+
+/**
+ * Draw a simplified HeartwoodMark — three concentric, slightly-eccentric copper
+ * growth rings plus a filled pith dot — as vector primitives, into a `size`-pt box
+ * at (x, y). A direct reduction of the "min" detail level in
+ * src/lib/components/heartwood/HeartwoodMark.svelte (100-unit viewBox): the pith
+ * sits up-left and each ring drifts down-right as it grows.
+ */
+function drawHeartwoodMark(doc: jsPDF, x: number, y: number, size: number): void {
+	const s = size / 100;
+	doc.setDrawColor(COPPER[0], COPPER[1], COPPER[2]);
+	doc.setLineWidth(0.7);
+	for (const r of [43, 28, 15]) {
+		const t = r / 45;
+		const cx = x + (49 + t * 2) * s;
+		const cy = y + (45 + t * 7) * s;
+		doc.ellipse(cx, cy, r * s, r * 0.955 * s, 'S');
+	}
+	// Filled pith dot.
+	doc.setFillColor(COPPER[0], COPPER[1], COPPER[2]);
+	doc.circle(x + 49.3 * s, y + 46 * s, 5.5 * s, 'F');
+	doc.setDrawColor(0);
+}
+
 /** Read a value's extended-key string down to first-12…last-12 for the table.
  *  Short strings (< 27 chars) are shown whole. */
 function truncateMiddle(s: string, head = 12, tail = 12): string {
@@ -60,7 +91,7 @@ function formatDate(iso: string): string {
  *
  * The QR encodes the COMPLETE `caravanExport(multisig)` JSON — byte-identical to
  * the "Download backup (JSON)" file — so scanning it restores the wallet in
- * Cairn, Sparrow, or any Caravan-format consumer. We fix error-correction at 'L'
+ * Heartwood, Sparrow, or any Caravan-format consumer. We fix error-correction at 'L'
  * (lowest) and let the `qrcode` library auto-pick the QR version: a multisig
  * config is a few hundred to ~2 000 bytes, well within a version that still has
  * chunky, printer-friendly modules at 'L'. Higher correction would force a
@@ -87,17 +118,23 @@ export async function buildMultisigBackupPdf(multisig: MultisigRow): Promise<Uin
 	}
 
 	// ---------------------------------------------------------------- header
+	// Copper Heartwood ring mark + wordmark; "Wallet Backup" stays black at right.
+	drawHeartwoodMark(doc, MARGIN, y, 18);
 	doc.setFont('helvetica', 'bold');
 	doc.setFontSize(22);
-	doc.text('Cairn', MARGIN, y + 16);
+	doc.setTextColor(COPPER[0], COPPER[1], COPPER[2]);
+	doc.text('Heartwood', MARGIN + 26, y + 16);
+	doc.setTextColor(0, 0, 0);
 	doc.setFont('helvetica', 'normal');
 	doc.setFontSize(12);
 	doc.text('Wallet Backup', PAGE_W - MARGIN, y + 16, { align: 'right' });
 	y += 30;
 
-	// Rule under the wordmark.
-	doc.setLineWidth(1);
+	// Copper rule under the wordmark.
+	doc.setDrawColor(COPPER[0], COPPER[1], COPPER[2]);
+	doc.setLineWidth(1.2);
 	doc.line(MARGIN, y, PAGE_W - MARGIN, y);
+	doc.setDrawColor(0);
 	y += 22;
 
 	// Wallet name (may wrap for long names).
@@ -129,7 +166,9 @@ export async function buildMultisigBackupPdf(multisig: MultisigRow): Promise<Uin
 	doc.setFont('helvetica', 'bold');
 	doc.setFontSize(12);
 	ensure(18);
+	doc.setTextColor(COPPER[0], COPPER[1], COPPER[2]);
 	doc.text('Signing keys', MARGIN, y);
+	doc.setTextColor(0, 0, 0);
 	y += 16;
 
 	// One block per key rather than a fixed-width grid: xpubs/paths vary in
@@ -175,7 +214,9 @@ export async function buildMultisigBackupPdf(multisig: MultisigRow): Promise<Uin
 	doc.setFont('helvetica', 'bold');
 	doc.setFontSize(12);
 	ensure(18);
+	doc.setTextColor(COPPER[0], COPPER[1], COPPER[2]);
 	doc.text('Output descriptor (receive)', MARGIN, y);
+	doc.setTextColor(0, 0, 0);
 	y += 16;
 
 	doc.setFont('courier', 'normal');
@@ -212,7 +253,9 @@ export async function buildMultisigBackupPdf(multisig: MultisigRow): Promise<Uin
 	if (qrDataUrl) {
 		doc.setFont('helvetica', 'bold');
 		doc.setFontSize(12);
+		doc.setTextColor(COPPER[0], COPPER[1], COPPER[2]);
 		doc.text('Scan to restore', MARGIN, y);
+		doc.setTextColor(0, 0, 0);
 		y += 14;
 		// Centre the QR horizontally.
 		const qrX = MARGIN + (CONTENT_W - QR_SIZE) / 2;
@@ -244,7 +287,7 @@ export async function buildMultisigBackupPdf(multisig: MultisigRow): Promise<Uin
 		'this wallet. Anyone with this document can see your transaction history and ' +
 		'balances (but cannot spend funds without the signing keys).';
 	const footer2 =
-		'To restore: scan the QR code above in Cairn, Sparrow, or any wallet that supports ' +
+		'To restore: scan the QR code above in Heartwood, Sparrow, or any wallet that supports ' +
 		'Caravan-format configs — or re-import the descriptor listed above.';
 
 	doc.setFont('helvetica', 'normal');
@@ -262,9 +305,11 @@ export async function buildMultisigBackupPdf(multisig: MultisigRow): Promise<Uin
 		ensure(footerBlock);
 	}
 
+	doc.setDrawColor(COPPER[0], COPPER[1], COPPER[2]);
+	doc.setLineWidth(1);
+	doc.line(MARGIN, y, PAGE_W - MARGIN, y);
 	doc.setDrawColor(0);
 	doc.setLineWidth(0.5);
-	doc.line(MARGIN, y, PAGE_W - MARGIN, y);
 	y += 12;
 
 	for (const line of f1) {

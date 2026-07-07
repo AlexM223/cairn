@@ -500,7 +500,7 @@ async function ensureInit(): Promise<TrezorConnectApi> {
 			await TrezorConnect.init({
 				// Trezor requires a developer manifest on every integration. Cairn is
 				// self-hosted open source, so these identify the app, not a company.
-				manifest: { appName: 'Cairn', email: 'admin@cairn.local', appUrl: window.location.origin },
+				manifest: { appName: 'Heartwood', email: 'admin@cairn.local', appUrl: window.location.origin },
 				lazyLoad: false,
 				popup: true
 			});

@@ -45,7 +45,7 @@ export const POST: RequestHandler = async (event) => {
 		return json(
 			{
 				error:
-					'That looks like a PRIVATE key. Only paste your PUBLIC key here — Cairn never needs your private key.'
+					'That looks like a PRIVATE key. Only paste your PUBLIC key here — Heartwood never needs your private key.'
 			},
 			{ status: 400 }
 		);

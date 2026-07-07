@@ -112,6 +112,7 @@ interface EsploraStub {
 	getTipHeight: ReturnType<typeof vi.fn>;
 	getTipHash: ReturnType<typeof vi.fn>;
 	getTx: ReturnType<typeof vi.fn>;
+	getTxHex: ReturnType<typeof vi.fn>;
 	getTxOutspends: ReturnType<typeof vi.fn>;
 	getAddress: ReturnType<typeof vi.fn>;
 	getAddressTxs: ReturnType<typeof vi.fn>;
@@ -126,6 +127,9 @@ function makeEsploraStub(): EsploraStub {
 		getTipHeight: vi.fn(async () => TIP_HEIGHT),
 		getTipHash: vi.fn(async () => TIP_HASH),
 		getTx: vi.fn(async () => ESPLORA_TX),
+		// Present only so a regression back to the esplora raw-hex path would show
+		// up as an unexpected call (getTxHex now goes through Electrum — cairn-zoz8.4).
+		getTxHex: vi.fn(async () => 'esplora-should-not-be-called'),
 		getTxOutspends: vi.fn(async () => [{ spent: true }, { spent: false }]),
 		getAddress: vi.fn(),
 		getAddressTxs: vi.fn(),
@@ -223,6 +227,59 @@ describe('getTx (toTxDetail mapping)', () => {
 		// The rest of the detail is intact.
 		expect(tx.confirmations).toBe(11);
 		expect(tx.vout[0].scriptPubKey).toBe(WATCHED_SCRIPT);
+	});
+});
+
+// ---- getTxHex (raw hex via Electrum) ----------------------------------------------
+
+// getTxHex no longer touches esplora (cairn-zoz8.4): it fetches raw hex from the
+// operator's own Electrum server via blockchain.transaction.get(txid, verbose=false),
+// which returns the raw serialization for both confirmed and mempool txids on a
+// full-indexing backend (ElectrumX/Fulcrum/electrs).
+describe('getTxHex (Electrum raw-hex path)', () => {
+	// Plausible raw serializations; getTxHex passes them through untouched (no decode).
+	const CONFIRMED_TX_HEX = '02000000000101' + 'ab'.repeat(100) + '00000000';
+	const MEMPOOL_TX_HEX = '02000000000101' + 'cd'.repeat(80) + '00000000';
+
+	/** Install a getTransaction stub on the pooled Electrum client (readonly is TS-only). */
+	function withElectrum(svc: ChainService, getTransaction: ReturnType<typeof vi.fn>): void {
+		Object.assign(svc.electrum, { getTransaction });
+	}
+
+	it('returns a confirmed tx hex via getTransaction(txid, false), without touching esplora', async () => {
+		const stub = makeEsploraStub();
+		const svc = makeService(stub);
+		const getTransaction = vi.fn(async () => CONFIRMED_TX_HEX);
+		withElectrum(svc, getTransaction);
+
+		const txid = 'f'.repeat(64);
+		await expect(svc.getTxHex(txid)).resolves.toBe(CONFIRMED_TX_HEX);
+		// verbose=false so the server returns raw hex rather than a decoded object.
+		expect(getTransaction).toHaveBeenCalledWith(txid, false);
+		// The esplora client must not be consulted for raw hex any more.
+		expect(stub.getTxHex).not.toHaveBeenCalled();
+	});
+
+	it('returns an unconfirmed (mempool) tx hex the same way', async () => {
+		const svc = makeService(makeEsploraStub());
+		const getTransaction = vi.fn(async () => MEMPOOL_TX_HEX);
+		withElectrum(svc, getTransaction);
+
+		const txid = 'a'.repeat(64);
+		await expect(svc.getTxHex(txid)).resolves.toBe(MEMPOOL_TX_HEX);
+		expect(getTransaction).toHaveBeenCalledWith(txid, false);
+	});
+
+	it('throws when the Electrum server has no such tx (contract parity with the old esplora path)', async () => {
+		const svc = makeService(makeEsploraStub());
+		const getTransaction = vi.fn(async () => {
+			throw new Error('Electrum error: No such mempool or blockchain transaction');
+		});
+		withElectrum(svc, getTransaction);
+
+		await expect(svc.getTxHex('b'.repeat(64))).rejects.toThrow(
+			/No such mempool or blockchain transaction/
+		);
 	});
 });
 
@@ -393,5 +450,47 @@ describe('block lookup', () => {
 		expect(block.miner).toBeUndefined();
 		expect(block.totalFees).toBeNull();
 		expect(block.reward).toBeNull();
+	});
+});
+
+// ---- fee histogram (electrum-backed, cairn-zoz8.2) ----------------------------------
+
+// getFeeHistogram now reads mempool.get_fee_histogram from the operator's own
+// Electrum connection instead of the esplora /mempool response. Stub the pooled
+// Electrum facade (readonly is TS-only) so the facade's passthrough + empty→null
+// collapse is exercised without a socket.
+describe('getFeeHistogram (electrum-backed)', () => {
+	function withElectrumHistogram(result: unknown): {
+		svc: ChainService;
+		getFeeHistogram: ReturnType<typeof vi.fn>;
+		getMempool: ReturnType<typeof vi.fn>;
+	} {
+		const stub = makeEsploraStub();
+		const getMempool = vi.fn();
+		Object.assign(stub, { getMempool });
+		const svc = makeService(stub);
+		const getFeeHistogram = vi.fn(async () => result);
+		Object.assign(svc, { electrum: { getFeeHistogram } });
+		return { svc, getFeeHistogram, getMempool };
+	}
+
+	it('passes the mempool.get_fee_histogram pairs through, highest fee first', async () => {
+		const histogram: [number, number][] = [
+			[120, 15_000],
+			[50, 32_000],
+			[10, 210_000],
+			[1, 90_000]
+		];
+		const { svc, getFeeHistogram, getMempool } = withElectrumHistogram(histogram);
+
+		await expect(svc.getFeeHistogram()).resolves.toEqual(histogram);
+		expect(getFeeHistogram).toHaveBeenCalledTimes(1);
+		// The esplora /mempool response is no longer the source of this chart.
+		expect(getMempool).not.toHaveBeenCalled();
+	});
+
+	it('collapses an empty mempool histogram to null', async () => {
+		const { svc } = withElectrumHistogram([]);
+		await expect(svc.getFeeHistogram()).resolves.toBeNull();
 	});
 });

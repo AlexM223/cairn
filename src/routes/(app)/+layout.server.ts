@@ -14,7 +14,7 @@ import { httpsExternalPort } from '$lib/server/httpsPort';
 import { isFirstSyncComplete } from '$lib/server/syncStatus';
 import type { LayoutServerLoad } from './$types';
 
-export const load: LayoutServerLoad = async ({ locals, url, cookies }) => {
+export const load: LayoutServerLoad = async ({ locals, url }) => {
 	if (!locals.user) {
 		const next = url.pathname === '/' ? '' : `?next=${encodeURIComponent(url.pathname)}`;
 		redirect(302, `/login${next}`);
@@ -52,21 +52,19 @@ export const load: LayoutServerLoad = async ({ locals, url, cookies }) => {
 		if (!recoveryComplete) redirect(302, '/recovery-setup');
 	}
 
-	// First-sync gate (cairn-koy4.11) — LAST, so signup/disclosure/recovery all
-	// finish first (that paperwork usefully overlaps the count). Until the
-	// once-per-install chain-history cache exists, app pages hop to the
-	// full-screen first-sync experience at top-level /sync (outside this
-	// layout, so it can't loop — same shape as /disclosure). /recovery-setup is
-	// exempt (it lives under this layout mid-wizard), and the screen's
-	// "continue without waiting" escape sets a session cookie honored here so
-	// nobody is ever trapped behind an unreachable chain backend.
-	if (
-		url.pathname !== '/recovery-setup' &&
-		cookies.get('hw_skip_sync') !== '1' &&
-		!isFirstSyncComplete()
-	) {
-		redirect(302, '/sync');
-	}
+	// First-sync is NON-BLOCKING (cairn-2zxt.1). We used to redirect every app
+	// route to the full-screen /sync experience until the once-per-install
+	// chain-history cache existed — but a full-screen gate traps users behind a
+	// blocking page on first install, and its "continue without waiting" escape
+	// cookie proved unreliable (it's set on the plain-HTTP origin, then the
+	// secure auto-hop in secureRedirect.ts throws the user onto the HTTPS origin
+	// where the just-set cookie doesn't reliably carry, bouncing them right back
+	// to /sync). So the gate is gone entirely: every route renders immediately.
+	// We thread only the coarse, cheap boolean here (a memoized settings read —
+	// NO Electrum tip lookup); the non-blocking SyncBanner in (app)/+layout.svelte
+	// polls /api/sync client-side for live phase/ring/ETA detail, exactly the way
+	// the /sync page does. /sync stays reachable as an optional "view details"
+	// page, linked from the banner, but nobody is redirected there involuntarily.
 
 	// Two separate backup nudges:
 	//  • unbackedWallets — wallets whose config has NEVER been downloaded (a lost
@@ -76,6 +74,11 @@ export const load: LayoutServerLoad = async ({ locals, url, cookies }) => {
 	// Both are cheap local SQLite reads.
 	return {
 		user: locals.user,
+		// Coarse first-sync flag (cairn-2zxt.1): true once this install's
+		// chain-history cache exists. Cheap — a memoized settings read, no live
+		// chain call. The client renders SyncBanner (which polls /api/sync for the
+		// live detail) only while this is false, so a completed sync costs nothing.
+		firstSyncComplete: isFirstSyncComplete(),
 		// Resolved feature flags for this user, read on the client as data.flags.send
 		// (etc). Server-side enforcement (requireFeature) is the real gate; this is
 		// what lets the UI hide/grey features the user can't use.

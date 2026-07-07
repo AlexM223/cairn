@@ -350,7 +350,7 @@ const nostrChannel: NotificationChannelPlugin = {
 		const result = await publishEncryptedDM(
 			recipientHex,
 			relays,
-			'Cairn test notification — if you can read this, your Nostr channel works.'
+			'Heartwood test notification — if you can read this, your Nostr channel works.'
 		);
 		if (result.ok) {
 			// No delivery confirmation is possible on Nostr — be honest about it.

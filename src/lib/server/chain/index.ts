@@ -318,9 +318,19 @@ export class ChainService {
 		return toTxDetail(tx, tipHeight, outspends);
 	}
 
-	/** Raw serialization of a transaction, hex. */
-	getTxHex(txid: string): Promise<string> {
-		return this.esplora.getTxHex(txid);
+	/**
+	 * Raw serialization of a transaction, hex.
+	 *
+	 * Sourced from the operator's own Electrum server via
+	 * `blockchain.transaction.get(txid, verbose=false)` rather than a third-party
+	 * esplora HTTP API (cairn-zoz8.4) — a full-indexing Electrum backend
+	 * (ElectrumX/Fulcrum/electrs) returns the raw hex for any confirmed or mempool
+	 * txid, not just wallet-owned ones. Throws when the server can't produce the
+	 * hex (tx not found, or a non-indexing server), matching the previous
+	 * esplora-backed contract so callers' existing try/catch handling is unchanged.
+	 */
+	async getTxHex(txid: string): Promise<string> {
+		return String(await this.electrum.getTransaction(txid, false));
 	}
 
 	/**
@@ -414,12 +424,17 @@ export class ChainService {
 		return { txCount: m.count, vsize: m.vsize, totalFees: m.total_fee };
 	}
 
-	/** Fee-rate distribution of the current mempool; null when unavailable. */
+	/**
+	 * Fee-rate distribution of the current mempool; null when unavailable.
+	 * Sourced from the operator's own Electrum connection
+	 * (`mempool.get_fee_histogram`) rather than a third-party esplora HTTP API
+	 * (cairn-zoz8.2). The protocol returns the exact shape this facade exposes —
+	 * [feeRate sat/vB, vsize] pairs, highest fee first — so this is a passthrough
+	 * that only collapses an empty mempool to null.
+	 */
 	async getFeeHistogram(): Promise<FeeHistogram | null> {
-		const m = await this.esplora.getMempool();
-		return Array.isArray(m.fee_histogram) && m.fee_histogram.length > 0
-			? m.fee_histogram
-			: null;
+		const histogram = await this.electrum.getFeeHistogram();
+		return Array.isArray(histogram) && histogram.length > 0 ? histogram : null;
 	}
 
 	/** Projected next blocks by fee rate; null on plain esplora backends. */

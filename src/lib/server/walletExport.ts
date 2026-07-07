@@ -111,7 +111,7 @@ export function walletDescriptors(input: WalletDescriptorInput): {
 export function walletDescriptorBackup(input: WalletDescriptorInput): string {
 	const { receive, change } = walletDescriptors(input);
 	return [
-		`Cairn wallet backup — "${input.name}"`,
+		`Heartwood wallet backup — "${input.name}"`,
 		`Single-key wallet, ${SCRIPT_LABEL[input.scriptType]}`,
 		'',
 		'These output descriptors describe the wallet completely: any descriptor',

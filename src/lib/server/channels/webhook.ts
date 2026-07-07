@@ -247,7 +247,7 @@ const webhookChannel: NotificationChannelPlugin = {
 			type: 'tx_received', // overridden to 'test' in the body below
 			userId,
 			level: 'info',
-			title: 'Cairn test notification',
+			title: 'Heartwood test notification',
 			body: 'If you received this, your webhook is working.',
 			detail: { test: true }
 		};

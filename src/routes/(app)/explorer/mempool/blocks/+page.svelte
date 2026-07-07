@@ -10,22 +10,41 @@
 
 	let { data } = $props();
 
-	// Live feed — seeded once by the server load, then owned by polling.
-	// svelte-ignore state_referenced_locally
-	let projected = $state<MempoolBlockProjection[] | null>(data.projected);
-	// svelte-ignore state_referenced_locally
-	let histogram = $state<FeeHistogram | null>(data.histogram);
-	// svelte-ignore state_referenced_locally
-	let tipHeight = $state<number | null>(data.tipHeight);
+	// Live feed — seeded by the STREAMED server load (cairn-2zxt.3), then owned by
+	// polling. The seed starts null so the page chrome + explainer paint instantly
+	// with a skeleton; the projection fills in when the first stream resolves.
+	let projected = $state<MempoolBlockProjection[] | null>(null);
+	let histogram = $state<FeeHistogram | null>(null);
+	let tipHeight = $state<number | null>(null);
+	let error = $state<string | null>(null);
+	let seeded = $state(false);
 	let lastUpdated = $state(Date.now());
 	let stale = $state(false);
 	// Fingerprint of the last inputs handed to synthesizeBlocks — when a poll
 	// returns the same picture, we skip reassigning state entirely so the DOM
 	// (and its 500+ CSS-transitioned rects) doesn't churn for nothing.
-	// svelte-ignore state_referenced_locally
-	let lastKey = $state(synthKey(data.histogram, data.projected));
+	let lastKey = $state('');
 	// Screen-reader announcement — only set on meaningful changes (new tip block).
 	let announcement = $state('');
+
+	// Seed from the streamed load. Runs once (the promise identity is stable for
+	// this route); a full reload hands a fresh promise and re-seeds correctly.
+	$effect(() => {
+		const promise = data.mempool;
+		let stale_ = false;
+		void promise.then((m) => {
+			if (stale_) return;
+			projected = m.projected;
+			histogram = m.histogram;
+			tipHeight = m.tipHeight;
+			error = m.error;
+			lastKey = synthKey(m.histogram, m.projected);
+			seeded = true;
+		});
+		return () => {
+			stale_ = true;
+		};
+	});
 
 	const POLL_MS = 10_000;
 
@@ -180,10 +199,27 @@
 	</p>
 </HowItWorks>
 
-{#if data.error}
+{#if error}
 	<div class="form-error" role="alert">
-		Can't reach chain data sources — {data.error}.
+		Can't reach chain data sources — {error}.
 		<a href="/explorer/mempool/blocks">Retry</a>
+	</div>
+{:else if !seeded}
+	<!-- Streamed placeholder: block-card scaffold while the projection lands. -->
+	<div class="blocks-row fade-in" aria-busy="true" aria-label="Loading projection">
+		{#each [0, 1, 2, 3] as i (i)}
+			<div class="block-card" style:--depth={i}>
+				<div class="block-head">
+					<span class="eta skeleton">~00 min</span>
+					<span class="median tabular skeleton">0 sat/vB</span>
+				</div>
+				<div class="viz skeleton"></div>
+				<div class="block-stats">
+					<span class="range tabular skeleton">0–0 sat/vB</span>
+					<span class="meta tabular skeleton">000 txs</span>
+				</div>
+			</div>
+		{/each}
 	</div>
 {:else if blocks.length === 0}
 	<div class="empty-state fade-in">

@@ -69,6 +69,13 @@ export interface ElectrumHeader {
 	hex: string;
 }
 
+/**
+ * Mempool fee-rate distribution from `mempool.get_fee_histogram`: [feeRate sat/vB,
+ * cumulative vsize] pairs, ordered highest fee rate first (Electrum protocol
+ * convention).
+ */
+export type ElectrumFeeHistogram = [number, number][];
+
 interface PendingRequest {
 	resolve: (value: unknown) => void;
 	reject: (err: Error) => void;
@@ -479,6 +486,16 @@ export class ElectrumClient extends EventEmitter {
 	/** Returns BTC/kvB (electrum convention) or -1 when the server has no estimate. */
 	async estimateFee(targetBlocks: number): Promise<number> {
 		return (await this.request('blockchain.estimatefee', [targetBlocks])) as number;
+	}
+
+	/**
+	 * The server's current mempool fee-rate distribution (`mempool.get_fee_histogram`,
+	 * no params): [feeRate sat/vB, cumulative vsize] pairs, highest fee rate first.
+	 * Sources the mempool fee-distribution chart from the operator's own Electrum
+	 * connection instead of a third-party esplora HTTP API (cairn-zoz8.2).
+	 */
+	async getFeeHistogram(): Promise<ElectrumFeeHistogram> {
+		return (await this.request('mempool.get_fee_histogram', [])) as ElectrumFeeHistogram;
 	}
 
 	/** Subscribe to new headers; resolves with the current tip. */

@@ -14,7 +14,7 @@ const K_OPERATOR = 'user_agreement_operator';
 const K_VERSION = 'user_agreement_version';
 
 /** Fallback operator name until the admin sets one. */
-export const DEFAULT_OPERATOR = 'the operator of this Cairn instance';
+export const DEFAULT_OPERATOR = 'the operator of this Heartwood instance';
 
 /**
  * Default user agreement — direct, covers the real risks, not lawyer-speak
@@ -22,9 +22,9 @@ export const DEFAULT_OPERATOR = 'the operator of this Cairn instance';
  * body, so the text refers to "the operator" generically and stays valid even
  * if the admin renames themselves.
  */
-export const DEFAULT_USER_AGREEMENT = `By using this Cairn instance, you agree to the following.
+export const DEFAULT_USER_AGREEMENT = `By using this Heartwood instance, you agree to the following.
 
-NOT A CUSTODIAN. This service never holds your private keys or your bitcoin. Your keys stay on your own devices — hardware wallets, signing apps, or backups you control. Neither the operator of this instance nor the Cairn software can move, freeze, or recover your funds.
+NOT A CUSTODIAN. This service never holds your private keys or your bitcoin. Your keys stay on your own devices — hardware wallets, signing apps, or backups you control. Neither the operator of this instance nor the Heartwood software can move, freeze, or recover your funds.
 
 YOUR BACKUPS ARE YOUR RESPONSIBILITY. This server stores your wallet configuration — your public keys, labels, and settings — so it can show balances and help you build transactions. It does NOT store anything that can spend. You must keep your own backups: your seed phrases, and for a multisig wallet, every public key and the wallet descriptor. Download your wallet backup files and store them somewhere safe. If you lose them and this server becomes unavailable, you may permanently lose access to your funds.
 
@@ -54,15 +54,15 @@ export const DEFAULT_AGREEMENT_VERSION = 2;
  */
 export const ADMIN_DISCLOSURE = `You are setting up Bitcoin infrastructure.
 
-Cairn is software you run yourself. By operating this instance you are providing infrastructure — not custody, and not a financial service.
+Heartwood is software you run yourself. By operating this instance you are providing infrastructure — not custody, and not a financial service.
 
-YOU NEVER HOLD KEYS OR FUNDS. Cairn stores only public keys and wallet configuration. It cannot spend, and neither can you on your users' behalf. Your users' private keys stay on their own devices.
+YOU NEVER HOLD KEYS OR FUNDS. Heartwood stores only public keys and wallet configuration. It cannot spend, and neither can you on your users' behalf. Your users' private keys stay on their own devices.
 
 YOU ARE RESPONSIBLE FOR THIS SERVER. Keeping it running, securing it, backing up its data, and communicating downtime or data loss to your users is on you. If this server's data is lost and a user has not kept their own backup, they may permanently lose access to their funds.
 
-YOU ARE RESPONSIBLE FOR YOUR USERS. If you invite others onto this instance, you are the operator they rely on. You should establish your own terms of service with them — Cairn gives you a customizable user agreement to start from, which you can edit in Settings.
+YOU ARE RESPONSIBLE FOR YOUR USERS. If you invite others onto this instance, you are the operator they rely on. You should establish your own terms of service with them — Heartwood gives you a customizable user agreement to start from, which you can edit in Settings.
 
-THE CAIRN SOFTWARE IS PROVIDED AS-IS. It comes with no warranty of any kind. The Cairn project and its contributors are not a party to your instance and are not responsible for any claim a user makes against you, for any loss of funds, or for how you operate this server.`;
+THE HEARTWOOD SOFTWARE IS PROVIDED AS-IS. It comes with no warranty of any kind. The Heartwood project and its contributors are not a party to your instance and are not responsible for any claim a user makes against you, for any loss of funds, or for how you operate this server.`;
 
 export interface UserAgreement {
 	text: string;

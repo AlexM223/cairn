@@ -117,10 +117,10 @@ export function decryptBackup(envelopeText: string, passphrase: string): BackupD
 	try {
 		env = JSON.parse(envelopeText);
 	} catch {
-		throw new BackupError('That is not a valid Cairn backup file.');
+		throw new BackupError('That is not a valid Heartwood backup file.');
 	}
 	if (env.format !== FORMAT || env.cipher !== 'aes-256-gcm' || typeof env.data !== 'string') {
-		throw new BackupError('That is not a Cairn backup file.');
+		throw new BackupError('That is not a Heartwood backup file.');
 	}
 	const kdf = env.kdf as { N: number; r: number; p: number; keyLen: number; salt: string };
 	const key = deriveKey(passphrase, Buffer.from(kdf.salt, 'base64'), {

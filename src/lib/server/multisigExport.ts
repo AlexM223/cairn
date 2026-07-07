@@ -34,7 +34,7 @@ export function coldcardName(name: string): string {
 		.trim()
 		.slice(0, 20)
 		.trim();
-	return ascii || 'Cairn multisig';
+	return ascii || 'Heartwood multisig';
 }
 
 /** Canonical (SLIP-132 normalized) xpubs in the multisig's stored key order,
@@ -67,7 +67,7 @@ export function coldcardRegistration(multisig: MultisigRow): string {
 	const uniform = paths.every((p) => p === paths[0]) && paths[0] !== 'm' && paths[0] !== '';
 
 	const lines: string[] = [
-		'# Cairn multisig setup file',
+		'# Heartwood multisig setup file',
 		`Name: ${coldcardName(multisig.name)}`,
 		`Policy: ${multisig.threshold} of ${multisig.keys.length}`,
 		`Format: ${FORMAT_LABEL[multisig.scriptType]}`
@@ -220,7 +220,7 @@ export function parseCaravanImport(text: string): CaravanImport {
 	const network = typeof root.network === 'string' ? root.network.toLowerCase() : null;
 	if (network && network !== 'mainnet') {
 		throw new MultisigError(
-			`This wallet file was built for ${root.network} — Cairn tracks mainnet Bitcoin, so its addresses would never match.`,
+			`This wallet file was built for ${root.network} — Heartwood tracks mainnet Bitcoin, so its addresses would never match.`,
 			'unsupported_descriptor'
 		);
 	}
@@ -342,7 +342,7 @@ export function descriptorBackup(multisig: MultisigRow): string {
 	const receive = multisigToDescriptor(config, { chain: 0 });
 	const change = multisigToDescriptor(config, { chain: 1 });
 	return [
-		`Cairn multisig backup — "${multisig.name}"`,
+		`Heartwood multisig backup — "${multisig.name}"`,
 		`${multisig.threshold}-of-${multisig.keys.length} multisig, ${FORMAT_LABEL[multisig.scriptType]} (sortedmulti)`,
 		'',
 		'These output descriptors describe the multisig completely: any descriptor',

@@ -60,7 +60,7 @@ export function wireChainEvents(electrum: ElectrumPool): void {
 				userId: null,
 				level: 'success',
 				title: 'Bitcoin node connection restored',
-				body: `Cairn reconnected to its Bitcoin backend (${server}).`,
+				body: `Heartwood reconnected to its Bitcoin backend (${server}).`,
 				detail: { server },
 				link: '/admin/settings'
 			});
@@ -89,7 +89,7 @@ export function wireChainEvents(electrum: ElectrumPool): void {
 					userId: null,
 					level: 'error',
 					title: 'Bitcoin node connection down',
-					body: `Cairn has been unable to reach its Bitcoin backend (${server}) for over a minute. Wallet balances and sends may be stale until it reconnects.`,
+					body: `Heartwood has been unable to reach its Bitcoin backend (${server}) for over a minute. Wallet balances and sends may be stale until it reconnects.`,
 					detail: { server },
 					link: '/admin/settings'
 				});

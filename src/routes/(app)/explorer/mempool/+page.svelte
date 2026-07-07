@@ -11,6 +11,30 @@
 
 	let { data } = $props();
 
+	// The mempool snapshot is STREAMED (cairn-2zxt.3): the page chrome paints
+	// instantly with a skeleton, then fills in when the backend answers. On
+	// invalidate, the previous snapshot stays visible until the fresh promise
+	// resolves — no skeleton flash on refresh.
+	type MempoolData = Awaited<(typeof data)['mempool']>;
+	let snap = $state<MempoolData | null>(null);
+	$effect(() => {
+		const promise = data.mempool;
+		let stale = false;
+		void promise.then((s) => {
+			if (!stale) snap = s;
+		});
+		return () => {
+			stale = true;
+		};
+	});
+	const loading = $derived(snap === null);
+	const summary = $derived(snap?.summary ?? null);
+	const fees = $derived(snap?.fees ?? null);
+	const histogram = $derived(snap?.histogram ?? null);
+	const projected = $derived(snap?.projected ?? null);
+	const trend = $derived(snap?.trend ?? null);
+	const chainError = $derived(snap?.error ?? null);
+
 	// Live new-block updates: refresh the mempool stats when the chain advances.
 	// This page exposes no tip height, so the initial SSE event triggers one
 	// harmless refresh shortly after mount.
@@ -24,7 +48,7 @@
 	);
 
 	// A full block holds ~1M vB; how many block-fulls are waiting right now.
-	const blocksWorth = $derived(data.summary ? data.summary.vsize / 1_000_000 : 0);
+	const blocksWorth = $derived(summary ? summary.vsize / 1_000_000 : 0);
 
 	// Group the raw [rate, vsize] histogram into readable fee bands.
 	const BANDS = [
@@ -38,9 +62,9 @@
 	];
 
 	const feeBands = $derived.by(() => {
-		if (!data.histogram) return null;
+		if (!histogram) return null;
 		const bands = BANDS.map((b) => ({ ...b, vsize: 0 }));
-		for (const [rate, vsize] of data.histogram) {
+		for (const [rate, vsize] of histogram) {
 			const band = bands.find((b) => rate >= b.min && rate < b.max) ?? bands[bands.length - 1];
 			band.vsize += vsize;
 		}
@@ -50,8 +74,8 @@
 
 	// Sparkline geometry for the 2-hour trend.
 	const spark = $derived.by(() => {
-		if (!data.trend || data.trend.length < 2) return null;
-		const points = data.trend;
+		if (!trend || trend.length < 2) return null;
+		const points = trend;
 		const maxV = Math.max(...points.map((p) => p.vsize), 1);
 		const minT = points[0].time;
 		const spanT = Math.max(points[points.length - 1].time - minT, 1);
@@ -66,21 +90,21 @@
 	});
 
 	const tiers = $derived(
-		data.fees
+		fees
 			? [
 					{
-						rate: data.fees.fastest,
+						rate: fees.fastest,
 						label: 'Fastest',
 						context: 'to make the very next ring (~10 minutes)'
 					},
 					{
-						rate: data.fees.halfHour,
+						rate: fees.halfHour,
 						label: 'Half hour',
 						context: 'to take a ring within about 30 minutes'
 					},
-					{ rate: data.fees.hour, label: 'Hour', context: 'to take a ring within about an hour' },
+					{ rate: fees.hour, label: 'Hour', context: 'to take a ring within about an hour' },
 					{
-						rate: data.fees.economy,
+						rate: fees.economy,
 						label: 'Economy',
 						context: 'to save money and wait — possibly hours'
 					}
@@ -104,9 +128,9 @@
 
 		<header class="head fade-in">
 			<EyebrowBreadcrumb path={['Explorer']} current="Mempool" />
-			{#if data.summary}
+			{#if summary}
 				<div class="hero-row">
-					<span class="hero-number hero-count">{formatNumber(data.summary.txCount)}</span>
+					<span class="hero-number hero-count">{formatNumber(summary.txCount)}</span>
 					<span class="hero-sub">transactions waiting · no rings yet</span>
 				</div>
 				<div class="stat-line tabular">
@@ -114,7 +138,7 @@
 						<Term
 							tip="The combined virtual size of everything waiting. A ring segment fits about 1 million virtual bytes, so this backlog is roughly {blocksWorth.toFixed(1)} rings deep."
 						>
-							<span class="stat-num">{formatBytes(data.summary.vsize)}</span>
+							<span class="stat-num">{formatBytes(summary.vsize)}</span>
 						</Term>
 						backlog
 					</span>
@@ -122,20 +146,45 @@
 					<span>≈ <span class="stat-num">{blocksWorth.toFixed(1)}</span> rings worth</span>
 					<span class="sep" aria-hidden="true">·</span>
 					<span>
-						<span class="stat-num fees">{formatBtc(data.summary.totalFees)}</span> BTC in waiting fees
+						<span class="stat-num fees">{formatBtc(summary.totalFees)}</span> BTC in waiting fees
 					</span>
+				</div>
+			{:else if loading}
+				<div class="hero-row" aria-busy="true" aria-label="Loading mempool">
+					<span class="hero-number hero-count skeleton">00,000</span>
+					<span class="hero-sub">transactions waiting · no rings yet</span>
+				</div>
+				<div class="stat-line tabular">
+					<span class="stat-num skeleton">000 MB backlog · 0.0 rings · 0.000 BTC</span>
 				</div>
 			{/if}
 		</header>
 
-		{#if data.error}
+		{#if chainError}
 			<div class="form-error" role="alert">
-				Can't reach chain data sources — {data.error}.
+				Can't reach chain data sources — {chainError}.
 				<a href="/explorer/mempool">Retry</a>
 			</div>
-		{:else if data.summary}
+		{:else if loading}
+			<!-- Streamed placeholder: section scaffold while the snapshot lands. -->
+			<section class="section fade-in" aria-busy="true">
+				<div class="section-head">
+					<span class="section-title skeleton">Projected next rings</span>
+				</div>
+				<div class="proj-row">
+					{#each [0, 1, 2, 3, 4, 5] as i (i)}
+						<div class="proj-block skeleton" style:--depth={i}>
+							<span class="proj-eta">&nbsp;</span>
+							<span class="proj-fee tabular">&nbsp;</span>
+							<span class="proj-range tabular">&nbsp;</span>
+							<span class="proj-meta">&nbsp;</span>
+						</div>
+					{/each}
+				</div>
+			</section>
+		{:else if summary}
 			<!-- Projected next blocks -->
-			{#if data.projected && data.projected.length > 0}
+			{#if projected && projected.length > 0}
 				<section class="section fade-in">
 					<div class="section-head">
 						<span class="section-title">Projected next rings</span>
@@ -149,7 +198,7 @@
 						</a>
 					</div>
 					<div class="proj-row">
-						{#each data.projected.slice(0, 6) as block, i (i)}
+						{#each projected.slice(0, 6) as block, i (i)}
 							<div class="proj-block" style:--depth={i}>
 								<span class="proj-eta">~{(i + 1) * 10} min</span>
 								<span class="proj-fee tabular">{formatFeeRate(block.medianFee)}</span>
@@ -239,7 +288,7 @@
 						<span class="hint">now</span>
 					</div>
 				</section>
-			{:else if data.projected === null}
+			{:else if projected === null}
 				<p class="hint degrade-note">
 					Projected rings and history need a mempool.space-compatible backend — the configured
 					Esplora server provides basic mempool totals only.

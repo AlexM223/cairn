@@ -451,8 +451,8 @@ describe('sanitizeMultisigPolicyName', () => {
 	});
 
 	it('falls back for an empty or all-non-ASCII name', () => {
-		expect(sanitizeMultisigPolicyName('')).toBe('Cairn multisig');
-		expect(sanitizeMultisigPolicyName('🏰🏰🏰')).toBe('Cairn multisig');
+		expect(sanitizeMultisigPolicyName('')).toBe('Heartwood multisig');
+		expect(sanitizeMultisigPolicyName('🏰🏰🏰')).toBe('Heartwood multisig');
 	});
 });
 

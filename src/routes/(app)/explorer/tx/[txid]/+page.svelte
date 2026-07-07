@@ -26,6 +26,26 @@
 	const totalIn = $derived(tx.vin.reduce((sum, v) => sum + (v.value ?? 0), 0));
 	const totalOut = $derived(tx.vout.reduce((sum, v) => sum + v.value, 0));
 
+	// The decoded transaction (above) renders immediately from the awaited load.
+	// Its supplementary details — fee outlook, RBF timeline, CPFP badges, raw hex —
+	// are extra Electrum/esplora round-trips, STREAMED in after first paint
+	// (cairn-2zxt.3). loadTxDetails never rejects.
+	type Details = Awaited<(typeof data)['details']>;
+	let details = $state<Details | null>(null);
+	$effect(() => {
+		const promise = data.details;
+		let stale = false;
+		void promise.then((d) => {
+			if (!stale) details = d;
+		});
+		return () => {
+			stale = true;
+		};
+	});
+	const fees = $derived(details?.fees ?? null);
+	const rawHex = $derived(details?.rawHex ?? null);
+	const rawTooLarge = $derived(details?.rawTooLarge ?? false);
+
 	// An output paying an address that also funded an input is certainly
 	// change. (Modern wallets avoid address reuse, so absence of this badge
 	// doesn't mean absence of change — the panel copy explains the concept.)
@@ -34,19 +54,19 @@
 	);
 
 	const outlook = $derived(
-		!tx.confirmed && tx.feeRate !== null && data.fees ? feeOutlook(tx.feeRate, data.fees) : null
+		!tx.confirmed && tx.feeRate !== null && fees ? feeOutlook(tx.feeRate, fees) : null
 	);
 
 	// Replace-by-fee timeline (oldest → newest). The newest entry is the only
 	// version that can still confirm; if it isn't the tx being viewed, this
 	// page shows a stale version.
-	const rbf = $derived(data.rbf);
+	const rbf = $derived(details?.rbf ?? null);
 	const newestRbf = $derived(rbf ? rbf.chain[rbf.chain.length - 1] : null);
 	const replacedByNewer = $derived(newestRbf !== null && newestRbf.txid !== tx.txid);
 
 	// CPFP only matters when the package rate meaningfully differs (>5%) from
 	// this transaction's own fee rate — otherwise the child changes nothing.
-	const cpfp = $derived(data.cpfp);
+	const cpfp = $derived(details?.cpfp ?? null);
 	const cpfpActive = $derived(
 		cpfp !== null &&
 			tx.feeRate !== null &&
@@ -70,8 +90,8 @@
 	});
 
 	async function copyRawHex() {
-		if (!data.rawHex) return;
-		if (!(await copyToClipboard(data.rawHex))) return;
+		if (!rawHex) return;
+		if (!(await copyToClipboard(rawHex))) return;
 		hexCopied = true;
 		setTimeout(() => (hexCopied = false), 1500);
 	}
@@ -466,7 +486,7 @@
 		</section>
 
 		<!-- Raw hex -->
-		{#if data.rawHex !== null || data.rawTooLarge}
+		{#if rawHex !== null || rawTooLarge}
 			<section class="raw fade-in" class:open={rawOpen}>
 				<button class="raw-toggle" onclick={() => (rawOpen = !rawOpen)} aria-expanded={rawOpen}>
 					<Icon name="eye" size={15} />
@@ -475,20 +495,20 @@
 				</button>
 				{#if rawOpen}
 					<div class="raw-body fade-in">
-						{#if data.rawHex !== null}
+						{#if rawHex !== null}
 							<p class="raw-caption">
 								<Term
 									tip="Every field on this page is decoded from these bytes. Nodes relay, verify, and store transactions in exactly this serialized form; the txid is a hash of it."
 									>The exact bytes</Term
 								>
-								this transaction is made of — {formatBytes(data.rawHex.length / 2)} of
+								this transaction is made of — {formatBytes(rawHex.length / 2)} of
 								serialized data.
 								<button type="button" class="btn btn-ghost btn-sm raw-copy" onclick={copyRawHex}>
 									<Icon name={hexCopied ? 'check' : 'copy'} size={13} />
 									{hexCopied ? 'Copied' : 'Copy hex'}
 								</button>
 							</p>
-							<div class="raw-hex mono">{data.rawHex}</div>
+							<div class="raw-hex mono">{rawHex}</div>
 						{:else}
 							<p class="raw-caption">
 								This transaction serializes to {formatBytes(tx.size)} — too large to display
