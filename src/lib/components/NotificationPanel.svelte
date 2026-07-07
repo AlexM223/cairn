@@ -207,12 +207,12 @@
 	>
 		<Icon name="activity" size={17} />
 		{#if unread > 0}
-			<span class="badge" aria-hidden="true">{unread > 99 ? '99+' : unread}</span>
+			<span class="notif-badge" aria-hidden="true">{unread > 99 ? '99+' : unread}</span>
 		{/if}
 	</button>
 
 	{#if open}
-		<div class="panel" role="dialog" aria-label="Notifications" bind:this={popEl} popover="manual">
+		<div class="notif-panel" role="dialog" aria-label="Notifications" bind:this={popEl} popover="manual">
 			<div class="panel-head">
 				<span class="panel-title">Notifications</span>
 				{#if unread > 0}
@@ -232,10 +232,10 @@
 						<span>Nothing here yet</span>
 					</div>
 				{:else}
-					<ul class="list">
+					<ul class="notif-list">
 						{#each items as n (n.id)}
 							{@const href = linkFor(n)}
-							<li class="row level-{n.level}" class:unread={n.readAt === null}>
+							<li class="notif-row level-{n.level}" class:unread={n.readAt === null}>
 								{#if href}
 									<a {href} class="row-inner" onclick={() => (open = false)}>
 										<span class="marker" aria-hidden="true">
@@ -246,7 +246,7 @@
 											<div class="row-when">{ago(n.createdAt)}</div>
 										</div>
 										{#if n.readAt === null}
-											<span class="dot" aria-label="Unread"></span>
+											<span class="notif-dot" aria-label="Unread"></span>
 										{/if}
 									</a>
 								{:else}
@@ -259,7 +259,7 @@
 											<div class="row-when">{ago(n.createdAt)}</div>
 										</div>
 										{#if n.readAt === null}
-											<span class="dot" aria-label="Unread"></span>
+											<span class="notif-dot" aria-label="Unread"></span>
 										{/if}
 									</div>
 								{/if}
@@ -306,7 +306,7 @@
 		color: var(--accent);
 	}
 
-	.badge {
+	.notif-badge {
 		position: absolute;
 		top: -2px;
 		right: -2px;
@@ -323,7 +323,7 @@
 		font-variant-numeric: tabular-nums;
 	}
 
-	.panel {
+	.notif-panel {
 		position: absolute;
 		bottom: calc(100% + 8px);
 		left: 0;
@@ -349,7 +349,7 @@
 	   left/bottom are set inline by positionPanel() in VIEWPORT coordinates
 	   (getBoundingClientRect + innerHeight), so it must be position:fixed. We also
 	   null out the UA inset:0 (top/right) that would otherwise stretch it. */
-	.panel:popover-open {
+	.notif-panel:popover-open {
 		position: fixed;
 		top: auto;
 		right: auto;
@@ -398,21 +398,21 @@
 		font-size: 12.5px;
 	}
 
-	.list {
+	.notif-list {
 		list-style: none;
 		margin: 0;
 		padding: 0;
 	}
 
-	.row {
+	.notif-row {
 		border-bottom: 1px solid var(--border-subtle);
 	}
 
-	.row:last-child {
+	.notif-row:last-child {
 		border-bottom: none;
 	}
 
-	.row.unread {
+	.notif-row.unread {
 		background: var(--accent-muted);
 	}
 
@@ -483,7 +483,7 @@
 		font-variant-numeric: tabular-nums;
 	}
 
-	.dot {
+	.notif-dot {
 		width: 7px;
 		height: 7px;
 		flex-shrink: 0;
