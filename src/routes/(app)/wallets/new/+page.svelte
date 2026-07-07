@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { enhance, applyAction, deserialize } from '$app/forms';
 	import { page } from '$app/state';
+	import { pushState, replaceState } from '$app/navigation';
 	import { browser } from '$app/environment';
 	import { onDestroy, onMount, tick } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
@@ -119,19 +120,28 @@
 	}
 
 	onMount(() => {
-		if (!savedProgress || !hasMeaningfulProgress(savedProgress)) return;
-		step = savedProgress.step;
-		method = savedProgress.method;
-		readMethod = savedProgress.readMethod;
-		deviceType = savedProgress.deviceType;
-		xpubInput = savedProgress.xpubInput;
-		validatedXpub = savedProgress.validatedXpub;
-		preview = savedProgress.preview;
-		scriptType = savedProgress.scriptType;
-		keyFingerprint = savedProgress.keyFingerprint;
-		keyPath = savedProgress.keyPath;
-		if (savedProgress.name) name = savedProgress.name;
-		resumed = true;
+		if (savedProgress && hasMeaningfulProgress(savedProgress)) {
+			step = savedProgress.step;
+			method = savedProgress.method;
+			readMethod = savedProgress.readMethod;
+			deviceType = savedProgress.deviceType;
+			xpubInput = savedProgress.xpubInput;
+			validatedXpub = savedProgress.validatedXpub;
+			preview = savedProgress.preview;
+			scriptType = savedProgress.scriptType;
+			keyFingerprint = savedProgress.keyFingerprint;
+			keyPath = savedProgress.keyPath;
+			if (savedProgress.name) name = savedProgress.name;
+			resumed = true;
+		}
+		// Browser Back should retreat one wizard screen (matching the in-app Back),
+		// not leave /wallets/new outright (cairn-aiyw). The URL never changes across
+		// steps, so we mirror the step position into the history stack with shallow
+		// routing: one same-URL entry per step reached. A resume can land mid-wizard,
+		// so seed the whole 0..step stack, not just the current entry.
+		seedStepHistory();
+		window.addEventListener('popstate', onPopState);
+		return () => window.removeEventListener('popstate', onPopState);
 	});
 
 	// Persist on every change; once the wallet exists (Done view) the snapshot
@@ -189,6 +199,63 @@
 		} catch {
 			// Already reset in memory; a stale snapshot will age out.
 		}
+		// Collapse the history stack back to a single step-0 entry so a Back press
+		// after "Start over" doesn't strand the user on a now-empty later screen.
+		try {
+			replaceState('', { wizardStep: 0 });
+		} catch {
+			// Router not ready (mid-hydration) — the back-button aid just no-ops.
+		}
+	}
+
+	// ---------------------------------------------------- browser back-button (cairn-aiyw)
+	//
+	// Steps live in the `step` state, not the URL (it stays /wallets/new throughout),
+	// so without help the browser Back button escapes the wizard entirely. We keep a
+	// history entry per step via SvelteKit shallow routing and translate a Back/Forward
+	// into a step change instead. Forward moves push; Back is delegated to the browser
+	// (history.back → popstate → onPopState), so the two Back paths can never disagree
+	// and there's no pushState⇄popstate loop (pushState never fires popstate).
+
+	/** Rebuild the history stack to match the current step (handles a mid-wizard resume). */
+	function seedStepHistory() {
+		try {
+			replaceState('', { wizardStep: 0 });
+			for (let i = 1; i <= step; i++) pushState('', { wizardStep: i });
+		} catch {
+			// Router not ready — degrade gracefully; navigation still works, the
+			// Back button just isn't step-aware.
+		}
+	}
+
+	/** Advance to a later step and record it as a new history entry. */
+	function advanceStep(next: number) {
+		step = next;
+		try {
+			pushState('', { wizardStep: next });
+		} catch {
+			// Non-fatal: the step still advances, only the Back-button aid is lost.
+		}
+	}
+
+	/** In-app Back: pop one history entry so it behaves exactly like browser Back. */
+	function stepBack() {
+		if (browser) history.back();
+		else step = Math.max(0, step - 1);
+	}
+
+	/** Apply a step the user reached via browser Back/Forward. Verify/Finish require a
+	 *  validated key + preview, so clamp back to Key if that data isn't present. */
+	function applyStepFromHistory(target: number) {
+		if (target >= 1 && (!validatedXpub || !scriptType || preview.length === 0)) target = 0;
+		step = target === 1 || target === 2 ? target : 0;
+	}
+
+	function onPopState() {
+		// The Done view is terminal (driven by createdId, not step) — leave it alone.
+		if (createdId !== null) return;
+		const target = page.state.wizardStep;
+		if (typeof target === 'number' && target !== step) applyStepFromHistory(target);
 	}
 
 	// -------------------------------------------------- Step 2: how the key arrives
@@ -316,7 +383,7 @@
 				readMethod = from;
 				deviceType = METHOD_DEVICE[from];
 				changeDevice = false;
-				step = 1;
+				advanceStep(1);
 			} else if (result.type === 'failure') {
 				deviceError =
 					(result.data as { error?: string } | undefined)?.error ??
@@ -954,7 +1021,7 @@
 										readMethod = 'paste';
 										deviceType = null;
 										changeDevice = false;
-										step = 1;
+										advanceStep(1);
 									} else if (result.type === 'failure') {
 										previewError =
 											(result.data as { error?: string } | undefined)?.error ??
@@ -1112,7 +1179,7 @@
 				{/each}
 			</div>
 			<div class="pane-actions">
-				<button type="button" class="btn btn-ghost" onclick={() => (step = 0)}>
+				<button type="button" class="btn btn-ghost" onclick={stepBack}>
 					<Icon name="chevron-left" size={14} />
 					Back
 				</button>
@@ -1121,7 +1188,7 @@
 					class="btn btn-primary"
 					onclick={() => {
 						if (!name && scriptType) name = `${SCRIPT_TYPE_LABELS[scriptType]} wallet`;
-						step = 2;
+						advanceStep(2);
 					}}
 				>
 					<Icon name="check" size={14} />
@@ -1230,7 +1297,7 @@
 				{/if}
 
 				<div class="pane-actions">
-					<button type="button" class="btn btn-ghost" onclick={() => (step = 1)}>
+					<button type="button" class="btn btn-ghost" onclick={stepBack}>
 						<Icon name="chevron-left" size={14} />
 						Back
 					</button>
