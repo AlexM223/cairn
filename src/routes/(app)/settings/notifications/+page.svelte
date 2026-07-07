@@ -2,6 +2,10 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import { formatSats } from '$lib/format';
+	import GroveField from '$lib/components/heartwood/GroveField.svelte';
+	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
+	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
+	import Modal from '$lib/components/heartwood/Modal.svelte';
 
 	let { data } = $props();
 
@@ -179,7 +183,6 @@
 	}
 
 	async function disconnectChannel(id: ChannelId) {
-		if (!confirm('Disconnect this channel? Its settings will be cleared.')) return;
 		saving[id] = true;
 		saveError[id] = null;
 		try {
@@ -194,6 +197,21 @@
 		} finally {
 			saving[id] = false;
 		}
+	}
+
+	// Destructive acts confirm through the shared Modal instead of
+	// window.confirm — same network logic as before once confirmed.
+	let confirmTarget = $state<{ title: string; message: string; label: string; run: () => void } | null>(null);
+	let confirmOpen = $state(false);
+
+	function askDisconnect(id: ChannelId, label: string) {
+		confirmTarget = {
+			title: `Disconnect ${label}?`,
+			message: `Its settings will be cleared. You can reconnect ${label} any time by entering them again.`,
+			label: 'Disconnect',
+			run: () => void disconnectChannel(id)
+		};
+		confirmOpen = true;
 	}
 
 	// ---- PGP -----------------------------------------------------------------
@@ -224,7 +242,6 @@
 	}
 
 	async function removePgp() {
-		if (!confirm('Remove your PGP key? Notification emails will no longer be encrypted.')) return;
 		pgpBusy = true;
 		pgpError = null;
 		try {
@@ -236,6 +253,16 @@
 		} finally {
 			pgpBusy = false;
 		}
+	}
+
+	function askRemovePgp() {
+		confirmTarget = {
+			title: 'Remove your PGP key?',
+			message: 'Notification emails will no longer be encrypted. You can paste the key again later.',
+			label: 'Remove key',
+			run: () => void removePgp()
+		};
+		confirmOpen = true;
 	}
 
 	function groupFingerprint(fp: string): string {
@@ -398,6 +425,12 @@
 		await patchPrefs(updates);
 	}
 
+	// Which channel rows are expanded to show their config panel.
+	let open = $state<Record<string, boolean>>({});
+	function toggleRow(key: string) {
+		open[key] = !open[key];
+	}
+
 	// Which event rows are expanded to show per-channel toggles.
 	let expanded = $state<Record<string, boolean>>({});
 	function toggleExpanded(type: string) {
@@ -467,278 +500,305 @@
 </script>
 
 <svelte:head>
-	<title>Notifications — Settings — Cairn</title>
+	<title>Notifications — Settings — Heartwood</title>
 </svelte:head>
 
-<div class="head">
-	<a href="/settings" class="back"><Icon name="chevron-left" size={16} /> Settings</a>
+<div class="grove-bleed" aria-hidden="true"><GroveField volume="whisper" /></div>
+
+<div class="hw-page hw-owns-header fade-in">
+	<!-- Mobile flow header: back circle + centered eyebrow + spacer. -->
+	<header class="flow-header">
+		<BackCircle href="/settings" label="Back to settings" />
+		<span class="flow-eyebrow">NOTIFICATIONS</span>
+		<span class="flow-spacer"></span>
+	</header>
+
+	<!-- Desktop eyebrow breadcrumb, linking back to Settings. -->
+	<a class="crumb-link" href="/settings">
+		<EyebrowBreadcrumb path={['Settings']} current="Notifications" />
+	</a>
+
 	<h1 class="page-title">Notifications</h1>
 	<p class="lede">
-		Choose how Cairn reaches you. In-app alerts are always on; connect any of the channels below to
-		also get notified by email, push, or your own tools. Everything here is opt-in and only ever
-		sends to servers you configure — Cairn adds no third-party telemetry.
+		Choose how Heartwood reaches you. In-app alerts are always on; connect any of the channels
+		below to also get notified by email, push, or your own tools. Everything here is opt-in and
+		only ever sends to servers you configure — Heartwood adds no third-party telemetry.
 	</p>
-</div>
 
-<div class="stack page fade-in">
 	<!-- ============ CHANNEL CONNECTIONS ============ -->
-	<section class="stack group">
-		<h2 class="group-title">Channels</h2>
+	<section class="hw-section">
+		<h2 class="section-title">Channels</h2>
 
 		<!-- Email -->
-		<div class="card card-pad channel">
-			<div class="ch-head">
-				<span class="ch-title">Email</span>
-				{#if channel('email').configured}
-					<span class="badge badge-success">Connected</span>
-				{:else}
-					<span class="badge badge-neutral">Not connected</span>
-				{/if}
-			</div>
-			<p class="hint">Notifications to your inbox over your instance's SMTP relay.</p>
-			<div class="field">
-				<label class="label" for="email-address">Send to</label>
-				<input class="input" id="email-address" type="email" bind:value={emailAddress} placeholder={data.defaults.emailAddress} />
-				<span class="hint">Defaults to your account email if left blank.</span>
-			</div>
-			{#if saveError.email}<div class="form-error" role="alert">{saveError.email}</div>{/if}
-			<div class="ch-actions">
-				<button class="btn btn-primary btn-sm" onclick={() => saveChannel('email')} disabled={saving.email}>
-					{#if saving.email}<span class="spinner"></span>{/if} Save
-				</button>
-				<button class="btn btn-secondary btn-sm" onclick={() => testChannel('email')} disabled={testing.email || !channel('email').configured}>
-					{#if testing.email}<span class="spinner"></span>{/if} Test
-				</button>
-				{#if channel('email').configured}
-					<button class="btn btn-ghost btn-sm danger" onclick={() => disconnectChannel('email')} disabled={saving.email}>Disconnect</button>
-				{/if}
-				{@render resultBadge('email')}
-			</div>
+		<button type="button" class="hw-row" aria-expanded={!!open.email} onclick={() => toggleRow('email')}>
+			<span class="row-title">Email</span>
+			{@render connMeta('email')}
+			<span class="chev" class:down={open.email}><Icon name="chevron-right" size={14} /></span>
+		</button>
 
-			<!-- Personal SMTP sub-section -->
-			<div class="subsection">
-				<div class="ch-head">
-					<span class="sub-title">Use my own email server</span>
-					<span class="badge badge-neutral">optional</span>
+		{#if open.email}
+			<div class="row-panel fade-in">
+				<p class="hint">Notifications to your inbox over your instance's SMTP relay.</p>
+				<div class="field">
+					<label class="label" for="email-address">Send to</label>
+					<input class="input" id="email-address" type="email" bind:value={emailAddress} placeholder={data.defaults.emailAddress} />
+					<span class="hint">Defaults to your account email if left blank.</span>
 				</div>
-				<p class="hint">
-					By default, notifications go out through the instance's shared email server (if the admin
-					has set one up). Turn this on to send them through your own email provider (Gmail,
-					Fastmail, etc.) instead.
-				</p>
-				<label class="toggle-row">
-					<input type="checkbox" bind:checked={useOwnSmtp} />
-					<span class="toggle-title">Send email through my own SMTP server</span>
-				</label>
+				{#if saveError.email}<div class="form-error" role="alert">{saveError.email}</div>{/if}
+				<div class="ch-actions">
+					<button class="btn btn-primary btn-sm" onclick={() => saveChannel('email')} disabled={saving.email}>
+						{#if saving.email}<span class="spinner"></span>{/if} Save
+					</button>
+					<button class="btn btn-secondary btn-sm" onclick={() => testChannel('email')} disabled={testing.email || !channel('email').configured}>
+						{#if testing.email}<span class="spinner"></span>{/if} Test
+					</button>
+					{#if channel('email').configured}
+						<button class="btn btn-ghost btn-sm" onclick={() => askDisconnect('email', 'Email')} disabled={saving.email}>Disconnect</button>
+					{/if}
+					{@render resultBadge('email')}
+				</div>
 
-				{#if useOwnSmtp}
-					<div class="smtp-form fade-in">
-						<div class="two-col">
-							<div class="field">
-								<label class="label" for="smtp-host">Host</label>
-								<input class="input mono" id="smtp-host" bind:value={smtpHost} placeholder="smtp.gmail.com" />
+				<!-- Personal SMTP sub-section -->
+				<div class="subsection">
+					<div class="sub-head">
+						<span class="sub-title">Use my own email server</span>
+						<span class="optional">optional</span>
+					</div>
+					<p class="hint">
+						By default, notifications go out through the instance's shared email server (if the admin
+						has set one up). Turn this on to send them through your own email provider (Gmail,
+						Fastmail, etc.) instead.
+					</p>
+					<label class="toggle-row">
+						<input type="checkbox" bind:checked={useOwnSmtp} />
+						<span class="toggle-title">Send email through my own SMTP server</span>
+					</label>
+
+					{#if useOwnSmtp}
+						<div class="smtp-form fade-in">
+							<div class="two-col">
+								<div class="field">
+									<label class="label" for="smtp-host">Host</label>
+									<input class="input mono" id="smtp-host" bind:value={smtpHost} placeholder="smtp.gmail.com" />
+								</div>
+								<div class="field">
+									<label class="label" for="smtp-port">Port</label>
+									<input class="input mono" id="smtp-port" type="number" min="1" max="65535" bind:value={smtpPort} />
+								</div>
 							</div>
-							<div class="field">
-								<label class="label" for="smtp-port">Port</label>
-								<input class="input mono" id="smtp-port" type="number" min="1" max="65535" bind:value={smtpPort} />
+							<div class="two-col">
+								<div class="field">
+									<label class="label" for="smtp-user">Username</label>
+									<input class="input mono" id="smtp-user" bind:value={smtpUser} autocomplete="off" placeholder="you@gmail.com" />
+								</div>
+								<div class="field">
+									<label class="label" for="smtp-pass">Password</label>
+									<input
+										class="input mono"
+										id="smtp-pass"
+										type="password"
+										bind:value={smtpPass}
+										autocomplete="new-password"
+										placeholder={smtpHasPass ? '•••••••• (unchanged)' : ''}
+									/>
+									{#if smtpHasPass}<span class="hint">A password is stored. Leave blank to keep it.</span>{/if}
+								</div>
+							</div>
+							<div class="two-col">
+								<div class="field">
+									<label class="label" for="smtp-from">From address</label>
+									<input class="input mono" id="smtp-from" type="email" bind:value={smtpFrom} placeholder="you@gmail.com" />
+								</div>
+								<div class="field">
+									<label class="label" for="smtp-tls">Encryption</label>
+									<select class="select input" id="smtp-tls" bind:value={smtpTls}>
+										<option value="starttls">STARTTLS</option>
+										<option value="tls">TLS (implicit)</option>
+										<option value="none">None</option>
+									</select>
+								</div>
+							</div>
+							<div class="ch-actions">
+								<button class="btn btn-secondary btn-sm" onclick={testSmtp} disabled={testingSmtp}>
+									{#if testingSmtp}<span class="spinner"></span>{/if} Test
+								</button>
+								{#if smtpTest}
+									{#if smtpTest.ok}
+										<span class="badge badge-success">Test email sent</span>
+									{:else}
+										<span class="badge badge-warning">{smtpTest.error ?? 'Failed'}</span>
+									{/if}
+								{/if}
+								<span class="hint">Sends a test to your destination address using these values (not yet saved). Click <strong>Save</strong> above to keep them.</span>
 							</div>
 						</div>
-						<div class="two-col">
-							<div class="field">
-								<label class="label" for="smtp-user">Username</label>
-								<input class="input mono" id="smtp-user" bind:value={smtpUser} autocomplete="off" placeholder="you@gmail.com" />
+					{/if}
+				</div>
+
+				<!-- PGP sub-section -->
+				<div class="subsection">
+					<div class="sub-head">
+						<span class="sub-title">
+							<Term tip="PGP encrypts just the notification email body — it has nothing to do with your Bitcoin keys, which never leave your hardware wallet.">PGP encryption</Term>
+						</span>
+						<span class="optional">optional</span>
+					</div>
+					<p class="hint">
+						Paste your <strong>public</strong> key to encrypt notification email bodies. This is not
+						your seed phrase and can never touch your bitcoin — it only scrambles the text of these
+						emails so your mail provider can't read them.
+					</p>
+					{#if pgpError}<div class="form-error" role="alert">{pgpError}</div>{/if}
+					{#if pgp}
+						<div class="pgp-current">
+							<Icon name="check" size={15} />
+							<div class="pgp-body">
+								<div class="pgp-label">Key on file</div>
+								<code class="fp">{groupFingerprint(pgp.fingerprint)}</code>
+								<div class="hint">Cross-check this fingerprint against your own keyring.</div>
 							</div>
-							<div class="field">
-								<label class="label" for="smtp-pass">Password</label>
-								<input
-									class="input mono"
-									id="smtp-pass"
-									type="password"
-									bind:value={smtpPass}
-									autocomplete="new-password"
-									placeholder={smtpHasPass ? '•••••••• (unchanged)' : ''}
-								/>
-								{#if smtpHasPass}<span class="hint">A password is stored. Leave blank to keep it.</span>{/if}
-							</div>
+							<button class="btn btn-ghost btn-sm" onclick={askRemovePgp} disabled={pgpBusy}>Remove</button>
 						</div>
-						<div class="two-col">
-							<div class="field">
-								<label class="label" for="smtp-from">From address</label>
-								<input class="input mono" id="smtp-from" type="email" bind:value={smtpFrom} placeholder="you@gmail.com" />
-							</div>
-							<div class="field">
-								<label class="label" for="smtp-tls">Encryption</label>
-								<select class="select input" id="smtp-tls" bind:value={smtpTls}>
-									<option value="starttls">STARTTLS</option>
-									<option value="tls">TLS (implicit)</option>
-									<option value="none">None</option>
-								</select>
-							</div>
+					{:else}
+						<div class="field">
+							<label class="label" for="pgp-paste">Public key (ASCII-armored)</label>
+							<textarea class="input mono pgp-paste" id="pgp-paste" rows="5" bind:value={pgpPaste} placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"></textarea>
 						</div>
 						<div class="ch-actions">
-							<button class="btn btn-secondary btn-sm" onclick={testSmtp} disabled={testingSmtp}>
-								{#if testingSmtp}<span class="spinner"></span>{/if} Test
+							<button class="btn btn-secondary btn-sm" onclick={savePgp} disabled={pgpBusy || !pgpPaste.trim()}>
+								{#if pgpBusy}<span class="spinner"></span>{/if} Save key
 							</button>
-							{#if smtpTest}
-								{#if smtpTest.ok}
-									<span class="badge badge-success">Test email sent</span>
-								{:else}
-									<span class="badge badge-error">{smtpTest.error ?? 'Failed'}</span>
-								{/if}
-							{/if}
-							<span class="hint">Sends a test to your destination address using these values (not yet saved). Click <strong>Save</strong> above to keep them.</span>
 						</div>
-					</div>
-				{/if}
-			</div>
-
-			<!-- PGP sub-section -->
-			<div class="subsection">
-				<div class="ch-head">
-					<span class="sub-title">
-						<Term tip="PGP encrypts just the notification email body — it has nothing to do with your Bitcoin keys, which never leave your hardware wallet.">PGP encryption</Term>
-					</span>
-					<span class="badge badge-neutral">optional</span>
+					{/if}
 				</div>
-				<p class="hint">
-					Paste your <strong>public</strong> key to encrypt notification email bodies. This is not
-					your seed phrase and can never touch your bitcoin — it only scrambles the text of these
-					emails so your mail provider can't read them.
-				</p>
-				{#if pgpError}<div class="form-error" role="alert">{pgpError}</div>{/if}
-				{#if pgp}
-					<div class="pgp-current">
-						<Icon name="check" size={15} />
-						<div class="pgp-body">
-							<div class="pgp-label">Key on file</div>
-							<code class="fp">{groupFingerprint(pgp.fingerprint)}</code>
-							<div class="hint">Cross-check this fingerprint against your own keyring.</div>
-						</div>
-						<button class="btn btn-ghost btn-sm danger" onclick={removePgp} disabled={pgpBusy}>Remove</button>
-					</div>
-				{:else}
-					<div class="field">
-						<label class="label" for="pgp-paste">Public key (ASCII-armored)</label>
-						<textarea class="input mono pgp-paste" id="pgp-paste" rows="5" bind:value={pgpPaste} placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"></textarea>
-					</div>
-					<div class="ch-actions">
-						<button class="btn btn-secondary btn-sm" onclick={savePgp} disabled={pgpBusy || !pgpPaste.trim()}>
-							{#if pgpBusy}<span class="spinner"></span>{/if} Save key
-						</button>
-					</div>
-				{/if}
 			</div>
-		</div>
+		{/if}
 
 		<!-- Telegram -->
-		<div class="card card-pad channel">
-			<div class="ch-head">
-				<span class="ch-title">Telegram</span>
-				{#if channel('telegram').configured}<span class="badge badge-success">Connected</span>{:else}<span class="badge badge-neutral">Not connected</span>{/if}
+		<button type="button" class="hw-row" aria-expanded={!!open.telegram} onclick={() => toggleRow('telegram')}>
+			<span class="row-title">Telegram</span>
+			{@render connMeta('telegram')}
+			<span class="chev" class:down={open.telegram}><Icon name="chevron-right" size={14} /></span>
+		</button>
+
+		{#if open.telegram}
+			<div class="row-panel fade-in">
+				<p class="hint">Messages from your instance's Telegram bot. Message the bot first, then paste your chat ID here.</p>
+				<div class="field">
+					<label class="label" for="tg-chat">Chat ID</label>
+					<input class="input mono" id="tg-chat" bind:value={telegramChatId} placeholder="123456789" />
+				</div>
+				{#if saveError.telegram}<div class="form-error" role="alert">{saveError.telegram}</div>{/if}
+				<div class="ch-actions">
+					<button class="btn btn-primary btn-sm" onclick={() => saveChannel('telegram')} disabled={saving.telegram}>{#if saving.telegram}<span class="spinner"></span>{/if} Save</button>
+					<button class="btn btn-secondary btn-sm" onclick={() => testChannel('telegram')} disabled={testing.telegram || !channel('telegram').configured}>{#if testing.telegram}<span class="spinner"></span>{/if} Test</button>
+					{#if channel('telegram').configured}<button class="btn btn-ghost btn-sm" onclick={() => askDisconnect('telegram', 'Telegram')} disabled={saving.telegram}>Disconnect</button>{/if}
+					{@render resultBadge('telegram')}
+				</div>
 			</div>
-			<p class="hint">Messages from your instance's Telegram bot. Message the bot first, then paste your chat ID here.</p>
-			<div class="field">
-				<label class="label" for="tg-chat">Chat ID</label>
-				<input class="input mono" id="tg-chat" bind:value={telegramChatId} placeholder="123456789" />
-			</div>
-			{#if saveError.telegram}<div class="form-error" role="alert">{saveError.telegram}</div>{/if}
-			<div class="ch-actions">
-				<button class="btn btn-primary btn-sm" onclick={() => saveChannel('telegram')} disabled={saving.telegram}>{#if saving.telegram}<span class="spinner"></span>{/if} Save</button>
-				<button class="btn btn-secondary btn-sm" onclick={() => testChannel('telegram')} disabled={testing.telegram || !channel('telegram').configured}>{#if testing.telegram}<span class="spinner"></span>{/if} Test</button>
-				{#if channel('telegram').configured}<button class="btn btn-ghost btn-sm danger" onclick={() => disconnectChannel('telegram')} disabled={saving.telegram}>Disconnect</button>{/if}
-				{@render resultBadge('telegram')}
-			</div>
-		</div>
+		{/if}
 
 		<!-- ntfy -->
-		<div class="card card-pad channel">
-			<div class="ch-head">
-				<span class="ch-title"><Term tip="ntfy is a simple, self-hostable push notification service. You pick a topic name — no account needed — and subscribe to it on your phone.">ntfy</Term> push</span>
-				{#if channel('ntfy').configured}<span class="badge badge-success">Connected</span>{:else}<span class="badge badge-neutral">Not connected</span>{/if}
-			</div>
-			<p class="hint">Push notifications via ntfy.sh or your own self-hosted ntfy server.</p>
-			<div class="two-col">
-				<div class="field">
-					<label class="label" for="ntfy-server">Server</label>
-					<input class="input mono" id="ntfy-server" bind:value={ntfyServer} placeholder={data.defaults.ntfyServer || 'https://ntfy.sh'} />
+		<button type="button" class="hw-row" aria-expanded={!!open.ntfy} onclick={() => toggleRow('ntfy')}>
+			<span class="row-title"><Term tip="ntfy is a simple, self-hostable push notification service. You pick a topic name — no account needed — and subscribe to it on your phone.">ntfy</Term> push</span>
+			{@render connMeta('ntfy')}
+			<span class="chev" class:down={open.ntfy}><Icon name="chevron-right" size={14} /></span>
+		</button>
+
+		{#if open.ntfy}
+			<div class="row-panel fade-in">
+				<p class="hint">Push notifications via ntfy.sh or your own self-hosted ntfy server.</p>
+				<div class="two-col">
+					<div class="field">
+						<label class="label" for="ntfy-server">Server</label>
+						<input class="input mono" id="ntfy-server" bind:value={ntfyServer} placeholder={data.defaults.ntfyServer || 'https://ntfy.sh'} />
+					</div>
+					<div class="field">
+						<label class="label" for="ntfy-topic">Topic</label>
+						<input class="input mono" id="ntfy-topic" bind:value={ntfyTopic} placeholder="my-secret-topic" />
+					</div>
 				</div>
 				<div class="field">
-					<label class="label" for="ntfy-topic">Topic</label>
-					<input class="input mono" id="ntfy-topic" bind:value={ntfyTopic} placeholder="my-secret-topic" />
+					<label class="label" for="ntfy-token">Access token <span class="hint-inline">optional</span></label>
+					<input class="input mono" id="ntfy-token" type="password" bind:value={ntfyToken} placeholder={ntfyHasToken ? '•••••••• (unchanged)' : 'for protected topics'} autocomplete="off" />
+					{#if ntfyHasToken}<span class="hint">A token is stored. Leave blank to keep it.</span>{/if}
+				</div>
+				{#if saveError.ntfy}<div class="form-error" role="alert">{saveError.ntfy}</div>{/if}
+				<div class="ch-actions">
+					<button class="btn btn-primary btn-sm" onclick={() => saveChannel('ntfy')} disabled={saving.ntfy}>{#if saving.ntfy}<span class="spinner"></span>{/if} Save</button>
+					<button class="btn btn-secondary btn-sm" onclick={() => testChannel('ntfy')} disabled={testing.ntfy || !channel('ntfy').configured}>{#if testing.ntfy}<span class="spinner"></span>{/if} Test</button>
+					{#if channel('ntfy').configured}<button class="btn btn-ghost btn-sm" onclick={() => askDisconnect('ntfy', 'ntfy')} disabled={saving.ntfy}>Disconnect</button>{/if}
+					{@render resultBadge('ntfy')}
 				</div>
 			</div>
-			<div class="field">
-				<label class="label" for="ntfy-token">Access token <span class="hint-inline">optional</span></label>
-				<input class="input mono" id="ntfy-token" type="password" bind:value={ntfyToken} placeholder={ntfyHasToken ? '•••••••• (unchanged)' : 'for protected topics'} autocomplete="off" />
-				{#if ntfyHasToken}<span class="hint">A token is stored. Leave blank to keep it.</span>{/if}
-			</div>
-			{#if saveError.ntfy}<div class="form-error" role="alert">{saveError.ntfy}</div>{/if}
-			<div class="ch-actions">
-				<button class="btn btn-primary btn-sm" onclick={() => saveChannel('ntfy')} disabled={saving.ntfy}>{#if saving.ntfy}<span class="spinner"></span>{/if} Save</button>
-				<button class="btn btn-secondary btn-sm" onclick={() => testChannel('ntfy')} disabled={testing.ntfy || !channel('ntfy').configured}>{#if testing.ntfy}<span class="spinner"></span>{/if} Test</button>
-				{#if channel('ntfy').configured}<button class="btn btn-ghost btn-sm danger" onclick={() => disconnectChannel('ntfy')} disabled={saving.ntfy}>Disconnect</button>{/if}
-				{@render resultBadge('ntfy')}
-			</div>
-		</div>
+		{/if}
 
 		<!-- Nostr -->
-		<div class="card card-pad channel">
-			<div class="ch-head">
-				<span class="ch-title">Nostr</span>
-				{#if channel('nostr').configured}<span class="badge badge-success">Connected</span>{:else}<span class="badge badge-neutral">Not connected</span>{/if}
+		<button type="button" class="hw-row" aria-expanded={!!open.nostr} onclick={() => toggleRow('nostr')}>
+			<span class="row-title">Nostr</span>
+			{@render connMeta('nostr')}
+			<span class="chev" class:down={open.nostr}><Icon name="chevron-right" size={14} /></span>
+		</button>
+
+		{#if open.nostr}
+			<div class="row-panel fade-in">
+				<p class="hint">
+					Encrypted direct messages to your Nostr identity, using
+					<Term tip="NIP-04 and NIP-44 are the Nostr standards for encrypted direct messages. NIP-44 is the newer, stronger scheme; NIP-04 is the older, more widely supported one.">NIP-04/NIP-44</Term>. Heartwood sends from its own instance identity to the pubkey you give here.
+				</p>
+				<div class="field">
+					<label class="label" for="nostr-pk">Your public key (npub or hex)</label>
+					<input class="input mono" id="nostr-pk" bind:value={nostrPubkey} placeholder="npub1…" />
+				</div>
+				<div class="field">
+					<label class="label" for="nostr-relays">Relays <span class="hint-inline">optional, one per line</span></label>
+					<textarea class="input mono relays" id="nostr-relays" rows="3" bind:value={nostrRelays} placeholder={(data.defaults.nostrRelays ?? []).join('\n') || 'wss://relay.damus.io'}></textarea>
+					<span class="hint">Leave blank to use the instance default relays.</span>
+				</div>
+				{#if saveError.nostr}<div class="form-error" role="alert">{saveError.nostr}</div>{/if}
+				<div class="ch-actions">
+					<button class="btn btn-primary btn-sm" onclick={() => saveChannel('nostr')} disabled={saving.nostr}>{#if saving.nostr}<span class="spinner"></span>{/if} Save</button>
+					<button class="btn btn-secondary btn-sm" onclick={() => testChannel('nostr')} disabled={testing.nostr || !channel('nostr').configured}>{#if testing.nostr}<span class="spinner"></span>{/if} Test</button>
+					{#if channel('nostr').configured}<button class="btn btn-ghost btn-sm" onclick={() => askDisconnect('nostr', 'Nostr')} disabled={saving.nostr}>Disconnect</button>{/if}
+					{@render resultBadge('nostr')}
+				</div>
 			</div>
-			<p class="hint">
-				Encrypted direct messages to your Nostr identity, using
-				<Term tip="NIP-04 and NIP-44 are the Nostr standards for encrypted direct messages. NIP-44 is the newer, stronger scheme; NIP-04 is the older, more widely supported one.">NIP-04/NIP-44</Term>. Cairn sends from its own instance identity to the pubkey you give here.
-			</p>
-			<div class="field">
-				<label class="label" for="nostr-pk">Your public key (npub or hex)</label>
-				<input class="input mono" id="nostr-pk" bind:value={nostrPubkey} placeholder="npub1…" />
-			</div>
-			<div class="field">
-				<label class="label" for="nostr-relays">Relays <span class="hint-inline">optional, one per line</span></label>
-				<textarea class="input mono relays" id="nostr-relays" rows="3" bind:value={nostrRelays} placeholder={(data.defaults.nostrRelays ?? []).join('\n') || 'wss://relay.damus.io'}></textarea>
-				<span class="hint">Leave blank to use the instance default relays.</span>
-			</div>
-			{#if saveError.nostr}<div class="form-error" role="alert">{saveError.nostr}</div>{/if}
-			<div class="ch-actions">
-				<button class="btn btn-primary btn-sm" onclick={() => saveChannel('nostr')} disabled={saving.nostr}>{#if saving.nostr}<span class="spinner"></span>{/if} Save</button>
-				<button class="btn btn-secondary btn-sm" onclick={() => testChannel('nostr')} disabled={testing.nostr || !channel('nostr').configured}>{#if testing.nostr}<span class="spinner"></span>{/if} Test</button>
-				{#if channel('nostr').configured}<button class="btn btn-ghost btn-sm danger" onclick={() => disconnectChannel('nostr')} disabled={saving.nostr}>Disconnect</button>{/if}
-				{@render resultBadge('nostr')}
-			</div>
-		</div>
+		{/if}
 
 		<!-- Webhook -->
-		<div class="card card-pad channel">
-			<div class="ch-head">
-				<span class="ch-title"><Term tip="A webhook is a URL Cairn sends an HTTP POST to when an event happens, so your own scripts or tools can react to it.">Webhook</Term></span>
-				{#if channel('webhook').configured}<span class="badge badge-success">Connected</span>{:else}<span class="badge badge-neutral">Not connected</span>{/if}
+		<button type="button" class="hw-row" aria-expanded={!!open.webhook} onclick={() => toggleRow('webhook')}>
+			<span class="row-title"><Term tip="A webhook is a URL Heartwood sends an HTTP POST to when an event happens, so your own scripts or tools can react to it.">Webhook</Term></span>
+			{@render connMeta('webhook')}
+			<span class="chev" class:down={open.webhook}><Icon name="chevron-right" size={14} /></span>
+		</button>
+
+		{#if open.webhook}
+			<div class="row-panel fade-in">
+				<p class="hint">Heartwood POSTs a JSON payload to your URL. Set a secret to receive an <code>X-Cairn-Signature</code> HMAC header your endpoint can verify.</p>
+				<div class="field">
+					<label class="label" for="wh-url">URL</label>
+					<input class="input mono" id="wh-url" bind:value={webhookUrl} placeholder="https://example.com/hook" />
+				</div>
+				<div class="field">
+					<label class="label" for="wh-secret">Signing secret <span class="hint-inline">optional</span></label>
+					<input class="input mono" id="wh-secret" type="password" bind:value={webhookSecret} placeholder={webhookHasSecret ? '•••••••• (unchanged)' : 'HMAC key'} autocomplete="off" />
+					{#if webhookHasSecret}<span class="hint">A secret is stored. Leave blank to keep it.</span>{/if}
+				</div>
+				{#if saveError.webhook}<div class="form-error" role="alert">{saveError.webhook}</div>{/if}
+				<div class="ch-actions">
+					<button class="btn btn-primary btn-sm" onclick={() => saveChannel('webhook')} disabled={saving.webhook}>{#if saving.webhook}<span class="spinner"></span>{/if} Save</button>
+					<button class="btn btn-secondary btn-sm" onclick={() => testChannel('webhook')} disabled={testing.webhook || !channel('webhook').configured}>{#if testing.webhook}<span class="spinner"></span>{/if} Test</button>
+					{#if channel('webhook').configured}<button class="btn btn-ghost btn-sm" onclick={() => askDisconnect('webhook', 'the webhook')} disabled={saving.webhook}>Disconnect</button>{/if}
+					{@render resultBadge('webhook')}
+				</div>
 			</div>
-			<p class="hint">Cairn POSTs a JSON payload to your URL. Set a secret to receive an <code>X-Cairn-Signature</code> HMAC header your endpoint can verify.</p>
-			<div class="field">
-				<label class="label" for="wh-url">URL</label>
-				<input class="input mono" id="wh-url" bind:value={webhookUrl} placeholder="https://example.com/hook" />
-			</div>
-			<div class="field">
-				<label class="label" for="wh-secret">Signing secret <span class="hint-inline">optional</span></label>
-				<input class="input mono" id="wh-secret" type="password" bind:value={webhookSecret} placeholder={webhookHasSecret ? '•••••••• (unchanged)' : 'HMAC key'} autocomplete="off" />
-				{#if webhookHasSecret}<span class="hint">A secret is stored. Leave blank to keep it.</span>{/if}
-			</div>
-			{#if saveError.webhook}<div class="form-error" role="alert">{saveError.webhook}</div>{/if}
-			<div class="ch-actions">
-				<button class="btn btn-primary btn-sm" onclick={() => saveChannel('webhook')} disabled={saving.webhook}>{#if saving.webhook}<span class="spinner"></span>{/if} Save</button>
-				<button class="btn btn-secondary btn-sm" onclick={() => testChannel('webhook')} disabled={testing.webhook || !channel('webhook').configured}>{#if testing.webhook}<span class="spinner"></span>{/if} Test</button>
-				{#if channel('webhook').configured}<button class="btn btn-ghost btn-sm danger" onclick={() => disconnectChannel('webhook')} disabled={saving.webhook}>Disconnect</button>{/if}
-				{@render resultBadge('webhook')}
-			</div>
-		</div>
+		{/if}
 	</section>
 
 	<!-- ============ EVENT PREFERENCES ============ -->
-	<section class="stack group">
-		<div class="group-head">
-			<h2 class="group-title">What you get notified about</h2>
+	<section class="hw-section">
+		<div class="section-head">
+			<h2 class="section-title">What you get notified about</h2>
 			<div class="pref-status">
 				{#if prefSaving}<span class="spinner"></span><span class="hint">Saving…</span>
 				{:else if prefSaved}<span class="saved-inline"><Icon name="check" size={13} /> Saved</span>{/if}
@@ -751,7 +811,7 @@
 		</p>
 
 		{#each visibleGroups as grp (grp.title)}
-			<div class="card card-pad cat">
+			<div class="cat">
 				<span class="cat-title">
 					{#if grp.title === 'Security'}<Icon name="shield" size={14} />{:else if grp.title === 'Admin'}<Icon name="settings" size={14} />{:else}<Icon name="wallet" size={14} />{/if}
 					{grp.title}
@@ -829,9 +889,9 @@
 	</section>
 
 	<!-- ============ QUIET HOURS ============ -->
-	<section class="stack group">
-		<h2 class="group-title">Quiet hours</h2>
-		<div class="card card-pad channel">
+	<section class="hw-section">
+		<h2 class="section-title">Quiet hours</h2>
+		<div class="quiet">
 			<p class="hint">
 				Pause routine notifications (like payments received and confirmations) during a nightly
 				window. They're held and delivered when the window ends — nothing is lost. Urgent security
@@ -843,7 +903,7 @@
 			</label>
 
 			{#if quiet.enabled}
-				<div class="fade-in stack" style="gap:12px;">
+				<div class="fade-in quiet-form">
 					<div class="two-col">
 						<div class="field">
 							<label class="label" for="q-start">From</label>
@@ -877,39 +937,100 @@
 	</section>
 </div>
 
+<Modal
+	bind:open={confirmOpen}
+	title={confirmTarget?.title ?? ''}
+	message={confirmTarget?.message ?? ''}
+	confirmLabel={confirmTarget?.label ?? 'Confirm'}
+	onConfirm={() => {
+		confirmTarget?.run();
+		confirmTarget = null;
+	}}
+	onCancel={() => (confirmTarget = null)}
+/>
+
+{#snippet connMeta(id: ChannelId)}
+	{#if channel(id).configured}
+		<span class="row-meta sage"><Icon name="check" size={13} strokeWidth={2.25} /> connected</span>
+	{:else}
+		<span class="row-meta">not connected</span>
+	{/if}
+{/snippet}
+
 {#snippet resultBadge(id: string)}
 	{@const r = testResult[id]}
 	{#if r}
 		{#if r.ok}
 			<span class="badge badge-success">Test sent</span>
 		{:else}
-			<span class="badge badge-error">{r.error ?? 'Failed'}</span>
+			<span class="badge badge-warning">{r.error ?? 'Failed'}</span>
 		{/if}
 	{/if}
 {/snippet}
 
 <style>
-	.page {
-		gap: 24px;
-		max-width: 720px;
+	/* Grove field bleeds to the viewport behind the content column. */
+	.grove-bleed {
+		position: fixed;
+		inset: 0;
+		z-index: 0;
+		pointer-events: none;
 	}
 
-	.head {
-		max-width: 720px;
-		margin-bottom: 4px;
+	.hw-page {
+		position: relative;
+		z-index: 1;
+		max-width: 660px;
+		margin: 0 auto;
 	}
 
-	.back {
-		display: inline-flex;
-		align-items: center;
-		gap: 3px;
-		font-size: 12.5px;
-		color: var(--text-secondary);
-		margin-bottom: 8px;
+	/* This page composes its own mobile flow header, so the shell's
+	   bare-back-circle fallback is suppressed while it's mounted. */
+	:global(body:has(.hw-owns-header) .mobile-flow-header) {
+		display: none;
 	}
 
-	.back:hover {
-		color: var(--text);
+	.flow-header {
+		display: none;
+	}
+
+	.flow-eyebrow {
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.2em;
+		text-transform: uppercase;
+		color: var(--eyebrow);
+		text-align: center;
+	}
+
+	.crumb-link {
+		display: inline-block;
+		margin-bottom: 12px;
+		text-decoration: none;
+	}
+
+	.crumb-link:hover :global(.seg) {
+		color: var(--eyebrow);
+	}
+
+	@media (max-width: 900px) {
+		.crumb-link {
+			display: none;
+		}
+
+		.flow-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 10px;
+			margin-bottom: 14px;
+		}
+
+		.flow-spacer {
+			width: 32px;
+			height: 32px;
+			flex-shrink: 0;
+		}
 	}
 
 	.lede {
@@ -917,41 +1038,98 @@
 		line-height: 1.6;
 		color: var(--text-secondary);
 		margin-top: 8px;
-		max-width: 640px;
+		max-width: 600px;
 	}
 
-	.group {
-		gap: 12px;
+	.hw-section {
+		margin-top: 38px;
 	}
 
-	.group-head {
+	.hw-section > .hint {
+		margin-top: 6px;
+		max-width: 560px;
+	}
+
+	.section-head {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 		gap: 12px;
 	}
 
-	.group-title {
-		font-size: 15px;
+	.section-title {
+		font-size: 17px;
 		font-weight: 600;
 		color: var(--text);
+		letter-spacing: -0.01em;
 	}
 
-	.channel {
-		display: flex;
-		flex-direction: column;
-		gap: 12px;
-	}
+	/* ---------- Channel rows (the 5h grammar: rows, not boxes) ---------- */
 
-	.ch-head {
+	.hw-row {
 		display: flex;
 		align-items: center;
-		gap: 10px;
+		gap: 14px;
+		width: 100%;
+		padding: 16px 0;
+		border: none;
+		border-bottom: 1px solid var(--hairline);
+		background: none;
+		text-align: left;
+		cursor: pointer;
+		color: inherit;
+		font-family: inherit;
+		transition: background 100ms var(--ease);
 	}
 
-	.ch-title {
-		font-size: 14px;
-		font-weight: 600;
+	.hw-row:hover {
+		background: rgba(255, 255, 255, 0.015);
+	}
+
+	.hw-section .hw-row:first-of-type {
+		margin-top: 10px;
+	}
+
+	.row-title {
+		flex: 1;
+		min-width: 0;
+		font-size: 15px;
+		font-weight: 500;
+		color: var(--text-rows);
+	}
+
+	.row-meta {
+		font-size: 13px;
+		color: var(--text-muted);
+		white-space: nowrap;
+	}
+
+	.row-meta.sage {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		font-weight: 500;
+		color: var(--sage);
+	}
+
+	.chev {
+		display: flex;
+		color: var(--text-faint);
+		flex-shrink: 0;
+		transition: transform 120ms var(--ease);
+	}
+
+	.chev.down {
+		transform: rotate(90deg);
+	}
+
+	/* Expanded config panel under a row. */
+	.row-panel {
+		display: flex;
+		flex-direction: column;
+		gap: 13px;
+		padding: 8px 0 22px;
+		border-bottom: 1px solid var(--hairline);
 	}
 
 	.ch-actions {
@@ -974,7 +1152,7 @@
 	}
 
 	.subsection {
-		border-top: 1px solid var(--border-subtle);
+		border-top: 1px solid var(--hairline);
 		padding-top: 14px;
 		margin-top: 2px;
 		display: flex;
@@ -982,9 +1160,23 @@
 		gap: 10px;
 	}
 
+	.sub-head {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+	}
+
 	.sub-title {
 		font-size: 13px;
 		font-weight: 600;
+		color: var(--text);
+	}
+
+	.optional {
+		font-size: 11px;
+		font-weight: 500;
+		color: var(--text-faint);
+		letter-spacing: 0.04em;
 	}
 
 	.hint-inline {
@@ -1003,11 +1195,10 @@
 		display: flex;
 		align-items: flex-start;
 		gap: 10px;
-		padding: 11px 12px;
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		background: var(--bg);
-		color: var(--success);
+		padding: 11px 0;
+		border-top: 1px solid var(--hairline);
+		border-bottom: 1px solid var(--hairline);
+		color: var(--sage);
 	}
 
 	.pgp-body {
@@ -1023,6 +1214,7 @@
 
 	.fp {
 		display: inline-block;
+		font-family: var(--font-mono);
 		font-size: 12px;
 		letter-spacing: 0.5px;
 		margin: 3px 0;
@@ -1036,22 +1228,29 @@
 		line-height: 1.5;
 	}
 
+	.row-panel code {
+		font-family: var(--font-mono);
+		font-size: 0.92em;
+		color: var(--text);
+	}
+
+	/* ---------- Event preference groups ---------- */
+
 	.cat {
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
+		margin-top: 22px;
 	}
 
 	.cat-title {
 		display: flex;
 		align-items: center;
 		gap: 7px;
-		font-size: 12px;
+		font-size: 11px;
 		font-weight: 600;
 		text-transform: uppercase;
-		letter-spacing: 0.4px;
-		color: var(--text-secondary);
-		margin-bottom: 4px;
+		letter-spacing: 0.08em;
+		color: var(--text-muted);
+		padding-bottom: 8px;
+		border-bottom: 1px solid var(--hairline);
 	}
 
 	.ev-list {
@@ -1063,11 +1262,7 @@
 	}
 
 	.ev {
-		border-top: 1px solid var(--border-subtle);
-	}
-
-	.ev:first-child {
-		border-top: none;
+		border-bottom: 1px solid var(--hairline);
 	}
 
 	.ev-row {
@@ -1075,17 +1270,23 @@
 		align-items: center;
 		gap: 10px;
 		width: 100%;
-		padding: 11px 2px;
+		padding: 13px 0;
 		background: none;
 		border: none;
 		text-align: left;
 		cursor: pointer;
 		color: inherit;
+		font-family: inherit;
+		transition: background 100ms var(--ease);
+	}
+
+	.ev-row:hover {
+		background: rgba(255, 255, 255, 0.015);
 	}
 
 	.ev-caret {
 		display: flex;
-		color: var(--text-muted);
+		color: var(--text-faint);
 		transition: transform 120ms var(--ease);
 		flex-shrink: 0;
 	}
@@ -1105,6 +1306,7 @@
 	.ev-name {
 		font-size: 13.5px;
 		font-weight: 500;
+		color: var(--text-rows);
 	}
 
 	.ev-desc {
@@ -1123,7 +1325,7 @@
 	}
 
 	.ev-detail {
-		padding: 4px 2px 14px 24px;
+		padding: 4px 0 16px 24px;
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
@@ -1135,15 +1337,17 @@
 		gap: 8px;
 	}
 
+	/* Toggle grammar: quiet chips, copper when meaningful. */
 	.toggle {
 		display: inline-flex;
 		align-items: center;
 		gap: 6px;
 		font-size: 12.5px;
-		padding: 6px 10px;
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-chip);
-		background: var(--bg);
+		color: var(--text-secondary);
+		padding: 6px 12px;
+		border: 1px solid var(--border-control);
+		border-radius: var(--radius-toggle);
+		background: transparent;
 		cursor: pointer;
 	}
 
@@ -1158,8 +1362,9 @@
 	}
 
 	.toggle.always-on {
-		color: var(--success);
-		border-color: var(--success-muted);
+		color: var(--sage);
+		border-color: transparent;
+		background: var(--sage-muted);
 		cursor: default;
 	}
 
@@ -1167,17 +1372,13 @@
 		font-size: 10px;
 		text-transform: uppercase;
 		letter-spacing: 0.4px;
-		color: var(--text-muted);
+		color: var(--text-faint);
 	}
 
 	.tunable {
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
-		padding: 12px;
-		background: var(--bg);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
 	}
 
 	.thr-row {
@@ -1207,15 +1408,17 @@
 		align-items: center;
 		gap: 6px;
 		font-size: 12.5px;
-		padding: 6px 10px;
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-chip);
+		color: var(--text-secondary);
+		padding: 6px 12px;
+		border: 1px solid var(--border-control);
+		border-radius: var(--radius-toggle);
 		cursor: pointer;
 	}
 
 	.conf-chip.on {
-		border-color: var(--accent);
-		color: var(--text);
+		border-color: transparent;
+		background: var(--accent-muted);
+		color: var(--accent-bright);
 	}
 
 	.conf-chip input {
@@ -1234,11 +1437,26 @@
 		align-items: center;
 		gap: 4px;
 		font-size: 12.5px;
-		color: var(--success);
+		color: var(--sage);
 	}
 
 	.tiny {
 		font-size: 11.5px;
+	}
+
+	/* ---------- Quiet hours ---------- */
+
+	.quiet {
+		display: flex;
+		flex-direction: column;
+		gap: 13px;
+		margin-top: 12px;
+	}
+
+	.quiet-form {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
 	}
 
 	.toggle-row {
@@ -1264,12 +1482,38 @@
 		gap: 12px;
 	}
 
-	.danger:hover:not(:disabled) {
-		color: var(--error);
-	}
-
 	.hint strong {
 		color: var(--text-secondary);
 		font-weight: 600;
+	}
+
+	@media (max-width: 900px) {
+		.hw-section {
+			margin-top: 28px;
+		}
+
+		.section-title {
+			font-size: 14.5px;
+		}
+
+		.hw-row {
+			padding: 14px 0;
+		}
+
+		.row-title {
+			font-size: 13.5px;
+		}
+
+		.row-meta {
+			font-size: 12px;
+		}
+
+		.ev-detail {
+			padding-left: 0;
+		}
+
+		.ev-summary {
+			display: none;
+		}
 	}
 </style>

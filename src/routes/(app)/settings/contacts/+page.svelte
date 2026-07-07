@@ -1,8 +1,11 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
-	import Icon from '$lib/components/Icon.svelte';
 	import { timeAgo } from '$lib/format';
 	import type { ContactList, ContactSummary } from '$lib/server/contacts';
+	import GroveField from '$lib/components/heartwood/GroveField.svelte';
+	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
+	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
+	import Modal from '$lib/components/heartwood/Modal.svelte';
 
 	let { data } = $props();
 	const contacts = $derived(data.contacts as ContactList);
@@ -57,67 +60,106 @@
 		}
 	}
 
-	async function remove(c: ContactSummary, verb: string) {
-		if (!confirm(`${verb} ${c.displayName}?`)) return;
+	// Removal/cancellation goes through the shared Modal instead of
+	// window.confirm — same network logic as before once confirmed.
+	let removeTarget = $state<{ contact: ContactSummary; title: string; message: string; label: string } | null>(null);
+	let removeOpen = $state(false);
+
+	function askRemove(c: ContactSummary) {
+		removeTarget = {
+			contact: c,
+			title: `Remove ${c.displayName}?`,
+			message: `You won't be able to share new wallets with ${c.displayName} until you add each other again. Wallets you already share stay as they are.`,
+			label: 'Remove contact'
+		};
+		removeOpen = true;
+	}
+
+	function askCancelRequest(c: ContactSummary) {
+		removeTarget = {
+			contact: c,
+			title: `Cancel the request to ${c.displayName}?`,
+			message: `They won't see your contact request. You can always send a new one later.`,
+			label: 'Cancel request'
+		};
+		removeOpen = true;
+	}
+
+	async function onRemoveConfirmed() {
+		if (!removeTarget) return;
+		const { contact } = removeTarget;
 		busy = true;
 		error = null;
 		try {
-			const res = await fetch(`/api/contacts/${c.id}`, { method: 'DELETE' });
+			const res = await fetch(`/api/contacts/${contact.id}`, { method: 'DELETE' });
 			if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Action failed.');
 			await invalidateAll();
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Action failed.';
 		} finally {
 			busy = false;
+			removeTarget = null;
 		}
 	}
 </script>
 
-<svelte:head><title>Contacts · Settings · Cairn</title></svelte:head>
+<svelte:head>
+	<title>Contacts — Settings — Heartwood</title>
+</svelte:head>
 
-<div class="wrap">
-	<a class="back" href="/settings"><Icon name="chevron-left" size={16} /> Settings</a>
-	<h1>Contacts</h1>
-	<p class="lead">
-		Contacts are the people you can share a wallet with. Adding someone shows them
-		your name and email — this is how you recognise each other, so only add people
-		you know.
+<div class="grove-bleed" aria-hidden="true"><GroveField volume="whisper" /></div>
+
+<div class="hw-page hw-owns-header fade-in">
+	<!-- Mobile flow header: back circle + centered eyebrow + spacer. -->
+	<header class="flow-header">
+		<BackCircle href="/settings" label="Back to settings" />
+		<span class="flow-eyebrow">CONTACTS</span>
+		<span class="flow-spacer"></span>
+	</header>
+
+	<!-- Desktop eyebrow breadcrumb, linking back to Settings. -->
+	<a class="crumb-link" href="/settings">
+		<EyebrowBreadcrumb path={['Settings']} current="Contacts" />
+	</a>
+
+	<h1 class="page-title">Contacts</h1>
+	<p class="lede">
+		Contacts are the people you can share a wallet with. Adding someone shows them your name and
+		email — this is how you recognise each other, so only add people you know.
 	</p>
 
 	{#if error}<div class="form-error" role="alert">{error}</div>{/if}
 
-	<section class="card card-pad section">
-		<span class="card-title">Add a contact</span>
-		<form onsubmit={add}>
-			<div class="field">
+	<section class="hw-section">
+		<h2 class="section-title">Add a contact</h2>
+		<form onsubmit={add} class="add-form">
+			<div class="field grow">
 				<label class="label" for="contact-email">Their email address</label>
-				<div class="row">
-					<input
-						class="input"
-						id="contact-email"
-						type="email"
-						placeholder="friend@example.com"
-						bind:value={email}
-						disabled={busy}
-					/>
-					<button class="btn btn-primary" disabled={busy || !email.trim()}>Send request</button>
-				</div>
+				<input
+					class="input"
+					id="contact-email"
+					type="email"
+					placeholder="friend@example.com"
+					bind:value={email}
+					disabled={busy}
+				/>
 			</div>
-			{#if notice}<p class="notice">{notice}</p>{/if}
+			<button class="btn btn-primary" disabled={busy || !email.trim()}>Send request</button>
 		</form>
+		{#if notice}<p class="notice">{notice}</p>{/if}
 	</section>
 
 	{#if contacts.requestsReceived.length}
-		<section class="card card-pad section">
-			<span class="card-title">Requests for you</span>
-			<ul class="people">
+		<section class="hw-section">
+			<h2 class="section-title">Requests for you</h2>
+			<ul class="hw-rows">
 				{#each contacts.requestsReceived as c (c.id)}
-					<li>
-						<div class="who">
-							<span class="name">{c.displayName}</span>
-							<span class="email">{c.email}</span>
+					<li class="hw-row">
+						<div class="row-body">
+							<div class="row-title">{c.displayName}</div>
+							<div class="row-sub">{c.email}</div>
 						</div>
-						<div class="actions">
+						<div class="row-actions">
 							<button class="btn btn-primary btn-sm" disabled={busy} onclick={() => respond(c.id, true)}>
 								Accept
 							</button>
@@ -131,42 +173,43 @@
 		</section>
 	{/if}
 
-	<section class="card card-pad section">
-		<span class="card-title">Your contacts</span>
+	<section class="hw-section">
+		<h2 class="section-title">Your contacts</h2>
 		{#if contacts.friends.length}
-			<ul class="people">
+			<ul class="hw-rows">
 				{#each contacts.friends as c (c.id)}
-					<li>
-						<div class="who">
-							<span class="name">{c.displayName}</span>
-							<span class="email">{c.email}</span>
+					<li class="hw-row">
+						<div class="row-body">
+							<div class="row-title">{c.displayName}</div>
+							<div class="row-sub">{c.email}</div>
 						</div>
-						<button class="btn btn-ghost btn-sm danger" disabled={busy} onclick={() => remove(c, 'Remove')}>
+						<button class="btn btn-ghost btn-sm" disabled={busy} onclick={() => askRemove(c)}>
 							Remove
 						</button>
 					</li>
 				{/each}
 			</ul>
 		{:else}
-			<p class="empty">
-				No contacts yet. Add someone by their email above to start sharing a
-				multisig wallet with them.
+			<p class="hint">
+				No contacts yet. Add someone by their email above to start sharing a multisig wallet with
+				them.
 			</p>
 		{/if}
 	</section>
 
 	{#if contacts.requestsSent.length}
-		<section class="card card-pad section">
-			<span class="card-title">Pending requests you sent</span>
-			<ul class="people">
+		<section class="hw-section">
+			<h2 class="section-title">Pending requests you sent</h2>
+			<ul class="hw-rows">
 				{#each contacts.requestsSent as c (c.id)}
-					<li>
-						<div class="who">
-							<span class="name">{c.displayName}</span>
-							<span class="email">{c.email}</span>
-							<span class="muted">Sent {timeAgo(Math.floor(Date.parse(c.createdAt) / 1000))}</span>
+					<li class="hw-row">
+						<div class="row-body">
+							<div class="row-title">{c.displayName}</div>
+							<div class="row-sub">
+								{c.email} · sent {timeAgo(Math.floor(Date.parse(c.createdAt) / 1000))}
+							</div>
 						</div>
-						<button class="btn btn-ghost btn-sm" disabled={busy} onclick={() => remove(c, 'Cancel the request to')}>
+						<button class="btn btn-ghost btn-sm" disabled={busy} onclick={() => askCancelRequest(c)}>
 							Cancel
 						</button>
 					</li>
@@ -176,88 +219,191 @@
 	{/if}
 </div>
 
+<Modal
+	bind:open={removeOpen}
+	title={removeTarget?.title ?? ''}
+	message={removeTarget?.message ?? ''}
+	confirmLabel={removeTarget?.label ?? 'Confirm'}
+	onConfirm={onRemoveConfirmed}
+	onCancel={() => (removeTarget = null)}
+/>
+
 <style>
-	.wrap {
-		max-width: 640px;
+	/* Grove field bleeds to the viewport behind the content column. */
+	.grove-bleed {
+		position: fixed;
+		inset: 0;
+		z-index: 0;
+		pointer-events: none;
+	}
+
+	.hw-page {
+		position: relative;
+		z-index: 1;
+		max-width: 660px;
 		margin: 0 auto;
 	}
-	.back {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.35rem;
-		color: var(--text-muted);
-		font-size: 0.9rem;
+
+	/* This page composes its own mobile flow header, so the shell's
+	   bare-back-circle fallback is suppressed while it's mounted. */
+	:global(body:has(.hw-owns-header) .mobile-flow-header) {
+		display: none;
+	}
+
+	.flow-header {
+		display: none;
+	}
+
+	.flow-eyebrow {
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.2em;
+		text-transform: uppercase;
+		color: var(--eyebrow);
+		text-align: center;
+	}
+
+	.crumb-link {
+		display: inline-block;
+		margin-bottom: 12px;
 		text-decoration: none;
-		margin-bottom: 0.75rem;
 	}
-	.back:hover {
+
+	.crumb-link:hover :global(.seg) {
+		color: var(--eyebrow);
+	}
+
+	@media (max-width: 900px) {
+		.crumb-link {
+			display: none;
+		}
+
+		.flow-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 10px;
+			margin-bottom: 14px;
+		}
+
+		.flow-spacer {
+			width: 32px;
+			height: 32px;
+			flex-shrink: 0;
+		}
+	}
+
+	.lede {
+		font-size: 13px;
+		line-height: 1.6;
+		color: var(--text-secondary);
+		margin-top: 8px;
+		max-width: 560px;
+	}
+
+	.form-error {
+		margin-top: 14px;
+	}
+
+	.hw-section {
+		margin-top: 34px;
+	}
+
+	.section-title {
+		font-size: 17px;
+		font-weight: 600;
 		color: var(--text);
+		letter-spacing: -0.01em;
 	}
-	h1 {
-		margin: 0 0 0.4rem;
-	}
-	.lead {
-		color: var(--text-muted);
-		margin: 0 0 1.25rem;
-		line-height: 1.5;
-	}
-	.section {
-		margin-bottom: 1rem;
-	}
-	.row {
+
+	.add-form {
 		display: flex;
-		gap: 0.5rem;
+		align-items: flex-end;
+		gap: 10px;
+		flex-wrap: wrap;
+		margin-top: 14px;
 	}
-	.row .input {
+
+	.add-form .grow {
 		flex: 1;
+		min-width: 220px;
 	}
+
 	.notice {
-		margin: 0.6rem 0 0;
-		color: var(--text-muted);
-		font-size: 0.9rem;
+		margin-top: 10px;
+		color: var(--sage);
+		font-size: 12.5px;
 	}
-	.people {
+
+	/* Hairline rows — the 5h grammar: rows, not boxes. */
+	.hw-rows {
 		list-style: none;
-		margin: 0.25rem 0 0;
+		margin: 6px 0 0;
 		padding: 0;
 		display: flex;
 		flex-direction: column;
-		gap: 0.5rem;
 	}
-	.people li {
+
+	.hw-row {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
-		gap: 0.75rem;
-		padding: 0.6rem 0;
-		border-top: 1px solid var(--border);
+		gap: 14px;
+		padding: 15px 0;
+		border-bottom: 1px solid var(--hairline);
 	}
-	.people li:first-child {
-		border-top: none;
+
+	.hw-row:last-child {
+		border-bottom: none;
 	}
-	.who {
-		display: flex;
-		flex-direction: column;
-		gap: 0.1rem;
+
+	.row-body {
+		flex: 1;
 		min-width: 0;
 	}
-	.name {
-		font-weight: 600;
+
+	.row-title {
+		font-size: 14.5px;
+		font-weight: 500;
+		color: var(--text-rows);
 	}
-	.email,
-	.muted {
+
+	.row-sub {
+		font-size: 12px;
 		color: var(--text-muted);
-		font-size: 0.85rem;
+		margin-top: 2px;
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
-	.actions {
+
+	.row-actions {
 		display: flex;
-		gap: 0.4rem;
+		gap: 6px;
 		flex-shrink: 0;
 	}
-	.empty {
-		color: var(--text-muted);
-		margin: 0.25rem 0 0;
+
+	.hint {
+		margin-top: 8px;
+	}
+
+	@media (max-width: 900px) {
+		.hw-section {
+			margin-top: 26px;
+		}
+
+		.section-title {
+			font-size: 14.5px;
+		}
+
+		.hw-row {
+			padding: 13px 0;
+		}
+
+		.row-title {
+			font-size: 13px;
+		}
+
+		.row-sub {
+			font-size: 10.5px;
+		}
 	}
 </style>
