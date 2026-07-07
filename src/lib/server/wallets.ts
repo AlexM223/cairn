@@ -296,6 +296,7 @@ export function deleteWallet(userId: number, id: number): boolean {
 	db.prepare("DELETE FROM wallet_backups WHERE wallet_kind = 'wallet' AND wallet_id = ?").run(id);
 	db.prepare("DELETE FROM backup_missing_notified WHERE wallet_kind = 'wallet' AND wallet_id = ?").run(id);
 	invalidateWalletCache(row.xpub);
+	forgetReceiveWindow(row.xpub);
 	return true;
 }
 
@@ -373,6 +374,43 @@ function clampToGap(idx: number, nextUnused: number): number {
 }
 
 /**
+ * Per-xpub memory of the last *actually scanned* next-unused receive index, so a
+ * Rotate click can advance one address without paying a fresh gap-limit Electrum
+ * rescan every time (cairn-2ic5). scanWallet's own cache is only 60s, so a Rotate
+ * more than a minute after the wallet page last scanned would otherwise re-run
+ * the full portfolio-grade scan (30-40s) just to advance one index the wallet
+ * already knows is unused.
+ *
+ * Safety: every index in [nextUnused, nextUnused + GAP_LIMIT − 1] was unused as
+ * of the recorded scan, so reusing this window to advance can never re-hand-out
+ * an address that Cairn or the chain had already used *at scan time*. The only
+ * residual risk is an address funded out-of-band since the scan; we bound that
+ * exposure with RECEIVE_WINDOW_TTL_MS and always fall back to a real scan the
+ * moment the caller would probe at/past the known gap boundary — the one place a
+ * stale boundary could actually hand out the wrong index.
+ */
+const RECEIVE_WINDOW_TTL_MS = 5 * 60_000;
+const knownReceiveWindow = new Map<string, { nextUnused: number; at: number }>();
+
+/** Resolve the receive-chain next-unused index and record it for the reuse
+ *  window. This is the only receive-address path that pays the scan cost. */
+async function resolveReceiveNextUnused(xpub: string): Promise<number> {
+	const nextUnused = await findNextUnusedIndex(xpub, 0);
+	knownReceiveWindow.set(xpub.trim(), { nextUnused, at: Date.now() });
+	return nextUnused;
+}
+
+/** The recorded next-unused index for an xpub, or null when absent or older than
+ *  RECEIVE_WINDOW_TTL_MS (reuse never refreshes the timestamp, so staleness is
+ *  measured from the last *real* scan, not the last hand-out). */
+function knownNextUnused(xpub: string): number | null {
+	const hit = knownReceiveWindow.get(xpub.trim());
+	if (!hit) return null;
+	if (Date.now() - hit.at > RECEIVE_WINDOW_TTL_MS) return null;
+	return hit.nextUnused;
+}
+
+/**
  * Hand out the next unused receive address and advance the cursor.
  * `afterIndex` (optional) requests an address strictly after the one the
  * caller is already showing, so repeated clicks always swap to a fresh one.
@@ -386,8 +424,23 @@ export async function nextReceiveAddress(
 	const wallet = getWallet(userId, id);
 	if (!wallet) return null;
 
-	const nextUnused = await findNextUnusedIndex(wallet.xpub, 0);
 	const after = Number.isInteger(afterIndex) ? (afterIndex as number) : -1;
+	// The index we'd hand out before any gap clamp — the furthest of the cursor
+	// and one past the address on display. (The scanned used-boundary joins the
+	// max below once we know it.)
+	const want = Math.max(wallet.receive_cursor, after + 1);
+
+	// Fast path (cairn-2ic5): if a recent scan already told us the used-boundary
+	// and `want` lands on a known-unused address strictly inside the gap window,
+	// advance without re-scanning. Anything at or past the window ceiling still
+	// forces a real scan, since that's exactly where a stale boundary could hand
+	// out a wrong index.
+	const cached = knownNextUnused(wallet.xpub);
+	const nextUnused =
+		cached !== null && want >= cached && want <= cached + GAP_LIMIT - 1
+			? cached
+			: await resolveReceiveNextUnused(wallet.xpub);
+
 	const idx = clampToGap(Math.max(nextUnused, wallet.receive_cursor, after + 1), nextUnused);
 	const { address, path } = deriveAddress(parseXpub(wallet.xpub), 0, idx);
 
@@ -402,13 +455,20 @@ export async function nextReceiveAddress(
 /**
  * The receive address currently "on display" — the most recently handed-out
  * index (cursor − 1) or the next unused one, whichever is further along.
- * Read-only: never advances the cursor.
+ * Read-only: never advances the cursor. Runs on every wallet-page load, so it
+ * doubles as the seed for the Rotate reuse window above.
  */
 export async function peekReceiveAddress(
 	wallet: WalletRow
 ): Promise<{ address: string; path: string; index: number }> {
-	const nextUnused = await findNextUnusedIndex(wallet.xpub, 0);
+	const nextUnused = await resolveReceiveNextUnused(wallet.xpub);
 	const idx = clampToGap(Math.max(nextUnused, wallet.receive_cursor - 1), nextUnused);
 	const { address, path } = deriveAddress(parseXpub(wallet.xpub), 0, idx);
 	return { address, path, index: idx };
+}
+
+/** Drop the Rotate reuse window for an xpub (wallet removed). Keeps the private
+ *  cache from re-seeding a deleted wallet's stale boundary. */
+export function forgetReceiveWindow(xpub: string): void {
+	knownReceiveWindow.delete(xpub.trim());
 }

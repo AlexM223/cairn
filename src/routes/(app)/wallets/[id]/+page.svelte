@@ -57,6 +57,12 @@
 	let confirmDelete = $state(false);
 	let deleting = $state(false);
 	let generating = $state(false);
+	// Rotate can legitimately take 30-40s when a fresh gap-limit scan is needed
+	// (cairn-2ic5): after a few seconds, reassure the user rather than leaving a
+	// silent spinner that reads as a hung button.
+	let rotateSlow = $state(false);
+	let rotateSlowTimer: ReturnType<typeof setTimeout> | null = null;
+	const ROTATE_SLOW_MS = 6000;
 	let retrying = $state(false);
 	let tab = $state<'transactions' | 'addresses' | 'saved'>('transactions');
 	let addrFilter = $state<'used' | 'unused' | 'change'>('used');
@@ -610,8 +616,14 @@
 									action="?/receive"
 									use:enhance={() => {
 										generating = true;
+										rotateSlow = false;
+										if (rotateSlowTimer) clearTimeout(rotateSlowTimer);
+										rotateSlowTimer = setTimeout(() => (rotateSlow = true), ROTATE_SLOW_MS);
 										return async ({ update }) => {
+											if (rotateSlowTimer) clearTimeout(rotateSlowTimer);
+											rotateSlowTimer = null;
 											generating = false;
+											rotateSlow = false;
 											await update({ reset: false });
 										};
 									}}
@@ -622,10 +634,16 @@
 												name="refresh"
 												size={14}
 											/>{/if}
-										Rotate
+										{generating ? (rotateSlow ? 'Still working…' : 'Rotating…') : 'Rotate'}
 									</button>
 								</form>
 							</div>
+							{#if generating && rotateSlow}
+								<p class="hw-rotate-status" role="status" aria-live="polite">
+									Still finding your next unused address — checking the chain can take a moment on a
+									busy node. Hang tight.
+								</p>
+							{/if}
 							<p class="hw-caption">
 								A new address for every payment keeps your history private. Old addresses keep
 								working forever — rotating never breaks anything.
@@ -1469,6 +1487,13 @@
 		display: flex;
 		gap: 10px;
 		flex-wrap: wrap;
+	}
+
+	.hw-rotate-status {
+		margin: 10px 0 0;
+		font-size: 12px;
+		line-height: 1.5;
+		color: var(--text-faint);
 	}
 
 	@media (max-width: 860px) {
