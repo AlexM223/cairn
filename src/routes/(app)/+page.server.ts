@@ -3,7 +3,7 @@ import { getChain } from '$lib/server/chain';
 import type { PageServerLoad } from './$types';
 import type { BlockSummary, FeeEstimates, MempoolSummary } from '$lib/types';
 
-interface ChainSnapshot {
+export interface ChainSnapshot {
 	tipHeight: number | null;
 	tipTime: number | null;
 	hashrate: number | null;
@@ -63,7 +63,12 @@ export const load: PageServerLoad = async ({ locals, depends }) => {
 		).n) > 0;
 
 	return {
-		chain: await loadChainSnapshot(),
+		// Streamed, not awaited (SvelteKit 2 leaves top-level promises alone):
+		// navigating to the dashboard paints immediately with a skeleton while the
+		// Electrum round-trips (blocks + mempool + fees + hashrate) resolve in the
+		// background (cairn-ybsv). loadChainSnapshot never rejects — failures
+		// resolve to an error-shaped snapshot the page renders as a banner.
+		chain: loadChainSnapshot(),
 		hasWallets
 	};
 };
