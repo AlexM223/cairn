@@ -1,44 +1,66 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
+	import Banner from '$lib/components/Banner.svelte';
 	import { formatBtc, formatSats, timeAgo } from '$lib/format';
 	import { SCRIPT_TYPE_LABELS, walletTypeLabel } from './labels';
 
 	let { data } = $props();
 
+	// The wallet scans are STREAMED from the server (cairn-ybsv): a cold cache
+	// means full gap-limit scans over Electrum, so the page paints skeleton cards
+	// immediately and fills in when the scans resolve.
+	type Scans = Awaited<(typeof data)['scans']>;
+	let scans = $state<Scans | null>(null);
+	$effect(() => {
+		const promise = data.scans;
+		let stale = false;
+		void promise.then((s) => {
+			if (!stale) scans = s;
+		});
+		return () => {
+			stale = true;
+		};
+	});
+	const loading = $derived(scans === null);
+
 	// One list, two flavors. Single-sig wallets and multisig wallets are merged
 	// into a single grid — the card head tells them apart (a script-type badge and
 	// device kind for single-sig, a quorum badge for multisig).
-	const items = $derived([
-		...data.wallets.map((w) => ({
-			kind: 'single' as const,
-			id: w.id,
-			href: `/wallets/${w.id}`,
-			name: w.name,
-			scriptType: w.scriptType,
-			deviceType: w.deviceType,
-			balance: w.balance,
-			unconfirmed: w.unconfirmed,
-			lastActivity: w.lastActivity,
-			unreachable: data.errors[w.id] !== undefined,
-			error: data.errors[w.id]
-		})),
-		...data.multisigs.map((m) => ({
-			kind: 'multisig' as const,
-			id: m.id,
-			href: `/wallets/multisig/${m.id}`,
-			name: m.name,
-			threshold: m.threshold,
-			totalKeys: m.totalKeys,
-			balance: m.balance,
-			unconfirmed: m.unconfirmed,
-			lastActivity: m.lastActivity,
-			// Collaborative custody: wallets shared WITH this user carry the owner's
-			// name so the card can distinguish them from wallets they own outright.
-			sharedBy: m.sharedBy,
-			unreachable: data.multisigErrors[m.id] !== undefined,
-			error: data.multisigErrors[m.id]
-		}))
-	]);
+	const items = $derived.by(() => {
+		const s = scans;
+		if (s === null) return [];
+		return [
+			...s.wallets.map((w) => ({
+				kind: 'single' as const,
+				id: w.id,
+				href: `/wallets/${w.id}`,
+				name: w.name,
+				scriptType: w.scriptType,
+				deviceType: w.deviceType,
+				balance: w.balance,
+				unconfirmed: w.unconfirmed,
+				lastActivity: w.lastActivity,
+				unreachable: s.errors[w.id] !== undefined,
+				error: s.errors[w.id]
+			})),
+			...s.multisigs.map((m) => ({
+				kind: 'multisig' as const,
+				id: m.id,
+				href: `/wallets/multisig/${m.id}`,
+				name: m.name,
+				threshold: m.threshold,
+				totalKeys: m.totalKeys,
+				balance: m.balance,
+				unconfirmed: m.unconfirmed,
+				lastActivity: m.lastActivity,
+				// Collaborative custody: wallets shared WITH this user carry the owner's
+				// name so the card can distinguish them from wallets they own outright.
+				sharedBy: m.sharedBy,
+				unreachable: s.multisigErrors[m.id] !== undefined,
+				error: s.multisigErrors[m.id]
+			}))
+		];
+	});
 </script>
 
 <svelte:head>
@@ -47,7 +69,7 @@
 
 <div class="head row">
 	<h1 class="page-title grow">Wallets</h1>
-	{#if items.length > 0}
+	{#if loading || items.length > 0}
 		<a href="/wallets/new" class="btn btn-primary">
 			<Icon name="plus" size={15} />
 			Add wallet
@@ -55,7 +77,31 @@
 	{/if}
 </div>
 
-{#if items.length === 0}
+{#if scans?.loadError}
+	<div style="margin-bottom: 14px">
+		<Banner variant="error">Couldn't load your wallets: {scans.loadError}</Banner>
+	</div>
+{/if}
+
+{#if loading}
+	<!-- Streamed scans still resolving (cairn-ybsv): skeleton cards keep the
+	     page responsive while Electrum answers. -->
+	<div class="grid fade-in" aria-busy="true" aria-label="Loading wallets">
+		{#each [0, 1, 2] as i (i)}
+			<div class="card card-pad wallet-card">
+				<div class="row" style="gap: 10px">
+					<span class="wallet-name grow skeleton">Wallet name</span>
+					<span class="badge badge-neutral skeleton">Type</span>
+				</div>
+				<span class="wallet-kind skeleton">Wallet kind</span>
+				<div class="balance">
+					<span class="hero-number wallet-btc skeleton">0.00000000</span>
+				</div>
+				<span class="hint activity skeleton">last activity</span>
+			</div>
+		{/each}
+	</div>
+{:else if items.length === 0}
 	<div class="card onboard fade-in">
 		<div class="onboard-icon">
 			<Icon name="wallet" size={26} />

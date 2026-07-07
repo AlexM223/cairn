@@ -11,14 +11,56 @@
 
 	let { data } = $props();
 
+	// The chain data (blocks + mempool + tip) is STREAMED from the server
+	// (cairn-ybsv): the page paints instantly with skeletons, then fills in when
+	// Electrum answers. On invalidate, the previous data stays visible until the
+	// fresh promise resolves — no skeleton flash on refresh.
+	type ChainData = Awaited<(typeof data)['chain']>;
+	let chain = $state<ChainData | null>(null);
+	let refetchedForHeight: number | null = null;
+	$effect(() => {
+		const promise = data.chain;
+		let stale = false;
+		void promise.then((snap) => {
+			if (stale) return;
+			chain = snap;
+			// A block arrived while this data was in flight — refresh once more.
+			if (
+				lastSeenHeight !== null &&
+				snap.tipHeight !== null &&
+				lastSeenHeight > snap.tipHeight &&
+				refetchedForHeight !== lastSeenHeight
+			) {
+				refetchedForHeight = lastSeenHeight;
+				void invalidate('cairn:chain');
+			}
+		});
+		return () => {
+			stale = true;
+		};
+	});
+	const loading = $derived(chain === null);
+	const blocks = $derived(chain?.blocks ?? []);
+	const mempool = $derived(chain?.mempool ?? null);
+	const chainError = $derived(chain?.chainError ?? null);
+
 	// Live new-block updates: refresh only the chain snapshot.
 	let lastSeenHeight: number | null = null;
 	onMount(() => {
-		lastSeenHeight = data.tipHeight;
 		const offBlock = onNewBlock((height) => {
-			if (lastSeenHeight !== null && height === lastSeenHeight) return;
+			if (lastSeenHeight !== null && height <= lastSeenHeight) return;
+			const first = lastSeenHeight === null;
 			lastSeenHeight = height;
-			invalidate('cairn:chain');
+			if (chain !== null && chain.tipHeight !== null) {
+				// SSE replays the current tip on connect — ignore what we already show.
+				if (height <= chain.tipHeight) return;
+				// Optimistic tip (cairn-9vav): reflect the new height immediately;
+				// the block list refreshes in the background via the invalidate.
+				chain = { ...chain, tipHeight: height };
+				void invalidate('cairn:chain');
+			} else if (!first) {
+				void invalidate('cairn:chain');
+			}
 		});
 		return () => {
 			offBlock();
@@ -146,8 +188,8 @@
 		localStorage.removeItem(recentKey);
 	}
 
-	const lastHeight = $derived(data.blocks.at(-1)?.height ?? null);
-	const firstHeight = $derived(data.blocks[0]?.height ?? null);
+	const lastHeight = $derived(blocks.at(-1)?.height ?? null);
+	const firstHeight = $derived(blocks[0]?.height ?? null);
 
 	// Older page ends just below the last block currently shown.
 	const olderUrl = $derived(
@@ -157,7 +199,8 @@
 	const newerUrl = $derived.by(() => {
 		if (data.before === null || firstHeight === null) return null;
 		const newerBefore = firstHeight + 16;
-		if (data.tipHeight !== null && newerBefore > data.tipHeight) return pageUrl(null);
+		const tip = chain?.tipHeight ?? null;
+		if (tip !== null && newerBefore > tip) return pageUrl(null);
 		return pageUrl(newerBefore);
 	});
 
@@ -277,10 +320,10 @@
 	</div>
 {/if}
 
-{#if data.chainError}
+{#if chainError}
 	<div class="form-error chain-error fade-in" role="alert">
 		<Icon name="alert-triangle" size={16} />
-		<span>Can't reach chain data sources — {data.chainError}</span>
+		<span>Can't reach chain data sources — {chainError}</span>
 		<a href={page.url.pathname + page.url.search} class="retry">Retry</a>
 	</div>
 {/if}
@@ -289,22 +332,22 @@
 <section class="card card-pad mempool fade-in">
 	<div class="mempool-stat">
 		<span class="overline">Unconfirmed</span>
-		<span class="mempool-value tabular">
-			{data.mempool ? formatNumber(data.mempool.txCount) : '—'}
+		<span class="mempool-value tabular" class:skeleton={loading}>
+			{mempool ? formatNumber(mempool.txCount) : '—'}
 			<span class="unit">txs</span>
 		</span>
 	</div>
 	<div class="mempool-stat">
 		<span class="overline">Mempool fees</span>
-		<span class="mempool-value tabular">
-			{data.mempool ? formatBtc(data.mempool.totalFees) : '—'}
+		<span class="mempool-value tabular" class:skeleton={loading}>
+			{mempool ? formatBtc(mempool.totalFees) : '—'}
 			<span class="unit">BTC</span>
 		</span>
 	</div>
 	<div class="mempool-stat">
 		<span class="overline">Mempool size</span>
-		<span class="mempool-value tabular">
-			{data.mempool ? formatBytes(data.mempool.vsize) : '—'}
+		<span class="mempool-value tabular" class:skeleton={loading}>
+			{mempool ? formatBytes(mempool.vsize) : '—'}
 		</span>
 	</div>
 	<a href="/explorer/mempool" class="mempool-link">
@@ -320,10 +363,38 @@
 			{data.before !== null ? `Blocks below ${formatNumber(data.before)}` : 'Recent blocks'}
 		</span>
 	</div>
-	{#if data.blocks.length === 0}
+	{#if loading}
+		<!-- Streamed chain data still resolving (cairn-ybsv). -->
+		<div class="table-wrap" aria-busy="true" aria-label="Loading blocks">
+			<table class="table">
+				<thead>
+					<tr>
+						<th>Height</th>
+						<th>Mined</th>
+						<th>Miner</th>
+						<th class="num">Txs</th>
+						<th class="num">Size</th>
+						<th class="num">Fee range</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each [0, 1, 2, 3, 4, 5, 6] as i (i)}
+						<tr>
+							<td><span class="skeleton">000,000</span></td>
+							<td><span class="skeleton">00 minutes ago</span></td>
+							<td><span class="skeleton">Miner</span></td>
+							<td class="num"><span class="skeleton">0,000</span></td>
+							<td class="num"><span class="skeleton">0.0 MB</span></td>
+							<td class="num"><span class="skeleton">0–00 sat/vB</span></td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		</div>
+	{:else if blocks.length === 0}
 		<div class="empty-state">
 			<span class="empty-title">No blocks to show</span>
-			<span>{data.chainError ? 'Chain data is unavailable right now.' : 'Nothing found at this height range.'}</span>
+			<span>{chainError ? 'Chain data is unavailable right now.' : 'Nothing found at this height range.'}</span>
 		</div>
 	{:else}
 		<div class="table-wrap">
@@ -339,7 +410,7 @@
 					</tr>
 				</thead>
 				<tbody>
-					{#each data.blocks as block (block.hash)}
+					{#each blocks as block (block.hash)}
 						<tr>
 							<td>
 								<a href="/explorer/block/{block.height}" class="block-link tabular">
@@ -377,7 +448,7 @@
 		{:else}
 			<span></span>
 		{/if}
-		{#if olderUrl && data.blocks.length > 0}
+		{#if olderUrl && blocks.length > 0}
 			<a href={olderUrl} class="btn btn-secondary btn-sm">
 				Older blocks <Icon name="chevron-right" size={14} />
 			</a>

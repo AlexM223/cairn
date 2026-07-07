@@ -4,6 +4,9 @@
 	import { page } from '$app/state';
 	import { onNewBlock } from '$lib/liveBlocks';
 	import Icon from '$lib/components/Icon.svelte';
+	import Banner from '$lib/components/Banner.svelte';
+	import Toasts from '$lib/components/Toasts.svelte';
+	import { toast } from '$lib/components/toast.svelte';
 	import Stepper from '$lib/components/Stepper.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
@@ -569,6 +572,7 @@
 			}
 			savedAddresses = [body.address as SavedAddress, ...savedAddresses];
 			addressJustSaved = true;
+			toast.success('Saved to your address book.');
 		} catch {
 			saveAddressError = 'Could not reach Cairn to save the address.';
 		} finally {
@@ -605,8 +609,6 @@
 	// which offers the file method — clearer than never pre-selecting).
 	// svelte-ignore state_referenced_locally — intentional per-load seed
 	let activeMethod = $state<SignMethod | null>(data.wallet.deviceType);
-	// Set briefly after a first-send device association so the user sees it stuck.
-	let deviceJustSaved = $state<WalletDeviceType | null>(null);
 	// Bumped to remount the active signer from scratch — a clean retry after the
 	// server-side guard rejects what a device returned.
 	let signerEpoch = $state(0);
@@ -625,7 +627,9 @@
 	async function rememberDevice(m: SignMethod) {
 		if (m === 'file' || m === walletDevice) return;
 		walletDevice = m;
-		deviceJustSaved = m;
+		toast.success(
+			`Saved — future sends from this wallet will go straight to your ${WALLET_DEVICE_LABELS[m]}.`
+		);
 		try {
 			await fetch(`/api/wallets/${walletId}`, {
 				method: 'PATCH',
@@ -759,9 +763,9 @@
 			</div>
 
 			{#if data.scanError}
-				<div class="form-error" role="alert">
+				<Banner variant="error">
 					Couldn't reach your node to load spendable coins: {data.scanError}
-				</div>
+				</Banner>
 			{/if}
 
 			<div class="card card-pad stack" style="gap: 18px">
@@ -962,7 +966,7 @@
 				{/if}
 
 				{#if buildError}
-					<div class="form-error" role="alert">{buildError}</div>
+					<Banner variant="error">{buildError}</Banner>
 				{/if}
 
 				<div class="row" style="justify-content: flex-end; gap: 10px">
@@ -1150,14 +1154,6 @@
 				<span class="text-secondary">{signHeading}</span>
 			</div>
 
-			{#if deviceJustSaved && deviceJustSaved !== 'file'}
-				<p class="device-saved-note" role="status" aria-live="polite">
-					<Icon name="check" size={13} />
-					Saved — future sends from this wallet will go straight to your
-					{WALLET_DEVICE_LABELS[deviceJustSaved]}.
-				</p>
-			{/if}
-
 			<HowItWorks id="send-sign">
 				<p>
 					Signing happens <strong>on your device</strong>, never here.
@@ -1221,7 +1217,7 @@
 										bind:value={signedPsbtText}
 									></textarea>
 									{#if signError}
-										<div class="form-error" role="alert">{signError}</div>
+										<Banner variant="error">{signError}</Banner>
 									{/if}
 									<button
 										class="btn btn-primary"
@@ -1288,17 +1284,17 @@
 						<span class="spinner"></span> Checking signatures against the transaction you reviewed…
 					</div>
 				{:else if signError}
-					<div class="form-error" role="alert">
+					<Banner variant="error">
 						{signError}
-						<div class="reject-actions">
+						{#snippet actions()}
 							<button class="btn btn-secondary btn-sm" onclick={() => selectMethod(activeMethod!)}>
 								<Icon name="refresh" size={14} /> Try again
 							</button>
 							<button class="btn btn-ghost btn-sm" onclick={collapseMethod}>
 								Choose another method
 							</button>
-						</div>
-					</div>
+						{/snippet}
+					</Banner>
 				{/if}
 			{/if}
 
@@ -1351,19 +1347,19 @@
 			</div>
 
 			{#if broadcastError}
-				<div class="form-error" role="alert">
+				<Banner variant="error">
 					{broadcastError}
-					{#if broadcastRejected || draft}
-						<div class="reject-actions">
+					{#snippet actions()}
+						{#if broadcastRejected || draft}
 							<a class="btn btn-secondary btn-sm" href={fileUrl} download>
 								<Icon name="arrow-down-left" size={14} /> Download PSBT
 							</a>
 							<button class="btn btn-ghost btn-sm" onclick={() => (step = 'sign')}>
 								Re-sign
 							</button>
-						</div>
-					{/if}
-				</div>
+						{/if}
+					{/snippet}
+				</Banner>
 			{/if}
 
 			<div class="row step-actions">
@@ -1460,13 +1456,9 @@
 						</button>
 					</div>
 					{#if saveAddressError}
-						<div class="form-error" role="alert">{saveAddressError}</div>
+						<Banner variant="error">{saveAddressError}</Banner>
 					{/if}
 				</div>
-			{:else if addressJustSaved}
-				<p class="hint saved-note" role="status" aria-live="polite">
-					<Icon name="check" size={13} /> Saved to your address book.
-				</p>
 			{/if}
 
 			<div class="row step-actions" style="justify-content: center">
@@ -1478,6 +1470,8 @@
 		</section>
 	{/if}
 </div>
+
+<Toasts />
 
 <style>
 	.send-page {
@@ -1877,14 +1871,6 @@
 		font-size: 13.5px;
 	}
 
-	.device-saved-note {
-		display: flex;
-		align-items: center;
-		gap: 7px;
-		font-size: 12.5px;
-		color: var(--success);
-	}
-
 	.method-grid {
 		display: grid;
 		grid-template-columns: 1fr;
@@ -2185,12 +2171,6 @@
 		max-width: 100%;
 	}
 
-	.reject-actions {
-		display: flex;
-		gap: 8px;
-		margin-top: 10px;
-	}
-
 	/* ---- Sent ---- */
 	.sent-body {
 		align-items: center;
@@ -2291,13 +2271,6 @@
 
 	.save-offer-row .input {
 		flex: 1;
-	}
-
-	.saved-note {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-		color: var(--success);
 	}
 
 	@media (max-width: 520px) {

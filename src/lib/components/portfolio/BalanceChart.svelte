@@ -129,16 +129,38 @@
 		});
 	}
 
+	// Up to 5 ticks, evenly spaced by TIME (not by array index) and snapped to
+	// the nearest data point — index spacing bunched ticks together on sparse
+	// series, producing adjacent identical labels like "Jul 4 … Jul 4 … Jul 6"
+	// (cairn-b4ys). A tick that would repeat the previous tick's calendar-day
+	// label (or land on the same point) is skipped rather than reformatted, so
+	// the axis stays clean: every label is distinct or absent.
 	const xTicks = $derived.by(() => {
 		const pts = filtered;
 		if (pts.length < 2) return [];
 		const COUNT = Math.min(5, pts.length);
+		const { minT, maxT } = bounds;
 		const ticks: { x: number; label: string }[] = [];
+		let lastIdx = -1;
+		let lastLabel = '';
 		for (let i = 0; i < COUNT; i++) {
 			const frac = COUNT === 1 ? 0 : i / (COUNT - 1);
-			const idx = Math.round(frac * (pts.length - 1));
-			const p = pts[idx];
-			ticks.push({ x: xFor(p.t), label: formatDate(p.t) });
+			const target = minT + frac * (maxT - minT);
+			let idx = 0;
+			let best = Infinity;
+			for (let j = 0; j < pts.length; j++) {
+				const d = Math.abs(pts[j].t - target);
+				if (d < best) {
+					best = d;
+					idx = j;
+				}
+			}
+			if (idx === lastIdx) continue; // two targets snapped to the same point
+			const label = formatDate(pts[idx].t);
+			if (label === lastLabel) continue; // same calendar day — skip the duplicate
+			lastIdx = idx;
+			lastLabel = label;
+			ticks.push({ x: xFor(pts[idx].t), label });
 		}
 		return ticks;
 	});
