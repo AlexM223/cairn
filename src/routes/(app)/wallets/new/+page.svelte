@@ -592,10 +592,6 @@
 </svelte:head>
 
 <div class="wizard fade-in">
-	<a href="/wallets" class="back-link">
-		<Icon name="chevron-left" size={14} />
-		Wallets
-	</a>
 	<h1 class="page-title" style="margin-bottom: 4px">Add a wallet</h1>
 	<p class="hint" style="margin-bottom: 24px">
 		A short guided setup — Cairn only ever sees public keys.
@@ -1385,19 +1381,6 @@
 		gap: 6px;
 		font-size: 12.5px;
 		color: var(--success);
-	}
-
-	.back-link {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		font-size: 12.5px;
-		color: var(--text-secondary);
-		margin-bottom: 14px;
-	}
-
-	.back-link:hover {
-		color: var(--accent);
 	}
 
 	/* --- resume note (shown after a mid-wizard reload restored progress) --- */

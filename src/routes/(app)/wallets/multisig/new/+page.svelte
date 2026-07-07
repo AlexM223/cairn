@@ -785,10 +785,6 @@
 </svelte:head>
 
 <div class="wizard fade-in" bind:this={pageEl}>
-	<a href="/wallets" class="back-link">
-		<Icon name="chevron-left" size={14} />
-		Wallets
-	</a>
 	<h1 class="page-title" style="margin-bottom: 4px">Create a multisig wallet</h1>
 	<p class="hint" style="margin-bottom: 20px">
 		Money that needs several of your keys to move — no single point of failure.
@@ -2089,19 +2085,6 @@
 <style>
 	.wizard {
 		max-width: 720px;
-	}
-
-	.back-link {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		font-size: 12.5px;
-		color: var(--text-secondary);
-		margin-bottom: 14px;
-	}
-
-	.back-link:hover {
-		color: var(--accent);
 	}
 
 	.stepper-wrap {
