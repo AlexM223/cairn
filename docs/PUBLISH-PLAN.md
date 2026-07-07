@@ -23,6 +23,28 @@ Status: **EXECUTED for the community-store path, 2026-07-06.** What shipped
   container env never contains a var literally named APP_PASSWORD, so the
   naming collision §5 worried about never materializes) and the manifest uses
   `defaultUsername: admin@cairn.local` + `deterministicPassword: true`.
+  **Re-verified against the package repo 2026-07-06 (cairn-49xi.1):** exactly
+  this has shipped since package 0.1.0 (commit `de44739` in
+  `AlexM223/umbrel-community-app-store`, still true at 0.1.4). No `exports.sh`
+  exists and none is needed — `deterministicPassword: true` is the mechanism
+  that makes umbrelOS both derive the per-install password AND display it on
+  the install card; a custom `derive_entropy` seed in an `exports.sh` (the
+  alternative cairn-49xi.1 sketched) would produce a secret the install card
+  never shows, which defeats the point. `CAIRN_ADMIN_EMAIL` is deliberately
+  unset in the compose: Cairn's built-in default (`admin@cairn.local`) already
+  matches the manifest's `defaultUsername`, so setting it would be redundant.
+- The auto-admin loop was closed in Cairn itself on 2026-07-06
+  (cairn-49xi.2): `bootstrapAdminFromEnv()` now flags the account it creates
+  with `users.must_reset_password`, and the `(app)` layout gate forces the
+  first login through `/setup-admin` — a one-time "choose your own password
+  AND a real email" step (both required together; see
+  docs/SOLO-MODE-UMBREL-AUTOADMIN-PLAN.md Part 1 decision) — before any other
+  route. The reset refuses the placeholder email and refuses re-using the
+  generated install password, and completing it rotates all sessions. Once
+  this ships in a tagged release (> 0.1.4), the package manifest's
+  description copy needs a touch-up at the next version bump: it currently
+  says "log in … then change the password (and set your real email address …)
+  from Settings", but the app now forces exactly that on first login.
 - §7 targeted the official `getumbrel/umbrel-apps` store; what shipped first
   is Alex's own community store (`github.com/AlexM223/umbrel-community-app-store`,
   app id `caravan-store-cairn`, port 3211, icon/gallery served from the public
@@ -223,7 +245,14 @@ bind-mounted from app data"):
     `Dockerfile` runtime stage, next to the existing `ENV CAIRN_DB=...`
     line. This is a plain correctness fix independent of Umbrel — do it
     before the public cutover, not as Umbrel-specific glue.
-- **`APP_PASSWORD` naming collision.** [auth.ts:238](../src/lib/server/auth.ts:238)
+- **`APP_PASSWORD` naming collision.** *[SUPERSEDED 2026-07-06 — see the
+  status note at the top. The shipped package DOES wire Umbrel's derived
+  password, as `CAIRN_ADMIN_PASSWORD: ${APP_PASSWORD}` compose interpolation
+  (container env never holds a literal `APP_PASSWORD`), with
+  `deterministicPassword: true` in the manifest; Cairn forces a first-login
+  password+email reset (`/setup-admin`, cairn-49xi.2) so the derived password
+  never stays in use. Original decision kept below for the record.]*
+  [auth.ts:238](../src/lib/server/auth.ts:238)
   and [recovery.ts:362](../src/lib/server/recovery.ts:362) read `APP_PASSWORD`
   as a legacy fallback for `CAIRN_ADMIN_PASSWORD` (the operator break-glass
   password, gated behind `CAIRN_ADMIN_RECOVERY=true`). Umbrel's own runtime
@@ -272,8 +301,8 @@ deciding what the Umbrel `docker-compose.yml` needs to set explicitly.
 | `CAIRN_ORIGIN` | request origin | no | absolute origin used in notification email links and as WebAuthn origin fallback; **set explicitly for Umbrel** to `http://${DEVICE_DOMAIN_NAME}:${APP_PROXY_PORT}` |
 | `CAIRN_RP_ID` | request hostname | no | WebAuthn RP ID; leave unset, derives correctly from the request |
 | `CAIRN_AUTH_MODE` | `password` (or DB setting) | no | leave unset — password mode is required for Umbrel |
-| `CAIRN_ADMIN_EMAIL` | `admin@cairn.local` | no | only used with `CAIRN_ADMIN_RECOVERY` |
-| `CAIRN_ADMIN_PASSWORD` / `APP_PASSWORD` (legacy alias) | unset | no | operator break-glass password; **do not set in the Umbrel package** (see §5 collision note) |
+| `CAIRN_ADMIN_EMAIL` | `admin@cairn.local` | no | initial email `bootstrapAdminFromEnv()` writes for the auto-created admin; also the break-glass account hint with `CAIRN_ADMIN_RECOVERY`. Leave unset for Umbrel — the default matches the manifest's `defaultUsername` |
+| `CAIRN_ADMIN_PASSWORD` / `APP_PASSWORD` (legacy alias) | unset | no | first-boot admin bootstrap password (and, with `CAIRN_ADMIN_RECOVERY=true`, the break-glass password). *[Superseded 2026-07-06: the Umbrel package DOES set `CAIRN_ADMIN_PASSWORD: ${APP_PASSWORD}` — see §5 marker. The account it creates carries `users.must_reset_password`, forcing a first-login reset at `/setup-admin`.]* |
 | `CAIRN_ADMIN_RECOVERY` | unset (`false`) | no | must be `true` to enable the above; leave unset for Umbrel |
 
 No env var currently configures the Electrum server — that's a runtime
@@ -390,6 +419,14 @@ Notes on fields left as placeholders/TBD:
 - `category: bitcoin` — confirm this is still the exact category slug the
   App Store uses at submission time (taxonomy can shift between Umbrel
   releases).
+- `defaultUsername: ""` / `defaultPassword: ""` in the draft above is
+  *[SUPERSEDED 2026-07-06]* — the shipped community package (and any future
+  official submission) uses `defaultUsername: admin@cairn.local` +
+  `deterministicPassword: true` + `defaultPassword: ""` so the install card
+  shows real credentials, with `CAIRN_ADMIN_PASSWORD: ${APP_PASSWORD}` in the
+  compose `environment:` block (contradicting §7.4's draft, which predates the
+  auto-admin decision). Cairn's forced first-login reset (cairn-49xi.2) is
+  what makes this safe: the derived password can't remain in long-term use.
 
 ### 7.4 Draft `docker-compose.yml`
 

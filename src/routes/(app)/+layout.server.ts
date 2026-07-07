@@ -6,6 +6,7 @@ import {
 	DEFAULT_OPERATOR
 } from '$lib/server/disclosures';
 import { hasRecoverySetup } from '$lib/server/recovery';
+import { mustResetPassword } from '$lib/server/auth';
 import { listUnbackedWallets, shouldShowBackupReminder } from '$lib/server/backups';
 import { listActiveAnnouncementsFor } from '$lib/server/announcements';
 import { getInstanceSettings } from '$lib/server/settings';
@@ -16,6 +17,14 @@ export const load: LayoutServerLoad = async ({ locals, url }) => {
 		const next = url.pathname === '/' ? '' : `?next=${encodeURIComponent(url.pathname)}`;
 		redirect(302, `/login${next}`);
 	}
+
+	// Forced credential-reset gate (cairn-49xi.2) — FIRST, before every other
+	// gate: a bootstrap-created admin's password came from a deployment env var
+	// that stays visible in the platform's install UI/logs, and their email is a
+	// placeholder that can't receive notifications. Until they choose their own
+	// at /setup-admin (top-level, outside this layout, so this can't loop), they
+	// shouldn't be accepting disclosures or setting up recovery either.
+	if (mustResetPassword(locals.user.id)) redirect(302, '/setup-admin');
 
 	// Disclosure gates. The acceptance screens live at top-level /disclosure and
 	// /agreement (outside this layout), so redirecting here can't loop.

@@ -506,6 +506,22 @@ db.exec(`
 	}
 }
 
+// Forced first-login credential reset (cairn-49xi.2). 1 = this account's
+// password came from a deployment env var (CAIRN_ADMIN_PASSWORD — Umbrel shows
+// the generated value on its install card and keeps it in logs indefinitely),
+// so the first login is routed through a one-time "choose your own password and
+// email" step (/setup-admin) before any other app route. Set only by
+// bootstrapAdminFromEnv() (auth.ts) when it writes an env-supplied password;
+// cleared by completeForcedCredentialReset(). Guarded and idempotent.
+{
+	const userCols = (db.prepare('PRAGMA table_info(users)').all() as { name: string }[]).map(
+		(c) => c.name
+	);
+	if (!userCols.includes('must_reset_password')) {
+		db.exec('ALTER TABLE users ADD COLUMN must_reset_password INTEGER NOT NULL DEFAULT 0');
+	}
+}
+
 // Account recovery secrets — how a user gets back INTO Cairn (their LOGIN) after
 // losing every passkey, NOT how they recover bitcoin. These secrets restore the
 // login only; they can never move or reveal bitcoin, whose keys live entirely on
