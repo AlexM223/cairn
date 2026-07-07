@@ -31,6 +31,10 @@ RUN deluser node \
 COPY --from=build /app/build ./build
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./package.json
+# Custom entry: adapter-node's handler on HTTP plus the optional self-signed
+# HTTPS listener (cairn-wgr8 — secure context for hardware signing on Umbrel).
+COPY --from=build /app/server.mjs ./server.mjs
+COPY --from=build /app/scripts/tls-cert.mjs ./scripts/tls-cert.mjs
 
 # SQLite database lives on the /data volume — mount it or lose it.
 ENV CAIRN_DB=/data/cairn.db
@@ -38,6 +42,11 @@ ENV CAIRN_DB=/data/cairn.db
 # /app/data/logs, i.e. the ephemeral writable layer — history lost on recreate).
 ENV CAIRN_LOG_FILE=/data/logs/cairn.log
 ENV PORT=3000
+# Self-signed HTTPS listener (secure context for WebHID/Web Serial hardware
+# signing + camera QR scanning on plain-HTTP hosts like Umbrel). The cert is
+# generated at first boot into /data/tls. Publish the port to enable it;
+# an unpublished port is harmless. Set CAIRN_HTTPS_PORT="" to disable.
+ENV CAIRN_HTTPS_PORT=3443
 # NOTE: deliberately no ADDRESS_HEADER default. adapter-node THROWS on any
 # getClientAddress() call when the configured header is absent, which breaks
 # login for direct (unproxied) deployments. Deployments that sit behind a
@@ -49,10 +58,10 @@ RUN mkdir -p /data && chown cairn:cairn /data
 VOLUME /data
 USER cairn
 
-EXPOSE 3000
+EXPOSE 3000 3443
 
 # Alpine images ship no curl/wget; probe with node's built-in fetch.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 	CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-CMD ["node", "build"]
+CMD ["node", "server.mjs"]

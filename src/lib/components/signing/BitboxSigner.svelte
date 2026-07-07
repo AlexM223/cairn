@@ -5,6 +5,7 @@
 	import Term from '$lib/components/Term.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import DeviceHelpLink from '$lib/components/signing/DeviceHelpLink.svelte';
+	import SecureContextHelp from '$lib/components/signing/SecureContextHelp.svelte';
 	import { formatSats, truncateMiddle } from '$lib/format';
 	import {
 		isBitbox02Available,
@@ -391,6 +392,11 @@
 			     flag-gated (it is help, not promotion). -->
 			<DeviceHelpLink device="bitbox02" kind="support" />
 		{/if}
+
+		<!-- On a plain-HTTP page the connect above goes through the BitBoxBridge
+		     app; Cairn's secure address lets the browser talk to the device
+		     directly instead. Renders nothing in a secure context. -->
+		<SecureContextHelp what="direct USB signing (no BitBoxBridge app needed)" />
 
 		<div class="actions">
 			<button class="btn btn-primary" onclick={connectAndSign} disabled={signing}>

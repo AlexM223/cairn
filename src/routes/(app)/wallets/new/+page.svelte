@@ -6,6 +6,7 @@
 	import { onDestroy, onMount, tick } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import DevicePicker from '$lib/components/DevicePicker.svelte';
+	import SecureContextHelp from '$lib/components/signing/SecureContextHelp.svelte';
 	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import type { ScriptType, WalletDeviceType } from '$lib/types';
@@ -864,6 +865,11 @@
 								{#if deviceBusy}<span class="spinner"></span>{/if}
 								Connect {method === 'trezor' ? 'Trezor' : 'Ledger'}
 							</button>
+							{#if method === 'ledger'}
+								<!-- Ledger needs WebHID, which plain-HTTP pages don't get; the
+								     Trezor popup carries its own transport, so no note there. -->
+								<SecureContextHelp what="Ledger connections" />
+							{/if}
 						</div>
 					{:else if method === 'bitbox02'}
 						<div class="connect-box">
@@ -881,6 +887,7 @@
 								{#if deviceBusy}<span class="spinner"></span>{/if}
 								Connect BitBox02
 							</button>
+							<SecureContextHelp what="direct USB connections (no BitBoxBridge app needed)" />
 						</div>
 					{:else if method === 'jade'}
 						<div class="connect-box">
@@ -898,6 +905,7 @@
 								{#if deviceBusy}<span class="spinner"></span>{/if}
 								Connect Jade
 							</button>
+							<SecureContextHelp what="Jade USB connections" />
 						</div>
 					{:else if method === 'coldcard'}
 						<div class="connect-box">
@@ -957,6 +965,7 @@
 									This browser can't scan QR codes from a camera — paste the key instead
 									(choose "Paste public key").
 								</p>
+								<SecureContextHelp what="camera scanning" />
 							{/if}
 						</div>
 					{:else}
