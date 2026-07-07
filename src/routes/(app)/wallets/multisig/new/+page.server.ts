@@ -3,9 +3,18 @@ import {
 	deriveMultisigAddress,
 	parseDescriptor,
 	multisigToDescriptor,
+	validateMultisigKeyPaths,
 	MultisigError,
 	type MultisigConfig
 } from '$lib/server/bitcoin/multisig';
+import {
+	parseVaultIntent,
+	validateKeyForIntent,
+	intentPurpose,
+	reusableDeviceKeys
+} from './vaultIntent.server';
+import { listDeviceKeys, rememberDeviceKey, purposeFromPath } from '$lib/server/deviceKeys';
+import { childLogger } from '$lib/server/logger';
 import {
 	createMultisig,
 	MULTISIG_KEY_CATEGORIES,
@@ -42,7 +51,42 @@ export const load: PageServerLoad = async (event) => {
 	};
 };
 
+const log = childLogger('multisigWizard');
+
 const DEVICE_TYPES = new Set(['trezor', 'ledger', 'coldcard', 'qr', 'file']);
+
+/** Devices whose keys arrive via a LIVE in-browser read (vs paste/file/QR) —
+ *  the only reads worth caching in the device-keys registry. */
+const LIVE_READ_DEVICES = new Set(['trezor', 'ledger', 'bitbox02', 'jade']);
+
+/**
+ * Best-effort registry write after a live device read (cairn-fdlf.4): remember
+ * the key under its purpose so the NEXT vault (or the next key slot of this
+ * one) can offer reuse instead of another device touch. Never blocks the add —
+ * the registry is a convenience cache, the key itself already validated.
+ */
+function rememberLiveRead(
+	userId: number | undefined,
+	readFromRaw: unknown,
+	key: { xpub: string; fingerprint: string; path: string }
+): void {
+	const readFrom = String(readFromRaw ?? '');
+	if (!userId || !LIVE_READ_DEVICES.has(readFrom)) return;
+	if (key.fingerprint === '00000000') return; // "no fingerprint on record" placeholder
+	const purpose = purposeFromPath(key.path);
+	if (purpose !== '45' && purpose !== '48') return; // only multisig-purpose reads land here
+	try {
+		rememberDeviceKey(userId, {
+			fingerprint: key.fingerprint,
+			purpose,
+			xpub: key.xpub,
+			path: key.path,
+			deviceType: readFrom
+		});
+	} catch (e) {
+		log.warn({ err: e, userId }, 'device-key registry write skipped after live read');
+	}
+}
 
 const PASTED_PRIVATE_KEY_REFUSAL =
 	"That's a private key. Never paste it anywhere. Export the public key instead (look for 'xpub' in your wallet).";
@@ -110,7 +154,7 @@ function parseConfigJson(json: string): MultisigConfig {
 
 export const actions: Actions = {
 	/** Validate + normalize one key (paste, device read, or ColdCard file). */
-	key: async ({ request }) => {
+	key: async ({ request, locals }) => {
 		const form = await request.formData();
 		const name = String(form.get('name') ?? '').trim();
 		const category = String(form.get('category') ?? '') as MultisigKeyCategory;
@@ -124,16 +168,53 @@ export const actions: Actions = {
 		}
 		const deviceType = (DEVICE_TYPES.has(deviceTypeRaw) ? deviceTypeRaw : null) as MultisigDeviceType;
 
+		// The vault's declared mode + script type (cairn-fdlf.4/.5): a key that
+		// contradicts the declared intent is rejected HERE, at add time, with an
+		// actionable message — createMultisig would reject it at the end anyway
+		// (cairn-1kc3.6), which is the worst place for the user to find out.
+		const intent = parseVaultIntent(form.get('intent'));
+		const scriptTypeRaw = String(form.get('scriptType') ?? '') as MultisigScriptType;
+		const scriptType = MULTISIG_SCRIPT_TYPES.includes(scriptTypeRaw) ? scriptTypeRaw : 'p2wsh';
+
 		try {
 			const normalized = normalizeKey(
 				String(form.get('xpub') ?? ''),
 				String(form.get('fingerprint') ?? ''),
 				String(form.get('path') ?? '')
 			);
+			validateKeyForIntent(normalized.path, scriptType, intent, name);
+			rememberLiveRead(locals.user?.id, form.get('readFrom'), normalized);
 			return { key: { name, category, deviceType, ...normalized } };
 		} catch (e) {
 			return fail(400, { error: errMessage(e) });
 		}
+	},
+
+	/**
+	 * Registry lookup for the reuse-before-fresh-read offer (cairn-fdlf.4): the
+	 * caller's known device keys at the declared intent's purpose, filtered to
+	 * rows actually usable in this vault. Only multisig-purpose rows ('45'/'48')
+	 * are ever read — single-sig registry rows stay private (cairn-fdlf.3).
+	 */
+	knownKeys: async ({ request, locals }) => {
+		if (!locals.user) return fail(401, { error: 'Sign in first.' });
+		const form = await request.formData();
+		const intent = parseVaultIntent(form.get('intent'));
+		if (!intent) return { knownKeys: [] };
+		const scriptTypeRaw = String(form.get('scriptType') ?? '') as MultisigScriptType;
+		const scriptType = MULTISIG_SCRIPT_TYPES.includes(scriptTypeRaw) ? scriptTypeRaw : 'p2wsh';
+		const rows = listDeviceKeys(locals.user.id, [intentPurpose(intent)]).map((r) => ({
+			fingerprint: r.fingerprint,
+			purpose: r.purpose as '45' | '48',
+			xpub: r.xpub,
+			path: r.path,
+			deviceType: r.deviceType
+		}));
+		return {
+			knownKeys: reusableDeviceKeys(rows, scriptType, intent).map(
+				({ fingerprint, xpub, path, deviceType }) => ({ fingerprint, xpub, path, deviceType })
+			)
+		};
 	},
 
 	/** First receive addresses for the Review step's cross-check. */
@@ -165,6 +246,11 @@ export const actions: Actions = {
 		// resumes at the right receive index instead of reusing 0.. (cairn-u161).
 		const startRaw = Number(form.get('startingAddressIndex'));
 		const receiveCursor = Number.isInteger(startRaw) && startRaw > 0 ? startRaw : 0;
+		// Declared vault mode (cairn-fdlf.4 → cairn-1kc3.6): 'true'/'false' when
+		// the wizard asked its collaborative-vs-personal question, '' when it
+		// didn't (import prefills). createMultisig enforces the mode server-side.
+		const collabRaw = String(form.get('collaborative') ?? '');
+		const collaborative = collabRaw === 'true' ? true : collabRaw === 'false' ? false : null;
 
 		let keys: NewMultisigKey[];
 		let threshold: number;
@@ -190,7 +276,8 @@ export const actions: Actions = {
 				scriptType,
 				keys,
 				source,
-				receiveCursor
+				receiveCursor,
+				collaborative
 			});
 			return { multisigId: multisig.id };
 		} catch (e) {
@@ -218,11 +305,18 @@ export const actions: Actions = {
 			const imported = source.startsWith('{')
 				? parseCaravanImport(source)
 				: (() => {
-						// parseDescriptor only accepts wsh(sortedmulti(...)) — native segwit.
 						const config = parseDescriptor(source);
+						// Path hygiene at the import boundary (cairn-1kc3.1/.3/.5), same
+						// as the API import route: parseDescriptor itself stays
+						// acceptance-agnostic (exports round-trip through it).
+						validateMultisigKeyPaths(config);
 						return {
 							name: '',
-							scriptType: 'p2wsh' as const,
+							// parseDescriptor reports the wrapper it recognized: wsh() →
+							// p2wsh, sh(wsh()) → p2sh-p2wsh, sh() → p2sh (cairn-opo6 —
+							// this was hardcoded 'p2wsh', silently mis-typing every
+							// non-native-segwit descriptor import).
+							scriptType: config.scriptType ?? ('p2wsh' as const),
 							threshold: config.threshold,
 							totalKeys: config.keys.length,
 							keys: config.keys.map((k, i) => ({ name: `Key ${i + 1}`, ...k }))
