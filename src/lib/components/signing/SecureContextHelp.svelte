@@ -44,8 +44,9 @@
 			<p class="secure-note">
 				The first visit shows a browser warning about the certificate. That's expected — it's the
 				certificate your own Cairn server created for itself, not a public website's. Choose
-				<strong>Advanced</strong> → <strong>Continue</strong> once; the browser remembers it. You may
-				need to sign in again there.
+				<strong>Advanced</strong> → <strong>Continue</strong>; the browser then remembers it for about
+				a week at a time. Sign in there with your email and password — passkeys don't work on the
+				self-signed address.
 			</p>
 		</div>
 	</div>
