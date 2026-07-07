@@ -15,18 +15,18 @@ describe('email template (cairn-5gpv.2)', () => {
 		expect(text).toContain('0.01 BTC to Savings');
 		expect(text).toContain('https://cairn.example/wallets/3');
 		expect(html).toContain('<html');
-		expect(html).toContain('Cairn'); // branded header
+		expect(html).toContain('Heartwood'); // branded header
 	});
 
-	it('includes a View in Cairn button linking the absolute url when a link is present', () => {
+	it('includes a View in Heartwood button linking the absolute url when a link is present', () => {
 		const html = renderHtml(base);
-		expect(html).toContain('View in Cairn');
+		expect(html).toContain('View in Heartwood');
 		expect(html).toContain('href="https://cairn.example/wallets/3"');
 	});
 
 	it('omits the button when there is no link', () => {
 		const html = renderHtml({ ...base, link: null });
-		expect(html).not.toContain('View in Cairn');
+		expect(html).not.toContain('View in Heartwood');
 	});
 
 	it('text alternative omits the link line when there is no link (PGP-path parity)', () => {
