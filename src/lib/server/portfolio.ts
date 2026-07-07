@@ -53,10 +53,38 @@ function lastActivityOf(scan: WalletScanResult | MultisigScanResult): number | n
 // ------------------------------------------------------------------ snapshots
 
 /**
+ * True when any entry's live balance contradicts that wallet's latest snapshot.
+ * Used to bypass the hourly snapshot throttle (cairn-qt1g): without it, the
+ * chart's newest point can disagree with the live balance card for up to an
+ * hour after any balance change — most visibly after switching the node
+ * connection to a different chain, where the live total re-scans to a new
+ * number but the chart keeps carrying the old chain's last snapshot forward.
+ */
+function contradictsLatestSnapshot(
+	userId: number,
+	entries: { kind: WalletKind; id: number; balance: number }[]
+): boolean {
+	const latest = db.prepare(
+		`SELECT balance_sats FROM balance_snapshots
+		  WHERE user_id = ? AND wallet_kind = ? AND wallet_id = ?
+		  ORDER BY taken_at DESC LIMIT 1`
+	);
+	for (const e of entries) {
+		const row = latest.get(userId, e.kind, e.id) as { balance_sats: number } | undefined;
+		if (row !== undefined && row.balance_sats !== e.balance) return true;
+	}
+	return false;
+}
+
+/**
  * Record a snapshot tick (one row per wallet, shared timestamp) if the last one
- * is older than SNAPSHOT_INTERVAL_MS. Reuses balances already computed by a
- * portfolio fetch, so it costs one cheap write and no chain calls. Callers pass
- * only fully-scanned balances so the summed total series stays accurate.
+ * is older than SNAPSHOT_INTERVAL_MS — or immediately, throttle bypassed, when
+ * the live balances contradict the latest snapshots (cairn-qt1g), so the chart
+ * catches up to reality on the next portfolio fetch instead of showing a stale
+ * number under a fresh balance card for up to an hour. Reuses balances already
+ * computed by a portfolio fetch, so it costs cheap reads/writes and no chain
+ * calls; callers pass only fully-scanned balances so the summed total series
+ * stays accurate (and a partial-outage scan can never fake a "contradiction").
  */
 export function recordSnapshot(
 	userId: number,
@@ -66,7 +94,12 @@ export function recordSnapshot(
 	const last = db
 		.prepare('SELECT taken_at FROM balance_snapshots WHERE user_id = ? ORDER BY taken_at DESC LIMIT 1')
 		.get(userId) as { taken_at: string } | undefined;
-	if (last && Date.now() - Date.parse(last.taken_at) < SNAPSHOT_INTERVAL_MS) return;
+	if (
+		last &&
+		Date.now() - Date.parse(last.taken_at) < SNAPSHOT_INTERVAL_MS &&
+		!contradictsLatestSnapshot(userId, entries)
+	)
+		return;
 
 	const takenAt = new Date().toISOString();
 	const insert = db.prepare(
