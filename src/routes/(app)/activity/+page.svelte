@@ -1,6 +1,9 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
-	import { timeAgo } from '$lib/format';
+	import GroveField from '$lib/components/heartwood/GroveField.svelte';
+	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
+	import RingStub from '$lib/components/heartwood/RingStub.svelte';
+	import { timeAgo, formatBtc, formatNumber } from '$lib/format';
 
 	// Mirrors the server's ActivityEvent (kept local so this client component
 	// never imports a $lib/server module).
@@ -25,9 +28,86 @@
 	let refreshing = $state(false);
 	let onlyAlerts = $state(false);
 
+	// ------------------------------------------------------------ 5f filters
+	// The spec's three toggles. "Wallets" = your bitcoin moving and the wallets/
+	// keys/signing around it; "Node" = instance-wide chain/server events (rare in
+	// this personal feed — the operational firehose lives in Admin → Activity).
+	// Account-security events show under All.
+	type Filter = 'all' | 'wallets' | 'node';
+	let filter = $state<Filter>('all');
+
+	const WALLET_TYPES = new Set([
+		'tx_received',
+		'tx_confirmed',
+		'tx_large',
+		'broadcast',
+		'wallet_added',
+		'wallet_created',
+		'key_reuse',
+		'backup_downloaded',
+		'backup_missing',
+		'backup_stale',
+		'signing_started',
+		'sign_session_waiting',
+		'key_health_due',
+		'contact_request',
+		'contact_accepted'
+	]);
+	const NODE_TYPES = new Set([
+		'new_block',
+		'network_up',
+		'network_down',
+		'electrum_switched',
+		'scan_complete'
+	]);
+
+	function inFilter(e: ActivityEvent): boolean {
+		if (filter === 'wallets') return WALLET_TYPES.has(e.type);
+		if (filter === 'node') return NODE_TYPES.has(e.type) || e.scope === 'instance';
+		return true;
+	}
+
 	const shown = $derived(
-		onlyAlerts ? events.filter((e) => e.level === 'warn' || e.level === 'error') : events
+		events.filter(
+			(e) => inFilter(e) && (!onlyAlerts || e.level === 'warn' || e.level === 'error')
+		)
 	);
+
+	// ------------------------------------------------------- hero + day groups
+	const heroSub = $derived.by(() => {
+		if (shown.length === 0) return '';
+		const oldest = new Date(shown[shown.length - 1].createdAt).getTime();
+		const days = Math.max(1, Math.ceil((Date.now() - oldest) / 86_400_000));
+		const span =
+			days === 1 ? 'today' : days === 2 ? 'in the last two days' : `in the last ${days} days`;
+		const noisy = shown.some((e) => e.level === 'warn' || e.level === 'error');
+		return `event${shown.length === 1 ? '' : 's'} ${span}${noisy ? '' : ' · all quiet'}`;
+	});
+
+	function dayLabel(iso: string): string {
+		const d = new Date(iso);
+		if (Number.isNaN(d.getTime())) return '';
+		const today = new Date();
+		const at = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+		const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+		const diff = Math.round((t0 - at) / 86_400_000);
+		if (diff <= 0) return 'Today';
+		if (diff === 1) return 'Yesterday';
+		return d
+			.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+			.toUpperCase();
+	}
+
+	const grouped = $derived.by(() => {
+		const groups: { label: string; items: ActivityEvent[] }[] = [];
+		for (const e of shown) {
+			const label = dayLabel(e.createdAt);
+			const last = groups[groups.length - 1];
+			if (last && last.label === label) last.items.push(e);
+			else groups.push({ label, items: [e] });
+		}
+		return groups;
+	});
 
 	async function refresh() {
 		if (refreshing) return;
@@ -51,18 +131,60 @@
 		return () => clearInterval(t);
 	});
 
-	const ICON: Record<string, string> = {
-		network_up: 'server',
-		network_down: 'server',
-		new_block: 'blocks',
-		broadcast: 'arrow-up-right',
-		signing_started: 'shield',
-		electrum_switched: 'refresh',
-		scan_complete: 'refresh',
-		wallet_added: 'wallet',
-		wallet_created: 'shield'
-	};
-	const iconFor = (type: string) => ICON[type] ?? 'info';
+	// ---------------------------------------------------------- row rendering
+	// Which glyph a row leads with (5f): burial rings for money moving, a ring
+	// stub for new blocks, a clock for PSBTs waiting on signatures, and quiet
+	// stroke icons for everything else.
+	const SECURITY_TYPES = new Set([
+		'security_new_passkey',
+		'security_password_changed',
+		'security_new_device',
+		'security_failed_login',
+		'account_recovery',
+		'account_recovery_codes_set',
+		'account_recovery_phrase_set',
+		'admin_break_glass'
+	]);
+
+	type Marker =
+		| { kind: 'rings'; confirmations: number; direction: 'in' | 'out' }
+		| { kind: 'block' }
+		| { kind: 'clock' }
+		| { kind: 'icon'; name: string };
+
+	function markerFor(e: ActivityEvent): Marker {
+		switch (e.type) {
+			case 'tx_received':
+			case 'tx_large':
+				return { kind: 'rings', confirmations: 0, direction: 'in' };
+			case 'tx_confirmed':
+				return { kind: 'rings', confirmations: confirmations(e) ?? 6, direction: 'in' };
+			case 'broadcast':
+				return { kind: 'rings', confirmations: 0, direction: 'out' };
+			case 'new_block':
+				return { kind: 'block' };
+			case 'signing_started':
+			case 'sign_session_waiting':
+				return { kind: 'clock' };
+			case 'wallet_added':
+			case 'wallet_created':
+				return { kind: 'icon', name: 'wallet' };
+			case 'backup_downloaded':
+			case 'backup_missing':
+			case 'backup_stale':
+				return { kind: 'icon', name: 'shield' };
+			case 'network_up':
+			case 'network_down':
+			case 'electrum_switched':
+				return { kind: 'icon', name: 'server' };
+			case 'scan_complete':
+				return { kind: 'icon', name: 'refresh' };
+			default:
+				return SECURITY_TYPES.has(e.type)
+					? { kind: 'icon', name: 'key' }
+					: { kind: 'icon', name: 'info' };
+		}
+	}
 
 	function ago(iso: string): string {
 		const secs = Math.floor(new Date(iso).getTime() / 1000);
@@ -73,126 +195,317 @@
 		return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
 	}
 
+	function num(v: unknown): number | null {
+		return typeof v === 'number' && Number.isFinite(v) ? v : null;
+	}
 	function txid(e: ActivityEvent): string | null {
 		const v = e.detail?.txid;
 		return typeof v === 'string' ? v : null;
 	}
 	function height(e: ActivityEvent): number | null {
-		const v = e.detail?.height;
-		return typeof v === 'number' ? v : null;
+		return num(e.detail?.height);
+	}
+	function amountSats(e: ActivityEvent): number | null {
+		return num(e.detail?.amountSats);
+	}
+	function confirmations(e: ActivityEvent): number | null {
+		return num(e.detail?.confirmations);
+	}
+	/** "2/3" quorum badge for a PSBT waiting on signatures. */
+	function quorum(e: ActivityEvent): string | null {
+		const collected = num(e.detail?.collected);
+		const required = num(e.detail?.required);
+		return collected !== null && required !== null ? `${collected}/${required}` : null;
+	}
+
+	/** The quiet meta line under the row title, in the brand language. */
+	function metaFor(e: ActivityEvent): string {
+		const parts: string[] = [];
+		if (e.type === 'tx_received' || e.type === 'tx_large' || e.type === 'broadcast') {
+			parts.push(burialRingsLabel(0));
+		} else if (e.type === 'tx_confirmed') {
+			parts.push(burialRingsLabel(confirmations(e) ?? 6));
+		}
+		parts.push(ago(e.createdAt));
+		return parts.join(' · ');
 	}
 </script>
 
 <svelte:head>
-	<title>Activity — Cairn</title>
+	<title>Activity — Heartwood</title>
 </svelte:head>
 
-<div class="head fade-in">
-	<div class="grow">
-		<h1 class="page-title">Activity</h1>
-		<p class="text-muted sub">
-			Your bitcoin — payments received and confirmed, transactions you sent, backups, signing,
-			and account security. Newest first.
-		</p>
-	</div>
-	<div class="controls">
-		<button
-			class="btn btn-ghost btn-sm"
-			class:active={onlyAlerts}
-			onclick={() => (onlyAlerts = !onlyAlerts)}
-			title="Show only warnings and errors"
-		>
-			<Icon name="alert-triangle" size={14} />
-			Alerts
-		</button>
-		<label class="auto" title="Refresh every 10 seconds">
-			<input type="checkbox" bind:checked={auto} />
-			Auto-refresh
-		</label>
-		<button class="btn btn-secondary btn-sm" onclick={refresh} disabled={refreshing}>
-			{#if refreshing}
-				<span class="spinner"></span>
-			{:else}
-				<Icon name="refresh" size={14} />
-			{/if}
-			Refresh
-		</button>
-	</div>
-</div>
-
-<div class="card fade-in">
-	{#if shown.length === 0}
-		<div class="empty-state">
-			<Icon name="activity" size={22} />
-			<span class="empty-title">Nothing here yet</span>
-			<span>Your activity appears here as you receive payments, download backups, and sign transactions.</span>
+<div class="activity">
+	<GroveField volume="whisper" />
+	<div class="activity-body">
+		<!-- eyebrow + filter toggles (5f header row) -->
+		<div class="head fade-in">
+			<span class="eyebrow">Activity</span>
+			<div class="toggles" role="group" aria-label="Filter activity">
+				{#each [{ v: 'all', l: 'All' }, { v: 'wallets', l: 'Wallets' }, { v: 'node', l: 'Node' }] as opt (opt.v)}
+					<button
+						type="button"
+						class="toggle"
+						class:active={filter === opt.v}
+						aria-pressed={filter === opt.v}
+						onclick={() => (filter = opt.v as Filter)}
+					>
+						{opt.l}
+					</button>
+				{/each}
+			</div>
 		</div>
-	{:else}
-		<ul class="feed">
-			{#each shown as e (e.id)}
-				<li class="event level-{e.level}">
-					<span class="marker" aria-hidden="true">
-						<Icon name={iconFor(e.type)} size={15} />
-					</span>
-					<div class="body">
-						<div class="message">{e.message}</div>
-						<div class="meta">
-							<span class="scope" class:instance={e.scope === 'instance'}>
-								{e.scope === 'instance' ? 'Instance' : 'You'}
+
+		<!-- hero event count -->
+		<div class="hero fade-in">
+			<span class="hero-number hero-count">{formatNumber(shown.length)}</span>
+			{#if heroSub}<span class="hero-sub">{heroSub}</span>{/if}
+		</div>
+
+		<!-- quiet controls: alerts filter, refresh -->
+		<div class="controls fade-in">
+			<button
+				type="button"
+				class="ctrl"
+				class:on={onlyAlerts}
+				onclick={() => (onlyAlerts = !onlyAlerts)}
+				title="Show only warnings and errors"
+				aria-pressed={onlyAlerts}
+			>
+				Needs a look
+			</button>
+			<label class="ctrl auto" title="Refresh every 10 seconds">
+				<input type="checkbox" bind:checked={auto} />
+				Auto-refresh
+			</label>
+			<button type="button" class="ctrl" onclick={refresh} disabled={refreshing}>
+				{#if refreshing}<span class="spinner"></span>{:else}<Icon name="refresh" size={13} />{/if}
+				Refresh
+			</button>
+		</div>
+
+		{#if shown.length === 0}
+			<div class="empty fade-in">
+				<span class="empty-title">
+					{#if filter === 'node'}
+						Nothing from the node in your feed
+					{:else if onlyAlerts}
+						Nothing needs a look
+					{:else}
+						Nothing here yet
+					{/if}
+				</span>
+				<span class="empty-copy">
+					{#if filter === 'node'}
+						Chain and server events live in the admin activity log. Your feed stays about your
+						bitcoin.
+					{:else}
+						Your activity appears here as you receive payments, download backups, and sign
+						transactions.
+					{/if}
+				</span>
+			</div>
+		{:else}
+			{#each grouped as group (group.label)}
+				<div class="day fade-in">{group.label}</div>
+				<ul class="feed">
+					{#each group.items as e (e.id)}
+						{@const marker = markerFor(e)}
+						{@const sats = amountSats(e)}
+						{@const q = quorum(e)}
+						<li class="event" class:attention={e.level === 'warn' || e.level === 'error'}>
+							<span class="marker" aria-hidden="true">
+								{#if marker.kind === 'rings'}
+									<BurialRings
+										confirmations={marker.confirmations}
+										direction={marker.direction}
+										size={30}
+									/>
+								{:else if marker.kind === 'block'}
+									<RingStub state="tip" size={17} />
+								{:else if marker.kind === 'clock'}
+									<svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="var(--accent)" stroke-width="1.6">
+										<circle cx="10" cy="10" r="7" />
+										<path d="M10 6 V10 L13 12" stroke-linecap="round" />
+									</svg>
+								{:else}
+									<Icon name={marker.name} size={16} />
+								{/if}
 							</span>
-							{#if txid(e)}
-								<a class="mono link" href="/explorer/tx/{txid(e)}">{txid(e)!.slice(0, 16)}…</a>
-							{:else if height(e)}
-								<a class="mono link" href="/explorer/block/{height(e)}">block {height(e)}</a>
+							<div class="body">
+								<div class="message">{e.message}</div>
+								<div class="meta">
+									<span>{metaFor(e)}</span>
+									{#if txid(e)}
+										<a class="mono link" href="/explorer/tx/{txid(e)}">{txid(e)!.slice(0, 12)}…</a>
+									{:else if height(e)}
+										<a class="mono link" href="/explorer/block/{height(e)}">
+											ring segment {formatNumber(height(e)!)}
+										</a>
+									{/if}
+								</div>
+							</div>
+							{#if sats !== null}
+								<span class="amount" class:in={marker.kind === 'rings' && marker.direction === 'in'}>
+									{marker.kind === 'rings' && marker.direction === 'out' ? '−' : '+'}{formatBtc(sats)}
+								</span>
+							{:else if q}
+								<span class="quorum-badge">{q}</span>
+							{:else if SECURITY_TYPES.has(e.type)}
+								<span class="you-badge">You</span>
+							{:else}
+								<time class="when" title={fullTime(e.createdAt)}>{ago(e.createdAt)}</time>
 							{/if}
-						</div>
-					</div>
-					<time class="when" title={fullTime(e.createdAt)}>{ago(e.createdAt)}</time>
-				</li>
+						</li>
+					{/each}
+				</ul>
 			{/each}
-		</ul>
-	{/if}
+		{/if}
+	</div>
 </div>
 
 <style>
+	/* Whisper-volume grove bleeds to the shell's padding edges; the 760px column
+	   (spec: dense pages) centers inside. */
+	.activity {
+		position: relative;
+		margin: -54px -52px -44px;
+		padding: 54px 52px 44px;
+		min-height: calc(100vh - 98px);
+	}
+
+	.activity-body {
+		position: relative;
+		z-index: 1;
+		max-width: 760px;
+		margin: 0 auto;
+	}
+
+	/* --- header: eyebrow + toggle grammar --- */
 	.head {
 		display: flex;
-		align-items: flex-start;
-		gap: 16px;
-		margin-bottom: 16px;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
 	}
 
-	.sub {
-		margin-top: 4px;
+	.eyebrow {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.22em;
+		text-transform: uppercase;
+		color: var(--eyebrow);
+	}
+
+	.toggles {
+		display: flex;
+		gap: 2px;
+	}
+
+	.toggle {
+		background: none;
+		border: none;
+		padding: 4px 12px;
+		border-radius: 14px;
+		font-family: var(--font-ui);
 		font-size: 13px;
-		max-width: 60ch;
+		font-weight: 500;
+		color: var(--eyebrow-path);
+		cursor: pointer;
+		transition:
+			color 120ms var(--ease),
+			background 120ms var(--ease);
 	}
 
+	.toggle:hover {
+		color: var(--text-secondary);
+	}
+
+	.toggle.active {
+		font-weight: 600;
+		color: var(--accent-bright);
+		background: rgba(232, 147, 90, 0.1);
+	}
+
+	/* --- hero --- */
+	.hero {
+		display: flex;
+		align-items: baseline;
+		gap: 14px;
+		margin-top: 18px;
+	}
+
+	.hero-count {
+		font-size: 56px;
+		line-height: 0.95;
+		color: var(--text-hero);
+	}
+
+	.hero-sub {
+		font-size: 15px;
+		color: var(--text-secondary);
+	}
+
+	/* --- quiet controls --- */
 	.controls {
 		display: flex;
 		align-items: center;
-		gap: 8px;
-		flex-shrink: 0;
+		justify-content: flex-end;
+		gap: 16px;
+		margin-top: 26px;
 	}
 
-	.btn-ghost.active {
-		color: var(--warning);
-		background: var(--warning-muted);
-	}
-
-	.auto {
-		display: flex;
+	.ctrl {
+		display: inline-flex;
 		align-items: center;
 		gap: 6px;
-		font-size: 12.5px;
-		color: var(--text-secondary);
+		background: none;
+		border: none;
+		padding: 0;
+		font-family: var(--font-ui);
+		font-size: 12px;
+		color: var(--text-faint);
 		cursor: pointer;
 		white-space: nowrap;
+		transition: color 120ms var(--ease);
+	}
+
+	.ctrl:hover:not(:disabled) {
+		color: var(--text-secondary);
+	}
+
+	.ctrl:disabled {
+		cursor: default;
+	}
+
+	.ctrl.on {
+		color: var(--attention);
 	}
 
 	.auto input {
 		accent-color: var(--accent);
 		cursor: pointer;
+		margin: 0;
+	}
+
+	.ctrl .spinner {
+		width: 12px;
+		height: 12px;
+		border-width: 1.5px;
+	}
+
+	/* --- day groups + hairline rows --- */
+	.day {
+		margin-top: 34px;
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.18em;
+		text-transform: uppercase;
+		color: var(--eyebrow-path);
+	}
+
+	.day:first-of-type {
+		margin-top: 30px;
 	}
 
 	.feed {
@@ -203,13 +516,13 @@
 
 	.event {
 		display: flex;
-		align-items: flex-start;
-		gap: 12px;
-		padding: 12px 18px;
-		border-bottom: 1px solid var(--border-subtle);
+		align-items: center;
+		gap: 16px;
+		padding: 16px 0;
+		border-bottom: 1px solid var(--hairline);
 	}
 
-	.event:last-child {
+	.feed:last-of-type .event:last-child {
 		border-bottom: none;
 	}
 
@@ -217,26 +530,9 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		width: 28px;
-		height: 28px;
+		width: 30px;
 		flex-shrink: 0;
-		border-radius: 50%;
-		background: var(--surface-elevated);
 		color: var(--text-secondary);
-		margin-top: 1px;
-	}
-
-	.level-success .marker {
-		background: var(--success-muted);
-		color: var(--success);
-	}
-	.level-warn .marker {
-		background: var(--warning-muted);
-		color: var(--warning);
-	}
-	.level-error .marker {
-		background: var(--error-muted);
-		color: var(--error);
 	}
 
 	.body {
@@ -245,53 +541,163 @@
 	}
 
 	.message {
-		font-size: 13.5px;
-		color: var(--text);
+		font-size: 14.5px;
+		font-weight: 500;
+		color: var(--text-rows);
 		line-height: 1.45;
+	}
+
+	.event.attention .message {
+		color: var(--attention);
 	}
 
 	.meta {
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		margin-top: 3px;
-	}
-
-	.scope {
-		font-size: 10.5px;
-		font-weight: 600;
-		letter-spacing: 0.04em;
-		text-transform: uppercase;
-		color: var(--text-muted);
-		background: var(--surface-elevated);
-		border-radius: var(--radius-chip);
-		padding: 1px 6px;
-	}
-
-	.scope.instance {
-		color: var(--accent);
-		background: var(--accent-muted);
+		margin-top: 1px;
+		font-size: 12px;
+		color: var(--text-faint);
 	}
 
 	.link {
-		font-size: 12px;
+		font-size: 11.5px;
+		color: var(--text-muted);
+	}
+
+	.link:hover {
+		color: var(--accent);
+	}
+
+	/* --- right-hand column: amount / quorum / YOU / time --- */
+	.amount {
+		flex-shrink: 0;
+		font-family: var(--font-serif);
+		font-size: 16px;
+		font-weight: 600;
+		font-variant-numeric: tabular-nums;
+		/* Spec literal #CBBFB3 ("value" tone) — no token exists for it. */
+		color: #cbbfb3;
+	}
+
+	.amount.in {
+		color: var(--sage);
+	}
+
+	.quorum-badge {
+		flex-shrink: 0;
+		font-size: 10.5px;
+		font-weight: 600;
+		color: var(--accent-bright);
+		background: rgba(232, 147, 90, 0.12);
+		padding: 4px 9px;
+		border-radius: var(--radius-badge);
+	}
+
+	.you-badge {
+		flex-shrink: 0;
+		font-size: 9.5px;
+		font-weight: 600;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: var(--text-secondary);
+		background: rgba(255, 255, 255, 0.04);
+		padding: 3px 7px;
+		border-radius: 4px;
 	}
 
 	.when {
 		flex-shrink: 0;
 		font-size: 12px;
-		color: var(--text-muted);
+		color: var(--text-faint);
 		font-variant-numeric: tabular-nums;
 		white-space: nowrap;
-		margin-top: 2px;
 	}
 
-	@media (max-width: 640px) {
-		.head {
-			flex-direction: column;
+	/* --- empty state --- */
+	.empty {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 8px;
+		padding: 64px 24px;
+		text-align: center;
+	}
+
+	.empty-title {
+		font-size: 14.5px;
+		font-weight: 500;
+		color: var(--text-secondary);
+	}
+
+	.empty-copy {
+		font-size: 13px;
+		color: var(--text-muted);
+		max-width: 44ch;
+		line-height: 1.55;
+	}
+
+	/* ============================================== mobile (8g, ≤900px) */
+	@media (max-width: 900px) {
+		.activity {
+			margin: -20px -18px -48px;
+			padding: 20px 18px 48px;
+			min-height: 0;
 		}
+
+		.head {
+			justify-content: center;
+		}
+
+		/* The shell's tab row carries navigation; the page keeps its own filter
+		   toggles centered under it, and the eyebrow steps back. */
+		.eyebrow {
+			display: none;
+		}
+
+		.toggle {
+			font-size: 12.5px;
+			padding: 6px 13px;
+			border-radius: 15px;
+		}
+
+		.hero {
+			flex-direction: column;
+			align-items: center;
+			gap: 8px;
+			margin-top: 22px;
+			text-align: center;
+		}
+
+		.hero-count {
+			font-size: 44px;
+			line-height: 1;
+		}
+
+		.hero-sub {
+			font-size: 12px;
+		}
+
 		.controls {
-			flex-wrap: wrap;
+			justify-content: center;
+			margin-top: 20px;
+		}
+
+		.day {
+			margin-top: 28px;
+			font-size: 10px;
+		}
+
+		.message {
+			font-size: 13px;
+		}
+
+		.meta {
+			font-size: 10.5px;
+		}
+
+		.amount {
+			font-size: 14px;
 		}
 	}
 </style>

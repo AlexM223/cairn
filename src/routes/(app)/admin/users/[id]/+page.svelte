@@ -26,7 +26,7 @@
 </script>
 
 <svelte:head>
-	<title>{data.subject.displayName} — Users — Admin — Cairn</title>
+	<title>{data.subject.displayName} — Users — Admin — Heartwood</title>
 </svelte:head>
 
 <a class="back" href="/admin/users">← All users</a>
@@ -53,12 +53,12 @@
 
 <div class="stack">
 	{#each grouped as group (group.category)}
-		<section class="card fade-in">
-			<h2 class="card-title" style="margin-bottom: 12px">{group.title}</h2>
-			<ul class="flag-list">
+		<section class="hw-section fade-in">
+			<h2 class="hw-title">{group.title}</h2>
+			<ul class="hw-rows">
 				{#each group.flags as flag (flag.key)}
 					{@const state = stateOf(flag)}
-					<li class="flag-row">
+					<li class="hw-row">
 						<div class="flag-main">
 							<span class="flag-label">{flag.label}</span>
 							<span class="flag-sub">
@@ -142,23 +142,6 @@
 		color: var(--accent);
 	}
 
-	.flag-list {
-		display: flex;
-		flex-direction: column;
-	}
-
-	.flag-row {
-		display: flex;
-		align-items: center;
-		gap: 16px;
-		padding: 12px 0;
-		border-top: 1px solid var(--border-subtle);
-	}
-
-	.flag-row:first-child {
-		border-top: none;
-	}
-
 	.flag-main {
 		display: flex;
 		flex-direction: column;
@@ -177,8 +160,10 @@
 		color: var(--text-muted);
 	}
 
+	/* Forced-off is a deliberate admin nudge, not an error — amber per the
+	   "never red outside genuine failures" rule. */
 	.flag-sub .off {
-		color: var(--error);
+		color: var(--attention);
 	}
 
 	.flag-sub .muted {
@@ -223,7 +208,7 @@
 	}
 
 	.seg-btn.danger {
-		background: var(--error-muted);
-		color: var(--error);
+		background: var(--attention-muted);
+		color: var(--attention);
 	}
 </style>

@@ -157,7 +157,7 @@
 </script>
 
 <svelte:head>
-	<title>Notifications — Admin — Cairn</title>
+	<title>Notifications — Admin — Heartwood</title>
 </svelte:head>
 
 <div class="stack settings-form fade-in">
@@ -165,9 +165,9 @@
 	{#if saved}<div class="saved-note" role="status">Settings saved.</div>{/if}
 
 	<!-- SMTP -->
-	<section class="card card-pad section">
+	<section class="hw-section section">
 		<div class="section-head">
-			<span class="card-title">Email (SMTP)</span>
+			<span class="hw-title">Email (SMTP)</span>
 			<p class="hint">
 				One SMTP relay for the whole instance. Each user picks their own destination address in
 				their notification settings.
@@ -246,9 +246,9 @@
 	</section>
 
 	<!-- Telegram -->
-	<section class="card card-pad section">
+	<section class="hw-section section">
 		<div class="section-head">
-			<span class="card-title">Telegram</span>
+			<span class="hw-title">Telegram</span>
 			<p class="hint">
 				One bot for the whole instance. Create a bot with <strong>@BotFather</strong> on Telegram
 				and paste its API token here; each user supplies their own chat ID in their settings.
@@ -272,9 +272,9 @@
 	</section>
 
 	<!-- ntfy + Nostr defaults -->
-	<section class="card card-pad section">
+	<section class="hw-section section">
 		<div class="section-head">
-			<span class="card-title">Push &amp; relay defaults</span>
+			<span class="hw-title">Push &amp; relay defaults</span>
 			<p class="hint">Convenience defaults users see pre-filled. They can override both.</p>
 		</div>
 		<div class="field">
@@ -290,16 +290,16 @@
 	</section>
 
 	<!-- Webhook SSRF escape hatch -->
-	<section class="card card-pad section">
+	<section class="hw-section section">
 		<div class="section-head">
-			<span class="card-title">Webhook targets</span>
+			<span class="hw-title">Webhook targets</span>
 		</div>
 		<label class="toggle-row">
 			<input type="checkbox" bind:checked={webhookAllowPrivate} />
 			<span class="toggle-body">
 				<span class="toggle-title">Allow webhooks to private network targets</span>
 				<span class="toggle-desc">
-					Off by default. Cairn normally refuses to POST webhooks to loopback, LAN, or link-local
+					Off by default. Heartwood normally refuses to POST webhooks to loopback, LAN, or link-local
 					addresses to prevent
 					<Term tip="Server-Side Request Forgery: tricking the server into making requests to internal addresses it shouldn't reach.">SSRF</Term>. Enable this only if you deliberately run a
 					webhook receiver on your own LAN and understand the risk.
@@ -322,9 +322,9 @@
 	</div>
 
 	<!-- Delivery health -->
-	<section class="card card-pad section">
+	<section class="hw-section section">
 		<div class="section-head">
-			<span class="card-title">Delivery health</span>
+			<span class="hw-title">Delivery health</span>
 			<p class="hint">The outbound queue for external channels. In-app alerts don't queue.</p>
 		</div>
 
@@ -450,9 +450,9 @@
 
 	.saved-note {
 		font-size: 13px;
-		color: var(--success);
-		background: var(--success-muted);
-		border: 1px solid rgba(107, 191, 107, 0.3);
+		color: var(--sage);
+		background: var(--sage-muted);
+		border: 1px solid rgba(138, 160, 110, 0.3);
 		border-radius: var(--radius-control);
 		padding: 9px 12px;
 	}
@@ -462,9 +462,9 @@
 		gap: 8px;
 		align-items: flex-start;
 		font-size: 12.5px;
-		color: var(--warning);
-		background: var(--warning-muted);
-		border: 1px solid rgba(232, 201, 90, 0.3);
+		color: var(--attention);
+		background: var(--attention-muted);
+		border: 1px solid var(--warning-border);
 		border-radius: var(--radius-control);
 		padding: 10px 12px;
 		line-height: 1.5;
@@ -504,40 +504,45 @@
 		justify-content: flex-end;
 	}
 
+	/* Unboxed stats: serif numbers over tracked-caps labels, hairline-split. */
 	.stat-row {
 		display: grid;
 		grid-template-columns: repeat(4, 1fr);
-		gap: 10px;
+		gap: 0;
 	}
 
 	.stat {
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
-		padding: 12px 14px;
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		background: var(--bg);
+		padding: 4px 14px;
 	}
 
-	.stat.bad {
-		border-color: rgba(232, 90, 90, 0.4);
+	.stat + .stat {
+		border-left: 1px solid var(--hairline);
+	}
+
+	.stat:first-child {
+		padding-left: 0;
 	}
 
 	.stat-n {
-		font-size: 20px;
+		font-family: var(--font-serif);
+		font-size: 24px;
 		font-weight: 600;
 		font-variant-numeric: tabular-nums;
+		color: var(--text-rows);
 	}
 
 	.stat.bad .stat-n {
-		color: var(--error);
+		color: var(--attention);
 	}
 
 	.stat-l {
-		font-size: 11.5px;
+		font-size: 11px;
+		font-weight: 600;
 		text-transform: uppercase;
-		letter-spacing: 0.4px;
+		letter-spacing: 0.08em;
 		color: var(--text-muted);
 	}
 
@@ -546,7 +551,7 @@
 		align-items: center;
 		gap: 8px;
 		font-size: 13px;
-		color: var(--success);
+		color: var(--sage);
 		padding: 6px 2px;
 	}
 
@@ -562,16 +567,19 @@
 
 	.fail-table th {
 		text-align: left;
+		font-size: 11px;
 		font-weight: 600;
-		color: var(--text-secondary);
+		letter-spacing: 0.07em;
+		text-transform: uppercase;
+		color: var(--text-muted);
 		padding: 6px 10px;
-		border-bottom: 1px solid var(--border-subtle);
+		border-bottom: 1px solid var(--hairline);
 		white-space: nowrap;
 	}
 
 	.fail-table td {
 		padding: 8px 10px;
-		border-bottom: 1px solid var(--border-subtle);
+		border-bottom: 1px solid var(--hairline);
 		vertical-align: top;
 	}
 
