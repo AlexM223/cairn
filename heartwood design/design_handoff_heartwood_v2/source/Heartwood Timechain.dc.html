@@ -1,0 +1,803 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&amp;display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;background:#0A0807}
+  body{font-family:'Inter',system-ui,sans-serif;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  a{color:#E8935A;text-decoration:none}
+  a:hover{color:#F4B486}
+  @keyframes hwBlink{0%,100%{opacity:1}50%{opacity:.25}}
+  [data-motion="false"] *{animation-play-state:paused!important}
+  [data-chip]{cursor:pointer;transition:color .2s,border-color .2s,background .2s}
+  [data-chip][data-on="true"]{border-color:rgba(232,147,90,.5)!important;color:#F4B486!important;background:rgba(232,147,90,.08)!important}
+  [data-drawer]{transform:translateY(130%);transition:transform .65s cubic-bezier(.22,.9,.26,1)}
+  [data-drawer="open"]{transform:none}
+</style>
+</helmet>
+<div data-motion="{{ dataMotion }}" data-screen-label="The Timechain" style="height:100vh;display:flex;background:#0A0807;overflow:hidden;">
+
+  <!-- ============ READING PANEL ============ -->
+  <div style="width:372px;flex:none;background:#0D0B09;border-right:1px solid #1D1712;display:flex;flex-direction:column;gap:0;padding:26px 28px 22px;overflow-y:auto;">
+
+    <div style="display:flex;align-items:center;gap:11px;padding-bottom:18px;border-bottom:1px solid #1D1712;">
+      <dc-import name="HeartwoodMark" size="26" tone="copper" detail="simple" hint-size="26px,26px"></dc-import>
+      <span style="font:600 14.5px 'Inter';color:#EDE4DB;letter-spacing:.02em;">Heartwood</span>
+      <span style="width:1px;height:14px;background:#2E2620;"></span>
+      <span style="font:500 12px 'Inter';color:#7A6E63;">The Timechain</span>
+    </div>
+
+    <div style="padding:20px 0 16px;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="font:600 10.5px 'Inter';letter-spacing:.2em;color:#8F8379;">BLOCK HEIGHT</span>
+        <span style="display:flex;align-items:center;gap:5px;font:600 9.5px 'Inter';letter-spacing:.08em;color:#8AA06E;"><span style="width:5px;height:5px;border-radius:50%;background:#8AA06E;box-shadow:0 0 6px rgba(138,160,110,.8);animation:hwBlink 2.4s ease-in-out infinite;"></span>LIVE</span>
+      </div>
+      <div style="margin-top:8px;font-family:'Source Serif 4',serif;font-weight:600;font-size:46px;line-height:1;color:#F1E7DD;letter-spacing:-.01em;font-variant-numeric:tabular-nums;">{{ heightFmt }}</div>
+      <div style="margin-top:8px;font:400 12px 'Inter';color:#8B7F75;">blocks laid down · not one removed</div>
+    </div>
+
+    <div style="background:#12100E;border:1px solid #241C18;border-radius:10px;padding:14px 16px;">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;">
+        <span style="font:600 10.5px 'Inter';letter-spacing:.16em;color:#B39A88;">{{ ringNumLabel }}</span>
+        <span style="font:400 10.5px 'Inter';color:#6B6058;">{{ closesLabel }}</span>
+      </div>
+      <div style="margin-top:10px;height:3px;border-radius:2px;background:#241C18;overflow:hidden;">
+        <div style="height:100%;border-radius:2px;background:linear-gradient(90deg,#B5673A,#E8935A);width:{{ progressPct }};transition:width .5s ease;"></div>
+      </div>
+      <div style="margin-top:8px;font:400 11.5px 'Inter';color:#8B7F75;">{{ progressLabel }}</div>
+    </div>
+
+    <div style="padding:20px 0 0;">
+      <div style="font:600 10.5px 'Inter';letter-spacing:.2em;color:#8F8379;">UNDER THE NEEDLE</div>
+      <div style="margin-top:9px;font:600 15px 'Inter';color:#EDE4DB;">{{ readTitle }}</div>
+      <div style="margin-top:12px;display:flex;flex-direction:column;gap:7px;">
+        <sc-for list="{{ readRows }}" as="rw" hint-placeholder-count="4">
+          <div style="display:grid;grid-template-columns:96px 1fr;gap:10px;align-items:baseline;">
+            <span style="font:400 11.5px 'Inter';color:#6B6058;">{{ rw.k }}</span>
+            <span style="font:500 12.5px 'Inter';color:#C9BEB4;font-variant-numeric:tabular-nums;">{{ rw.v }}</span>
+          </div>
+        </sc-for>
+      </div>
+      <div style="margin-top:13px;font:400 12px/1.65 'Inter';color:#D8B27A;">{{ readNote }}</div>
+    </div>
+
+    <div style="margin-top:18px;">
+      <div style="border:1px solid #241C18;border-radius:8px;overflow:hidden;background:#0F0C0A;">
+        <canvas ref="{{ setLoupe }}" style="display:block;width:100%;height:64px;"></canvas>
+      </div>
+      <div style="margin-top:7px;font:400 10.5px 'Inter';color:#5E554D;">the loupe · eleven seasons around the needle, widths to scale</div>
+    </div>
+
+    <div style="flex:1;min-height:22px;"></div>
+
+    <button onClick="{{ onSample }}" style="display:flex;align-items:center;justify-content:center;gap:9px;width:100%;padding:11px;border-radius:6px;border:1px solid #3A2F27;background:transparent;color:#E8C6A8;font:600 12.5px 'Inter';letter-spacing:.04em;cursor:pointer;" style-hover="border-color:#E8935A;color:#F4B486;">
+      <svg width="14" height="14" viewBox="0 0 14 14" style="display:block;"><circle cx="6" cy="8" r="4.6" fill="none" stroke="#E8935A" stroke-width="1.3"></circle><line x1="6" y1="8" x2="13" y2="1" stroke="#E8935A" stroke-width="1.3" stroke-linecap="round"></line></svg>
+      <span>{{ sampleLabel }}</span>
+    </button>
+
+    <div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:8px;">
+      <sc-for list="{{ chips }}" as="c" hint-placeholder-count="3">
+        <button data-chip data-on="{{ c.on }}" onClick="{{ c.toggle }}" style="padding:5px 11px;border-radius:14px;border:1px solid #2A2320;background:transparent;color:#8B7F75;font:500 11px 'Inter';">{{ c.label }}</button>
+      </sc-for>
+    </div>
+
+    <div style="margin-top:18px;padding-top:16px;border-top:1px solid #1D1712;display:flex;align-items:baseline;justify-content:space-between;gap:10px;">
+      <span style="font:400 11.5px 'Inter';color:#6B6058;">Every block leaves a ring.</span>
+      <a href="Heartwood App.dc.html" style="font:600 12px 'Inter';white-space:nowrap;">Open Heartwood →</a>
+    </div>
+  </div>
+
+  <!-- ============ THE WOOD ============ -->
+  <div style="flex:1;position:relative;overflow:hidden;">
+    <canvas ref="{{ setCanvas }}" style="position:absolute;inset:0;width:100%;height:100%;display:block;cursor:crosshair;"></canvas>
+
+    <div style="position:absolute;top:22px;right:26px;text-align:right;pointer-events:none;">
+      <div style="font:500 11px 'Inter';color:#7A6E63;">{{ ringsCaption }}</div>
+      <div style="margin-top:4px;font:400 10.5px 'Inter';color:#5E554D;">genesis at the core · the bark is now</div>
+    </div>
+    <div style="position:absolute;bottom:20px;right:26px;text-align:right;pointer-events:none;">
+      <div style="font:400 10.5px 'Inter';color:#5E554D;">hover to read · widths to scale — a tight ring is a fast fortnight</div>
+    </div>
+
+    <!-- ============ CORE SAMPLE DRAWER ============ -->
+    <div data-drawer="{{ drawerOpen }}" style="position:absolute;left:22px;right:22px;bottom:18px;background:#12100E;border:1px solid #2A2320;border-radius:14px;box-shadow:0 24px 70px rgba(0,0,0,.55);overflow:hidden;">
+      <div style="display:flex;align-items:center;gap:12px;padding:12px 18px 10px;">
+        <span style="font:600 10.5px 'Inter';letter-spacing:.2em;color:#EDBE94;">CORE SAMPLE</span>
+        <span style="font:400 11px 'Inter';color:#7A6E63;">pith → bark · Jan 3, 2009 → block {{ heightFmt }}</span>
+        <span style="flex:1;"></span>
+        <span style="font:400 10.5px 'Inter';color:#5E554D;">hover the strip — the wood answers</span>
+        <button onClick="{{ onSample }}" style="display:flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:6px;border:1px solid #2A2320;background:transparent;color:#8B7F75;cursor:pointer;" style-hover="border-color:#3A2F27;color:#EDE4DB;">
+          <svg width="9" height="9" viewBox="0 0 9 9"><path d="M1 1 L8 8 M8 1 L1 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"></path></svg>
+        </button>
+      </div>
+      <canvas ref="{{ setStrip }}" style="display:block;width:100%;height:148px;cursor:crosshair;"></canvas>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;motion&quot;: {&quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Display&quot;, &quot;label&quot;: &quot;Ambient motion&quot;},
+  &quot;pace&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;default&quot;: &quot;Demo&quot;, &quot;options&quot;: [&quot;Demo&quot;, &quot;Realtime&quot;], &quot;tsType&quot;: &quot;string&quot;, &quot;section&quot;: &quot;Display&quot;, &quot;label&quot;: &quot;New-block pace&quot;}
+}">
+class Component extends DCLogic {
+  state = {
+    height: 956237,
+    hoverE: null,
+    sample: 'closed',
+    layers: { halvings: true, landmarks: true, marks: true }
+  };
+
+  // ============ seeded rng ============
+  _mkRng(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
+
+  // ============ epoch data (anchored to real history) ============
+  _buildEpochs() {
+    const A = [[0,'2009-01-03'],[16,'2009-12-30'],[28,'2010-05-15'],[50,'2011-01-28'],[70,'2011-09-25'],[85,'2012-04-05'],[104,'2012-11-25'],[124,'2013-08-02'],[140,'2014-01-05'],[155,'2014-08-08'],[180,'2015-07-20'],[208,'2016-07-05'],[240,'2017-09-08'],[270,'2018-11-15'],[300,'2020-02-20'],[313,'2020-05-18'],[341,'2021-06-20'],[342,'2021-07-03'],[343,'2021-07-22'],[352,'2021-11-14'],[380,'2022-11-20'],[410,'2024-01-25'],[417,'2024-04-22'],[445,'2025-05-13'],[474,'2026-07-01']];
+    const rnd = this._mkRng(20260706);
+    const durs = [];
+    for (let k = 0; k < A.length - 1; k++) {
+      const eA = A[k][0], eB = A[k + 1][0];
+      const span = (Date.parse(A[k + 1][1]) - Date.parse(A[k][1])) / 86400000;
+      const n = eB - eA, raw = []; let sum = 0;
+      for (let j = 0; j < n; j++) { const v = 1 + (rnd() * 2 - 1) * 0.14 + Math.sin((eA + j) * 0.7) * 0.05; raw.push(v); sum += v; }
+      for (let j = 0; j < n; j++) durs.push(raw[j] / sum * span);
+    }
+    const E = []; let t = Date.parse('2009-01-03T18:15:00Z');
+    for (let i = 0; i < durs.length; i++) {
+      E.push({ i, b0: i * 2016, d0: t, dur: durs[i] });
+      t += durs[i] * 86400000;
+    }
+    this._E = E;
+    this._formStart = t;
+    const rn = this._mkRng(777);
+    this._bn = E.map(() => rn());
+
+    this._halvings = [
+      { b: 210000, yr: '2012', sub: '50 → 25', ang: 128 },
+      { b: 420000, yr: '2016', sub: '25 → 12.5', ang: 146 },
+      { b: 630000, yr: '2020', sub: '12.5 → 6.25', ang: 164 },
+      { b: 840000, yr: '2024', sub: '6.25 → 3.125', ang: 182 }
+    ];
+    this._landmarks = [
+      { b: 57043, label: 'Pizza Day', sub: 'May 22, 2010', ang: 232 },
+      { b: 481824, label: 'SegWit locks in', sub: 'Aug 2017', ang: 305 },
+      { b: 689000, label: 'The Great Migration', sub: 'Jun 2021', ang: 340 },
+      { b: 709632, label: 'Taproot', sub: 'Nov 2021', ang: 30 }
+    ];
+    this._marks = [
+      { b: 776000, label: 'Cold Storage · first deposit', sub: 'Feb 2023', ang: 45 },
+      { b: 861000, label: 'Daily spending · created', sub: 'Sep 2024', ang: 62 },
+      { b: 948800, label: 'Cold Storage · key rotated', sub: 'May 2026', ang: 100 }
+    ];
+    this._specials = {
+      0: 'Jan 3, 2009 — genesis. \u201CChancellor on brink of second bailout for banks.\u201D',
+      28: 'May 22, 2010 — 10,000 BTC buys two pizzas. The wood remembers.',
+      104: 'Nov 28, 2012 — the first halving. 50 becomes 25.',
+      208: 'Jul 9, 2016 — the second halving. 25 becomes 12.5.',
+      239: 'Aug 2017 — SegWit locks in after two years of argument.',
+      312: 'May 11, 2020 — the third halving, weeks after a global shutdown.',
+      341: 'Summer 2021 — half the hashrate unplugs and moves continents. The chain doesn\u2019t blink.',
+      342: 'The Great Migration, at its widest. The slowest season in a decade — and not one block lost.',
+      352: 'Nov 14, 2021 — Taproot activates.',
+      416: 'Apr 20, 2024 — the fourth halving. 6.25 becomes 3.125.'
+    };
+  }
+
+  // ============ geometry ============
+  _geom(W, H, dpr) {
+    const R = Math.max(140 * dpr, Math.min(W, H) / 2 - 92 * dpr);
+    const coreR = R * 0.045;
+    const total = this._E.reduce((s, e) => s + e.dur, 0);
+    const scale = (R - coreR) / total;
+    const B = [coreR]; let acc = coreR;
+    for (const e of this._E) { acc += e.dur * scale; B.push(acc); }
+    this._B = B; this._R = R; this._coreR = coreR;
+    this._cx = W * 0.5; this._cy = H * 0.47; this._dpr = dpr;
+  }
+  _wob(th, B) {
+    const R = this._R, t = B / R;
+    return t * (0.020 * R * Math.cos(th) + 0.058 * R * Math.sin(th)
+      + 0.014 * R * Math.sin(2 * th + 1.2 + t * 1.6) + 0.006 * R * Math.sin(3 * th - 0.5 - t * 2.2));
+  }
+  _pt(B, th) {
+    const r = B + this._wob(th, B);
+    return [this._cx + Math.cos(th) * r, this._cy + Math.sin(th) * r * 0.965];
+  }
+  _ringPath(ctx, B, segs) {
+    segs = segs || 140;
+    ctx.beginPath();
+    for (let s = 0; s <= segs; s++) {
+      const th = s / segs * 6.28319;
+      const p = this._pt(B, th);
+      if (s === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
+    }
+    ctx.closePath();
+  }
+  _blockR(b) {
+    const N = this._E.length, i = Math.min(N - 1, Math.floor(b / 2016));
+    const f = (b - i * 2016) / 2016;
+    return this._B[i] + (this._B[i + 1] - this._B[i]) * f;
+  }
+  _dateR(ms) {
+    const E = this._E;
+    if (ms <= E[0].d0) return this._coreR;
+    for (let i = 0; i < E.length; i++) {
+      const end = E[i].d0 + E[i].dur * 86400000;
+      if (ms < end) return this._B[i] + (this._B[i + 1] - this._B[i]) * (ms - E[i].d0) / (E[i].dur * 86400000);
+    }
+    return this._B[E.length];
+  }
+
+  // ============ canvas refs ============
+  setCanvas = (el) => {
+    if (!el || el === this._cv) return;
+    this._cv = el; this._ctx = el.getContext('2d');
+    el.onpointermove = this._onWoodMove;
+    el.onpointerleave = this._onLeave;
+    this._woodDirty = true; this._once();
+  };
+  setLoupe = (el) => {
+    if (!el || el === this._lc) return;
+    this._lc = el; this._lctx = el.getContext('2d');
+    this._loupeDirty = true; this._once();
+  };
+  setStrip = (el) => {
+    if (!el || el === this._sc) return;
+    this._sc = el; this._sctx = el.getContext('2d');
+    el.onpointermove = this._onStripMove;
+    el.onpointerleave = this._onLeave;
+    this._stripDirty = true; this._once();
+  };
+
+  _ensure(el, key) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return false;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const w = Math.round(r.width * dpr), h = Math.round(r.height * dpr);
+    if (el.width !== w || el.height !== h) { el.width = w; el.height = h; this[key] = true; }
+    return true;
+  }
+
+  // ============ hover ============
+  _setHover(e) {
+    if (e === this.state.hoverE) return;
+    this._loupeDirty = true; this._stripDirty = true;
+    this.setState({ hoverE: e });
+  }
+  _onWoodMove = (ev) => {
+    if (!this._B) return;
+    const rect = this._cv.getBoundingClientRect();
+    const dpr = this._dpr || 1;
+    const x = (ev.clientX - rect.left) * dpr, y = (ev.clientY - rect.top) * dpr;
+    const dx = x - this._cx, dy = (y - this._cy) / 0.965;
+    const th = Math.atan2(dy, dx);
+    let r = Math.hypot(dx, dy);
+    r -= this._wob(th, Math.min(r, this._R));
+    this._ang = th; this._hoverKind = 'wood';
+    const N = this._E.length;
+    if (r > this._R + 14 * dpr) { this._setHover(null); }
+    else if (r > this._R - 0.001) { this._setHover(N); }       // forming edge
+    else if (r <= this._coreR) { this._setHover(0); }          // genesis
+    else {
+      let lo = 0, hi = N;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (this._B[m + 1] < r) lo = m + 1; else hi = m; }
+      this._setHover(lo);
+    }
+    this._once();
+  };
+  _onStripMove = (ev) => {
+    if (!this._B || !this._sx) return;
+    const rect = this._sc.getBoundingClientRect();
+    const dpr = this._dpr || 1;
+    const x = (ev.clientX - rect.left) * dpr;
+    const r = this._coreR + (x - this._sx.pad) / this._sx.bandW * (this._R - this._coreR);
+    const N = this._E.length;
+    this._hoverKind = 'strip';
+    if (r > this._R) { this._setHover(N); this._once(); return; }
+    if (r <= this._coreR) { this._setHover(0); this._once(); return; }
+    let lo = 0, hi = N;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (this._B[m + 1] < r) lo = m + 1; else hi = m; }
+    this._setHover(lo);
+    this._once();
+  };
+  _onLeave = () => { this._hoverKind = null; this._setHover(null); this._once(); };
+
+  // ============ wood (offscreen) ============
+  _renderWood() {
+    const W = this._cv.width, H = this._cv.height, dpr = this._dpr;
+    if (!this._oc) this._oc = document.createElement('canvas');
+    const oc = this._oc; oc.width = W; oc.height = H;
+    const ctx = oc.getContext('2d');
+    const cx = this._cx, cy = this._cy, R = this._R, coreR = this._coreR, B = this._B, N = this._E.length;
+
+    // backdrop
+    const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.hypot(W, H) / 2);
+    bg.addColorStop(0, '#141009'); bg.addColorStop(0.5, '#0D0A08'); bg.addColorStop(1, '#080605');
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+    // aura
+    const au = ctx.createRadialGradient(cx, cy, R * 0.3, cx, cy, R * 1.45);
+    au.addColorStop(0, 'rgba(232,147,90,.06)'); au.addColorStop(0.72, 'rgba(232,147,90,.018)'); au.addColorStop(1, 'rgba(232,147,90,0)');
+    ctx.fillStyle = au; ctx.beginPath(); ctx.arc(cx, cy, R * 1.45, 0, 6.28319); ctx.fill();
+
+    // wood disc
+    const wg = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 1.05);
+    wg.addColorStop(0, '#3B2B1F'); wg.addColorStop(0.5, '#281B12'); wg.addColorStop(1, '#150E0A');
+    this._ringPath(ctx, B[N]); ctx.fillStyle = wg; ctx.fill();
+
+    // medullary rays
+    const rr = this._mkRng(31);
+    ctx.strokeStyle = 'rgba(232,147,90,.05)'; ctx.lineWidth = 1 * dpr;
+    for (let i = 0; i < 14; i++) {
+      const th = rr() * 6.28319;
+      const p0 = this._pt(coreR * 1.3, th), p1 = this._pt(B[N] * 0.985, th);
+      ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(p1[0], p1[1]); ctx.stroke();
+    }
+
+    // grain zones (soft banding)
+    for (let i = 0; i < N - 4; i += 5) {
+      const w = B[i + 5] - B[i]; if (w <= 0) continue;
+      const z = this._bn[i];
+      ctx.lineWidth = w;
+      ctx.strokeStyle = z > 0.5 ? 'rgba(246,200,154,' + (0.012 + 0.02 * (z - 0.5)) + ')' : 'rgba(0,0,0,' + (0.03 + 0.06 * (0.5 - z)) + ')';
+      this._ringPath(ctx, (B[i] + B[i + 5]) / 2, 110); ctx.stroke();
+    }
+    // sapwood (the young outer wood)
+    const sw = B[N] - B[Math.max(0, N - 8)];
+    ctx.lineWidth = sw; ctx.strokeStyle = 'rgba(246,200,154,.05)';
+    this._ringPath(ctx, B[N] - sw / 2, 120); ctx.stroke();
+
+    // ring boundaries
+    const hset = {}; for (const h of this._halvings) hset[Math.floor(h.b / 2016)] = true;
+    for (let i = 1; i <= N; i++) {
+      const bn = this._bn[i - 1], pop = bn > 0.87;
+      const halv = this.state.layers.halvings && hset[i - 1];
+      if (halv) {
+        ctx.strokeStyle = 'rgba(251,225,198,.8)'; ctx.lineWidth = 1.5 * dpr;
+        ctx.shadowColor = 'rgba(232,147,90,.7)'; ctx.shadowBlur = 6 * dpr;
+      } else {
+        ctx.strokeStyle = 'rgba(232,147,90,' + (0.06 + 0.13 * bn + (pop ? 0.28 : 0)).toFixed(3) + ')';
+        ctx.lineWidth = (0.55 + 0.6 * bn + (pop ? 0.4 : 0)) * dpr;
+      }
+      this._ringPath(ctx, B[i], i > N * 0.6 ? 150 : 110);
+      ctx.stroke(); ctx.shadowBlur = 0;
+    }
+
+    // bark
+    ctx.lineWidth = 5 * dpr; ctx.strokeStyle = 'rgba(8,5,4,.85)';
+    this._ringPath(ctx, B[N] + 3.5 * dpr, 150); ctx.stroke();
+    ctx.lineWidth = 1.9 * dpr; ctx.strokeStyle = 'rgba(232,147,90,.9)';
+    ctx.shadowColor = 'rgba(232,147,90,.55)'; ctx.shadowBlur = 7 * dpr;
+    this._ringPath(ctx, B[N], 150); ctx.stroke(); ctx.shadowBlur = 0;
+
+    // vignette
+    const vg = ctx.createRadialGradient(cx, cy, R * 0.55, cx, cy, Math.hypot(W, H) * 0.62);
+    vg.addColorStop(0, 'rgba(8,6,5,0)'); vg.addColorStop(1, 'rgba(7,5,4,.72)');
+    ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+
+    // ---- pins & labels ----
+    const label = (x, y, main, sub, align, mainCol, mainPx) => {
+      ctx.textAlign = align; ctx.textBaseline = 'alphabetic';
+      ctx.lineJoin = 'round'; ctx.lineWidth = 3.5 * dpr; ctx.strokeStyle = 'rgba(9,7,5,.85)';
+      ctx.font = '600 ' + (mainPx || 10.5) * dpr + 'px Inter';
+      ctx.strokeText(main, x, y); ctx.fillStyle = mainCol; ctx.fillText(main, x, y);
+      if (sub) {
+        ctx.font = '400 ' + 9 * dpr + 'px Inter';
+        ctx.strokeText(sub, x, y + 11 * dpr); ctx.fillStyle = '#8B7F75'; ctx.fillText(sub, x, y + 11 * dpr);
+      }
+    };
+    const alignFor = (th) => { const c = Math.cos(th); return c > 0.35 ? 'left' : c < -0.35 ? 'right' : 'center'; };
+
+    if (this.state.layers.halvings) {
+      for (const h of this._halvings) {
+        const th = h.ang * Math.PI / 180, r = this._blockR(h.b);
+        const p1 = this._pt(r, th - 0.05), p2 = this._pt(r, th + 0.05), p3 = this._pt(r + 15 * dpr, th);
+        ctx.beginPath(); ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p3[0], p3[1]); ctx.lineTo(p2[0], p2[1]); ctx.closePath();
+        ctx.fillStyle = 'rgba(10,6,4,.92)'; ctx.fill();
+        ctx.strokeStyle = 'rgba(251,225,198,.5)'; ctx.lineWidth = 1 * dpr; ctx.stroke();
+        const lp = this._pt(r + 24 * dpr, th);
+        label(lp[0], lp[1], h.yr, h.sub, alignFor(th), '#EDBE94');
+      }
+    }
+    if (this.state.layers.landmarks) {
+      for (const L of this._landmarks) {
+        const th = L.ang * Math.PI / 180, r = this._blockR(L.b);
+        const p = this._pt(r, th);
+        ctx.beginPath(); ctx.arc(p[0], p[1], 2.6 * dpr, 0, 6.28319);
+        ctx.fillStyle = '#F4B486'; ctx.shadowColor = 'rgba(232,147,90,.9)'; ctx.shadowBlur = 6 * dpr; ctx.fill(); ctx.shadowBlur = 0;
+        const lp = this._pt(r, th); const a = alignFor(th);
+        const ox = a === 'left' ? 9 * dpr : a === 'right' ? -9 * dpr : 0;
+        label(lp[0] + ox, lp[1] - 6 * dpr, L.label, L.sub, a, '#D8CCC1');
+      }
+    }
+    if (this.state.layers.marks) {
+      for (const M of this._marks) {
+        const th = M.ang * Math.PI / 180, r = this._blockR(M.b);
+        const p = this._pt(r, th), s = 3.2 * dpr;
+        ctx.beginPath(); ctx.moveTo(p[0], p[1] - s); ctx.lineTo(p[0] + s, p[1]); ctx.lineTo(p[0], p[1] + s); ctx.lineTo(p[0] - s, p[1]); ctx.closePath();
+        ctx.fillStyle = '#E8935A'; ctx.shadowColor = 'rgba(232,147,90,.8)'; ctx.shadowBlur = 5 * dpr; ctx.fill(); ctx.shadowBlur = 0;
+        const a = alignFor(th);
+        const lx = p[0] + (a === 'left' ? 9 * dpr : a === 'right' ? -9 * dpr : 0);
+        const ly = p[1] + (a === 'center' ? (Math.sin(th) > 0 ? 17 : -12) * dpr : 3 * dpr);
+        label(lx, ly, M.label, M.sub, a, '#E8C6A8', 9.5);
+      }
+    }
+    // genesis
+    const gp = [cx, cy];
+    label(gp[0] - 10 * dpr, gp[1] + 22 * dpr, 'genesis', 'Jan 3, 2009', 'right', '#B39A88', 10);
+  }
+
+  // ============ main frame ============
+  _frame = (now) => {
+    const cv = this._cv; if (!cv || !this._E) return;
+    if (!this._ensure(cv, '_woodDirty')) return;
+    if (this._woodDirty) {
+      this._geom(cv.width, cv.height, Math.min(2, window.devicePixelRatio || 1));
+      this._renderWood();
+      this._woodDirty = false; this._loupeDirty = true; this._stripDirty = true;
+    }
+    const ctx = this._ctx, dpr = this._dpr, N = this._E.length;
+    const cx = this._cx, cy = this._cy, R = this._R, coreR = this._coreR, B = this._B;
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    ctx.drawImage(this._oc, 0, 0);
+    const t = now / 1000;
+
+    // ring-close sweep
+    if (this._sweepT0 && now - this._sweepT0 < 4400) {
+      const p = (now - this._sweepT0) / 4400, e = 1 - Math.pow(1 - p, 3);
+      ctx.strokeStyle = 'rgba(251,225,198,' + (0.6 * (1 - p)).toFixed(3) + ')';
+      ctx.lineWidth = 1.8 * dpr; ctx.shadowColor = 'rgba(232,147,90,.6)'; ctx.shadowBlur = 8 * dpr;
+      this._ringPath(ctx, coreR + (B[N] - coreR) * e, 120); ctx.stroke(); ctx.shadowBlur = 0;
+    }
+
+    // hover highlight + needle
+    const hov = this.state.hoverE;
+    if (hov !== null && hov < N) {
+      const mid = (B[hov] + B[hov + 1]) / 2;
+      ctx.strokeStyle = 'rgba(251,225,198,.85)';
+      ctx.lineWidth = Math.max(1.2 * dpr, (B[hov + 1] - B[hov]) * 0.7);
+      ctx.shadowColor = 'rgba(232,147,90,.75)'; ctx.shadowBlur = 7 * dpr;
+      this._ringPath(ctx, mid, 150); ctx.stroke(); ctx.shadowBlur = 0;
+      if (this._hoverKind === 'wood' && this._ang !== undefined) {
+        const pe = this._pt(B[N] + 8 * dpr, this._ang);
+        ctx.strokeStyle = 'rgba(246,200,154,.32)'; ctx.lineWidth = 1 * dpr;
+        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(pe[0], pe[1]); ctx.stroke();
+        const px = this._pt(mid, this._ang);
+        ctx.beginPath(); ctx.arc(px[0], px[1], 3 * dpr, 0, 6.28319);
+        ctx.fillStyle = '#FBE1C6'; ctx.shadowColor = 'rgba(232,147,90,.9)'; ctx.shadowBlur = 8 * dpr; ctx.fill(); ctx.shadowBlur = 0;
+      }
+    }
+
+    // forming ring (live edge)
+    const base = N * 2016;
+    const prog = Math.min(1, (this.state.height - base) / 2016);
+    const rF = B[N] + 6 * dpr, th0 = -Math.PI / 2, th1 = th0 + prog * 6.28319;
+    ctx.beginPath();
+    const segs = Math.max(8, Math.round(150 * prog));
+    for (let s = 0; s <= segs; s++) {
+      const th = th0 + (th1 - th0) * s / segs;
+      const p = this._pt(rF, th);
+      if (s === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
+    }
+    const edgeHov = hov === N;
+    ctx.strokeStyle = edgeHov ? 'rgba(251,225,198,.95)' : 'rgba(246,200,154,.75)';
+    ctx.lineWidth = 1.5 * dpr;
+    ctx.shadowColor = 'rgba(232,147,90,.7)'; ctx.shadowBlur = 6 * dpr; ctx.stroke(); ctx.shadowBlur = 0;
+    // tip
+    const k = this._tipT ? Math.max(0, 1 - (now - this._tipT) / 900) : 0;
+    const tp = this._pt(rF, th1);
+    const pulse = this._motion() ? 0.5 + 0.5 * Math.sin(t * 2.2) : 1;
+    ctx.beginPath(); ctx.arc(tp[0], tp[1], (2.4 + 2.6 * k + 0.6 * pulse) * dpr, 0, 6.28319);
+    ctx.fillStyle = '#FBE1C6'; ctx.shadowColor = 'rgba(232,147,90,1)'; ctx.shadowBlur = (9 + 10 * k) * dpr; ctx.fill(); ctx.shadowBlur = 0;
+    if (k > 0) {
+      ctx.beginPath(); ctx.arc(tp[0], tp[1], (6 + 30 * (1 - k)) * dpr, 0, 6.28319);
+      ctx.strokeStyle = 'rgba(246,200,154,' + (0.4 * k).toFixed(3) + ')'; ctx.lineWidth = 1 * dpr; ctx.stroke();
+    }
+
+    // core (genesis) pulse
+    const cp = this._motion() ? 0.82 + 0.18 * Math.sin(t * 1.6) : 1;
+    const cg = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreR * 3.2);
+    cg.addColorStop(0, 'rgba(255,238,216,' + (0.85 * cp).toFixed(3) + ')');
+    cg.addColorStop(0.35, 'rgba(246,200,154,' + (0.4 * cp).toFixed(3) + ')');
+    cg.addColorStop(1, 'rgba(232,147,90,0)');
+    ctx.fillStyle = cg; ctx.beginPath(); ctx.arc(cx, cy, coreR * 3.2, 0, 6.28319); ctx.fill();
+    ctx.fillStyle = 'rgba(255,245,232,' + cp.toFixed(3) + ')';
+    ctx.beginPath(); ctx.arc(cx, cy, 2.6 * dpr, 0, 6.28319); ctx.fill();
+
+    // borer / core-sample track
+    const thb = -0.62;
+    if (this.state.sample === 'drilling' && this._drillT0) {
+      const p = Math.min(1, (now - this._drillT0) / 900);
+      const rOut = B[N] + 10 * dpr, rIn = rOut - p * (rOut - coreR * 0.4);
+      const pa = this._pt(rOut, thb), pb = this._pt(rIn, thb);
+      ctx.strokeStyle = 'rgba(251,225,198,.85)'; ctx.lineWidth = 2 * dpr;
+      ctx.shadowColor = 'rgba(232,147,90,.8)'; ctx.shadowBlur = 8 * dpr;
+      ctx.beginPath(); ctx.moveTo(pa[0], pa[1]); ctx.lineTo(pb[0], pb[1]); ctx.stroke(); ctx.shadowBlur = 0;
+      ctx.beginPath(); ctx.arc(pb[0], pb[1], 3 * dpr, 0, 6.28319); ctx.fillStyle = '#FFE9CE'; ctx.fill();
+    } else if (this.state.sample === 'open') {
+      const pa = this._pt(B[N] + 6 * dpr, thb), pb = this._pt(coreR * 0.4, thb);
+      ctx.strokeStyle = 'rgba(246,200,154,.22)'; ctx.lineWidth = 1.1 * dpr;
+      ctx.beginPath(); ctx.moveTo(pa[0], pa[1]); ctx.lineTo(pb[0], pb[1]); ctx.stroke();
+      ctx.beginPath(); ctx.arc(pa[0], pa[1], 2.2 * dpr, 0, 6.28319);
+      ctx.fillStyle = '#0B0806'; ctx.fill(); ctx.strokeStyle = 'rgba(232,147,90,.5)'; ctx.lineWidth = 1 * dpr; ctx.stroke();
+    }
+
+    // companions
+    if (this._lc && this._ensure(this._lc, '_loupeDirty') && this._loupeDirty) { this._drawLoupe(); this._loupeDirty = false; }
+    if (this._sc && this.state.sample === 'open' && this._ensure(this._sc, '_stripDirty') && this._stripDirty) { this._drawStrip(); this._stripDirty = false; }
+  };
+
+  // ============ loupe ============
+  _drawLoupe() {
+    const c = this._lc, ctx = this._lctx, dpr = this._dpr || 1;
+    const W = c.width, H = c.height, N = this._E.length;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#0F0C0A'; ctx.fillRect(0, 0, W, H);
+    const center = this.state.hoverE === null ? N - 1 : Math.min(this.state.hoverE, N - 1);
+    const lo = Math.max(0, center - 5), hi = Math.min(N - 1, center + 5);
+    let total = 0; for (let i = lo; i <= hi; i++) total += this._E[i].dur;
+    const pad = 10 * dpr, bw = W - pad * 2, y0 = 9 * dpr, y1 = H - 20 * dpr;
+    const hset = {}; for (const h of this._halvings) hset[Math.floor(h.b / 2016)] = true;
+    let x = pad;
+    for (let i = lo; i <= hi; i++) {
+      const w = this._E[i].dur / total * bw;
+      const bn = this._bn[i];
+      if (i === center) { ctx.fillStyle = 'rgba(246,200,154,.12)'; ctx.fillRect(x, y0, w, y1 - y0); }
+      else { ctx.fillStyle = 'rgba(232,147,90,' + (0.015 + 0.035 * bn).toFixed(3) + ')'; ctx.fillRect(x, y0, w, y1 - y0); }
+      const halv = hset[i];
+      ctx.fillStyle = halv ? 'rgba(251,225,198,.9)' : 'rgba(232,147,90,' + (0.25 + 0.4 * bn).toFixed(3) + ')';
+      ctx.fillRect(x + w - 1 * dpr, y0, Math.max(1, 1.1 * dpr), y1 - y0);
+      x += w;
+    }
+    // center edges
+    let cxp = pad; for (let i = lo; i < center; i++) cxp += this._E[i].dur / total * bw;
+    const cw = this._E[center].dur / total * bw;
+    ctx.strokeStyle = 'rgba(251,225,198,.85)'; ctx.lineWidth = 1.2 * dpr;
+    ctx.strokeRect(cxp, y0, cw, y1 - y0);
+    // dates
+    ctx.textBaseline = 'alphabetic'; ctx.font = '400 ' + 9 * dpr + 'px Inter';
+    ctx.fillStyle = '#6B6058';
+    const fm = (ms) => new Date(ms).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+    ctx.textAlign = 'left'; ctx.fillText(fm(this._E[lo].d0), pad, H - 7 * dpr);
+    ctx.textAlign = 'right'; ctx.fillText(fm(this._E[hi].d0 + this._E[hi].dur * 86400000), W - pad, H - 7 * dpr);
+    ctx.textAlign = 'center'; ctx.fillStyle = '#B39A88'; ctx.font = '600 ' + 9 * dpr + 'px Inter';
+    ctx.fillText('ring ' + (center + 1), cxp + cw / 2, H - 7 * dpr);
+  }
+
+  // ============ core-sample strip ============
+  _drawStrip() {
+    const c = this._sc, ctx = this._sctx, dpr = this._dpr || 1;
+    const W = c.width, H = c.height, N = this._E.length, B = this._B;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#100D0B'; ctx.fillRect(0, 0, W, H);
+    const pad = 16 * dpr, formW = 30 * dpr;
+    const bandW = W - pad * 2 - formW;
+    this._sx = { pad, bandW };
+    const xOf = (r) => pad + (r - this._coreR) / (this._R - this._coreR) * bandW;
+    const y0 = 30 * dpr, y1 = H - 26 * dpr;
+
+    // wood body
+    const g = ctx.createLinearGradient(0, y0, 0, y1);
+    g.addColorStop(0, '#241811'); g.addColorStop(0.5, '#2E1F15'); g.addColorStop(1, '#241811');
+    ctx.fillStyle = g; ctx.fillRect(pad, y0, bandW + formW * 0.5, y1 - y0);
+    // sapwood right
+    const swx = xOf(B[Math.max(0, N - 8)]);
+    ctx.fillStyle = 'rgba(246,200,154,.06)'; ctx.fillRect(swx, y0, xOf(B[N]) - swx, y1 - y0);
+
+    const hset = {}; for (const h of this._halvings) hset[Math.floor(h.b / 2016)] = true;
+    for (let i = 1; i <= N; i++) {
+      const x = xOf(B[i]), bn = this._bn[i - 1], pop = bn > 0.87;
+      const halv = this.state.layers.halvings && hset[i - 1];
+      if (halv) {
+        ctx.fillStyle = 'rgba(251,225,198,.9)';
+        ctx.fillRect(x - 0.75 * dpr, y0, 1.5 * dpr, y1 - y0);
+        ctx.beginPath(); ctx.moveTo(x - 4 * dpr, y0); ctx.lineTo(x + 4 * dpr, y0); ctx.lineTo(x, y0 + 7 * dpr); ctx.closePath();
+        ctx.fillStyle = '#EDBE94'; ctx.fill();
+      } else {
+        ctx.fillStyle = 'rgba(232,147,90,' + (0.08 + 0.16 * bn + (pop ? 0.3 : 0)).toFixed(3) + ')';
+        ctx.fillRect(x, y0, Math.max(0.8, (0.55 + 0.5 * bn) * dpr), y1 - y0);
+      }
+    }
+
+    // labels
+    const lbl = (x, y, txt, col, px, wt, align) => {
+      ctx.textAlign = align || 'center'; ctx.textBaseline = 'alphabetic';
+      ctx.font = (wt || 600) + ' ' + px * dpr + 'px Inter';
+      ctx.lineJoin = 'round'; ctx.lineWidth = 3 * dpr; ctx.strokeStyle = 'rgba(12,9,7,.9)';
+      ctx.strokeText(txt, x, y); ctx.fillStyle = col; ctx.fillText(txt, x, y);
+    };
+    if (this.state.layers.halvings) {
+      for (const h of this._halvings) lbl(xOf(this._blockR(h.b)), 20 * dpr, h.yr, '#EDBE94', 9.5);
+    }
+    if (this.state.layers.landmarks) {
+      let flip = false;
+      for (const L of this._landmarks) {
+        const x = xOf(this._blockR(L.b));
+        ctx.beginPath(); ctx.arc(x, y0 + (flip ? 14 : 26) * dpr, 2.2 * dpr, 0, 6.28319);
+        ctx.fillStyle = '#F4B486'; ctx.fill();
+        lbl(x + 6 * dpr, y0 + (flip ? 17 : 29) * dpr, L.label, '#D8CCC1', 9, 500, 'left');
+        flip = !flip;
+      }
+    }
+    if (this.state.layers.marks) {
+      let flip = false;
+      for (const M of this._marks) {
+        const x = xOf(this._blockR(M.b)), y = y1 - (flip ? 12 : 26) * dpr, s = 2.8 * dpr;
+        ctx.beginPath(); ctx.moveTo(x, y - s); ctx.lineTo(x + s, y); ctx.lineTo(x, y + s); ctx.lineTo(x - s, y); ctx.closePath();
+        ctx.fillStyle = '#E8935A'; ctx.fill();
+        lbl(x - 6 * dpr, y + 3 * dpr, M.label, '#E8C6A8', 9, 500, 'right');
+        flip = !flip;
+      }
+    }
+
+    // forming stub
+    const base = N * 2016, prog = Math.min(1, (this.state.height - base) / 2016);
+    const fx = xOf(B[N]), fw = formW * 0.8 * prog;
+    ctx.fillStyle = 'rgba(246,200,154,.28)'; ctx.fillRect(fx, y0, fw, y1 - y0);
+    ctx.beginPath(); ctx.arc(fx + fw, (y0 + y1) / 2, 2.6 * dpr, 0, 6.28319);
+    ctx.fillStyle = '#FBE1C6'; ctx.shadowColor = 'rgba(232,147,90,.9)'; ctx.shadowBlur = 7 * dpr; ctx.fill(); ctx.shadowBlur = 0;
+    lbl(fx + fw, y1 + 13 * dpr, 'now', '#B39A88', 9);
+
+    // year axis
+    ctx.fillStyle = '#5E554D';
+    for (let yr = 2010; yr <= 2026; yr += 2) {
+      const x = xOf(this._dateR(Date.parse(yr + '-01-01')));
+      ctx.fillRect(x, y1, 1 * dpr, 4 * dpr);
+      lbl(x, y1 + 15 * dpr, String(yr), '#6B6058', 8.5, 400);
+    }
+    lbl(pad, y1 + 15 * dpr, '2009', '#6B6058', 8.5, 400, 'left');
+
+    // hover
+    const hov = this.state.hoverE;
+    if (hov !== null && hov < N) {
+      const xa = xOf(B[hov]), xb = xOf(B[hov + 1]);
+      ctx.fillStyle = 'rgba(246,200,154,.14)'; ctx.fillRect(xa, y0, Math.max(2 * dpr, xb - xa), y1 - y0);
+      ctx.strokeStyle = 'rgba(251,225,198,.85)'; ctx.lineWidth = 1 * dpr;
+      ctx.strokeRect(xa, y0, Math.max(2 * dpr, xb - xa), y1 - y0);
+    }
+  }
+
+  // ============ live sim ============
+  _motion() { return this.props.motion !== false; }
+  _scheduleTick() {
+    clearTimeout(this._tmr);
+    const ms = this.props.pace === 'Realtime' ? 600000 : 6000 + Math.random() * 3500;
+    this._tmr = setTimeout(() => {
+      const N = this._E ? this._E.length : 450;
+      let h = this.state.height + 1;
+      this._tipT = performance.now();
+      if (h >= (N + 1) * 2016 && this._E) {
+        const nowMs = Date.now();
+        this._E.push({ i: N, b0: N * 2016, d0: this._formStart || nowMs, dur: 13.5 });
+        this._bn.push(this._mkRng(h)());
+        this._formStart = nowMs;
+        this._sweepT0 = performance.now();
+        this._woodDirty = true;
+      }
+      this._stripDirty = true; this._loupeDirty = true;
+      this.setState({ height: h });
+      this._once();
+      this._scheduleTick();
+    }, ms);
+  }
+
+  // ============ loop ============
+  _loopOn() {
+    if (this._raf) return;
+    const f = (t) => { this._raf = requestAnimationFrame(f); this._frame(t); };
+    this._raf = requestAnimationFrame(f);
+  }
+  _loopOff() { if (this._raf) cancelAnimationFrame(this._raf); this._raf = null; }
+  _once() { if (this._raf) return; requestAnimationFrame((t) => this._frame(t)); }
+
+  componentDidMount() {
+    this._onResize = () => { this._woodDirty = true; this._once(); };
+    window.addEventListener('resize', this._onResize);
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { this._woodDirty = true; this._once(); });
+    if (this._motion()) this._loopOn(); else this._once();
+    this._scheduleTick();
+  }
+  componentDidUpdate(prevProps) {
+    if (prevProps && prevProps.motion !== this.props.motion) {
+      if (this._motion()) this._loopOn(); else { this._loopOff(); this._once(); }
+    }
+    if (prevProps && prevProps.pace !== this.props.pace) this._scheduleTick();
+  }
+  componentWillUnmount() {
+    this._loopOff(); clearTimeout(this._tmr);
+    window.removeEventListener('resize', this._onResize);
+  }
+
+  // ============ formatting ============
+  _fd(ms, opts) { return new Date(ms).toLocaleDateString('en-US', opts || { month: 'short', day: 'numeric', year: 'numeric' }); }
+  _fRange(a, b) {
+    const da = new Date(a), db = new Date(b);
+    if (da.getFullYear() === db.getFullYear()) {
+      return this._fd(a, { month: 'short', day: 'numeric' }) + ' – ' + this._fd(b, { month: 'short', day: 'numeric' }) + ', ' + db.getFullYear();
+    }
+    return this._fd(a) + ' – ' + this._fd(b);
+  }
+  _reward(b0) { return ['50', '25', '12.5', '6.25', '3.125'][Math.min(4, Math.floor(b0 / 210000))]; }
+
+  // ============ render vals ============
+  renderVals() {
+    if (!this._E) this._buildEpochs();
+    const N = this._E.length, H = this.state.height;
+    const base = N * 2016, into = H - base, left = base + 2016 - H;
+    const hov = this.state.hoverE;
+
+    let readTitle, readRows, readNote;
+    if (hov === null || hov >= N) {
+      readTitle = 'Ring ' + (N + 1) + ' · forming now';
+      readRows = [
+        { k: 'Blocks', v: base.toLocaleString('en-US') + ' – …' },
+        { k: 'Began', v: this._fd(this._formStart || Date.parse('2026-07-01')) },
+        { k: 'Laid so far', v: into.toLocaleString('en-US') + ' of 2,016 blocks' },
+        { k: 'Reward', v: this._reward(base) + ' BTC / block' }
+      ];
+      readNote = 'The outer edge is still sapwood — soft, live, unfinished. It hardens as the chain buries it.';
+    } else {
+      const e = this._E[hov], end = e.d0 + e.dur * 86400000;
+      readTitle = 'Ring ' + (hov + 1) + ' · ' + this._fRange(e.d0, end);
+      const cls = e.dur < 11.5 ? 'A tight ring — difficulty racing to keep up with new hashrate.'
+        : e.dur > 16 ? 'A wide ring — a slow season on the network.'
+        : 'A steady season, close to the ten-minute heartbeat.';
+      readRows = [
+        { k: 'Blocks', v: e.b0.toLocaleString('en-US') + ' – ' + (e.b0 + 2015).toLocaleString('en-US') },
+        { k: 'Season', v: this._fRange(e.d0, end) },
+        { k: 'Laid down in', v: e.dur.toFixed(1) + ' days' },
+        { k: 'Reward', v: this._reward(e.b0) + ' BTC / block' }
+      ];
+      readNote = this._specials[hov] || cls;
+    }
+
+    const L = this.state.layers;
+    const mkToggle = (key) => () => {
+      const nl = Object.assign({}, this.state.layers); nl[key] = !nl[key];
+      this._woodDirty = true; this._stripDirty = true;
+      this.setState({ layers: nl }); this._once();
+    };
+
+    const closeDate = this._fd(Date.now() + left * 600000, { month: 'short', day: 'numeric' });
+    const days = left * 10 / 1440;
+
+    return {
+      dataMotion: this._motion() ? 'true' : 'false',
+      setCanvas: this.setCanvas, setLoupe: this.setLoupe, setStrip: this.setStrip,
+      heightFmt: H.toLocaleString('en-US'),
+      ringNumLabel: 'RING ' + (N + 1) + ' · FORMING',
+      ringsCaption: (N + 1) + ' rings — one per difficulty epoch',
+      progressPct: (into / 2016 * 100).toFixed(2) + '%',
+      progressLabel: into.toLocaleString('en-US') + ' of 2,016 blocks laid',
+      closesLabel: days >= 1.5 ? 'closes ≈ ' + closeDate : 'closes in ≈ ' + Math.max(1, Math.round(days * 24)) + ' h',
+      readTitle, readRows, readNote,
+      sampleLabel: this.state.sample === 'open' ? 'Retract the sample' : this.state.sample === 'drilling' ? 'Drilling…' : 'Take a core sample',
+      onSample: () => {
+        if (this.state.sample === 'drilling') return;
+        if (this.state.sample === 'open') { this.setState({ sample: 'closed' }); this._once(); return; }
+        this._drillT0 = performance.now();
+        this.setState({ sample: 'drilling' });
+        if (!this._motion()) { const anim = () => { if (this.state.sample === 'drilling') { this._once(); requestAnimationFrame(anim); } }; anim(); }
+        setTimeout(() => { if (this.state.sample === 'drilling') { this._stripDirty = true; this.setState({ sample: 'open' }); this._once(); } }, 950);
+      },
+      drawerOpen: this.state.sample === 'open' ? 'open' : 'closed',
+      chips: [
+        { label: 'Halvings', on: L.halvings, toggle: mkToggle('halvings') },
+        { label: 'Landmarks', on: L.landmarks, toggle: mkToggle('landmarks') },
+        { label: 'Your marks', on: L.marks, toggle: mkToggle('marks') }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

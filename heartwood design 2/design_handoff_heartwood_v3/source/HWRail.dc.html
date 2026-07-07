@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<div style="width:68px;height:100%;min-height:100%;border-right:1px solid #1D1712;display:flex;flex-direction:column;align-items:center;padding:22px 0 18px;">
+  <dc-import name="HeartwoodMark" size="26" tone="copper" detail="simple" hint-size="26px,26px"></dc-import>
+  <div style="height:30px;"></div>
+  <div style="display:flex;flex-direction:column;gap:6px;align-items:center;">
+    <div title="Home" style="width:40px;height:40px;border-radius:11px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:{{ cHome }};background:{{ bHome }};"><svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2.5" y="2.5" width="6" height="6" rx="1.5"></rect><rect x="11.5" y="2.5" width="6" height="6" rx="1.5"></rect><rect x="2.5" y="11.5" width="6" height="6" rx="1.5"></rect><rect x="11.5" y="11.5" width="6" height="6" rx="1.5"></rect></svg></div>
+    <div title="Explorer" style="width:40px;height:40px;border-radius:11px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:{{ cExplorer }};background:{{ bExplorer }};"><svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="10" cy="10" r="7.5"></circle><circle cx="10" cy="10" r="4.5"></circle><circle cx="10" cy="10" r="1.4" fill="currentColor" stroke="none"></circle></svg></div>
+    <div title="Wallets" style="width:40px;height:40px;border-radius:11px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:{{ cWallets }};background:{{ bWallets }};"><svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2.5" y="4.5" width="15" height="11" rx="2.5"></rect><path d="M2.5 8 H17.5"></path><circle cx="14" cy="11.6" r="1.1" fill="currentColor" stroke="none"></circle></svg></div>
+    <div title="Activity" style="width:40px;height:40px;border-radius:11px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:{{ cActivity }};background:{{ bActivity }};"><svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 10 H6 L8 5 L11.5 15 L13.5 10 H18" stroke-linecap="round" stroke-linejoin="round"></path></svg></div>
+    <div title="Node" style="width:40px;height:40px;border-radius:11px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:{{ cNode }};background:{{ bNode }};"><svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3.5" width="14" height="5" rx="1.5"></rect><rect x="3" y="11.5" width="14" height="5" rx="1.5"></rect><circle cx="6.4" cy="6" r="0.9" fill="currentColor" stroke="none"></circle><circle cx="6.4" cy="14" r="0.9" fill="currentColor" stroke="none"></circle></svg></div>
+    <div title="Settings" style="width:40px;height:40px;border-radius:11px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:{{ cSettings }};background:{{ bSettings }};"><svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 6 H11" stroke-linecap="round"></path><circle cx="14.5" cy="6" r="2"></circle><path d="M3 14 H7.5" stroke-linecap="round"></path><circle cx="11" cy="14" r="2"></circle><path d="M14.5 14 H17" stroke-linecap="round"></path></svg></div>
+  </div>
+  <div style="flex:1;"></div>
+  <svg width="38" height="38" viewBox="0 0 34 34" style="overflow:visible;margin-bottom:14px;">
+    <circle cx="17" cy="17" r="5" fill="none" stroke="#E8935A" stroke-width="1.1" opacity=".45"></circle>
+    <circle cx="17" cy="17" r="9" fill="none" stroke="#E8935A" stroke-width="1.1" opacity=".6"></circle>
+    <circle cx="17" cy="17" r="13.5" fill="none" stroke="#2E2620" stroke-width="1.6"></circle>
+    <circle cx="17" cy="17" r="13.5" fill="none" stroke="#E8935A" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="27.5 57.3" transform="rotate(-90 17 17)" style="filter:drop-shadow(0 0 3px rgba(232,147,90,.5));"></circle>
+    <circle cx="27.8" cy="10.7" r="2" fill="#F6C89A"></circle>
+    <circle cx="17" cy="17" r="1.6" fill="#FFE9CE"></circle>
+  </svg>
+  <div style="width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#B5673A,#E8935A);display:flex;align-items:center;justify-content:center;font:600 12.5px 'Inter';color:#1A1210;">S</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;$preview&quot;: {&quot;width&quot;: 68, &quot;height&quot;: 832},
+  &quot;active&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;default&quot;: &quot;home&quot;, &quot;options&quot;: [&quot;home&quot;, &quot;explorer&quot;, &quot;wallets&quot;, &quot;activity&quot;, &quot;node&quot;, &quot;settings&quot;], &quot;tsType&quot;: &quot;string&quot;, &quot;label&quot;: &quot;Active item&quot;}
+}">
+class Component extends DCLogic {
+  renderVals() {
+    const active = this.props.active || 'home';
+    const out = {};
+    for (const k of ['home', 'explorer', 'wallets', 'activity', 'node', 'settings']) {
+      const K = k.charAt(0).toUpperCase() + k.slice(1);
+      out['c' + K] = k === active ? '#F4B486' : '#7A6E63';
+      out['b' + K] = k === active ? 'rgba(232,147,90,.1)' : 'transparent';
+    }
+    return out;
+  }
+}
+</script>
+</body>
+</html>
