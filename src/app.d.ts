@@ -13,7 +13,13 @@ declare global {
 			flags: Record<string, boolean>;
 		}
 		// interface PageData {}
-		// interface PageState {}
+		interface PageState {
+			/** Which wizard screen this history entry represents, so the browser
+			 *  Back button steps through a same-URL wizard one screen at a time
+			 *  instead of leaving the flow (cairn-aiyw). Set via shallow routing
+			 *  (pushState/replaceState) by the wallet-creation wizards. */
+			wizardStep?: number;
+		}
 		// interface Platform {}
 	}
 }
