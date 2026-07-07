@@ -3,7 +3,7 @@
 // Email is the one channel that should be the MOST full-featured: it's
 // asynchronous, so the recipient isn't already in the app the way they are for an
 // in-app alert. A raw-text subject+body reads like a system cron mail; a lightly
-// branded HTML message with a "View in Cairn" button reads like a product.
+// branded HTML message with a "View in Heartwood" button reads like a product.
 //
 // One template function serves all event types (title + body + optional link),
 // so every event gets the same treatment with zero per-event work. The plain-text
@@ -29,17 +29,19 @@ export interface RenderedEmail {
 	text: string;
 }
 
-/** Cairn's dark theme, hard-coded here because email clients can't read the app's
- *  CSS variables. Kept in sync with the app palette by eye, not by import. */
+/** Heartwood's dark theme, hard-coded here because email clients can't read the
+ *  app's CSS custom properties (Gmail et al. strip <style> blocks with var()).
+ *  Resolved hex values mirror src/app.css — kept in sync by eye, not by import. */
 const COLORS = {
-	bg: '#0e1116',
-	surface: '#171b21',
-	border: '#2a2f37',
-	text: '#e6e9ee',
-	textMuted: '#9aa4b2',
-	accent: '#f7931a', // Bitcoin orange — the app accent
-	warn: '#e0a44a',
-	error: '#e5534b'
+	bg: '#100d0b', // --bg (deep wood charcoal)
+	surface: '#17120f', // --surface
+	border: '#3a2f27', // --border
+	text: '#ede4db', // --text
+	textMuted: '#a99c90', // --text-secondary (body/footer copy; legible on --surface)
+	accent: '#e8935a', // --accent (Heartwood copper)
+	onAccent: '#1a1210', // --on-accent (text placed ON the copper accent)
+	warn: '#d8b27a', // --attention (warm tan — Heartwood has no orange nudge)
+	error: '#e0604c' // --error
 };
 
 /** Accent colour for the header stripe by level. */
@@ -75,8 +77,8 @@ export function renderHtml(input: EmailTemplateInput): string {
 	const button = input.link
 		? `<tr><td style="padding:8px 0 4px;">
 				<a href="${esc(input.link)}"
-				   style="display:inline-block;background:${accent};color:${COLORS.bg};text-decoration:none;font-weight:600;font-size:14px;padding:10px 18px;border-radius:8px;">
-					View in Cairn
+				   style="display:inline-block;background:${accent};color:${COLORS.onAccent};text-decoration:none;font-weight:600;font-size:14px;padding:10px 18px;border-radius:8px;">
+					View in Heartwood
 				</a>
 			</td></tr>`
 		: '';
@@ -92,7 +94,7 @@ export function renderHtml(input: EmailTemplateInput): string {
 						<tr><td style="height:4px;background:${accent};"></td></tr>
 						<tr>
 							<td style="padding:20px 24px 4px;">
-								<span style="color:${accent};font-weight:700;font-size:15px;letter-spacing:0.3px;">Cairn</span>
+								<span style="color:${accent};font-weight:700;font-size:15px;letter-spacing:0.3px;">Heartwood</span>
 							</td>
 						</tr>
 						<tr>
@@ -113,7 +115,7 @@ export function renderHtml(input: EmailTemplateInput): string {
 						<tr>
 							<td style="padding:14px 24px;border-top:1px solid ${COLORS.border};">
 								<p style="margin:0;color:${COLORS.textMuted};font-size:11px;line-height:1.5;">
-									You're receiving this because you enabled email notifications in Cairn. Manage them in Settings › Notifications.
+									You're receiving this because you enabled email notifications in Heartwood. Manage them in Settings › Notifications.
 								</p>
 							</td>
 						</tr>
