@@ -318,9 +318,19 @@ export class ChainService {
 		return toTxDetail(tx, tipHeight, outspends);
 	}
 
-	/** Raw serialization of a transaction, hex. */
-	getTxHex(txid: string): Promise<string> {
-		return this.esplora.getTxHex(txid);
+	/**
+	 * Raw serialization of a transaction, hex.
+	 *
+	 * Sourced from the operator's own Electrum server via
+	 * `blockchain.transaction.get(txid, verbose=false)` rather than a third-party
+	 * esplora HTTP API (cairn-zoz8.4) — a full-indexing Electrum backend
+	 * (ElectrumX/Fulcrum/electrs) returns the raw hex for any confirmed or mempool
+	 * txid, not just wallet-owned ones. Throws when the server can't produce the
+	 * hex (tx not found, or a non-indexing server), matching the previous
+	 * esplora-backed contract so callers' existing try/catch handling is unchanged.
+	 */
+	async getTxHex(txid: string): Promise<string> {
+		return String(await this.electrum.getTransaction(txid, false));
 	}
 
 	/**
