@@ -9,6 +9,7 @@ import { ElectrumClient } from '../electrum/client';
 import { ElectrumPool } from '../electrum/pool';
 import type { ElectrumBalance, ElectrumHistoryItem } from '../electrum/client';
 import { wireChainEvents, resetConnectionState } from '../chainEvents';
+import { noteProxyConfigured, resetChainHealth } from '../chainHealth';
 import { resetPackageRelaySupport } from '../packageRelay';
 import { recordActivity } from '../activity';
 import { childLogger } from '../logger';
@@ -205,6 +206,10 @@ export class ChainService {
 
 	constructor(config = getChainConfig()) {
 		this.config = config;
+		// Record whether chain traffic is routed through a SOCKS5/Tor proxy, so the
+		// transport-health signal can tell users a misconfigured proxy (not the node)
+		// is the likely cause of an outage (cairn-hy8z).
+		noteProxyConfigured(!!(config.socks5Host && config.socks5Port));
 		this.electrum = new ElectrumPool(
 			{
 				host: config.electrumHost,
@@ -672,6 +677,11 @@ export function reconfigureChain(): void {
 		});
 	}
 	resetConnectionState();
+	// Forget accumulated transport-health failures so the new server/proxy starts
+	// from a clean slate — a stale error from the old backend must not linger on
+	// the chain-health banner (cairn-hy8z). The next ChainService (built lazily by
+	// getChain) re-notes whether a proxy is configured in its constructor.
+	resetChainHealth();
 	// Package-relay support is per-server — forget the cached verdict so the new
 	// backend is probed afresh (cairn-u9ob.8).
 	resetPackageRelaySupport();

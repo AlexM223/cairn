@@ -25,6 +25,51 @@ const log = childLogger('portfolio');
 /** How often a portfolio fetch is allowed to record a new snapshot tick. */
 const SNAPSHOT_INTERVAL_MS = 60 * 60 * 1000; // once per hour
 
+/**
+ * Per-wallet budget for a dashboard scan (cairn-3gvb / cairn-xsuq). The
+ * dashboard aggregates every wallet with Promise.all, so its response can only
+ * be as fast as the SLOWEST wallet's scan settles. A single unreachable wallet —
+ * or, worse, a broken SOCKS5/Tor proxy that makes every dial hang or slowly get
+ * rejected (observed 16–135s per request) — otherwise drags the whole dashboard
+ * to that worst case, leaving the balance stuck on a skeleton for tens of
+ * seconds. Racing each scan against this bound means a slow/unreachable wallet
+ * degrades gracefully (excluded from totals, exactly as a hard scan failure
+ * already is) instead of blocking everyone else. Comfortably above a healthy
+ * scan (a warm/cached scan returns instantly; a cold gap-limit pass over a
+ * responsive server is a few seconds) yet far below the pathological worst case.
+ * The timed-out scan keeps running in the background and populates the 60s scan
+ * cache, so the next dashboard load can show the full balance once it completes.
+ */
+const SCAN_BUDGET_MS = 10_000;
+
+/** The tip lookup is best-effort and only feeds confirmation counts; never let a
+ *  hung explorer/proxy hold the dashboard past the same per-item budget. */
+const TIP_BUDGET_MS = SCAN_BUDGET_MS;
+
+/**
+ * Reject with a clear timeout error if `p` doesn't settle within `ms`. Does not
+ * cancel `p` (promises aren't cancellable) — the underlying scan runs on and
+ * still warms the cache; this only bounds how long the CALLER waits.
+ */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => {
+			reject(new Error(`${label} timed out after ${ms}ms`));
+		}, ms);
+		timer.unref?.();
+		p.then(
+			(v) => {
+				clearTimeout(timer);
+				resolve(v);
+			},
+			(err: unknown) => {
+				clearTimeout(timer);
+				reject(err instanceof Error ? err : new Error(String(err)));
+			}
+		);
+	});
+}
+
 interface ScannedWallet {
 	kind: WalletKind;
 	id: number;
@@ -319,16 +364,22 @@ export async function getPortfolioDetail(userId: number): Promise<PortfolioDetai
 	const walletCount = wallets.length + multisigs.length;
 
 	// Tip height for confirmations — best-effort; unconfirmed rows report 0 anyway.
+	// Bounded so a hung explorer/proxy can't stall the dashboard before scans even
+	// start (cairn-3gvb).
 	let tipHeight = 0;
 	try {
-		tipHeight = (await getChain().getTip()).height;
+		tipHeight = (await withTimeout(getChain().getTip(), TIP_BUDGET_MS, 'portfolio tip lookup')).height;
 	} catch {
 		tipHeight = 0;
 	}
 
+	// Each scan is raced against SCAN_BUDGET_MS (cairn-3gvb / cairn-xsuq): a
+	// slow/unreachable wallet — or every wallet, when a broken proxy makes each
+	// dial hang — settles as null within the budget and is excluded from totals,
+	// instead of dragging the whole Promise.all to the slowest wallet's timeout.
 	const scanned = await Promise.all<ScannedWallet | null>([
 		...wallets.map((w) =>
-			scanWallet(w.xpub).then(
+			withTimeout(scanWallet(w.xpub), SCAN_BUDGET_MS, `wallet ${w.id} scan`).then(
 				(scan): ScannedWallet => ({
 					kind: 'wallet',
 					id: w.id,
@@ -337,16 +388,17 @@ export async function getPortfolioDetail(userId: number): Promise<PortfolioDetai
 					scan
 				}),
 				(err) => {
-					// A scan failure (e.g. Electrum down) silently drops this wallet from
-					// the dashboard totals, understating the balance — at least leave a
-					// trace to diagnose the partial outage (cairn-ednl).
+					// A scan failure (Electrum down, proxy rejected, or over-budget)
+					// silently drops this wallet from the dashboard totals, understating
+					// the balance — at least leave a trace to diagnose the partial outage
+					// (cairn-ednl) / slow transport (cairn-xsuq).
 					log.warn({ err, walletId: w.id, kind: 'wallet' }, 'portfolio scan failed; wallet excluded from totals');
 					return null;
 				}
 			)
 		),
 		...multisigs.map((m) =>
-			scanMultisig(m).then(
+			withTimeout(scanMultisig(m), SCAN_BUDGET_MS, `multisig ${m.id} scan`).then(
 				(scan): ScannedWallet => ({
 					kind: 'multisig',
 					id: m.id,

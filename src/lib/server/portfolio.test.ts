@@ -212,6 +212,42 @@ describe('getPortfolioDetail failed scans (cairn-rr94 / cairn-ednl)', () => {
 	});
 });
 
+// ---- cairn-3gvb / cairn-xsuq: per-wallet scan budget ---------------------------
+
+describe('getPortfolioDetail per-wallet timeout (cairn-3gvb / cairn-xsuq)', () => {
+	it('excludes a wallet whose scan never settles, without blocking the rest', async () => {
+		makeWallet('Fast', 'xpubFast');
+		makeWallet('Hangs', 'xpubHang');
+		// The hung scan models a broken SOCKS5/Tor proxy where every dial hangs: it
+		// neither resolves nor rejects. Before the fix, Promise.all would wait on it
+		// indefinitely; now the per-wallet budget cuts it loose.
+		mocks.scanWallet.mockImplementation((xpub: string) =>
+			xpub === 'xpubHang'
+				? new Promise<WalletScanResult>(() => {})
+				: Promise.resolve(scanResult(120_000))
+		);
+
+		vi.useFakeTimers();
+		try {
+			const pending = getPortfolioDetail(userId);
+			// Advance past the 10s per-wallet budget so the hung scan times out.
+			await vi.advanceTimersByTimeAsync(10_000);
+			const detail = await pending;
+
+			expect(detail.walletCount).toBe(2);
+			expect(detail.scannedCount).toBe(1); // only the fast wallet counted
+			expect(detail.confirmed).toBe(120_000);
+			expect(detail.allocation.map((a) => a.name)).toEqual(['Fast']);
+			// The over-budget wallet logged the same exclusion warning a hard failure does.
+			expect(
+				logMock.warn.mock.calls.some(([, msg]) => /excluded from totals/.test(String(msg)))
+			).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
 // ---- cairn-ittq: balance-history backfill on first scan -------------------------
 
 import { buildBackfillPoints, getBalanceSeries } from './portfolio';

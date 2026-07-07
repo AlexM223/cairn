@@ -6,6 +6,7 @@ import tls from 'node:tls';
 import { EventEmitter } from 'node:events';
 import { SocksClient } from 'socks';
 import { childLogger } from '../logger';
+import { recordChainOk, recordChainError } from '../chainHealth';
 
 const log = childLogger('electrum');
 
@@ -151,6 +152,11 @@ export class ElectrumClient extends EventEmitter {
 				if (settled) return;
 				settled = true;
 				this.connecting = null;
+				// Feed the instance-wide transport-health signal (cairn-hy8z): a failed
+				// dial — proxy rejection, TLS error, connect timeout — is what makes the
+				// "can't reach the Bitcoin network" banner appear instead of leaving the
+				// user on an endless skeleton with no idea the transport is the problem.
+				recordChainError(err);
 				reject(err);
 			};
 
@@ -169,6 +175,9 @@ export class ElectrumClient extends EventEmitter {
 				this.rawRequest('server.version', [CLIENT_NAME, PROTOCOL_VERSION])
 					.then(async () => {
 						this.reconnectDelay = RECONNECT_MIN_MS;
+						// The transport is reachable right now — clears the unhealthy
+						// signal + failure count behind the chain-health banner (cairn-hy8z).
+						recordChainOk();
 						await this.resubscribe();
 						this.startKeepalive();
 						if (settled) return;
