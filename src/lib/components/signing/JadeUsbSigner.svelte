@@ -5,6 +5,7 @@
 	import Term from '$lib/components/Term.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import DeviceHelpLink from '$lib/components/signing/DeviceHelpLink.svelte';
+	import SecureContextHelp from '$lib/components/signing/SecureContextHelp.svelte';
 	import { formatSats, truncateMiddle } from '$lib/format';
 	import {
 		isWebSerialAvailable,
@@ -220,6 +221,7 @@
 						? 'sign this key with the file method instead'
 						: 'use the Animated QR / file method instead'}.
 				</p>
+				<SecureContextHelp what="Jade USB signing" />
 				<DeviceHelpLink device="jade" kind="buy" />
 			</div>
 		</div>

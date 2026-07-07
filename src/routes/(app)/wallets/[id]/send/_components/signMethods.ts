@@ -10,10 +10,7 @@
 
 import { isWebHidAvailable } from '$lib/hw/ledger';
 import { isTrezorConnectAvailable } from '$lib/hw/trezor';
-import {
-	isWebHidAvailable as isBitboxWebHidAvailable,
-	bitbox02SupportsScriptType
-} from '$lib/hw/bitbox02';
+import { isBitbox02Available, bitbox02SupportsScriptType } from '$lib/hw/bitbox02';
 import { isWebSerialAvailable } from '$lib/hw/jade';
 import type { ScriptType } from '$lib/types';
 import type { DeviceMethod } from './signerContract';
@@ -41,12 +38,12 @@ export interface DeviceSignMethod extends DeviceMethod {
 /** The capability probes the method list gates on. Injectable so tests can
  *  simulate any browser; the defaults are the real driver feature checks. */
 export interface SignMethodCapabilities {
-	/** Secure context for the Trezor Connect popup. */
+	/** A browser at all — the Trezor Connect popup carries its own transport. */
 	trezorConnectAvailable: () => boolean;
 	/** WebHID (Ledger). */
 	webHidAvailable: () => boolean;
-	/** WebHID as the BitBox02 driver probes it. */
-	bitboxWebHidAvailable: () => boolean;
+	/** BitBox02 reachability: WebHID or the BitBoxBridge (any browser). */
+	bitbox02Available: () => boolean;
 	/** Web Serial (Jade over USB). */
 	webSerialAvailable: () => boolean;
 	/** Whether the BitBox02 firmware can sign this wallet's script type. */
@@ -56,7 +53,7 @@ export interface SignMethodCapabilities {
 const DEFAULT_CAPABILITIES: SignMethodCapabilities = {
 	trezorConnectAvailable: isTrezorConnectAvailable,
 	webHidAvailable: isWebHidAvailable,
-	bitboxWebHidAvailable: isBitboxWebHidAvailable,
+	bitbox02Available: isBitbox02Available,
 	webSerialAvailable: isWebSerialAvailable,
 	bitbox02SupportsScriptType
 };
@@ -79,8 +76,7 @@ export function deviceSignMethods(
 			blurb: 'Sign on-device over USB via Trezor Connect — approve in the Connect popup',
 			icon: 'shield',
 			available: () => caps.trezorConnectAvailable(),
-			unavailableReason:
-				'Needs a secure context (HTTPS or localhost) for the Trezor Connect popup.'
+			unavailableReason: 'The Trezor Connect popup can only open from a web browser.'
 		},
 		{
 			key: 'ledger',
@@ -94,14 +90,14 @@ export function deviceSignMethods(
 		{
 			key: 'bitbox02',
 			name: 'BitBox02',
-			blurb: 'Sign on-device over USB (WebHID) — nothing leaves the device but signatures',
+			blurb: 'Sign on-device over USB — directly, or through the BitBoxBridge app',
 			icon: 'shield',
-			// Needs WebHID AND a script type the device supports (no legacy p2pkh).
-			available: () =>
-				caps.bitboxWebHidAvailable() && caps.bitbox02SupportsScriptType(walletScriptType),
+			// Reachable in any browser (WebHID or the BitBoxBridge) — but the
+			// script type must be one the device supports (no legacy p2pkh).
+			available: () => caps.bitbox02Available() && caps.bitbox02SupportsScriptType(walletScriptType),
 			unavailableReason: !caps.bitbox02SupportsScriptType(walletScriptType)
 				? "The BitBox02 doesn't support legacy (P2PKH) single-sig wallets — use the file method."
-				: 'Needs WebHID, which is only in Chromium desktop browsers (Chrome, Edge, Brave) over HTTPS or localhost.'
+				: 'The BitBox02 can only connect from a web browser.'
 		},
 		{
 			key: 'jade',

@@ -5,9 +5,10 @@
 	import Term from '$lib/components/Term.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import DeviceHelpLink from '$lib/components/signing/DeviceHelpLink.svelte';
+	import SecureContextHelp from '$lib/components/signing/SecureContextHelp.svelte';
 	import { formatSats, truncateMiddle } from '$lib/format';
 	import {
-		isWebHidAvailable,
+		isBitbox02Available,
 		signPsbtWithBitbox02,
 		buildSimpleScriptConfig,
 		singleSigAccountPath,
@@ -77,7 +78,7 @@
 		onusefile?: () => void;
 	} = $props();
 
-	// WebHID must only be probed in the browser: navigator.hid does not exist
+	// Availability must only be probed in the browser: navigator does not exist
 	// during SSR. We start pessimistic (unavailable) and re-check after mount, so
 	// the server-rendered markup is the safe disabled state and never touches
 	// navigator. `mounted` gates the whole interactive UI on client hydration.
@@ -101,7 +102,7 @@
 
 	onMount(() => {
 		mounted = true;
-		available = isWebHidAvailable();
+		available = isBitbox02Available();
 	});
 
 	async function connectAndSign() {
@@ -169,9 +170,9 @@
 			<p class="method-sub">
 				Sign on-device over
 				<Term
-					tip="WebHID is a browser API that lets a web page talk directly to USB devices like a BitBox02 — no extra app or driver. It works in Chromium desktop browsers (Chrome, Edge, Brave) over HTTPS or localhost."
+					tip="The browser talks to the BitBox02 directly (WebHID, in Chromium desktop browsers over HTTPS or localhost) or through the BitBoxBridge app from bitbox.swiss, which works in any browser — including over plain HTTP."
 				>
-					WebHID
+					USB
 				</Term>. Nothing leaves the device but {multisig ? "this key's signature" : 'signatures'}.
 			</p>
 		</div>
@@ -254,20 +255,17 @@
 			{/if}
 		{/if}
 	{:else if !available}
-		<!-- WebHID unavailable: disabled state with a plain-language reason. -->
+		<!-- Not a browser environment: disabled state with a plain-language reason. -->
 		<div class="unavailable" role="note">
 			<span class="unavailable-icon"><Icon name="alert-triangle" size={18} /></span>
 			<div>
 				<p class="unavailable-title" id="bitbox02-unavailable-title">
-					BitBox02 signing isn't available in this browser
+					BitBox02 signing isn't available here
 				</p>
 				<p class="hint" id="bitbox02-unavailable-reason">
-					It needs
-					<Term tip="A browser API for talking to USB devices directly.">WebHID</Term>, which is
-					only in Chromium-based desktop browsers — Chrome, Edge, or Brave — served over HTTPS or
-					localhost. Open this page in one of those, or {multisig
-						? 'sign this key with the file method instead'
-						: 'use the Generic wallet / file method instead'}.
+					The BitBox02 can't be reached from this page. {multisig
+						? 'Sign this key with the file method instead'
+						: 'Use the Generic wallet / file method instead'}.
 				</p>
 				<DeviceHelpLink device="bitbox02" kind="buy" />
 			</div>
@@ -394,6 +392,11 @@
 			     flag-gated (it is help, not promotion). -->
 			<DeviceHelpLink device="bitbox02" kind="support" />
 		{/if}
+
+		<!-- On a plain-HTTP page the connect above goes through the BitBoxBridge
+		     app; Cairn's secure address lets the browser talk to the device
+		     directly instead. Renders nothing in a secure context. -->
+		<SecureContextHelp what="direct USB signing (no BitBoxBridge app needed)" />
 
 		<div class="actions">
 			<button class="btn btn-primary" onclick={connectAndSign} disabled={signing}>

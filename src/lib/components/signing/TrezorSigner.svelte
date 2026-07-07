@@ -65,7 +65,7 @@
 		onusefile?: () => void;
 	} = $props();
 
-	// The secure-context check must only run in the browser: window does not
+	// The availability check must only run in the browser: window does not
 	// exist during SSR. We start pessimistic (unavailable) and re-check after
 	// mount, so the server-rendered markup is the safe disabled state and never
 	// touches window. `mounted` gates the whole interactive UI on client hydration.
@@ -125,7 +125,7 @@
 			<p class="method-sub">
 				Sign on-device via the
 				<Term
-					tip="Trezor Connect is Trezor's official browser integration. It opens a small popup window from trezor.io that talks to your device — no extra app or driver, and it works in any modern browser over HTTPS or localhost."
+					tip="Trezor Connect is Trezor's official browser integration. It opens a small popup window from trezor.io that talks to your device — no extra app or driver, and it works in any modern browser."
 				>
 					Trezor Connect
 				</Term>
@@ -168,7 +168,7 @@
 		<!-- Server-rendered / pre-hydration placeholder. Never probes window. -->
 		<div class="hint">Checking for device support…</div>
 	{:else if !available}
-		<!-- Insecure context: disabled state with a plain-language reason. -->
+		<!-- Not a browser environment: disabled state with a plain-language reason. -->
 		<div class="unavailable" role="note">
 			<span class="unavailable-icon"><Icon name="alert-triangle" size={18} /></span>
 			<div>
@@ -179,10 +179,9 @@
 				     reader users landing on the button by control navigation hear
 				     WHY the device path is unavailable, not just the workaround. -->
 				<p class="hint" id="trezor-unavailable-reason">
-					The Trezor Connect popup needs a secure page — HTTPS or localhost. Open Cairn over one of
-					those, or {multisig
-						? 'sign this key with the file method instead'
-						: 'use the Generic wallet / file method instead'}.
+					The Trezor Connect popup can't open here. {multisig
+						? 'Sign this key with the file method instead'
+						: 'Use the Generic wallet / file method instead'}.
 				</p>
 				<DeviceHelpLink device="trezor" kind="buy" />
 			</div>

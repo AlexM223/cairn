@@ -1,7 +1,7 @@
 // Trezor hardware-wallet signer — Trezor Connect v9 (popup) driver.
 //
-// Framework-agnostic on purpose: no Svelte, no DOM beyond the secure-context
-// feature check, so the pure logic (PSBT → Connect signTransaction params,
+// Framework-agnostic on purpose: no Svelte, no DOM beyond a browser-environment
+// check, so the pure logic (PSBT → Connect signTransaction params,
 // signature merge-back) is unit-testable without a device. The heavy
 // @trezor/connect-web module is imported lazily inside signPsbtWithTrezor —
 // never at module top level — so SSR and non-Trezor users never pay to load it.
@@ -46,7 +46,7 @@ const SIGHASH_ALL = 0x01;
  * offer "approve the popup" vs "reconnect the device") without string-matching.
  */
 export type TrezorErrorCode =
-	| 'unavailable' // not a secure browser context — the Connect popup can't run
+	| 'unavailable' // not a browser (SSR/Node) — the Connect popup can't run
 	| 'rejected' // user declined on the device itself
 	| 'cancelled' // popup closed / permissions not granted (host-side, not on-device)
 	| 'no_device' // no Trezor found, or it disconnected mid-flow
@@ -64,13 +64,15 @@ export class TrezorError extends HwError<TrezorErrorCode> {
 const trezorFail = (message: string): TrezorError => new TrezorError(message, 'unexpected');
 
 /**
- * True in any browser running in a secure context (HTTPS or localhost). Unlike
- * Ledger's WebHID, Trezor Connect works cross-browser: the popup it opens on
- * connect.trezor.io holds the device transport, so the host page only needs to
- * be allowed to open that popup.
+ * True in any browser. Unlike Ledger's WebHID, Trezor Connect works
+ * cross-browser AND from insecure origins (plain-HTTP Umbrel included): the
+ * popup it opens on connect.trezor.io is its own secure context and holds the
+ * device transport (WebUSB/Bridge), so the host page's scheme doesn't matter —
+ * it only needs to be allowed to open that popup. Caravan ships the same popup
+ * with no secure-context gate, verified working on Umbrel HTTP (cairn-n5ok).
  */
 export function isTrezorConnectAvailable(): boolean {
-	return typeof window !== 'undefined' && window.isSecureContext === true;
+	return typeof window !== 'undefined';
 }
 
 // BIP purpose (first, hardened path element) → Trezor input/change-output
@@ -533,7 +535,7 @@ async function ensureInit(): Promise<TrezorConnectApi> {
 export async function signPsbtWithTrezor(unsignedPsbtBase64: string): Promise<string> {
 	if (!isTrezorConnectAvailable()) {
 		throw new TrezorError(
-			'Trezor signing needs a secure browser context (HTTPS or localhost) so the Trezor Connect popup can open.',
+			'Trezor Connect can only run in a web browser.',
 			'unavailable'
 		);
 	}
@@ -1259,7 +1261,7 @@ export async function readMultisigKeyFromTrezor(
 ): Promise<{ xpub: string; fingerprint: string; path: string }> {
 	if (!isTrezorConnectAvailable()) {
 		throw new TrezorError(
-			'Trezor signing needs a secure browser context (HTTPS or localhost) so the Trezor Connect popup can open.',
+			'Trezor Connect can only run in a web browser.',
 			'unavailable'
 		);
 	}
@@ -1349,7 +1351,7 @@ export async function readSingleSigKeyFromTrezor(
 ): Promise<{ xpub: string; fingerprint: string; path: string }> {
 	if (!isTrezorConnectAvailable()) {
 		throw new TrezorError(
-			'Trezor signing needs a secure browser context (HTTPS or localhost) so the Trezor Connect popup can open.',
+			'Trezor Connect can only run in a web browser.',
 			'unavailable'
 		);
 	}
@@ -1402,7 +1404,7 @@ export async function readBip45KeyFromTrezor(): Promise<{
 }> {
 	if (!isTrezorConnectAvailable()) {
 		throw new TrezorError(
-			'Trezor signing needs a secure browser context (HTTPS or localhost) so the Trezor Connect popup can open.',
+			'Trezor Connect can only run in a web browser.',
 			'unavailable'
 		);
 	}
@@ -1459,7 +1461,7 @@ export async function readBip45KeyFromTrezor(): Promise<{
 export async function signMultisigPsbtWithTrezor(params: MultisigSignParams): Promise<string> {
 	if (!isTrezorConnectAvailable()) {
 		throw new TrezorError(
-			'Trezor signing needs a secure browser context (HTTPS or localhost) so the Trezor Connect popup can open.',
+			'Trezor Connect can only run in a web browser.',
 			'unavailable'
 		);
 	}

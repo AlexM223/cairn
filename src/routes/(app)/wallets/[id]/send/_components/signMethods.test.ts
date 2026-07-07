@@ -13,7 +13,7 @@ import {
 const ALL_ON: SignMethodCapabilities = {
 	trezorConnectAvailable: () => true,
 	webHidAvailable: () => true,
-	bitboxWebHidAvailable: () => true,
+	bitbox02Available: () => true,
 	webSerialAvailable: () => true,
 	bitbox02SupportsScriptType: () => true
 };
@@ -21,7 +21,7 @@ const ALL_ON: SignMethodCapabilities = {
 const NO_BROWSER_APIS: SignMethodCapabilities = {
 	trezorConnectAvailable: () => false,
 	webHidAvailable: () => false,
-	bitboxWebHidAvailable: () => false,
+	bitbox02Available: () => false,
 	webSerialAvailable: () => false,
 	// Script-type support is a device property, not a browser one — keep it
 	// true so the reason distinguishes "browser can't" from "device can't".
@@ -84,7 +84,7 @@ describe('deviceSignMethods (cairn-34nl)', () => {
 		}
 	});
 
-	it('disables BitBox02 for a legacy p2pkh wallet with the legacy-specific reason, even with WebHID', () => {
+	it('disables BitBox02 for a legacy p2pkh wallet with the legacy-specific reason, even when reachable', () => {
 		const caps: SignMethodCapabilities = {
 			...ALL_ON,
 			bitbox02SupportsScriptType: (scriptType) => scriptType !== 'p2pkh'
@@ -93,10 +93,10 @@ describe('deviceSignMethods (cairn-34nl)', () => {
 		expect(legacy.available()).toBe(false);
 		expect(legacy.unavailableReason).toMatch(/P2PKH/i);
 
-		// A supported script type keeps the WebHID-flavoured reason and stays live.
+		// A supported script type keeps the browser-flavoured reason and stays live.
 		const segwit = byKey(deviceSignMethods('p2wpkh', caps), 'bitbox02');
 		expect(segwit.available()).toBe(true);
-		expect(segwit.unavailableReason).toMatch(/WebHID/);
+		expect(segwit.unavailableReason).toMatch(/browser/i);
 	});
 
 	it('default probes are SSR-safe: in Node the USB methods report unavailable instead of throwing', () => {

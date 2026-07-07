@@ -4,6 +4,7 @@ import { createBase58check } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha2.js';
 import {
 	isWebHidAvailable,
+	isBitbox02Available,
 	singleSigAccountPath,
 	multisigAccountPath,
 	normalizeXpub,
@@ -37,6 +38,22 @@ function withVersion(xpub: string, version: number): string {
 describe('isWebHidAvailable', () => {
 	it('is false in a Node/SSR environment with no navigator.hid', () => {
 		expect(isWebHidAvailable()).toBe(false);
+	});
+});
+
+describe('isBitbox02Available', () => {
+	it('is false in a Node/SSR environment with no window', () => {
+		expect(isBitbox02Available()).toBe(false);
+	});
+
+	it('is true in any browser (window present), even without WebHID — the BitBoxBridge path remains', () => {
+		vi.stubGlobal('window', {});
+		try {
+			expect(isBitbox02Available()).toBe(true);
+			expect(isWebHidAvailable()).toBe(false);
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 });
 
@@ -333,8 +350,8 @@ describe('without a Node Buffer global (browser environment)', () => {
 // The device flows are exercised only for their up-front guards (a bad script
 // type or empty PSBT must fail BEFORE any device I/O). The bitbox-api WASM
 // module is mocked so no real WASM/WebHID is touched — same spirit as
-// ledger.test.ts mocking its transport. navigator.hid is absent under Vitest,
-// so connect flows also surface `unsupported-browser` without a mock.
+// ledger.test.ts mocking its transport. `window` is absent under Vitest, so
+// unstubbed connect flows surface `unavailable` before any device I/O.
 describe('device-flow guards (no hardware)', () => {
 	it('readSingleSigKeyFromBitbox02 rejects p2pkh before connecting', async () => {
 		const { readSingleSigKeyFromBitbox02 } = await import('./bitbox02');
@@ -398,7 +415,7 @@ describe('device-flow guards (no hardware)', () => {
 	/** bitbox-api mock whose connect chain yields the given fake paired device. */
 	function bitboxMock(paired: unknown) {
 		return {
-			bitbox02ConnectWebHID: vi.fn(async () => ({
+			bitbox02ConnectAuto: vi.fn(async () => ({
 				unlockAndPair: async () => ({
 					getPairingCode: () => undefined, // already paired — no code
 					waitConfirm: async () => paired
@@ -415,6 +432,7 @@ describe('device-flow guards (no hardware)', () => {
 	): Promise<{ calls: string[]; paired: ReturnType<typeof makePaired>['paired']; out: string }> {
 		const { paired, calls } = makePaired(registered);
 		vi.doMock('bitbox-api', () => bitboxMock(paired));
+		vi.stubGlobal('window', {}); // make the browser check pass
 		vi.stubGlobal('navigator', { hid: {} }); // make WebHID look available
 		try {
 			vi.resetModules();
@@ -458,11 +476,11 @@ describe('device-flow guards (no hardware)', () => {
 		expect(paired.btcRegisterScriptConfig).not.toHaveBeenCalled();
 	});
 
-	it('a supported-scriptType read surfaces unsupported-browser when navigator.hid is absent', async () => {
+	it('a supported-scriptType read surfaces unavailable outside a browser (no window)', async () => {
 		// Mock the WASM module so import() never loads real WASM; the connect guard
-		// throws unsupported-browser first because Vitest has no navigator.hid.
+		// throws unavailable first because Vitest has no window.
 		vi.doMock('bitbox-api', () => ({
-			bitbox02ConnectWebHID: vi.fn(),
+			bitbox02ConnectAuto: vi.fn(),
 			ensureError: (e: unknown) => e,
 			isUserAbort: () => false
 		}));
@@ -471,10 +489,37 @@ describe('device-flow guards (no hardware)', () => {
 			const { readSingleSigKeyFromBitbox02 } = await import('./bitbox02');
 			await expect(readSingleSigKeyFromBitbox02('p2wpkh')).rejects.toMatchObject({
 				name: 'Bitbox02Error',
-				code: 'unsupported-browser'
+				code: 'unavailable'
 			});
 		} finally {
 			vi.doUnmock('bitbox-api');
+			vi.resetModules();
+		}
+	});
+
+	it('a failed connect on a bridge-only browser (window, no WebHID) explains the BitBoxBridge', async () => {
+		// Browser present but navigator.hid absent — the Umbrel plain-HTTP case.
+		// ConnectAuto rejecting then means "no bridge either": the error must
+		// name the BitBoxBridge instead of a bare connect failure.
+		vi.doMock('bitbox-api', () => ({
+			bitbox02ConnectAuto: vi.fn(async () => {
+				throw new Error('could not connect');
+			}),
+			ensureError: (e: unknown) => e,
+			isUserAbort: () => false
+		}));
+		vi.stubGlobal('window', {});
+		try {
+			vi.resetModules();
+			const { readSingleSigKeyFromBitbox02 } = await import('./bitbox02');
+			await expect(readSingleSigKeyFromBitbox02('p2wpkh')).rejects.toMatchObject({
+				name: 'Bitbox02Error',
+				code: 'unsupported-browser',
+				message: expect.stringContaining('BitBoxBridge')
+			});
+		} finally {
+			vi.doUnmock('bitbox-api');
+			vi.unstubAllGlobals();
 			vi.resetModules();
 		}
 	});

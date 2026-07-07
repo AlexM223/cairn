@@ -3,6 +3,7 @@
 	import { deserialize } from '$app/forms';
 	import { page } from '$app/state';
 	import Icon from '$lib/components/Icon.svelte';
+	import SecureContextHelp from '$lib/components/signing/SecureContextHelp.svelte';
 	import Stepper from '$lib/components/Stepper.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
@@ -785,10 +786,6 @@
 </svelte:head>
 
 <div class="wizard fade-in" bind:this={pageEl}>
-	<a href="/wallets" class="back-link">
-		<Icon name="chevron-left" size={14} />
-		Wallets
-	</a>
 	<h1 class="page-title" style="margin-bottom: 4px">Create a multisig wallet</h1>
 	<p class="hint" style="margin-bottom: 20px">
 		Money that needs several of your keys to move — no single point of failure.
@@ -1422,6 +1419,14 @@
 											{#if deviceBusy || adding}<span class="spinner"></span>{/if}
 											Connect {CONNECT_LABELS[method]}
 										</button>
+										{#if method === 'ledger' || method === 'jade'}
+											<!-- These need WebHID/Web Serial, which plain-HTTP pages don't
+											     get; Trezor's popup carries its own transport and the
+											     BitBox02 can go through its bridge app. -->
+											<SecureContextHelp what="{CONNECT_LABELS[method]} connections" />
+										{:else if method === 'bitbox02'}
+											<SecureContextHelp what="direct USB connections (no BitBoxBridge app needed)" />
+										{/if}
 									{/if}
 								</div>
 							{:else if method === 'coldcard'}
@@ -1497,6 +1502,7 @@
 											This browser can't scan QR codes from a camera — paste the key from the
 											QR instead ("Enter it as text" below).
 										</p>
+										<SecureContextHelp what="camera scanning" />
 									{/if}
 								</div>
 							{:else}
@@ -2089,19 +2095,6 @@
 <style>
 	.wizard {
 		max-width: 720px;
-	}
-
-	.back-link {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		font-size: 12.5px;
-		color: var(--text-secondary);
-		margin-bottom: 14px;
-	}
-
-	.back-link:hover {
-		color: var(--accent);
 	}
 
 	.stepper-wrap {

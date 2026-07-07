@@ -16,12 +16,14 @@
 // (btcSignPSBT). The pure part here is therefore the request shape — the
 // scriptConfig + account keypath — not a signature merge-back.
 //
-// Connection posture: WebHID only (Chrome/Edge/Brave desktop), mirroring the
-// Ledger driver's Chromium-only stance. bitbox-api can also fall back to the
-// locally-installed BitBoxBridge native app for Firefox/Safari (which lack
-// WebHID) via bitbox02ConnectAuto; Cairn treats that as a documented
-// unsupported gap for v1 and connects strictly over WebHID (bitbox02ConnectWebHID),
-// throwing a clear `unsupported-browser` error when navigator.hid is absent.
+// Connection posture: bitbox02ConnectAuto — WebHID when the browser has it
+// (Chromium desktop on HTTPS/localhost), otherwise the locally-installed
+// BitBoxBridge native service (ws://127.0.0.1:8178). The bridge is what makes
+// the BitBox02 reachable from Firefox/Safari AND from plain-HTTP origins like
+// a stock Umbrel install, where navigator.hid doesn't exist; it shows its own
+// native "allow this origin?" confirmation for unknown hosts. Same posture as
+// Caravan, verified working on Umbrel HTTP (cairn-n5ok — this replaced the v1
+// WebHID-only stance).
 //
 // PAIRING PERSISTENCE (follow-up, intentionally not built here): the first
 // WebHID connection performs a Noise-protocol pairing (trust-on-first-use
@@ -57,8 +59,8 @@ import type {
  * Mirrors LedgerError/TrezorError.
  */
 export type Bitbox02ErrorCode =
-	| 'unsupported-browser' // WebHID not present (Firefox/Safari — BitBoxBridge unsupported in v1)
-	| 'unavailable' // secure-context / navigator missing entirely
+	| 'unsupported-browser' // neither WebHID nor the BitBoxBridge could reach a device
+	| 'unavailable' // not a browser (SSR/Node) — navigator missing entirely
 	| 'device_locked' // device not unlocked (PIN not entered)
 	| 'pairing_rejected' // user declined the on-device pairing confirmation
 	| 'rejected' // user declined an operation on-device
@@ -81,6 +83,17 @@ export function isWebHidAvailable(): boolean {
 		typeof (navigator as Navigator & { hid?: unknown }).hid !== 'undefined' &&
 		!!(navigator as Navigator & { hid?: unknown }).hid
 	);
+}
+
+/**
+ * True in any browser: with WebHID the device connects directly; without it
+ * (Firefox/Safari, or Chromium on a plain-HTTP origin like Umbrel) the
+ * BitBoxBridge service can still reach it. Only SSR/Node is a hard no — the
+ * UI should offer the tile and let connect errors explain a missing bridge.
+ * Probes `window` (not `navigator`, which Node 21+ also defines globally).
+ */
+export function isBitbox02Available(): boolean {
+	return typeof window !== 'undefined';
 }
 
 // ---------------------------------------------------------------- single-sig
@@ -414,10 +427,11 @@ async function loadBitbox(): Promise<BitboxModule> {
 }
 
 /**
- * Connect over WebHID, unlock, and pair, returning a PairedBitBox plus the
- * loaded module (for error mapping) and a close() helper. WebHID only — throws
- * `unsupported-browser` when navigator.hid is absent (Firefox/Safari), mirroring
- * Ledger's Chromium-only posture; BitBoxBridge fallback is a documented gap.
+ * Connect (WebHID, or the BitBoxBridge when WebHID is absent), unlock, and
+ * pair, returning a PairedBitBox plus the loaded module (for error mapping)
+ * and a close() helper. When neither transport can reach a device on a
+ * bridge-only browser, the error explains the BitBoxBridge requirement
+ * instead of a bare connect failure.
  *
  * `onPairingCode` is invoked with the trust-on-first-use pairing code (first
  * connection only) so the UI can display it while the user confirms on-device.
@@ -428,18 +442,25 @@ async function connectAndPair(
 	mod: BitboxModule,
 	onPairingCode?: (code: string) => void
 ): Promise<{ paired: PairedBitBoxType; close: () => void }> {
-	if (!isWebHidAvailable()) {
-		throw new Bitbox02Error(
-			'The BitBox02 needs a Chromium-based desktop browser (Chrome, Edge, or Brave) with WebHID, served over HTTPS or localhost. Firefox and Safari are not supported.',
-			'unsupported-browser'
-		);
+	if (!isBitbox02Available()) {
+		throw new Bitbox02Error('The BitBox02 can only connect from a web browser.', 'unavailable');
 	}
 
 	let unpaired: BitBoxType;
 	try {
-		// WebHID-only connect (never the BitBoxBridge auto-fallback).
-		unpaired = await mod.bitbox02ConnectWebHID(undefined);
+		// WebHID where the browser has it, else the BitBoxBridge native service.
+		unpaired = await mod.bitbox02ConnectAuto(undefined);
 	} catch (err) {
+		// On a bridge-only browser (no WebHID: Firefox/Safari, or any browser on
+		// a plain-HTTP origin like Umbrel) a connect failure usually means the
+		// bridge isn't installed/running — say that instead of a bare failure.
+		if (!isWebHidAvailable()) {
+			throw new Bitbox02Error(
+				"Couldn't reach your BitBox02. On this connection the browser can't use USB directly, so Cairn connects through the BitBoxBridge app — install it from bitbox.swiss, make sure it's running, approve this site when it asks, then try again.",
+				'unsupported-browser',
+				{ cause: err }
+			);
+		}
 		throw toBitbox02Error(err, mod);
 	}
 

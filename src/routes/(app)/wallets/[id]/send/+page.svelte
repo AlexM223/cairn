@@ -26,6 +26,7 @@
 	import TrezorSigner from '$lib/components/signing/TrezorSigner.svelte';
 	import BitboxSigner from '$lib/components/signing/BitboxSigner.svelte';
 	import JadeUsbSigner from '$lib/components/signing/JadeUsbSigner.svelte';
+	import SecureContextHelp from '$lib/components/signing/SecureContextHelp.svelte';
 	import JadeQrSigner from './_components/JadeQrSigner.svelte';
 	import type { SignerContext } from './_components/signerContract';
 	import { deviceSignMethods, type DeviceSignMethodKey } from './_components/signMethods';
@@ -1170,6 +1171,11 @@
 					before it can be broadcast.
 				</p>
 			</HowItWorks>
+
+			<!-- Plain-HTTP page (e.g. stock Umbrel): the USB methods below are limited
+			     or disabled; Cairn's own HTTPS listener is the way to use them
+			     directly. Renders nothing in a secure context. -->
+			<SecureContextHelp what="plug-in USB signing" />
 
 			<div class="method-grid">
 				<!-- Generic / file method: always available, hosts its own upload UI. -->

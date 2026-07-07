@@ -6,6 +6,7 @@
 	import { onDestroy, onMount, tick } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import DevicePicker from '$lib/components/DevicePicker.svelte';
+	import SecureContextHelp from '$lib/components/signing/SecureContextHelp.svelte';
 	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import type { ScriptType, WalletDeviceType } from '$lib/types';
@@ -592,10 +593,6 @@
 </svelte:head>
 
 <div class="wizard fade-in">
-	<a href="/wallets" class="back-link">
-		<Icon name="chevron-left" size={14} />
-		Wallets
-	</a>
 	<h1 class="page-title" style="margin-bottom: 4px">Add a wallet</h1>
 	<p class="hint" style="margin-bottom: 24px">
 		A short guided setup — Cairn only ever sees public keys.
@@ -868,6 +865,11 @@
 								{#if deviceBusy}<span class="spinner"></span>{/if}
 								Connect {method === 'trezor' ? 'Trezor' : 'Ledger'}
 							</button>
+							{#if method === 'ledger'}
+								<!-- Ledger needs WebHID, which plain-HTTP pages don't get; the
+								     Trezor popup carries its own transport, so no note there. -->
+								<SecureContextHelp what="Ledger connections" />
+							{/if}
 						</div>
 					{:else if method === 'bitbox02'}
 						<div class="connect-box">
@@ -885,6 +887,7 @@
 								{#if deviceBusy}<span class="spinner"></span>{/if}
 								Connect BitBox02
 							</button>
+							<SecureContextHelp what="direct USB connections (no BitBoxBridge app needed)" />
 						</div>
 					{:else if method === 'jade'}
 						<div class="connect-box">
@@ -902,6 +905,7 @@
 								{#if deviceBusy}<span class="spinner"></span>{/if}
 								Connect Jade
 							</button>
+							<SecureContextHelp what="Jade USB connections" />
 						</div>
 					{:else if method === 'coldcard'}
 						<div class="connect-box">
@@ -961,6 +965,7 @@
 									This browser can't scan QR codes from a camera — paste the key instead
 									(choose "Paste public key").
 								</p>
+								<SecureContextHelp what="camera scanning" />
 							{/if}
 						</div>
 					{:else}
@@ -1385,19 +1390,6 @@
 		gap: 6px;
 		font-size: 12.5px;
 		color: var(--success);
-	}
-
-	.back-link {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		font-size: 12.5px;
-		color: var(--text-secondary);
-		margin-bottom: 14px;
-	}
-
-	.back-link:hover {
-		color: var(--accent);
 	}
 
 	/* --- resume note (shown after a mid-wizard reload restored progress) --- */

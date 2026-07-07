@@ -6,7 +6,7 @@
 // admins, does NOT fire for members, exempts /recovery-setup itself (no loop),
 // and stops once recovery is actually complete.
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { db } from '$lib/server/db';
 import { registerUser, completeForcedCredentialReset } from '$lib/server/auth';
 import { setSetting } from '$lib/server/settings';
@@ -161,5 +161,49 @@ describe('(app) layout announcement banners (flag-gated)', () => {
 		dismissAnnouncement(member.id, a.id);
 		const data = await loadData({});
 		expect(data.announcements).toEqual([]);
+	});
+});
+
+// Self-signed HTTPS listener advertisement (cairn-wgr8): the layout tells the
+// client where Cairn's own secure-context origin lives (or that there is none)
+// so USB-signing UI can offer it on plain-HTTP pages. External (host-mapped)
+// port wins over the listen port; junk values mean "not running".
+describe('(app) layout httpsPort (cairn-wgr8)', () => {
+	async function loadData(): Promise<{ httpsPort: number | null }> {
+		const event = {
+			locals: { user: member, flags: {} },
+			url: new URL('http://localhost/wallets')
+		} as unknown as Parameters<typeof load>[0];
+		return (await load(event)) as { httpsPort: number | null };
+	}
+
+	const saved: Record<string, string | undefined> = {};
+	beforeEach(() => {
+		saved.CAIRN_HTTPS_PORT = process.env.CAIRN_HTTPS_PORT;
+		saved.CAIRN_HTTPS_EXTERNAL_PORT = process.env.CAIRN_HTTPS_EXTERNAL_PORT;
+		delete process.env.CAIRN_HTTPS_PORT;
+		delete process.env.CAIRN_HTTPS_EXTERNAL_PORT;
+	});
+	afterEach(() => {
+		for (const k of ['CAIRN_HTTPS_PORT', 'CAIRN_HTTPS_EXTERNAL_PORT']) {
+			if (saved[k] === undefined) delete process.env[k];
+			else process.env[k] = saved[k];
+		}
+	});
+
+	it('is null when no HTTPS listener is configured', async () => {
+		expect((await loadData()).httpsPort).toBeNull();
+	});
+
+	it('falls back to the listen port, and prefers the external (host-mapped) port', async () => {
+		process.env.CAIRN_HTTPS_PORT = '3443';
+		expect((await loadData()).httpsPort).toBe(3443);
+		process.env.CAIRN_HTTPS_EXTERNAL_PORT = '3212';
+		expect((await loadData()).httpsPort).toBe(3212);
+	});
+
+	it('treats junk values as not running', async () => {
+		process.env.CAIRN_HTTPS_PORT = 'not-a-port';
+		expect((await loadData()).httpsPort).toBeNull();
 	});
 });
