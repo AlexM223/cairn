@@ -144,7 +144,7 @@ export async function ensureCert(dir, hosts = DEFAULT_HOSTS) {
 		console.error(
 			`cairn: could not persist TLS certificate to ${dir} (serving it from memory; ` +
 				`expect a fresh browser warning on every restart) —`,
-			err?.message ?? err
+			err instanceof Error ? err.message : err
 		);
 	}
 	return fresh;

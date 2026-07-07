@@ -19,7 +19,7 @@ const SHA256_RSA_OID = Buffer.from('06092a864886f70d01010b', 'hex');
 async function generateLegacySha1Cert(): Promise<{ key: string; cert: string }> {
 	const selfsigned = (await import('selfsigned')).default;
 	const pems = await selfsigned.generate([{ name: 'commonName', value: 'umbrel.local' }], {
-		days: 3650,
+		notAfterDate: new Date(Date.now() + 3650 * 24 * 60 * 60 * 1000),
 		keySize: 2048,
 		algorithm: 'sha1'
 	});
