@@ -30,36 +30,47 @@ function walletId(param: string): number {
 	return id;
 }
 
-export const load: PageServerLoad = async ({ params, locals, url }) => {
-	const id = walletId(params.id);
-	const row = getWallet(locals.user!.id, id);
-	if (!row) error(404, 'Wallet not found');
+type WalletRow = NonNullable<ReturnType<typeof getWallet>>;
+type WalletScan = NonNullable<Awaited<ReturnType<typeof getWalletDetail>>>['scan'];
 
-	const base = {
-		wallet: {
-			id: row.id,
-			name: row.name,
-			scriptType: row.script_type,
-			deviceType: row.device_type ?? null,
-			xpub: row.xpub,
-			createdAt: row.created_at
-		},
-		imported: url.searchParams.get('imported') === '1',
-		// Server-tracked backup status (wallet_backups) — the single source of
-		// truth the wizard's download step and the persistent banner both use.
-		backedUp: isBackedUp('wallet', id),
-		// Tx labels are local bookkeeping — one cheap SQLite read, no network.
-		labels: getLabels(locals.user!.id, id) ?? {},
-		// Address labels (cairn-nbsx) — annotate why an address exists; local read.
-		addressLabels: getAddressLabels(locals.user!.id, 'wallet', id),
-		// Saved transactions in the draft → awaiting-signature → broadcast
-		// lifecycle. Cheap local SQLite read, newest first.
-		transactions: listTransactions(locals.user!.id, id) ?? []
-	};
+/** The Electrum/esplora-dependent slice of the wallet-detail page. Everything
+ *  here rides on network round-trips (full gap-limit scan, receive-address peek,
+ *  UTXO fetch, tip) so it is STREAMED, not awaited (see load below). */
+export interface WalletChainData {
+	scan: Pick<WalletScan, 'addresses' | 'txs' | 'confirmed' | 'unconfirmed'> | null;
+	receive: (Awaited<ReturnType<typeof peekReceiveAddress>> & { qr: string }) | null;
+	coinbaseUtxos: { txid: string; vout: number; value: number; height: number }[];
+	tipHeight: number;
+	speedUp: Awaited<ReturnType<typeof detectWalletUnconfirmedInflows>>;
+	scanError: string | null;
+}
 
+/**
+ * Do all the network-bound work off the critical render path. Mirrors
+ * `loadChainSnapshot` on the dashboard (`(app)/+page.server.ts`): it NEVER
+ * rejects — every failure resolves to an error-shaped value the page renders as
+ * a degraded/empty state, so a streamed rejection can never surface as a 500.
+ */
+async function loadWalletChainData(
+	userId: number,
+	id: number,
+	row: WalletRow
+): Promise<WalletChainData> {
 	try {
-		const detail = await getWalletDetail(locals.user!.id, id);
-		if (!detail) error(404, 'Wallet not found');
+		const detail = await getWalletDetail(userId, id);
+		if (!detail) {
+			// The wallet row exists (checked synchronously in load), so a missing
+			// detail here means the scan couldn't be built — degrade to an empty
+			// scan rather than 404ing a page whose shell has already painted.
+			return {
+				scan: null,
+				receive: null,
+				coinbaseUtxos: [],
+				tipHeight: 0,
+				speedUp: [],
+				scanError: null
+			};
+		}
 		const receive = await peekReceiveAddress(row);
 		const qr = await QRCode.toDataURL(receive.address, QR_OPTS);
 
@@ -70,10 +81,7 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 		let coinbaseUtxos: { txid: string; vout: number; value: number; height: number }[] = [];
 		let tipHeight = 0;
 		try {
-			const [utxos, tip] = await Promise.all([
-				getWalletUtxos(row.xpub),
-				getChain().getTip()
-			]);
+			const [utxos, tip] = await Promise.all([getWalletUtxos(row.xpub), getChain().getTip()]);
 			tipHeight = tip.height;
 			coinbaseUtxos = utxos
 				.filter((u) => u.coinbase)
@@ -88,13 +96,12 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 		// button simply doesn't appear rather than failing the page.
 		let speedUp: Awaited<ReturnType<typeof detectWalletUnconfirmedInflows>> = [];
 		try {
-			speedUp = (await detectWalletUnconfirmedInflows(locals.user!.id, id)) ?? [];
+			speedUp = (await detectWalletUnconfirmedInflows(userId, id)) ?? [];
 		} catch {
 			speedUp = [];
 		}
 
 		return {
-			...base,
 			scan: {
 				addresses: detail.scan.addresses,
 				txs: detail.scan.txs,
@@ -104,27 +111,63 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 			receive: { ...receive, qr },
 			coinbaseUtxos,
 			tipHeight,
-			speedUp: speedUp ?? [],
-			scanError: null as string | null
+			speedUp,
+			scanError: null
 		};
 	} catch (e) {
-		// Only swallow scan failures — let 404s and friends bubble.
-		if (e instanceof Error && e.cause === 'unreachable') {
-			// Mirror the success branch's shape (empty/zero values) so the generated
-			// PageData type never marks tipHeight & friends optional — the page reads
-			// data.tipHeight without guards.
-			return {
-				...base,
-				scan: null,
-				receive: null,
-				coinbaseUtxos: [] as { txid: string; vout: number; value: number; height: number }[],
-				tipHeight: 0,
-				speedUp: [] as Awaited<ReturnType<typeof detectWalletUnconfirmedInflows>>,
-				scanError: e.message
-			};
-		}
-		throw e;
+		// Scan/chain unreachable → degrade to zero/empty, never 500. This is the
+		// same "scan unreachable" branch the awaited version had, now caught inside
+		// the streamed function so the shell still paints.
+		return {
+			scan: null,
+			receive: null,
+			coinbaseUtxos: [],
+			tipHeight: 0,
+			speedUp: [],
+			scanError: e instanceof Error ? e.message : 'Could not reach the wallet scanner'
+		};
 	}
+}
+
+export const load: PageServerLoad = ({ params, locals, url, depends }) => {
+	const id = walletId(params.id);
+	const userId = locals.user!.id;
+	const row = getWallet(userId, id);
+	if (!row) error(404, 'Wallet not found');
+
+	// New-block SSE events invalidate this tag only, refreshing the wallet's
+	// chain-derived fields (tip, coinbase maturity, speed-up eligibility) live —
+	// see the +page.svelte onMount wiring. Mirrors depends('cairn:chain') on the
+	// dashboard.
+	depends(`cairn:wallet:${id}`);
+
+	return {
+		wallet: {
+			id: row.id,
+			name: row.name,
+			scriptType: row.script_type,
+			deviceType: row.device_type ?? null,
+			xpub: row.xpub,
+			createdAt: row.created_at
+		},
+		imported: url.searchParams.get('imported') === '1',
+		// Server-tracked backup status (wallet_backups) — the single source of
+		// truth the wizard's download step and the persistent banner both use.
+		backedUp: isBackedUp('wallet', id),
+		// Tx labels are local bookkeeping — one cheap SQLite read, no network.
+		labels: getLabels(userId, id) ?? {},
+		// Address labels (cairn-nbsx) — annotate why an address exists; local read.
+		addressLabels: getAddressLabels(userId, 'wallet', id),
+		// Saved transactions in the draft → awaiting-signature → broadcast
+		// lifecycle. Cheap local SQLite read, newest first.
+		transactions: listTransactions(userId, id) ?? [],
+		// Streamed, not awaited (SvelteKit 2 leaves top-level promises alone): the
+		// shell above paints immediately while the full gap-limit scan, receive
+		// peek, UTXO/tip fetch and speed-up detection resolve in the background
+		// (cairn-vknb.1). loadWalletChainData never rejects — failures resolve to
+		// an error-shaped value rendered as a degraded state.
+		chainData: loadWalletChainData(userId, id, row)
+	};
 };
 
 export const actions: Actions = {
