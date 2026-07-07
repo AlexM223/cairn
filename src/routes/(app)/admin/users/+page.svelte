@@ -22,14 +22,14 @@
 </script>
 
 <svelte:head>
-	<title>Users — Admin — Cairn</title>
+	<title>Users — Admin — Heartwood</title>
 </svelte:head>
 
 {#if form?.error}
 	<div class="form-error" role="alert" style="margin-bottom: 14px">{form.error}</div>
 {/if}
 
-<div class="card fade-in">
+<div class="hw-section fade-in">
 	<div class="table-wrap">
 		<table class="table">
 			<thead>

@@ -18,13 +18,13 @@
 </script>
 
 <svelte:head>
-	<title>Referral links — Admin — Cairn</title>
+	<title>Referral links — Admin — Heartwood</title>
 </svelte:head>
 
 {#if data.flags?.referral_links === false}
 	<!-- The page stays reachable with the flag off — an admin configures links
 	     BEFORE enabling them — but says clearly that nothing is shown to users. -->
-	<div class="card card-pad flag-notice fade-in" role="status">
+	<div class="flag-notice fade-in" role="status">
 		<Icon name="info" size={16} />
 		<div>
 			<strong>Referral links are currently turned off.</strong>
@@ -38,8 +38,8 @@
 {/if}
 
 <!-- ======================= Section 1: per-device buy links ======================= -->
-<div class="card card-pad section-card fade-in">
-	<span class="card-title">Buy-a-device links</span>
+<section class="hw-section section-card fade-in">
+	<span class="hw-title">Buy-a-device links</span>
 	<p class="hint">
 		Shown in the wallet wizards and signing flows when someone doesn't have a device yet. Leave a
 		field blank to link to the official store; paste your own (e.g. affiliate) link to override it.
@@ -86,11 +86,11 @@
 			</button>
 		</div>
 	</form>
-</div>
+</section>
 
 <!-- ================= Section 2: managed multisig services ================= -->
-<div class="card card-pad section-card fade-in">
-	<span class="card-title">Managed multisig services</span>
+<section class="hw-section section-card fade-in">
+	<span class="hw-title">Managed multisig services</span>
 	<p class="hint">
 		Optional suggestions shown in the multisig wizard for people who'd rather use a managed
 		service (Casa, Nunchuk, Unchained, …) than run a do-it-yourself multisig. Only
@@ -254,22 +254,24 @@
 			</div>
 		</div>
 	{/if}
-</div>
+</section>
 
 <style>
+	/* Quiet flag-off note above the first hairline — amber, no box. */
 	.flag-notice {
 		display: flex;
 		gap: 10px;
 		align-items: flex-start;
-		margin-bottom: 14px;
-		border-color: var(--accent-border);
-		background: var(--accent-muted);
+		padding-bottom: 18px;
+		margin-bottom: 22px;
+		border-bottom: 1px solid var(--hairline);
 		font-size: 13px;
 		line-height: 1.55;
+		color: var(--attention);
 	}
 
 	.flag-notice :global(svg) {
-		color: var(--accent);
+		color: var(--attention);
 		flex-shrink: 0;
 		margin-top: 2px;
 	}
@@ -281,14 +283,10 @@
 
 	.flag-notice a {
 		color: var(--accent);
-		text-decoration: underline;
 	}
 
 	.section-card {
-		display: flex;
-		flex-direction: column;
 		gap: 14px;
-		margin-bottom: 14px;
 	}
 
 	.device-field {
@@ -300,7 +298,7 @@
 		align-items: center;
 		gap: 6px;
 		font-size: 12.5px;
-		color: var(--success);
+		color: var(--sage);
 	}
 
 	.opt {
@@ -345,22 +343,23 @@
 		padding-bottom: 9px;
 	}
 
+	/* Editable services split by hairlines, not boxes. */
 	.service-list {
 		display: flex;
 		flex-direction: column;
-		gap: 10px;
 	}
 
 	.service-row {
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		padding: 12px 14px;
-		background: var(--bg);
+		padding: 14px 0;
+		border-bottom: 1px solid var(--hairline);
+	}
+
+	.service-row:first-child {
+		border-top: 1px solid var(--hairline);
 	}
 
 	.service-row.inactive {
-		border-style: dashed;
-		opacity: 0.75;
+		opacity: 0.6;
 	}
 
 	.row-actions {
@@ -377,10 +376,11 @@
 		gap: 8px;
 	}
 
+	/* The preview keeps a filled input-tone surface so it reads as an inset
+	   mirror of the wizard, not page content. */
 	.services-card {
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-card);
-		background: var(--bg);
+		border-radius: var(--radius-strip);
+		background: var(--bg-input);
 		padding: 14px 16px;
 		max-width: 460px;
 	}

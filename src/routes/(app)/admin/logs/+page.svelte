@@ -91,7 +91,7 @@
 </script>
 
 <svelte:head>
-	<title>Server logs — Cairn</title>
+	<title>Server logs — Admin — Heartwood</title>
 </svelte:head>
 
 <div class="bar">
@@ -123,7 +123,7 @@
 	</span>
 </div>
 
-<div class="card console">
+<div class="console">
 	{#if !data.available}
 		<div class="empty-state">
 			<Icon name="server" size={22} />
@@ -206,13 +206,19 @@
 		accent-color: var(--accent);
 	}
 	.meta-row {
-		margin-bottom: 10px;
+		margin-bottom: 6px;
+	}
+	.meta-row .hint {
+		font-size: 11.5px;
+		color: var(--eyebrow-path);
 	}
 	.meta-row .mono {
-		color: var(--text-secondary);
+		color: var(--text-muted);
 	}
 
+	/* Unboxed console: hairline rows under a hairline rule. */
 	.console {
+		border-top: 1px solid var(--hairline);
 		padding: 6px 0;
 		overflow: hidden;
 	}
@@ -224,7 +230,7 @@
 		font-size: 12.5px;
 	}
 	.line {
-		border-bottom: 1px solid var(--border-subtle);
+		border-bottom: 1px solid var(--hairline);
 	}
 	.line:last-child {
 		border-bottom: none;
@@ -238,7 +244,7 @@
 		background: transparent;
 		border: none;
 		color: var(--text-secondary);
-		padding: 6px 16px;
+		padding: 6px 2px;
 		cursor: default;
 		font: inherit;
 	}
@@ -270,23 +276,21 @@
 	.msg {
 		flex: 1;
 		min-width: 0;
-		color: var(--text);
+		color: var(--text-rows);
 		white-space: pre-wrap;
 		word-break: break-word;
 	}
-	.lvl-warn .lv {
-		color: var(--warning);
+	/* Warnings read amber; genuine errors keep --error (an operational log's
+	   failures are failures, not nudges). */
+	.lvl-warn .lv,
+	.lvl-warn .msg {
+		color: var(--attention);
 	}
 	.lvl-error .lv,
-	.lvl-fatal .lv {
-		color: var(--error);
-	}
-	.lvl-warn .msg {
-		color: var(--warning);
-	}
+	.lvl-fatal .lv,
 	.lvl-error .msg,
 	.lvl-fatal .msg {
-		color: #f0a0a0;
+		color: var(--error);
 	}
 	.lvl-debug .msg,
 	.lvl-trace .msg {
@@ -294,12 +298,13 @@
 	}
 
 	.fields {
-		margin: 0;
-		padding: 8px 16px 12px 62px;
+		margin: 0 0 8px;
+		padding: 8px 14px 12px 48px;
 		font-family: var(--font-mono);
 		font-size: 11.5px;
 		color: var(--text-secondary);
-		background: var(--bg);
+		background: var(--bg-input);
+		border-radius: var(--radius-badge);
 		white-space: pre-wrap;
 		word-break: break-word;
 		overflow-x: auto;

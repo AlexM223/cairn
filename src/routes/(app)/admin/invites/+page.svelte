@@ -36,11 +36,11 @@
 </script>
 
 <svelte:head>
-	<title>Invites — Admin — Cairn</title>
+	<title>Invites — Admin — Heartwood</title>
 </svelte:head>
 
-<div class="card card-pad create-card fade-in">
-	<span class="card-title">Create invites</span>
+<section class="hw-section create-section fade-in">
+	<span class="hw-title">Create invites</span>
 	<form
 		method="POST"
 		action="?/create"
@@ -96,9 +96,9 @@
 			</div>
 		</div>
 	{/if}
-</div>
+</section>
 
-<div class="card fade-in">
+<section class="hw-section fade-in">
 	{#if data.invites.length === 0}
 		<div class="empty-state">
 			<div class="empty-title">No invites yet</div>
@@ -146,14 +146,11 @@
 			</table>
 		</div>
 	{/if}
-</div>
+</section>
 
 <style>
-	.create-card {
-		display: flex;
-		flex-direction: column;
+	.create-section {
 		gap: 14px;
-		margin-bottom: 14px;
 	}
 
 	.create-form {
@@ -190,12 +187,13 @@
 		color: var(--text-muted);
 	}
 
+	/* Fresh codes: a filled input-tone surface (the one allowed fill). */
 	.created-box {
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
-		background: var(--surface-elevated);
-		border-radius: var(--radius-control);
+		background: var(--bg-input);
+		border-radius: var(--radius-strip);
 		padding: 12px 14px;
 	}
 
@@ -209,10 +207,10 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 7px;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-chip);
-		color: var(--text);
+		background: var(--bg-input);
+		border: 1px solid var(--border-control);
+		border-radius: var(--radius-badge);
+		color: var(--text-rows);
 		padding: 4px 9px;
 		font-size: 12.5px;
 		cursor: pointer;
