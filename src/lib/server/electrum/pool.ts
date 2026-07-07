@@ -19,6 +19,7 @@ import { ElectrumClient } from './client';
 import type {
 	ElectrumClientOptions,
 	ElectrumBalance,
+	ElectrumFeeHistogram,
 	ElectrumHistoryItem,
 	ElectrumUnspent
 } from './client';
@@ -114,6 +115,10 @@ export class ElectrumPool extends EventEmitter {
 
 	estimateFee(targetBlocks: number): Promise<number> {
 		return this.pick().estimateFee(targetBlocks);
+	}
+
+	getFeeHistogram(): Promise<ElectrumFeeHistogram> {
+		return this.pick().getFeeHistogram();
 	}
 
 	serverFeatures(): Promise<Record<string, unknown>> {

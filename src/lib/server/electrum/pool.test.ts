@@ -56,6 +56,8 @@ function startServer(): Promise<FakeServer> {
 				} else if (req.method === 'blockchain.headers.subscribe') {
 					state.subscriber = socket;
 					reply(socket, req.id, { height: 900000, hex: 'aa'.repeat(80) });
+				} else if (req.method === 'mempool.get_fee_histogram') {
+					reply(socket, req.id, [[10, 5000]]);
 				} else {
 					reply(socket, req.id, null);
 				}
@@ -133,6 +135,14 @@ describe('ElectrumPool (cairn-ynfp)', () => {
 			{ height: 900001, hex: 'bb'.repeat(80) }
 		]);
 		await expect(next).resolves.toEqual({ height: 900001, hex: 'bb'.repeat(80) });
+	});
+
+	it('getFeeHistogram delegates to a pooled connection', async () => {
+		const server = await startServer();
+		cleanups.push(() => server.close());
+
+		const pool = makePool(server.port, 2);
+		await expect(pool.getFeeHistogram()).resolves.toEqual([[10, 5000]]);
 	});
 
 	it('rejects requests after close()', async () => {

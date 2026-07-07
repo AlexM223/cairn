@@ -395,3 +395,45 @@ describe('block lookup', () => {
 		expect(block.reward).toBeNull();
 	});
 });
+
+// ---- fee histogram (electrum-backed, cairn-zoz8.2) ----------------------------------
+
+// getFeeHistogram now reads mempool.get_fee_histogram from the operator's own
+// Electrum connection instead of the esplora /mempool response. Stub the pooled
+// Electrum facade (readonly is TS-only) so the facade's passthrough + empty→null
+// collapse is exercised without a socket.
+describe('getFeeHistogram (electrum-backed)', () => {
+	function withElectrumHistogram(result: unknown): {
+		svc: ChainService;
+		getFeeHistogram: ReturnType<typeof vi.fn>;
+		getMempool: ReturnType<typeof vi.fn>;
+	} {
+		const stub = makeEsploraStub();
+		const getMempool = vi.fn();
+		Object.assign(stub, { getMempool });
+		const svc = makeService(stub);
+		const getFeeHistogram = vi.fn(async () => result);
+		Object.assign(svc, { electrum: { getFeeHistogram } });
+		return { svc, getFeeHistogram, getMempool };
+	}
+
+	it('passes the mempool.get_fee_histogram pairs through, highest fee first', async () => {
+		const histogram: [number, number][] = [
+			[120, 15_000],
+			[50, 32_000],
+			[10, 210_000],
+			[1, 90_000]
+		];
+		const { svc, getFeeHistogram, getMempool } = withElectrumHistogram(histogram);
+
+		await expect(svc.getFeeHistogram()).resolves.toEqual(histogram);
+		expect(getFeeHistogram).toHaveBeenCalledTimes(1);
+		// The esplora /mempool response is no longer the source of this chart.
+		expect(getMempool).not.toHaveBeenCalled();
+	});
+
+	it('collapses an empty mempool histogram to null', async () => {
+		const { svc } = withElectrumHistogram([]);
+		await expect(svc.getFeeHistogram()).resolves.toBeNull();
+	});
+});

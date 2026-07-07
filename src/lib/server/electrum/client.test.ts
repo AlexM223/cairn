@@ -309,6 +309,27 @@ describe('ElectrumClient', () => {
 		expect(results).toEqual(['res:a', 'res:b', 'res:c']);
 	});
 
+	it('getFeeHistogram returns the mempool.get_fee_histogram pairs (no params)', async () => {
+		const histogram = [
+			[120, 15000],
+			[50, 32000],
+			[10, 210000],
+			[1, 90000]
+		];
+		let sawParams: unknown[] | undefined;
+		const server = await withServer((req, socket) => {
+			if (req.method === 'mempool.get_fee_histogram') {
+				sawParams = req.params;
+				reply(socket, req.id, histogram);
+				return true;
+			}
+		});
+
+		const client = makeClient(server.port);
+		await expect(client.getFeeHistogram()).resolves.toEqual(histogram);
+		expect(sawParams).toEqual([]);
+	});
+
 	it('rejects with an Electrum error for JSON-RPC error responses', async () => {
 		const server = await withServer((req, socket) => {
 			if (req.method === 'boom') {
