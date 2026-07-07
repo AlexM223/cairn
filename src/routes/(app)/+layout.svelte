@@ -4,6 +4,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import AnnouncementBanner from '$lib/components/AnnouncementBanner.svelte';
 	import SyncBanner from '$lib/components/heartwood/SyncBanner.svelte';
+	import ChainHealthBanner from '$lib/components/heartwood/ChainHealthBanner.svelte';
 	import HWRail from '$lib/components/heartwood/HWRail.svelte';
 	import MobileTopBar from '$lib/components/heartwood/MobileTopBar.svelte';
 	import MobileTabRow from '$lib/components/heartwood/MobileTabRow.svelte';
@@ -108,6 +109,11 @@
 		{/if}
 
 		<main class="main">
+			<!-- Instance-wide chain-transport health (cairn-hy8z). Always mounted;
+			     renders nothing until the Electrum pool / SOCKS5 proxy is unhealthy,
+			     then warns that balances may be stale and (for admins) links to the
+			     connection settings. Polls /api/chain-health, a cheap in-memory read. -->
+			<ChainHealthBanner isAdmin={data.user.isAdmin} />
 			{#if !data.firstSyncComplete}
 				<!-- Non-blocking first-sync indicator (cairn-2zxt.1). Shown until the
 				     chain-history cache exists; polls /api/sync for live detail and
