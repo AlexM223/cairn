@@ -1,6 +1,7 @@
 <script lang="ts">
-	import { tick } from 'svelte';
-	import { replaceState } from '$app/navigation';
+	import { onMount, tick } from 'svelte';
+	import { invalidate, replaceState } from '$app/navigation';
+	import { onNewBlock } from '$lib/liveBlocks';
 	import Icon from '$lib/components/Icon.svelte';
 	import Banner from '$lib/components/Banner.svelte';
 	import Toasts from '$lib/components/Toasts.svelte';
@@ -51,6 +52,33 @@
 	const SATS_PER_BTC = 100_000_000;
 	// svelte-ignore state_referenced_locally — per-navigation constant
 	const multisigId = data.multisig.id;
+
+	// The fee/utxo/tip slice is STREAMED from the server (cairn-vknb.4): the send
+	// shell — and any resumed step — paints instantly, then this fills in when
+	// Electrum answers. On invalidate the previous snapshot stays visible until
+	// the fresh one resolves, so there's no skeleton flash on a block refresh.
+	type SendChain = Awaited<(typeof data)['chain']>;
+	let chain = $state<SendChain | null>(null);
+	const chainLoading = $derived(chain === null);
+	$effect(() => {
+		const promise = data.chain;
+		let stale = false;
+		void promise.then((snap) => {
+			if (!stale) chain = snap;
+		});
+		return () => {
+			stale = true;
+		};
+	});
+
+	// Live new-block updates refresh only the streamed fee/tip snapshot via the
+	// existing SSE channel — never a poll. The coin/utxo scan rides along in the
+	// same invalidate, which is fine: coins change on new blocks too.
+	onMount(() =>
+		onNewBlock(() => {
+			void invalidate(`cairn:multisig-send:${multisigId}`);
+		})
+	);
 	// svelte-ignore state_referenced_locally — per-navigation constant
 	const required = data.multisig.threshold;
 	// svelte-ignore state_referenced_locally — per-navigation constant
@@ -147,14 +175,22 @@
 
 	type FeeChoice = 'fast' | 'normal' | 'economy' | 'custom';
 	let feeChoice = $state<FeeChoice>('normal');
-	// svelte-ignore state_referenced_locally — intentional per-load seed
-	let customFee = $state(String(data.fees?.halfHour ?? 5));
+	// Fees stream in, so the custom-rate starting value is seeded reactively (see
+	// the effect below) rather than at load; '5' is the pre-estimate fallback.
+	let customFee = $state('5');
+	// Seed the custom-fee input from the streamed half-hour estimate until the
+	// user actually switches to the custom rate — after that it's theirs to edit.
+	$effect(() => {
+		if (feeChoice === 'custom') return;
+		const h = chain?.fees?.halfHour;
+		if (h != null) customFee = String(h);
+	});
 
 	const feeRate = $derived.by(() => {
 		const fallback = Number(customFee) || 1;
-		if (feeChoice === 'fast') return data.fees?.fastest ?? fallback;
-		if (feeChoice === 'normal') return data.fees?.halfHour ?? fallback;
-		if (feeChoice === 'economy') return data.fees?.economy ?? fallback;
+		if (feeChoice === 'fast') return chain?.fees?.fastest ?? fallback;
+		if (feeChoice === 'normal') return chain?.fees?.halfHour ?? fallback;
+		if (feeChoice === 'economy') return chain?.fees?.economy ?? fallback;
 		return Math.max(1, fallback);
 	});
 
@@ -759,7 +795,11 @@
 
 	<div class="eyebrow-row">
 		<EyebrowBreadcrumb path={[data.multisig.name]} current={crumbCurrent} />
-		<AtTipPill height={data.tipHeight} />
+		{#if chain}
+			<AtTipPill height={chain.tipHeight} />
+		{:else}
+			<span class="skeleton tip-skeleton" aria-hidden="true">at tip · 000,000</span>
+		{/if}
 	</div>
 
 	<!-- ============================================================ CREATE -->
@@ -865,7 +905,7 @@
 					<span class="fee-caption">{formatFeeRate(feeRate)} · {feeEta}</span>
 				</div>
 				<div class="fee-toggles" role="group" aria-label="Fee rate">
-					{#each [{ k: 'economy', label: 'Low', rate: data.fees?.economy }, { k: 'normal', label: 'Medium', rate: data.fees?.halfHour }, { k: 'fast', label: 'High', rate: data.fees?.fastest }] as opt (opt.k)}
+					{#each [{ k: 'economy', label: 'Low', rate: chain?.fees?.economy }, { k: 'normal', label: 'Medium', rate: chain?.fees?.halfHour }, { k: 'fast', label: 'High', rate: chain?.fees?.fastest }] as opt (opt.k)}
 						<button
 							type="button"
 							class="txt-toggle"
@@ -874,6 +914,8 @@
 						>
 							{opt.label}{#if opt.rate != null}<span class="toggle-rate tabular"
 									>&nbsp;· {opt.rate < 10 ? Number(opt.rate.toFixed(1)) : Math.round(opt.rate)}</span
+								>{:else if chainLoading}<span class="toggle-rate skeleton skeleton-rate" aria-hidden="true"
+									>&nbsp;· 00</span
 								>{/if}
 						</button>
 					{/each}
@@ -897,7 +939,9 @@
 						<span class="unit-sm">sat/vB</span>
 					</div>
 				{/if}
-				{#if !data.fees}
+				{#if chainLoading}
+					<p class="fee-caption">Fetching live fee estimates…</p>
+				{:else if !chain?.fees}
 					<p class="fee-caption">Live fee estimates are unavailable — set a custom sat/vB rate.</p>
 				{/if}
 				<p class="fee-caption">
@@ -906,7 +950,7 @@
 				</p>
 			</div>
 
-			{#if data.utxos.length > 0}
+			{#if chain && chain.utxos.length > 0}
 				{#if data.flags?.coin_control === false}
 					<!-- Coin control disabled by an admin: explain why rather than silently
 					     dropping the picker; selection stays empty so the send uses automatic
@@ -922,9 +966,9 @@
 					<div class="field">
 						<CoinControl
 							walletId={multisigId}
-							utxos={data.utxos}
+							utxos={chain.utxos}
 							bind:selected={selectedCoins}
-							tipHeight={data.tipHeight}
+							tipHeight={chain.tipHeight}
 							massEndpoint={`/api/wallets/multisig/${multisigId}/utxo-mass`}
 						/>
 					</div>
@@ -1633,6 +1677,25 @@
 		justify-content: space-between;
 		gap: 14px;
 		margin-bottom: 26px;
+	}
+
+	/* Placeholder for the AtTipPill while the streamed tip is in flight — same
+	   footprint as the pill so the eyebrow row doesn't reflow when it resolves. */
+	.tip-skeleton {
+		display: inline-flex;
+		align-items: center;
+		padding: 5px 12px;
+		font-family: var(--font-ui);
+		font-size: 11.5px;
+		font-weight: 500;
+		line-height: 1.4;
+		white-space: nowrap;
+	}
+
+	/* Fee-rate placeholder inside a toggle while estimates stream in. */
+	.skeleton-rate {
+		display: inline-block;
+		border-radius: var(--radius-badge);
 	}
 
 	/* Mobile flow header (8b/8c/8k) — this page composes its own back circle +
