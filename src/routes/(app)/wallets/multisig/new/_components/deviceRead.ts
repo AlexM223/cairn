@@ -67,11 +67,12 @@ export async function readKeyFromLedger(scriptType: MultisigScriptType): Promise
 	return callReader('ledger', mod, 'readMultisigKeyFromLedger', scriptType);
 }
 
-/** Read the BIP-48 account key from a connected BitBox02 via WebHID. Throws the
+/** Read the BIP-48 account key from a connected BitBox02 (WebHID or the
+ *  BitBoxBridge — the driver picks whichever this browser can use). Throws the
  *  driver's own typed error for plain-P2SH multisig (the device can't do it). */
 export async function readKeyFromBitbox02(scriptType: MultisigScriptType): Promise<DeviceKey> {
 	const mod = (await import('$lib/hw/bitbox02')) as unknown as Record<string, unknown>;
-	const available = mod.isWebHidAvailable;
+	const available = mod.isBitbox02Available;
 	if (typeof available === 'function' && !(available as () => boolean)()) {
 		throw new DeviceReadUnavailable('bitbox02');
 	}

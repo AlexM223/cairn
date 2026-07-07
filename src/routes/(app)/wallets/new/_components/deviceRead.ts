@@ -81,10 +81,11 @@ export async function readKeyFromLedger(scriptType: ScriptType): Promise<DeviceK
 	return callReader('ledger', mod, 'readSingleSigKeyFromLedger', scriptType);
 }
 
-/** Read the single-sig account key from a connected BitBox02 via WebHID. */
+/** Read the single-sig account key from a connected BitBox02 (WebHID or the
+ *  BitBoxBridge — the driver picks whichever this browser can use). */
 export async function readKeyFromBitbox02(scriptType: ScriptType): Promise<DeviceKey> {
 	const mod = (await import('$lib/hw/bitbox02')) as unknown as Record<string, unknown>;
-	const available = mod.isWebHidAvailable;
+	const available = mod.isBitbox02Available;
 	if (typeof available === 'function' && !(available as () => boolean)()) {
 		throw new DeviceReadUnavailable('bitbox02');
 	}
