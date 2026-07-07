@@ -985,3 +985,33 @@ db.exec(`
 		updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 	);
 `);
+
+// Known-device-keys registry (cairn-fdlf.2, see src/lib/server/deviceKeys.ts).
+// One row per (user, master fingerprint, purpose): the account xpub last read
+// off that hardware device at that purpose's path, so a later wizard session
+// can reuse it instead of forcing another live device touch (the single-sig
+// wizard's BIP-45 prefetch writes here — cairn-fdlf.1; the multisig wizard
+// read-path is cairn-fdlf.4). Modeled on Bastion's master_keys table
+// (UNIQUE(user_id, xfp, purpose)). purpose keeps the single-sig ('44'/'49'/
+// '84'/'86'), personal-multisig ('48'), and collaborative-vault ('45') key
+// families as strictly separate rows — deviceKeys.ts validates it against a
+// closed enum and requires the path to match, so the families can never be
+// conflated. Convenience cache only: wallets/multisig_keys stay the source of
+// truth. share_opt_in is cairn-fdlf.3's sharing flag (default off; column
+// only, enforcement is that future bead).
+db.exec(`
+	CREATE TABLE IF NOT EXISTS device_keys (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		fingerprint  TEXT NOT NULL,               -- 8 lowercase hex master fingerprint
+		purpose      TEXT NOT NULL,               -- '44'|'49'|'84'|'86'|'48'|'45'
+		xpub         TEXT NOT NULL,               -- account-level xpub last read
+		path         TEXT NOT NULL,               -- e.g. "m/45'", "m/84'/0'/0'"
+		device_type  TEXT,                        -- 'trezor'|'ledger'|…; NULL = unknown
+		share_opt_in INTEGER NOT NULL DEFAULT 0,  -- cairn-fdlf.3 (single-sig rows)
+		created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		UNIQUE (user_id, fingerprint, purpose)
+	);
+	CREATE INDEX IF NOT EXISTS idx_device_keys_user ON device_keys(user_id, fingerprint);
+`);

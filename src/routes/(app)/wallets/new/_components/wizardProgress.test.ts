@@ -67,12 +67,19 @@ describe('parseSavedProgress', () => {
 	});
 
 	it('rejects an unknown step outright', () => {
-		expect(parseSavedProgress(validSnapshot({ step: 4 }), NOW)).toBeNull();
+		// 4 is the Device step since cairn-0py6 split Name/Device; 5 = Done,
+		// which is never saved.
+		expect(parseSavedProgress(validSnapshot({ step: 5 }), NOW)).toBeNull();
 		expect(parseSavedProgress(validSnapshot({ step: -1 }), NOW)).toBeNull();
 		expect(parseSavedProgress(validSnapshot({ step: 'preview' }), NOW)).toBeNull();
 	});
 
-	it('clamps Preview/Name steps back to the Key step when the validated key is missing', () => {
+	it('accepts the Device step (cairn-0py6)', () => {
+		const p = parseSavedProgress(validSnapshot({ step: 4 }), NOW);
+		expect(p!.step).toBe(4);
+	});
+
+	it('clamps Preview/Name/Device steps back to the Key step when the validated key is missing', () => {
 		const noKey = parseSavedProgress(validSnapshot({ validatedXpub: '' }), NOW);
 		expect(noKey!.step).toBe(1);
 
@@ -81,6 +88,9 @@ describe('parseSavedProgress', () => {
 
 		const noScript = parseSavedProgress(validSnapshot({ scriptType: null }), NOW);
 		expect(noScript!.step).toBe(1);
+
+		const noKeyDevice = parseSavedProgress(validSnapshot({ step: 4, validatedXpub: '' }), NOW);
+		expect(noKeyDevice!.step).toBe(1);
 	});
 
 	it('normalizes unknown enum values to null instead of failing', () => {
