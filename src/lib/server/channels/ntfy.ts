@@ -181,8 +181,8 @@ const ntfyChannel: NotificationChannelPlugin = {
 			type: 'admin_server_health',
 			userId,
 			level: 'info',
-			title: 'Cairn test notification',
-			body: 'This is a test notification from Cairn. ntfy is connected.'
+			title: 'Heartwood test notification',
+			body: 'This is a test notification from Heartwood. ntfy is connected.'
 		});
 	}
 };

@@ -46,7 +46,7 @@ export const POST: RequestHandler = async (event) => {
 			// regressed once in the passkey refactor — see cairn-nnfj).
 			const error =
 				e.code === 'invite_required' || e.code === 'bad_invite'
-					? `${e.message} Invites come from whoever runs this Cairn instance — ask them for a code.`
+					? `${e.message} Invites come from whoever runs this Heartwood instance — ask them for a code.`
 					: e.message;
 			return json({ error, code: e.code }, { status: 400 });
 		}

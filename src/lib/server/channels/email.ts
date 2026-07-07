@@ -307,7 +307,7 @@ async function deliverWith(
 			};
 		}
 		// Never leak the event in the subject when we bothered to encrypt.
-		return sendMail(smtp, { to, subject: 'Cairn notification', text, headers });
+		return sendMail(smtp, { to, subject: 'Heartwood notification', text, headers });
 	}
 
 	// Cleartext path: full branded HTML alternative + a plain-text fallback
@@ -348,7 +348,7 @@ function testPayload(userId: number): NotificationPayload {
 		type: 'admin_server_health',
 		userId,
 		level: 'info',
-		title: 'Test notification from Cairn',
+		title: 'Test notification from Heartwood',
 		body: 'This is a test notification. If you received it, email notifications are working.'
 	};
 }

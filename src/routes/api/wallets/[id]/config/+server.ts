@@ -30,7 +30,7 @@ export const GET: RequestHandler = async (event) => {
 		xpub: wallet.xpub,
 		masterFingerprint: wallet.master_fingerprint ?? null,
 		derivationPath: wallet.derivation_path ?? null,
-		note: 'Public keys only — cannot spend. Re-import the xpub to restore this wallet in Cairn, Sparrow, or Electrum.'
+		note: 'Public keys only — cannot spend. Re-import the xpub to restore this wallet in Heartwood, Sparrow, Electrum, or other Caravan-compatible software.'
 	};
 
 	// Downloading the config is what "backed up" means for a single-sig wallet.

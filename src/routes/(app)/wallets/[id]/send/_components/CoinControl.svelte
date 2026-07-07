@@ -168,7 +168,7 @@
 	{#if open}
 		<div class="coin-list fade-in" id="coin-control-list">
 			<p class="hint">
-				Leave everything unchecked and Cairn picks coins automatically. Check specific coins to
+				Leave everything unchecked and Heartwood picks coins automatically. Check specific coins to
 				spend only those.
 			</p>
 			{#if massLoading}
@@ -261,7 +261,7 @@
 						<Icon name="x" size={13} /> Use all coins
 					</button>
 				{:else}
-					<span class="hint">Automatic — Cairn will pick from all {utxos.length} coins.</span>
+					<span class="hint">Automatic — Heartwood will pick from all {utxos.length} coins.</span>
 				{/if}
 			</div>
 		</div>

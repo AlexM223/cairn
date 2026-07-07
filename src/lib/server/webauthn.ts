@@ -36,7 +36,7 @@ import type {
 // (cairn-wbmu). Never logs the challenge, credential secrets, or signatures.
 const log = childLogger('security');
 
-const RP_NAME = 'Cairn';
+const RP_NAME = 'Heartwood';
 const REG_COOKIE = 'cairn_wa_reg';
 const AUTH_COOKIE = 'cairn_wa_auth';
 const CEREMONY_TTL_S = 300; // 5 minutes to complete a ceremony
