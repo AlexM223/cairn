@@ -35,15 +35,18 @@ function storageInfo(): {
 	return { dbBytes, diskTotalBytes, diskFreeBytes };
 }
 
-export const load: PageServerLoad = async () => {
-	const stats = instanceStats();
-	const settings = getInstanceSettings();
-
-	let node: NodeInfo;
+/** getNodeInfo() is a LIVE, uncached Electrum headersSubscribe+banner round-trip
+ *  (cairn-2zxt.3): awaiting it in `load` froze every /admin navigation until
+ *  Electrum answered. Streamed instead, so the page paints its chrome + tabs
+ *  immediately and the health pill/tip fill in. Never rejects — any failure
+ *  resolves to a disconnected NodeInfo built from the configured settings. */
+async function loadNodeInfo(
+	settings: ReturnType<typeof getInstanceSettings>
+): Promise<NodeInfo> {
 	try {
-		node = await getChain().getNodeInfo();
+		return await getChain().getNodeInfo();
 	} catch (e) {
-		node = {
+		return {
 			connected: false,
 			mode: settings.connectionMode,
 			server: `${settings.electrumHost}:${settings.electrumPort}`,
@@ -53,10 +56,17 @@ export const load: PageServerLoad = async () => {
 			error: e instanceof Error ? e.message : 'Connection failed'
 		};
 	}
+}
+
+export const load: PageServerLoad = async () => {
+	const stats = instanceStats();
+	const settings = getInstanceSettings();
 
 	return {
 		stats,
-		node,
+		// Streamed, not awaited (cairn-2zxt.3): the node round-trip no longer gates
+		// the admin overview render.
+		node: loadNodeInfo(settings),
 		registrationMode: settings.registrationMode,
 		// Newer-release notice (cairn-ivae.2). Answers from an in-process cache and
 		// never awaits the network — GitHub being down can't slow this page.

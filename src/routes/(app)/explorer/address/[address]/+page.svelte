@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { page } from '$app/state';
 	import Icon from '$lib/components/Icon.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import Term from '$lib/components/Term.svelte';
@@ -18,27 +19,67 @@
 
 	let { data } = $props();
 
-	const info = $derived(data.info);
-	const typeInfo = $derived(addressTypeInfo(info.scriptType));
+	// The address itself is known synchronously (from the route param), so the
+	// header chrome, page title, and QR paint instantly. The address summary and
+	// its transaction history are Electrum/esplora round-trips, STREAMED in after
+	// first paint (cairn-2zxt.3). Neither promise rejects.
+	type InfoResult = Awaited<(typeof data)['infoResult']>;
+	let infoResult = $state<InfoResult | null>(null);
+	$effect(() => {
+		const promise = data.infoResult;
+		let stale = false;
+		void promise.then((r) => {
+			if (!stale) infoResult = r;
+		});
+		return () => {
+			stale = true;
+		};
+	});
+	const infoLoading = $derived(infoResult === null);
+	const info = $derived(infoResult?.info ?? null);
+	const infoError = $derived(infoResult?.error ?? null);
+	const notFound = $derived(infoResult?.notFound ?? false);
 
-	// Cursor page size varies by backend (blockstream esplora pages confirmed
-	// txs 25 at a time, mempool.space 50), so we can't treat a "short" page as
-	// the end. Instead: offer more while the total count says history remains,
-	// and stop once a fetch brings nothing new.
-	const seedHasMore = () => data.txs.length > 0 && data.info.txCount > data.txs.length;
+	type TxsResult = Awaited<(typeof data)['txsResult']>;
+	let txsResult = $state<TxsResult | null>(null);
+	$effect(() => {
+		const promise = data.txsResult;
+		let stale = false;
+		void promise.then((r) => {
+			if (!stale) txsResult = r;
+		});
+		return () => {
+			stale = true;
+		};
+	});
+	const txsLoading = $derived(txsResult === null);
+	const seedTxs = $derived(txsResult?.txs ?? []);
+	const txError = $derived(txsResult?.error ?? null);
+
+	const typeInfo = $derived(info ? addressTypeInfo(info.scriptType) : null);
 
 	// Pages loaded on the client, appended after the server-loaded first page.
 	let extraTxs = $state<AddressTx[]>([]);
 	let loadingMore = $state(false);
 	let loadMoreError = $state<string | null>(null);
-	let hasMore = $state(seedHasMore());
+	let hasMore = $state(false);
 
-	// Reset accumulation whenever the loaded data changes (new address or reload).
+	// Reset accumulation whenever the streamed seed changes (new address, reload,
+	// or the info/txs promises resolving). Reads `info` and `seedTxs` so it
+	// re-runs when either lands.
+	//
+	// Cursor page size varies by backend (blockstream esplora pages confirmed txs
+	// 25 at a time, mempool.space 50), so we can't treat a "short" page as the
+	// end. Instead: offer more while the total count says history remains, and
+	// stop once a fetch brings nothing new.
 	$effect(() => {
+		const currentInfo = info;
+		const seed = seedTxs;
+		void data.address;
 		extraTxs = [];
 		loadingMore = false;
 		loadMoreError = null;
-		hasMore = seedHasMore();
+		hasMore = currentInfo ? seed.length > 0 && currentInfo.txCount > seed.length : false;
 	});
 
 	// Full accumulated list, newest first, de-duplicated by txid (mempool txs
@@ -46,7 +87,7 @@
 	const allTxs = $derived.by(() => {
 		const seen = new Set<string>();
 		const out: AddressTx[] = [];
-		for (const tx of [...data.txs, ...extraTxs]) {
+		for (const tx of [...seedTxs, ...extraTxs]) {
 			if (seen.has(tx.txid)) continue;
 			seen.add(tx.txid);
 			out.push(tx);
@@ -57,6 +98,7 @@
 	// Newest-first walk from the current balance yields the balance after each
 	// transaction — correct even when we only have the most recent pages.
 	const rows = $derived.by(() => {
+		if (!info) return [];
 		let running = info.confirmedBalance + info.unconfirmedBalance;
 		return allTxs.map((tx) => {
 			const balanceAfter = running;
@@ -65,7 +107,7 @@
 		});
 	});
 
-	const haveFullHistory = $derived(allTxs.length >= info.txCount);
+	const haveFullHistory = $derived(info ? allTxs.length >= info.txCount : false);
 	const firstSeen = $derived(
 		haveFullHistory && allTxs.length > 0 ? (allTxs[allTxs.length - 1].time ?? null) : null
 	);
@@ -83,7 +125,7 @@
 		loadMoreError = null;
 		try {
 			const res = await fetch(
-				`/api/address/${encodeURIComponent(info.address)}?after=${last.txid}`
+				`/api/address/${encodeURIComponent(data.address)}?after=${last.txid}`
 			);
 			const body = await res.json().catch(() => null);
 			if (!res.ok) {
@@ -105,7 +147,7 @@
 </script>
 
 <svelte:head>
-	<title>Address {truncateMiddle(info.address, 8, 8)} — Heartwood</title>
+	<title>Address {truncateMiddle(data.address, 8, 8)} — Heartwood</title>
 </svelte:head>
 
 <div class="addr-page">
@@ -120,109 +162,166 @@
 		<div class="head-wrap fade-in">
 			<header class="head">
 				<EyebrowBreadcrumb path={['Explorer']} current="Address" />
-				<div class="hero-row">
-					<span class="hero-number hero-bal" title="{formatSats(info.confirmedBalance)} sats">
-						{formatBtc(info.confirmedBalance)}
-					</span>
-					<span class="hero-unit">BTC</span>
-				</div>
-				<div class="addr mono"><CopyText value={info.address} /></div>
-				<div class="meta">
-					{#if typeInfo}
-						<Term tip={typeInfo.explanation}>
-							<span class="badge badge-accent">{typeInfo.label} · {typeInfo.prefix}</span>
-						</Term>
-					{:else if info.scriptType}
-						<span class="badge badge-neutral">{info.scriptType.toUpperCase()}</span>
-					{/if}
-					{#if info.used}
-						<span
-							class="badge badge-success"
-							title="This address appears in at least one transaction on the blockchain."
-							>Used</span
-						>
+				{#if info}
+					<div class="hero-row">
+						<span class="hero-number hero-bal" title="{formatSats(info.confirmedBalance)} sats">
+							{formatBtc(info.confirmedBalance)}
+						</span>
+						<span class="hero-unit">BTC</span>
+					</div>
+					<div class="addr mono"><CopyText value={info.address} /></div>
+					<div class="meta">
+						{#if typeInfo}
+							<Term tip={typeInfo.explanation}>
+								<span class="badge badge-accent">{typeInfo.label} · {typeInfo.prefix}</span>
+							</Term>
+						{:else if info.scriptType}
+							<span class="badge badge-neutral">{info.scriptType.toUpperCase()}</span>
+						{/if}
+						{#if info.used}
+							<span
+								class="badge badge-success"
+								title="This address appears in at least one transaction on the blockchain."
+								>Used</span
+							>
+						{:else}
+							<span
+								class="badge badge-neutral"
+								title="No transaction has ever touched this address. It exists only as a possibility until someone sends to it."
+								>Never used</span
+							>
+						{/if}
+						{#if firstSeen}
+							<span class="meta-date" title={formatDateTime(firstSeen)}>
+								first seen {timeAgo(firstSeen)}
+							</span>
+						{/if}
+						{#if lastSeen}
+							<span class="meta-date" title={formatDateTime(lastSeen)}>
+								last active {timeAgo(lastSeen)}
+							</span>
+						{/if}
+					</div>
+				{:else if infoLoading}
+					<div class="hero-row" aria-busy="true" aria-label="Loading address">
+						<span class="hero-number hero-bal skeleton">0.00000000</span>
+						<span class="hero-unit">BTC</span>
+					</div>
+					<div class="addr mono"><CopyText value={data.address} /></div>
+					<div class="meta">
+						<span class="badge skeleton">address type</span>
+					</div>
+				{:else}
+					<!-- notFound or infoError: the address is known, its chain record isn't -->
+					<div class="hero-row">
+						<span class="hero-number hero-bal dim">—</span>
+						<span class="hero-unit">BTC</span>
+					</div>
+					<div class="addr mono"><CopyText value={data.address} /></div>
+					{#if notFound}
+						<p class="info-note">
+							No on-chain record for this address yet — it hasn't received or sent anything, or the
+							backend has never seen it.
+						</p>
 					{:else}
-						<span
-							class="badge badge-neutral"
-							title="No transaction has ever touched this address. It exists only as a possibility until someone sends to it."
-							>Never used</span
-						>
+						<div class="form-error info-note" role="alert">
+							<Icon name="alert-triangle" size={15} />
+							<span>Can't reach chain data sources — {infoError}.</span>
+							<a href={page.url.pathname} class="retry">Retry</a>
+						</div>
 					{/if}
-					{#if firstSeen}
-						<span class="meta-date" title={formatDateTime(firstSeen)}>
-							first seen {timeAgo(firstSeen)}
-						</span>
-					{/if}
-					{#if lastSeen}
-						<span class="meta-date" title={formatDateTime(lastSeen)}>
-							last active {timeAgo(lastSeen)}
-						</span>
-					{/if}
-				</div>
+				{/if}
 			</header>
 			{#if data.qr}
 				<div class="qr">
-					<img src={data.qr} alt="QR code for address {info.address}" width="132" height="132" />
+					<img src={data.qr} alt="QR code for address {data.address}" width="132" height="132" />
 					<span class="hint">Scan to copy address</span>
 				</div>
 			{/if}
 		</div>
 
 		<!-- inline serif stats -->
-		<section class="stat-line fade-in">
-			<div class="stat">
-				<span class="stat-label">
-					<Term
-						tip="Pending change from transactions with no rings yet. It becomes part of the balance once they take their first ring."
-						>Pending</Term
-					>
-				</span>
-				<span class="stat-value tabular" title="{formatSats(info.unconfirmedBalance)} sats">
-					{#if info.unconfirmedBalance === 0}
-						—
-					{:else}
-						<span class={info.unconfirmedBalance > 0 ? 'pos' : 'neg'}>
-							{info.unconfirmedBalance > 0 ? '+' : ''}{formatBtc(info.unconfirmedBalance)} BTC
+		{#if info}
+			<section class="stat-line fade-in">
+				<div class="stat">
+					<span class="stat-label">
+						<Term
+							tip="Pending change from transactions with no rings yet. It becomes part of the balance once they take their first ring."
+							>Pending</Term
+						>
+					</span>
+					<span class="stat-value tabular" title="{formatSats(info.unconfirmedBalance)} sats">
+						{#if info.unconfirmedBalance === 0}
+							—
+						{:else}
+							<span class={info.unconfirmedBalance > 0 ? 'pos' : 'neg'}>
+								{info.unconfirmedBalance > 0 ? '+' : ''}{formatBtc(info.unconfirmedBalance)} BTC
+							</span>
+						{/if}
+					</span>
+				</div>
+				<div class="stat">
+					<span class="stat-label">Transactions</span>
+					<span class="stat-value tabular">{formatNumber(info.txCount)}</span>
+				</div>
+				{#if info.totalReceived !== null}
+					<div class="stat">
+						<span class="stat-label">Total received</span>
+						<span class="stat-value tabular" title="{formatSats(info.totalReceived)} sats">
+							{formatBtc(info.totalReceived)} BTC
 						</span>
-					{/if}
-				</span>
-			</div>
-			<div class="stat">
-				<span class="stat-label">Transactions</span>
-				<span class="stat-value tabular">{formatNumber(info.txCount)}</span>
-			</div>
-			{#if info.totalReceived !== null}
-				<div class="stat">
-					<span class="stat-label">Total received</span>
-					<span class="stat-value tabular" title="{formatSats(info.totalReceived)} sats">
-						{formatBtc(info.totalReceived)} BTC
-					</span>
-				</div>
-			{/if}
-			{#if info.totalSent !== null && info.totalSent > 0}
-				<div class="stat">
-					<span class="stat-label">Total sent</span>
-					<span class="stat-value tabular" title="{formatSats(info.totalSent)} sats">
-						{formatBtc(info.totalSent)} BTC
-					</span>
-				</div>
-			{/if}
-		</section>
+					</div>
+				{/if}
+				{#if info.totalSent !== null && info.totalSent > 0}
+					<div class="stat">
+						<span class="stat-label">Total sent</span>
+						<span class="stat-value tabular" title="{formatSats(info.totalSent)} sats">
+							{formatBtc(info.totalSent)} BTC
+						</span>
+					</div>
+				{/if}
+			</section>
+		{/if}
 
 		<section class="txs">
 			<div class="txs-head fade-in">
 				<span class="txs-title">History</span>
-				{#if allTxs.length > 0 && allTxs.length < info.txCount}
+				{#if info && allTxs.length > 0 && allTxs.length < info.txCount}
 					<span class="txs-count">Latest {allTxs.length} of {formatNumber(info.txCount)}</span>
 				{/if}
 			</div>
 
-			{#if data.txError}
+			{#if txError}
 				<div class="form-error tx-error" role="alert">
 					<Icon name="alert-triangle" size={15} />
-					<span>Couldn't load transactions — {data.txError}</span>
+					<span>Couldn't load transactions — {txError}</span>
 				</div>
-			{:else if allTxs.length === 0}
+			{:else if infoLoading || txsLoading}
+				<div class="table-wrap" aria-busy="true" aria-label="Loading history">
+					<table class="table">
+						<thead>
+							<tr>
+								<th>Txid</th>
+								<th>Time</th>
+								<th class="num">Amount</th>
+								<th class="num">Balance after</th>
+								<th class="num">Fee</th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each [0, 1, 2, 3, 4] as i (i)}
+								<tr>
+									<td><span class="mono skeleton">0000000000…0000000000</span></td>
+									<td><span class="skeleton">00 min ago</span></td>
+									<td class="num"><span class="tabular skeleton">+0.0000 BTC</span></td>
+									<td class="num"><span class="tabular skeleton">0.0000 BTC</span></td>
+									<td class="num"><span class="skeleton">000 sats</span></td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			{:else if !info || allTxs.length === 0}
 				<div class="empty-state">
 					<span class="empty-title">No transactions</span>
 					<span>This address hasn't sent or received anything yet.</span>
@@ -505,6 +604,34 @@
 		align-items: center;
 		gap: 8px;
 		margin-top: 12px;
+	}
+
+	.hero-bal.dim {
+		color: var(--text-faint);
+	}
+
+	/* Streamed not-found / error note under the address (info stream resolved
+	   but carried no record). */
+	.info-note {
+		margin-top: 16px;
+		font-size: 13px;
+		line-height: 1.55;
+		color: var(--text-secondary);
+		max-width: 52ch;
+	}
+
+	.form-error.info-note {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		max-width: none;
+	}
+
+	.info-note .retry {
+		margin-left: auto;
+		color: inherit;
+		text-decoration: underline;
+		white-space: nowrap;
 	}
 
 	.load-more {
