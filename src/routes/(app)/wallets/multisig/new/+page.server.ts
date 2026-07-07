@@ -53,7 +53,7 @@ export const load: PageServerLoad = async (event) => {
 
 const log = childLogger('multisigWizard');
 
-const DEVICE_TYPES = new Set(['trezor', 'ledger', 'coldcard', 'qr', 'file']);
+const DEVICE_TYPES = new Set(['trezor', 'ledger', 'bitbox02', 'jade', 'coldcard', 'qr', 'file']);
 
 /** Devices whose keys arrive via a LIVE in-browser read (vs paste/file/QR) —
  *  the only reads worth caching in the device-keys registry. */
