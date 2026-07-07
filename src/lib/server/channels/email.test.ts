@@ -225,7 +225,7 @@ describe('PGP encryption', () => {
 		const res = await emailChannel.send(userId, PAYLOAD);
 		expect(res.ok).toBe(true);
 		const opts = sendMail.mock.calls[0][0] as { subject: string; text: string };
-		expect(opts.subject).toBe('Cairn notification');
+		expect(opts.subject).toBe('Heartwood notification');
 		expect(opts.text).toContain('BEGIN PGP MESSAGE');
 		expect(opts.text).not.toContain('0.01 BTC to Savings');
 	});

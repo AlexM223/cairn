@@ -14,7 +14,7 @@ import { setSetting } from '$lib/server/settings';
 import { createInvites } from '$lib/server/admin';
 import { POST } from './+server';
 
-const HINT = 'Invites come from whoever runs this Cairn instance';
+const HINT = 'Invites come from whoever runs this Heartwood instance';
 
 function wipe(): void {
 	db.exec('DELETE FROM invites; DELETE FROM sessions; DELETE FROM users; DELETE FROM settings;');

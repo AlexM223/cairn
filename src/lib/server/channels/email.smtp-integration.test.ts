@@ -223,7 +223,7 @@ describe('email channel — real SMTP wire protocol against a local stub server'
 		const msg = smtp.messages[0];
 		const { headers, body } = parseHeaders(msg.data);
 		// Subject must NOT leak the event; body must NOT contain plaintext on the wire.
-		expect(headers.subject).toBe('Cairn notification');
+		expect(headers.subject).toBe('Heartwood notification');
 		expect(body).not.toContain(originalBody);
 		expect(body).toContain('BEGIN PGP MESSAGE');
 

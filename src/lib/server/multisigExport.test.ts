@@ -93,8 +93,8 @@ describe('coldcardName', () => {
 	});
 
 	it('falls back to a generic name when nothing printable remains', () => {
-		expect(coldcardName('🏦🏦🏦')).toBe('Cairn multisig');
-		expect(coldcardName('   ')).toBe('Cairn multisig');
+		expect(coldcardName('🏦🏦🏦')).toBe('Heartwood multisig');
+		expect(coldcardName('   ')).toBe('Heartwood multisig');
 	});
 });
 
@@ -102,7 +102,7 @@ describe('coldcardRegistration', () => {
 	it('emits the exact ColdCard setup file format (uniform derivation)', () => {
 		expect(coldcardRegistration(makeMultisig())).toBe(
 			[
-				'# Cairn multisig setup file',
+				'# Heartwood multisig setup file',
 				'Name: Family savings',
 				'Policy: 2 of 3',
 				'Format: P2WSH',
@@ -126,7 +126,7 @@ describe('coldcardRegistration', () => {
 		});
 		expect(coldcardRegistration(multisig)).toBe(
 			[
-				'# Cairn multisig setup file',
+				'# Heartwood multisig setup file',
 				'Name: Family savings',
 				'Policy: 2 of 3',
 				'Format: P2WSH',
