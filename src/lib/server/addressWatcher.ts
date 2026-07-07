@@ -69,9 +69,16 @@ interface WatchState {
 	onScripthash: ((sh: string, status: string | null) => void) | null;
 	onHeader: ((header: ElectrumHeader) => void) | null;
 	started: boolean;
-	/** True once the startup baseline pass has recorded pre-existing history, so
+	/** True once the startup baseline pass has completed (even partially), so
 	 *  scripthash changes that fire during startup don't notify for old txs. */
 	baselined: boolean;
+	/** Scripthashes whose pre-existing history has been successfully recorded
+	 *  (confirmed=1, no notification). A scripthash NOT in this set must never be
+	 *  treated as live by handleScripthashChange — a mid-scan Electrum drop
+	 *  (cairn-u7bw) used to leave addresses un-baselined behind the single global
+	 *  flag, so their real old txids flooded out as "payment received" +
+	 *  "transaction confirmed" (cairn-3bt1). */
+	baselinedScripthashes: Set<string>;
 	/** In-flight change handling per scripthash, so overlapping notifications for
 	 *  the same address don't double-process. */
 	inFlight: Set<string>;
@@ -87,6 +94,7 @@ const state: WatchState = {
 	onHeader: null,
 	started: false,
 	baselined: false,
+	baselinedScripthashes: new Set(),
 	inFlight: new Set(),
 	tipHeight: 0
 };
@@ -393,6 +401,21 @@ async function handleScripthashChange(scripthash: string): Promise<void> {
 	if (state.inFlight.has(scripthash)) return;
 	state.inFlight.add(scripthash);
 	try {
+		// Per-scripthash baseline gate (cairn-3bt1): if this address's pre-existing
+		// history was never successfully recorded (its startup baseline fetch
+		// failed, or it was subscribed after startup), we cannot distinguish old
+		// txids from new ones — so baseline it NOW, silently, and stop. The rare
+		// cost is one missed notification for a deposit that races the baseline;
+		// the alternative was a flood of false "payment received"/"confirmed"
+		// notifications for the address's entire real history.
+		if (!state.baselinedScripthashes.has(scripthash)) {
+			try {
+				await baselineScripthash(scripthash, w);
+			} catch (e) {
+				log.debug({ err: e, walletId: w.walletId }, 'on-demand baseline failed; will retry');
+			}
+			return;
+		}
 		const chain = getChain();
 		let history: ElectrumHistoryItem[];
 		try {
@@ -525,6 +548,11 @@ interface PendingTxidRow {
  * `confirmed` flag so it never fires again.
  */
 async function handleNewBlock(): Promise<void> {
+	// Same startup gate as handleScripthashChange (cairn-3bt1): reconnects re-emit
+	// the current header, so without this guard a header event arriving mid-
+	// baseline would sweep confirmed=0 rows into "Transaction confirmed"
+	// notifications before the baseline pass has protected pre-existing history.
+	if (!state.baselined) return;
 	let pending: PendingTxidRow[];
 	try {
 		pending = db
@@ -625,6 +653,18 @@ export async function refreshWatches(): Promise<void> {
 	if (subscribed > 0) {
 		log.info({ subscribed, total: state.byScripthash.size }, 'address subscriptions updated');
 	}
+
+	// Retry sweep (cairn-3bt1): baseline anything still pending — addresses whose
+	// startup baseline fetch failed (e.g. an Electrum drop mid-pass) and addresses
+	// subscribed after startup (new or imported wallets — an imported wallet's
+	// pre-existing history must be recorded silently, not notified as new). Only
+	// after the startup pass, which owns the first full sweep.
+	if (state.baselined) {
+		const { done, failed } = await baselinePendingScripthashes();
+		if (done > 0 || failed > 0) {
+			log.info({ baselinedAddresses: done, failed }, 'baseline retry sweep');
+		}
+	}
 }
 
 /**
@@ -635,27 +675,61 @@ export async function refreshWatches(): Promise<void> {
  * and rate-limited by WATCH_WINDOW; a failure for one address is skipped.
  */
 async function baselineExisting(): Promise<void> {
+	const { done, failed } = await baselinePendingScripthashes();
+	if (done > 0 || failed > 0) {
+		log.info({ baselinedAddresses: done, failed }, 'baseline pass complete');
+	}
+	// The global flag only means "the startup pass has run" — per-scripthash
+	// liveness is tracked in state.baselinedScripthashes, so addresses whose
+	// history fetch failed mid-pass (e.g. an Electrum socket drop, cairn-u7bw)
+	// stay quarantined until a later retry succeeds, instead of leaking their old
+	// history out as brand-new transactions (cairn-3bt1).
+	state.baselined = true;
+}
+
+/**
+ * Record one scripthash's current history as already-notified (confirmed=1,
+ * no notification) and mark it baselined. Throws on a failed history fetch so
+ * callers can decide to retry — the scripthash is only added to
+ * baselinedScripthashes after a fully successful pass.
+ */
+async function baselineScripthash(scripthash: string, w: Watched): Promise<number> {
 	const chain = getChain();
-	const seen = new Set<string>(); // wallet+txid keys handled this pass
 	const insert = db.prepare(
 		`INSERT OR IGNORE INTO notified_txids (wallet_kind, wallet_id, user_id, txid, confirmed)
 		 VALUES (?, ?, ?, ?, 1)`
 	);
+	const history = await chain.electrum.getHistory(scripthash);
+	for (const item of history) {
+		insert.run(w.kind, w.walletId, w.userId, item.tx_hash);
+	}
+	state.baselinedScripthashes.add(scripthash);
+	return history.length;
+}
+
+/**
+ * Baseline every watched scripthash that isn't yet baselined. Best-effort per
+ * address: a failure is logged and left un-baselined for the next retry (the
+ * 5-minute refreshWatches cadence, or on-demand when a change event arrives for
+ * it). Used both for the startup pass and as the retry sweep afterwards.
+ */
+async function baselinePendingScripthashes(): Promise<{ done: number; failed: number }> {
+	let done = 0;
+	let failed = 0;
 	for (const [scripthash, w] of state.byScripthash) {
+		if (state.baselinedScripthashes.has(scripthash)) continue;
 		try {
-			const history = await chain.electrum.getHistory(scripthash);
-			for (const item of history) {
-				const key = `${w.kind}:${w.walletId}:${w.userId}:${item.tx_hash}`;
-				if (seen.has(key)) continue;
-				seen.add(key);
-				insert.run(w.kind, w.walletId, w.userId, item.tx_hash);
-			}
-		} catch {
-			// Skip an address whose history we couldn't fetch at startup.
+			await baselineScripthash(scripthash, w);
+			done++;
+		} catch (e) {
+			failed++;
+			log.debug(
+				{ err: e, walletId: w.walletId },
+				'baseline history fetch failed; address stays quarantined until retry'
+			);
 		}
 	}
-	if (seen.size > 0) log.info({ baselined: seen.size }, 'baselined existing transactions');
-	state.baselined = true;
+	return { done, failed };
 }
 
 function attachListeners(electrum: ElectrumPool): void {
@@ -708,11 +782,12 @@ export function startAddressWatcher(): void {
 	// Periodic refresh picks up wallets/multisigs created since the last pass and
 	// re-subscribes after a reconfigureChain swapped the Electrum client — without
 	// coupling wallet-creation code to this module (which would form an import
-	// cycle, since this module imports the wallet layer). New addresses are
-	// baselined-on-subscribe implicitly: their history is only recorded once a
-	// 'scripthash' change fires, and only for txids not already in notified_txids.
-	// A brand-new wallet has no history, so its first real deposit is a genuine
-	// tx_received. Unref'd so it never holds the process open.
+	// cycle, since this module imports the wallet layer). Newly subscribed
+	// addresses are explicitly baselined by refreshWatches' retry sweep before
+	// they go live: a brand-new wallet has no history (cheap no-op), and an
+	// imported wallet's pre-existing history is recorded silently instead of
+	// flooding out as new (cairn-3bt1). Unref'd so it never holds the process
+	// open.
 	const refresh = setInterval(() => {
 		void refreshWatches().catch((e) => log.error({ err: e }, 'periodic refresh failed'));
 	}, REFRESH_INTERVAL_MS);
