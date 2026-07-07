@@ -224,46 +224,50 @@ describe('(app) layout httpsPort (cairn-wgr8)', () => {
 	});
 });
 
-// First-sync gate (cairn-koy4.11): until the once-per-install chain-history
-// cache exists, app routes hop to /sync. Pins: fires for members and admins
-// alike, exempts /recovery-setup (mid-wizard), honors the hw_skip_sync escape
-// cookie, and stops for good once the cache row exists.
-describe('(app) layout first-sync gate (cairn-koy4.11)', () => {
+// First sync is NON-BLOCKING (cairn-2zxt.1). The old gate redirected every app
+// route to the full-screen /sync page until the once-per-install chain-history
+// cache existed — that trapped users behind a blocking screen on first install
+// and its escape cookie was unreliable. The gate is gone: routes always render,
+// and the layout threads only a coarse firstSyncComplete flag (the client's
+// SyncBanner polls /api/sync for live detail). Pins: NO redirect while the cache
+// is missing, and the flag reflects whether the cache exists.
+describe('(app) layout first-sync is non-blocking (cairn-2zxt.1)', () => {
 	function clearHistoryCache(): void {
 		db.prepare(`DELETE FROM settings WHERE key = 'chainEpochs.v1'`).run();
 		resetFirstSyncStateForTests();
 	}
 
-	it('redirects to /sync while the chain-history cache is missing', async () => {
+	async function loadData(user: User, pathname: string): Promise<Record<string, unknown>> {
+		const event = {
+			locals: { user, flags: {} },
+			url: new URL(`http://localhost${pathname}`),
+			cookies: { get: () => undefined }
+		} as unknown as Parameters<typeof load>[0];
+		return (await load(event)) as Record<string, unknown>;
+	}
+
+	it('does NOT redirect while the chain-history cache is missing', async () => {
 		completeRecovery(admin.id);
 		clearHistoryCache();
-		expect(await runLoad(member, '/wallets')).toEqual({ redirected: '/sync' });
-		expect(await runLoad(admin, '/')).toEqual({ redirected: '/sync' });
+		expect(await runLoad(member, '/wallets')).toEqual({ redirected: null });
+		expect(await runLoad(admin, '/')).toEqual({ redirected: null });
 	});
 
-	it('exempts /recovery-setup so the wizard is not interrupted', async () => {
+	it('threads firstSyncComplete=false into the data while the cache is missing', async () => {
 		clearHistoryCache();
-		expect(await runLoad(admin, '/recovery-setup')).toEqual({ redirected: null });
+		const data = await loadData(member, '/wallets');
+		expect(data.firstSyncComplete).toBe(false);
 	});
 
-	it('honors the hw_skip_sync escape cookie', async () => {
-		completeRecovery(admin.id);
-		clearHistoryCache();
-		expect(await runLoad(member, '/wallets', { hw_skip_sync: '1' })).toEqual({
-			redirected: null
-		});
+	it('threads firstSyncComplete=true once the cache exists', async () => {
+		setSetting('chainEpochs.v1', '{"seeded":"by-test"}');
+		resetFirstSyncStateForTests();
+		const data = await loadData(member, '/wallets');
+		expect(data.firstSyncComplete).toBe(true);
 	});
 
-	it('fires AFTER the recovery gate (paperwork overlaps the count)', async () => {
+	it('does NOT weaken the recovery gate — an admin with no recovery still lands there', async () => {
 		clearHistoryCache();
 		expect(await runLoad(admin, '/wallets')).toEqual({ redirected: '/recovery-setup' });
-	});
-
-	it('stops once the cache exists', async () => {
-		completeRecovery(admin.id);
-		clearHistoryCache();
-		expect(await runLoad(member, '/wallets')).toEqual({ redirected: '/sync' });
-		setSetting('chainEpochs.v1', '{"seeded":"by-test"}');
-		expect(await runLoad(member, '/wallets')).toEqual({ redirected: null });
 	});
 });

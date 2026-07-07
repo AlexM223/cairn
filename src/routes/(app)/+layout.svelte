@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import Icon from '$lib/components/Icon.svelte';
 	import AnnouncementBanner from '$lib/components/AnnouncementBanner.svelte';
+	import SyncBanner from '$lib/components/heartwood/SyncBanner.svelte';
 	import HWRail from '$lib/components/heartwood/HWRail.svelte';
 	import MobileTopBar from '$lib/components/heartwood/MobileTopBar.svelte';
 	import MobileTabRow from '$lib/components/heartwood/MobileTabRow.svelte';
@@ -107,6 +108,13 @@
 		{/if}
 
 		<main class="main">
+			{#if !data.firstSyncComplete}
+				<!-- Non-blocking first-sync indicator (cairn-2zxt.1). Shown until the
+				     chain-history cache exists; polls /api/sync for live detail and
+				     removes itself when the count reaches the tip. Never blocks the
+				     page — the app under it is fully usable while this counts. -->
+				<SyncBanner />
+			{/if}
 			{#each data.announcements ?? [] as announcement (announcement.id)}
 				<!-- Instance-wide admin announcements, above the backup nudges (an urgent
 				     maintenance notice outranks a routine reminder). Server already
