@@ -21,18 +21,29 @@ import { multisigAddressAt, multisigAddressDetailAt } from './multisigScan';
 // suites pin one derivation universe. Test-only keys, never a real wallet.
 const BIP48_PATH = "m/48'/0'/0'/2'";
 
-function fixtureKey(seedByte: number): { xpub: string; fingerprint: string; path: string } {
+function fixtureKeyAt(
+	seedByte: number,
+	path: string
+): { xpub: string; fingerprint: string; path: string } {
 	const master = HDKey.fromMasterSeed(new Uint8Array(32).fill(seedByte));
-	const account = master.derive(BIP48_PATH);
+	const account = path === 'm' ? master : master.derive(path);
 	return {
 		xpub: account.publicExtendedKey,
 		fingerprint: (master.fingerprint >>> 0).toString(16).padStart(8, '0'),
-		path: BIP48_PATH
+		path
 	};
+}
+
+function fixtureKey(seedByte: number): { xpub: string; fingerprint: string; path: string } {
+	return fixtureKeyAt(seedByte, BIP48_PATH);
 }
 
 function newKey(seedByte: number, name: string): NewMultisigKey {
 	return { name, category: 'hardware', deviceType: 'trezor', ...fixtureKey(seedByte) };
+}
+
+function newKeyAt(seedByte: number, name: string, path: string): NewMultisigKey {
+	return { name, category: 'hardware', deviceType: 'trezor', ...fixtureKeyAt(seedByte, path) };
 }
 
 /** Re-encode an xpub with the SLIP-132 Zpub (p2wsh multisig) version bytes. */
@@ -307,5 +318,233 @@ describe('createMultisig activity event (cairn-cvcu)', () => {
 		});
 		const feed = listUserFeed(user.id);
 		expect(feed[0].message).toContain('imported');
+	});
+});
+
+// ---- cairn-1kc3.1/.2/.3: cosigner path acceptance at creation ------------------
+
+import { MultisigError } from './bitcoin/multisig';
+
+describe('createMultisig cosigner path validation (cairn-1kc3.1/.3)', () => {
+	it('rejects a key declaring a single-sig path — the audit case (cairn-1kc3.3)', () => {
+		const user = makeUser('paths@example.com');
+		expect(() =>
+			createMultisig(user.id, {
+				name: 'Bad vault',
+				threshold: 2,
+				keys: [newKey(1, 'Trezor'), newKey(2, 'Ledger'), newKeyAt(3, 'Pasted', "m/84'/0'/0'")]
+			})
+		).toThrow(/Pasted.*single-sig/);
+		// Nothing was stored.
+		expect(db.prepare('SELECT COUNT(*) AS n FROM multisigs').get()).toEqual({ n: 0 });
+	});
+
+	it("rejects a BIP-48 suffix contradicting the wallet's script type (cairn-1kc3.1)", () => {
+		const user = makeUser('suffix@example.com');
+		expect(() =>
+			createMultisig(user.id, {
+				name: 'Mismatch',
+				threshold: 2,
+				scriptType: 'p2wsh',
+				keys: [newKey(1, 'A'), newKey(2, 'B'), newKeyAt(3, 'C', "m/48'/0'/0'/1'")]
+			})
+		).toThrow(/C: .*1'.*p2wsh/);
+	});
+
+	it('accepts BIP-45 keys and unknown-origin keys', () => {
+		const user = makeUser('bip45@example.com');
+		const ms = createMultisig(user.id, {
+			name: 'Shared vault',
+			threshold: 2,
+			keys: [
+				newKeyAt(1, 'Mine', "m/45'"),
+				newKeyAt(2, 'Theirs', "m/45'"),
+				{ ...newKeyAt(3, 'Watch-only', 'm'), fingerprint: '00000000' }
+			]
+		});
+		expect(ms.keys.map((k) => k.path)).toEqual(["m/45'", "m/45'", 'm']);
+	});
+
+	it('accepts a p2sh wallet whose keys carry the 1\' suffix — proving the real scriptType flows into validation and the sanity derivation (cairn-1kc3.2)', () => {
+		const user = makeUser('p2sh@example.com');
+		// Before cairn-1kc3.2 the acceptance config dropped scriptType, so
+		// everything validated as if p2wsh — under which these 1'-suffix keys
+		// would be wrongly rejected (and 2'-suffix keys wrongly accepted below).
+		const ms = createMultisig(user.id, {
+			name: 'Legacy vault',
+			threshold: 2,
+			scriptType: 'p2sh',
+			keys: [
+				newKeyAt(1, 'A', "m/48'/0'/0'/1'"),
+				newKeyAt(2, 'B', "m/48'/0'/0'/1'"),
+				newKeyAt(3, 'C', "m/48'/0'/0'/1'")
+			]
+		});
+		expect(ms.scriptType).toBe('p2sh');
+		expect(() =>
+			createMultisig(user.id, {
+				name: 'Legacy vault 2',
+				threshold: 2,
+				scriptType: 'p2sh',
+				keys: [newKey(4, 'A'), newKey(5, 'B'), newKey(6, 'C')] // 2' suffix
+			})
+		).toThrow(/2'.*p2sh/);
+	});
+
+	it('applies the universal checks to imports too — a single-sig path never enters (cairn-1kc3.3 rule 3)', () => {
+		const user = makeUser('importpaths@example.com');
+		expect(() =>
+			createMultisig(user.id, {
+				name: 'Imported bad',
+				threshold: 1,
+				source: 'imported',
+				keys: [newKeyAt(1, 'K', "m/44'/0'/0'")]
+			})
+		).toThrow(/single-sig/);
+	});
+});
+
+// ---- cairn-1kc3.6: declared vault mode (collaborative vs personal) -------------
+
+describe('createMultisig vault mode (cairn-1kc3.6)', () => {
+	const bip45Keys = () => [newKeyAt(1, 'Mine', "m/45'"), newKeyAt(2, 'Theirs', "m/45'")];
+	const bip48Keys = () => [newKey(1, 'A'), newKey(2, 'B')];
+
+	it('collaborative vaults require BIP-45 on every key', () => {
+		const user = makeUser('collab@example.com');
+		expect(() =>
+			createMultisig(user.id, {
+				name: 'Family vault',
+				threshold: 2,
+				collaborative: true,
+				keys: bip48Keys()
+			})
+		).toThrow(MultisigError);
+		expect(() =>
+			createMultisig(user.id, {
+				name: 'Family vault',
+				threshold: 2,
+				collaborative: true,
+				keys: bip48Keys()
+			})
+		).toThrow(/m\/45'/);
+		// An unknown-origin key can't prove it is BIP-45 — rejected too.
+		expect(() =>
+			createMultisig(user.id, {
+				name: 'Family vault',
+				threshold: 2,
+				collaborative: true,
+				keys: [newKeyAt(1, 'Mine', "m/45'"), { ...newKeyAt(2, 'Mystery', 'm'), fingerprint: '00000000' }]
+			})
+		).toThrow(/Mystery/);
+
+		const ms = createMultisig(user.id, {
+			name: 'Family vault',
+			threshold: 2,
+			collaborative: true,
+			keys: bip45Keys()
+		});
+		expect(ms.collaborative).toBe(true);
+		expect(getMultisig(user.id, ms.id)!.collaborative).toBe(true);
+	});
+
+	it('personal vaults reject BIP-45 keys (they mark a key as shared)', () => {
+		const user = makeUser('personal@example.com');
+		expect(() =>
+			createMultisig(user.id, {
+				name: 'My vault',
+				threshold: 2,
+				collaborative: false,
+				keys: [newKey(1, 'A'), newKeyAt(2, 'Shared key', "m/45'")]
+			})
+		).toThrow(/Shared key.*collaborative/);
+
+		const ms = createMultisig(user.id, {
+			name: 'My vault',
+			threshold: 2,
+			collaborative: false,
+			keys: bip48Keys()
+		});
+		expect(ms.collaborative).toBe(false);
+	});
+
+	it('undeclared mode (the default) keeps today\'s behavior: both purposes accepted, stored as null', () => {
+		const user = makeUser('unset@example.com');
+		const ms = createMultisig(user.id, {
+			name: 'Legacy-flow vault',
+			threshold: 2,
+			keys: [newKeyAt(1, 'A', "m/45'"), newKey(2, 'B')]
+		});
+		expect(ms.collaborative).toBeNull();
+		expect(getMultisig(user.id, ms.id)!.collaborative).toBeNull();
+	});
+
+	it('imports are exempt from the BIP-45 rule but still persist the declared mode', () => {
+		const user = makeUser('importmode@example.com');
+		const ms = createMultisig(user.id, {
+			name: 'Imported collab vault',
+			threshold: 2,
+			source: 'imported',
+			collaborative: true,
+			keys: bip48Keys() // 48' paths — fine for an import
+		});
+		expect(ms.collaborative).toBe(true);
+		expect(ms.source).toBe('imported');
+	});
+});
+
+// ---- cairn-1kc3.4: cross-wallet xpub reuse warning ------------------------------
+
+describe('createMultisig xpub reuse warning (cairn-1kc3.4)', () => {
+	it('creating a multisig with a key already stored as a single-sig wallet warns in the activity feed', () => {
+		const user = makeUser('reuse@example.com');
+		db.exec('DELETE FROM events; DELETE FROM wallets;');
+		const shared = fixtureKey(1);
+		db.prepare(
+			"INSERT INTO wallets (user_id, name, type, xpub, script_type) VALUES (?, 'Daily wallet', 'xpub', ?, 'p2wpkh')"
+		).run(user.id, shared.xpub);
+
+		createMultisig(user.id, {
+			name: 'Overlapping vault',
+			threshold: 2,
+			keys: [newKey(1, 'Reused'), newKey(2, 'Fresh'), newKey(3, 'Fresh 2')]
+		});
+
+		const warns = listUserFeed(user.id).filter((e) => e.type === 'key_reuse');
+		expect(warns).toHaveLength(1);
+		expect(warns[0].level).toBe('warn');
+		expect(warns[0].message).toContain('Daily wallet');
+		expect(warns[0].message).toContain('Overlapping vault');
+		// No xpubs leak into the feed.
+		expect(warns[0].message).not.toContain(shared.xpub);
+	});
+
+	it('a key shared across two multisigs warns; disjoint keys stay silent; the new vault never matches itself', () => {
+		const user = makeUser('reuse2@example.com');
+		db.exec('DELETE FROM events; DELETE FROM wallets;');
+		createMultisig(user.id, {
+			name: 'First vault',
+			threshold: 2,
+			keys: [newKey(1, 'A'), newKey(2, 'B')]
+		});
+		// Creating a vault does NOT warn about its own keys.
+		expect(listUserFeed(user.id).filter((e) => e.type === 'key_reuse')).toHaveLength(0);
+
+		createMultisig(user.id, {
+			name: 'Second vault',
+			threshold: 2,
+			keys: [newKey(2, 'B again'), newKey(3, 'C')]
+		});
+		const warns = listUserFeed(user.id).filter((e) => e.type === 'key_reuse');
+		expect(warns).toHaveLength(1);
+		expect(warns[0].message).toContain('First vault');
+
+		db.exec('DELETE FROM events;');
+		createMultisig(user.id, {
+			name: 'Disjoint vault',
+			threshold: 2,
+			keys: [newKey(8, 'X'), newKey(9, 'Y')]
+		});
+		expect(listUserFeed(user.id).filter((e) => e.type === 'key_reuse')).toHaveLength(0);
 	});
 });

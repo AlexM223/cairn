@@ -13,6 +13,10 @@ import {
 	multisigToDescriptor,
 	parseDescriptor,
 	descriptorChecksum,
+	validateCosignerKeyPath,
+	validateMultisigKeyPaths,
+	cosignerPathPurpose,
+	canonicalXpub,
 	MultisigError,
 	MAX_MULTISIG_KEYS,
 	type MultisigConfig,
@@ -479,6 +483,140 @@ describe('parseDescriptor', () => {
 describe('multisigTestAddress', () => {
 	it('is the first receive address', () => {
 		expect(multisigTestAddress(MULTISIG_2OF3)).toBe(deriveMultisigAddress(MULTISIG_2OF3, 0, 0).address);
+	});
+});
+
+// ── Cosigner path acceptance (cairn-1kc3.1 / .3 / .5) ────────────────────────
+
+describe('validateCosignerKeyPath', () => {
+	const rejects = (path: string, scriptType: MultisigScriptType, pattern: RegExp) => {
+		try {
+			validateCosignerKeyPath(path, scriptType, 'Coldcard');
+		} catch (e) {
+			expect(e).toBeInstanceOf(MultisigError);
+			expect((e as MultisigError).code).toBe('invalid_key');
+			expect((e as MultisigError).message).toMatch(/Coldcard/);
+			expect((e as MultisigError).message).toMatch(pattern);
+			return;
+		}
+		throw new Error(`expected "${path}" (${scriptType}) to be rejected`);
+	};
+
+	it('accepts unknown-origin and Caravan-masked paths (no purpose claim)', () => {
+		for (const path of ['m', '', 'm/0/0/0/0', 'm/0']) {
+			expect(() => validateCosignerKeyPath(path, 'p2wsh', 'k')).not.toThrow();
+		}
+	});
+
+	it('accepts BIP-45 paths at any depth regardless of script type (no subfields to check)', () => {
+		for (const scriptType of ['p2wsh', 'p2sh-p2wsh', 'p2sh'] as const) {
+			expect(() => validateCosignerKeyPath("m/45'", scriptType, 'k')).not.toThrow();
+			expect(() => validateCosignerKeyPath("m/45'/0", scriptType, 'k')).not.toThrow();
+			expect(() => validateCosignerKeyPath("m/45'/2/0/17", scriptType, 'k')).not.toThrow();
+		}
+	});
+
+	it('accepts BIP-48 paths whose script-type suffix matches the wallet (2\' = p2wsh, 1\' = both p2sh forms)', () => {
+		expect(() => validateCosignerKeyPath("m/48'/0'/0'/2'", 'p2wsh', 'k')).not.toThrow();
+		expect(() => validateCosignerKeyPath("m/48'/0'/7'/2'", 'p2wsh', 'k')).not.toThrow();
+		expect(() => validateCosignerKeyPath("m/48'/0'/0'/1'", 'p2sh', 'k')).not.toThrow();
+		expect(() => validateCosignerKeyPath("m/48'/0'/0'/1'", 'p2sh-p2wsh', 'k')).not.toThrow();
+		// h/H hardened markers are equivalent to apostrophes.
+		expect(() => validateCosignerKeyPath('m/48h/0h/0h/2h', 'p2wsh', 'k')).not.toThrow();
+	});
+
+	it('rejects every single-sig purpose, naming the BIP (cairn-1kc3.3)', () => {
+		rejects("m/44'/0'/0'", 'p2wsh', /BIP-44.*single-sig/);
+		rejects("m/49'/0'/0'", 'p2wsh', /BIP-49.*single-sig/);
+		rejects("m/84'/0'/0'", 'p2wsh', /BIP-84.*single-sig/);
+		rejects("m/86'/0'/0'", 'p2wsh', /BIP-86.*single-sig/);
+		// A full single-sig RECEIVE path (not even account-level) — the exact
+		// shape the audit found being accepted silently.
+		rejects("m/84'/0'/0'/0/0", 'p2wsh', /single-sig/);
+		// Unhardened single-sig purposes are just as wrong.
+		rejects('m/44/0/0', 'p2sh', /single-sig/);
+	});
+
+	it('rejects unknown purposes and unhardened 45/48', () => {
+		rejects("m/1234'/0'/0'", 'p2wsh', /not a multisig derivation path/);
+		rejects('m/48/0/0/2', 'p2wsh', /unhardened/);
+		rejects('m/45/0', 'p2wsh', /unhardened/);
+	});
+
+	it("rejects a BIP-48 suffix contradicting the wallet's script type (cairn-1kc3.1)", () => {
+		// The audit's concrete case: P2WSH wallet, P2SH-suffix path.
+		rejects("m/48'/0'/0'/1'", 'p2wsh', /script type 1'.*p2wsh/);
+		rejects("m/48'/0'/0'/2'", 'p2sh', /script type 2'.*p2sh/);
+		rejects("m/48'/0'/0'/2'", 'p2sh-p2wsh', /script type 2'.*p2sh-p2wsh/);
+		// Unknown suffixes (e.g. 3' — no BIP-48 meaning) are rejected too.
+		rejects("m/48'/0'/0'/3'", 'p2wsh', /script type 3'/);
+	});
+
+	it('rejects a truncated BIP-48 path', () => {
+		rejects("m/48'", 'p2wsh', /incomplete/);
+		rejects("m/48'/0'/0'", 'p2wsh', /incomplete/);
+	});
+
+	it("rejects a non-mainnet coin type on a 48' path (cairn-1kc3.5)", () => {
+		rejects("m/48'/1'/0'/2'", 'p2wsh', /coin type 1/);
+		rejects("m/48'/1'/0'/2'", 'p2wsh', /mainnet/);
+		// BIP-45 has no coin-type field, so nothing to reject there.
+		expect(() => validateCosignerKeyPath("m/45'", 'p2wsh', 'k')).not.toThrow();
+	});
+
+	it('surfaces parse errors under the key label', () => {
+		rejects('m/48q/nope', 'p2wsh', /48q/);
+	});
+});
+
+describe('validateMultisigKeyPaths', () => {
+	it('validates each key against the config script type, labeling by key name', () => {
+		const config: MultisigConfig = {
+			threshold: 2,
+			scriptType: 'p2sh',
+			keys: [
+				{ ...KEYS[0], path: "m/48'/0'/0'/1'", name: 'Trezor' },
+				{ ...KEYS[1], path: "m/48'/0'/0'/2'", name: 'Ledger' },
+				{ ...KEYS[2], path: "m/48'/0'/0'/1'", name: 'Backup' }
+			]
+		};
+		expect(() => validateMultisigKeyPaths(config)).toThrow(/Ledger/);
+		config.keys[1] = { ...config.keys[1], path: "m/48'/0'/0'/1'" };
+		expect(() => validateMultisigKeyPaths(config)).not.toThrow();
+	});
+
+	it('defaults an absent scriptType to p2wsh, like every other config consumer', () => {
+		const config: MultisigConfig = {
+			threshold: 1,
+			keys: [{ ...KEYS[0], path: "m/48'/0'/0'/1'" }]
+		};
+		expect(() => validateMultisigKeyPaths(config)).toThrow(/p2wsh/);
+	});
+});
+
+describe('cosignerPathPurpose', () => {
+	it('reports 45, 48, or null (no purpose claim)', () => {
+		expect(cosignerPathPurpose("m/45'")).toBe(45);
+		expect(cosignerPathPurpose("m/45'/1/0/2")).toBe(45);
+		expect(cosignerPathPurpose("m/48'/0'/0'/2'")).toBe(48);
+		expect(cosignerPathPurpose('m')).toBeNull();
+		expect(cosignerPathPurpose('')).toBeNull();
+		expect(cosignerPathPurpose('m/0/0/0/0')).toBeNull();
+		expect(cosignerPathPurpose("m/84'/0'/0'")).toBeNull();
+		expect(cosignerPathPurpose('garbage')).toBeNull();
+	});
+});
+
+describe('canonicalXpub', () => {
+	it('passes a standard xpub through and normalizes a SLIP-132 Zpub alias', () => {
+		expect(canonicalXpub(KEYS[0].xpub)).toBe(KEYS[0].xpub);
+		expect(canonicalXpub(toZpub(KEYS[0].xpub))).toBe(KEYS[0].xpub);
+		expect(canonicalXpub(` ${KEYS[0].xpub} `)).toBe(KEYS[0].xpub);
+	});
+
+	it('returns null for garbage', () => {
+		expect(canonicalXpub('not-a-key')).toBeNull();
+		expect(canonicalXpub('')).toBeNull();
 	});
 });
 

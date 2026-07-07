@@ -862,6 +862,24 @@ db.exec(`
 	}
 }
 
+// The vault's declared mode at creation (cairn-1kc3.6): 1 = collaborative
+// (cosigner keys shared with other people — fresh on-platform creations must
+// use BIP-45 m/45' paths, enforced server-side in createMultisig), 0 = personal
+// (all the user's own keys — BIP-48 paths; m/45' rejected), NULL = never
+// declared (every pre-existing row, and creations from flows that don't ask
+// yet — no mode enforcement). A DIFFERENT axis from `source` above: a fresh
+// vault can be personal or collaborative, and an imported vault is exempt from
+// the BIP-45 rule regardless of this flag. Set once at creation, never edited
+// after — flipping it later wouldn't re-derive already-recorded key paths.
+{
+	const msCols = (db.prepare('PRAGMA table_info(multisigs)').all() as { name: string }[]).map(
+		(c) => c.name
+	);
+	if (!msCols.includes('collaborative')) {
+		db.exec('ALTER TABLE multisigs ADD COLUMN collaborative INTEGER');
+	}
+}
+
 // Multisig RBF: a replacement draft points at the txid it was built to replace;
 // the original row is marked 'superseded' when the replacement broadcasts —
 // mirroring the single-sig transactions.replaces_txid column. Guarded and
