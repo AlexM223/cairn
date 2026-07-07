@@ -2,6 +2,9 @@
 	import { tick } from 'svelte';
 	import { replaceState } from '$app/navigation';
 	import Icon from '$lib/components/Icon.svelte';
+	import Banner from '$lib/components/Banner.svelte';
+	import Toasts from '$lib/components/Toasts.svelte';
+	import { toast } from '$lib/components/toast.svelte';
 	import Stepper from '$lib/components/Stepper.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
@@ -205,7 +208,6 @@
 			chainDepthWarning = body.chainDepthWarning ?? null;
 			progress = (body.progress as MultisigSigningProgress) ?? null;
 			activeKeyId = null;
-			signFlash = null;
 			syncTxParam(draft.id);
 			step = 'review';
 		} catch {
@@ -397,7 +399,6 @@
 	let activeKeyId = $state<number | null>(null);
 	// Bumped to remount the active signer from scratch (clean retry / next key).
 	let signerEpoch = $state(0);
-	let signFlash = $state<string | null>(null);
 
 	/** Roster path → the canonical form progress.keys carries ("m/48'/0'/0'/2'"). */
 	function normalizePath(p: string): string {
@@ -461,7 +462,6 @@
 	function chooseKey(id: number) {
 		activeKeyId = id;
 		signError = null;
-		signFlash = null;
 		signerEpoch += 1;
 	}
 
@@ -550,9 +550,11 @@
 						? keys.find((k) => keyIdentity(k.fingerprint, k.path) === newId)?.name
 						: undefined;
 				const more = fresh.required - fresh.collected;
-				signFlash = `${who ? `Signature from ${who}` : 'Signature'} added — ${more} more ${
-					more === 1 ? 'signature' : 'signatures'
-				} needed.`;
+				toast.success(
+					`${who ? `Signature from ${who}` : 'Signature'} added — ${more} more ${
+						more === 1 ? 'signature' : 'signatures'
+					} needed.`
+				);
 				activeKeyId = null; // advance to the next unsigned key
 				signerEpoch += 1;
 			} else {
@@ -895,7 +897,7 @@
 				{/if}
 
 				{#if buildError}
-					<div class="form-error" role="alert">{buildError}</div>
+					<Banner variant="error">{buildError}</Banner>
 				{/if}
 
 				<div class="row" style="justify-content: flex-end; gap: 10px">
@@ -1187,13 +1189,6 @@
 				{/if}
 			</div>
 
-			{#if signFlash}
-				<div class="sign-flash" role="status" aria-live="polite">
-					<Icon name="check" size={15} />
-					<span>{signFlash}</span>
-				</div>
-			{/if}
-
 			{#if quorumMet}
 				<!-- Reached via "Back" from Confirm (attach jumps there directly).
 				     Never offer another signing panel on a complete transaction. -->
@@ -1343,14 +1338,14 @@
 					transaction you reviewed…
 				</div>
 			{:else if signError}
-				<div class="form-error" role="alert">
+				<Banner variant="error">
 					{signError}
-					<div class="reject-actions">
+					{#snippet actions()}
 						<button class="btn btn-secondary btn-sm" onclick={() => (signerEpoch += 1)}>
 							<Icon name="refresh" size={14} /> Try again
 						</button>
-					</div>
-				</div>
+					{/snippet}
+				</Banner>
 			{/if}
 
 			<div class="row step-actions">
@@ -1423,15 +1418,15 @@
 			</div>
 
 			{#if broadcastError}
-				<div class="form-error" role="alert">
+				<Banner variant="error">
 					{broadcastError}
-					<div class="reject-actions">
+					{#snippet actions()}
 						<a class="btn btn-secondary btn-sm" href={currentPsbtUrl} download>
 							<Icon name="arrow-down-left" size={14} /> Download PSBT
 						</a>
 						<button class="btn btn-ghost btn-sm" onclick={() => (step = 'sign')}> Re-sign </button>
-					</div>
-				</div>
+					{/snippet}
+				</Banner>
 			{/if}
 
 			<div class="row step-actions">
@@ -1507,6 +1502,8 @@
 		</section>
 	{/if}
 </div>
+
+<Toasts />
 
 <style>
 	.send-page {
@@ -2177,18 +2174,6 @@
 		border-color: var(--accent-muted);
 	}
 
-	.sign-flash {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		color: var(--success);
-		background: var(--success-muted);
-		border-radius: var(--radius-control);
-		padding: 12px 14px;
-		font-size: 13.5px;
-		font-weight: 500;
-	}
-
 	/* ---- registration callout (QR variant; the ColdCard one lives in
 	       MultisigFileSigner). Warning-toned: registration is a hard prerequisite
 	       — the device refuses to sign without it. ---- */
@@ -2228,12 +2213,6 @@
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-control);
 		padding: 12px 14px;
-	}
-
-	.reject-actions {
-		display: flex;
-		gap: 8px;
-		margin-top: 10px;
 	}
 
 	/* ---- Confirm ---- */
