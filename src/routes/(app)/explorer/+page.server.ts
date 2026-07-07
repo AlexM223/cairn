@@ -1,7 +1,15 @@
 import { getChain } from '$lib/server/chain';
 import { classifySearch, chainErrorMessage } from '$lib/server/search';
+import { getEpochStrip } from '$lib/server/chainEpochs';
 import type { PageServerLoad } from './$types';
-import type { BlockSummary, MempoolSummary, SearchResult } from '$lib/types';
+import type {
+	BlockSummary,
+	MempoolSummary,
+	SearchResult,
+	FeeEstimates,
+	DifficultyInfo,
+	MempoolBlockProjection
+} from '$lib/types';
 
 const PAGE_SIZE = 15;
 
@@ -10,24 +18,46 @@ export interface ExplorerChainData {
 	mempool: MempoolSummary | null;
 	tipHeight: number | null;
 	chainError: string | null;
+	/** Fee tiers for the hero's "next ring ≈ N sat/vB" line. */
+	fees: FeeEstimates | null;
+	/** Epoch progress + projected retarget for the hero sub-line. */
+	difficulty: DifficultyInfo | null;
+	/** The projected next block, for the dashed pending row. */
+	nextBlock: MempoolBlockProjection | null;
 }
 
 async function loadChainData(before: number | null): Promise<ExplorerChainData> {
 	const chain = getChain();
 	try {
-		const [blocks, mempool, tip] = await Promise.all([
+		const [blocks, mempool, tip, fees, difficulty, projected] = await Promise.all([
 			chain.getRecentBlocks(PAGE_SIZE, before !== null ? Math.max(0, before - 1) : undefined),
 			chain.getMempoolSummary().catch(() => null),
-			chain.getTip().catch(() => null)
+			chain.getTip().catch(() => null),
+			// Hero sub-line extras (5e): all optional, the line degrades segment by
+			// segment when a backend lacks them.
+			chain.getFeeEstimates().catch(() => null),
+			chain.getDifficultyInfo().catch(() => null),
+			chain.getMempoolBlocks().catch(() => null)
 		]);
 		return {
 			blocks,
 			mempool,
 			tipHeight: tip?.height ?? (before === null ? (blocks[0]?.height ?? null) : null),
-			chainError: null
+			chainError: null,
+			fees,
+			difficulty,
+			nextBlock: projected?.[0] ?? null
 		};
 	} catch (e) {
-		return { blocks: [], mempool: null, tipHeight: null, chainError: chainErrorMessage(e) };
+		return {
+			blocks: [],
+			mempool: null,
+			tipHeight: null,
+			chainError: chainErrorMessage(e),
+			fees: null,
+			difficulty: null,
+			nextBlock: null
+		};
 	}
 }
 
@@ -59,6 +89,11 @@ export const load: PageServerLoad = async ({ url, depends }) => {
 		// Streamed, not awaited (cairn-ybsv): blocks + mempool + tip are Electrum
 		// round-trips — the page paints instantly with skeletons while they
 		// resolve. loadChainData never rejects (errors resolve to chainError).
-		chain: loadChainData(before)
+		chain: loadChainData(before),
+		// The ChainStrip dataset (cairn-koy4.7): real difficulty-epoch boundaries,
+		// cached hard after the first computation. Streamed separately so a slow
+		// first-ever boundary fetch can't hold up the block list; resolves to null
+		// (strip hidden) rather than rejecting.
+		strip: getEpochStrip().catch(() => null)
 	};
 };

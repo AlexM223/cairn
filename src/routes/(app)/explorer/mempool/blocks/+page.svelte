@@ -2,7 +2,8 @@
 	import { onMount } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
-	import ExplorerNav from '$lib/components/ExplorerNav.svelte';
+	import GroveField from '$lib/components/heartwood/GroveField.svelte';
+	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
 	import { synthesizeBlocks, synthKey, feeColor, type VizRect } from '$lib/mempoolViz';
 	import { formatNumber, formatBtc, formatBytes, formatSats, formatFeeRate } from '$lib/format';
 	import type { FeeHistogram, MempoolBlockProjection } from '$lib/types';
@@ -138,13 +139,22 @@
 </script>
 
 <svelte:head>
-	<title>Next blocks — Cairn</title>
+	<title>Next rings — Heartwood</title>
 </svelte:head>
+
+<div class="blocks-page">
+<GroveField volume="present" />
+<div class="page-body">
+<div class="top-row fade-in">
+	<a href="/explorer/mempool" class="back">
+		<Icon name="chevron-left" size={15} /> Mempool
+	</a>
+</div>
 
 <div class="head fade-in">
 	<div>
-		<span class="overline">Explorer</span>
-		<h1 class="page-title">Next blocks</h1>
+		<EyebrowBreadcrumb path={['Explorer', 'Mempool']} current="Next rings" />
+		<h1 class="page-title">Next rings</h1>
 	</div>
 	<span class="live" class:stale title={stale ? 'Last refresh failed — retrying' : 'Refreshes every 10 seconds'}>
 		<span class="live-dot"></span>
@@ -154,8 +164,6 @@
 		{/if}
 	</span>
 </div>
-
-<ExplorerNav active="blocks" />
 
 <HowItWorks id="mempool-blocks">
 	<p>
@@ -178,7 +186,7 @@
 		<a href="/explorer/mempool/blocks">Retry</a>
 	</div>
 {:else if blocks.length === 0}
-	<div class="card empty-state fade-in">
+	<div class="empty-state fade-in">
 		<span class="empty-title">No projection available</span>
 		<p>
 			Block projections need a mempool.space-compatible backend. The configured Esplora
@@ -191,7 +199,7 @@
 			<div class="block-card" class:next={i === 0} style:--depth={i}>
 				<div class="block-head">
 					{#if i === 0}
-						<span class="next-label"><Icon name="zap" size={12} /> Next block</span>
+						<span class="next-label"><Icon name="zap" size={12} /> Next ring</span>
 					{:else}
 						<span class="eta">~{(i + 1) * 10} min</span>
 					{/if}
@@ -279,14 +287,51 @@
 		<div class="tooltip-row"><span>Est. fees</span><span class="tabular">{formatSats(tip.rect.fee)} sats</span></div>
 	</div>
 {/if}
+</div>
+</div>
 
 <style>
+	.blocks-page {
+		position: relative;
+		margin: -54px -52px -44px;
+		padding: 54px 52px 44px;
+		min-height: calc(100vh - 98px);
+	}
+
+	.page-body {
+		position: relative;
+		z-index: 1;
+	}
+
+	.top-row {
+		display: flex;
+		align-items: center;
+		margin-bottom: 26px;
+	}
+
+	.back {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--text-muted);
+	}
+
+	.back:hover {
+		color: var(--accent);
+	}
+
 	.head {
 		display: flex;
 		justify-content: space-between;
 		align-items: flex-end;
 		gap: 12px;
 		margin-bottom: 14px;
+	}
+
+	.head .page-title {
+		margin-top: 6px;
 	}
 
 	.head > div {
@@ -339,8 +384,8 @@
 		display: flex;
 		flex-direction: column;
 		gap: 9px;
-		background: var(--surface);
-		border: 1px solid var(--border-subtle);
+		background: var(--bg-input);
+		border: 1px solid var(--hairline);
 		border-radius: var(--radius-card);
 		padding: 14px;
 		opacity: calc(1 - var(--depth) * 0.06);
@@ -499,7 +544,7 @@
 		z-index: 50;
 		width: min(196px, calc(100vw - 16px));
 		background: var(--surface-elevated);
-		border: 1px solid var(--border);
+		border: 1px solid var(--border-control);
 		border-radius: var(--radius-control);
 		box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
 		padding: 10px 12px;
@@ -527,6 +572,18 @@
 
 	.tooltip-row > span:first-child {
 		color: var(--text-secondary);
+	}
+
+	@media (max-width: 900px) {
+		.blocks-page {
+			margin: -20px -18px -48px;
+			padding: 20px 18px 48px;
+			min-height: 0;
+		}
+
+		.top-row {
+			margin-bottom: 18px;
+		}
 	}
 
 	@media (max-width: 700px) {

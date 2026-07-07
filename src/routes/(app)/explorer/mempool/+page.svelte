@@ -4,7 +4,8 @@
 	import { onNewBlock } from '$lib/liveBlocks';
 	import Icon from '$lib/components/Icon.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
-	import ExplorerNav from '$lib/components/ExplorerNav.svelte';
+	import GroveField from '$lib/components/heartwood/GroveField.svelte';
+	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import { formatNumber, formatBtc, formatBytes, formatFeeRate, timeAgo } from '$lib/format';
 
@@ -70,14 +71,14 @@
 					{
 						rate: data.fees.fastest,
 						label: 'Fastest',
-						context: 'to be picked for the very next block (~10 minutes)'
+						context: 'to make the very next ring (~10 minutes)'
 					},
 					{
 						rate: data.fees.halfHour,
 						label: 'Half hour',
-						context: 'to confirm within about 30 minutes'
+						context: 'to take a ring within about 30 minutes'
 					},
-					{ rate: data.fees.hour, label: 'Hour', context: 'to confirm within about an hour' },
+					{ rate: data.fees.hour, label: 'Hour', context: 'to take a ring within about an hour' },
 					{
 						rate: data.fees.economy,
 						label: 'Economy',
@@ -89,203 +90,282 @@
 </script>
 
 <svelte:head>
-	<title>Mempool — Cairn</title>
+	<title>Mempool — Heartwood</title>
 </svelte:head>
 
-<div class="head fade-in">
-	<h1 class="page-title">Mempool</h1>
+<div class="mempool-page">
+	<GroveField volume="present" />
+	<div class="body">
+		<div class="top-row fade-in">
+			<a href="/explorer" class="back">
+				<Icon name="chevron-left" size={15} /> Explorer
+			</a>
+		</div>
+
+		<header class="head fade-in">
+			<EyebrowBreadcrumb path={['Explorer']} current="Mempool" />
+			{#if data.summary}
+				<div class="hero-row">
+					<span class="hero-number hero-count">{formatNumber(data.summary.txCount)}</span>
+					<span class="hero-sub">transactions waiting · no rings yet</span>
+				</div>
+				<div class="stat-line tabular">
+					<span>
+						<Term
+							tip="The combined virtual size of everything waiting. A ring segment fits about 1 million virtual bytes, so this backlog is roughly {blocksWorth.toFixed(1)} rings deep."
+						>
+							<span class="stat-num">{formatBytes(data.summary.vsize)}</span>
+						</Term>
+						backlog
+					</span>
+					<span class="sep" aria-hidden="true">·</span>
+					<span>≈ <span class="stat-num">{blocksWorth.toFixed(1)}</span> rings worth</span>
+					<span class="sep" aria-hidden="true">·</span>
+					<span>
+						<span class="stat-num fees">{formatBtc(data.summary.totalFees)}</span> BTC in waiting fees
+					</span>
+				</div>
+			{/if}
+		</header>
+
+		{#if data.error}
+			<div class="form-error" role="alert">
+				Can't reach chain data sources — {data.error}.
+				<a href="/explorer/mempool">Retry</a>
+			</div>
+		{:else if data.summary}
+			<!-- Projected next blocks -->
+			{#if data.projected && data.projected.length > 0}
+				<section class="section fade-in">
+					<div class="section-head">
+						<span class="section-title">Projected next rings</span>
+						<Term
+							tip="A simulation of the blocks miners would assemble from the current mempool, greedily taking the highest fee rates first. Your transaction lands in the first projected ring whose fee range it beats."
+						>
+							<span class="hint">how is this known?</span>
+						</Term>
+						<a href="/explorer/mempool/blocks" class="viz-link">
+							Visualize <Icon name="arrow-right" size={13} />
+						</a>
+					</div>
+					<div class="proj-row">
+						{#each data.projected.slice(0, 6) as block, i (i)}
+							<div class="proj-block" style:--depth={i}>
+								<span class="proj-eta">~{(i + 1) * 10} min</span>
+								<span class="proj-fee tabular">{formatFeeRate(block.medianFee)}</span>
+								<span class="proj-range tabular">
+									{block.feeRange[0]}–{block.feeRange[1]} sat/vB
+								</span>
+								<span class="proj-meta">
+									{formatNumber(block.nTx)} txs · {formatBtc(block.totalFees)} BTC fees
+								</span>
+							</div>
+						{/each}
+					</div>
+				</section>
+			{/if}
+
+			<div class="columns">
+				<!-- Recommended fees with context -->
+				{#if tiers.length}
+					<section class="section">
+						<div class="section-head">
+							<span class="section-title">What should I pay?</span>
+						</div>
+						<div class="tier-list">
+							{#each tiers as tier (tier.label)}
+								<div class="tier">
+									<span class="tier-rate tabular">{Math.round(tier.rate)}</span>
+									<span class="tier-unit">sat/vB</span>
+									<span class="tier-context">{tier.context}</span>
+								</div>
+							{/each}
+						</div>
+						<p class="hint tier-note">
+							Rates move with demand — a quiet Sunday mempool can clear at 1 sat/vB while a busy
+							day pushes the next ring past 100.
+						</p>
+					</section>
+				{/if}
+
+				<!-- Fee distribution -->
+				{#if feeBands}
+					<section class="section">
+						<div class="section-head">
+							<span class="section-title">Fee distribution</span>
+							<Term
+								tip="How the waiting transactions are spread across fee rates, by virtual size. Tall bands near the bottom mean cheap transactions dominate; weight near the top means a bidding war."
+							>
+								<span class="hint">what am I seeing?</span>
+							</Term>
+						</div>
+						<div class="bands">
+							{#each feeBands as band (band.label)}
+								<div class="band">
+									<span class="band-label tabular">{band.label}</span>
+									<div class="band-track">
+										<div
+											class="band-fill"
+											style:width="{Math.max(band.share * 100, band.vsize > 0 ? 2 : 0)}%"
+										></div>
+									</div>
+									<span class="band-size tabular">{band.vsize > 0 ? formatBytes(band.vsize) : '—'}</span>
+								</div>
+							{/each}
+						</div>
+						<span class="hint">sat/vB bands · bar length = share of waiting virtual bytes</span>
+					</section>
+				{/if}
+			</div>
+
+			<!-- Trend -->
+			{#if spark}
+				<section class="section fade-in">
+					<div class="section-head">
+						<span class="section-title">Backlog over the last two hours</span>
+					</div>
+					<svg viewBox="0 0 100 36" preserveAspectRatio="none" class="spark" aria-hidden="true">
+						<path
+							d={spark.path}
+							fill="none"
+							stroke="var(--accent)"
+							stroke-width="0.8"
+							vector-effect="non-scaling-stroke"
+						/>
+					</svg>
+					<div class="spark-axis">
+						<span class="hint">{timeAgo(spark.from)}</span>
+						<span class="hint">peak {formatBytes(spark.maxV)}</span>
+						<span class="hint">now</span>
+					</div>
+				</section>
+			{:else if data.projected === null}
+				<p class="hint degrade-note">
+					Projected rings and history need a mempool.space-compatible backend — the configured
+					Esplora server provides basic mempool totals only.
+				</p>
+			{/if}
+		{/if}
+
+		<div class="explain">
+			<HowItWorks id="mempool">
+				<p>
+					<strong>The mempool is Bitcoin's waiting room.</strong> Every transaction broadcast to the
+					network sits here until a miner includes it in a block. There is no single mempool — each
+					node keeps its own — but well-connected nodes see nearly the same picture.
+				</p>
+				<p>
+					Block space is scarce (about 1 MB of virtual bytes every ten minutes), so miners fill
+					blocks with the highest-paying transactions first. That turns the mempool into a
+					<strong>fee auction</strong>: the more you pay per virtual byte, the sooner you take a
+					ring. When the mempool empties, even 1 sat/vB confirms quickly.
+				</p>
+			</HowItWorks>
+		</div>
+	</div>
 </div>
 
-<ExplorerNav active="mempool" />
-
-<HowItWorks id="mempool">
-	<p>
-		<strong>The mempool is Bitcoin's waiting room.</strong> Every transaction broadcast to the
-		network sits here until a miner includes it in a block. There is no single mempool — each
-		node keeps its own — but well-connected nodes see nearly the same picture.
-	</p>
-	<p>
-		Block space is scarce (about 1 MB of virtual bytes every ten minutes), so miners fill
-		blocks with the highest-paying transactions first. That turns the mempool into a
-		<strong>fee auction</strong>: the more you pay per virtual byte, the sooner you confirm.
-		When the mempool empties, even 1 sat/vB confirms quickly.
-	</p>
-</HowItWorks>
-
-{#if data.error}
-	<div class="form-error" role="alert">
-		Can't reach chain data sources — {data.error}.
-		<a href="/explorer/mempool">Retry</a>
-	</div>
-{:else if data.summary}
-	<!-- Summary stats -->
-	<section class="stats fade-in">
-		<div class="card card-pad stat">
-			<span class="overline">Unconfirmed</span>
-			<span class="hero-number stat-hero">{formatNumber(data.summary.txCount)}</span>
-			<span class="hint">transactions waiting</span>
-		</div>
-		<div class="card card-pad stat">
-			<span class="overline">
-				<Term
-					tip="The combined virtual size of everything waiting. A block fits about 1 million virtual bytes, so this backlog is roughly {blocksWorth.toFixed(1)} blocks deep."
-					>Backlog</Term
-				>
-			</span>
-			<span class="hero-number stat-hero">{formatBytes(data.summary.vsize)}</span>
-			<span class="hint">≈ {blocksWorth.toFixed(1)} blocks worth</span>
-		</div>
-		<div class="card card-pad stat">
-			<span class="overline">Pending fees</span>
-			<span class="hero-number stat-hero">{formatBtc(data.summary.totalFees)}</span>
-			<span class="hint">BTC waiting to be collected by miners</span>
-		</div>
-	</section>
-
-	<!-- Projected next blocks -->
-	{#if data.projected && data.projected.length > 0}
-		<section class="card card-pad fade-in section">
-			<div class="section-head">
-				<Icon name="blocks" size={17} />
-				<span class="card-title">Projected next blocks</span>
-				<Term
-					tip="A simulation of the blocks miners would assemble from the current mempool, greedily taking the highest fee rates first. Your transaction lands in the first projected block whose fee range it beats."
-				>
-					<span class="hint">how is this known?</span>
-				</Term>
-				<a href="/explorer/mempool/blocks" class="viz-link">
-					Visualize <Icon name="arrow-right" size={13} />
-				</a>
-			</div>
-			<div class="proj-row">
-				{#each data.projected.slice(0, 6) as block, i (i)}
-					<div class="proj-block" style:--depth={i}>
-						<span class="proj-eta">~{(i + 1) * 10} min</span>
-						<span class="proj-fee tabular">{formatFeeRate(block.medianFee)}</span>
-						<span class="proj-range tabular">
-							{block.feeRange[0]}–{block.feeRange[1]} sat/vB
-						</span>
-						<span class="proj-meta">
-							{formatNumber(block.nTx)} txs · {formatBtc(block.totalFees)} BTC fees
-						</span>
-					</div>
-				{/each}
-			</div>
-		</section>
-	{/if}
-
-	<div class="columns">
-		<!-- Recommended fees with context -->
-		{#if tiers.length}
-			<section class="card card-pad section">
-				<div class="section-head">
-					<Icon name="zap" size={17} />
-					<span class="card-title">What should I pay?</span>
-				</div>
-				<div class="tier-list">
-					{#each tiers as tier (tier.label)}
-						<div class="tier">
-							<span class="tier-rate tabular">{Math.round(tier.rate)}</span>
-							<span class="tier-unit">sat/vB</span>
-							<span class="tier-context">{tier.context}</span>
-						</div>
-					{/each}
-				</div>
-				<p class="hint tier-note">
-					Rates move with demand — a quiet Sunday mempool can clear at 1 sat/vB while a busy
-					day pushes the next block past 100.
-				</p>
-			</section>
-		{/if}
-
-		<!-- Fee distribution -->
-		{#if feeBands}
-			<section class="card card-pad section">
-				<div class="section-head">
-					<Icon name="activity" size={17} />
-					<span class="card-title">Fee distribution</span>
-					<Term
-						tip="How the waiting transactions are spread across fee rates, by virtual size. Tall bands near the bottom mean cheap transactions dominate; weight near the top means a bidding war."
-					>
-						<span class="hint">what am I seeing?</span>
-					</Term>
-				</div>
-				<div class="bands">
-					{#each feeBands as band (band.label)}
-						<div class="band">
-							<span class="band-label tabular">{band.label}</span>
-							<div class="band-track">
-								<div class="band-fill" style:width="{Math.max(band.share * 100, band.vsize > 0 ? 2 : 0)}%"></div>
-							</div>
-							<span class="band-size tabular">{band.vsize > 0 ? formatBytes(band.vsize) : '—'}</span>
-						</div>
-					{/each}
-				</div>
-				<span class="hint">sat/vB bands · bar length = share of waiting virtual bytes</span>
-			</section>
-		{/if}
-	</div>
-
-	<!-- Trend -->
-	{#if spark}
-		<section class="card card-pad section fade-in">
-			<div class="section-head">
-				<Icon name="clock" size={17} />
-				<span class="card-title">Backlog over the last two hours</span>
-			</div>
-			<svg viewBox="0 0 100 36" preserveAspectRatio="none" class="spark" aria-hidden="true">
-				<path d={spark.path} fill="none" stroke="var(--accent)" stroke-width="0.8" vector-effect="non-scaling-stroke" />
-			</svg>
-			<div class="spark-axis">
-				<span class="hint">{timeAgo(spark.from)}</span>
-				<span class="hint">peak {formatBytes(spark.maxV)}</span>
-				<span class="hint">now</span>
-			</div>
-		</section>
-	{:else if data.projected === null}
-		<p class="hint degrade-note">
-			Projected blocks and history need a mempool.space-compatible backend — the configured
-			Esplora server provides basic mempool totals only.
-		</p>
-	{/if}
-{/if}
-
 <style>
+	.mempool-page {
+		position: relative;
+		margin: -54px -52px -44px;
+		padding: 54px 52px 44px;
+		min-height: calc(100vh - 98px);
+	}
+
+	.body {
+		position: relative;
+		z-index: 1;
+	}
+
+	.top-row {
+		display: flex;
+		align-items: center;
+		margin-bottom: 26px;
+	}
+
+	.back {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--text-muted);
+	}
+
+	.back:hover {
+		color: var(--accent);
+	}
+
 	.head {
 		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		margin-bottom: 18px;
-	}
-
-	.stats {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-		gap: 14px;
-		margin-bottom: 14px;
-	}
-
-	.stat {
-		display: flex;
 		flex-direction: column;
-		gap: 5px;
+		margin-bottom: 36px;
 	}
 
-	.stat-hero {
-		font-size: 30px;
+	.hero-row {
+		display: flex;
+		align-items: baseline;
+		gap: 14px;
+		flex-wrap: wrap;
+		margin-top: 18px;
+	}
+
+	.hero-count {
+		font-size: 64px;
+		line-height: 0.95;
+		color: var(--text-hero);
+	}
+
+	.hero-sub {
+		font-size: 15px;
+		color: var(--text-secondary);
+	}
+
+	.stat-line {
+		display: flex;
+		align-items: baseline;
+		gap: 12px;
+		flex-wrap: wrap;
+		margin-top: 18px;
+		font-size: 13px;
+		color: var(--text-faint);
+	}
+
+	.stat-line .sep {
+		color: var(--border-ghost);
+	}
+
+	.stat-num {
+		font-family: var(--font-serif);
+		font-weight: 600;
+		font-size: 18px;
+		color: var(--text-rows);
+	}
+
+	.stat-num.fees {
+		color: var(--accent-bright);
 	}
 
 	.section {
 		display: flex;
 		flex-direction: column;
 		gap: 14px;
-		margin-bottom: 14px;
+		padding: 20px 0;
+		border-top: 1px solid var(--hairline);
 	}
 
 	.section-head {
 		display: flex;
 		align-items: center;
 		gap: 10px;
+	}
+
+	.section-title {
+		font-size: 17px;
+		font-weight: 600;
+		color: var(--text);
+		letter-spacing: -0.01em;
 	}
 
 	.section-head .hint {
@@ -313,7 +393,7 @@
 		flex-direction: column;
 		gap: 3px;
 		padding: 14px;
-		border-radius: var(--radius-control);
+		border-radius: var(--radius-strip);
 		background: linear-gradient(
 			160deg,
 			rgba(232, 147, 90, calc(0.22 - var(--depth) * 0.03)),
@@ -333,7 +413,7 @@
 	.proj-fee {
 		font-family: var(--font-serif);
 		font-size: 22px;
-		font-weight: 560;
+		font-weight: 600;
 		margin-top: 2px;
 	}
 
@@ -351,13 +431,12 @@
 	.columns {
 		display: grid;
 		grid-template-columns: 1fr 1fr;
-		gap: 14px;
+		gap: 0 48px;
 		align-items: start;
 	}
 
 	.columns > section {
 		min-width: 0;
-		margin-bottom: 0;
 	}
 
 	@media (max-width: 860px) {
@@ -376,7 +455,7 @@
 		align-items: baseline;
 		gap: 8px;
 		padding: 10px 0;
-		border-bottom: 1px solid var(--border-subtle);
+		border-bottom: 1px solid var(--hairline);
 	}
 
 	.tier:last-child {
@@ -386,9 +465,10 @@
 	.tier-rate {
 		font-family: var(--font-serif);
 		font-size: 22px;
-		font-weight: 560;
+		font-weight: 600;
 		min-width: 48px;
 		text-align: right;
+		color: var(--text-rows);
 	}
 
 	.tier-unit {
@@ -403,7 +483,7 @@
 	}
 
 	.tier-note {
-		border-top: 1px solid var(--border-subtle);
+		border-top: 1px solid var(--hairline);
 		padding-top: 10px;
 		margin: 0;
 	}
@@ -429,7 +509,7 @@
 
 	.band-track {
 		height: 14px;
-		background: var(--bg);
+		background: var(--bg-input);
 		border-radius: 3px;
 		overflow: hidden;
 	}
@@ -458,5 +538,41 @@
 
 	.degrade-note {
 		margin-top: 4px;
+	}
+
+	.explain {
+		margin-top: 32px;
+	}
+
+	@media (max-width: 900px) {
+		.mempool-page {
+			margin: -20px -18px -48px;
+			padding: 20px 18px 48px;
+			min-height: 0;
+		}
+
+		.top-row {
+			margin-bottom: 18px;
+		}
+
+		.head {
+			margin-bottom: 24px;
+		}
+
+		.hero-count {
+			font-size: 42px;
+		}
+
+		.hero-sub {
+			font-size: 12px;
+		}
+
+		.stat-line {
+			margin-top: 12px;
+		}
+
+		.stat-num {
+			font-size: 15px;
+		}
 	}
 </style>
