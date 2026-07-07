@@ -23,7 +23,7 @@
 	// the multisig flow, whose one prerequisite is Jade-specific: Jade refuses to
 	// co-sign a multisig it has not REGISTERED — a one-time on-device review of
 	// the wallet's name, quorum and every cosigner key. Jade stores that
-	// registration itself (there is no Cairn-side record to keep, unlike Ledger's
+	// registration itself (there is no Heartwood-side record to keep, unlike Ledger's
 	// HMAC), and re-registering the same descriptor is idempotent, so the
 	// multisig flow registers then signs each time; a device that already knows
 	// the wallet simply re-confirms and moves on. Jade speaks raw PSBT BYTES, so
@@ -140,7 +140,7 @@
 
 			phase = 'signing';
 			const psbtBytes = base64ToBytes(unsignedPsbt);
-			// Cairn is mainnet-only; the driver ignores the network arg and uses its
+			// Heartwood is mainnet-only; the driver ignores the network arg and uses its
 			// canonical one, but we pass it for parity with the driver signature.
 			const signedBytes = await signPsbtWithJade('mainnet', psbtBytes);
 			done = true;
@@ -174,11 +174,11 @@
 	{#if multisig}
 		<HowItWorks id="multisig-jade-usb-sign">
 			<p>
-				Your <strong>private keys never leave the Jade</strong>. Cairn hands the device the current
+				Your <strong>private keys never leave the Jade</strong>. Heartwood hands the device the current
 				transaction — including every signature already collected — and the Jade shows the
 				destination and amount on its own screen for a spend from this
 				<strong>{multisig.threshold}-of-{multisig.totalKeys} multisig wallet</strong>. It returns one more
-				signature, which Cairn merges into the transaction.
+				signature, which Heartwood merges into the transaction.
 			</p>
 			<p>
 				A Jade co-signs only for multisig wallets it has <strong>registered</strong>: a one-time
@@ -190,9 +190,9 @@
 	{:else}
 		<HowItWorks id="jade-usb-sign">
 			<p>
-				Your <strong>private keys never leave the Jade</strong>. Cairn sends the unsigned
+				Your <strong>private keys never leave the Jade</strong>. Heartwood sends the unsigned
 				transaction to the device; the Jade shows you the amount and destination on its own screen
-				and asks you to physically confirm. It returns the signed transaction, which Cairn
+				and asks you to physically confirm. It returns the signed transaction, which Heartwood
 				broadcasts.
 			</p>
 			<p>

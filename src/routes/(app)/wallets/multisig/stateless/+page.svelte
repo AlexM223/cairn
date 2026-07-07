@@ -155,7 +155,7 @@
 			psbt = null;
 			sentTxid = null;
 		} catch {
-			scanError = 'Could not reach Cairn to scan that config.';
+			scanError = 'Could not reach Heartwood to scan that config.';
 		} finally {
 			scanning = false;
 		}
@@ -250,7 +250,7 @@
 			signFlash = null;
 			signError = null;
 		} catch {
-			buildError = 'Could not reach Cairn to build the transaction.';
+			buildError = 'Could not reach Heartwood to build the transaction.';
 		} finally {
 			building = false;
 		}
@@ -374,7 +374,7 @@
 					'That PSBT was read, but it added no new signature — it may already be counted, or the wrong device signed. Pick the next key and sign the freshly downloaded file.';
 			}
 		} catch {
-			signError = 'Could not reach Cairn to combine the signed transaction.';
+			signError = 'Could not reach Heartwood to combine the signed transaction.';
 		} finally {
 			attaching = false;
 		}
@@ -405,7 +405,7 @@
 			}
 			sentTxid = body.txid as string;
 		} catch {
-			broadcastError = 'Could not reach Cairn to broadcast.';
+			broadcastError = 'Could not reach Heartwood to broadcast.';
 		} finally {
 			broadcasting = false;
 		}
@@ -413,7 +413,7 @@
 </script>
 
 <svelte:head>
-	<title>Stateless signer · Cairn</title>
+	<title>Stateless signer · Heartwood</title>
 </svelte:head>
 
 <div class="stateless-page hw-owns-header">
@@ -463,7 +463,7 @@
 						Paste an <Term
 							tip="A single line of text (wsh(sortedmulti(…))) that describes every address a multisig wallet can ever derive — using only PUBLIC keys."
 							>output descriptor</Term
-						> or a Caravan/Unchained wallet JSON. Cairn derives the wallet's addresses, checks their
+						> or a Caravan/Unchained wallet JSON. Heartwood derives the wallet's addresses, checks their
 						balance over Electrum, and lets you build and sign a spend — the same
 						<Term
 							tip="A Partially Signed Bitcoin Transaction — an unsigned proposal each signing device reviews and signs in turn."

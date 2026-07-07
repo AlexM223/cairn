@@ -4,8 +4,8 @@
 	import Icon from '$lib/components/Icon.svelte';
 
 	// The way out of the insecure-context trap (cairn-wgr8). Umbrel serves
-	// Cairn over plain HTTP, where browsers withhold WebHID / Web Serial /
-	// WebUSB (USB hardware signing) and the camera (QR scan-back). Cairn runs
+	// Heartwood over plain HTTP, where browsers withhold WebHID / Web Serial /
+	// WebUSB (USB hardware signing) and the camera (QR scan-back). Heartwood runs
 	// its own self-signed HTTPS listener for exactly this; this box appears
 	// ONLY when the current page is an insecure context AND the server reports
 	// that listener's port (page.data.httpsPort) — and offers the same path on
@@ -32,10 +32,10 @@
 	<div class="secure-help" role="note">
 		<span class="secure-icon"><Icon name="shield" size={16} /></span>
 		<div>
-			<p class="secure-title">Use Cairn's secure address for {what}</p>
+			<p class="secure-title">Use Heartwood's secure address for {what}</p>
 			<p class="secure-body">
 				Your browser only allows {what} on a secure (HTTPS) page, and this page came over plain
-				HTTP. This Cairn server has a secure address built in:
+				HTTP. This Heartwood server has a secure address built in:
 			</p>
 			<a class="btn btn-secondary btn-sm secure-cta" href={secureHref}>
 				<Icon name="shield" size={14} />
@@ -43,7 +43,7 @@
 			</a>
 			<p class="secure-note">
 				The first visit shows a browser warning about the certificate. That's expected — it's the
-				certificate your own Cairn server created for itself, not a public website's. Choose
+				certificate your own Heartwood server created for itself, not a public website's. Choose
 				<strong>Advanced</strong> → <strong>Continue</strong>; the browser then remembers it for about
 				a week at a time. Sign in there with your email and password — passkeys don't work on the
 				self-signed address.

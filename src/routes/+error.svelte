@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import Logo from '$lib/components/Logo.svelte';
+	import HeartwoodMark from '$lib/components/heartwood/HeartwoodMark.svelte';
 
 	const message = $derived(
 		page.status === 404
@@ -14,12 +14,12 @@
 </script>
 
 <svelte:head>
-	<title>{page.status} — Cairn</title>
+	<title>{page.status} — Heartwood</title>
 </svelte:head>
 
 <div class="error-page">
 	<div class="error-card fade-in">
-		<Logo size={30} />
+		<HeartwoodMark size={30} tone="copper" detail="simple" />
 		<div class="status hero-number">{page.status}</div>
 		<p class="message">{message}</p>
 		{#if errorId}

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
-	import Logo from '$lib/components/Logo.svelte';
+	import HeartwoodMark from '$lib/components/heartwood/HeartwoodMark.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 
 	let { data, form } = $props();
@@ -21,13 +21,16 @@
 </script>
 
 <svelte:head>
-	<title>Secure your account — Cairn</title>
+	<title>Secure your account — Heartwood</title>
 </svelte:head>
 
 <div class="screen">
 	<div class="card sheet">
 		<div class="sheet-head">
-			<Logo size={22} wordmark />
+			<span class="mark-wordmark">
+				<HeartwoodMark size={22} tone="copper" detail="simple" />
+				<span class="wordmark-text">Heartwood</span>
+			</span>
 			<span class="badge badge-accent">First-run setup</span>
 		</div>
 
@@ -123,6 +126,18 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
+	}
+	.mark-wordmark {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+	}
+	.wordmark-text {
+		font-family: var(--font-serif);
+		font-size: 17px;
+		font-weight: 600;
+		letter-spacing: -0.01em;
+		color: var(--text-hero, var(--text));
 	}
 	.title {
 		font-family: var(--font-serif);

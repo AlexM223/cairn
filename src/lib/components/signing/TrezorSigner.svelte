@@ -137,11 +137,11 @@
 	{#if multisig}
 		<HowItWorks id="multisig-trezor-sign">
 			<p>
-				Your <strong>private keys never leave the Trezor</strong>. Cairn hands the device the
+				Your <strong>private keys never leave the Trezor</strong>. Heartwood hands the device the
 				current transaction — including every signature already collected — and the Trezor shows
 				the full picture on its own screen: that this is a <strong>{multisig.threshold}-of-{multisig.totalKeys}
 				multisig spend</strong>, plus the destination and amount. It returns one more signature,
-				which Cairn merges into the transaction.
+				which Heartwood merges into the transaction.
 			</p>
 			<p>
 				No registration step is needed: unlike some devices, a Trezor doesn't store the wallet — it
@@ -152,10 +152,10 @@
 	{:else}
 		<HowItWorks id="trezor-sign">
 			<p>
-				Your <strong>private keys never leave the Trezor</strong>. Cairn sends the unsigned
+				Your <strong>private keys never leave the Trezor</strong>. Heartwood sends the unsigned
 				transaction to the device through Trezor's Connect popup; the Trezor shows you the amount
 				and destination on its own screen and asks you to physically approve. It returns only
-				signatures, which Cairn merges back into the transaction to broadcast.
+				signatures, which Heartwood merges back into the transaction to broadcast.
 			</p>
 			<p>
 				The device is the source of truth — always confirm the address <strong>on the Trezor's

@@ -88,7 +88,7 @@
 	height={size}
 	class="mark"
 	role="img"
-	aria-label="Cairn"
+	aria-label="Heartwood"
 >
 	{#each rings as ring (ring.rx)}
 		<ellipse
