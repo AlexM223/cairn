@@ -42,11 +42,15 @@ const LEVEL: string = (
 /**
  * Where the rotating log file lives. Defaults under data/ (which is gitignored
  * and the same volume the SQLite DB uses) so the admin viewer works out of the
- * box. Set CAIRN_LOG_FILE to relocate it, or CAIRN_LOG_TO_FILE=false to write
- * to stdout only (e.g. when an external collector already captures stdout).
+ * box. Set HEARTWOOD_LOG_FILE (post-rebrand alias) or CAIRN_LOG_FILE to
+ * relocate it, or CAIRN_LOG_TO_FILE=false to write to stdout only (e.g. when an
+ * external collector already captures stdout). CAIRN_LOG_FILE stays supported
+ * indefinitely — existing self-hosted installs set it in their Docker env.
  */
 export const LOG_FILE: string =
-	env.CAIRN_LOG_FILE ?? path.join(process.cwd(), 'data', 'logs', 'cairn.log');
+	env.HEARTWOOD_LOG_FILE ??
+	env.CAIRN_LOG_FILE ??
+	path.join(process.cwd(), 'data', 'logs', 'cairn.log');
 
 const FILE_ENABLED = !isTest && env.CAIRN_LOG_TO_FILE !== 'false';
 

@@ -1,6 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-	<!-- Cairn mark: three stacked stones -->
-	<rect x="11.5" y="3.5" width="10" height="6.5" rx="3.25" fill="#E8935A"/>
-	<rect x="8.5" y="12.5" width="15" height="7" rx="3.5" fill="#E8935A"/>
-	<rect x="5" y="22" width="22" height="7.5" rx="3.75" fill="#E8935A"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+	<!--
+		Heartwood mark, min detail — static export of the ring math in
+		src/lib/components/heartwood/HeartwoodMark.svelte (detail="min", tone="copper").
+		Eccentric pith: cx = 49 + t*2, cy = 45 + t*7 where t = r/45; ry = r*0.955.
+	-->
+	<ellipse cx="50.911" cy="51.689" rx="43" ry="41.065" fill="none" stroke="#E8935A" stroke-width="3.2" opacity="0.95"/>
+	<ellipse cx="50.244" cy="49.356" rx="28" ry="26.74" fill="none" stroke="#E8935A" stroke-width="2.6" opacity="0.82"/>
+	<ellipse cx="49.667" cy="47.333" rx="15" ry="14.325" fill="none" stroke="#E8935A" stroke-width="2.4" opacity="0.82"/>
+	<circle cx="49.3" cy="46" r="5.5" fill="#FFE9CE"/>
 </svg>

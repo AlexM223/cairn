@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
-	import Logo from '$lib/components/Logo.svelte';
+	import GroveField from '$lib/components/heartwood/GroveField.svelte';
+	import HeartwoodMark from '$lib/components/heartwood/HeartwoodMark.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 
 	let { data, form } = $props();
@@ -16,13 +17,17 @@
 </script>
 
 <svelte:head>
-	<title>{data.alreadyAccepted ? 'Terms' : 'Accept the terms'} — Cairn</title>
+	<title>{data.alreadyAccepted ? 'Terms' : 'Accept the terms'} — Heartwood</title>
 </svelte:head>
 
 <div class="screen">
-	<div class="card sheet">
+	<GroveField volume="grove" />
+	<div class="sheet">
 		<div class="sheet-head">
-			<Logo size={22} wordmark />
+			<span class="brand">
+				<HeartwoodMark size={24} tone="copper" detail="simple" />
+				<span class="brand-word">Heartwood</span>
+			</span>
 			{#if !data.alreadyAccepted}
 				<span class="badge badge-accent">Please review</span>
 			{/if}
@@ -35,7 +40,7 @@
 			{#if data.hasCustomOperator}
 				This instance is operated by <strong>{data.agreement.operator}</strong>.
 			{:else}
-				This is a self-hosted Cairn instance, run by whoever operates it.
+				This is a self-hosted Heartwood instance, run by whoever operates it.
 			{/if}
 		</p>
 
@@ -55,7 +60,7 @@
 		{#if data.alreadyAccepted}
 			<div class="review-actions">
 				<span class="hint">You've accepted the current terms (version {data.agreement.version}).</span>
-				<a href="/" class="btn btn-secondary">Back to Cairn</a>
+				<a href="/" class="btn btn-secondary">Back to Heartwood</a>
 			</div>
 		{:else}
 			<form method="POST" action="?/accept" use:enhance={() => {
@@ -86,88 +91,117 @@
 
 <style>
 	.screen {
+		position: relative;
 		min-height: 100vh;
 		display: flex;
 		align-items: center;
 		justify-content: center;
 		padding: 40px 20px;
-		background: radial-gradient(120% 80% at 50% -10%, rgba(232, 147, 90, 0.08), transparent 60%);
 	}
+
+	/* No card box — a centered column directly on the grove field. */
 	.sheet {
+		position: relative;
+		z-index: 1;
 		width: 100%;
-		max-width: 640px;
-		padding: 32px;
+		max-width: 620px;
 		display: flex;
 		flex-direction: column;
 		gap: 16px;
 	}
+
 	.sheet-head {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 	}
+
+	.brand {
+		display: inline-flex;
+		align-items: center;
+		gap: 10px;
+	}
+
+	.brand-word {
+		font-family: var(--font-serif);
+		font-size: 17px;
+		font-weight: 600;
+		letter-spacing: -0.01em;
+		color: var(--text);
+	}
+
 	.title {
 		font-family: var(--font-serif);
-		font-size: 25px;
-		font-weight: 560;
-		letter-spacing: -0.01em;
+		font-size: 27px;
+		font-weight: 600;
+		letter-spacing: -0.015em;
+		color: var(--text-hero);
 	}
+
 	.operator {
 		font-size: 13.5px;
 		color: var(--text-secondary);
 		margin-top: -6px;
 	}
+
 	.operator strong {
 		color: var(--text);
 	}
+
+	/* The scrollable legal text sits between hairline rules, unboxed. */
 	.agreement {
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
-		padding: 18px 20px;
-		background: var(--bg);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
+		padding: 18px 2px;
+		border-top: 1px solid var(--hairline);
+		border-bottom: 1px solid var(--hairline);
 		max-height: 46vh;
 		overflow-y: auto;
 		white-space: pre-line;
 	}
+
 	.agreement-intro {
 		font-size: 14px;
 		font-weight: 500;
 		color: var(--text);
 		line-height: 1.6;
 	}
+
 	.agreement-p {
 		font-size: 13px;
 		line-height: 1.65;
 		color: var(--text-secondary);
 	}
+
 	.agreement-p strong {
 		color: var(--text);
 		font-weight: 600;
 	}
+
 	form {
 		display: flex;
 		flex-direction: column;
 		gap: 16px;
 	}
+
 	.accept {
 		display: flex;
 		align-items: flex-start;
 		gap: 11px;
-		padding: 14px 16px;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-control);
+		padding: 14px 18px;
+		border: 1px solid var(--border-ghost);
+		border-radius: 18px;
 		font-size: 13.5px;
 		line-height: 1.5;
 		cursor: pointer;
 		transition: border-color 120ms var(--ease);
 	}
+
 	.accept:hover {
 		border-color: var(--accent);
 	}
+
 	.accept input {
 		margin-top: 2px;
 		width: 17px;
@@ -176,9 +210,11 @@
 		flex-shrink: 0;
 		cursor: pointer;
 	}
+
 	.continue {
 		align-self: flex-end;
 	}
+
 	.review-actions {
 		display: flex;
 		align-items: center;

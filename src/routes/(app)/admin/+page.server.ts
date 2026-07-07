@@ -1,9 +1,39 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { instanceStats } from '$lib/server/admin';
-import { getInstanceSettings } from '$lib/server/settings';
+import { getInstanceSettings, getSetting } from '$lib/server/settings';
 import { getChain } from '$lib/server/chain';
-import { getUpdateNotice } from '$lib/server/updateCheck';
+import { getUpdateNotice, CURRENT_VERSION } from '$lib/server/updateCheck';
+import { DB_PATH } from '$lib/server/db';
 import type { PageServerLoad } from './$types';
 import type { NodeInfo } from '$lib/types';
+
+/** Best-effort storage picture for the Node page: how big the instance's
+ *  database is, and how full the volume it lives on is. Any FS hiccup (odd
+ *  container mounts, statfs unsupported) degrades to nulls — the page simply
+ *  hides the bar rather than failing the whole admin overview. */
+function storageInfo(): {
+	dbBytes: number | null;
+	diskTotalBytes: number | null;
+	diskFreeBytes: number | null;
+} {
+	let dbBytes: number | null = null;
+	try {
+		dbBytes = fs.statSync(DB_PATH).size;
+	} catch {
+		// leave null
+	}
+	let diskTotalBytes: number | null = null;
+	let diskFreeBytes: number | null = null;
+	try {
+		const s = fs.statfsSync(path.dirname(DB_PATH));
+		diskTotalBytes = s.bsize * s.blocks;
+		diskFreeBytes = s.bsize * s.bavail;
+	} catch {
+		// leave nulls
+	}
+	return { dbBytes, diskTotalBytes, diskFreeBytes };
+}
 
 export const load: PageServerLoad = async () => {
 	const stats = instanceStats();
@@ -30,6 +60,12 @@ export const load: PageServerLoad = async () => {
 		registrationMode: settings.registrationMode,
 		// Newer-release notice (cairn-ivae.2). Answers from an in-process cache and
 		// never awaits the network — GitHub being down can't slow this page.
-		updateNotice: getUpdateNotice()
+		updateNotice: getUpdateNotice(),
+		// Node-page k/v rows (Heartwood 5g): version, uptime, storage, and the
+		// config-backup recency that drives the amber "Back up" nudge.
+		version: CURRENT_VERSION,
+		uptimeSeconds: Math.floor(process.uptime()),
+		storage: storageInfo(),
+		lastInstanceBackupAt: getSetting('last_instance_backup_at')
 	};
 };

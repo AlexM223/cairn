@@ -37,6 +37,11 @@ COPY --from=build /app/server.mjs ./server.mjs
 COPY --from=build /app/scripts/tls-cert.mjs ./scripts/tls-cert.mjs
 
 # SQLite database lives on the /data volume — mount it or lose it.
+# Rebrand note (Cairn → Heartwood): these CAIRN_* env vars and the /data paths
+# are the real operational values for every existing install and must NOT be
+# renamed in place (that would orphan users' databases on upgrade). The app also
+# accepts HEARTWOOD_DB / HEARTWOOD_LOG_FILE as aliases (they take precedence
+# when set, falling back to CAIRN_*) — see src/lib/server/db.ts and logger.ts.
 ENV CAIRN_DB=/data/cairn.db
 # Keep the rotating log on the same volume (the in-container default would be
 # /app/data/logs, i.e. the ephemeral writable layer — history lost on recreate).

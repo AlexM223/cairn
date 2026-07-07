@@ -86,7 +86,7 @@
 </script>
 
 <svelte:head>
-	<title>Sign in — Cairn</title>
+	<title>Sign in — Heartwood</title>
 </svelte:head>
 
 <form class="stack" onsubmit={signInPassword}>
@@ -126,7 +126,6 @@
 	</button>
 
 	{#if passkeySupported}
-		<div class="divider"><span>or</span></div>
 		<button type="button" class="btn btn-secondary" onclick={signInPasskey} disabled={submitting}>
 			Sign in with a passkey
 		</button>
@@ -145,23 +144,6 @@
 	.btn {
 		width: 100%;
 		margin-top: 4px;
-	}
-
-	.divider {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		color: var(--text-muted);
-		font-size: 12px;
-		margin: 2px 0;
-	}
-
-	.divider::before,
-	.divider::after {
-		content: '';
-		flex: 1;
-		height: 1px;
-		background: var(--border-subtle);
 	}
 
 	.alt {

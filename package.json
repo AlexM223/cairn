@@ -1,6 +1,6 @@
 {
-	"name": "cairn",
-	"description": "Self-hosted Bitcoin command center — block explorer, watch-only wallet navigator, and multi-user instance you run yourself.",
+	"name": "heartwood",
+	"description": "Heartwood — self-hosted Bitcoin command center: block explorer, watch-only wallet navigator, and multi-user instance you run yourself. Your bitcoin. Your rules.",
 	"private": true,
 	"version": "0.1.7",
 	"license": "MIT",
@@ -45,8 +45,8 @@
 		"vitest": "^4.1.9"
 	},
 	"dependencies": {
-		"@fontsource-variable/fraunces": "^5.2.9",
 		"@fontsource/inter": "^5.2.8",
+		"@fontsource/source-serif-4": "^5.2.9",
 		"@ledgerhq/hw-app-btc": "^11.2.1",
 		"@ledgerhq/hw-transport-webhid": "^6.36.0",
 		"@noble/hashes": "^2.2.0",

@@ -1,66 +1,103 @@
 /* ============================================================
-   Cairn — "The Forge" design system
-   Warm charcoal, copper ember accents, weighty serif numerals.
+   Cairn — "Heartwood" design system
+   Standing inside the trunk: deep wood charcoal, copper growth
+   rings, serif numerals. Grammar: hairlines not boxes, pills
+   not cards, depth from the grove field — not glow.
    ============================================================ */
 
 @import '@fontsource/inter/400.css';
 @import '@fontsource/inter/500.css';
 @import '@fontsource/inter/600.css';
-@import '@fontsource-variable/fraunces';
+@import '@fontsource/inter/700.css';
+@import '@fontsource/source-serif-4/400.css';
+@import '@fontsource/source-serif-4/600.css';
+@import '@fontsource/source-serif-4/700.css';
 
 :root {
 	/* Surfaces */
-	--bg: #1a1614;
-	--surface: #231f1c;
-	--surface-elevated: #2c2724;
-	--border: #3a3330;
-	--border-subtle: #2e2925;
+	--bg: #100d0b;
+	--bg-deep: #0a0807;
+	--bg-input: #17120f;
+	--bg-strip: #14100c;
+	/* Legacy surface tiers — kept for unreskinned cards/panels until their
+	   lanes land; new work uses --bg-input fills + hairline rows instead. */
+	--surface: #17120f;
+	--surface-elevated: #241c15;
+	--border: #3a2f27;
+	--border-subtle: #2e2621;
+	/* The "hairlines, not boxes" grammar: 1px row separators. */
+	--hairline: #1d1712;
+	--border-control: #2a2320;
+	--border-ghost: #3a2f27;
 
 	/* Text
-	   Contrast on the darkest surfaces (measured): secondary 6.8:1,
-	   muted 4.6:1 (WCAG AA for normal text). --text-faint fails AA by
-	   design — decorative/disabled use only, never informative copy. */
-	--text: #f0ebe5;
-	--text-secondary: #a89e94;
-	--text-muted: #92857a;
-	--text-faint: #5c5147;
+	   --text-faint fails AA by design — decorative/disabled use only,
+	   never informative copy. */
+	--text: #ede4db;
+	--text-hero: #f1e7dd;
+	--text-rows: #e5dbd1;
+	--text-secondary: #a99c90;
+	--text-muted: #8b7f75;
+	--text-faint: #5e554d;
+	/* Breadcrumb eyebrow: current segment vs path segments. */
+	--eyebrow: #8f8379;
+	--eyebrow-path: #6b6058;
 
-	/* Accent — copper / ember */
+	/* Accent — copper */
 	--accent: #e8935a;
-	--accent-hover: #f0a06a;
+	--accent-hover: #efa06b;
+	--accent-pressed: #d9884f;
+	--accent-bright: #f4b486;
+	--accent-glow: #f6c89a;
+	--accent-glow-strong: #fbe1c6;
+	--accent-core: #ffe9ce;
+	--accent-dim: #7a5238;
+	--accent-dim-2: #5e3f2c;
 	--accent-muted: rgba(232, 147, 90, 0.15);
-	/* Border weight for accent-tinted panels/cards that sit on --accent-muted
+	/* Border weight for accent-tinted panels that sit on --accent-muted
 	   fills. --accent-border is the default; --accent-border-strong is for
-	   intentionally-emphasized "next step" cards. */
+	   intentionally-emphasized "next step" callouts. */
 	--accent-border: rgba(232, 147, 90, 0.3);
 	--accent-border-strong: rgba(232, 147, 90, 0.45);
-	/* Text placed ON the accent (button labels, active stepper dots). */
-	--on-accent: #201409;
+	/* Text placed ON the accent (pill labels); ghost pill label color. */
+	--on-accent: #1a1210;
+	--on-accent-ghost: #e8c6a8;
 
-	/* Status */
-	--success: #6bbf6b;
-	--success-muted: rgba(107, 191, 107, 0.14);
-	--warning: #e8c95a;
-	--warning-muted: rgba(232, 201, 90, 0.14);
-	/* Border weight for warning-tinted panels on --warning-muted fills.
-	   --warning-border-strong emphasizes high-severity callouts. */
-	--warning-border: rgba(232, 201, 90, 0.3);
-	--warning-border-strong: rgba(232, 201, 90, 0.45);
-	--error: #e85a5a;
-	--error-muted: rgba(232, 90, 90, 0.14);
-	/* Border weight for error-tinted panels on --error-muted fills. */
-	--error-border: rgba(232, 90, 90, 0.3);
-	/* "danger" is the same semantic red as "error"; aliased so call sites using
-	   var(--danger)/var(--danger-muted) resolve correctly instead of falling back. */
+	/* Status — sage for received/connected/valid, attention (warm tan,
+	   never red) for nudges AND form validation. */
+	--sage: #8aa06e;
+	--sage-muted: rgba(138, 160, 110, 0.1);
+	--success: var(--sage);
+	--success-muted: var(--sage-muted);
+	--attention: #d8b27a;
+	--attention-muted: rgba(216, 178, 122, 0.1);
+	--warning: var(--attention);
+	--warning-muted: var(--attention-muted);
+	--warning-border: rgba(216, 178, 122, 0.3);
+	--warning-border-strong: rgba(216, 178, 122, 0.45);
+	/* Off-spec extension: Heartwood has no red, but irrecoverable failures
+	   (broadcast rejected, invalid PSBT, API down) keep it — routine
+	   validation uses --attention instead. */
+	--error: #e0604c;
+	--error-muted: rgba(224, 96, 76, 0.14);
+	--error-border: rgba(224, 96, 76, 0.3);
 	--danger: var(--error);
 	--danger-muted: var(--error-muted);
 
 	/* Typography */
 	--font-ui: 'Inter', system-ui, -apple-system, sans-serif;
-	--font-serif: 'Fraunces Variable', 'Fraunces', Georgia, serif;
+	--font-serif: 'Source Serif 4', Georgia, serif;
 	--font-mono: ui-monospace, 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
 
-	/* Radii */
+	/* Radii — pill hardware. Rows get none. */
+	--radius-pill: 26px;
+	--radius-toggle: 15px;
+	--radius-status-pill: 18px;
+	--radius-icon-btn: 10px;
+	--radius-badge: 5px;
+	--radius-strip: 11px;
+	/* Legacy radii — literal fallbacks so unreskinned components render
+	   sanely until their lanes retire them. */
 	--radius-card: 8px;
 	--radius-control: 6px;
 	--radius-chip: 4px;
@@ -133,8 +170,7 @@ a:hover {
 
 .hero-number {
 	font-family: var(--font-serif);
-	font-variation-settings: 'opsz' 72;
-	font-weight: 560;
+	font-weight: 600;
 	font-variant-numeric: tabular-nums;
 	letter-spacing: -0.015em;
 	line-height: 1.05;
@@ -204,8 +240,8 @@ a:hover {
 	align-items: center;
 	justify-content: center;
 	gap: 7px;
-	padding: 8px 16px;
-	border-radius: var(--radius-control);
+	padding: 8px 18px;
+	border-radius: var(--radius-pill);
 	border: 1px solid transparent;
 	font-family: var(--font-ui);
 	font-size: 13.5px;
@@ -214,10 +250,12 @@ a:hover {
 	cursor: pointer;
 	white-space: nowrap;
 	transition:
-		background 120ms var(--ease),
-		border-color 120ms var(--ease),
-		color 120ms var(--ease),
-		opacity 120ms var(--ease);
+		background 120ms ease-out,
+		border-color 120ms ease-out,
+		color 120ms ease-out,
+		opacity 120ms ease-out,
+		box-shadow 120ms ease-out,
+		transform 120ms ease-out;
 	text-decoration: none;
 }
 
@@ -241,22 +279,41 @@ a:hover {
 	background: var(--accent);
 	color: var(--on-accent);
 	font-weight: 600;
+	box-shadow: 0 4px 20px rgba(232, 147, 90, 0.25);
 }
 
 .btn-primary:hover:not(:disabled) {
 	background: var(--accent-hover);
 	color: var(--on-accent);
+	box-shadow: 0 6px 26px rgba(232, 147, 90, 0.32);
 }
 
+.btn-primary:active:not(:disabled) {
+	background: var(--accent-pressed);
+	transform: scale(0.97);
+}
+
+.btn-primary:disabled {
+	background: var(--border-control);
+	color: var(--eyebrow-path);
+	box-shadow: none;
+	opacity: 1;
+}
+
+/* Ghost pill: the spec's "one copper primary, ghost for the rest". */
 .btn-secondary {
-	background: var(--surface-elevated);
-	border-color: var(--border);
-	color: var(--text);
+	background: transparent;
+	border-color: var(--border-ghost);
+	color: var(--on-accent-ghost);
 }
 
 .btn-secondary:hover:not(:disabled) {
-	border-color: var(--text-muted);
-	color: var(--text);
+	border-color: var(--accent);
+	color: var(--on-accent-ghost);
+}
+
+.btn-secondary:active:not(:disabled) {
+	transform: scale(0.97);
 }
 
 .btn-ghost {
@@ -271,13 +328,13 @@ a:hover {
 
 .btn-danger {
 	background: var(--error-muted);
-	border-color: rgba(232, 90, 90, 0.35);
+	border-color: rgba(224, 96, 76, 0.35);
 	color: var(--error);
 }
 
 .btn-danger:hover:not(:disabled) {
-	background: rgba(232, 90, 90, 0.22);
-	color: #f07a7a;
+	background: rgba(224, 96, 76, 0.22);
+	color: #ea7f6e;
 }
 
 .btn-sm {
@@ -304,14 +361,17 @@ a:hover {
 textarea.input {
 	width: 100%;
 	padding: 9px 12px;
-	background: var(--bg);
-	border: 1px solid var(--border);
+	background: var(--bg-input);
+	border: 1px solid var(--border-subtle);
 	border-radius: var(--radius-control);
 	color: var(--text);
+	caret-color: var(--accent);
 	font-family: var(--font-ui);
 	font-size: 14px;
 	line-height: 1.45;
-	transition: border-color 120ms var(--ease);
+	transition:
+		border-color 120ms var(--ease),
+		box-shadow 120ms var(--ease);
 }
 
 .input::placeholder {
@@ -323,10 +383,13 @@ textarea.input {
 textarea.input:focus {
 	outline: none;
 	border-color: var(--accent);
+	box-shadow: 0 0 0 3px rgba(232, 147, 90, 0.12);
 }
 
+/* Validation is calm amber per the "never red" rule — --error is reserved
+   for irrecoverable failures. */
 .input[aria-invalid='true'] {
-	border-color: var(--error);
+	border-color: var(--attention);
 }
 
 .hint {
@@ -334,11 +397,13 @@ textarea.input:focus {
 	color: var(--text-muted);
 }
 
+/* Validation-style messages use --attention (never red); a genuine
+   broadcast-rejected/API-error banner can still reach for --error. */
 .form-error {
 	font-size: 13px;
-	color: var(--error);
-	background: var(--error-muted);
-	border: 1px solid rgba(232, 90, 90, 0.3);
+	color: var(--attention);
+	background: var(--attention-muted);
+	border: 1px solid var(--warning-border);
 	border-radius: var(--radius-control);
 	padding: 9px 12px;
 }
@@ -350,7 +415,7 @@ textarea.input:focus {
 	align-items: center;
 	gap: 5px;
 	padding: 2px 8px;
-	border-radius: var(--radius-chip);
+	border-radius: var(--radius-badge);
 	font-size: 11.5px;
 	font-weight: 500;
 	line-height: 1.6;
@@ -363,13 +428,13 @@ textarea.input:focus {
 }
 
 .badge-success {
-	background: var(--success-muted);
-	color: var(--success);
+	background: var(--sage-muted);
+	color: var(--sage);
 }
 
 .badge-warning {
-	background: var(--warning-muted);
-	color: var(--warning);
+	background: var(--attention-muted);
+	color: var(--attention);
 }
 
 .badge-error {
@@ -411,13 +476,13 @@ textarea.input:focus {
 	text-transform: uppercase;
 	color: var(--text-muted);
 	padding: 10px 14px;
-	border-bottom: 1px solid var(--border-subtle);
+	border-bottom: 1px solid var(--hairline);
 	white-space: nowrap;
 }
 
 .table td {
 	padding: 11px 14px;
-	border-bottom: 1px solid var(--border-subtle);
+	border-bottom: 1px solid var(--hairline);
 	vertical-align: middle;
 	font-variant-numeric: tabular-nums;
 }
@@ -459,27 +524,13 @@ textarea.input:focus {
 }
 
 .skeleton {
-	background: linear-gradient(
-		100deg,
-		var(--surface-elevated) 40%,
-		#332d29 50%,
-		var(--surface-elevated) 60%
-	);
+	background: linear-gradient(100deg, var(--bg-input) 40%, #241c15 50%, var(--bg-input) 60%);
 	background-size: 200% 100%;
-	animation: skeleton-sheen 1.4s ease-in-out infinite;
-	border-radius: var(--radius-chip);
+	animation: hwShimmer 1.6s ease-in-out infinite;
+	border-radius: var(--radius-badge);
 	color: transparent !important;
 	user-select: none;
 	pointer-events: none;
-}
-
-@keyframes skeleton-sheen {
-	from {
-		background-position: 120% 0;
-	}
-	to {
-		background-position: -80% 0;
-	}
 }
 
 .spinner {
@@ -495,6 +546,83 @@ textarea.input:focus {
 @keyframes spin {
 	to {
 		transform: rotate(360deg);
+	}
+}
+
+/* ---------- Heartwood motion primitives ----------
+   Raw keyframes only — components set duration/timing at the call site,
+   e.g. `animation: hwPulse 2.4s ease-in-out infinite` (grove dust uses
+   4.4–6s on the same keyframe). All are neutralized by the universal
+   prefers-reduced-motion block below. */
+
+/* Tips, live dots, dashed mempool rings, grove dust. */
+@keyframes hwPulse {
+	0%,
+	100% {
+		opacity: 0.45;
+	}
+	50% {
+		opacity: 1;
+	}
+}
+
+/* Status dots. */
+@keyframes hwBlink {
+	0%,
+	100% {
+		opacity: 1;
+	}
+	50% {
+		opacity: 0.28;
+	}
+}
+
+/* Sent moment / ring close — plays once (2.4s ease-out, no infinite). */
+@keyframes hwSweepOnce {
+	from {
+		transform: scale(0.18);
+		opacity: 0.9;
+	}
+	to {
+		transform: scale(1);
+		opacity: 0;
+	}
+}
+
+/* Chart draw-in — component sets stroke-dasharray/-dashoffset; this
+   animates the offset to 0 (1.8s ease-out). */
+@keyframes hwGrow {
+	to {
+		stroke-dashoffset: 0;
+	}
+}
+
+/* Skeleton shimmer (1.6s infinite). */
+@keyframes hwShimmer {
+	from {
+		background-position: 200% 0;
+	}
+	to {
+		background-position: -200% 0;
+	}
+}
+
+/* Ring-arc spinner (1.2s linear infinite) — distinct from the legacy
+   border-spinner's `spin` above. */
+@keyframes hwSpin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+/* First-sync aura only (9s infinite). */
+@keyframes hwBreathe {
+	0%,
+	100% {
+		transform: scale(1);
+	}
+	50% {
+		transform: scale(1.05);
 	}
 }
 

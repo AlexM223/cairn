@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
-	import Logo from '$lib/components/Logo.svelte';
+	import GroveField from '$lib/components/heartwood/GroveField.svelte';
+	import HeartwoodMark from '$lib/components/heartwood/HeartwoodMark.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 
 	let { data, form } = $props();
@@ -18,20 +19,24 @@
 </script>
 
 <svelte:head>
-	<title>Operator disclosure — Cairn</title>
+	<title>Operator disclosure — Heartwood</title>
 </svelte:head>
 
 <div class="screen">
-	<div class="card sheet">
+	<GroveField volume="grove" />
+	<div class="sheet">
 		<div class="sheet-head">
-			<Logo size={22} wordmark />
+			<span class="brand">
+				<HeartwoodMark size={24} tone="copper" detail="simple" />
+				<span class="brand-word">Heartwood</span>
+			</span>
 			<span class="badge badge-accent">First-run setup</span>
 		</div>
 
 		<h1 class="title">Before you invite anyone</h1>
 		<p class="lede">
 			You're about to run Bitcoin infrastructure for yourself and anyone you invite. Read this
-			once — it sets out what you're responsible for, and what Cairn is not.
+			once — it sets out what you're responsible for, and what Heartwood is not.
 		</p>
 
 		<div class="disclosure">
@@ -50,7 +55,7 @@
 		<div class="tos-tip">
 			<Icon name="info" size={15} />
 			<span>
-				We recommend establishing your own terms of service with your users. Cairn ships a
+				We recommend establishing your own terms of service with your users. Heartwood ships a
 				customizable <strong>user agreement</strong> you can edit in
 				<em>Settings → User Agreement</em> — <a href="/terms" target="_blank" rel="noopener"
 					>preview the current version</a
@@ -85,64 +90,90 @@
 
 <style>
 	.screen {
+		position: relative;
 		min-height: 100vh;
 		display: flex;
 		align-items: center;
 		justify-content: center;
 		padding: 40px 20px;
-		background: radial-gradient(120% 80% at 50% -10%, rgba(232, 147, 90, 0.08), transparent 60%);
 	}
+
+	/* No card box — a centered column directly on the grove field. */
 	.sheet {
+		position: relative;
+		z-index: 1;
 		width: 100%;
-		max-width: 660px;
-		padding: 32px;
+		max-width: 620px;
 		display: flex;
 		flex-direction: column;
 		gap: 18px;
 	}
+
 	.sheet-head {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 	}
+
+	.brand {
+		display: inline-flex;
+		align-items: center;
+		gap: 10px;
+	}
+
+	.brand-word {
+		font-family: var(--font-serif);
+		font-size: 17px;
+		font-weight: 600;
+		letter-spacing: -0.01em;
+		color: var(--text);
+	}
+
 	.title {
 		font-family: var(--font-serif);
-		font-size: 26px;
-		font-weight: 560;
-		letter-spacing: -0.01em;
+		font-size: 28px;
+		font-weight: 600;
+		letter-spacing: -0.015em;
+		color: var(--text-hero);
 	}
+
 	.lede {
 		font-size: 14px;
 		line-height: 1.6;
 		color: var(--text-secondary);
 		margin-top: -8px;
 	}
+
+	/* The scrollable legal text sits between hairline rules, unboxed. */
 	.disclosure {
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
-		padding: 18px 20px;
-		background: var(--bg);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
+		padding: 18px 2px;
+		border-top: 1px solid var(--hairline);
+		border-bottom: 1px solid var(--hairline);
 		max-height: 42vh;
 		overflow-y: auto;
 	}
+
 	.disclosure-intro {
 		font-size: 14px;
 		font-weight: 500;
 		color: var(--text);
 		line-height: 1.6;
 	}
+
 	.disclosure-p {
 		font-size: 13px;
 		line-height: 1.65;
 		color: var(--text-secondary);
 	}
+
 	.disclosure-p strong {
 		color: var(--text);
 		font-weight: 600;
 	}
+
 	.tos-tip {
 		display: flex;
 		gap: 10px;
@@ -151,38 +182,43 @@
 		line-height: 1.6;
 		color: var(--text-secondary);
 		background: var(--accent-muted);
-		border-radius: var(--radius-control);
-		padding: 12px 14px;
+		border-radius: 18px;
+		padding: 12px 16px;
 	}
+
 	.tos-tip :global(svg) {
 		color: var(--accent);
 		flex-shrink: 0;
 		margin-top: 1px;
 	}
+
 	.tos-tip strong {
 		color: var(--text);
 	}
+
 	form {
 		display: flex;
 		flex-direction: column;
 		gap: 16px;
 	}
+
 	.accept {
 		display: flex;
 		align-items: flex-start;
 		gap: 11px;
-		padding: 14px 16px;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-control);
+		padding: 14px 18px;
+		border: 1px solid var(--border-ghost);
+		border-radius: 18px;
 		font-size: 13.5px;
 		line-height: 1.5;
 		cursor: pointer;
 		transition: border-color 120ms var(--ease);
 	}
+
 	.accept:hover {
 		border-color: var(--accent);
 	}
+
 	.accept input {
 		margin-top: 2px;
 		width: 17px;
@@ -191,6 +227,7 @@
 		flex-shrink: 0;
 		cursor: pointer;
 	}
+
 	.continue {
 		align-self: flex-end;
 	}

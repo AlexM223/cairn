@@ -52,7 +52,7 @@
 </script>
 
 <svelte:head>
-	<title>Create account — Cairn</title>
+	<title>Create account — Heartwood</title>
 </svelte:head>
 
 {#if data.closed}
@@ -117,14 +117,14 @@
 					bind:value={inviteCode}
 				/>
 				<span class="hint">
-					Invites come from whoever runs this Cairn instance — ask them for a code.
+					Invites come from whoever runs this Heartwood instance — ask them for a code.
 				</span>
 			</div>
 		{/if}
 
 		<button class="btn btn-primary" disabled={submitting}>
 			{#if submitting}<span class="spinner"></span>{/if}
-			{data.firstUser ? 'Set up Cairn' : 'Create account'}
+			{data.firstUser ? 'Set up Heartwood' : 'Create account'}
 		</button>
 
 		<p class="alt">Already have an account? <a href="/login">Sign in</a></p>
@@ -140,8 +140,8 @@
 		font-size: 12.5px;
 		color: var(--accent);
 		background: var(--accent-muted);
-		border-radius: var(--radius-control);
-		padding: 9px 12px;
+		border-radius: 18px;
+		padding: 11px 18px;
 		margin-bottom: 16px;
 		line-height: 1.5;
 	}
