@@ -18,8 +18,9 @@
 		confirmed,
 		height = 148
 	}: {
-		/** Wallet scan txs — only confirmed ones (height > 0) are charted. */
-		txs: { time: number; height: number; delta: number }[];
+		/** Wallet scan txs — only confirmed ones (height > 0, so time is set)
+		 *  are charted; unconfirmed rows (time: null) are filtered out here. */
+		txs: { time: number | null; height: number; delta: number }[];
 		/** Current confirmed balance in sats (anchors the series' end). */
 		confirmed: number;
 		height?: number;
@@ -33,7 +34,9 @@
 
 	const series = $derived.by(() => {
 		const conf = txs
-			.filter((t) => t.height > 0 && t.time > 0)
+			.filter((t): t is { time: number; height: number; delta: number } =>
+				t.height > 0 && t.time != null && t.time > 0
+			)
 			.toSorted((a, b) => a.time - b.time || a.height - b.height);
 		if (conf.length === 0) return null;
 		// Walk deltas forward, then shift so the walk ends exactly at the

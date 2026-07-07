@@ -27,7 +27,7 @@ import type { Actions, PageServerLoad } from './$types';
 const QR_OPTS = {
 	margin: 1,
 	width: 220,
-	color: { dark: '#F0EBE5', light: '#00000000' }
+	color: { dark: '#E4D8CC', light: '#00000000' }
 };
 
 function multisigId(param: string): number {
@@ -141,6 +141,8 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 			...base,
 			detail: null,
 			receive: null,
+			coinbaseUtxos: [] as { txid: string; vout: number; value: number; height: number }[],
+			tipHeight: 0,
 			speedUp: [] as Awaited<ReturnType<typeof detectMultisigUnconfirmedInflows>>,
 			savedTxs: [] as { id: number; txid: string | null; status: string; feeRate: number }[],
 			scanError: e instanceof Error ? e.message : 'Multisig scan failed'

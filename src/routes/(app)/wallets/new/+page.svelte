@@ -4,6 +4,8 @@
 	import { browser } from '$app/environment';
 	import { onDestroy, onMount, tick } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
+	import GroveField from '$lib/components/heartwood/GroveField.svelte';
+	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
 	import DevicePicker from '$lib/components/DevicePicker.svelte';
 	import SecureContextHelp from '$lib/components/signing/SecureContextHelp.svelte';
 	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
@@ -531,7 +533,7 @@
 		try {
 			config = JSON.parse(await file.text());
 		} catch {
-			restoreError = "That file isn't valid JSON. Pick a Cairn wallet-config backup (.json).";
+			restoreError = "That file isn't valid JSON. Pick a Heartwood wallet-config backup (.json).";
 			return;
 		}
 
@@ -585,45 +587,47 @@
 			return;
 		}
 
-		restoreError = "That file isn't a Cairn single-key wallet backup.";
+		restoreError = "That file isn't a Heartwood single-key wallet backup.";
 	}
 </script>
 
 <svelte:head>
-	<title>Import a wallet — Cairn</title>
+	<title>Import a wallet — Heartwood</title>
 </svelte:head>
 
-<div class="wizard fade-in">
-	<h1 class="page-title" style="margin-bottom: 4px">Add a wallet</h1>
-	<p class="hint" style="margin-bottom: 24px">
-		A short guided setup — Cairn only ever sees public keys.
-	</p>
-
-	{#if resumed}
-		<!-- A reload (or coming back to the tab) landed mid-wizard and we restored
-		     the saved progress — say so, with a way out to a clean start. -->
-		<div class="resume-note" role="status">
-			<Icon name="info" size={14} />
-			<span class="grow">Picked up where you left off.</span>
-			<button type="button" class="resume-reset" onclick={startOver}>Start over</button>
+<div class="wizard hw-page fade-in">
+	<GroveField volume="present" />
+	<div class="wizard-content">
+		<div class="wizard-eyebrow">
+			<EyebrowBreadcrumb
+				path={['Wallets']}
+				current={createdId !== null ? 'New wallet · done' : `New wallet · ${STEPS[step]}`}
+			/>
 		</div>
-	{/if}
+		<h1 class="wizard-title">Add a wallet</h1>
+		<p class="wizard-sub">
+			A short guided setup — Heartwood only ever sees public keys.
+		</p>
 
-	<!-- Step indicator -->
-	<ol class="steps" aria-label="Import progress">
-		{#each STEPS as label, i (label)}
-			<li class="step-item" class:active={i === indicatorStep} class:done={i < indicatorStep}>
-				<span class="step-dot">
-					{#if i < indicatorStep}
-						<Icon name="check" size={11} />
-					{:else}
-						{i + 1}
-					{/if}
-				</span>
-				<span class="step-label">{label}</span>
-			</li>
-		{/each}
-	</ol>
+		{#if resumed}
+			<!-- A reload (or coming back to the tab) landed mid-wizard and we restored
+			     the saved progress — say so, with a way out to a clean start. -->
+			<div class="resume-note" role="status">
+				<Icon name="info" size={14} />
+				<span class="grow">Picked up where you left off.</span>
+				<button type="button" class="resume-reset" onclick={startOver}>Start over</button>
+			</div>
+		{/if}
+
+		<!-- Step indicator — the Send flow's quiet text-step grammar (5a/4a). -->
+		<ol class="steps" aria-label="Import progress">
+			{#each STEPS as label, i (label)}
+				<li class="step-item" class:active={i === indicatorStep} class:done={i < indicatorStep}>
+					<span class="step-word">{label}</span>
+					{#if i < STEPS.length - 1}<span class="step-line" aria-hidden="true"></span>{/if}
+				</li>
+			{/each}
+		</ol>
 
 	{#if step === 0}
 		<!-- ------------------------------------------------- Step 1: key -->
@@ -632,7 +636,7 @@
 
 			{#if method === null}
 				<p class="step-lead">
-					Where does this wallet's key live? Cairn only ever reads the
+					Where does this wallet's key live? Heartwood only ever reads the
 					<strong>public</strong> key — nothing that can spend.
 				</p>
 
@@ -789,12 +793,12 @@
 							<span>
 								I plan to use this key in a <strong>shared (multisig) wallet</strong> later.
 								{#if supportsSharedKeyRead(method)}
-									Cairn will also read its sharing key now, so you won't need to plug this
+									Heartwood will also read its sharing key now, so you won't need to plug this
 									device in again when you set that up.
 								{:else}
 									<span class="share-opt-in-caveat">
 										(The extra sharing-key read isn't supported on the
-										{WALLET_DEVICE_LABELS[method]} yet — Cairn will skip it and let you know.)
+										{WALLET_DEVICE_LABELS[method]} yet — Heartwood will skip it and let you know.)
 									</span>
 								{/if}
 							</span>
@@ -804,7 +808,7 @@
 					{#if method === 'trezor' || method === 'ledger'}
 						<div class="connect-box">
 							<p class="connect-copy">
-								Plug in your {method === 'trezor' ? 'Trezor' : 'Ledger'} and unlock it. Cairn
+								Plug in your {method === 'trezor' ? 'Trezor' : 'Ledger'} and unlock it. Heartwood
 								reads the wallet's public key straight from the device — it can
 								<strong>watch, never spend</strong>.
 							</p>
@@ -826,7 +830,7 @@
 					{:else if method === 'bitbox02'}
 						<div class="connect-box">
 							<p class="connect-copy">
-								Plug in your BitBox02 and unlock it. Cairn reads the wallet's public key
+								Plug in your BitBox02 and unlock it. Heartwood reads the wallet's public key
 								straight from the device — it can <strong>watch, never spend</strong>.
 								<strong>Confirm on the BitBox02 when it asks.</strong>
 							</p>
@@ -844,7 +848,7 @@
 					{:else if method === 'jade'}
 						<div class="connect-box">
 							<p class="connect-copy">
-								Plug in your Jade and unlock it with your PIN. Cairn reads the wallet's
+								Plug in your Jade and unlock it with your PIN. Heartwood reads the wallet's
 								public key straight from the device — it can
 								<strong>watch, never spend</strong>. Needs Chrome, Edge or Brave.
 							</p>
@@ -1009,7 +1013,7 @@
 									<span class="hint">
 										8 characters, shown in your wallet as "master fingerprint" or "XFP".
 										Needed to <Term
-											tip="Cairn stamps this ID into every transaction it prepares, so your signing device can recognize which of its keys to sign with."
+											tip="Heartwood stamps this ID into every transaction it prepares, so your signing device can recognize which of its keys to sign with."
 											>sign with a hardware wallet</Term
 										> — without it you'll sign by passing files through another wallet app.
 									</span>
@@ -1037,7 +1041,7 @@
 									<div class="help-body fade-in">
 										<p>
 											An xpub is your wallet's master <strong>public</strong> key. From it,
-											Cairn can derive every address your wallet will ever use and see the
+											Heartwood can derive every address your wallet will ever use and see the
 											full transaction history — but it can't spend a single sat. Private
 											keys and seed words never leave your wallet.
 										</p>
@@ -1212,7 +1216,7 @@
 							</span>
 							<p class="hint" style="margin-bottom: 4px">
 								This is how you'll <Term
-									tip="Cairn prepares an unsigned transaction; you approve it on this device. Your private key never leaves it."
+									tip="Heartwood prepares an unsigned transaction; you approve it on this device. Your private key never leaves it."
 									>sign when you spend</Term
 								>. Not sure? Leave it — you can pick when you send, and any PSBT wallet works.
 							</p>
@@ -1281,11 +1285,43 @@
 			</div>
 		</div>
 	{/if}
+	</div>
 </div>
 
 <style>
 	.wizard {
 		max-width: 620px;
+	}
+
+	.hw-page {
+		position: relative;
+	}
+
+	.wizard-content {
+		position: relative;
+		z-index: 1;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.wizard-eyebrow {
+		margin-bottom: 18px;
+		max-width: 100%;
+	}
+
+	.wizard-title {
+		font-family: var(--font-serif);
+		font-size: 26px;
+		font-weight: 600;
+		letter-spacing: -0.01em;
+		margin: 0 0 6px;
+	}
+
+	.wizard-sub {
+		color: var(--text-secondary);
+		font-size: 14px;
+		line-height: 1.5;
+		margin: 0 0 24px;
 	}
 
 	.done-title {
@@ -1371,90 +1407,61 @@
 		color: var(--text);
 	}
 
-	/* --- step indicator --- */
+	/* --- step indicator — quiet text-step grammar (word + connecting line,
+	   no dots/circles), matching the Send flow's step language --- */
 
 	.steps {
 		display: flex;
 		align-items: center;
-		gap: 4px;
 		list-style: none;
-		margin: 0 0 18px;
+		margin: 0 0 20px;
 		padding: 0;
 	}
 
 	.step-item {
 		display: flex;
 		align-items: center;
-		gap: 7px;
-		flex: 1;
+		gap: 8px;
+		flex: 1 1 auto;
 		min-width: 0;
 	}
 
-	.step-item:not(:first-child)::before {
-		content: '';
-		flex: 1;
-		height: 1px;
-		background: var(--border-subtle);
-		margin-right: 4px;
-	}
-
-	.step-item:first-child {
+	.step-item:last-child {
 		flex: 0 0 auto;
 	}
 
-	.step-dot {
-		width: 22px;
-		height: 22px;
-		flex-shrink: 0;
-		border-radius: 50%;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		font-size: 11px;
+	.step-word {
+		font-size: 12px;
 		font-weight: 600;
-		background: var(--surface);
-		border: 1px solid var(--border);
+		letter-spacing: 0.02em;
+		text-transform: uppercase;
 		color: var(--text-muted);
-		transition:
-			background 120ms var(--ease),
-			color 120ms var(--ease),
-			border-color 120ms var(--ease);
+		white-space: nowrap;
+		transition: color 120ms var(--ease);
 	}
 
-	.step-item.active .step-dot {
-		background: var(--accent);
-		border-color: var(--accent);
-		color: var(--on-accent);
-	}
-
-	.step-item.done .step-dot {
-		background: var(--accent-muted);
-		border-color: transparent;
+	.step-item.active .step-word {
 		color: var(--accent);
 	}
 
-	.step-label {
-		font-size: 11.5px;
-		font-weight: 500;
-		color: var(--text-muted);
-		white-space: nowrap;
-	}
-
-	.step-item.active .step-label {
-		color: var(--text);
-	}
-
-	.step-item.done .step-label {
+	.step-item.done .step-word {
 		color: var(--text-secondary);
 	}
 
-	@media (max-width: 560px) {
-		.step-label {
-			display: none;
-		}
+	.step-line {
+		flex: 1;
+		height: 1px;
+		min-width: 12px;
+		background: var(--border-subtle);
+	}
 
-		.step-item.active .step-label {
-			display: inline;
+	.step-item.done .step-line {
+		background: var(--accent-muted);
+	}
+
+	@media (max-width: 560px) {
+		.step-word {
+			font-size: 10.5px;
 		}
 	}
 
