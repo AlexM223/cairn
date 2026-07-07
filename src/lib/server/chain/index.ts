@@ -14,6 +14,7 @@ import { resetPackageRelaySupport } from '../packageRelay';
 import { recordActivity } from '../activity';
 import { childLogger } from '../logger';
 import { EsploraApi } from './esplora';
+import { cachedTip, cachedFeeEstimates, resetChainCaches } from './cache';
 import type { EsploraBlock, EsploraTx } from './esplora';
 import type {
 	AddressInfo,
@@ -236,11 +237,16 @@ export class ChainService {
 	// ------------------------------------------------------------- explorer data
 
 	async getTip(): Promise<{ height: number; hash: string }> {
-		const [height, hash] = await Promise.all([
-			this.esplora.getTipHeight(),
-			this.esplora.getTipHash()
-		]);
-		return { height, hash };
+		// TTL-cached (10min ceiling, invalidated on every 'header' event) so the
+		// several call sites that fire on one navigation — and concurrent tabs —
+		// share one slow esplora round-trip instead of each paying for it.
+		return cachedTip(async () => {
+			const [height, hash] = await Promise.all([
+				this.esplora.getTipHeight(),
+				this.esplora.getTipHash()
+			]);
+			return { height, hash };
+		});
 	}
 
 	/** Recent blocks, newest first. Pages the esplora /blocks endpoint as needed. */
@@ -473,7 +479,9 @@ export class ChainService {
 	}
 
 	async getFeeEstimates(): Promise<FeeEstimates> {
-		return this.esplora.getFeeEstimates();
+		// TTL-cached (30s flat — fee estimates drift continuously) so the send
+		// pages and /api/mempool/fees don't each re-fetch the same slow lookup.
+		return cachedFeeEstimates(() => this.esplora.getFeeEstimates());
 	}
 
 	/**
@@ -685,6 +693,9 @@ export function reconfigureChain(): void {
 	// Package-relay support is per-server — forget the cached verdict so the new
 	// backend is probed afresh (cairn-u9ob.8).
 	resetPackageRelaySupport();
+	// Tip + fee-estimate TTL caches are per-backend too — clear them so a server
+	// switch never serves a value fetched from the old backend (cairn-vknb.5).
+	resetChainCaches();
 }
 
 // ---------------------------------------------------------------- test helpers
