@@ -198,6 +198,7 @@
 	<button
 		type="button"
 		class="bell"
+		bind:this={bellEl}
 		class:has-unread={unread > 0}
 		aria-label={unread > 0 ? `Notifications (${unread} unread)` : 'Notifications'}
 		aria-haspopup="true"
@@ -211,7 +212,7 @@
 	</button>
 
 	{#if open}
-		<div class="panel" role="dialog" aria-label="Notifications">
+		<div class="panel" role="dialog" aria-label="Notifications" bind:this={popEl} popover="manual">
 			<div class="panel-head">
 				<span class="panel-title">Notifications</span>
 				{#if unread > 0}
@@ -336,6 +337,22 @@
 		overflow: hidden;
 		display: flex;
 		flex-direction: column;
+		/* Reset the UA popover defaults (margin:auto, padding, inherited colors)
+		   so the panel looks identical whether it renders as a top-layer popover
+		   or the absolute-positioned fallback. */
+		margin: 0;
+		padding: 0;
+		color: inherit;
+	}
+
+	/* Top-layer (cairn-k391): once showPopover() promotes the panel, its
+	   left/bottom are set inline by positionPanel() in VIEWPORT coordinates
+	   (getBoundingClientRect + innerHeight), so it must be position:fixed. We also
+	   null out the UA inset:0 (top/right) that would otherwise stretch it. */
+	.panel:popover-open {
+		position: fixed;
+		top: auto;
+		right: auto;
 	}
 
 	.panel-head {
@@ -446,6 +463,17 @@
 		font-size: 12.5px;
 		line-height: 1.4;
 		color: var(--text);
+		/* Messages are title + " — " + body (can run 150+ chars). Clamp to two
+		   lines so a long body can't wrap into a ragged block inside the fixed
+		   320px panel. .row-body's min-width:0 is the flex prerequisite for this.
+		   The -webkit-box combo is the portable line-clamp idiom (Chrome/Edge/
+		   Safari/Firefox); the standard `line-clamp` is defined alongside it for
+		   forward-compat. */
+		display: -webkit-box;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 2;
+		line-clamp: 2;
+		overflow: hidden;
 	}
 
 	.row-when {
