@@ -37,6 +37,19 @@
 	$effect(() => {
 		if (form?.esploraTest) esploraResult = form.esploraTest as TestResult;
 	});
+
+	// Live-ish chain-transport health next to the proxy config (cairn-hy8z): a
+	// last-known signal (from the load, refreshed on navigation), so an admin can
+	// see whether connections are currently succeeding or being rejected.
+	const chainHealth = $derived(data.chainHealth);
+	function agoLabel(atMs: number | null): string {
+		if (atMs === null) return '';
+		const secs = Math.max(0, Math.round((Date.now() - atMs) / 1000));
+		if (secs < 60) return 'just now';
+		const mins = Math.round(secs / 60);
+		if (mins < 60) return `${mins}m ago`;
+		return `${Math.round(mins / 60)}h ago`;
+	}
 </script>
 
 <svelte:head>
@@ -319,6 +332,29 @@
 					/>
 				</div>
 			</div>
+			{#if chainHealth}
+				<!-- Last-known transport health (cairn-hy8z): surfaces a rejecting proxy
+				     or unreachable node right where the proxy is configured. -->
+				<div class="health-line" class:health-bad={!chainHealth.healthy} role="status">
+					{#if !chainHealth.healthy}
+						<span class="health-dot bad"></span>
+						<span>
+							{chainHealth.proxyConfigured
+								? 'Connections through the proxy are failing'
+								: 'Connections to the node are failing'}{chainHealth.lastErrorAt
+								? ` — last failure ${agoLabel(chainHealth.lastErrorAt)}`
+								: ''}{chainHealth.lastError ? ` (${chainHealth.lastError})` : ''}.
+						</span>
+					{:else}
+						<span class="health-dot ok"></span>
+						<span>
+							Chain transport healthy{chainHealth.lastOkAt
+								? ` — last connected ${agoLabel(chainHealth.lastOkAt)}`
+								: ''}.
+						</span>
+					{/if}
+				</div>
+			{/if}
 		</div>
 	</section>
 
@@ -616,6 +652,35 @@
 		align-items: center;
 		gap: 10px;
 		flex-wrap: wrap;
+	}
+
+	/* Live-ish chain-transport health next to the proxy config (cairn-hy8z). */
+	.health-line {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		font-size: 12.5px;
+		color: var(--text-muted);
+	}
+
+	.health-line.health-bad {
+		color: var(--error);
+	}
+
+	.health-dot {
+		flex-shrink: 0;
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		transform: translateY(-1px);
+	}
+
+	.health-dot.ok {
+		background: var(--sage);
+	}
+
+	.health-dot.bad {
+		background: var(--error);
 	}
 
 	.saved-note {

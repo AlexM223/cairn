@@ -1,6 +1,8 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { enhance } from '$app/forms';
-	import { afterNavigate, goto, invalidateAll, replaceState } from '$app/navigation';
+	import { afterNavigate, goto, invalidate, invalidateAll, replaceState } from '$app/navigation';
+	import { onNewBlock } from '$lib/liveBlocks';
 	import Icon from '$lib/components/Icon.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
@@ -25,6 +27,51 @@
 	import '$lib/styles/wallet-detail.css';
 
 	let { data, form } = $props();
+
+	// The scan/receive/tip/speed-up bundle is STREAMED from the server
+	// (cairn-vknb.1): the page shell paints instantly from the cheap local fields
+	// while the Electrum round-trips resolve. On invalidate, the previous bundle
+	// stays visible until the fresh one resolves — no skeleton flash on refresh.
+	type WalletChainData = Awaited<(typeof data)['chainData']>;
+	let chainData = $state<WalletChainData | null>(null);
+	$effect(() => {
+		const promise = data.chainData;
+		let stale = false;
+		void promise.then((d) => {
+			if (stale) return;
+			chainData = d;
+		});
+		return () => {
+			stale = true;
+		};
+	});
+	// null until the first stream resolves — drives the loading skeleton, kept
+	// distinct from "scan resolved to null" (an actual scan error/miss).
+	const loading = $derived(chainData === null);
+	const scan = $derived(chainData?.scan ?? null);
+	const scanError = $derived(chainData?.scanError ?? null);
+	const coinbaseUtxos = $derived(chainData?.coinbaseUtxos ?? []);
+	const tipHeight = $derived(chainData?.tipHeight ?? 0);
+	const speedUp = $derived(chainData?.speedUp ?? []);
+
+	// Live new-block updates refresh this wallet's chain-derived fields (tip,
+	// coinbase maturity, speed-up eligibility) by re-running the streamed load —
+	// never a manual reload, never a poll. Mirrors the dashboard's onNewBlock
+	// wiring; refetchedForHeight guards against a resolve→invalidate loop.
+	let lastSeenHeight: number | null = null;
+	let refetchedForHeight: number | null = null;
+	onMount(() =>
+		onNewBlock((height) => {
+			if (lastSeenHeight !== null && height <= lastSeenHeight) return;
+			const first = lastSeenHeight === null;
+			lastSeenHeight = height;
+			// The first SSE delivery is a replay of the current tip on connect —
+			// nothing new to refresh.
+			if (first || refetchedForHeight === height) return;
+			refetchedForHeight = height;
+			void invalidate(`cairn:wallet:${data.wallet.id}`);
+		})
+	);
 
 	// How the wallet describes itself: "Trezor wallet" when a device is on
 	// record, otherwise just "Wallet" — never "watch-only", since it can always
@@ -57,6 +104,12 @@
 	let confirmDelete = $state(false);
 	let deleting = $state(false);
 	let generating = $state(false);
+	// Rotate can legitimately take 30-40s when a fresh gap-limit scan is needed
+	// (cairn-2ic5): after a few seconds, reassure the user rather than leaving a
+	// silent spinner that reads as a hung button.
+	let rotateSlow = $state(false);
+	let rotateSlowTimer: ReturnType<typeof setTimeout> | null = null;
+	const ROTATE_SLOW_MS = 6000;
 	let retrying = $state(false);
 	let tab = $state<'transactions' | 'addresses' | 'saved'>('transactions');
 	let addrFilter = $state<'used' | 'unused' | 'change'>('used');
@@ -84,8 +137,8 @@
 	// pending (height <= 0). The server re-checks against the chain anyway —
 	// this only decides whether to offer the button.
 	function plausiblyUnconfirmed(txid: string | null): boolean {
-		if (!txid || !data.scan) return false;
-		const seen = data.scan.txs.find((t) => t.txid === txid);
+		if (!txid || !scan) return false;
+		const seen = scan.txs.find((t) => t.txid === txid);
 		return seen ? seen.height <= 0 : false;
 	}
 
@@ -138,8 +191,8 @@
 	// we originated the tx and it still signals replaceability (replace it more
 	// cheaply), or 'cpfp' otherwise (received funds, or our own tx that no longer
 	// signals RBF — attach a high-fee child instead). See docs/CPFP-UNCONFIRMED-PLAN.md §4.
-	const speedUpByTxid = $derived<Record<string, NonNullable<typeof data.speedUp>[number]>>(
-		Object.fromEntries((data.speedUp ?? []).map((s) => [s.txid, s]))
+	const speedUpByTxid = $derived<Record<string, NonNullable<typeof speedUp>[number]>>(
+		Object.fromEntries((speedUp ?? []).map((s) => [s.txid, s]))
 	);
 	let cpfpTxid = $state<string | null>(null);
 	let cpfpRate = $state('');
@@ -240,7 +293,7 @@
 		}
 	}
 
-	const receive = $derived(form?.receive ?? data.receive);
+	const receive = $derived(form?.receive ?? chainData?.receive ?? null);
 
 	// Copy button on the receive panel (spec 5c: Copy + Rotate pills).
 	let addrCopied = $state(false);
@@ -256,7 +309,7 @@
 	 *  still shows a confirmed tx as sealed rather than lying "no rings yet". */
 	function confirmationsOf(height: number): number {
 		if (height <= 0) return 0;
-		if (data.tipHeight > 0) return Math.max(1, data.tipHeight - height + 1);
+		if (tipHeight > 0) return Math.max(1, tipHeight - height + 1);
 		return 6;
 	}
 
@@ -383,13 +436,13 @@
 		}
 	}
 
-	const usedAddrs = $derived((data.scan?.addresses ?? []).filter((a) => a.used));
+	const usedAddrs = $derived((scan?.addresses ?? []).filter((a) => a.used));
 	// Unused = the forward gap window on BOTH chains — used-change addresses
 	// already show under Used, so hiding unused-change here left a slice of the
 	// wallet's addresses invisible in every view. Receive first: those are the
 	// ones you hand out.
 	const unusedAddrs = $derived(
-		(data.scan?.addresses ?? [])
+		(scan?.addresses ?? [])
 			.filter((a) => !a.used)
 			.toSorted((a, b) => Number(a.change) - Number(b.change))
 	);
@@ -397,7 +450,7 @@
 	// verify where change went AND where the next spend's change will go
 	// (cairn-teyh).
 	const changeAddrs = $derived(
-		(data.scan?.addresses ?? []).filter((a) => a.change).toSorted((a, b) => a.index - b.index)
+		(scan?.addresses ?? []).filter((a) => a.change).toSorted((a, b) => a.index - b.index)
 	);
 	const shownAddrs = $derived(
 		addrFilter === 'used' ? usedAddrs : addrFilter === 'unused' ? unusedAddrs : changeAddrs
@@ -424,9 +477,11 @@
 			<div class="imported-banner" role="status">
 				<Icon name="check" size={15} />
 				<span class="grow">
-					Wallet imported — {data.scan
-						? `found ${data.scan.txs.length === 50 ? '50+' : data.scan.txs.length} transaction${data.scan.txs.length === 1 ? '' : 's'} across ${data.scan.addresses.filter((a) => a.used).length} used address${data.scan.addresses.filter((a) => a.used).length === 1 ? '' : 'es'}.`
-						: 'history will appear once the wallet can be scanned.'}
+					Wallet imported — {scan
+						? `found ${scan.txs.length === 50 ? '50+' : scan.txs.length} transaction${scan.txs.length === 1 ? '' : 's'} across ${scan.addresses.filter((a) => a.used).length} used address${scan.addresses.filter((a) => a.used).length === 1 ? '' : 'es'}.`
+						: loading
+							? 'scanning the chain for its history…'
+							: 'history will appear once the wallet can be scanned.'}
 				</span>
 				<button
 					type="button"
@@ -448,20 +503,29 @@
 				/>
 			</div>
 
-			{#if data.scan}
+			{#if scan}
 				<div class="hw-hero">
-					<span class="hero-number hw-hero-btc" title="{formatSats(data.scan.confirmed)} sats"
-						>{formatBtc(data.scan.confirmed)}</span
+					<span class="hero-number hw-hero-btc" title="{formatSats(scan.confirmed)} sats"
+						>{formatBtc(scan.confirmed)}</span
 					>
 					<span class="hw-hero-unit">BTC</span>
 				</div>
 				<p class="hw-hero-sub">
-					<span class="tabular">{formatSats(data.scan.confirmed)} sats</span>
-					{#if data.scan.unconfirmed !== 0}
+					<span class="tabular">{formatSats(scan.confirmed)} sats</span>
+					{#if scan.unconfirmed !== 0}
 						<span class="hw-pending">
-							· {data.scan.unconfirmed > 0 ? '+' : ''}{formatBtc(data.scan.unconfirmed)} BTC on its way
+							· {scan.unconfirmed > 0 ? '+' : ''}{formatBtc(scan.unconfirmed)} BTC on its way
 						</span>
 					{/if}
+				</p>
+			{:else if loading}
+				<div class="hw-hero">
+					<span class="hero-number hw-hero-btc hw-skeleton hw-skeleton-hero" aria-hidden="true"
+					></span>
+				</div>
+				<p class="hw-hero-sub">
+					<span class="hw-skeleton hw-skeleton-line" aria-hidden="true"></span>
+					<span class="sr-only">Loading balance…</span>
 				</p>
 			{:else}
 				<div class="hw-hero">
@@ -524,24 +588,24 @@
 			</details>
 		{/if}
 
-		{#if data.scanError}
+		{#if scanError}
 			<!-- ------------------------------------------- scan failed -->
 			<div class="scan-error hw-scan-error">
 				<Icon name="alert-triangle" size={18} />
 				<div class="grow">
 					<div style="font-weight: 500">Can't reach the wallet scanner</div>
-					<div class="hint">{data.scanError}</div>
+					<div class="hint">{scanError}</div>
 				</div>
 				<button type="button" class="btn btn-secondary btn-sm" onclick={retry} disabled={retrying}>
 					{#if retrying}<span class="spinner"></span>{:else}<Icon name="refresh" size={14} />{/if}
 					Retry
 				</button>
 			</div>
-		{:else if data.scan}
+		{:else if scan}
 			<!-- ------------------------------------------- stepped balance chart -->
-			{#if data.scan.txs.some((t) => t.height > 0)}
+			{#if scan.txs.some((t) => t.height > 0)}
 				<div class="hw-chart">
-					<WalletStepChart txs={data.scan.txs} confirmed={data.scan.confirmed} height={148} />
+					<WalletStepChart txs={scan.txs} confirmed={scan.confirmed} height={148} />
 					<p class="hw-caption">balance over time · each step is a transaction</p>
 				</div>
 			{/if}
@@ -610,8 +674,14 @@
 									action="?/receive"
 									use:enhance={() => {
 										generating = true;
+										rotateSlow = false;
+										if (rotateSlowTimer) clearTimeout(rotateSlowTimer);
+										rotateSlowTimer = setTimeout(() => (rotateSlow = true), ROTATE_SLOW_MS);
 										return async ({ update }) => {
+											if (rotateSlowTimer) clearTimeout(rotateSlowTimer);
+											rotateSlowTimer = null;
 											generating = false;
+											rotateSlow = false;
 											await update({ reset: false });
 										};
 									}}
@@ -622,10 +692,16 @@
 												name="refresh"
 												size={14}
 											/>{/if}
-										Rotate
+										{generating ? (rotateSlow ? 'Still working…' : 'Rotating…') : 'Rotate'}
 									</button>
 								</form>
 							</div>
+							{#if generating && rotateSlow}
+								<p class="hw-rotate-status" role="status" aria-live="polite">
+									Still finding your next unused address — checking the chain can take a moment on a
+									busy node. Hang tight.
+								</p>
+							{/if}
 							<p class="hw-caption">
 								A new address for every payment keeps your history private. Old addresses keep
 								working forever — rotating never breaks anything.
@@ -638,8 +714,8 @@
 			<!-- ------------------------------------------- mining rewards -->
 			<!-- Coinbase (mining reward) UTXOs only — empty for a normal wallet, so
 			     the whole section is absent unless the wallet actually mined. -->
-			{#if data.coinbaseUtxos.length > 0}
-				<MiningRewards utxos={data.coinbaseUtxos} tipHeight={data.tipHeight} />
+			{#if coinbaseUtxos.length > 0}
+				<MiningRewards utxos={coinbaseUtxos} {tipHeight} />
 			{/if}
 
 			<!-- ------------------------------------------- tabs -->
@@ -652,7 +728,7 @@
 					aria-selected={tab === 'transactions'}
 					onclick={() => (tab = 'transactions')}
 				>
-					Transactions · {data.scan.txs.length}
+					Transactions · {scan.txs.length}
 				</button>
 				<button
 					type="button"
@@ -662,7 +738,7 @@
 					aria-selected={tab === 'addresses'}
 					onclick={() => (tab = 'addresses')}
 				>
-					Addresses · {data.scan.addresses.length}
+					Addresses · {scan.addresses.length}
 				</button>
 				<button
 					type="button"
@@ -679,14 +755,14 @@
 			{#if tab === 'transactions'}
 				<!-- Hairline tx rows with burial-ring confirmation glyphs (5d). -->
 				<section class="hw-txs" aria-label="Transactions">
-					{#if data.scan.txs.length === 0}
+					{#if scan.txs.length === 0}
 						<div class="empty-state">
 							<Icon name="activity" size={22} />
 							<span class="empty-title">No transactions yet</span>
 							<span>Send some sats to a receive address and they'll show up here.</span>
 						</div>
 					{:else}
-						{#each data.scan.txs as tx (tx.txid)}
+						{#each scan.txs as tx (tx.txid)}
 							{@const conf = confirmationsOf(tx.height)}
 							<div class="hw-tx-row">
 								<BurialRings confirmations={conf} direction={tx.delta >= 0 ? 'in' : 'out'} size={30} />
@@ -1191,6 +1267,23 @@
 					raw text form, for Bitcoin Core and power users.
 				</p>
 			</section>
+		{:else if loading}
+			<!-- ------------------------------------------- streaming skeleton -->
+			<!-- The shell has painted from the cheap local fields; the scan, receive
+			     panel and transaction list stream in behind these placeholders. -->
+			<div class="hw-loading" aria-live="polite" aria-busy="true">
+				<span class="sr-only">Loading this wallet's balance and history…</span>
+				<div class="hw-skeleton hw-skeleton-chart" aria-hidden="true"></div>
+				<div class="hw-skeleton-rows" aria-hidden="true">
+					{#each Array(4) as _, i (i)}
+						<div class="hw-skeleton-row">
+							<div class="hw-skeleton hw-skeleton-glyph"></div>
+							<div class="hw-skeleton hw-skeleton-flex"></div>
+							<div class="hw-skeleton hw-skeleton-amount"></div>
+						</div>
+					{/each}
+				</div>
+			</div>
 		{/if}
 
 		<!-- ------------------------------------------- delete (quiet footer) -->
@@ -1410,6 +1503,103 @@
 		border-bottom: 1px solid var(--hairline);
 	}
 
+	/* --- streaming skeletons (cairn-vknb.1) --- */
+
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
+	}
+
+	.hw-skeleton {
+		display: block;
+		border-radius: var(--radius-control, 6px);
+		background: linear-gradient(
+			90deg,
+			var(--hairline) 25%,
+			var(--accent-muted) 37%,
+			var(--hairline) 63%
+		);
+		background-size: 400% 100%;
+		animation: hw-shimmer 1.4s ease infinite;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.hw-skeleton {
+			animation: none;
+		}
+	}
+
+	@keyframes hw-shimmer {
+		0% {
+			background-position: 100% 0;
+		}
+		100% {
+			background-position: 0 0;
+		}
+	}
+
+	/* Hero balance placeholder — sized to the clamp() balance figure. */
+	.hw-skeleton-hero {
+		width: min(320px, 70%);
+		height: clamp(44px, 7vw, 72px);
+		border-radius: 8px;
+	}
+
+	.hw-skeleton-line {
+		width: 180px;
+		height: 14px;
+		margin-top: 4px;
+	}
+
+	.hw-loading {
+		margin-top: 40px;
+	}
+
+	.hw-skeleton-chart {
+		width: 100%;
+		height: 148px;
+		border-radius: 10px;
+	}
+
+	.hw-skeleton-rows {
+		display: flex;
+		flex-direction: column;
+		margin-top: 28px;
+	}
+
+	.hw-skeleton-row {
+		display: flex;
+		align-items: center;
+		gap: 14px;
+		padding: 15px 0;
+		border-bottom: 1px solid var(--hairline);
+	}
+
+	.hw-skeleton-glyph {
+		width: 30px;
+		height: 30px;
+		border-radius: 50%;
+		flex-shrink: 0;
+	}
+
+	.hw-skeleton-flex {
+		flex: 1;
+		height: 14px;
+	}
+
+	.hw-skeleton-amount {
+		width: 84px;
+		height: 16px;
+		flex-shrink: 0;
+	}
+
 	/* --- receive panel (5c/8d) --- */
 
 	.hw-receive-grid {
@@ -1469,6 +1659,13 @@
 		display: flex;
 		gap: 10px;
 		flex-wrap: wrap;
+	}
+
+	.hw-rotate-status {
+		margin: 10px 0 0;
+		font-size: 12px;
+		line-height: 1.5;
+		color: var(--text-faint);
 	}
 
 	@media (max-width: 860px) {

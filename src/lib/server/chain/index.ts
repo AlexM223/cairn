@@ -9,10 +9,12 @@ import { ElectrumClient } from '../electrum/client';
 import { ElectrumPool } from '../electrum/pool';
 import type { ElectrumBalance, ElectrumHistoryItem } from '../electrum/client';
 import { wireChainEvents, resetConnectionState } from '../chainEvents';
+import { noteProxyConfigured, resetChainHealth } from '../chainHealth';
 import { resetPackageRelaySupport } from '../packageRelay';
 import { recordActivity } from '../activity';
 import { childLogger } from '../logger';
 import { EsploraApi } from './esplora';
+import { cachedTip, cachedFeeEstimates, resetChainCaches } from './cache';
 import type { EsploraBlock, EsploraTx } from './esplora';
 import type {
 	AddressInfo,
@@ -205,6 +207,10 @@ export class ChainService {
 
 	constructor(config = getChainConfig()) {
 		this.config = config;
+		// Record whether chain traffic is routed through a SOCKS5/Tor proxy, so the
+		// transport-health signal can tell users a misconfigured proxy (not the node)
+		// is the likely cause of an outage (cairn-hy8z).
+		noteProxyConfigured(!!(config.socks5Host && config.socks5Port));
 		this.electrum = new ElectrumPool(
 			{
 				host: config.electrumHost,
@@ -231,11 +237,16 @@ export class ChainService {
 	// ------------------------------------------------------------- explorer data
 
 	async getTip(): Promise<{ height: number; hash: string }> {
-		const [height, hash] = await Promise.all([
-			this.esplora.getTipHeight(),
-			this.esplora.getTipHash()
-		]);
-		return { height, hash };
+		// TTL-cached (10min ceiling, invalidated on every 'header' event) so the
+		// several call sites that fire on one navigation — and concurrent tabs —
+		// share one slow esplora round-trip instead of each paying for it.
+		return cachedTip(async () => {
+			const [height, hash] = await Promise.all([
+				this.esplora.getTipHeight(),
+				this.esplora.getTipHash()
+			]);
+			return { height, hash };
+		});
 	}
 
 	/** Recent blocks, newest first. Pages the esplora /blocks endpoint as needed. */
@@ -468,7 +479,9 @@ export class ChainService {
 	}
 
 	async getFeeEstimates(): Promise<FeeEstimates> {
-		return this.esplora.getFeeEstimates();
+		// TTL-cached (30s flat — fee estimates drift continuously) so the send
+		// pages and /api/mempool/fees don't each re-fetch the same slow lookup.
+		return cachedFeeEstimates(() => this.esplora.getFeeEstimates());
 	}
 
 	/**
@@ -672,9 +685,17 @@ export function reconfigureChain(): void {
 		});
 	}
 	resetConnectionState();
+	// Forget accumulated transport-health failures so the new server/proxy starts
+	// from a clean slate — a stale error from the old backend must not linger on
+	// the chain-health banner (cairn-hy8z). The next ChainService (built lazily by
+	// getChain) re-notes whether a proxy is configured in its constructor.
+	resetChainHealth();
 	// Package-relay support is per-server — forget the cached verdict so the new
 	// backend is probed afresh (cairn-u9ob.8).
 	resetPackageRelaySupport();
+	// Tip + fee-estimate TTL caches are per-backend too — clear them so a server
+	// switch never serves a value fetched from the old backend (cairn-vknb.5).
+	resetChainCaches();
 }
 
 // ---------------------------------------------------------------- test helpers

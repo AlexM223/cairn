@@ -63,7 +63,7 @@ vi.mock('./chain', () => ({ getChain: () => ({ getTip: mocks.getTip }) }));
 import { db } from './db';
 import { registerUser } from './auth';
 import { setSetting } from './settings';
-import { getPortfolioDetail } from './portfolio';
+import { getPortfolioDetail, PORTFOLIO_SCAN_TIMEOUT_MS } from './portfolio';
 
 // ---- fixtures -----------------------------------------------------------------
 
@@ -209,6 +209,77 @@ describe('getPortfolioDetail failed scans (cairn-rr94 / cairn-ednl)', () => {
 		expect(ctx).toMatchObject({ multisigId: 77, kind: 'multisig' });
 		expect(ctx.err).toBeInstanceOf(Error);
 		expect(String(msg)).toMatch(/excluded/);
+	});
+
+	// cairn-3gvb / cairn-hy8z: a wallet scan that never settles (a hung Electrum
+	// round-trip through a broken proxy, not a clean rejection) used to hang
+	// Promise.all forever — the whole dashboard response, not just one wallet.
+	it('never lets one stuck wallet scan hang the whole dashboard response', async () => {
+		vi.useFakeTimers();
+		try {
+			makeWallet('Good', 'xpubA');
+			const stuckId = makeWallet('Stuck', 'xpubSTUCK');
+			mocks.scanWallet.mockImplementation((xpub: string) =>
+				xpub === 'xpubSTUCK'
+					? new Promise<WalletScanResult>(() => {
+							/* never resolves or rejects — simulates a hung round-trip */
+						})
+					: Promise.resolve(scanResult(100_000))
+			);
+
+			const detailPromise = getPortfolioDetail(userId);
+			// Fast-forward past the scan's timeout budget without waiting in real time.
+			await vi.advanceTimersByTimeAsync(PORTFOLIO_SCAN_TIMEOUT_MS + 1_000);
+			const detail = await detailPromise;
+
+			expect(detail.walletCount).toBe(2);
+			expect(detail.scannedCount).toBe(1);
+			expect(detail.confirmed).toBe(100_000);
+			expect(detail.allocation.map((a) => a.name)).toEqual(['Good']);
+
+			expect(logMock.warn).toHaveBeenCalledTimes(1);
+			const [ctx, msg] = logMock.warn.mock.calls[0] as [Record<string, unknown>, string];
+			expect(ctx).toMatchObject({ walletId: stuckId, kind: 'wallet' });
+			expect(String(msg)).toMatch(/excluded/);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
+// ---- cairn-3gvb / cairn-xsuq: per-wallet scan budget ---------------------------
+
+describe('getPortfolioDetail per-wallet timeout (cairn-3gvb / cairn-xsuq)', () => {
+	it('excludes a wallet whose scan never settles, without blocking the rest', async () => {
+		makeWallet('Fast', 'xpubFast');
+		makeWallet('Hangs', 'xpubHang');
+		// The hung scan models a broken SOCKS5/Tor proxy where every dial hangs: it
+		// neither resolves nor rejects. Before the fix, Promise.all would wait on it
+		// indefinitely; now the per-wallet budget cuts it loose.
+		mocks.scanWallet.mockImplementation((xpub: string) =>
+			xpub === 'xpubHang'
+				? new Promise<WalletScanResult>(() => {})
+				: Promise.resolve(scanResult(120_000))
+		);
+
+		vi.useFakeTimers();
+		try {
+			const pending = getPortfolioDetail(userId);
+			// Advance past the 10s per-wallet budget so the hung scan times out.
+			await vi.advanceTimersByTimeAsync(10_000);
+			const detail = await pending;
+
+			expect(detail.walletCount).toBe(2);
+			expect(detail.scannedCount).toBe(1); // only the fast wallet counted
+			expect(detail.confirmed).toBe(120_000);
+			expect(detail.allocation.map((a) => a.name)).toEqual(['Fast']);
+			// The over-budget wallet logged the same exclusion warning a hard failure does.
+			expect(
+				logMock.warn.mock.calls.some(([, msg]) => /excluded from totals/.test(String(msg)))
+			).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 

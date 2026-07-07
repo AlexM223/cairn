@@ -41,6 +41,24 @@ export function timeAgo(unixSeconds: number | null | undefined): string {
 	});
 }
 
+/** "in 3m", "in 2h", "in 5d" from a FUTURE unix-seconds timestamp — the
+ *  forward-looking mirror of timeAgo (e.g. session expiry). A timestamp that's
+ *  already past reads as "now". */
+export function expiresIn(unixSeconds: number | null | undefined): string {
+	if (!unixSeconds) return '—';
+	const diff = unixSeconds - Math.floor(Date.now() / 1000);
+	if (diff < 5) return 'now';
+	if (diff < 60) return `in ${diff}s`;
+	if (diff < 3600) return `in ${Math.floor(diff / 60)}m`;
+	if (diff < 86400) return `in ${Math.floor(diff / 3600)}h`;
+	if (diff < 86400 * 30) return `in ${Math.floor(diff / 86400)}d`;
+	return new Date(unixSeconds * 1000).toLocaleDateString('en-US', {
+		month: 'short',
+		day: 'numeric',
+		year: 'numeric'
+	});
+}
+
 export function formatDateTime(unixSeconds: number | null | undefined): string {
 	if (!unixSeconds) return '—';
 	return new Date(unixSeconds * 1000).toLocaleString('en-US', {

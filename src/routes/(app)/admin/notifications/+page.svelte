@@ -217,7 +217,7 @@
 		<div class="row-fields">
 			<div class="field grow">
 				<label class="label" for="smtpFrom">From address</label>
-				<input class="input mono" id="smtpFrom" type="email" bind:value={smtpFrom} placeholder="cairn@example.com" />
+				<input class="input mono" id="smtpFrom" type="email" bind:value={smtpFrom} placeholder="heartwood@example.com" />
 			</div>
 			<div class="field">
 				<label class="label" for="smtpTls">Encryption</label>

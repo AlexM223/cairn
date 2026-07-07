@@ -1,13 +1,21 @@
 import { fail, redirect } from '@sveltejs/kit';
 import { getPublicInstanceSettings, setSetting, setSecretSetting } from '$lib/server/settings';
 import { reconfigureChain, testElectrum, testEsplora } from '$lib/server/chain';
+import { getChainHealth } from '$lib/server/chainHealth';
 import { resetInstance } from '$lib/server/admin';
 import { invalidateWalletCache } from '$lib/server/bitcoin/walletScan';
 import { getUserAgreement, setUserAgreement } from '$lib/server/disclosures';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async () => {
-	return { settings: getPublicInstanceSettings(), agreement: getUserAgreement() };
+	// chainHealth is a cheap in-memory read (last-known transport state, no probe);
+	// it drives the live proxy/connection indicator next to the proxy config so an
+	// admin can see at a glance whether the proxy is rejecting connections (cairn-hy8z).
+	return {
+		settings: getPublicInstanceSettings(),
+		agreement: getUserAgreement(),
+		chainHealth: getChainHealth()
+	};
 };
 
 /** Parse the optional SOCKS5 proxy fields from a settings form submission. */

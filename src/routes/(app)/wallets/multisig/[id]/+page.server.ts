@@ -6,7 +6,13 @@ import {
 	deleteMultisig,
 	toMultisigConfig
 } from '$lib/server/wallets/multisig';
-import { multisigAccessRole, redactMultisigKeysForViewer } from '$lib/server/multisigShares';
+import {
+	multisigAccessRole,
+	redactMultisigKeysForViewer,
+	listCollaborators
+} from '$lib/server/multisigShares';
+import { listContacts } from '$lib/server/contacts';
+import { getInstanceSettings } from '$lib/server/settings';
 import {
 	getMultisigDetail,
 	getMultisigUtxos,
@@ -36,8 +42,113 @@ function multisigId(param: string): number {
 	return id;
 }
 
-export const load: PageServerLoad = async ({ params, locals, url }) => {
+type SavedTxSummary = NonNullable<ReturnType<typeof listMultisigTransactionSummaries>>[number];
+type SpeedUpInflow = NonNullable<Awaited<ReturnType<typeof detectMultisigUnconfirmedInflows>>>[number];
+
+export interface MultisigScan {
+	detail: {
+		balance: Awaited<ReturnType<typeof getMultisigDetail>>['balance'];
+		addresses: Awaited<ReturnType<typeof getMultisigDetail>>['addresses'];
+		history: Awaited<ReturnType<typeof getMultisigDetail>>['history'];
+		utxoCount: number;
+	} | null;
+	receive:
+		| (Awaited<ReturnType<typeof peekMultisigReceiveAddress>> & { qr: string })
+		| null;
+	coinbaseUtxos: { txid: string; vout: number; value: number; height: number }[];
+	tipHeight: number;
+	speedUp: SpeedUpInflow[];
+	savedTxs: SavedTxSummary[];
+	scanError: string | null;
+}
+
+/**
+ * The Electrum-dependent slice of the page. Streamed (returned as an unawaited
+ * promise) so the multisig shell paints instantly while the full gap-limit scan
+ * + tip + unconfirmed-inflow detection resolve in the background (cairn-vknb.2),
+ * mirroring the dashboard's `loadChainSnapshot`. Never rejects — a scan failure
+ * resolves to an empty-but-shaped snapshot the page renders as a banner, so the
+ * "scan unreachable → degrade to zero/empty, never 500" contract is preserved.
+ */
+async function loadMultisigScan(
+	multisig: Parameters<typeof getMultisigDetail>[0],
+	userId: number,
+	id: number
+): Promise<MultisigScan> {
+	try {
+		const detail = await getMultisigDetail(multisig);
+		const receive = await peekMultisigReceiveAddress(multisig);
+		const qr = await QRCode.toDataURL(receive.address, QR_OPTS);
+
+		// Mining rewards (coinbase UTXOs) get their own "cooling off" section —
+		// empty for almost every multisig. The scan above already ran, so
+		// getMultisigUtxos hits the cache; guard the chain tip separately so a tip
+		// hiccup just hides the section rather than failing the page.
+		let coinbaseUtxos: { txid: string; vout: number; value: number; height: number }[] = [];
+		let tipHeight = 0;
+		try {
+			const [utxos, tip] = await Promise.all([getMultisigUtxos(multisig), getChain().getTip()]);
+			tipHeight = tip.height;
+			coinbaseUtxos = utxos
+				.filter((u) => u.coinbase)
+				.map((u) => ({ txid: u.txid, vout: u.vout, value: u.value, height: u.height }));
+		} catch {
+			coinbaseUtxos = [];
+			tipHeight = 0;
+		}
+
+		// Which unconfirmed txs can be sped up, and how (RBF vs CPFP) — feeds the
+		// "Speed up" button (cairn-u9ob.4). Tolerate a chain hiccup. The saved-tx
+		// list lets the RBF path find the row to bump.
+		let speedUp: SpeedUpInflow[] = [];
+		try {
+			speedUp = (await detectMultisigUnconfirmedInflows(userId, id)) ?? [];
+		} catch {
+			speedUp = [];
+		}
+		// Already the viewer-safe projection (no PSBT/recipients) — the summary
+		// list stays viewer-reachable while the full-shape functions are
+		// cosigner-gated (cairn-o1dp.1).
+		const savedTxs = listMultisigTransactionSummaries(userId, id) ?? [];
+
+		return {
+			detail: {
+				balance: detail.balance,
+				addresses: detail.addresses,
+				history: detail.history,
+				utxoCount: detail.utxos.length
+			},
+			receive: { ...receive, qr },
+			coinbaseUtxos,
+			tipHeight,
+			speedUp,
+			savedTxs,
+			scanError: null
+		};
+	} catch (e) {
+		// Only swallow scan failures — the multisig shell still renders. Keep the
+		// same fields the success branch returns (empty) so `scan.speedUp`/
+		// `scan.savedTxs` aren't typed as possibly-undefined at the call sites.
+		return {
+			detail: null,
+			receive: null,
+			coinbaseUtxos: [],
+			tipHeight: 0,
+			speedUp: [],
+			savedTxs: [],
+			scanError: e instanceof Error ? e.message : 'Multisig scan failed'
+		};
+	}
+}
+
+export const load: PageServerLoad = async ({ params, locals, url, depends }) => {
 	const id = multisigId(params.id);
+	// A new block invalidates only this tag (wired to onNewBlock on the client),
+	// so the chain-derived fields (tip, coinbase maturity, speed-up eligibility)
+	// refresh live without a manual reload — mirroring `depends('cairn:chain')`
+	// on the dashboard. The scan itself is 60s-cached server-side, so this stays
+	// cheap on repeat.
+	depends(`cairn:multisig:${id}`);
 	// Owner OR any accepted share (viewer/cosigner) — read-only surface. A non-
 	// participant gets the same 404 as a missing wallet.
 	const multisig = getViewableMultisig(locals.user!.id, id);
@@ -45,6 +156,13 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 	const role = multisigAccessRole(locals.user!.id, id);
 	// Non-owner viewers see their own key's path but not other cosigners' (plan §6).
 	const visibleKeys = redactMultisigKeysForViewer(multisig.keys, locals.user!.id, multisig.userId);
+
+	// The share-MANAGEMENT surface (Collaborators) is owner-only AND gated on team
+	// mode — the same gate the /shares API enforces (requireTeamMode). In solo mode
+	// nothing is "disabled", the instance is just narrower, so we hide the section
+	// entirely rather than showing a dead form. Read access a cosigner/viewer
+	// already has is never touched by this (cairn-7t0z.5).
+	const canManageShares = role === 'owner' && getInstanceSettings().instanceMode === 'team';
 
 	const base = {
 		// The caller's role drives which owner-only controls (share, delete,
@@ -76,78 +194,33 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 		// viewer never signs, so they don't get it (plan §6).
 		descriptor: role === 'viewer' ? null : multisigToDescriptor(toMultisigConfig(multisig)),
 		// Address labels (cairn-nbsx) — shared annotations for this vault; local read.
-		addressLabels: getAddressLabels(locals.user!.id, 'multisig', id)
+		addressLabels: getAddressLabels(locals.user!.id, 'multisig', id),
+		// Sharing surface (owner + team mode only). Both lists are cheap local reads
+		// and independent of the Electrum scan, so they live on `base` and stay
+		// present even when the scan below fails. Empty for everyone else.
+		canManageShares,
+		collaborators: canManageShares ? listCollaborators(locals.user!.id, id) : [],
+		// Only accepted contacts (friends) can receive a share; the picker needs
+		// just the id/name/email to build the option list.
+		shareableContacts: canManageShares
+			? listContacts(locals.user!.id).friends.map((c) => ({
+					userId: c.userId,
+					displayName: c.displayName,
+					email: c.email
+				}))
+			: []
 	};
 
-	try {
-		const detail = await getMultisigDetail(multisig);
-		const receive = await peekMultisigReceiveAddress(multisig);
-		const qr = await QRCode.toDataURL(receive.address, QR_OPTS);
-
-		// Mining rewards (coinbase UTXOs) get their own "cooling off" section —
-		// empty for almost every multisig. The scan above already ran, so
-		// getMultisigUtxos hits the cache; guard the chain tip separately so a tip
-		// hiccup just hides the section rather than failing the page.
-		let coinbaseUtxos: { txid: string; vout: number; value: number; height: number }[] = [];
-		let tipHeight = 0;
-		try {
-			const [utxos, tip] = await Promise.all([
-				getMultisigUtxos(multisig),
-				getChain().getTip()
-			]);
-			tipHeight = tip.height;
-			coinbaseUtxos = utxos
-				.filter((u) => u.coinbase)
-				.map((u) => ({ txid: u.txid, vout: u.vout, value: u.value, height: u.height }));
-		} catch {
-			coinbaseUtxos = [];
-			tipHeight = 0;
-		}
-
-		// Which unconfirmed txs can be sped up, and how (RBF vs CPFP) — feeds the
-		// "Speed up" button (cairn-u9ob.4). Tolerate a chain hiccup. The saved-tx
-		// list lets the RBF path find the row to bump.
-		let speedUp: Awaited<ReturnType<typeof detectMultisigUnconfirmedInflows>> = [];
-		try {
-			speedUp = (await detectMultisigUnconfirmedInflows(locals.user!.id, id)) ?? [];
-		} catch {
-			speedUp = [];
-		}
-		// Already the viewer-safe projection (no PSBT/recipients) — the summary
-		// list stays viewer-reachable while the full-shape functions are
-		// cosigner-gated (cairn-o1dp.1).
-		const savedTxs = listMultisigTransactionSummaries(locals.user!.id, id) ?? [];
-
-		return {
-			...base,
-			detail: {
-				balance: detail.balance,
-				addresses: detail.addresses,
-				history: detail.history,
-				utxoCount: detail.utxos.length
-			},
-			receive: { ...receive, qr },
-			coinbaseUtxos,
-			tipHeight,
-			speedUp: speedUp ?? [],
-			savedTxs,
-			scanError: null as string | null
-		};
-	} catch (e) {
-		// Only swallow scan failures — the multisig shell still renders. Keep the
-		// same fields the success branch returns (empty) so `data.speedUp`/
-		// `data.savedTxs` aren't typed as possibly-undefined at the call sites.
-		return {
-			...base,
-			detail: null,
-			receive: null,
-			coinbaseUtxos: [] as { txid: string; vout: number; value: number; height: number }[],
-			tipHeight: 0,
-			speedUp: [] as Awaited<ReturnType<typeof detectMultisigUnconfirmedInflows>>,
-			savedTxs: [] as { id: number; txid: string | null; status: string; feeRate: number }[],
-			scanError: e instanceof Error ? e.message : 'Multisig scan failed'
-		};
-	}
+	return {
+		...base,
+		// Streamed, not awaited (SvelteKit 2 leaves top-level promises alone): the
+		// multisig shell (name, keys, collaborators, descriptor, backup status)
+		// paints immediately from the cheap `base` fields above while the full
+		// gap-limit scan + tip + speed-up detection resolve in the background
+		// (cairn-vknb.2). loadMultisigScan never rejects — a scan failure resolves
+		// to an empty-but-shaped snapshot the page renders as a banner.
+		scan: loadMultisigScan(multisig, locals.user!.id, id)
+	};
 };
 
 export const actions: Actions = {

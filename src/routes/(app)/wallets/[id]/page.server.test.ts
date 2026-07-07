@@ -54,7 +54,8 @@ function loadEvent(id: number) {
 	return {
 		params: { id: String(id) },
 		locals: { user: { id: userId, email: 'user@example.com', isAdmin: false } },
-		url: new URL(`http://localhost/wallets/${id}`)
+		url: new URL(`http://localhost/wallets/${id}`),
+		depends: vi.fn()
 	} as unknown as Parameters<typeof load>[0];
 }
 

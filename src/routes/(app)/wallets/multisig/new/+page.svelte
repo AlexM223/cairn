@@ -1,7 +1,8 @@
 <script lang="ts">
-	import { onDestroy, tick } from 'svelte';
+	import { onDestroy, onMount, tick } from 'svelte';
 	import { deserialize } from '$app/forms';
 	import { page } from '$app/state';
+	import { pushState, replaceState } from '$app/navigation';
 	import Icon from '$lib/components/Icon.svelte';
 	import SecureContextHelp from '$lib/components/signing/SecureContextHelp.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
@@ -745,19 +746,75 @@
 	const hasQrKey = $derived(keys.some((k) => k.deviceType === 'qr'));
 
 	// -------------------------------------------------------------- navigation
+	//
+	// The wizard's screen lives in `step`, not the URL — it stays
+	// /wallets/multisig/new throughout — so without help the browser Back button
+	// escapes the whole flow (and the wallets list too, landing on the dashboard).
+	// We mirror the step position into the history stack with SvelteKit shallow
+	// routing: one same-URL entry per step reached. Forward moves push a new entry;
+	// in-app Back delegates to the browser (history.back → popstate → onPopState),
+	// so both Back paths are identical and there's no pushState⇄popstate loop
+	// (a pushState never fires popstate).
+
+	/** Advance to a later step and record it as a new history entry. */
+	function advanceTo(key: StepKey) {
+		step = key;
+		try {
+			pushState('', { wizardStep: STEPS.findIndex((s) => s.key === key) });
+		} catch {
+			// Router not ready — the step still changes, only the Back aid is lost.
+		}
+	}
+
 	function goToReview() {
-		step = 'review';
+		advanceTo('review');
 		void loadPreview();
 	}
 
-	// Entering the Keys step — first time or via any Back control — always
-	// lands on the method picker with no stale device/error state left over
-	// from a previous visit (e.g. a failed Ledger connect). Reuses the same
-	// reset as the in-form "Different source" button; added keys are kept.
-	function goToKeys() {
+	// Entering the Keys step — first time, via a forward move, or via any Back
+	// control — always lands on the method picker with no stale device/error state
+	// left over from a previous visit (e.g. a failed Ledger connect). Reuses the
+	// same reset as the in-form "Different source" button; added keys are kept.
+	//
+	// Forward move onto the Keys step (Protection → Add keys): reset the form AND
+	// push a history entry. Back-into-keys is handled by onPopState (which resets
+	// the form too), so both entry paths behave identically.
+	function advanceToKeys() {
 		resetKeyForm();
-		step = 'keys';
+		advanceTo('keys');
 	}
+
+	/** In-app Back: pop one history entry so it behaves exactly like browser Back. */
+	function stepBack() {
+		history.back();
+	}
+
+	/** Apply a step the user reached via browser Back/Forward. */
+	function applyStepFromHistory(idx: number) {
+		const key = STEPS[idx]?.key;
+		if (!key || key === 'done') return; // Done is terminal (guarded by createdId)
+		if (key === 'keys') resetKeyForm();
+		step = key;
+	}
+
+	function onPopState() {
+		// Once created, the Done screen is terminal — don't reopen the form on Back.
+		if (createdId !== null) return;
+		const target = page.state.wizardStep;
+		if (typeof target === 'number' && target !== stepIndex) applyStepFromHistory(target);
+	}
+
+	onMount(() => {
+		// Seed the first entry ('why', index 0). This wizard always starts there
+		// (no mid-flow resume), so a single replaceState is enough.
+		try {
+			replaceState('', { wizardStep: 0 });
+		} catch {
+			// Router mid-hydration — degrade gracefully; nav still works.
+		}
+		window.addEventListener('popstate', onPopState);
+		return () => window.removeEventListener('popstate', onPopState);
+	});
 
 	// Every step change — button, back, or programmatic — moves focus to the
 	// new step's section so screen readers announce the step and keyboard users
@@ -1162,7 +1219,7 @@
 					type="button"
 					class="btn btn-primary"
 					disabled={!quorumValid}
-					onclick={goToKeys}
+					onclick={advanceToKeys}
 				>
 					Continue
 					<Icon name="chevron-right" size={14} />
@@ -1766,7 +1823,7 @@
 			{/if}
 
 			<div class="pane-actions">
-				<button type="button" class="btn btn-ghost" onclick={() => (step = 'why')}>
+				<button type="button" class="btn btn-ghost" onclick={stepBack}>
 					<Icon name="chevron-left" size={14} />
 					Back
 				</button>
@@ -1858,7 +1915,7 @@
 			</div>
 
 			<div class="pane-actions">
-				<button type="button" class="btn btn-ghost" onclick={goToKeys}>
+				<button type="button" class="btn btn-ghost" onclick={stepBack}>
 					<Icon name="chevron-left" size={14} />
 					Back
 				</button>
@@ -1866,7 +1923,7 @@
 					type="button"
 					class="btn btn-primary"
 					disabled={previewAddresses.length === 0}
-					onclick={() => (step = 'confirm')}
+					onclick={() => advanceTo('confirm')}
 				>
 					Continue
 					<Icon name="chevron-right" size={14} />
@@ -1947,7 +2004,7 @@
 			{/if}
 
 			<div class="pane-actions">
-				<button type="button" class="btn btn-ghost" onclick={() => (step = 'review')} disabled={creating}>
+				<button type="button" class="btn btn-ghost" onclick={stepBack} disabled={creating}>
 					<Icon name="chevron-left" size={14} />
 					Back
 				</button>

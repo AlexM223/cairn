@@ -456,7 +456,7 @@ async function connectAndPair(
 		// bridge isn't installed/running — say that instead of a bare failure.
 		if (!isWebHidAvailable()) {
 			throw new Bitbox02Error(
-				"Couldn't reach your BitBox02. On this connection the browser can't use USB directly, so Cairn connects through the BitBoxBridge app — install it from bitbox.swiss, make sure it's running, approve this site when it asks, then try again.",
+				"Couldn't reach your BitBox02. On this connection the browser can't use USB directly, so Heartwood connects through the BitBoxBridge app — install it from bitbox.swiss, make sure it's running, approve this site when it asks, then try again.",
 				'unsupported-browser',
 				{ cause: err }
 			);

@@ -9,6 +9,7 @@
 import type { ElectrumHeader } from './electrum/client';
 import type { ElectrumPool } from './electrum/pool';
 import { recordActivity } from './activity';
+import { invalidateTipCache } from './chain/cache';
 import { notify } from './notifications';
 import { childLogger } from './logger';
 import { formatNumber } from '$lib/format';
@@ -113,6 +114,10 @@ export function wireChainEvents(electrum: ElectrumPool): void {
 		// of a height is a real "new block".
 		if (header.height <= lastBlockHeight) return;
 		lastBlockHeight = header.height;
+		// A new block means the cached tip (ChainService.getTip) is stale — drop it
+		// now so the next lookup reflects the new height without waiting out the
+		// 10-minute TTL ceiling (cairn-vknb.5).
+		invalidateTipCache();
 		log.debug({ height: header.height }, 'new block');
 		recordActivity({
 			type: 'new_block',
