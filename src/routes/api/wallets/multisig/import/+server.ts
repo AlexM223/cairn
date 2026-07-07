@@ -1,5 +1,9 @@
 import { json, requireFeature, readJson } from '$lib/server/api';
-import { parseDescriptor, MultisigError } from '$lib/server/bitcoin/multisig';
+import {
+	parseDescriptor,
+	validateMultisigKeyPaths,
+	MultisigError
+} from '$lib/server/bitcoin/multisig';
 import {
 	containsPrivateKeyMaterial,
 	parseCaravanImport,
@@ -7,7 +11,7 @@ import {
 	type CaravanImport
 } from '$lib/server/multisigExport';
 import { createMultisig, type NewMultisigKey } from '$lib/server/wallets/multisig';
-import { detectCosignerContacts } from '$lib/server/cosignerDetection';
+import { detectCosignerContacts, detectXpubReuse } from '$lib/server/cosignerDetection';
 import { childLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
 
@@ -21,6 +25,11 @@ interface ImportBody {
 	/** When true, create the multisig immediately instead of returning a prefill. */
 	create?: boolean;
 	name?: string;
+	/** Declared vault mode to record (cairn-1kc3.6). Imports are EXEMPT from the
+	 *  BIP-45 enforcement regardless — an imported wallet already exists on-chain
+	 *  with whatever paths it was built with — but the declared mode still
+	 *  persists for downstream UX. */
+	collaborative?: boolean;
 }
 
 function parseSource(source: string): CaravanImport {
@@ -29,9 +38,16 @@ function parseSource(source: string): CaravanImport {
 	}
 	if (source.trim().startsWith('{')) return parseCaravanImport(source);
 	const config = parseDescriptor(source.trim());
+	// Path hygiene at the import boundary (cairn-1kc3.1/.3/.5): parseDescriptor
+	// itself stays acceptance-agnostic (exports round-trip stored wallets
+	// through it), so the check lives here where a NEW record is being accepted.
+	validateMultisigKeyPaths(config);
 	return {
 		name: '',
-		scriptType: 'p2wsh', // parseDescriptor only accepts native-segwit wsh()
+		// parseDescriptor reports the wrapper it recognized: wsh() → p2wsh,
+		// sh(wsh()) → p2sh-p2wsh, sh() → p2sh (cairn-opo6 — this was hardcoded
+		// 'p2wsh', silently mis-typing every non-native-segwit descriptor import).
+		scriptType: config.scriptType ?? 'p2wsh',
 		threshold: config.threshold,
 		totalKeys: config.keys.length,
 		keys: config.keys.map((k, i) => ({
@@ -75,7 +91,13 @@ export const POST: RequestHandler = async (event) => {
 			user.id,
 			parsed.keys.map((k) => k.fingerprint)
 		);
-		return json({ imported: parsed, cosignerMatches });
+		// Cross-wallet reuse hint (cairn-1kc3.4): is any of these keys already
+		// stored as one of the importer's own wallets/cosigner keys? Non-blocking.
+		const xpubReuse = detectXpubReuse(
+			user.id,
+			parsed.keys.map((k) => k.xpub)
+		);
+		return json({ imported: parsed, cosignerMatches, xpubReuse });
 	}
 
 	const keys: NewMultisigKey[] = parsed.keys.map((k) => ({
@@ -87,10 +109,17 @@ export const POST: RequestHandler = async (event) => {
 		path: k.path
 	}));
 	try {
+		// Cross-wallet reuse check BEFORE creation so the response can carry it
+		// (cairn-1kc3.4); createMultisig also records an activity-feed warning.
+		const xpubReuse = detectXpubReuse(
+			user.id,
+			keys.map((k) => k.xpub)
+		);
 		const multisig = createMultisig(user.id, {
 			name: String(body.name ?? '').trim() || parsed.name,
 			threshold: parsed.threshold,
 			scriptType: parsed.scriptType,
+			collaborative: typeof body.collaborative === 'boolean' ? body.collaborative : null,
 			keys,
 			// Imported from a config the user already holds — no backup prompts.
 			source: 'imported',
@@ -98,7 +127,7 @@ export const POST: RequestHandler = async (event) => {
 			// addresses (cairn-u161).
 			receiveCursor: parsed.startingAddressIndex
 		});
-		return json({ multisig }, { status: 201 });
+		return json({ multisig, xpubReuse }, { status: 201 });
 	} catch (e) {
 		const message = e instanceof MultisigError ? e.message : 'Could not create that multisig.';
 		if (!(e instanceof MultisigError)) log.error({ err: e }, 'wallet import create failed');

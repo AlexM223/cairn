@@ -146,6 +146,17 @@ function toStandardXpub(input: string): string {
 	return b58check.encode(out);
 }
 
+/** Canonical xpub string (SLIP-132 ypub/zpub/Ypub/Zpub aliases normalized to
+ *  standard xpub form) for equality comparison across storage contexts, or
+ *  null when the input is not a parseable extended public key. */
+export function canonicalXpub(input: string): string | null {
+	try {
+		return parseXpub(toStandardXpub(input)).hdkey.publicExtendedKey;
+	} catch {
+		return null;
+	}
+}
+
 // --------------------------------------------------------------- path utils
 
 /** "m/48'/0'/0'/2'" (h/H/’ markers accepted, leading m/ optional) → index
@@ -225,6 +236,145 @@ function multisigScriptType(config: MultisigConfig): MultisigScriptType {
 		`Multisig script type "${st}" is not supported — use p2wsh, p2sh-p2wsh, or p2sh (taproot multisig is not supported).`,
 		'invalid_config'
 	);
+}
+
+// ------------------------------------------------ cosigner path acceptance
+//
+// The checks below run at ACCEPTANCE time only — multisig creation and config
+// import — never at derivation/export time. A recorded origin path is metadata
+// (the address math derives from the xpub alone and never reads it), so an
+// already-stored wallet with an odd path must keep deriving, exporting, and
+// spending; blocking those operations would strand funds over a label. What
+// acceptance must stop is NEW records being created with a lying path, because
+// that path flows into descriptors, PSBTs, and hardware-wallet displays where
+// every OTHER tool trusts it (cairn-1kc3.1/.3/.5).
+
+/** Single-sig BIP purposes — never valid on a multisig cosigner key. */
+const SINGLE_SIG_PURPOSES = new Map<number, string>([
+	[44, 'BIP-44 legacy single-sig'],
+	[49, 'BIP-49 wrapped-segwit single-sig'],
+	[84, 'BIP-84 native-segwit single-sig'],
+	[86, 'BIP-86 taproot single-sig']
+]);
+
+/** BIP-48 script-type suffix (4th component) per script form: only p2wsh gets
+ *  2'; BOTH p2sh forms share 1' (see file header). */
+const BIP48_SUFFIX: Record<MultisigScriptType, number> = {
+	p2wsh: 2,
+	'p2sh-p2wsh': 1,
+	p2sh: 1
+};
+
+/** Hardened-marker-stripped value of one path component. */
+const unhardened = (i: number): number => (i >= HARDENED ? i - HARDENED : i);
+
+/**
+ * Validate one cosigner's declared origin path for acceptance into a multisig.
+ *
+ * Accepted:
+ *   - "m" / "" — unknown origin (the watch-only convention), and Caravan's
+ *     masked depth-preserving all-zeros paths ("m/0/0/0/0")
+ *   - m/45'/… — BIP-45, the collaborative-custody purpose; its structure
+ *     (purpose'/cosigner_index/change/address_index) has no coin-type or
+ *     script-type field, so nothing further to cross-check
+ *   - m/48'/coin'/account'/script'… — BIP-48, where coin must be 0 (mainnet is
+ *     the only network Cairn tracks, cairn-1kc3.5) and script must match the
+ *     multisig's script form (cairn-1kc3.1)
+ *
+ * Everything else is rejected (cairn-1kc3.3) — single-sig purposes above all:
+ * a single-sig path recorded on a multisig key makes from-seed recovery derive
+ * the wrong key in every path-trusting tool, and leaks the existence of a
+ * single-sig wallet into every export a cosigner receives.
+ */
+export function validateCosignerKeyPath(
+	path: string,
+	scriptType: MultisigScriptType | undefined,
+	label: string
+): void {
+	let indexes: number[];
+	try {
+		indexes = parsePath(path);
+	} catch (e) {
+		const msg = e instanceof Error ? e.message : String(e);
+		throw new MultisigError(`${label}: ${msg}`, 'invalid_key');
+	}
+	// No purpose claim to validate: unknown origin, or a masked all-zeros path.
+	if (indexes.length === 0 || indexes.every((i) => i === 0)) return;
+
+	const shown = path.trim();
+	if (indexes[0] === 45 + HARDENED) return;
+
+	if (indexes[0] === 48 + HARDENED) {
+		if (indexes.length < 4) {
+			throw new MultisigError(
+				`${label}: the path "${shown}" is incomplete — a BIP-48 multisig path has four levels, like m/48'/0'/0'/2'.`,
+				'invalid_key'
+			);
+		}
+		const coin = unhardened(indexes[1]);
+		if (coin !== 0) {
+			throw new MultisigError(
+				`${label}: the path "${shown}" is for a different network (coin type ${coin}) — Cairn tracks mainnet Bitcoin, which uses coin type 0.`,
+				'invalid_key'
+			);
+		}
+		const st = scriptType ?? 'p2wsh';
+		const suffix = unhardened(indexes[3]);
+		if (suffix !== BIP48_SUFFIX[st]) {
+			throw new MultisigError(
+				`${label}: the path "${shown}" declares BIP-48 script type ${suffix}' but this multisig is ${st}, which uses …/${BIP48_SUFFIX[st]}' — re-export this key at the right path for this wallet type.`,
+				'invalid_key'
+			);
+		}
+		return;
+	}
+
+	const purpose = unhardened(indexes[0]);
+	const singleSig = SINGLE_SIG_PURPOSES.get(purpose);
+	if (singleSig) {
+		throw new MultisigError(
+			`${label}: the path "${shown}" is a ${singleSig} path — a multisig cosigner key must come from a multisig path (m/45', or m/48'/0'/0'/2' for this wallet's script type).`,
+			'invalid_key'
+		);
+	}
+	if (purpose === 45 || purpose === 48) {
+		throw new MultisigError(
+			`${label}: the path "${shown}" leaves purpose ${purpose} unhardened — multisig paths harden it (m/${purpose}'/…).`,
+			'invalid_key'
+		);
+	}
+	throw new MultisigError(
+		`${label}: the path "${shown}" is not a multisig derivation path — expected purpose 45' or 48' (like m/48'/0'/0'/2').`,
+		'invalid_key'
+	);
+}
+
+/** Whole-config acceptance gate: every key's declared path validated against
+ *  the config's script form. Called by createMultisig and the import parsers. */
+export function validateMultisigKeyPaths(config: MultisigConfig): void {
+	const scriptType = multisigScriptType(config);
+	(config.keys ?? []).forEach((key, i) => {
+		validateCosignerKeyPath(key.path, scriptType, key.name?.trim() || `key ${i + 1}`);
+	});
+}
+
+/**
+ * The multisig purpose a key's path declares: 45, 48, or null when it carries
+ * no purpose claim at all (unknown origin "m", a masked all-zeros path, or an
+ * unparseable path — run validateCosignerKeyPath first for real errors).
+ * Vault-mode enforcement branches on this (cairn-1kc3.6).
+ */
+export function cosignerPathPurpose(path: string): 45 | 48 | null {
+	let indexes: number[];
+	try {
+		indexes = parsePath(path);
+	} catch {
+		return null;
+	}
+	if (indexes.length === 0 || indexes.every((i) => i === 0)) return null;
+	if (indexes[0] === 45 + HARDENED) return 45;
+	if (indexes[0] === 48 + HARDENED) return 48;
+	return null;
 }
 
 /** Full config validation: threshold bounds, key count, parseability, and

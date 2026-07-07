@@ -18,6 +18,7 @@
 // invite/share explicitly through the existing contact-scoped share flow.
 
 import { db } from './db';
+import { canonicalXpub } from './bitcoin/multisig';
 
 /** The unknown-fingerprint sentinel (see db.ts multisig_keys) — never matched. */
 const UNKNOWN_FINGERPRINT = '00000000';
@@ -110,5 +111,78 @@ export function detectCosignerContacts(
 		return out;
 	} catch {
 		return []; // detection is a convenience — never break an import over it
+	}
+}
+
+// ------------------------------------------- cross-wallet xpub reuse (cairn-1kc3.4)
+
+/** One place a to-be-added cosigner xpub is ALREADY stored for the same user. */
+export interface XpubReuseMatch {
+	/** Canonical form of the xpub that is already stored elsewhere. */
+	xpub: string;
+	/** Where it already lives: a single-sig wallet or another multisig. */
+	kind: 'wallet' | 'multisig';
+	walletId: number;
+	walletName: string;
+}
+
+/**
+ * Detect when a key offered for a new multisig is already committed elsewhere
+ * for the SAME user — as a single-sig wallet's xpub or as a cosigner key in
+ * another multisig (cairn-1kc3.4). Nothing in the schema stops this (both
+ * UNIQUE constraints are scoped to one wallet), and reusing one account key
+ * across derivation contexts is exactly the cross-contamination BIP-48 path
+ * separation exists to prevent tooling from silently accepting.
+ *
+ * Comparison is on CANONICAL xpubs, so a SLIP-132 Ypub/Zpub alias of a stored
+ * key still matches. Own-user data only — no enumeration surface. The result
+ * is a non-blocking warning (reuse can be deliberate, e.g. watching one key
+ * two ways) but must never be silent. Never throws; a DB hiccup yields [].
+ */
+export function detectXpubReuse(userId: number, xpubs: string[]): XpubReuseMatch[] {
+	const wanted = new Set(
+		xpubs.map((x) => canonicalXpub(x)).filter((x): x is string => x !== null)
+	);
+	if (wanted.size === 0) return [];
+
+	try {
+		const out: XpubReuseMatch[] = [];
+		const seen = new Set<string>();
+		const collect = (
+			rows: { id: number; name: string; xpub: string }[],
+			kind: XpubReuseMatch['kind']
+		) => {
+			for (const row of rows) {
+				const canon = canonicalXpub(row.xpub);
+				if (!canon || !wanted.has(canon)) continue;
+				const dedupe = `${kind}:${row.id}:${canon}`;
+				if (seen.has(dedupe)) continue;
+				seen.add(dedupe);
+				out.push({ xpub: canon, kind, walletId: row.id, walletName: row.name });
+			}
+		};
+
+		collect(
+			db.prepare('SELECT id, name, xpub FROM wallets WHERE user_id = ?').all(userId) as {
+				id: number;
+				name: string;
+				xpub: string;
+			}[],
+			'wallet'
+		);
+		collect(
+			db
+				.prepare(
+					`SELECT m.id AS id, m.name AS name, k.xpub AS xpub
+					 FROM multisig_keys k
+					 JOIN multisigs m ON m.id = k.multisig_id
+					 WHERE m.user_id = ?`
+				)
+				.all(userId) as { id: number; name: string; xpub: string }[],
+			'multisig'
+		);
+		return out;
+	} catch {
+		return []; // a warning helper must never break wallet creation
 	}
 }

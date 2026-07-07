@@ -24,7 +24,8 @@ export type ActivityType =
 	| 'signing_started'
 	| 'electrum_switched'
 	| 'wallet_added'
-	| 'wallet_created';
+	| 'wallet_created'
+	| 'key_reuse';
 
 export interface ActivityEvent {
 	id: number;
@@ -165,6 +166,9 @@ export const USER_FEED_TYPES: ReadonlySet<string> = new Set([
 	// Your wallets
 	'wallet_added',
 	'wallet_created',
+	// A key you just added to a multisig is already committed to another of
+	// your wallets (cairn-1kc3.4) — the user must see this, non-blocking.
+	'key_reuse',
 	'backup_downloaded',
 	'backup_missing',
 	'backup_stale',

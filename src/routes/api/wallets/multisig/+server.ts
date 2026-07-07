@@ -7,6 +7,7 @@ import {
 	type MultisigScriptType
 } from '$lib/server/wallets/multisig';
 import { MultisigError } from '$lib/server/bitcoin/multisig';
+import { detectXpubReuse } from '$lib/server/cosignerDetection';
 import { listMultisigSummaries } from '$lib/server/multisigScan';
 import { childLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
@@ -24,6 +25,10 @@ interface CreateBody {
 	name?: string;
 	threshold?: number;
 	scriptType?: MultisigScriptType;
+	/** Declared vault mode (cairn-1kc3.6): true = collaborative (every key must
+	 *  be BIP-45 m/45'), false = personal (BIP-48; m/45' rejected), omitted =
+	 *  undeclared (no mode enforcement — today's wizard doesn't ask yet). */
+	collaborative?: boolean;
 	keys?: {
 		name?: string;
 		category?: MultisigKeyCategory;
@@ -59,13 +64,21 @@ export const POST: RequestHandler = async (event) => {
 	}));
 
 	try {
+		// Cross-wallet reuse check BEFORE creation so the response can carry it
+		// (cairn-1kc3.4) — non-blocking; createMultisig also records a warning in
+		// the activity feed.
+		const xpubReuse = detectXpubReuse(
+			user.id,
+			keys.map((k) => k.xpub)
+		);
 		const multisig = createMultisig(user.id, {
 			name: String(body.name ?? ''),
 			threshold: Number(body.threshold),
 			scriptType: body.scriptType,
+			collaborative: typeof body.collaborative === 'boolean' ? body.collaborative : null,
 			keys
 		});
-		return json({ multisig }, { status: 201 });
+		return json({ multisig, xpubReuse }, { status: 201 });
 	} catch (e) {
 		if (e instanceof MultisigError) return json({ error: e.message }, { status: 400 });
 		log.error({ err: e }, 'wallet create failed');
