@@ -28,7 +28,10 @@ export const SESSION_COOKIE = 'cairn_session';
 
 // ---------- Sessions ----------
 
-function hashToken(token: string): string {
+/** SHA-256 hex digest of an opaque bearer secret. Shared by sessions here and
+ *  personal API tokens (apiTokens.ts) so both stores use the identical
+ *  hash-only-at-rest scheme — the raw value is never persisted anywhere. */
+export function hashToken(token: string): string {
 	return createHash('sha256').update(token).digest('hex');
 }
 
