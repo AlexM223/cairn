@@ -23,6 +23,7 @@
 	// svelte-ignore state_referenced_locally
 	let operatorName = $state(data.agreement.operator);
 	let savingAgreement = $state(false);
+	let togglingTeamMode = $state(false);
 
 	// Danger zone: the destructive submit stays disabled until the admin has
 	// opened the inline confirm AND typed the word RESET.
@@ -415,6 +416,50 @@
 			{#if savingAgreement}<span class="spinner"></span>{/if}
 			Save agreement
 		</button>
+	</div>
+</form>
+
+<!-- Team features (docs/SOLO-MODE-UMBREL-AUTOADMIN-PLAN.md Part 2) -->
+<form
+	method="POST"
+	action={data.settings.instanceMode === 'team' ? '?/lockTeamMode' : '?/unlockTeamMode'}
+	class="card card-pad section fade-in"
+	use:enhance={() => {
+		togglingTeamMode = true;
+		return async ({ update }) => {
+			togglingTeamMode = false;
+			await update();
+		};
+	}}
+>
+	<div class="section-head">
+		<span class="card-title">Team features</span>
+		<p class="hint">
+			Multi-user features — other accounts, invites, contacts, and multisig wallet sharing — stay
+			hidden until you turn this on. Nothing is deleted either way; this only shows or hides the
+			nav.
+		</p>
+	</div>
+
+	{#if form?.instanceModeSaved}
+		<div class="save-note" role="status">
+			{data.settings.instanceMode === 'team' ? 'Team features unlocked.' : 'Team features hidden.'}
+		</div>
+	{/if}
+
+	<div class="row" style="align-items: center; gap: 10px">
+		{#if data.settings.instanceMode === 'team'}
+			<span class="badge badge-neutral">Unlocked</span>
+			<button class="btn btn-secondary btn-sm" disabled={togglingTeamMode}>
+				{#if togglingTeamMode}<span class="spinner"></span>{/if}
+				Hide team features again
+			</button>
+		{:else}
+			<button class="btn btn-secondary btn-sm" disabled={togglingTeamMode}>
+				{#if togglingTeamMode}<span class="spinner"></span>{/if}
+				Unlock team features
+			</button>
+		{/if}
 	</div>
 </form>
 

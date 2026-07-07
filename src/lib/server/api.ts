@@ -3,6 +3,7 @@ import type { RequestEvent } from '@sveltejs/kit';
 import type { SessionUser } from '$lib/types';
 import { FEATURE_FLAGS_BY_KEY } from './featureFlags/registry';
 import { isFeatureEnabled } from './featureFlags/resolve';
+import { getInstanceSettings } from './settings';
 import { childLogger } from './logger';
 
 const flagLog = childLogger('feature-flags');
@@ -43,6 +44,28 @@ export function requireFeature(event: RequestEvent, key: string): SessionUser {
 		);
 		error(403, def.userMessage);
 	}
+	return user;
+}
+
+/**
+ * Guard for the multi-user MANAGEMENT surfaces only — admin users/invites,
+ * contacts, and multisig-share creation/editing — gated on instanceMode ===
+ * 'team' (docs/SOLO-MODE-UMBREL-AUTOADMIN-PLAN.md Part 2). A 404, not a 403:
+ * solo mode hides these outright rather than showing a "disabled by your
+ * administrator" message, since nothing disabled them — the instance is just
+ * narrower. Never gates the READ path a cosigner/viewer already uses to
+ * access a wallet already shared with them (that's a separate check, e.g.
+ * getViewableMultisig) — an owner toggling back to solo must not silently
+ * revoke access they already granted (cairn-7t0z.5).
+ */
+export function assertTeamMode(): void {
+	if (getInstanceSettings().instanceMode !== 'team') error(404, 'Not found');
+}
+
+/** Same as {@link assertTeamMode}, for /api routes: also requires sign-in. */
+export function requireTeamMode(event: RequestEvent): SessionUser {
+	const user = requireUser(event);
+	assertTeamMode();
 	return user;
 }
 

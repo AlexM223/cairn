@@ -6,6 +6,7 @@ import {
 import { hasRecoverySetup } from '$lib/server/recovery';
 import { listUnbackedWallets, shouldShowBackupReminder } from '$lib/server/backups';
 import { listActiveAnnouncementsFor } from '$lib/server/announcements';
+import { getInstanceSettings } from '$lib/server/settings';
 import type { LayoutServerLoad } from './$types';
 
 export const load: LayoutServerLoad = async ({ locals, url }) => {
@@ -50,6 +51,11 @@ export const load: LayoutServerLoad = async ({ locals, url }) => {
 		// (etc). Server-side enforcement (requireFeature) is the real gate; this is
 		// what lets the UI hide/grey features the user can't use.
 		flags: locals.flags,
+		// 'solo' | 'team' — drives whether multi-user nav (admin users/invites,
+		// contacts, wallet sharing) is shown at all. Server-side assertTeamMode()
+		// is the real gate; this is what lets the UI hide the nav entirely rather
+		// than show a disabled state (docs/SOLO-MODE-UMBREL-AUTOADMIN-PLAN.md Part 2).
+		instanceMode: getInstanceSettings().instanceMode,
 		unbackedWallets: listUnbackedWallets(locals.user.id),
 		showBackupReminder: shouldShowBackupReminder(locals.user.id),
 		// Instance-wide admin announcements (active, unexpired, not dismissed by

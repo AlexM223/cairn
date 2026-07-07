@@ -1,4 +1,4 @@
-import { json, readJson, requireUser } from '$lib/server/api';
+import { json, readJson, requireTeamMode } from '$lib/server/api';
 import { listCollaborators, shareMultisig, ShareError, type ShareRole } from '$lib/server/multisigShares';
 import type { RequestHandler } from './$types';
 
@@ -7,9 +7,16 @@ function parseId(param: string): number | null {
 	return Number.isInteger(id) && id > 0 ? id : null;
 }
 
-/** GET /api/wallets/multisig/:id/shares — collaborators on this wallet (owner only). */
+/**
+ * GET /api/wallets/multisig/:id/shares — collaborators on this wallet (owner
+ * only). This is the sharing MANAGEMENT surface — gated on instanceMode. A
+ * cosigner/viewer's own read access to the wallet itself goes through
+ * getViewableMultisig instead, which is never gated by instanceMode
+ * (cairn-7t0z.5) — so turning solo mode back on never revokes access already
+ * granted, it only hides the owner's management UI/API.
+ */
 export const GET: RequestHandler = async (event) => {
-	const user = requireUser(event);
+	const user = requireTeamMode(event);
 	const id = parseId(event.params.id);
 	if (id === null) return json({ error: 'Wallet not found' }, { status: 404 });
 	try {
@@ -26,7 +33,7 @@ export const GET: RequestHandler = async (event) => {
  * { contactUserId, role: 'viewer'|'cosigner', keyIds?: number[] }.
  */
 export const POST: RequestHandler = async (event) => {
-	const user = requireUser(event);
+	const user = requireTeamMode(event);
 	const id = parseId(event.params.id);
 	if (id === null) return json({ error: 'Wallet not found' }, { status: 404 });
 	const body = await readJson<{ contactUserId?: unknown; role?: unknown; keyIds?: unknown }>(event);
