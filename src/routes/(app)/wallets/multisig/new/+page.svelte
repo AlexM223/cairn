@@ -4,7 +4,8 @@
 	import { page } from '$app/state';
 	import Icon from '$lib/components/Icon.svelte';
 	import SecureContextHelp from '$lib/components/signing/SecureContextHelp.svelte';
-	import Stepper from '$lib/components/Stepper.svelte';
+	import GroveField from '$lib/components/heartwood/GroveField.svelte';
+	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
@@ -782,18 +783,33 @@
 </script>
 
 <svelte:head>
-	<title>New multisig wallet — Cairn</title>
+	<title>New multisig wallet — Heartwood</title>
 </svelte:head>
 
-<div class="wizard fade-in" bind:this={pageEl}>
-	<h1 class="page-title" style="margin-bottom: 4px">Create a multisig wallet</h1>
-	<p class="hint" style="margin-bottom: 20px">
-		Money that needs several of your keys to move — no single point of failure.
-	</p>
+<div class="wizard hw-page fade-in" bind:this={pageEl}>
+	<GroveField volume="present" />
+	<div class="wizard-content">
+		<div class="wizard-eyebrow">
+			<EyebrowBreadcrumb
+				path={['Wallets']}
+				current={`New multisig wallet · ${STEPS[stepIndex]?.label ?? ''}`}
+			/>
+		</div>
+		<h1 class="wizard-title">Create a multisig wallet</h1>
+		<p class="wizard-sub">
+			Money that needs several of your keys to move — no single point of failure.
+		</p>
 
-	<div class="stepper-wrap card card-pad">
-		<Stepper steps={STEPS} current={step} />
-	</div>
+		<!-- Step indicator — the Send flow's quiet text-step grammar (5a/4a), same
+		     pattern as the single-sig wizard. -->
+		<ol class="steps" aria-label="Setup progress">
+			{#each STEPS as s, i (s.key)}
+				<li class="step-item" class:active={i === stepIndex} class:done={i < stepIndex}>
+					<span class="step-word">{s.label}</span>
+					{#if i < STEPS.length - 1}<span class="step-line" aria-hidden="true"></span>{/if}
+				</li>
+			{/each}
+		</ol>
 
 	<!-- Same-seed warning (cairn-h4l) — shown on the Keys step and repeated on Review. -->
 	{#snippet seedWarning()}
@@ -849,7 +865,7 @@
 						key gets nothing, and you still spend with the other two.
 					</p>
 					<p>
-						Cairn only ever sees <strong>public</strong> keys — it can watch and prepare
+						Heartwood only ever sees <strong>public</strong> keys — it can watch and prepare
 						transactions, never spend. Your keys stay on your devices.
 					</p>
 				</div>
@@ -1050,7 +1066,7 @@
 							Paste the wallet's <Term
 								tip="A descriptor is a single line of text that describes a multisig wallet completely — the quorum and every public key. Wallets like Sparrow export it under Settings."
 								>descriptor</Term
-							>, or a Caravan / Unchained wallet file (JSON) — Cairn fills in the quorum and
+							>, or a Caravan / Unchained wallet file (JSON) — Heartwood fills in the quorum and
 							keys for you.
 						</p>
 						<textarea
@@ -1161,7 +1177,7 @@
 				Each <Term
 					tip="A key is a device or backup that can approve spending — a hardware wallet, a phone wallet, or a seed phrase stored somewhere safe."
 					>key</Term
-				> should live on a different device or in a different place. Cairn only ever reads
+				> should live on a different device or in a different place. Heartwood only ever reads
 				<strong>public</strong> keys — nothing that can spend.
 			</p>
 
@@ -1239,7 +1255,7 @@
 						     is added, because it decides which key path every device read and
 						     paste must use. Locked once the first key lands. -->
 						<p class="hint">
-							First, one question — it decides which key Cairn reads from your devices.
+							First, one question — it decides which key Heartwood reads from your devices.
 							Is this wallet shared with other people, or all yours?
 						</p>
 						<div class="mode-grid">
@@ -1296,7 +1312,7 @@
 							<div class="known-keys">
 								<span class="known-title">
 									<Icon name="check" size={14} />
-									Keys Cairn already knows
+									Keys Heartwood already knows
 								</span>
 								<p class="hint">
 									You've read these from your devices before — reuse one without plugging
@@ -1398,7 +1414,7 @@
 									{:else}
 										<p class="connect-copy">
 											Plug in your {CONNECT_LABELS[method]} and unlock it.
-											Cairn reads the multisig key straight from the device — the key it reads can
+											Heartwood reads the multisig key straight from the device — the key it reads can
 											<strong>watch, never spend</strong>.
 											{#if vaultMode === 'collaborative'}
 												Because this vault is shared, the key is read from the shared multisig
@@ -1532,7 +1548,7 @@
 											<p>
 												Paste the <strong>full form</strong> —
 												<span class="mono">[fingerprint/45']xpub…</span> — not just the bare
-												key, so Cairn can check it belongs to this vault.
+												key, so Heartwood can check it belongs to this vault.
 											</p>
 										</div>
 									</div>
@@ -1541,7 +1557,7 @@
 									<label class="label" for="key-xpub">
 										Paste the
 										<Term
-											tip="An extended public key lets Cairn track this key's addresses and balances without having the private key. It's safe to share — it can't spend funds on its own."
+											tip="An extended public key lets Heartwood track this key's addresses and balances without having the private key. It's safe to share — it can't spend funds on its own."
 											>extended public key</Term
 										>
 									</label>
@@ -1616,7 +1632,7 @@
 										<span class="label">
 											<Term
 												tip={vaultMode === 'collaborative'
-													? "Where in the device's key tree this key lives. A shared vault's keys come from m/45' — required here so Cairn can check the key."
+													? "Where in the device's key tree this key lives. A shared vault's keys come from m/45' — required here so Heartwood can check the key."
 													: "Where in the device's key tree this key lives. m/48'/0'/0'/2' is the standard for native-segwit multisig — leave blank if unsure."}
 												>Derivation path</Term
 											>
@@ -1656,7 +1672,7 @@
 											<div class="disclosure-body fade-in where-list">
 												<p>
 													<strong>Trezor or Ledger</strong> — connect it directly (pick it on
-													the previous screen) and Cairn reads the
+													the previous screen) and Heartwood reads the
 													<span class="mono">m/45'</span> key itself. Their own apps (Trezor
 													Suite, Ledger Live) can't export this key — use Electrum or Sparrow
 													below if you can't connect directly.
@@ -1921,7 +1937,7 @@
 				<input type="checkbox" bind:checked={verified} />
 				<span>
 					I've checked that all keys are correct, and each key is
-					<strong>backed up</strong> — its seed phrase written down and stored safely. Cairn
+					<strong>backed up</strong> — its seed phrase written down and stored safely. Heartwood
 					holds no keys and cannot recover them for me.
 				</span>
 			</label>
@@ -2066,7 +2082,7 @@
 				<p id="backup-gate-note" class="backup-gate-warning" role="alert">
 					<Icon name="alert-triangle" size={14} />
 					Download your backup above before continuing — it's the only way to reconstruct
-					this multisig wallet if Cairn's data is lost.
+					this multisig wallet if Heartwood's data is lost.
 				</p>
 			{/if}
 
@@ -2090,6 +2106,7 @@
 			</div>
 		</section>
 	{/if}
+	</div>
 </div>
 
 <style>
@@ -2097,8 +2114,93 @@
 		max-width: 720px;
 	}
 
-	.stepper-wrap {
-		margin-bottom: 14px;
+	.hw-page {
+		position: relative;
+	}
+
+	.wizard-content {
+		position: relative;
+		z-index: 1;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.wizard-eyebrow {
+		margin-bottom: 18px;
+		max-width: 100%;
+	}
+
+	.wizard-title {
+		font-family: var(--font-serif);
+		font-size: 26px;
+		font-weight: 600;
+		letter-spacing: -0.01em;
+		margin: 0 0 6px;
+	}
+
+	.wizard-sub {
+		color: var(--text-secondary);
+		font-size: 14px;
+		line-height: 1.5;
+		margin: 0 0 24px;
+	}
+
+	/* --- step indicator — quiet text-step grammar (word + connecting line,
+	   no dots/circles), matching the single-sig wizard and the Send flow --- */
+
+	.steps {
+		display: flex;
+		align-items: center;
+		list-style: none;
+		margin: 0 0 20px;
+		padding: 0;
+	}
+
+	.step-item {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex: 1 1 auto;
+		min-width: 0;
+	}
+
+	.step-item:last-child {
+		flex: 0 0 auto;
+	}
+
+	.step-word {
+		font-size: 12px;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+		text-transform: uppercase;
+		color: var(--text-muted);
+		white-space: nowrap;
+		transition: color 120ms var(--ease);
+	}
+
+	.step-item.active .step-word {
+		color: var(--accent);
+	}
+
+	.step-item.done .step-word {
+		color: var(--text-secondary);
+	}
+
+	.step-line {
+		flex: 1;
+		height: 1px;
+		min-width: 12px;
+		background: var(--border-subtle);
+	}
+
+	.step-item.done .step-line {
+		background: var(--accent-muted);
+	}
+
+	@media (max-width: 560px) {
+		.step-word {
+			font-size: 10.5px;
+		}
 	}
 
 	.pane {

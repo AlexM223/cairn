@@ -104,10 +104,10 @@
 </script>
 
 {#if show}
-	<section class="card card-pad consolidate-card fade-in" aria-label="Consolidation suggestion">
+	<section class="consolidate-card fade-in" aria-label="Consolidation suggestion">
 		<div class="consolidate-head">
 			<Icon name="clock" size={15} />
-			<span class="card-title grow">Make future sends faster</span>
+			<span class="consolidate-title grow">Make future sends faster</span>
 			<button type="button" class="consolidate-dismiss" aria-label="Dismiss" onclick={dismiss}>
 				<Icon name="x" size={14} />
 			</button>
@@ -136,21 +136,28 @@
 {/if}
 
 <style>
+	/* Hairline section, not a card — the nudge lives in the clock icon and the
+	   copy, never a tinted box (Heartwood grammar). */
 	.consolidate-card {
 		display: flex;
 		flex-direction: column;
 		gap: 10px;
-		margin-bottom: 18px;
+		border-top: 1px solid var(--hairline);
+		margin-top: 40px;
+		padding-top: 22px;
 	}
 
 	.consolidate-head {
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		color: var(--warning);
+		color: var(--attention);
 	}
 
-	.consolidate-head .card-title {
+	.consolidate-title {
+		font-size: 17px;
+		font-weight: 600;
+		letter-spacing: -0.01em;
 		color: var(--text);
 	}
 
@@ -163,14 +170,14 @@
 		flex-shrink: 0;
 		background: none;
 		border: none;
-		border-radius: var(--radius-chip);
+		border-radius: var(--radius-icon-btn);
 		color: var(--text-muted);
 		cursor: pointer;
 	}
 
 	.consolidate-dismiss:hover {
 		color: var(--text);
-		background: var(--bg);
+		background: var(--bg-input);
 	}
 
 	.consolidate-body {

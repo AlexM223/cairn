@@ -1,5 +1,5 @@
 <script lang="ts">
-	import Icon from '$lib/components/Icon.svelte';
+	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
 	import { formatBtc, timeAgo } from '$lib/format';
 
 	type ActivityItem = {
@@ -23,31 +23,24 @@
 		{#each items as item (item.key)}
 			<li>
 				<a class="row" href={`/explorer/tx/${item.txid}`}>
-					<span
-						class="dir"
-						class:in={item.direction === 'in'}
-						class:out={item.direction === 'out'}
-					>
-						<Icon
-							name={item.direction === 'in' ? 'arrow-down-left' : 'arrow-up-right'}
-							size={16}
-						/>
-						<span class="dir-label">{item.direction === 'in' ? 'Received' : 'Sent'}</span>
-					</span>
+					<BurialRings
+						confirmations={item.time === null ? 0 : item.confirmations}
+						direction={item.direction}
+						size={28}
+					/>
 
 					<span class="mid">
-						<span class="wallet-chip">{item.walletName}</span>
+						<span class="title">{item.direction === 'in' ? 'Received' : 'Sent'}</span>
 						<span class="meta">
-							{#if item.time === null}
-								<span class="pending-badge">pending</span>
-							{:else}
+							<span class="truncate">{item.walletName}</span>
+							<span class="sep">·</span>
+							<span class="burial-label"
+								>{burialRingsLabel(item.time === null ? 0 : item.confirmations)}</span
+							>
+							{#if item.time !== null}
+								<span class="sep">·</span>
 								<span class="time">{timeAgo(item.time)}</span>
 							{/if}
-							<span class="conf">
-								{item.time === null || item.confirmations === 0
-									? 'unconfirmed'
-									: `${item.confirmations} conf`}
-							</span>
 						</span>
 					</span>
 
@@ -56,7 +49,7 @@
 						class:in={item.direction === 'in'}
 						class:out={item.direction === 'out'}
 					>
-						{item.direction === 'in' ? '+' : '-'}{formatBtc(item.sats)}<span class="unit"
+						{item.direction === 'in' ? '+' : '−'}{formatBtc(item.sats)}<span class="unit"
 							>&nbsp;BTC</span
 						>
 					</span>
@@ -76,6 +69,7 @@
 		text-align: center;
 	}
 
+	/* Hairline rows — no cards, no chips. */
 	.list {
 		list-style: none;
 		margin: 0;
@@ -84,124 +78,115 @@
 		flex-direction: column;
 	}
 
-	.list li + li {
-		border-top: 1px solid var(--border-subtle);
+	.list li {
+		border-bottom: 1px solid var(--hairline);
+	}
+
+	.list li:last-child {
+		border-bottom: none;
 	}
 
 	.row {
 		display: flex;
 		align-items: center;
-		gap: 1rem;
-		padding: 0.75rem 0.5rem;
+		gap: 14px;
+		padding: 15px 2px;
 		text-decoration: none;
 		color: inherit;
-		border-radius: var(--radius-control);
 		transition: background-color 0.15s var(--ease);
 	}
 
 	.row:hover {
-		background: var(--surface-elevated);
+		background: rgba(255, 255, 255, 0.018);
 	}
 
-	/* Direction indicator */
-	.dir {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.4rem;
-		flex-shrink: 0;
-		min-width: 6.5rem;
-		font-family: var(--font-ui);
-		font-size: 0.875rem;
-		font-weight: 500;
-	}
-
-	.dir.in {
-		color: var(--success);
-	}
-
-	.dir.out {
-		color: var(--error);
-	}
-
-	.dir-label {
-		white-space: nowrap;
-	}
-
-	/* Middle column: wallet chip + meta */
 	.mid {
 		display: flex;
 		flex-direction: column;
-		gap: 0.3rem;
+		gap: 3px;
 		min-width: 0;
 		flex: 1;
 	}
 
-	.wallet-chip {
-		align-self: flex-start;
-		max-width: 100%;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		padding: 0.1rem 0.5rem;
-		border-radius: var(--radius-chip);
-		background: var(--surface-elevated);
-		border: 1px solid var(--border-subtle);
-		color: var(--text-secondary);
+	.title {
 		font-family: var(--font-ui);
-		font-size: 0.75rem;
-		line-height: 1.4;
+		font-size: 14.5px;
+		font-weight: 500;
+		color: var(--text-rows);
+		line-height: 1.3;
 	}
 
 	.meta {
 		display: flex;
 		align-items: center;
-		gap: 0.5rem;
+		gap: 6px;
+		min-width: 0;
 		font-family: var(--font-ui);
-		font-size: 0.75rem;
+		font-size: 12px;
 		color: var(--text-muted);
+		white-space: nowrap;
 	}
 
+	.meta .truncate {
+		min-width: 0;
+		flex-shrink: 1;
+	}
+
+	.sep {
+		color: var(--text-faint);
+	}
+
+	.burial-label,
 	.time {
 		white-space: nowrap;
 	}
 
-	.conf {
-		white-space: nowrap;
-		color: var(--text-faint);
-	}
-
-	.pending-badge {
-		padding: 0.05rem 0.4rem;
-		border-radius: var(--radius-chip);
-		background: color-mix(in srgb, var(--warning) 15%, transparent);
-		border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
-		color: var(--warning);
-		font-size: 0.7rem;
-		font-weight: 500;
-		white-space: nowrap;
-	}
-
-	/* Amount */
+	/* Amount: serif — a number that matters. Sage in, quiet rows-text out. */
 	.amount {
 		flex-shrink: 0;
 		text-align: right;
-		font-family: var(--font-ui);
-		font-size: 0.9375rem;
+		font-family: var(--font-serif);
+		font-size: 15.5px;
 		font-weight: 600;
 		white-space: nowrap;
 	}
 
 	.amount.in {
-		color: var(--success);
+		color: var(--sage);
 	}
 
 	.amount.out {
-		color: var(--text);
+		color: var(--text-rows);
 	}
 
 	.unit {
 		color: var(--text-muted);
+		font-family: var(--font-ui);
 		font-weight: 500;
-		font-size: 0.8125rem;
+		font-size: 12px;
+	}
+
+	@media (max-width: 900px) {
+		/* Mobile Home (8a) shows just the two freshest rows — the Activity tab
+		   has the rest. */
+		.list li:nth-child(n + 3) {
+			display: none;
+		}
+
+		.row {
+			padding: 13px 0;
+		}
+
+		.title {
+			font-size: 13px;
+		}
+
+		.meta {
+			font-size: 10.5px;
+		}
+
+		.amount {
+			font-size: 13.5px;
+		}
 	}
 </style>

@@ -26,7 +26,7 @@
 </script>
 
 <svelte:head>
-	<title>Feature flags — Admin — Cairn</title>
+	<title>Feature flags — Admin — Heartwood</title>
 </svelte:head>
 
 <p class="lead">
@@ -40,14 +40,14 @@
 
 <div class="stack">
 	{#each grouped as group (group.category)}
-		<section class="card fade-in">
+		<section class="hw-section fade-in">
 			<div class="group-head">
-				<h2 class="card-title">{group.title}</h2>
+				<h2 class="hw-title">{group.title}</h2>
 				{#if group.hint}<p class="hint">{group.hint}</p>{/if}
 			</div>
-			<ul class="flag-list">
+			<ul class="hw-rows">
 				{#each group.flags as flag (flag.key)}
-					<li class="flag-row">
+					<li class="hw-row">
 						<div class="flag-main">
 							<span class="flag-label">{flag.label}</span>
 							{#if flag.description}<span class="flag-desc">{flag.description}</span>{/if}
@@ -92,28 +92,9 @@
 	}
 
 	.group-head {
-		margin-bottom: 12px;
-	}
-
-	.group-head .hint {
-		margin-top: 3px;
-	}
-
-	.flag-list {
 		display: flex;
 		flex-direction: column;
-	}
-
-	.flag-row {
-		display: flex;
-		align-items: center;
-		gap: 16px;
-		padding: 12px 0;
-		border-top: 1px solid var(--border-subtle);
-	}
-
-	.flag-row:first-child {
-		border-top: none;
+		gap: 3px;
 	}
 
 	.flag-main {
@@ -155,7 +136,7 @@
 		height: 22px;
 		border-radius: 999px;
 		border: none;
-		background: var(--surface-strong, var(--border-subtle));
+		background: var(--border-control);
 		cursor: pointer;
 		transition: background 140ms var(--ease);
 		padding: 0;
@@ -172,7 +153,7 @@
 		width: 18px;
 		height: 18px;
 		border-radius: 50%;
-		background: #fff;
+		background: var(--accent-core);
 		transition: transform 140ms var(--ease);
 	}
 

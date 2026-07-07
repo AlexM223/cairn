@@ -5,19 +5,12 @@
 	import { onNewBlock } from '$lib/liveBlocks';
 	import Icon from '$lib/components/Icon.svelte';
 	import Term from '$lib/components/Term.svelte';
+	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import BalanceChart from '$lib/components/portfolio/BalanceChart.svelte';
 	import AllocationBar from '$lib/components/portfolio/AllocationBar.svelte';
 	import RecentActivity from '$lib/components/portfolio/RecentActivity.svelte';
 	import Sparkline from '$lib/components/portfolio/Sparkline.svelte';
-	import {
-		formatNumber,
-		formatBtc,
-		formatBytes,
-		formatHashrate,
-		formatSats,
-		timeAgo,
-		formatFeeRate
-	} from '$lib/format';
+	import { formatNumber, formatBtc, formatBytes, formatSats, timeAgo } from '$lib/format';
 	import type { PortfolioDetail } from '$lib/types';
 
 	let { data } = $props();
@@ -92,6 +85,16 @@
 			.finally(() => (portfolioLoading = false));
 	});
 
+	// --- hide-balance eye toggle (7a) — persisted, hero-scoped ---
+	let hideBalance = $state(false);
+	onMount(() => {
+		hideBalance = localStorage.getItem('cairn.hideBalance') === '1';
+	});
+	function toggleHide() {
+		hideBalance = !hideBalance;
+		localStorage.setItem('cairn.hideBalance', hideBalance ? '1' : '0');
+	}
+
 	// --- optional fiat estimate (privacy-first: OFF by default, no price call
 	//     until the user turns it on) ---
 	let showFiat = $state(false);
@@ -129,26 +132,29 @@
 		}).format(n);
 	}
 
-	// Change chips (24h/7d/30d) — only those with data.
-	const changes = $derived(
-		portfolio
-			? (
-					[
-						{ label: '24h', sats: portfolio.change.d1 },
-						{ label: '7d', sats: portfolio.change.d7 },
-						{ label: '30d', sats: portfolio.change.d30 }
-					] as const
-				).filter((c) => c.sats !== null)
-			: []
-	);
+	// Today's change (sage ▲ chip in the hero sub-line, 7a). Down is calm
+	// amber, never red.
+	const todayDelta = $derived.by(() => {
+		if (!portfolio || portfolio.change.d1 === null || portfolio.change.d1 === 0) return null;
+		const sats = portfolio.change.d1;
+		const base = portfolio.confirmed - sats;
+		const pct = base > 0 ? (sats / base) * 100 : null;
+		return { sats, pct, up: sats > 0 };
+	});
 
-	const unreachable = $derived(
-		portfolio ? portfolio.walletCount - portfolio.scannedCount : 0
-	);
+	const unreachable = $derived(portfolio ? portfolio.walletCount - portfolio.scannedCount : 0);
 
 	function sendHref(s: { kind: string; id: number }): string {
 		return s.kind === 'multisig' ? `/wallets/multisig/${s.id}/send` : `/wallets/${s.id}/send`;
 	}
+
+	// Hero pills: with exactly one wallet they go straight to it; otherwise to
+	// the wallet list (there is no cross-wallet send/receive flow).
+	const soloWallet = $derived(
+		portfolio && portfolio.allocation.length === 1 ? portfolio.allocation[0] : null
+	);
+	const sendTarget = $derived(soloWallet ? sendHref(soloWallet) : '/wallets');
+	const receiveTarget = $derived(soloWallet ? soloWallet.href : '/wallets');
 
 	// One-time orientation for new users; dismissal remembered per account.
 	const tourKey = $derived(`cairn.tour.${page.data.user?.id ?? 'anon'}`);
@@ -161,386 +167,313 @@
 		localStorage.setItem(tourKey, 'done');
 	}
 
-	const feeTiers = $derived(
-		chain?.fees
-			? [
-					{ label: 'Fastest', desc: '~10 min', rate: chain.fees.fastest },
-					{ label: 'Half hour', desc: '~30 min', rate: chain.fees.halfHour },
-					{ label: 'Hour', desc: '~60 min', rate: chain.fees.hour },
-					{ label: 'Economy', desc: 'whenever', rate: chain.fees.economy }
-				]
-			: []
-	);
+	// Next-block footer: 3-segment mempool bar — the share that fits the next
+	// ring (bright copper), the ~2 rings behind it (dim), and the long tail
+	// (dimmest). Track shows remaining headroom up to a 4-ring display cap.
+	const mempoolSegs = $derived.by(() => {
+		const v = chain?.mempool?.vsize ?? 0;
+		if (v <= 0) return null;
+		const BLOCK = 1_000_000; // ~1M vB per block
+		const s1 = Math.min(v, BLOCK);
+		const s2 = Math.min(Math.max(v - BLOCK, 0), 2 * BLOCK);
+		const s3 = Math.max(v - 3 * BLOCK, 0);
+		const cap = Math.max(v, 4 * BLOCK);
+		return {
+			widths: [(s1 / cap) * 100, (s2 / cap) * 100, (s3 / cap) * 100],
+			blocks: Math.max(1, Math.ceil(v / BLOCK))
+		};
+	});
+
+	const sparkPoints = $derived(portfolio ? portfolio.balanceSeries.map((p) => p.sats) : []);
 </script>
 
 <svelte:head>
-	<title>Dashboard — Cairn</title>
+	<title>Home — Heartwood</title>
 </svelte:head>
 
-{#if showTour}
-	<section class="card card-pad tour fade-in">
-		<div class="tour-head">
-			<span class="tour-title">Welcome to Cairn</span>
-			<button class="tour-close" onclick={dismissTour} aria-label="Dismiss welcome tour">
-				<Icon name="x" size={15} />
-			</button>
-		</div>
-		<div class="tour-items">
-			<a href="/wallets" class="tour-item" onclick={dismissTour}>
-				<Icon name="wallet" size={18} />
-				<span class="tour-item-title">Wallets</span>
-				<span class="tour-item-desc">
-					Import a single-key or multisig wallet to watch balances and spend. Keys never leave
-					your devices.
-				</span>
-			</a>
-			<a href="/explorer" class="tour-item" onclick={dismissTour}>
-				<Icon name="blocks" size={18} />
-				<span class="tour-item-title">Explorer</span>
-				<span class="tour-item-desc">
-					Browse blocks, transactions, and addresses — every technical term explains itself.
-				</span>
-			</a>
-			<a href="/explorer/mempool" class="tour-item" onclick={dismissTour}>
-				<Icon name="zap" size={18} />
-				<span class="tour-item-title">Mempool</span>
-				<span class="tour-item-desc">
-					See what's waiting to confirm and what a transaction costs right now.
-				</span>
-			</a>
-		</div>
-	</section>
-{/if}
-
-<!-- ============================================================ PORTFOLIO -->
-{#if !data.hasWallets && !portfolio}
-	<section class="card onboard fade-in">
-		<div class="onboard-icon"><Icon name="wallet" size={26} /></div>
-		<h2 class="onboard-title">Your bitcoin, at a glance</h2>
-		<p class="onboard-copy">
-			Add a wallet and Cairn shows your total balance, history, and allocation here — all from
-			your <em>public</em> keys. Nothing here can move your bitcoin; you sign every spend on your
-			own device.
-		</p>
-		<a href="/wallets/new" class="btn btn-primary">
-			<Icon name="plus" size={15} /> Add your first wallet
-		</a>
-	</section>
-{:else}
-	<section class="portfolio-hero card card-pad fade-in">
-		<div class="ph-top">
-			<span class="overline ph-label">
-				<Term
-					tip="Your portfolio shows all wallets you've imported into Cairn — single-key and multisig. Cairn only holds your public keys; your keys stay on your devices."
-				>
-					Portfolio
-				</Term>
-			</span>
-			<span class="grow"></span>
-			{#if portfolio}
-				<a href="/wallets" class="ph-count">
-					{portfolio.walletCount} wallet{portfolio.walletCount === 1 ? '' : 's'}
-					{#if unreachable > 0}· <span class="ph-unreachable">{unreachable} unreachable</span>{/if}
-					<Icon name="chevron-right" size={14} />
-				</a>
-			{/if}
-		</div>
-
-		{#if portfolioLoading && !portfolio}
-			<div class="ph-balance"><span class="hero-number ph-btc skeleton">0.00000000</span></div>
-		{:else if portfolio}
-			<div class="ph-balance">
-				<span class="hero-number ph-btc" title="{formatSats(portfolio.confirmed)} sats">
-					{formatBtc(portfolio.confirmed)}
-				</span>
-				<span class="ph-unit">BTC</span>
-				{#if portfolio.unconfirmed !== 0}
-					<span class="badge badge-warning">
-						{portfolio.unconfirmed > 0 ? '+' : ''}{formatSats(portfolio.unconfirmed)} sats pending
-					</span>
-				{/if}
-			</div>
-			<div class="ph-sub">
-				<span class="ph-sats tabular">{formatSats(portfolio.confirmed)} sats</span>
-				{#if fiatValue != null}
-					<span class="ph-fiat tabular">≈ {usd(fiatValue)}</span>
-				{/if}
-				<button
-					type="button"
-					class="ph-fiat-toggle"
-					onclick={toggleFiat}
-					title="Show or hide a fiat estimate (off by default — no price is fetched until you turn it on)"
-				>
-					<Icon name={showFiat ? 'check' : 'plus'} size={12} />
-					{showFiat ? 'Hide fiat' : 'Show fiat'}
-				</button>
-			</div>
-
-			{#if changes.length > 0}
-				<div class="ph-changes">
-					{#each changes as c (c.label)}
-						{@const up = (c.sats ?? 0) >= 0}
-						<span class="change-chip" class:up class:down={!up}>
-							<Icon name={up ? 'arrow-up-right' : 'arrow-down-left'} size={12} />
-							<span class="change-label">{c.label}</span>
-							<span class="tabular">{up ? '+' : '−'}{formatBtc(Math.abs(c.sats ?? 0))} BTC</span>
+<div class="home">
+	<GroveField volume="present" />
+	<div class="home-body">
+		{#if showTour}
+			<section class="tour fade-in">
+				<div class="tour-head">
+					<span class="tour-title">Welcome to Heartwood</span>
+					<button class="tour-close" onclick={dismissTour} aria-label="Dismiss welcome tour">
+						<Icon name="x" size={15} />
+					</button>
+				</div>
+				<div class="tour-items">
+					<a href="/wallets" class="tour-item" onclick={dismissTour}>
+						<Icon name="wallet" size={18} />
+						<span class="tour-item-title">Wallets</span>
+						<span class="tour-item-desc">
+							Import a single-key or multisig wallet to watch balances and spend. Keys never leave
+							your devices.
 						</span>
-					{/each}
+					</a>
+					<a href="/explorer" class="tour-item" onclick={dismissTour}>
+						<Icon name="blocks" size={18} />
+						<span class="tour-item-title">Explorer</span>
+						<span class="tour-item-desc">
+							Browse blocks, transactions, and addresses — every technical term explains itself.
+						</span>
+					</a>
+					<a href="/explorer/mempool" class="tour-item" onclick={dismissTour}>
+						<Icon name="zap" size={18} />
+						<span class="tour-item-title">Mempool</span>
+						<span class="tour-item-desc">
+							See what's waiting to confirm and what a transaction costs right now.
+						</span>
+					</a>
+				</div>
+			</section>
+		{/if}
+
+		{#if !data.hasWallets && !portfolio}
+			<!-- ============================================== FIRST-RUN ONBOARD -->
+			<section class="onboard fade-in">
+				<div class="onboard-icon"><Icon name="wallet" size={26} /></div>
+				<h2 class="onboard-title">Your bitcoin, at a glance</h2>
+				<p class="onboard-copy">
+					Add a wallet and Heartwood shows your total balance, history, and allocation here — all
+					from your <em>public</em> keys. Nothing here can move your bitcoin; you sign every spend
+					on your own device.
+				</p>
+				<a href="/wallets/new" class="btn btn-primary pill-lg">
+					<Icon name="plus" size={15} /> Add your first wallet
+				</a>
+			</section>
+		{:else}
+			<!-- ======================================================== HERO -->
+			<header class="hero fade-in">
+				<div class="hero-eyebrow">
+					<span class="hero-label">
+						<Term
+							tip="Everything across the wallets you've imported into Heartwood — single-key and multisig. Heartwood only holds your public keys; your keys stay on your devices."
+						>
+							Total balance
+						</Term>
+					</span>
+					<button
+						type="button"
+						class="eye-btn"
+						onclick={toggleHide}
+						aria-pressed={hideBalance}
+						aria-label={hideBalance ? 'Show balance' : 'Hide balance'}
+						title={hideBalance ? 'Show balance' : 'Hide balance'}
+					>
+						{#if hideBalance}
+							<svg
+								width="15"
+								height="15"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="1.75"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								aria-hidden="true"
+							>
+								<path
+									d="M9.88 9.88a3 3 0 1 0 4.24 4.24M10.73 5.08A10.4 10.4 0 0 1 12 5c6.5 0 10 7 10 7a13.2 13.2 0 0 1-1.67 2.68M6.61 6.61A13.5 13.5 0 0 0 2 12s3.5 7 10 7a9.7 9.7 0 0 0 5.39-1.61M2 2l20 20"
+								/>
+							</svg>
+						{:else}
+							<Icon name="eye" size={15} />
+						{/if}
+					</button>
+				</div>
+
+				{#if portfolioLoading && !portfolio}
+					<div class="hero-amount-row">
+						<span class="hero-number hero-amount skeleton">0.0000</span>
+					</div>
+				{:else if portfolio}
+					{#if hideBalance}
+						<div class="hero-amount-row">
+							<span class="hero-number hero-amount hero-hidden">•.••</span>
+						</div>
+						<div class="hero-sub"><span class="hidden-note">balance hidden</span></div>
+					{:else}
+						<div class="hero-amount-row">
+							<span
+								class="hero-number hero-amount"
+								title="{formatSats(portfolio.confirmed)} sats"
+							>
+								{formatBtc(portfolio.confirmed)}
+							</span>
+							<span class="hero-unit">BTC</span>
+						</div>
+						<div class="hero-sub">
+							<span class="tabular">{formatSats(portfolio.confirmed)} sats</span>
+							{#if fiatValue != null}
+								<span class="tabular">≈ {usd(fiatValue)}</span>
+							{/if}
+							<button
+								type="button"
+								class="fiat-toggle"
+								onclick={toggleFiat}
+								title="Show or hide a fiat estimate (off by default — no price is fetched until you turn it on)"
+							>
+								{showFiat ? 'hide fiat' : 'show fiat'}
+							</button>
+							{#if todayDelta}
+								<span class="today-chip" class:up={todayDelta.up} class:down={!todayDelta.up}>
+									{todayDelta.up ? '▲' : '▼'}
+									{#if todayDelta.pct !== null}
+										{Math.abs(todayDelta.pct) < 0.05
+											? '<0.1'
+											: Math.abs(todayDelta.pct).toFixed(1)}% today
+									{:else}
+										{formatBtc(Math.abs(todayDelta.sats))} BTC today
+									{/if}
+								</span>
+							{/if}
+							{#if portfolio.unconfirmed !== 0}
+								<span class="pending-note tabular">
+									{portfolio.unconfirmed > 0 ? '+' : ''}{formatSats(portfolio.unconfirmed)} sats pending
+								</span>
+							{/if}
+						</div>
+					{/if}
+				{/if}
+
+				<div class="hero-actions">
+					<a href={sendTarget} class="btn btn-primary pill-lg">
+						<Icon name="arrow-up-right" size={16} /> Send
+					</a>
+					<a href={receiveTarget} class="btn btn-secondary pill-lg">
+						<Icon name="arrow-down-left" size={16} /> Receive
+					</a>
+				</div>
+			</header>
+
+			{#if portfolio}
+				<!-- ================================================== THE CHART -->
+				<section class="chart-zone fade-in">
+					<div class="chart-desktop">
+						<BalanceChart series={portfolio.balanceSeries} />
+					</div>
+					{#if sparkPoints.length > 1}
+						<div class="chart-mobile">
+							<Sparkline points={sparkPoints} stretch height={96} strokeWidth={2} />
+							<div class="spark-caption">balance · full history</div>
+						</div>
+					{/if}
+				</section>
+
+				<!-- ============================================ ACTIVITY | WALLETS -->
+				<div class="home-grid">
+					<section class="col">
+						<div class="col-head">
+							<span class="col-title">Activity</span>
+							<a href="/activity" class="see-all">
+								All activity <Icon name="arrow-right" size={13} />
+							</a>
+						</div>
+						<RecentActivity items={portfolio.recentActivity} />
+					</section>
+
+					<section class="col">
+						<div class="col-head">
+							<span class="col-title">
+								Wallets · {portfolio.walletCount}
+								{#if unreachable > 0}
+									<span class="unreachable">· {unreachable} unreachable</span>
+								{/if}
+							</span>
+							<a href="/wallets" class="see-all">All <Icon name="arrow-right" size={13} /></a>
+						</div>
+						<AllocationBar slices={portfolio.allocation} total={portfolio.confirmed} />
+
+						<!-- next-block footer -->
+						<div class="next-block">
+							<div class="nb-head">
+								<span class="nb-label">Next block</span>
+								{#if chain !== null && !chain.error && chain.tipHeight !== null}
+									<a href="/explorer/block/{chain.tipHeight}" class="nb-tip tabular">
+										{formatNumber(chain.tipHeight)} · {timeAgo(chain.tipTime)}
+									</a>
+								{:else if chain === null}
+									<span class="nb-tip skeleton">000,000 · just now</span>
+								{/if}
+							</div>
+							{#if chain === null}
+								<div class="nb-fee skeleton">next ring ≈ 00 sat/vB</div>
+							{:else if chain.error}
+								<div class="nb-error">
+									Can't reach chain data sources — check the connection in Admin → Settings.
+								</div>
+							{:else}
+								{#if chain.fees}
+									<div class="nb-fee">
+										next ring ≈ <span class="nb-fee-num tabular"
+											>{Math.round(chain.fees.fastest)}</span
+										> sat/vB
+									</div>
+								{/if}
+								{#if mempoolSegs}
+									<div
+										class="mempool-bar"
+										role="img"
+										aria-label="Mempool depth: about {mempoolSegs.blocks} blocks of transactions waiting"
+									>
+										<span class="seg s1" style="width: {mempoolSegs.widths[0]}%"></span>
+										<span class="seg s2" style="width: {mempoolSegs.widths[1]}%"></span>
+										<span class="seg s3" style="width: {mempoolSegs.widths[2]}%"></span>
+									</div>
+									<div class="nb-caption">
+										{formatBytes(chain.mempool?.vsize ?? 0)} waiting · ~{mempoolSegs.blocks}
+										block{mempoolSegs.blocks === 1 ? '' : 's'}
+									</div>
+								{:else if chain.mempool}
+									<div class="nb-caption">mempool is clear</div>
+								{/if}
+							{/if}
+						</div>
+					</section>
 				</div>
 			{/if}
 		{/if}
-	</section>
-
-	{#if portfolio}
-		<!-- balance over time -->
-		<section class="card card-pad chart-card fade-in">
-			<div class="row section-head">
-				<Icon name="activity" size={16} />
-				<span class="card-title grow">Balance over time</span>
-			</div>
-			<BalanceChart series={portfolio.balanceSeries} />
-		</section>
-
-		<div class="two-col">
-			<!-- allocation -->
-			<section class="card card-pad fade-in">
-				<div class="row section-head">
-					<Icon name="wallet" size={16} />
-					<span class="card-title grow">Allocation</span>
-				</div>
-				<AllocationBar slices={portfolio.allocation} total={portfolio.confirmed} />
-			</section>
-
-			<!-- recent activity -->
-			<section class="card card-pad fade-in">
-				<div class="row section-head">
-					<Icon name="clock" size={16} />
-					<span class="card-title grow">Recent activity</span>
-				</div>
-				<RecentActivity items={portfolio.recentActivity} />
-			</section>
-		</div>
-
-		<!-- wallet cards -->
-		<div class="row section-head wallets-head">
-			<span class="card-title grow">Your wallets</span>
-			<a href="/wallets" class="see-all">All wallets <Icon name="arrow-right" size={13} /></a>
-		</div>
-		<div class="wallet-grid">
-			{#each portfolio.allocation as w (w.key)}
-				<div class="wallet-card card card-pad" class:multisig={w.kind === 'multisig'}>
-					<a href={w.href} class="wc-head">
-						{#if w.kind === 'multisig'}
-							<span class="wc-badge-icon"><Icon name="shield" size={12} /></span>
-						{/if}
-						<span class="wc-name truncate">{w.name}</span>
-						<span class="badge badge-neutral wc-type">
-							{w.kind === 'multisig' ? 'Multisig' : 'Single-sig'}
-						</span>
-					</a>
-					<a href={w.href} class="wc-balance">
-						<span class="hero-number wc-btc" title="{formatSats(w.balance)} sats">
-							{formatBtc(w.balance)}
-						</span>
-						<span class="wc-unit">BTC</span>
-					</a>
-					{#if portfolio.sparklines[w.key]?.length > 1}
-						<div class="wc-spark"><Sparkline points={portfolio.sparklines[w.key]} width={220} height={30} /></div>
-					{/if}
-					<span class="hint wc-activity">
-						<Icon name="clock" size={12} />
-						{#if w.lastActivity}last activity {timeAgo(w.lastActivity)}{:else}no activity{/if}
-					</span>
-					<div class="wc-actions">
-						<a href={sendHref(w)} class="btn btn-primary btn-sm">
-							<Icon name="arrow-up-right" size={13} /> Send
-						</a>
-						<a href={w.href} class="btn btn-secondary btn-sm">
-							<Icon name="arrow-down-left" size={13} /> Receive
-						</a>
-					</div>
-				</div>
-			{/each}
-		</div>
-	{/if}
-{/if}
-
-<!-- ============================================================== NETWORK -->
-{#if chain === null}
-	<!-- Streamed snapshot still resolving (cairn-ybsv): paint the section shape
-	     instantly so navigation never feels frozen on Electrum round-trips. -->
-	<div class="row section-head network-head">
-		<Icon name="blocks" size={16} />
-		<span class="card-title grow">Network</span>
-		<span class="see-all skeleton">Block 000,000 · just now</span>
 	</div>
-	<div class="columns">
-		<section class="card card-pad fees fade-in">
-			<div class="row" style="gap: 10px; margin-bottom: 14px">
-				<Icon name="zap" size={17} />
-				<span class="card-title">Recommended fees</span>
-			</div>
-			<div class="fee-grid">
-				{#each ['Fastest', 'Half hour', 'Hour', 'Economy'] as label (label)}
-					<div class="fee-tier">
-						<span class="fee-label">{label}</span>
-						<span class="fee-rate tabular skeleton">00</span>
-						<span class="fee-unit">sat/vB</span>
-						<span class="fee-desc skeleton">~00 min</span>
-					</div>
-				{/each}
-			</div>
-		</section>
-		<section class="card blocks fade-in">
-			<div class="row blocks-head">
-				<Icon name="blocks" size={17} />
-				<span class="card-title grow">Recent blocks</span>
-				<a href="/explorer" class="see-all">Explorer <Icon name="arrow-right" size={13} /></a>
-			</div>
-			<div class="table-wrap">
-				<table class="table">
-					<thead>
-						<tr>
-							<th>Height</th>
-							<th>Mined</th>
-							<th class="num">Txs</th>
-							<th class="num">Size</th>
-							<th class="num">Fee range</th>
-						</tr>
-					</thead>
-					<tbody>
-						{#each [0, 1, 2, 3, 4] as i (i)}
-							<tr>
-								<td><span class="skeleton">000,000</span></td>
-								<td><span class="skeleton">00 minutes ago</span></td>
-								<td class="num"><span class="skeleton">0,000</span></td>
-								<td class="num"><span class="skeleton">0.0 MB</span></td>
-								<td class="num"><span class="skeleton">0–00 sat/vB</span></td>
-							</tr>
-						{/each}
-					</tbody>
-				</table>
-			</div>
-		</section>
-	</div>
-{:else if chain.error}
-	<div class="card card-pad chain-error fade-in">
-		<Icon name="alert-triangle" size={18} />
-		<div>
-			<div style="font-weight: 500">Can't reach chain data sources</div>
-			<div class="hint">{chain.error} — check the connection in Admin → Settings.</div>
-		</div>
-	</div>
-{:else}
-	<div class="row section-head network-head">
-		<Icon name="blocks" size={16} />
-		<span class="card-title grow">Network</span>
-		<a href="/explorer/block/{chain.tipHeight}" class="see-all">
-			Block {formatNumber(chain.tipHeight ?? 0)} · {timeAgo(chain.tipTime)}
-		</a>
-	</div>
-	<div class="columns">
-		<!-- Recommended fees -->
-		<section class="card card-pad fees fade-in">
-			<div class="row" style="gap: 10px; margin-bottom: 14px">
-				<Icon name="zap" size={17} />
-				<span class="card-title">Recommended fees</span>
-			</div>
-			{#if feeTiers.length}
-				<div class="fee-grid">
-					{#each feeTiers as tier (tier.label)}
-						<div class="fee-tier">
-							<span class="fee-label">{tier.label}</span>
-							<span class="fee-rate tabular">{Math.round(tier.rate)}</span>
-							<span class="fee-unit">sat/vB</span>
-							<span class="fee-desc">{tier.desc}</span>
-						</div>
-					{/each}
-				</div>
-			{:else}
-				<div class="empty-state">Fee estimates unavailable</div>
-			{/if}
-			{#if chain.mempool}
-				<div class="mempool-line">
-					<span class="hint">Mempool depth</span>
-					<span class="hint tabular">{formatBytes(chain.mempool.vsize)} of transactions</span>
-				</div>
-			{/if}
-		</section>
-
-		<!-- Recent blocks -->
-		<section class="card blocks fade-in">
-			<div class="row blocks-head">
-				<Icon name="blocks" size={17} />
-				<span class="card-title grow">Recent blocks</span>
-				<a href="/explorer" class="see-all">Explorer <Icon name="arrow-right" size={13} /></a>
-			</div>
-			<div class="table-wrap">
-				<table class="table">
-					<thead>
-						<tr>
-							<th>Height</th>
-							<th>Mined</th>
-							<th class="num">Txs</th>
-							<th class="num">Size</th>
-							<th class="num">Fee range</th>
-						</tr>
-					</thead>
-					<tbody>
-						{#each chain.blocks as block (block.hash)}
-							<tr>
-								<td>
-									<a href="/explorer/block/{block.hash}" class="block-link tabular">
-										{formatNumber(block.height)}
-									</a>
-								</td>
-								<td class="text-muted">{timeAgo(block.time)}</td>
-								<td class="num">{formatNumber(block.txCount)}</td>
-								<td class="num text-muted">{formatBytes(block.size)}</td>
-								<td class="num text-muted">
-									{#if block.feeRange}
-										{formatFeeRate(block.feeRange[0]).replace(' sat/vB', '')}–{formatFeeRate(
-											block.feeRange[1]
-										)}
-									{:else}
-										—
-									{/if}
-								</td>
-							</tr>
-						{/each}
-					</tbody>
-				</table>
-			</div>
-		</section>
-	</div>
-{/if}
+</div>
 
 <style>
-	.chain-error {
-		display: flex;
-		gap: 12px;
-		align-items: flex-start;
-		color: var(--warning);
-		margin-top: 16px;
+	/* The grove field bleeds to the content-column edges (negative margins undo
+	   the shell's <main> padding), content floats above it. */
+	.home {
+		position: relative;
+		margin: -54px -52px -44px;
+		padding: 54px 52px 44px;
+		min-height: calc(100vh - 98px);
 	}
 
-	/* --- welcome tour --- */
-	.tour {
-		margin-bottom: 16px;
-		background: linear-gradient(160deg, rgba(232, 147, 90, 0.1), var(--surface) 55%);
-		border-color: rgba(232, 147, 90, 0.3);
+	.home-body {
+		position: relative;
+		z-index: 1;
 	}
+
+	/* --- welcome tour (hairline grammar, no card) --- */
+	.tour {
+		margin-bottom: 36px;
+		padding-bottom: 22px;
+		border-bottom: 1px solid var(--hairline);
+	}
+
 	.tour-head {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 		margin-bottom: 14px;
 	}
+
 	.tour-title {
 		font-family: var(--font-serif);
 		font-size: 19px;
 		font-weight: 600;
+		color: var(--text-hero);
 	}
+
 	.tour-close {
 		display: flex;
 		align-items: center;
@@ -549,38 +482,39 @@
 		height: 26px;
 		background: none;
 		border: none;
-		border-radius: var(--radius-chip);
+		border-radius: var(--radius-icon-btn);
 		color: var(--text-muted);
 		cursor: pointer;
 	}
+
 	.tour-close:hover {
 		color: var(--text);
-		background: var(--surface-elevated);
+		background: var(--bg-input);
 	}
+
 	.tour-items {
 		display: grid;
 		grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-		gap: 12px;
+		gap: 22px;
 	}
+
 	.tour-item {
 		display: flex;
 		flex-direction: column;
 		gap: 5px;
-		padding: 14px;
-		background: var(--bg);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
 		color: var(--accent);
-		transition: border-color 120ms var(--ease);
 	}
-	.tour-item:hover {
-		border-color: var(--accent);
-	}
+
 	.tour-item-title {
 		font-size: 14px;
 		font-weight: 600;
-		color: var(--text);
+		color: var(--text-rows);
 	}
+
+	.tour-item:hover .tour-item-title {
+		color: var(--accent-bright);
+	}
+
 	.tour-item-desc {
 		font-size: 12.5px;
 		line-height: 1.55;
@@ -593,11 +527,12 @@
 		flex-direction: column;
 		align-items: center;
 		gap: 14px;
-		padding: 56px 32px;
+		padding: 72px 32px;
 		text-align: center;
 		max-width: 520px;
 		margin: 40px auto;
 	}
+
 	.onboard-icon {
 		width: 52px;
 		height: 52px;
@@ -608,299 +543,381 @@
 		align-items: center;
 		justify-content: center;
 	}
+
 	.onboard-title {
 		font-family: var(--font-serif);
-		font-size: 22px;
-		font-weight: 560;
+		font-size: 24px;
+		font-weight: 600;
 		letter-spacing: -0.01em;
+		color: var(--text-hero);
 	}
+
 	.onboard-copy {
 		color: var(--text-secondary);
 		font-size: 13.5px;
 		line-height: 1.65;
 		max-width: 420px;
 	}
+
 	.onboard-copy em {
 		font-style: normal;
 		color: var(--text);
 		font-weight: 500;
 	}
 
-	/* --- portfolio hero --- */
-	.portfolio-hero {
+	/* --- hero --- */
+	.hero {
 		display: flex;
 		flex-direction: column;
-		gap: 10px;
-		margin-bottom: 14px;
 	}
-	.ph-top {
+
+	.hero-eyebrow {
 		display: flex;
 		align-items: center;
-		gap: 8px;
+		gap: 10px;
 	}
-	.ph-label :global(.term) {
+
+	.hero-label {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.22em;
+		text-transform: uppercase;
+		color: var(--eyebrow);
+	}
+
+	.hero-label :global(.term) {
 		text-transform: inherit;
 		letter-spacing: inherit;
 	}
-	.ph-count {
-		display: inline-flex;
+
+	.eye-btn {
+		display: flex;
 		align-items: center;
-		gap: 5px;
-		font-size: 12.5px;
+		justify-content: center;
+		width: 26px;
+		height: 26px;
+		background: none;
+		border: none;
+		border-radius: var(--radius-icon-btn);
+		color: var(--text-faint);
+		cursor: pointer;
+		transition: color 120ms var(--ease);
+	}
+
+	.eye-btn:hover {
 		color: var(--text-secondary);
 	}
-	.ph-count:hover {
-		color: var(--accent);
-	}
-	.ph-unreachable {
-		color: var(--warning);
-	}
-	.ph-balance {
+
+	.hero-amount-row {
 		display: flex;
 		align-items: baseline;
-		gap: 10px;
-		flex-wrap: wrap;
+		gap: 14px;
+		margin-top: 18px;
 	}
-	.ph-btc {
-		font-size: 48px;
-		line-height: 1.05;
+
+	.hero-amount {
+		font-size: 86px;
+		line-height: 0.92;
+		color: var(--text-hero);
 	}
-	.ph-btc.skeleton {
+
+	.hero-amount.skeleton {
+		color: transparent;
+	}
+
+	.hero-hidden {
 		color: var(--text-faint);
-		opacity: 0.4;
 	}
-	.ph-unit {
-		font-size: 16px;
+
+	.hero-unit {
+		font-family: var(--font-serif);
+		font-size: 34px;
+		font-weight: 600;
 		color: var(--text-muted);
 	}
-	.ph-sub {
+
+	.hero-sub {
 		display: flex;
 		align-items: center;
 		gap: 14px;
 		flex-wrap: wrap;
-	}
-	.ph-sats {
-		font-size: 13px;
-		color: var(--text-muted);
-	}
-	.ph-fiat {
-		font-size: 13px;
+		margin-top: 16px;
+		font-size: 15px;
 		color: var(--text-secondary);
 	}
-	.ph-fiat-toggle {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
+
+	.hidden-note {
+		color: var(--text-muted);
+	}
+
+	.fiat-toggle {
 		background: none;
 		border: none;
 		padding: 0;
 		font: inherit;
-		font-size: 12px;
-		color: var(--text-muted);
+		font-size: 12.5px;
+		color: var(--text-faint);
 		cursor: pointer;
 	}
-	.ph-fiat-toggle:hover {
+
+	.fiat-toggle:hover {
 		color: var(--accent);
 	}
-	.ph-changes {
-		display: flex;
-		gap: 8px;
-		flex-wrap: wrap;
-		margin-top: 2px;
-	}
-	.change-chip {
+
+	.today-chip {
 		display: inline-flex;
 		align-items: center;
 		gap: 5px;
-		padding: 4px 10px;
-		border-radius: 99px;
-		font-size: 12px;
-		background: var(--bg);
-		border: 1px solid var(--border-subtle);
-	}
-	.change-chip.up {
-		color: var(--success);
-	}
-	.change-chip.down {
-		color: var(--error);
-	}
-	.change-label {
-		color: var(--text-muted);
+		font-size: 13px;
+		font-weight: 500;
+		font-variant-numeric: tabular-nums;
 	}
 
-	/* --- section heads --- */
-	.section-head {
-		gap: 10px;
-		margin-bottom: 12px;
+	.today-chip.up {
+		color: var(--sage);
 	}
-	.chart-card {
-		margin-bottom: 14px;
+
+	.today-chip.down {
+		color: var(--attention);
 	}
-	.wallets-head,
-	.network-head {
-		margin-top: 22px;
-		margin-bottom: 12px;
-		align-items: center;
+
+	.pending-note {
+		font-size: 12.5px;
+		color: var(--attention);
 	}
+
+	/* --- action pills (52px, radius 26) --- */
+	.hero-actions {
+		display: flex;
+		gap: 12px;
+		margin-top: 30px;
+	}
+
+	.pill-lg {
+		height: 52px;
+		padding: 0 30px;
+		font-size: 15px;
+		font-weight: 600;
+	}
+
+	/* --- chart --- */
+	.chart-zone {
+		margin-top: 44px;
+	}
+
+	.chart-mobile {
+		display: none;
+	}
+
+	.spark-caption {
+		font-size: 10.5px;
+		color: var(--eyebrow-path);
+		padding: 6px 18px 0;
+	}
+
+	/* --- activity | wallets grid --- */
+	.home-grid {
+		display: grid;
+		grid-template-columns: 1.5fr 1fr;
+		gap: 64px;
+		margin-top: 46px;
+		align-items: start;
+	}
+
+	.home-grid .col {
+		min-width: 0;
+	}
+
+	.col-head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 12px;
+		padding-bottom: 12px;
+		border-bottom: 1px solid var(--hairline);
+	}
+
+	.col-title {
+		font-size: 17px;
+		font-weight: 600;
+		color: var(--text-hero);
+		letter-spacing: -0.01em;
+	}
+
+	.unreachable {
+		font-size: 12px;
+		font-weight: 500;
+		color: var(--attention);
+	}
+
 	.see-all {
 		display: inline-flex;
 		align-items: center;
 		gap: 4px;
 		font-size: 12.5px;
+		color: var(--text-muted);
+		white-space: nowrap;
 	}
 
-	.two-col {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: 14px;
-		margin-bottom: 4px;
-		align-items: start;
-	}
-	.two-col > section {
-		min-width: 0;
-	}
-	@media (max-width: 860px) {
-		.two-col {
-			grid-template-columns: 1fr;
-		}
+	.see-all:hover {
+		color: var(--accent);
 	}
 
-	/* --- wallet cards --- */
-	.wallet-grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-		gap: 14px;
-	}
-	.wallet-card {
+	/* --- next-block footer --- */
+	.next-block {
+		margin-top: 26px;
+		padding-top: 16px;
+		border-top: 1px solid var(--hairline);
 		display: flex;
 		flex-direction: column;
-		gap: 8px;
+		gap: 10px;
 	}
-	.wallet-card.multisig {
-		border-color: rgba(232, 147, 90, 0.25);
-	}
-	.wc-head {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		color: inherit;
-	}
-	.wc-badge-icon {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 22px;
-		height: 22px;
-		border-radius: 50%;
-		background: var(--accent-muted);
-		color: var(--accent);
-		flex-shrink: 0;
-	}
-	.wc-name {
-		font-size: 14px;
-		font-weight: 600;
-		flex: 1;
-		min-width: 0;
-	}
-	.wc-head:hover .wc-name {
-		color: var(--accent);
-	}
-	.wc-type {
-		flex-shrink: 0;
-	}
-	.wc-balance {
+
+	.nb-head {
 		display: flex;
 		align-items: baseline;
-		gap: 6px;
-		color: inherit;
-	}
-	.wc-btc {
-		font-size: 26px;
-	}
-	.wc-unit {
-		font-size: 12px;
-		color: var(--text-muted);
-	}
-	.wc-spark {
-		margin: 2px 0;
-	}
-	.wc-activity {
-		display: inline-flex;
-		align-items: center;
-		gap: 5px;
-	}
-	.wc-actions {
-		display: flex;
-		gap: 8px;
-		margin-top: 6px;
-		padding-top: 10px;
-		border-top: 1px solid var(--border-subtle);
-	}
-	.wc-actions .btn {
-		flex: 1;
-		justify-content: center;
+		justify-content: space-between;
+		gap: 12px;
 	}
 
-	/* --- network (chain) --- */
-	.columns {
-		display: grid;
-		grid-template-columns: 300px 1fr;
-		gap: 14px;
-		align-items: start;
+	.nb-label {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.22em;
+		text-transform: uppercase;
+		color: var(--eyebrow);
 	}
-	.columns > section {
-		min-width: 0;
-	}
-	@media (max-width: 900px) {
-		.columns {
-			grid-template-columns: 1fr;
-		}
-	}
-	.fee-grid {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: 10px;
-	}
-	.fee-tier {
-		display: flex;
-		flex-direction: column;
-		background: var(--bg);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		padding: 12px;
-	}
-	.fee-label {
+
+	.nb-tip {
 		font-size: 12px;
-		font-weight: 500;
+		color: var(--text-muted);
+	}
+
+	.nb-tip:hover {
+		color: var(--accent);
+	}
+
+	.nb-fee {
+		font-size: 13.5px;
 		color: var(--text-secondary);
 	}
-	.fee-rate {
+
+	.nb-fee-num {
 		font-family: var(--font-serif);
-		font-size: 26px;
-		font-weight: 560;
-		margin-top: 2px;
+		font-size: 17px;
+		font-weight: 600;
+		color: var(--text-rows);
 	}
-	.fee-unit {
-		font-size: 11px;
-		color: var(--text-muted);
+
+	.nb-error {
+		font-size: 12.5px;
+		line-height: 1.5;
+		color: var(--attention);
 	}
-	.fee-desc {
-		font-size: 11px;
-		color: var(--text-muted);
-		margin-top: 6px;
-	}
-	.mempool-line {
+
+	.mempool-bar {
 		display: flex;
-		justify-content: space-between;
-		margin-top: 14px;
-		padding-top: 12px;
-		border-top: 1px solid var(--border-subtle);
+		width: 100%;
+		height: 6px;
+		border-radius: 999px;
+		overflow: hidden;
+		background: var(--bg-input);
 	}
-	.blocks-head {
-		gap: 10px;
-		padding: 16px 20px 12px;
+
+	.seg {
+		display: block;
+		height: 100%;
 	}
-	.block-link {
-		font-weight: 500;
+
+	.seg.s1 {
+		background: var(--accent);
+	}
+
+	.seg.s2 {
+		background: var(--accent-dim);
+	}
+
+	.seg.s3 {
+		background: var(--accent-dim-2);
+	}
+
+	.nb-caption {
+		font-size: 11.5px;
+		color: var(--eyebrow-path);
+	}
+
+	/* ================================================= mobile (8a, ≤900px) */
+	@media (max-width: 900px) {
+		.home {
+			margin: -20px -18px -48px;
+			padding: 20px 18px 48px;
+			min-height: 0;
+		}
+
+		.hero {
+			align-items: center;
+			text-align: center;
+			margin-top: 10px;
+		}
+
+		.hero-amount-row {
+			margin-top: 14px;
+			gap: 8px;
+		}
+
+		.hero-amount {
+			font-size: 48px;
+			line-height: 1;
+		}
+
+		.hero-unit {
+			font-size: 19px;
+		}
+
+		.hero-sub {
+			justify-content: center;
+			margin-top: 12px;
+			font-size: 12.5px;
+			gap: 10px;
+		}
+
+		.hero-actions {
+			width: 100%;
+			margin-top: 24px;
+		}
+
+		.hero-actions .pill-lg {
+			flex: 1;
+			height: 48px;
+			font-size: 14.5px;
+		}
+
+		/* Edge-to-edge sparkline replaces the full chart. */
+		.chart-zone {
+			margin-top: 30px;
+		}
+
+		.chart-desktop {
+			display: none;
+		}
+
+		.chart-mobile {
+			display: block;
+			margin: 0 -18px;
+		}
+
+		.home-grid {
+			grid-template-columns: 1fr;
+			gap: 34px;
+			margin-top: 34px;
+		}
+
+		.col-title {
+			font-size: 14.5px;
+		}
+
+		.tour-items {
+			gap: 16px;
+		}
 	}
 </style>

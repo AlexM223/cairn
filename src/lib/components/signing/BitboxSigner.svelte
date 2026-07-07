@@ -28,9 +28,9 @@
 	// sign idiom is identical for both wallet types; passing `multisig` selects
 	// the multisig flow, whose one prerequisite is BitBox02-specific: the device
 	// must have the multisig SCRIPT CONFIG registered before it will sign.
-	// Unlike Ledger (whose registration yields a persistable HMAC Cairn stores),
+	// Unlike Ledger (whose registration yields a persistable HMAC Heartwood stores),
 	// the bitbox-api registers the config on the device itself during the first
-	// btcSignPSBT for that config — so there is no Cairn-side registration record
+	// btcSignPSBT for that config — so there is no Heartwood-side registration record
 	// to keep. The user simply approves the wallet on-device the first time, then
 	// approves the spend; the driver's single signPsbtWithBitbox02 call covers both.
 
@@ -181,11 +181,11 @@
 	{#if multisig}
 		<HowItWorks id="multisig-bitbox02-sign">
 			<p>
-				Your <strong>private keys never leave the BitBox02</strong>. Cairn hands the device the
+				Your <strong>private keys never leave the BitBox02</strong>. Heartwood hands the device the
 				current transaction — including every signature already collected — and the BitBox02 shows
 				the destination and amount on its own screen for a spend from this
 				<strong>{multisig.threshold}-of-{multisig.totalKeys} multisig wallet</strong>. It returns one more
-				signature, which Cairn merges into the transaction.
+				signature, which Heartwood merges into the transaction.
 			</p>
 			<p>
 				A BitBox02 co-signs only for multisig wallets it has <strong>registered</strong>: the first
@@ -197,10 +197,10 @@
 	{:else}
 		<HowItWorks id="bitbox02-sign">
 			<p>
-				Your <strong>private keys never leave the BitBox02</strong>. Cairn sends the unsigned
+				Your <strong>private keys never leave the BitBox02</strong>. Heartwood sends the unsigned
 				transaction to the device; the BitBox02 shows you the amount and destination on its own
 				screen and asks you to physically confirm. It returns the fully-signed transaction, which
-				Cairn broadcasts.
+				Heartwood broadcasts.
 			</p>
 			<p>
 				The device is the source of truth — always confirm the address <strong>on the BitBox02's
@@ -394,7 +394,7 @@
 		{/if}
 
 		<!-- On a plain-HTTP page the connect above goes through the BitBoxBridge
-		     app; Cairn's secure address lets the browser talk to the device
+		     app; Heartwood's secure address lets the browser talk to the device
 		     directly instead. Renders nothing in a secure context. -->
 		<SecureContextHelp what="direct USB signing (no BitBoxBridge app needed)" />
 

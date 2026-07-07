@@ -4,6 +4,11 @@
 	import Term from '$lib/components/Term.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
+	import GroveField from '$lib/components/heartwood/GroveField.svelte';
+	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
+	import QuorumArc from '$lib/components/heartwood/QuorumArc.svelte';
+	import BurialRings from '$lib/components/heartwood/BurialRings.svelte';
+	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
 	import { formatBtc, formatSats, formatFeeRate, truncateMiddle } from '$lib/format';
 	import type { ConstructedMultisigPsbt, MultisigSigningProgress } from '$lib/server/bitcoin/multisigPsbt';
 	import type { SigningMass } from '$lib/server/bitcoin/signingMass';
@@ -150,7 +155,7 @@
 			psbt = null;
 			sentTxid = null;
 		} catch {
-			scanError = 'Could not reach Cairn to scan that config.';
+			scanError = 'Could not reach Heartwood to scan that config.';
 		} finally {
 			scanning = false;
 		}
@@ -245,7 +250,7 @@
 			signFlash = null;
 			signError = null;
 		} catch {
-			buildError = 'Could not reach Cairn to build the transaction.';
+			buildError = 'Could not reach Heartwood to build the transaction.';
 		} finally {
 			building = false;
 		}
@@ -369,7 +374,7 @@
 					'That PSBT was read, but it added no new signature — it may already be counted, or the wrong device signed. Pick the next key and sign the freshly downloaded file.';
 			}
 		} catch {
-			signError = 'Could not reach Cairn to combine the signed transaction.';
+			signError = 'Could not reach Heartwood to combine the signed transaction.';
 		} finally {
 			attaching = false;
 		}
@@ -400,7 +405,7 @@
 			}
 			sentTxid = body.txid as string;
 		} catch {
-			broadcastError = 'Could not reach Cairn to broadcast.';
+			broadcastError = 'Could not reach Heartwood to broadcast.';
 		} finally {
 			broadcasting = false;
 		}
@@ -408,21 +413,29 @@
 </script>
 
 <svelte:head>
-	<title>Stateless signer · Cairn</title>
+	<title>Stateless signer · Heartwood</title>
 </svelte:head>
 
-<div class="stateless-page">
-	<header class="page-head">
-		<a class="back" href="/wallets">
-			<Icon name="chevron-left" size={15} />
-			<span>Wallets</span>
-		</a>
-		<h1 class="page-title">Stateless signer</h1>
-		<p class="lead text-secondary">
-			Work a multisig wallet straight from its config file — balance, spend, sign, broadcast —
-			without saving anything to Cairn.
-		</p>
+<div class="stateless-page hw-owns-header">
+	<GroveField volume={sentTxid ? 'grove' : 'present'} />
+
+	<div class="page-content">
+	<!-- Mobile flow header (8b/8c): back circle + centered eyebrow + spacer —
+	     this page composes its own so the shell's bare fallback is suppressed. -->
+	<header class="flow-header">
+		<BackCircle href="/wallets" />
+		<span class="flow-eyebrow">Stateless signer</span>
+		<span class="flow-spacer"></span>
 	</header>
+
+	<div class="eyebrow-row">
+		<EyebrowBreadcrumb path={['Wallets']} current="Stateless signer" />
+	</div>
+
+	<p class="lead text-secondary">
+		Work a multisig wallet straight from its config file — balance, spend, sign, broadcast —
+		without saving anything to Heartwood.
+	</p>
 
 	<!-- ============================================================= LOAD -->
 	<section class="phase" class:done={phase !== 'load' && scan}>
@@ -450,7 +463,7 @@
 						Paste an <Term
 							tip="A single line of text (wsh(sortedmulti(…))) that describes every address a multisig wallet can ever derive — using only PUBLIC keys."
 							>output descriptor</Term
-						> or a Caravan/Unchained wallet JSON. Cairn derives the wallet's addresses, checks their
+						> or a Caravan/Unchained wallet JSON. Heartwood derives the wallet's addresses, checks their
 						balance over Electrum, and lets you build and sign a spend — the same
 						<Term
 							tip="A Partially Signed Bitcoin Transaction — an unsigned proposal each signing device reviews and signs in turn."
@@ -459,9 +472,9 @@
 					</p>
 				</HowItWorks>
 
-				<div class="card card-pad stack" style="gap: 14px">
+				<div class="load-form">
 					<div class="field">
-						<label class="label" for="stateless-source">Descriptor or Caravan wallet JSON</label>
+						<label class="sec-label" for="stateless-source">Descriptor or Caravan wallet JSON</label>
 						<textarea
 							id="stateless-source"
 							class="input mono source-input"
@@ -497,7 +510,7 @@
 				</div>
 
 				{#if scan && config}
-					<div class="card card-pad scan-result fade-in">
+					<div class="scan-result fade-in">
 						<div class="row" style="gap: 10px; flex-wrap: wrap">
 							<span class="multisig-icon"><Icon name="shield" size={14} /></span>
 							<span class="scan-name grow truncate">{multisigLabel}</span>
@@ -505,11 +518,11 @@
 							<span class="hint">{MULTISIG_SCRIPT_LABELS[config.scriptType]}</span>
 						</div>
 
-						<div class="balance">
-							<span class="hero-number" title="{formatSats(scan.balance.confirmed)} sats">
+						<div class="balance-block">
+							<span class="hero-amount sm tabular" title="{formatSats(scan.balance.confirmed)} sats">
 								{formatBtc(scan.balance.confirmed)}
 							</span>
-							<span class="unit">BTC</span>
+							<span class="hero-unit">BTC</span>
 							{#if scan.balance.unconfirmed !== 0}
 								<span class="badge badge-warning">
 									{scan.balance.unconfirmed > 0 ? '+' : ''}{formatSats(scan.balance.unconfirmed)} sats
@@ -524,7 +537,7 @@
 						</p>
 
 						<div class="test-address">
-							<span class="label">First address (0/0) — cross-check it in another tool</span>
+							<span class="sec-label">First address (0/0) — cross-check it in another tool</span>
 							<CopyText value={scan.testAddress} display={scan.testAddress} />
 						</div>
 
@@ -551,7 +564,7 @@
 						</p>
 
 						<div class="row" style="justify-content: flex-end">
-							<button class="btn btn-primary" onclick={() => (phase = 'build')}>
+							<button class="btn btn-primary pill-lg" onclick={() => (phase = 'build')}>
 								Build a transaction <Icon name="arrow-right" size={15} />
 							</button>
 						</div>
@@ -580,163 +593,162 @@
 
 			{#if phase === 'build'}
 				<div class="phase-body fade-in">
-					<div class="card card-pad stack" style="gap: 18px">
-						<div class="field">
-							<label class="label" for="stateless-recipient">Recipient address</label>
-							<input
-								id="stateless-recipient"
-								class="input mono"
-								placeholder="bc1q…"
-								bind:value={recipient}
-								autocomplete="off"
-								spellcheck="false"
-							/>
-							{#if recipient.length > 0 && !looksLikeAddress(recipient)}
-								<p class="hint" style="color: var(--warning)">
-									That doesn't look like a Bitcoin address yet.
-								</p>
-							{/if}
-							<p class="hint">One recipient for now — batch sends live in the saved-multisig flow.</p>
-						</div>
+					<div class="field">
+						<label class="sec-label" for="stateless-recipient">Recipient address</label>
+						<input
+							id="stateless-recipient"
+							class="input mono"
+							placeholder="bc1q…"
+							bind:value={recipient}
+							autocomplete="off"
+							spellcheck="false"
+						/>
+						{#if recipient.length > 0 && !looksLikeAddress(recipient)}
+							<p class="field-line attention">That doesn't look like a Bitcoin address yet.</p>
+						{/if}
+						<p class="hint">One recipient for now — batch sends live in the saved-multisig flow.</p>
+					</div>
 
-						<div class="field">
-							<div class="row" style="justify-content: space-between">
-								<span class="label" id="stateless-amount-label">Amount</span>
-								<div class="seg" role="group" aria-label="Amount mode">
-									<button
-										type="button"
-										class="seg-btn"
-										class:active={amountMode === 'btc'}
-										onclick={() => (amountMode = 'btc')}>BTC</button
-									>
-									<button
-										type="button"
-										class="seg-btn"
-										class:active={amountMode === 'max'}
-										onclick={() => (amountMode = 'max')}
-										title="Sweep the whole spendable balance">Max</button
-									>
-								</div>
-							</div>
-							{#if !isMax}
-								<div class="amount-input">
-									<input
-										class="input tabular"
-										inputmode="decimal"
-										placeholder="0.00000000"
-										bind:value={amountBtc}
-										aria-labelledby="stateless-amount-label"
-									/>
-									<span class="unit-abs">BTC</span>
-								</div>
-								{#if Number(amountBtc) > 0}
-									<p class="hint tabular">
-										{formatSats(Math.round(Number(amountBtc) * SATS_PER_BTC))} sats
-									</p>
-								{/if}
-							{:else}
-								<div class="max-note">
-									<Icon name="zap" size={15} />
-									<span>Sweeps the wallet's entire spendable balance to this address, minus the fee.</span>
-								</div>
-							{/if}
-						</div>
-
-						<div class="field">
-							<span class="label">Fee rate</span>
-							<div class="fee-grid">
-								{#each [{ k: 'fast', label: 'Fast', rate: data.fees?.fastest, eta: '~10 min' }, { k: 'normal', label: 'Normal', rate: data.fees?.halfHour, eta: '~30 min' }, { k: 'economy', label: 'Economy', rate: data.fees?.economy, eta: '~1 hr+' }] as opt (opt.k)}
-									<button
-										type="button"
-										class="fee-card"
-										class:active={feeChoice === opt.k}
-										onclick={() => (feeChoice = opt.k as FeeChoice)}
-									>
-										<span class="fee-label">{opt.label}</span>
-										<span class="fee-rate tabular">
-											{opt.rate != null ? formatFeeRate(opt.rate) : '—'}
-										</span>
-										<span class="fee-eta">{opt.eta}</span>
-									</button>
-								{/each}
+					<div class="field">
+						<div class="row" style="justify-content: space-between">
+							<span class="sec-label" id="stateless-amount-label">Amount</span>
+							<div class="mode-toggles" role="group" aria-label="Amount mode">
 								<button
 									type="button"
-									class="fee-card custom"
-									class:active={feeChoice === 'custom'}
-									onclick={() => (feeChoice = 'custom')}
+									class="txt-toggle"
+									class:active={amountMode === 'btc'}
+									onclick={() => (amountMode = 'btc')}>BTC</button
 								>
-									<span class="fee-label">Custom</span>
-									<div class="custom-input" role="presentation">
-										<input
-											class="input tabular"
-											inputmode="decimal"
-											bind:value={customFee}
-											onfocus={() => (feeChoice = 'custom')}
-											aria-label="Custom fee rate in sat/vB"
-										/>
-										<span class="unit-sm">sat/vB</span>
-									</div>
-								</button>
-							</div>
-							{#if !data.fees}
-								<p class="hint">Live fee estimates are unavailable — set a custom sat/vB rate.</p>
-							{/if}
-						</div>
-
-						{#if scan.utxos.length > 0}
-							<div class="field">
 								<button
-									class="utxo-toggle"
-									aria-expanded={coinsOpen}
-									onclick={() => (coinsOpen = !coinsOpen)}
+									type="button"
+									class="txt-toggle"
+									class:active={amountMode === 'max'}
+									onclick={() => (amountMode = 'max')}
+									title="Sweep the whole spendable balance">Max</button
 								>
-									<Icon name={coinsOpen ? 'chevron-down' : 'chevron-right'} size={14} />
-									<span
-										>Coin control (optional{selectedCoins.size > 0
-											? ` — ${selectedCoins.size} selected`
-											: ''})</span
-									>
-								</button>
-								{#if coinsOpen}
-									<div class="utxo-list fade-in">
-										<p class="hint">
-											Leave everything unchecked to let Cairn pick coins; check specific coins to
-											spend only those.
-										</p>
-										{#each scan.utxos as u (`${u.txid}:${u.vout}`)}
-											{@const key = `${u.txid}:${u.vout}`}
-											<label class="utxo-row">
-												<input
-													type="checkbox"
-													checked={selectedCoins.has(key)}
-													onchange={() => toggleCoin(key)}
-												/>
-												<span class="mono text-muted">{truncateMiddle(u.txid, 10, 8)}:{u.vout}</span>
-												<span class="grow"></span>
-												<span class="tabular">{formatSats(u.value)} sats</span>
-											</label>
-										{/each}
-									</div>
-								{/if}
+							</div>
+						</div>
+						{#if !isMax}
+							<div class="amount-abs">
+								<input
+									class="input tabular"
+									inputmode="decimal"
+									placeholder="0.00000000"
+									bind:value={amountBtc}
+									aria-labelledby="stateless-amount-label"
+								/>
+								<span class="unit-abs">BTC</span>
+							</div>
+							{#if Number(amountBtc) > 0}
+								<p class="field-line tabular muted">
+									{formatSats(Math.round(Number(amountBtc) * SATS_PER_BTC))} sats
+								</p>
+							{/if}
+						{:else}
+							<div class="max-note">
+								<Icon name="zap" size={15} />
+								<span>Sweeps the wallet's entire spendable balance to this address, minus the fee.</span>
 							</div>
 						{/if}
+					</div>
 
-						{#if buildError}
-							<div class="form-error" role="alert">{buildError}</div>
-						{/if}
-
-						<div class="row" style="justify-content: flex-end">
-							<button class="btn btn-primary" onclick={build} disabled={!canBuild || building}>
-								{#if building}<span class="spinner"></span> Building…{:else}Build &amp; review<Icon
-										name="arrow-right"
-										size={15}
-									/>{/if}
+					<!-- FEE: text toggles, not a dropdown. -->
+					<div class="fee-section">
+						<div class="fee-head">
+							<span class="sec-label">Fee</span>
+							<span class="fee-caption">{formatFeeRate(feeRate)}</span>
+						</div>
+						<div class="fee-toggles" role="group" aria-label="Fee rate">
+							{#each [{ k: 'economy', label: 'Low', rate: data.fees?.economy }, { k: 'normal', label: 'Medium', rate: data.fees?.halfHour }, { k: 'fast', label: 'High', rate: data.fees?.fastest }] as opt (opt.k)}
+								<button
+									type="button"
+									class="txt-toggle"
+									class:active={feeChoice === opt.k}
+									onclick={() => (feeChoice = opt.k as FeeChoice)}
+								>
+									{opt.label}{#if opt.rate != null}<span class="toggle-rate tabular"
+											>&nbsp;· {opt.rate < 10 ? Number(opt.rate.toFixed(1)) : Math.round(opt.rate)}</span
+										>{/if}
+								</button>
+							{/each}
+							<button
+								type="button"
+								class="txt-toggle"
+								class:active={feeChoice === 'custom'}
+								onclick={() => (feeChoice = 'custom')}
+							>
+								Custom
 							</button>
 						</div>
+						{#if feeChoice === 'custom'}
+							<div class="custom-fee">
+								<input
+									class="custom-fee-input tabular"
+									inputmode="decimal"
+									bind:value={customFee}
+									aria-label="Custom fee rate in sat/vB"
+								/>
+								<span class="unit-sm">sat/vB</span>
+							</div>
+						{/if}
+						{#if !data.fees}
+							<p class="fee-caption">Live fee estimates are unavailable — set a custom sat/vB rate.</p>
+						{/if}
+					</div>
+
+					{#if scan.utxos.length > 0}
+						<div class="field">
+							<button
+								class="utxo-toggle"
+								aria-expanded={coinsOpen}
+								onclick={() => (coinsOpen = !coinsOpen)}
+							>
+								<Icon name={coinsOpen ? 'chevron-down' : 'chevron-right'} size={14} />
+								<span
+									>Coin control (optional{selectedCoins.size > 0
+										? ` — ${selectedCoins.size} selected`
+										: ''})</span
+								>
+							</button>
+							{#if coinsOpen}
+								<div class="utxo-list fade-in">
+									<p class="hint">
+										Leave everything unchecked to let Heartwood pick coins; check specific coins to
+										spend only those.
+									</p>
+									{#each scan.utxos as u (`${u.txid}:${u.vout}`)}
+										{@const key = `${u.txid}:${u.vout}`}
+										<label class="utxo-row">
+											<input
+												type="checkbox"
+												checked={selectedCoins.has(key)}
+												onchange={() => toggleCoin(key)}
+											/>
+											<span class="mono text-muted">{truncateMiddle(u.txid, 10, 8)}:{u.vout}</span>
+											<span class="grow"></span>
+											<span class="tabular">{formatSats(u.value)} sats</span>
+										</label>
+									{/each}
+								</div>
+							{/if}
+						</div>
+					{/if}
+
+					{#if buildError}
+						<div class="form-error" role="alert">{buildError}</div>
+					{/if}
+
+					<div class="row step-actions" style="justify-content: flex-end">
+						<button class="btn btn-primary pill-lg" onclick={build} disabled={!canBuild || building}>
+							{#if building}<span class="spinner"></span> Building…{:else}Build &amp; review<Icon
+									name="arrow-right"
+									size={15}
+								/>{/if}
+						</button>
 					</div>
 
 					{#if details}
-						<div class="card card-pad detail-list fade-in">
+						<div class="detail-list fade-in">
 							<div class="detail-row">
 								<span class="text-secondary">Sending</span>
 								<span class="detail-val tabular"
@@ -795,8 +807,8 @@
 							</div>
 						{/if}
 
-						<div class="row" style="justify-content: flex-end">
-							<button class="btn btn-primary" onclick={() => (phase = 'sign')}>
+						<div class="row step-actions" style="justify-content: flex-end">
+							<button class="btn btn-primary pill-lg" onclick={() => (phase = 'sign')}>
 								Looks good — collect signatures <Icon name="arrow-right" size={15} />
 							</button>
 						</div>
@@ -822,83 +834,96 @@
 			<div class="phase-body fade-in">
 				{#if sentTxid}
 					<div class="sent-body">
-						<div class="sent-check"><Icon name="check" size={30} strokeWidth={2.5} /></div>
-						<h3 class="sent-title">Broadcast!</h3>
-						<p class="text-secondary">Your {quorum} transaction is on its way to the network.</p>
-						<a class="sent-txid mono" href={`/explorer/tx/${sentTxid}`}>
-							{truncateMiddle(sentTxid, 12, 12)}
-							<Icon name="arrow-up-right" size={15} />
-						</a>
-						<div class="sent-copy">
-							<CopyText value={sentTxid} display="Copy transaction ID" mono={false} />
+						<!-- The ring-sweep moment: two cream sweeps (once), a dashed mempool
+						     ring pulsing underneath — the transaction waiting for its first ring. -->
+						<div class="sweep-stage">
+							<span class="sweep s1"></span>
+							<span class="sweep s2"></span>
+							<BurialRings confirmations={0} direction="out" size={64} />
+						</div>
+						{#if details}
+							<h2 class="sent-title">{formatBtc(details.amount)} BTC is on its way</h2>
+						{:else}
+							<h2 class="sent-title">Your bitcoin is on its way</h2>
+						{/if}
+						<p class="sent-sub">
+							Authorized by {quorum} keys · in the mempool, waiting for its first ring
+						</p>
+						<div class="txid-pill">
+							<span class="mono">{truncateMiddle(sentTxid, 12, 12)}</span>
+							<CopyText value={sentTxid} display="Copy" mono={false} />
 						</div>
 						<p class="hint">
 							Remember: nothing was saved. To track this wallet over time,
 							<a href="/wallets/multisig/new">import the config as a multisig wallet</a>.
 						</p>
-						<div class="row" style="justify-content: center; gap: 10px">
+						<div class="row step-actions" style="justify-content: center">
+							<a class="btn btn-primary pill-lg" href={`/explorer/tx/${sentTxid}`}
+								>Watch it get buried</a
+							>
 							<button class="btn btn-secondary" onclick={startOver}>Start over</button>
-							<a class="btn btn-primary" href="/wallets">Back to wallets</a>
 						</div>
 					</div>
 				{:else}
 					<!-- Live quorum progress, straight from the server's PSBT inspection. -->
-					<div class="card card-pad quorum-card">
-						<div class="quorum-head">
-							<span class="quorum-count tabular">{collected} of {required} signatures collected</span>
-							{#if !complete && remainingNeeded > 0}
-								<span class="text-muted"
-									>· {remainingNeeded} more {remainingNeeded === 1 ? 'signature' : 'signatures'} needed</span
-								>
-							{/if}
-						</div>
-						<div
-							class="quorum-bar"
-							role="progressbar"
-							aria-valuemin={0}
-							aria-valuemax={required}
-							aria-valuenow={collected}
-							aria-label="Signatures collected"
-						>
-							<div
-								class="quorum-bar-fill"
-								style={`width:${Math.min(100, required > 0 ? (collected / required) * 100 : 0)}%`}
-							></div>
-						</div>
-
-						<div class="key-chips">
-							{#each config.keys as key, idx (idx)}
-								{@const signed = isSigned(idx)}
-								{@const active = activeIdx === idx}
-								{#if signed}
-									<div class="key-chip signed">
-										<Icon name="check" size={13} strokeWidth={2.5} />
-										<span class="chip-name">{key.name}</span>
-										<span class="chip-meta mono">{key.fingerprint}</span>
-									</div>
-								{:else}
-									<button
-										type="button"
-										class="key-chip"
-										class:active
-										onclick={() => chooseKey(idx)}
-										title={active ? 'Currently signing with this key' : 'Sign with this key instead'}
-									>
-										<span class="chip-dot" aria-hidden="true"></span>
-										<span class="chip-name">{key.name}</span>
-										<span class="chip-meta mono">{key.fingerprint}</span>
-									</button>
-								{/if}
-							{/each}
-						</div>
-						{#if hasPlaceholderFp}
-							<p class="hint">
-								Keys without a recorded master fingerprint (00000000) can't be individually ticked
-								off — the signature count above is still exact, straight from the transaction
-								itself.
-							</p>
-						{/if}
+					<div class="sig-head" role="status" aria-live="polite">
+						<h2 class="section-title">Signatures</h2>
+						<QuorumArc total={required} collected={collected} active={!complete} size={26} />
+						<span class="sig-count">
+							{collected} of {required} collected{#if !complete && remainingNeeded > 0}&nbsp;· {remainingNeeded}
+								more needed{/if}
+						</span>
 					</div>
+
+					<!-- Per-key hairline rows (5b): signed / active / queued. -->
+					<div class="key-rows">
+						{#each config.keys as key, idx (idx)}
+							{@const signed = isSigned(idx)}
+							{@const active = activeIdx === idx}
+							{#if signed}
+								<div class="key-row">
+									<span class="key-icon" aria-hidden="true">
+										<svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="2.5" width="12" height="15" rx="2"></rect><circle cx="10" cy="7" r="2"></circle><path d="M10 9 V12" stroke-linecap="round"></path></svg>
+									</span>
+									<span class="key-main">
+										<span class="key-name">{key.name}</span>
+										<span class="key-meta mono">{key.fingerprint}</span>
+									</span>
+									<span class="key-state signed"
+										><Icon name="check" size={13} strokeWidth={2.5} /> Signed</span
+									>
+								</div>
+							{:else}
+								<button
+									type="button"
+									class="key-row selectable"
+									class:active
+									onclick={() => chooseKey(idx)}
+									title={active ? 'Currently signing with this key' : 'Sign with this key instead'}
+								>
+									<span class="key-icon" aria-hidden="true">
+										<svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="2.5" width="12" height="15" rx="2"></rect><circle cx="10" cy="7" r="2"></circle><path d="M10 9 V12" stroke-linecap="round"></path></svg>
+									</span>
+									<span class="key-main">
+										<span class="key-name">{key.name}</span>
+										<span class="key-meta mono">{key.fingerprint}</span>
+									</span>
+									{#if active}
+										<span class="key-state pending">Sign below</span>
+									{:else}
+										<span class="key-cta">Sign now</span>
+									{/if}
+								</button>
+							{/if}
+						{/each}
+					</div>
+					{#if hasPlaceholderFp}
+						<p class="never-line">
+							Keys without a recorded master fingerprint (00000000) can't be individually ticked
+							off — the signature count above is still exact, straight from the transaction
+							itself.
+						</p>
+					{/if}
 
 					{#if signFlash}
 						<div class="sign-flash" role="status">
@@ -1016,7 +1041,7 @@
 							</span>
 						</div>
 
-						<div class="confirm-warning" role="alert">
+						<div class="attention-panel" role="alert">
 							<Icon name="alert-triangle" size={18} />
 							<div>
 								<strong>You are about to broadcast this transaction.</strong>
@@ -1038,7 +1063,7 @@
 							live in the PSBT itself — download it from the file method anytime as a backup.
 						</span>
 						<button
-							class="btn btn-primary"
+							class="btn btn-primary pill-lg"
 							onclick={broadcast}
 							disabled={!complete || broadcasting}
 							title={complete
@@ -1055,10 +1080,22 @@
 			</div>
 		</section>
 	{/if}
+	</div>
 </div>
 
 <style>
 	.stateless-page {
+		position: relative;
+		/* Bleed the grove field across the shell's content padding so the
+		   atmosphere isn't a visible box — same idiom as the send flows. */
+		margin: -54px -52px -44px;
+		padding: 54px 52px 44px;
+		min-height: 100%;
+	}
+
+	.page-content {
+		position: relative;
+		z-index: 1;
 		max-width: 680px;
 		margin: 0 auto;
 		display: flex;
@@ -1066,27 +1103,47 @@
 		gap: 22px;
 	}
 
-	.page-head {
-		margin-bottom: 2px;
+	.eyebrow-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 14px;
 	}
 
-	.back {
+	/* Mobile flow header (8b/8c) — this page composes its own back circle +
+	   centered eyebrow + spacer, so the shell's bare fallback is suppressed. */
+	:global(body:has(.hw-owns-header) .mobile-flow-header) {
+		display: none;
+	}
+
+	.flow-header {
+		display: none;
+	}
+
+	.flow-eyebrow {
 		display: inline-flex;
 		align-items: center;
-		gap: 3px;
-		color: var(--text-secondary);
-		font-size: 13px;
-		font-weight: 500;
-		margin-bottom: 8px;
+		justify-content: center;
+		gap: 7px;
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.2em;
+		text-transform: uppercase;
+		color: var(--eyebrow);
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
-	.back:hover {
-		color: var(--accent);
+	.flow-spacer {
+		width: 32px;
+		height: 32px;
+		flex-shrink: 0;
 	}
 
 	.lead {
 		font-size: 13.5px;
-		margin-top: 4px;
 		line-height: 1.6;
 	}
 
@@ -1094,7 +1151,7 @@
 	.phase {
 		display: flex;
 		flex-direction: column;
-		gap: 12px;
+		gap: 14px;
 	}
 
 	.phase-head {
@@ -1111,42 +1168,45 @@
 		height: 24px;
 		flex-shrink: 0;
 		border-radius: 50%;
-		background: var(--surface-elevated);
-		border: 1px solid var(--border);
+		background: var(--bg-input);
+		border: 1px solid var(--border-control);
 		color: var(--text-secondary);
 		font-size: 12px;
 		font-weight: 600;
 	}
 
 	.phase-num.complete {
-		background: var(--success-muted);
+		background: var(--sage-muted);
 		border-color: transparent;
-		color: var(--success);
+		color: var(--sage);
 	}
 
 	.phase-title {
 		font-size: 16px;
 		font-weight: 600;
 		flex: 1;
+		color: var(--text);
 	}
 
 	.phase-body {
 		display: flex;
 		flex-direction: column;
-		gap: 14px;
+		gap: 18px;
+		padding-left: 34px;
 	}
 
 	.phase-summary {
 		margin-left: 34px;
 	}
 
+	/* ---- Load: ephemeral note + config source ---- */
 	.ephemeral-note {
 		display: flex;
 		gap: 10px;
 		align-items: flex-start;
 		background: var(--accent-muted);
 		border: 1px solid var(--accent-border);
-		border-radius: var(--radius-card);
+		border-radius: var(--radius-icon-btn);
 		padding: 12px 14px;
 		font-size: 13px;
 		line-height: 1.55;
@@ -1156,6 +1216,12 @@
 		color: var(--accent);
 		flex-shrink: 0;
 		margin-top: 1px;
+	}
+
+	.load-form {
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
 	}
 
 	.source-input {
@@ -1172,11 +1238,13 @@
 		display: none;
 	}
 
-	/* ---- scan result ---- */
+	/* ---- Load: scan result ---- */
 	.scan-result {
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
+		border-top: 1px solid var(--hairline);
+		padding-top: 18px;
 	}
 
 	.multisig-icon {
@@ -1194,31 +1262,44 @@
 	.scan-name {
 		font-size: 14.5px;
 		font-weight: 600;
+		color: var(--text);
 	}
 
-	.balance {
+	.balance-block {
 		display: flex;
 		align-items: baseline;
 		gap: 8px;
 		flex-wrap: wrap;
 	}
 
-	.balance .hero-number {
-		font-size: 28px;
+	.hero-amount {
+		font-family: var(--font-serif);
+		font-weight: 600;
+		font-size: 44px;
+		line-height: 0.96;
+		letter-spacing: -0.015em;
+		font-variant-numeric: tabular-nums;
+		color: var(--text-hero);
 	}
 
-	.unit {
-		font-size: 12px;
-		color: var(--text-muted);
+	.hero-amount.sm {
+		font-size: 36px;
+	}
+
+	.hero-unit {
+		font-family: var(--font-serif);
+		font-weight: 400;
+		font-size: 20px;
+		color: var(--eyebrow);
 	}
 
 	.test-address {
 		display: flex;
 		flex-direction: column;
 		gap: 6px;
-		background: var(--bg);
+		background: var(--bg-input);
 		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
+		border-radius: var(--radius-icon-btn);
 		padding: 10px 12px;
 		font-size: 12.5px;
 		word-break: break-all;
@@ -1237,8 +1318,7 @@
 	.addr-list {
 		display: flex;
 		flex-direction: column;
-		gap: 4px;
-		padding-top: 8px;
+		padding-top: 6px;
 	}
 
 	.addr-row {
@@ -1246,9 +1326,12 @@
 		align-items: baseline;
 		gap: 10px;
 		font-size: 12.5px;
-		padding: 5px 8px;
-		background: var(--bg);
-		border-radius: var(--radius-chip);
+		padding: 7px 0;
+		border-bottom: 1px solid var(--hairline);
+	}
+
+	.addr-row:last-child {
+		border-bottom: none;
 	}
 
 	.addr-idx {
@@ -1267,37 +1350,69 @@
 		text-underline-offset: 2px;
 	}
 
-	/* ---- build form (fee grid / seg / amount idioms from the send flows) ---- */
-	.seg {
-		display: inline-flex;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-control);
-		padding: 2px;
-	}
-
-	.seg-btn {
-		background: none;
-		border: none;
-		color: var(--text-muted);
-		font-family: var(--font-ui);
-		font-size: 12px;
+	/* ---- Build: amount mode toggle + fee toggles (send-flow idioms) ---- */
+	.sec-label {
+		font-size: 11px;
 		font-weight: 600;
-		padding: 4px 12px;
-		border-radius: var(--radius-chip);
+		letter-spacing: 0.18em;
+		text-transform: uppercase;
+		color: var(--eyebrow-path);
+	}
+
+	.mode-toggles {
+		display: flex;
+		gap: 4px;
+	}
+
+	.txt-toggle {
+		background: transparent;
+		border: none;
+		border-radius: 14px;
+		padding: 6px 13px;
+		font-family: var(--font-ui);
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--eyebrow-path);
 		cursor: pointer;
+		transition:
+			background 120ms var(--ease),
+			color 120ms var(--ease);
 	}
 
-	.seg-btn.active {
-		background: var(--accent-muted);
-		color: var(--accent);
+	.txt-toggle:hover {
+		color: var(--text-secondary);
 	}
 
-	.amount-input {
+	.txt-toggle.active {
+		background: rgba(232, 147, 90, 0.1);
+		color: var(--accent-bright);
+	}
+
+	.toggle-rate {
+		font-weight: 400;
+	}
+
+	.field-line {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		font-size: 12.5px;
+		line-height: 1.5;
+	}
+
+	.field-line.attention {
+		color: var(--attention);
+	}
+
+	.field-line.muted {
+		color: var(--text-muted);
+	}
+
+	.amount-abs {
 		position: relative;
 	}
 
-	.amount-input .input {
+	.amount-abs .input {
 		padding-right: 52px;
 		font-size: 18px;
 	}
@@ -1318,75 +1433,64 @@
 		gap: 8px;
 		color: var(--accent);
 		background: var(--accent-muted);
-		border-radius: var(--radius-control);
+		border-radius: var(--radius-icon-btn);
 		padding: 10px 12px;
 		font-size: 13px;
 	}
 
-	.fee-grid {
-		display: grid;
-		grid-template-columns: repeat(2, 1fr);
-		gap: 8px;
-	}
-
-	.fee-card {
+	.fee-section {
 		display: flex;
 		flex-direction: column;
-		align-items: flex-start;
-		gap: 2px;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-control);
-		padding: 10px 12px;
-		cursor: pointer;
-		text-align: left;
+		gap: 10px;
+		border-top: 1px solid var(--hairline);
+		padding-top: 18px;
 	}
 
-	.fee-card:hover {
-		border-color: var(--text-muted);
-	}
-
-	.fee-card.active {
-		border-color: var(--accent);
-		background: var(--accent-muted);
-	}
-
-	.fee-label {
-		font-size: 12px;
-		font-weight: 600;
-		color: var(--text);
-	}
-
-	.fee-rate {
-		font-size: 13.5px;
-		color: var(--text-secondary);
-	}
-
-	.fee-eta {
-		font-size: 11px;
-		color: var(--text-muted);
-	}
-
-	.fee-card.custom {
-		gap: 6px;
-	}
-
-	.custom-input {
+	.fee-head {
 		display: flex;
-		align-items: center;
-		gap: 6px;
-		width: 100%;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 12px;
 	}
 
-	.custom-input .input {
-		padding: 5px 8px;
-		font-size: 13px;
+	.fee-toggles {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+	}
+
+	.custom-fee {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		max-width: 180px;
+		border-bottom: 1px solid var(--border-subtle);
+		padding-bottom: 4px;
+	}
+
+	.custom-fee-input {
+		flex: 1;
+		min-width: 0;
+		background: transparent;
+		border: none;
+		outline: none;
+		padding: 4px 0;
+		font-family: var(--font-serif);
+		font-weight: 600;
+		font-size: 17px;
+		color: var(--text-hero);
+		caret-color: var(--accent);
 	}
 
 	.unit-sm {
 		font-size: 11px;
 		color: var(--text-muted);
 		white-space: nowrap;
+	}
+
+	.fee-caption {
+		font-size: 11.5px;
+		color: var(--eyebrow-path);
 	}
 
 	.utxo-toggle {
@@ -1410,8 +1514,8 @@
 	.utxo-list {
 		display: flex;
 		flex-direction: column;
-		gap: 6px;
-		padding-top: 10px;
+		gap: 8px;
+		padding-top: 8px;
 	}
 
 	.utxo-row {
@@ -1419,16 +1523,36 @@
 		align-items: center;
 		gap: 10px;
 		font-size: 12.5px;
-		padding: 7px 10px;
-		background: var(--bg);
-		border-radius: var(--radius-chip);
+		padding: 8px 0;
+		border-bottom: 1px solid var(--hairline);
 		cursor: pointer;
 	}
 
-	/* ---- review ---- */
+	.utxo-row:last-child {
+		border-bottom: none;
+	}
+
+	.utxo-row input {
+		accent-color: var(--accent);
+		flex-shrink: 0;
+	}
+
+	.step-actions {
+		justify-content: space-between;
+		gap: 10px;
+	}
+
+	.pill-lg {
+		padding: 13px 26px;
+		font-size: 15px;
+		border-radius: var(--radius-pill);
+	}
+
+	/* ---- Build: review ---- */
 	.detail-list {
 		display: flex;
 		flex-direction: column;
+		gap: 0;
 	}
 
 	.detail-row {
@@ -1436,22 +1560,17 @@
 		justify-content: space-between;
 		align-items: baseline;
 		gap: 12px;
-		padding: 11px 0;
-		border-bottom: 1px solid var(--border-subtle);
+		padding: 14px 0;
+		border-bottom: 1px solid var(--hairline);
 		font-size: 13.5px;
 	}
 
 	.detail-row:first-child {
-		padding-top: 0;
-	}
-
-	.detail-row:last-child {
-		border-bottom: none;
-		padding-bottom: 0;
+		border-top: 1px solid var(--hairline);
 	}
 
 	.detail-val {
-		color: var(--text);
+		color: var(--text-rows);
 		font-weight: 500;
 		text-align: right;
 	}
@@ -1466,30 +1585,14 @@
 		display: flex;
 		gap: 10px;
 		align-items: flex-start;
-		border-radius: var(--radius-card);
+		border-radius: var(--radius-icon-btn);
 		padding: 12px 14px;
 		font-size: 13px;
 		line-height: 1.55;
+		color: var(--text);
 	}
 
-	.mass-panel.amber {
-		background: var(--warning-muted);
-		border: 1px solid var(--warning-border);
-	}
-
-	.mass-panel.amber :global(svg) {
-		color: var(--warning);
-		flex-shrink: 0;
-		margin-top: 1px;
-	}
-
-	.mass-panel.red {
-		background: var(--danger-muted, var(--warning-muted));
-		border: 1px solid rgba(220, 90, 90, 0.35);
-	}
-
-	.mass-panel.red :global(svg) {
-		color: var(--danger, var(--warning));
+	.mass-panel :global(svg) {
 		flex-shrink: 0;
 		margin-top: 1px;
 	}
@@ -1498,105 +1601,164 @@
 		display: block;
 	}
 
+	.mass-panel.amber {
+		background: var(--attention-muted);
+		border: 1px solid var(--warning-border);
+	}
+
+	.mass-panel.amber :global(svg) {
+		color: var(--attention);
+	}
+
+	.mass-panel.red {
+		background: var(--error-muted);
+		border: 1px solid var(--error-border);
+	}
+
+	.mass-panel.red :global(svg) {
+		color: var(--error);
+	}
+
 	.mass-note {
 		display: block;
-		color: var(--text-muted);
+		margin-top: 4px;
 		font-size: 12px;
-		margin-top: 2px;
+		color: var(--text-secondary);
 	}
 
-	/* ---- sign ---- */
-	.quorum-card {
+	/* Attention (never red) panels: irreversible-broadcast warning. */
+	.attention-panel {
 		display: flex;
-		flex-direction: column;
-		gap: 12px;
-	}
-
-	.quorum-head {
-		display: flex;
-		align-items: baseline;
-		gap: 6px;
-		flex-wrap: wrap;
-	}
-
-	.quorum-count {
-		font-size: 14px;
-		font-weight: 600;
-	}
-
-	.quorum-bar {
-		height: 6px;
-		border-radius: var(--radius-chip);
-		background: var(--bg);
-		border: 1px solid var(--border-subtle);
-		overflow: hidden;
-	}
-
-	.quorum-bar-fill {
-		height: 100%;
-		background: var(--accent);
-		border-radius: var(--radius-chip);
-		transition: width 240ms var(--ease);
-	}
-
-	.key-chips {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-	}
-
-	.key-chip {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		flex-wrap: wrap;
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		background: var(--bg);
-		padding: 9px 12px;
+		gap: 10px;
+		align-items: flex-start;
+		background: var(--attention-muted);
+		border: 1px solid var(--warning-border);
+		border-radius: var(--radius-icon-btn);
+		padding: 12px 14px;
 		font-size: 13px;
-		text-align: left;
-	}
-
-	button.key-chip {
-		cursor: pointer;
-		font-family: var(--font-ui);
+		line-height: 1.55;
 		color: var(--text);
 	}
 
-	button.key-chip:hover {
-		border-color: var(--text-muted);
+	.attention-panel :global(svg) {
+		color: var(--attention);
+		flex-shrink: 0;
+		margin-top: 1px;
 	}
 
-	.key-chip.active {
-		border-color: var(--accent);
-		background: var(--accent-muted);
+	.attention-panel strong {
+		display: block;
 	}
 
-	.key-chip.signed {
-		color: var(--success);
-		border-color: rgba(90, 200, 120, 0.3);
-		background: var(--success-muted);
+	/* ---- Sign: quorum header + per-key hairline rows ---- */
+	.sig-head {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		flex-wrap: wrap;
 	}
 
-	.chip-dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: var(--border);
+	.section-title {
+		font-size: 17px;
+		font-weight: 600;
+		color: var(--text);
+		letter-spacing: -0.01em;
+	}
+
+	.sig-count {
+		font-size: 13px;
+		color: var(--text-secondary);
+	}
+
+	.key-rows {
+		display: flex;
+		flex-direction: column;
+	}
+
+	.key-rows > :first-child {
+		border-top: 1px solid var(--hairline);
+	}
+
+	.key-row {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 14px 0;
+		border-bottom: 1px solid var(--hairline);
+	}
+
+	button.key-row.selectable {
+		width: 100%;
+		background: none;
+		border: none;
+		border-bottom: 1px solid var(--hairline);
+		text-align: left;
+		font-family: var(--font-ui);
+		cursor: pointer;
+		transition: background-color 120ms var(--ease);
+	}
+
+	button.key-row.selectable:hover {
+		background: rgba(255, 255, 255, 0.018);
+	}
+
+	.key-icon {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 36px;
+		height: 36px;
+		flex-shrink: 0;
+		border-radius: var(--radius-icon-btn);
+		background: var(--surface-elevated);
+		color: var(--text-faint);
+	}
+
+	.key-main {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
+		flex: 1;
+	}
+
+	.key-name {
+		font-size: 14.5px;
+		font-weight: 500;
+		color: var(--text-rows);
+	}
+
+	.key-meta {
+		font-size: 12px;
+		color: var(--text-muted);
+	}
+
+	.key-state {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		font-size: 13px;
+		font-weight: 500;
 		flex-shrink: 0;
 	}
 
-	.key-chip.active .chip-dot {
-		background: var(--accent);
+	.key-state.signed {
+		color: var(--accent-bright);
 	}
 
-	.chip-name {
+	.key-state.pending {
+		color: var(--accent-bright);
+	}
+
+	.key-cta {
+		font-size: 13px;
 		font-weight: 600;
+		color: var(--accent);
+		flex-shrink: 0;
 	}
 
-	.chip-meta {
-		font-size: 11.5px;
+	.never-line {
+		font-size: 12.5px;
 		color: var(--text-muted);
 	}
 
@@ -1604,13 +1766,14 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		color: var(--success);
-		background: var(--success-muted);
-		border-radius: var(--radius-control);
+		color: var(--sage);
+		background: var(--sage-muted);
+		border-radius: var(--radius-icon-btn);
 		padding: 10px 12px;
 		font-size: 13px;
 	}
 
+	/* ---- Sign: method picker (file/QR/Trezor/Ledger) ---- */
 	.method-grid {
 		display: grid;
 		grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -1622,17 +1785,20 @@
 		flex-direction: column;
 		align-items: flex-start;
 		gap: 3px;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-control);
+		background: transparent;
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-icon-btn);
 		padding: 10px 12px;
 		cursor: pointer;
 		text-align: left;
 		font-family: var(--font-ui);
+		transition:
+			border-color 120ms var(--ease),
+			background 120ms var(--ease);
 	}
 
 	.method-card:hover {
-		border-color: var(--text-muted);
+		border-color: var(--border-ghost);
 	}
 
 	.method-card.active {
@@ -1658,7 +1824,7 @@
 		align-items: flex-start;
 		background: var(--warning-muted);
 		border: 1px solid var(--warning-border);
-		border-radius: var(--radius-card);
+		border-radius: var(--radius-icon-btn);
 		padding: 12px 14px;
 		font-size: 13px;
 		line-height: 1.55;
@@ -1680,6 +1846,10 @@
 		gap: 8px;
 		font-size: 13px;
 		color: var(--text-secondary);
+		background: var(--bg-input);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-icon-btn);
+		padding: 12px 14px;
 	}
 
 	.reject-actions {
@@ -1690,50 +1860,18 @@
 		display: flex;
 		gap: 10px;
 		align-items: flex-start;
-		color: var(--success);
 		background: var(--success-muted);
-		border: 1px solid rgba(90, 200, 120, 0.3);
-		border-radius: var(--radius-card);
-		padding: 12px 14px;
-		font-size: 13px;
+		border-radius: var(--radius-icon-btn);
+		padding: 14px 16px;
+		font-size: 13.5px;
 		line-height: 1.55;
+		color: var(--text);
 	}
 
 	.quorum-done :global(svg) {
+		color: var(--sage);
 		flex-shrink: 0;
 		margin-top: 2px;
-	}
-
-	.quorum-done span {
-		color: var(--text-secondary);
-	}
-
-	.quorum-done strong {
-		color: var(--success);
-	}
-
-	.confirm-warning {
-		display: flex;
-		gap: 12px;
-		align-items: flex-start;
-		background: var(--warning-muted);
-		border: 1px solid var(--warning-border);
-		border-radius: var(--radius-card);
-		padding: 14px;
-		font-size: 13px;
-		line-height: 1.6;
-	}
-
-	.confirm-warning :global(svg) {
-		color: var(--warning);
-		flex-shrink: 0;
-		margin-top: 1px;
-	}
-
-	.step-actions {
-		justify-content: space-between;
-		gap: 12px;
-		align-items: center;
 	}
 
 	.session-hint {
@@ -1741,48 +1879,134 @@
 		line-height: 1.5;
 	}
 
-	/* ---- sent ---- */
+	/* ---- Sent: the grove moment ---- */
 	.sent-body {
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-		gap: 12px;
+		gap: 16px;
 		text-align: center;
-		padding: 20px 0;
+		padding: 8px 0;
 	}
 
-	.sent-check {
+	.sweep-stage {
+		position: relative;
+		width: 180px;
+		height: 180px;
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		width: 60px;
-		height: 60px;
+		margin: 4px 0;
+	}
+
+	/* Two cream ring sweeps — hwSweepOnce plays ONCE (no infinite), staggered.
+	   Base opacity 0 keeps them invisible during their delay and after. */
+	.sweep {
+		position: absolute;
+		inset: 0;
 		border-radius: 50%;
-		background: var(--success-muted);
-		color: var(--success);
+		border: 1.5px solid var(--accent-glow-strong);
+		opacity: 0;
+		transform: scale(0.18);
+		animation: hwSweepOnce 2.4s ease-out forwards;
+		pointer-events: none;
+	}
+
+	.sweep.s1 {
+		animation-delay: 0.2s;
+	}
+
+	.sweep.s2 {
+		animation-delay: 1s;
 	}
 
 	.sent-title {
 		font-family: var(--font-serif);
-		font-size: 22px;
-		font-weight: 560;
+		font-weight: 600;
+		font-size: 32px;
+		line-height: 1.1;
+		letter-spacing: -0.015em;
+		font-variant-numeric: tabular-nums;
+		color: var(--text-hero);
 	}
 
-	.sent-txid {
+	.sent-sub {
+		font-size: 13.5px;
+		color: var(--text-secondary);
+	}
+
+	.txid-pill {
 		display: inline-flex;
 		align-items: center;
-		gap: 5px;
+		gap: 10px;
 		font-size: 13.5px;
-		color: var(--accent);
-	}
-
-	.sent-copy {
-		font-size: 12.5px;
+		padding: 9px 16px;
+		background: rgba(255, 255, 255, 0.025);
+		border: 1px solid var(--hairline);
+		border-radius: var(--radius-status-pill);
+		color: var(--text-rows);
 	}
 
 	.sent-body .hint a {
 		color: var(--accent);
 		text-decoration: underline;
 		text-underline-offset: 2px;
+	}
+
+	/* ---- Mobile (≤900px): flow-page composition ---- */
+	@media (max-width: 900px) {
+		.stateless-page {
+			margin: -20px -18px -48px;
+			padding: 16px 18px 48px;
+		}
+
+		.flow-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 10px;
+		}
+
+		.eyebrow-row {
+			display: none;
+		}
+
+		.phase-body {
+			padding-left: 0;
+		}
+
+		.phase-summary {
+			margin-left: 0;
+		}
+
+		.step-actions {
+			flex-direction: column-reverse;
+			align-items: stretch;
+		}
+
+		.step-actions :global(.btn) {
+			width: 100%;
+			min-height: 46px;
+		}
+
+		.sent-title {
+			font-size: 26px;
+		}
+	}
+
+	/* Touch targets: text toggles and selectable key rows are tap targets. */
+	@media (max-width: 520px), (pointer: coarse) {
+		.txt-toggle {
+			min-height: 44px;
+			padding: 10px 16px;
+		}
+
+		button.key-row.selectable {
+			min-height: 44px;
+		}
+
+		.utxo-row {
+			min-height: 44px;
+		}
 	}
 </style>

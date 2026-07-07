@@ -21,7 +21,7 @@ import type { Actions, PageServerLoad } from './$types';
 const QR_OPTS = {
 	margin: 1,
 	width: 220,
-	color: { dark: '#F0EBE5', light: '#00000000' }
+	color: { dark: '#E4D8CC', light: '#00000000' }
 };
 
 function walletId(param: string): number {
@@ -110,7 +110,18 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 	} catch (e) {
 		// Only swallow scan failures — let 404s and friends bubble.
 		if (e instanceof Error && e.cause === 'unreachable') {
-			return { ...base, scan: null, receive: null, scanError: e.message };
+			// Mirror the success branch's shape (empty/zero values) so the generated
+			// PageData type never marks tipHeight & friends optional — the page reads
+			// data.tipHeight without guards.
+			return {
+				...base,
+				scan: null,
+				receive: null,
+				coinbaseUtxos: [] as { txid: string; vout: number; value: number; height: number }[],
+				tipHeight: 0,
+				speedUp: [] as Awaited<ReturnType<typeof detectWalletUnconfirmedInflows>>,
+				scanError: e.message
+			};
 		}
 		throw e;
 	}

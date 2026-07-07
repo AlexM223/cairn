@@ -1,13 +1,13 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
-	import Banner from '$lib/components/Banner.svelte';
+	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import { formatBtc, formatSats, timeAgo } from '$lib/format';
 	import { SCRIPT_TYPE_LABELS, walletTypeLabel } from './labels';
 
 	let { data } = $props();
 
 	// The wallet scans are STREAMED from the server (cairn-ybsv): a cold cache
-	// means full gap-limit scans over Electrum, so the page paints skeleton cards
+	// means full gap-limit scans over Electrum, so the page paints skeleton rows
 	// immediately and fills in when the scans resolve.
 	type Scans = Awaited<(typeof data)['scans']>;
 	let scans = $state<Scans | null>(null);
@@ -24,8 +24,8 @@
 	const loading = $derived(scans === null);
 
 	// One list, two flavors. Single-sig wallets and multisig wallets are merged
-	// into a single grid — the card head tells them apart (a script-type badge and
-	// device kind for single-sig, a quorum badge for multisig).
+	// into a single hairline-row list (7a's wallet-rows grammar) — the row meta
+	// tells them apart (script type + device kind vs. an m-of-n quorum).
 	const items = $derived.by(() => {
 		const s = scans;
 		if (s === null) return [];
@@ -54,222 +54,334 @@
 				unconfirmed: m.unconfirmed,
 				lastActivity: m.lastActivity,
 				// Collaborative custody: wallets shared WITH this user carry the owner's
-				// name so the card can distinguish them from wallets they own outright.
+				// name so the row can distinguish them from wallets they own outright.
 				sharedBy: m.sharedBy,
 				unreachable: s.multisigErrors[m.id] !== undefined,
 				error: s.multisigErrors[m.id]
 			}))
 		];
 	});
+
+	const totalSats = $derived(
+		items.filter((i) => !i.unreachable).reduce((sum, i) => sum + i.balance, 0)
+	);
 </script>
 
 <svelte:head>
-	<title>Wallets — Cairn</title>
+	<title>Wallets — Heartwood</title>
 </svelte:head>
 
-<div class="head row">
-	<h1 class="page-title grow">Wallets</h1>
-	{#if loading || items.length > 0}
-		<a href="/wallets/new" class="btn btn-primary">
-			<Icon name="plus" size={15} />
-			Add wallet
-		</a>
-	{/if}
-</div>
-
-{#if scans?.loadError}
-	<div style="margin-bottom: 14px">
-		<Banner variant="error">Couldn't load your wallets: {scans.loadError}</Banner>
-	</div>
-{/if}
-
-{#if loading}
-	<!-- Streamed scans still resolving (cairn-ybsv): skeleton cards keep the
-	     page responsive while Electrum answers. -->
-	<div class="grid fade-in" aria-busy="true" aria-label="Loading wallets">
-		{#each [0, 1, 2] as i (i)}
-			<div class="card card-pad wallet-card">
-				<div class="row" style="gap: 10px">
-					<span class="wallet-name grow skeleton">Wallet name</span>
-					<span class="badge badge-neutral skeleton">Type</span>
-				</div>
-				<span class="wallet-kind skeleton">Wallet kind</span>
-				<div class="balance">
-					<span class="hero-number wallet-btc skeleton">0.00000000</span>
-				</div>
-				<span class="hint activity skeleton">last activity</span>
+<div class="wallets-page fade-in">
+	<GroveField volume="present" />
+	<div class="page-content">
+		{#if scans?.loadError}
+			<div class="load-error" role="alert">
+				<Icon name="alert-triangle" size={15} />
+				<span>Couldn't load your wallets: {scans.loadError}</span>
 			</div>
-		{/each}
-	</div>
-{:else if items.length === 0}
-	<div class="card onboard fade-in">
-		<div class="onboard-icon">
-			<Icon name="wallet" size={26} />
-		</div>
-		<h2 class="onboard-title">Bring your first wallet</h2>
-		<p class="onboard-copy">
-			Add a wallet with a single key, or a multisig wallet that needs several keys to spend. Cairn
-			only ever sees <em>public</em> keys — it tracks your balance and history, and you sign every
-			spend on your own device. Nothing here can move your bitcoin on its own.
-		</p>
-		<div class="onboard-actions">
-			<a href="/wallets/new" class="btn btn-primary">
-				<Icon name="plus" size={15} />
-				Add your first wallet
-			</a>
-			<a href="/wallets/new?restore=1" class="restore-link">
-				<Icon name="arrow-down-left" size={14} />
-				Restore from a backup
-			</a>
-		</div>
-	</div>
-{:else}
-	<div class="grid fade-in">
-		{#each items as item (item.kind + '-' + item.id)}
-			<a
-				href={item.href}
-				class="card card-pad wallet-card"
-				class:multisig-card={item.kind === 'multisig'}
-			>
-				<div class="row" style="gap: 10px">
-					{#if item.kind === 'multisig'}
-						<span class="multisig-icon"><Icon name="shield" size={13} /></span>
-					{/if}
-					<span class="wallet-name grow truncate">{item.name}</span>
-					{#if item.kind === 'multisig'}
-						<span class="badge badge-accent">{item.threshold} of {item.totalKeys}</span>
-					{:else}
-						<span class="badge badge-neutral">{SCRIPT_TYPE_LABELS[item.scriptType]}</span>
-					{/if}
-				</div>
-				<span class="wallet-kind">
-					{item.kind === 'multisig' ? 'Multisig wallet' : walletTypeLabel(item.deviceType)}
-					{#if item.kind === 'multisig' && item.sharedBy}
-						· <span class="shared-by">Shared by {item.sharedBy}</span>
-					{/if}
-				</span>
+		{/if}
 
-				{#if item.unreachable}
-					<div class="balance">
-						<span class="hero-number wallet-btc muted-balance">—</span>
-					</div>
-					<div class="row" style="gap: 8px; flex-wrap: wrap">
-						<span class="badge badge-warning" title={item.error}>
-							<Icon name="alert-triangle" size={12} />
-							unreachable
-						</span>
+		{#if !loading && items.length === 0}
+			<!-- ------------------------------------------- first-run onboard -->
+			<section class="onboard fade-in">
+				<div class="onboard-icon"><Icon name="wallet" size={26} /></div>
+				<h2 class="onboard-title">Bring your first wallet</h2>
+				<p class="onboard-copy">
+					Add a wallet with a single key, or a multisig wallet that needs several keys to spend.
+					Heartwood only ever sees <em>public</em> keys — it tracks your balance and history, and
+					you sign every spend on your own device. Nothing here can move your bitcoin on its own.
+				</p>
+				<div class="onboard-actions">
+					<a href="/wallets/new" class="btn btn-primary pill-lg">
+						<Icon name="plus" size={15} />
+						Add your first wallet
+					</a>
+					<a href="/wallets/new?restore=1" class="restore-link">
+						<Icon name="arrow-down-left" size={14} />
+						Restore from a backup
+					</a>
+				</div>
+			</section>
+		{:else}
+			<!-- ------------------------------------------- eyebrow + hero -->
+			<header class="head">
+				<span class="head-eyebrow">Wallets</span>
+				{#if loading}
+					<div class="head-hero">
+						<span class="hero-number head-btc skeleton">0.0000</span>
 					</div>
 				{:else}
-					<div class="balance">
-						<span class="hero-number wallet-btc" title="{formatSats(item.balance)} sats">
-							{formatBtc(item.balance)}
+					<div class="head-hero">
+						<span class="hero-number head-btc" title="{formatSats(totalSats)} sats">
+							{formatBtc(totalSats)}
 						</span>
-						<span class="unit">BTC</span>
+						<span class="head-unit">BTC</span>
 					</div>
-					{#if item.unconfirmed !== 0}
-						<div class="row" style="gap: 8px; flex-wrap: wrap">
-							<span class="badge badge-warning">
-								{item.unconfirmed > 0 ? '+' : ''}{formatSats(item.unconfirmed)} sats pending
-							</span>
-						</div>
-					{/if}
+					<p class="head-sub">
+						across {items.length} wallet{items.length === 1 ? '' : 's'}
+					</p>
 				{/if}
+				<div class="head-actions">
+					<a href="/wallets/new" class="btn btn-primary head-pill">
+						<Icon name="plus" size={15} />
+						Add wallet
+					</a>
+				</div>
+			</header>
 
-				<span class="hint activity">
-					<Icon name="clock" size={12} />
-					{#if item.unreachable}
-						balance unavailable — check connection
-					{:else if item.lastActivity}
-						last activity {timeAgo(item.lastActivity)}
-					{:else}
-						no activity
-					{/if}
-				</span>
-			</a>
-		{/each}
+			<!-- ------------------------------------------- hairline wallet rows -->
+			{#if loading}
+				<div class="rows" aria-busy="true" aria-label="Loading wallets">
+					{#each [0, 1, 2] as i (i)}
+						<div class="wallet-row">
+							<div class="row-main">
+								<span class="row-name skeleton">Wallet name</span>
+								<span class="row-meta skeleton">Wallet kind · type</span>
+							</div>
+							<div class="row-right">
+								<span class="row-btc skeleton">0.0000</span>
+								<span class="row-when skeleton">last activity</span>
+							</div>
+						</div>
+					{/each}
+				</div>
+			{:else}
+				<div class="rows">
+					{#each items as item (item.kind + '-' + item.id)}
+						<a href={item.href} class="wallet-row">
+							<div class="row-main">
+								<span class="row-name">
+									{#if item.kind === 'multisig'}
+										<Icon name="shield" size={13} />
+									{/if}
+									<span class="row-name-text truncate">{item.name}</span>
+								</span>
+								<span class="row-meta">
+									{#if item.kind === 'multisig'}
+										{item.threshold} of {item.totalKeys} keys
+										{#if item.sharedBy}
+											· <span class="shared-by">shared by {item.sharedBy}</span>
+										{/if}
+									{:else}
+										{walletTypeLabel(item.deviceType)} · {SCRIPT_TYPE_LABELS[item.scriptType]}
+									{/if}
+									{#if item.unreachable}
+										· <span class="row-attention" title={item.error}>unreachable</span>
+									{:else if item.unconfirmed !== 0}
+										· <span class="row-attention tabular">
+											{item.unconfirmed > 0 ? '+' : ''}{formatSats(item.unconfirmed)} sats pending
+										</span>
+									{/if}
+								</span>
+							</div>
+							<div class="row-right">
+								{#if item.unreachable}
+									<span class="row-btc muted">—</span>
+									<span class="row-when">check connection</span>
+								{:else}
+									<span class="row-btc tabular" title="{formatSats(item.balance)} sats">
+										{formatBtc(item.balance)}
+									</span>
+									<span class="row-when">
+										{#if item.lastActivity}
+											{timeAgo(item.lastActivity)}
+										{:else}
+											no activity
+										{/if}
+									</span>
+								{/if}
+							</div>
+						</a>
+					{/each}
+				</div>
+			{/if}
+		{/if}
 	</div>
-{/if}
+</div>
 
 <style>
+	/* Grove field needs a positioned ancestor; content floats above it. */
+	.wallets-page {
+		position: relative;
+	}
+
+	.page-content {
+		position: relative;
+		z-index: 1;
+	}
+
+	.load-error {
+		display: flex;
+		align-items: flex-start;
+		gap: 8px;
+		padding: 12px 0;
+		margin-bottom: 16px;
+		border-bottom: 1px solid var(--hairline);
+		font-size: 13px;
+		line-height: 1.5;
+		color: var(--attention);
+	}
+
+	.load-error :global(svg) {
+		flex-shrink: 0;
+		margin-top: 2px;
+	}
+
+	/* --- eyebrow + hero --- */
+
 	.head {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+	}
+
+	.head-eyebrow {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.22em;
+		text-transform: uppercase;
+		color: var(--eyebrow);
+	}
+
+	.head-hero {
+		display: flex;
+		align-items: baseline;
+		gap: 12px;
+		margin-top: 18px;
+		min-width: 0;
+		max-width: 100%;
+	}
+
+	.head-btc {
+		font-size: clamp(44px, 7vw, 72px);
+		line-height: 0.95;
+		color: var(--text-hero);
+	}
+
+	.head-btc.skeleton {
+		color: transparent;
+	}
+
+	.head-unit {
+		font-family: var(--font-serif);
+		font-weight: 600;
+		font-size: clamp(20px, 3vw, 30px);
+		color: var(--text-secondary);
+	}
+
+	.head-sub {
+		margin-top: 14px;
+		font-size: 15px;
+		color: var(--text-secondary);
+	}
+
+	.head-actions {
+		display: flex;
+		gap: 12px;
+		margin-top: 28px;
+		align-self: stretch;
+	}
+
+	.head-pill {
+		height: 52px;
+		padding: 0 30px;
+		font-size: 15px;
+		font-weight: 600;
+	}
+
+	/* --- hairline wallet rows (7a grammar) --- */
+
+	.rows {
+		display: flex;
+		flex-direction: column;
+		margin-top: 40px;
+		border-top: 1px solid var(--hairline);
+	}
+
+	.wallet-row {
+		display: flex;
+		align-items: center;
 		gap: 16px;
-		margin-bottom: 22px;
+		padding: 16px 2px;
+		border-bottom: 1px solid var(--hairline);
+		color: var(--text-rows);
+		min-width: 0;
+		transition: background 0.15s var(--ease);
+	}
+
+	.wallet-row:hover {
+		background: rgba(255, 255, 255, 0.018);
+	}
+
+	.wallet-row:hover .row-name-text {
+		color: var(--accent-bright);
+	}
+
+	.row-main {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+	}
+
+	.row-name {
+		display: inline-flex;
+		align-items: center;
+		gap: 7px;
+		font-size: 15px;
+		font-weight: 500;
+		color: var(--text-rows);
+		min-width: 0;
+	}
+
+	.row-name :global(svg) {
+		color: var(--accent);
+		flex-shrink: 0;
+	}
+
+	.row-name-text {
+		transition: color 0.15s var(--ease);
+	}
+
+	.row-meta {
+		font-size: 12.5px;
+		color: var(--text-muted);
 	}
 
 	.shared-by {
 		color: var(--accent);
 	}
 
-	.grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-		gap: 14px;
+	.row-attention {
+		color: var(--attention);
 	}
 
-	.wallet-card {
+	.row-right {
 		display: flex;
 		flex-direction: column;
-		gap: 10px;
-		color: inherit;
-		transition: border-color 120ms var(--ease);
-	}
-
-	.wallet-card:hover {
-		border-color: var(--border);
-	}
-
-	.multisig-card {
-		border-color: var(--accent-border);
-	}
-
-	.multisig-icon {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 24px;
-		height: 24px;
-		border-radius: 50%;
-		background: var(--accent-muted);
-		color: var(--accent);
+		align-items: flex-end;
+		gap: 3px;
 		flex-shrink: 0;
 	}
 
-	.wallet-name {
-		font-size: 14.5px;
+	/* Balances in serif — numbers that matter. */
+	.row-btc {
+		font-family: var(--font-serif);
+		font-size: 16.5px;
 		font-weight: 600;
+		font-variant-numeric: tabular-nums;
+		color: var(--text-rows);
+		white-space: nowrap;
 	}
 
-	.wallet-kind {
+	.row-btc.muted {
+		color: var(--text-muted);
+	}
+
+	.row-when {
 		font-size: 11.5px;
-		color: var(--text-muted);
-		margin-top: -4px;
-	}
-
-	.balance {
-		display: flex;
-		align-items: baseline;
-		gap: 7px;
-		margin-top: 2px;
-	}
-
-	.wallet-btc {
-		font-size: 28px;
-	}
-
-	.muted-balance {
-		color: var(--text-muted);
-	}
-
-	.unit {
-		font-size: 12px;
-		color: var(--text-muted);
-	}
-
-	.activity {
-		display: inline-flex;
-		align-items: center;
-		gap: 5px;
-		margin-top: auto;
+		color: var(--text-faint);
 	}
 
 	/* --- onboarding empty state --- */
@@ -279,7 +391,7 @@
 		flex-direction: column;
 		align-items: center;
 		gap: 14px;
-		padding: 56px 32px;
+		padding: 72px 32px;
 		text-align: center;
 		max-width: 520px;
 		margin: 40px auto 0;
@@ -298,9 +410,10 @@
 
 	.onboard-title {
 		font-family: var(--font-serif);
-		font-size: 22px;
-		font-weight: 560;
+		font-size: 24px;
+		font-weight: 600;
 		letter-spacing: -0.01em;
+		color: var(--text-hero);
 	}
 
 	.onboard-copy {
@@ -323,6 +436,13 @@
 		gap: 12px;
 	}
 
+	.pill-lg {
+		height: 52px;
+		padding: 0 30px;
+		font-size: 15px;
+		font-weight: 600;
+	}
+
 	.restore-link {
 		display: inline-flex;
 		align-items: center;
@@ -337,5 +457,57 @@
 
 	.restore-link :global(svg) {
 		flex-shrink: 0;
+	}
+
+	/* --- mobile (≤900px, tab page) --- */
+
+	@media (max-width: 900px) {
+		.head {
+			align-items: center;
+			text-align: center;
+			margin-top: 10px;
+		}
+
+		.head-hero {
+			margin-top: 14px;
+			gap: 8px;
+		}
+
+		.head-btc {
+			font-size: clamp(38px, 11vw, 48px);
+			line-height: 1;
+		}
+
+		.head-unit {
+			font-size: 19px;
+		}
+
+		.head-sub {
+			margin-top: 12px;
+			font-size: 12.5px;
+		}
+
+		.head-actions {
+			width: 100%;
+			margin-top: 24px;
+		}
+
+		.head-actions .head-pill {
+			flex: 1;
+			height: 48px;
+			font-size: 14.5px;
+		}
+
+		.rows {
+			margin-top: 30px;
+		}
+
+		.row-name {
+			font-size: 13.5px;
+		}
+
+		.row-btc {
+			font-size: 14px;
+		}
 	}
 </style>

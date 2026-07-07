@@ -31,6 +31,39 @@
 	let open = $state(false);
 	let loading = $state(false);
 	let panelEl = $state<HTMLDivElement | null>(null);
+	let bellEl = $state<HTMLButtonElement | null>(null);
+	let popEl = $state<HTMLDivElement | null>(null);
+
+	// The sidebar is position:sticky — a stacking context — so no z-index can
+	// lift the panel above main-content stacking contexts (.fade-in animates a
+	// transform, which is enough to paint over it; cairn-k391). The Popover API
+	// puts the panel in the browser TOP LAYER, above everything, ending the
+	// z-index war outright. Feature-detected: without it (old browsers) the
+	// absolute-positioned fallback below still works, it just isn't top-layer.
+	const canPopover =
+		typeof HTMLElement !== 'undefined' && 'showPopover' in HTMLElement.prototype;
+
+	/** Pin the top-layer panel to the bell: same left edge, opening upward. */
+	function positionPanel() {
+		if (!popEl || !bellEl) return;
+		const rect = bellEl.getBoundingClientRect();
+		// Clamp so the 320px panel never leaves the viewport on narrow screens.
+		const left = Math.max(8, Math.min(rect.left, window.innerWidth - 320 - 8));
+		popEl.style.left = `${left}px`;
+		popEl.style.bottom = `${window.innerHeight - rect.top + 8}px`;
+	}
+
+	$effect(() => {
+		if (!open || !popEl || !canPopover) return;
+		positionPanel();
+		try {
+			popEl.showPopover();
+		} catch {
+			// Already shown, or the browser refused — the panel still renders.
+		}
+		window.addEventListener('resize', positionPanel);
+		return () => window.removeEventListener('resize', positionPanel);
+	});
 
 	// Same event-type → icon map the /activity page uses, extended with the
 	// notification event types (Unit 8). Unknown types fall back by level below.
@@ -128,6 +161,8 @@
 
 	function onDocClick(e: MouseEvent) {
 		if (!open) return;
+		// The popover is still a DOM descendant of .notif (top layer doesn't
+		// reparent), so one containment check covers bell + panel in both modes.
 		if (panelEl && !panelEl.contains(e.target as Node)) open = false;
 	}
 

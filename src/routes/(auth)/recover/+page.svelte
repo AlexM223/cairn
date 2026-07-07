@@ -137,15 +137,15 @@
 </script>
 
 <svelte:head>
-	<title>Recover access — Cairn</title>
+	<title>Recover access — Heartwood</title>
 </svelte:head>
 
 {#if !verified}
 	<form class="stack" onsubmit={verify}>
 		<div class="intro">
-			<h1>Recover access to Cairn</h1>
+			<h1>Recover access to Heartwood</h1>
 			<p class="sub">
-				Lost the device with your passkey? Prove it's you with your Cairn recovery phrase or a
+				Lost the device with your passkey? Prove it's you with your Heartwood recovery phrase or a
 				recovery code, then set up a new passkey.
 			</p>
 		</div>
@@ -204,7 +204,7 @@
 					placeholder="Your 12 words, separated by spaces"
 					bind:value={phrase}
 				></textarea>
-				<p class="hint">The 12-word phrase Cairn gave you when you set up recovery.</p>
+				<p class="hint">The 12-word phrase Heartwood gave you when you set up recovery.</p>
 			</div>
 		{:else}
 			<div class="field">
@@ -231,7 +231,7 @@
 		</button>
 
 		<div class="reassure" role="note">
-			<strong>This restores your Cairn login only.</strong>
+			<strong>This restores your Heartwood login only.</strong>
 			It can never move, spend, or reveal your bitcoin — those keys live on your hardware wallet and
 			are untouched by account recovery.
 		</div>
@@ -254,7 +254,7 @@
 
 		{#if !passkeySupported}
 			<div class="form-error" role="alert">
-				This browser can't create passkeys. Open Cairn in a browser that supports them (or on a
+				This browser can't create passkeys. Open Heartwood in a browser that supports them (or on a
 				device with a screen lock) to finish recovery.
 			</div>
 		{:else}
@@ -265,8 +265,8 @@
 		{/if}
 
 		<div class="reassure" role="note">
-			<strong>Reminder:</strong> this new passkey only signs you in to Cairn. It has no access to your
-			bitcoin, which stays secured on your hardware wallet.
+			<strong>Reminder:</strong> this new passkey only signs you in to Heartwood. It has no access to
+			your bitcoin, which stays secured on your hardware wallet.
 		</div>
 
 		<p class="alt"><a href="/login">Cancel and go back</a></p>
@@ -302,31 +302,35 @@
 		margin-top: 4px;
 	}
 
+	/* Heartwood text-toggle grammar: no boxed track — active tab is copper
+	   text on a copper tint pill, inactive is quiet text. */
 	.method-toggle {
 		display: flex;
-		gap: 6px;
-		padding: 4px;
-		background: var(--surface-2, rgba(127, 127, 127, 0.06));
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-card);
+		justify-content: center;
+		gap: 8px;
 	}
 
 	.method-btn {
-		flex: 1;
-		padding: 8px 10px;
-		font-size: 13px;
+		padding: 6px 13px;
+		font-size: 12.5px;
 		font-weight: 500;
-		color: var(--text-muted);
+		color: var(--eyebrow-path);
 		background: transparent;
 		border: 0;
-		border-radius: calc(var(--radius-card) - 4px);
+		border-radius: var(--radius-toggle);
 		cursor: pointer;
+		transition:
+			color 120ms var(--ease),
+			background 120ms var(--ease);
+	}
+
+	.method-btn:hover {
+		color: var(--text-secondary);
 	}
 
 	.method-btn.active {
-		color: var(--text);
-		background: var(--surface);
-		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+		color: var(--accent-bright);
+		background: var(--accent-muted);
 	}
 
 	.phrase-input {
@@ -348,14 +352,15 @@
 		color: var(--text-muted);
 	}
 
+	/* Hairlines, not boxes: the reassurance note reads as a quiet aside
+	   between two hairline rules rather than a panel. */
 	.reassure {
 		font-size: 12.5px;
 		line-height: 1.5;
 		color: var(--text-muted);
-		padding: 12px 14px;
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-card);
-		background: var(--surface-2, rgba(127, 127, 127, 0.04));
+		padding: 12px 4px;
+		border-top: 1px solid var(--hairline);
+		border-bottom: 1px solid var(--hairline);
 	}
 
 	.reassure strong {

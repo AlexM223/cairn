@@ -7,10 +7,16 @@
 	import Banner from '$lib/components/Banner.svelte';
 	import Toasts from '$lib/components/Toasts.svelte';
 	import { toast } from '$lib/components/toast.svelte';
-	import Stepper from '$lib/components/Stepper.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
+	import GroveField from '$lib/components/heartwood/GroveField.svelte';
+	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
+	import QuorumArc from '$lib/components/heartwood/QuorumArc.svelte';
+	import BurialRings from '$lib/components/heartwood/BurialRings.svelte';
+	import Modal from '$lib/components/heartwood/Modal.svelte';
+	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
+	import AtTipPill from '$lib/components/heartwood/AtTipPill.svelte';
 	import { formatBtc, formatSats, formatFeeRate, truncateMiddle } from '$lib/format';
 	import type { ScriptType } from '$lib/types';
 	import type { ConstructedPsbt } from '$lib/server/bitcoin/psbt';
@@ -196,28 +202,53 @@
 
 	// One row per output. A single row is the classic send; adding rows makes
 	// a batch payment — one transaction, several recipients, one fee.
-	type RecipientRow = { key: number; address: string; amountBtc: string };
+	// `amountText` is in the CURRENT display unit (see `unit` below).
+	type RecipientRow = { key: number; address: string; amountText: string };
 	let rowKey = 0;
 	function seedRows(): RecipientRow[] {
 		if (resumeTx && resumeTx.recipients.length > 0) {
 			return resumeTx.recipients.map((r) => ({
 				key: rowKey++,
 				address: r.address,
-				amountBtc: r.amount > 0 ? formatBtc(r.amount, { trim: true }) : ''
+				amountText: r.amount > 0 ? formatBtc(r.amount, { trim: true }) : ''
 			}));
 		}
 		if (consolidate?.to) {
-			return [{ key: rowKey++, address: consolidate.to, amountBtc: '' }];
+			return [{ key: rowKey++, address: consolidate.to, amountText: '' }];
 		}
-		return [{ key: rowKey++, address: '', amountBtc: '' }];
+		return [{ key: rowKey++, address: '', amountText: '' }];
 	}
 	// svelte-ignore state_referenced_locally — intentional per-load seed
 	let rows = $state<RecipientRow[]>(seedRows());
 	// Consolidation is a self-sweep of the selected coins — Max is the point.
 	let amountMode = $state<'btc' | 'max'>(consolidate ? 'max' : 'btc');
 
+	// The hero's unit-swap circle: amounts are typed in BTC or sats. Rows seed
+	// in BTC; toggling converts every row's text in place so what the user sees
+	// stays the same amount. `rowSats` is the one converter every consumer uses.
+	let unit = $state<'btc' | 'sats'>('btc');
+
+	function rowSats(r: RecipientRow): number {
+		const n = Number(r.amountText);
+		if (!Number.isFinite(n) || n <= 0) return 0;
+		return unit === 'btc' ? Math.round(n * SATS_PER_BTC) : Math.round(n);
+	}
+
+	function toggleUnit() {
+		const next = unit === 'btc' ? 'sats' : 'btc';
+		rows = rows.map((r) => {
+			const sats = rowSats(r);
+			if (sats <= 0) return r; // empty/invalid text carries over untouched
+			return {
+				...r,
+				amountText: next === 'sats' ? String(sats) : formatBtc(sats, { trim: true })
+			};
+		});
+		unit = next;
+	}
+
 	function addRow() {
-		rows = [...rows, { key: rowKey++, address: '', amountBtc: '' }];
+		rows = [...rows, { key: rowKey++, address: '', amountText: '' }];
 		amountMode = 'btc'; // send-max is single-recipient-only
 	}
 
@@ -251,6 +282,14 @@
 		return Math.max(1, fallback);
 	});
 
+	// "next ring ≈ N min" — the brand way to say confirmation ETA per tier.
+	const feeEta = $derived.by(() => {
+		if (feeChoice === 'fast') return 'next ring ≈ 10 min';
+		if (feeChoice === 'normal') return 'next ring ≈ 30 min';
+		if (feeChoice === 'economy') return 'next ring ≈ 1 hr or more';
+		return 'custom rate — timing depends on the mempool';
+	});
+
 	// Warn when the effective rate is drastically above the live fast tier —
 	// almost always a typo in the custom box, and an overpaid fee is gone the
 	// moment the transaction broadcasts. The 50 sat/vB floor keeps low-fee
@@ -272,7 +311,7 @@
 		rows.every((r) => {
 			if (r.address.trim().length === 0 || !looksLikeAddress(r.address)) return false;
 			if (isMax) return true;
-			return Number(r.amountBtc) > 0 && Number.isFinite(Number(r.amountBtc));
+			return rowSats(r) > 0;
 		})
 	);
 
@@ -282,22 +321,17 @@
 	// server stays authoritative (and its errors surface via buildError without
 	// touching what the user typed).
 	function amountError(r: RecipientRow): string | null {
-		if (isMax || r.amountBtc.trim().length === 0) return null;
-		const n = Number(r.amountBtc);
+		if (isMax || r.amountText.trim().length === 0) return null;
+		const n = Number(r.amountText);
 		if (!Number.isFinite(n) || n <= 0) return 'Amount must be a positive number.';
-		if (data.confirmed != null && Math.round(n * SATS_PER_BTC) > data.confirmed)
+		if (data.confirmed != null && rowSats(r) > data.confirmed)
 			return "That's more than this wallet holds.";
 		return null;
 	}
 
 	// Running total across rows — shown on batch sends so the sum is visible
 	// before Review.
-	const createTotalSats = $derived(
-		rows.reduce((s, r) => {
-			const n = Number(r.amountBtc);
-			return s + (n > 0 && Number.isFinite(n) ? Math.round(n * SATS_PER_BTC) : 0);
-		}, 0)
-	);
+	const createTotalSats = $derived(rows.reduce((s, r) => s + rowSats(r), 0));
 
 	// The send as a whole can't exceed the confirmed balance either (a batch's
 	// rows may each pass alone but overshoot together). Fee-exclusive on
@@ -323,7 +357,7 @@
 		chainDepthWarning = null;
 		const recipients = rows.map((r) => ({
 			address: r.address.trim(),
-			amount: (isMax ? 'max' : Math.round(Number(r.amountBtc) * SATS_PER_BTC)) as number | 'max'
+			amount: (isMax ? 'max' : rowSats(r)) as number | 'max'
 		}));
 		// Manual coin control rides along only when coins are actually selected.
 		const onlyUtxos = selectedCoins.map((k) => {
@@ -357,7 +391,7 @@
 			syncTxParam(draft.id);
 			step = 'review';
 		} catch {
-			buildError = 'Could not reach Cairn to build the transaction.';
+			buildError = 'Could not reach Heartwood to build the transaction.';
 		} finally {
 			building = false;
 		}
@@ -454,7 +488,7 @@
 					'This PSBT was attached but still is not fully signed. Sign it with your wallet and upload it again.';
 			}
 		} catch {
-			signError = 'Could not reach Cairn to attach the signed transaction.';
+			signError = 'Could not reach Heartwood to attach the signed transaction.';
 		} finally {
 			attaching = false;
 		}
@@ -468,6 +502,9 @@
 	let broadcasting = $state(false);
 	let broadcastError = $state<string | null>(null);
 	let broadcastRejected = $state(false);
+	// The irreversible-act modal ("Once it takes a ring, there is no undo.") —
+	// broadcast() only runs from its confirm.
+	let confirmOpen = $state(false);
 	// svelte-ignore state_referenced_locally — intentional per-load seed
 	let sentTxid = $state<string | null>(resumeTx?.txid ?? null);
 
@@ -499,7 +536,7 @@
 			draft = body.transaction as SavedTransaction;
 			step = 'sent';
 		} catch {
-			broadcastError = 'Could not reach Cairn to broadcast.';
+			broadcastError = 'Could not reach Heartwood to broadcast.';
 		} finally {
 			broadcasting = false;
 		}
@@ -528,6 +565,17 @@
 	const stepAriaLabel = $derived(
 		`Step ${stepIndex + 1} of ${STEPS.length}: ${STEPS[stepIndex]?.label ?? ''}`
 	);
+
+	// The eyebrow's current descriptor tracks the step; on Create it carries
+	// the spendable balance (`SEND · 2.6180 AVAILABLE`).
+	const crumbCurrent = $derived.by(() => {
+		if (step === 'create')
+			return data.confirmed != null ? `Send · ${formatBtc(data.confirmed)} available` : 'Send';
+		if (step === 'review') return 'Send · review';
+		if (step === 'sign') return 'Send · sign';
+		if (step === 'confirm') return 'Send · broadcast';
+		return 'Sent';
+	});
 
 	// Forward navigation is gated: you can only move to a step whose prereq is
 	// met. Backward navigation to Create (to edit) is always allowed while the
@@ -575,7 +623,7 @@
 			addressJustSaved = true;
 			toast.success('Saved to your address book.');
 		} catch {
-			saveAddressError = 'Could not reach Cairn to save the address.';
+			saveAddressError = 'Could not reach Heartwood to save the address.';
 		} finally {
 			savingAddress = false;
 		}
@@ -585,6 +633,16 @@
 		draft ? `/api/wallets/${walletId}/transactions/${draft.id}/file` : '#'
 	);
 	const explorerUrl = $derived(sentTxid ? `/explorer/tx/${sentTxid}` : '#');
+
+	async function copyAddress(text: string) {
+		if (!text) return;
+		try {
+			await navigator.clipboard.writeText(text);
+			toast.success('Address copied.');
+		} catch {
+			toast.error('Could not copy — select and copy it by hand.');
+		}
+	}
 
 	// ---------------------------------------------------- Sign: method selection
 	// One signing method is active (expanded) at a time; the rest collapse to
@@ -619,6 +677,11 @@
 		walletDevice && walletDevice !== 'file'
 			? `Sign with your ${WALLET_DEVICE_LABELS[walletDevice]}`
 			: 'Sign this transaction with your wallet'
+	);
+
+	// The Sign step's single key row: name the device when one is on record.
+	const keyRowName = $derived(
+		walletDevice && walletDevice !== 'file' ? WALLET_DEVICE_LABELS[walletDevice] : 'Your key'
 	);
 
 	// Persist which device the user signs with the first time they pick one, so
@@ -687,7 +750,7 @@
 	}
 
 	// Every signer hands its result here → same substitution-guard PATCH as the
-	// generic file method, then the stepper advances identically.
+	// generic file method, then the flow advances identically.
 	function handleDeviceSigned(signedPsbtBase64: string) {
 		void attachSignedPsbt(signedPsbtBase64.trim());
 	}
@@ -722,54 +785,50 @@
 </script>
 
 <svelte:head>
-	<title>Send · {data.wallet.name} · Cairn</title>
+	<title>Send · {data.wallet.name} · Heartwood</title>
 </svelte:head>
 
-<div class="send-page" bind:this={pageEl}>
-	<header class="page-head">
-		<a class="back" href={`/wallets/${walletId}`}>
-			<Icon name="chevron-left" size={15} />
-			<span>{data.wallet.name}</span>
-		</a>
-		<h1 class="page-title">Send bitcoin</h1>
-	</header>
+<div class="send-page hw-owns-header" bind:this={pageEl}>
+	<GroveField volume={step === 'sent' ? 'grove' : 'present'} />
 
-	<div class="stepper-wrap card card-pad">
-		<Stepper steps={STEPS} current={step} />
-	</div>
-
-	<!-- ============================================================ CREATE -->
-	{#if step === 'create'}
-		<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
-			<HowItWorks id="send-psbt">
-				<p>
-					Cairn builds an <Term
-						tip="A Partially Signed Bitcoin Transaction — an unsigned proposal your hardware wallet reviews and signs. Your private keys never touch Cairn's server."
-						>unsigned transaction (a PSBT)</Term
-					> — a proposal describing exactly what will be sent. You take it to your hardware
-					wallet or signing app, which reviews it and adds your signature.
-				</p>
-				<p>
-					<strong>Your keys never touch Cairn.</strong> Cairn only holds your public key — it can
-					build and broadcast, but only your device can authorize the spend.
-				</p>
-			</HowItWorks>
-
-			<div class="fee-warning" role="note">
-				<Icon name="alert-triangle" size={16} />
-				<div>
-					This transaction is irreversible. You'll verify the address and amount on your hardware
-					wallet before anything is signed — but once it's sent, it can't be undone.
-				</div>
-			</div>
-
-			{#if data.scanError}
-				<Banner variant="error">
-					Couldn't reach your node to load spendable coins: {data.scanError}
-				</Banner>
+	<div class="page-content">
+		<!-- Mobile flow header (8b/8c): back circle + centered eyebrow + spacer.
+		     The Sent moment (8k) drops the back circle — there is no "back" from
+		     a broadcast, only Done. -->
+		<header class="flow-header">
+			{#if step === 'sent'}
+				<span class="flow-spacer"></span>
+			{:else}
+				<BackCircle href={`/wallets/${walletId}`} />
 			{/if}
+			<span class="flow-eyebrow">
+				{#if step === 'sign'}
+					Sign
+					<QuorumArc total={1} collected={signedComplete ? 1 : 0} active={!signedComplete} size={18} />
+					{signedComplete ? 1 : 0} of 1
+				{:else if step === 'sent'}
+					Sent
+				{:else}
+					Send · {data.wallet.name}
+				{/if}
+			</span>
+			<span class="flow-spacer"></span>
+		</header>
 
-			<div class="card card-pad stack" style="gap: 18px">
+		<div class="eyebrow-row">
+			<EyebrowBreadcrumb path={[data.wallet.name]} current={crumbCurrent} />
+			<AtTipPill height={tipHeight} pulseKey={tipHeight} />
+		</div>
+
+		<!-- ============================================================ CREATE -->
+		{#if step === 'create'}
+			<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
+				{#if data.scanError}
+					<Banner variant="error">
+						Couldn't reach your node to load spendable coins: {data.scanError}
+					</Banner>
+				{/if}
+
 				{#if consolidate}
 					<div class="max-note">
 						<Icon name="zap" size={15} />
@@ -783,97 +842,175 @@
 						</span>
 					</div>
 				{/if}
-				{#each rows as row, i (row.key)}
-					<div class="recipient-block" class:multi={rows.length > 1}>
-						{#if rows.length > 1}
-							<div class="row recipient-block-head">
-								<span class="label">Recipient {i + 1}</span>
+
+				{#if rows.length === 1}
+					{@const row = rows[0]}
+					<!-- The hero: the typed amount owns the page. -->
+					<div class="amount-hero">
+						{#if !isMax}
+							<div class="hero-line">
+								<!-- svelte-ignore a11y_autofocus -->
+								<input
+									class="hero-input"
+									inputmode="decimal"
+									placeholder={unit === 'btc' ? '0.00' : '0'}
+									bind:value={row.amountText}
+									aria-label="Amount in {unit === 'btc' ? 'BTC' : 'sats'}"
+									aria-invalid={amountError(row) !== null}
+									style:width="{Math.max(4, (row.amountText || '0.00').length + 0.5)}ch"
+								/>
+								<span class="hero-unit">{unit === 'btc' ? 'BTC' : 'sats'}</span>
 								<button
 									type="button"
-									class="row-remove"
-									aria-label={`Remove recipient ${i + 1}`}
-									onclick={() => removeRow(row.key)}
+									class="unit-swap"
+									onclick={toggleUnit}
+									aria-label="Switch to {unit === 'btc' ? 'sats' : 'BTC'}"
+									title="Switch to {unit === 'btc' ? 'sats' : 'BTC'}"
 								>
-									<Icon name="x" size={14} />
+									<Icon name="refresh" size={14} />
 								</button>
 							</div>
-						{/if}
-						<div class="field">
-							{#if rows.length === 1}
-								<label class="label" for={`recipient-${row.key}`}>Recipient address</label>
-							{/if}
-							<RecipientCombobox
-								id={`recipient-${row.key}`}
-								bind:value={row.address}
-								saved={savedAddresses}
-								invalid={row.address.length > 0 && !looksLikeAddress(row.address)}
-								ondelete={deleteSavedAddress}
-							/>
-							{#if row.address.length > 0 && !looksLikeAddress(row.address)}
-								<p class="hint" style="color: var(--warning)">
-									That doesn't look like a Bitcoin address yet.
+							{#if amountError(row)}
+								<p class="hero-sub attention">{amountError(row)}</p>
+							{:else if rowSats(row) > 0}
+								<p class="hero-sub tabular">
+									{unit === 'btc'
+										? `${formatSats(rowSats(row))} sats`
+										: `${formatBtc(rowSats(row))} BTC`}
+								</p>
+							{:else}
+								<p class="hero-sub">
+									{data.confirmed != null
+										? `${formatBtc(data.confirmed)} BTC spendable`
+										: 'Type an amount'}
 								</p>
 							{/if}
-						</div>
-
-						<div class="field">
-							<div class="row amount-head">
-								<span class="label" id={`amount-label-${row.key}`}>Amount</span>
-								{#if rows.length === 1}
-									<!-- Max sweeps everything to a single destination — the mode
-									     toggle disappears (and the mode resets) with a second row. -->
-									<div class="seg" role="group" aria-label="Amount mode">
-										<button
-											type="button"
-											class="seg-btn"
-											class:active={amountMode === 'btc'}
-											onclick={() => (amountMode = 'btc')}>BTC</button
-										>
-										<button
-											type="button"
-											class="seg-btn"
-											class:active={amountMode === 'max'}
-											onclick={() => (amountMode = 'max')}
-											title="Sweep the whole spendable balance">Max</button
-										>
-									</div>
-								{/if}
+						{:else}
+							<div class="hero-line">
+								<span class="hero-max">Everything</span>
 							</div>
-							{#if !isMax}
-								<div class="amount-input">
-									<input
-										class="input tabular"
-										inputmode="decimal"
-										placeholder="0.00000000"
-										bind:value={row.amountBtc}
-										aria-labelledby={`amount-label-${row.key}`}
-										aria-invalid={amountError(row) !== null}
-									/>
-									<span class="unit">BTC</span>
-								</div>
-								{#if amountError(row)}
-									<p class="hint" style="color: var(--warning)">{amountError(row)}</p>
-								{:else if Number(row.amountBtc) > 0}
-									<p class="hint tabular">
-										{formatSats(Math.round(Number(row.amountBtc) * SATS_PER_BTC))} sats
-									</p>
-								{/if}
-							{:else}
-								<div class="max-note">
-									<Icon name="zap" size={15} />
-									<span>Sweeps the entire spendable balance to this address, minus the fee.</span>
-								</div>
-							{/if}
+							<p class="hero-sub">
+								Sweeps the entire spendable balance to this address, minus the fee.
+							</p>
+						{/if}
+						<div class="mode-toggles" role="group" aria-label="Amount mode">
+							<button
+								type="button"
+								class="txt-toggle"
+								class:active={amountMode === 'btc'}
+								onclick={() => (amountMode = 'btc')}>Amount</button
+							>
+							<button
+								type="button"
+								class="txt-toggle"
+								class:active={amountMode === 'max'}
+								onclick={() => (amountMode = 'max')}
+								title="Sweep the whole spendable balance">Max</button
+							>
 						</div>
 					</div>
-				{/each}
+
+					<!-- TO: hairline field, mono, with copy. -->
+					<div class="to-field">
+						<span class="sec-label" id="to-label">To</span>
+						<div class="to-row">
+							<div class="grow">
+								<RecipientCombobox
+									id={`recipient-${row.key}`}
+									bind:value={row.address}
+									saved={savedAddresses}
+									invalid={row.address.length > 0 && !looksLikeAddress(row.address)}
+									ondelete={deleteSavedAddress}
+								/>
+							</div>
+							<button
+								type="button"
+								class="icon-btn"
+								aria-label="Copy address"
+								title="Copy address"
+								disabled={row.address.trim().length === 0}
+								onclick={() => copyAddress(row.address.trim())}
+							>
+								<Icon name="copy" size={15} />
+							</button>
+						</div>
+						{#if row.address.length > 0 && !looksLikeAddress(row.address)}
+							<p class="field-line attention">That doesn't look like a Bitcoin address yet.</p>
+						{:else if looksLikeAddress(row.address)}
+							<p class="field-line sage">
+								<Icon name="check" size={12} strokeWidth={2.5} /> Valid Bitcoin address
+							</p>
+						{/if}
+					</div>
+				{:else}
+					<!-- Batch send: one hairline block per recipient. -->
+					<div class="batch-blocks">
+						{#each rows as row, i (row.key)}
+							<div class="recipient-block">
+								<div class="row recipient-block-head">
+									<span class="sec-label">Recipient {i + 1}</span>
+									<button
+										type="button"
+										class="row-remove"
+										aria-label={`Remove recipient ${i + 1}`}
+										onclick={() => removeRow(row.key)}
+									>
+										<Icon name="x" size={14} />
+									</button>
+								</div>
+								<div class="field">
+									<RecipientCombobox
+										id={`recipient-${row.key}`}
+										bind:value={row.address}
+										saved={savedAddresses}
+										invalid={row.address.length > 0 && !looksLikeAddress(row.address)}
+										ondelete={deleteSavedAddress}
+									/>
+									{#if row.address.length > 0 && !looksLikeAddress(row.address)}
+										<p class="field-line attention">
+											That doesn't look like a Bitcoin address yet.
+										</p>
+									{/if}
+								</div>
+								<div class="field">
+									<div class="amount-input">
+										<input
+											class="batch-amount tabular"
+											inputmode="decimal"
+											placeholder={unit === 'btc' ? '0.00000000' : '0'}
+											bind:value={row.amountText}
+											aria-label={`Amount for recipient ${i + 1} in ${unit === 'btc' ? 'BTC' : 'sats'}`}
+											aria-invalid={amountError(row) !== null}
+										/>
+										<button
+											type="button"
+											class="unit-inline"
+											onclick={toggleUnit}
+											title="Switch to {unit === 'btc' ? 'sats' : 'BTC'}"
+											>{unit === 'btc' ? 'BTC' : 'sats'}</button
+										>
+									</div>
+									{#if amountError(row)}
+										<p class="field-line attention">{amountError(row)}</p>
+									{:else if rowSats(row) > 0}
+										<p class="field-line tabular muted">
+											{unit === 'btc'
+												? `${formatSats(rowSats(row))} sats`
+												: `${formatBtc(rowSats(row))} BTC`}
+										</p>
+									{/if}
+								</div>
+							</div>
+						{/each}
+					</div>
+				{/if}
 
 				<div class="row batch-row">
 					<button type="button" class="btn btn-ghost btn-sm" onclick={addRow}>
 						<Icon name="plus" size={14} /> Add another recipient
 					</button>
 					{#if rows.length > 1 && createTotalSats > 0}
-						<span class="hint tabular batch-total">
+						<span class="field-line tabular muted batch-total">
 							Total: {formatBtc(createTotalSats)} BTC · {formatSats(createTotalSats)} sats
 						</span>
 					{/if}
@@ -881,54 +1018,56 @@
 				{#if rows.length > 1 && exceedsBalance && rows.every((r) => amountError(r) === null)}
 					<!-- Each amount passes alone but the batch overshoots together — say so
 					     once, by the total, instead of leaving the button silently disabled. -->
-					<p class="hint" style="color: var(--warning)">
+					<p class="field-line attention">
 						Together these amounts are more than this wallet holds.
 					</p>
 				{/if}
 
-				<div class="field">
-					<span class="label">Fee rate</span>
-					<div class="fee-grid">
-						{#each [{ k: 'fast', label: 'Fast', rate: data.fees?.fastest, eta: '~10 min' }, { k: 'normal', label: 'Normal', rate: data.fees?.halfHour, eta: '~30 min' }, { k: 'economy', label: 'Economy', rate: data.fees?.economy, eta: '~1 hr+' }] as opt (opt.k)}
+				<!-- FEE: text toggles, not a dropdown. Label left, live rate + "next
+				     ring" ETA right (5a). -->
+				<div class="fee-section">
+					<div class="fee-head">
+						<span class="sec-label">Fee</span>
+						<span class="fee-caption">{formatFeeRate(feeRate)} · {feeEta}</span>
+					</div>
+					<div class="fee-toggles" role="group" aria-label="Fee rate">
+						{#each [{ k: 'economy', label: 'Low', rate: data.fees?.economy }, { k: 'normal', label: 'Medium', rate: data.fees?.halfHour }, { k: 'fast', label: 'High', rate: data.fees?.fastest }] as opt (opt.k)}
 							<button
 								type="button"
-								class="fee-card"
+								class="txt-toggle"
 								class:active={feeChoice === opt.k}
 								onclick={() => (feeChoice = opt.k as FeeChoice)}
 							>
-								<span class="fee-label">{opt.label}</span>
-								<span class="fee-rate tabular">
-									{opt.rate != null ? formatFeeRate(opt.rate) : '—'}
-								</span>
-								<span class="fee-eta">{opt.eta}</span>
+								{opt.label}{#if opt.rate != null}<span class="toggle-rate tabular"
+										>&nbsp;· {opt.rate < 10 ? Number(opt.rate.toFixed(1)) : Math.round(opt.rate)}</span
+									>{/if}
 							</button>
 						{/each}
 						<button
 							type="button"
-							class="fee-card custom"
+							class="txt-toggle"
 							class:active={feeChoice === 'custom'}
 							onclick={() => (feeChoice = 'custom')}
 						>
-							<span class="fee-label">Custom</span>
-							<div class="custom-input" role="presentation">
-								<input
-									class="input tabular"
-									inputmode="decimal"
-									bind:value={customFee}
-									onfocus={() => (feeChoice = 'custom')}
-									aria-label="Custom fee rate in sat/vB"
-								/>
-								<span class="unit-sm">sat/vB</span>
-							</div>
+							Custom
 						</button>
 					</div>
+					{#if feeChoice === 'custom'}
+						<div class="custom-fee">
+							<input
+								class="custom-fee-input tabular"
+								inputmode="decimal"
+								bind:value={customFee}
+								aria-label="Custom fee rate in sat/vB"
+							/>
+							<span class="unit-sm">sat/vB</span>
+						</div>
+					{/if}
 					{#if !data.fees}
-						<p class="hint">
-							Live fee estimates are unavailable — set a custom sat/vB rate.
-						</p>
+						<p class="fee-caption">Live fee estimates are unavailable — set a custom sat/vB rate.</p>
 					{/if}
 					{#if feeWarning}
-						<div class="fee-warning" role="alert">
+						<div class="attention-panel" role="alert">
 							<Icon name="alert-triangle" size={16} />
 							<div>
 								<strong
@@ -966,60 +1105,47 @@
 					{/if}
 				{/if}
 
+				<HowItWorks id="send-psbt">
+					<p>
+						Heartwood builds an <Term
+							tip="A Partially Signed Bitcoin Transaction — an unsigned proposal your hardware wallet reviews and signs. Your private keys never touch Heartwood's server."
+							>unsigned transaction (a PSBT)</Term
+						> — a proposal describing exactly what will be sent. You take it to your hardware
+						wallet or signing app, which reviews it and adds your signature.
+					</p>
+					<p>
+						<strong>Heartwood never sees a key.</strong> It only holds your public key — it can
+						build and broadcast, but only your device can authorize the spend.
+					</p>
+				</HowItWorks>
+
 				{#if buildError}
-					<Banner variant="error">{buildError}</Banner>
+					<div class="form-error" role="alert">{buildError}</div>
 				{/if}
 
-				<div class="row" style="justify-content: flex-end; gap: 10px">
+				<div class="row step-actions" style="justify-content: flex-end">
 					<a class="btn btn-ghost" href={`/wallets/${walletId}`}>Cancel</a>
-					<button class="btn btn-primary" onclick={build} disabled={!canBuild || building}>
-						{#if building}<span class="spinner"></span> Building…{:else}Review transaction<Icon
+					<button class="btn btn-primary pill-lg" onclick={build} disabled={!canBuild || building}>
+						{#if building}<span class="spinner"></span> Building…{:else}Review send<Icon
 								name="arrow-right"
 								size={15}
 							/>{/if}
 					</button>
 				</div>
-			</div>
-		</section>
+			</section>
 
-	<!-- ============================================================ REVIEW -->
-	{:else if step === 'review' && review}
-		<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
-			<p class="step-lead">
-				Check every detail. Once you sign and broadcast, this transaction
-				<strong>cannot be reversed.</strong>
-			</p>
-
-			{#if chainDepthWarning}
-				<div class="chain-depth-warning" role="status">
-					<Icon name="alert-triangle" size={16} />
-					<span>{chainDepthWarning.message}</span>
-				</div>
-			{/if}
-
-			<div class="card review-hero">
-				{#if review.recipients.length === 1}
-					<div class="review-line">
-						<span class="overline">Sending</span>
-						<span class="hero-number send-amount">{formatBtc(review.amount)} <em>BTC</em></span>
-						<span class="text-muted tabular">{formatSats(review.amount)} sats</span>
-					</div>
-					<div class="review-arrow"><Icon name="arrow-down-left" size={20} /></div>
-					<div class="review-line">
-						<span class="overline">To recipient</span>
+		<!-- ============================================================ REVIEW -->
+		{:else if step === 'review' && review}
+			<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
+				<div class="review-hero">
+					<span class="hero-amount">{formatBtc(review.amount)} <em>BTC</em></span>
+					{#if review.recipients.length === 1}
+						<span class="hero-sub tabular">{formatSats(review.amount)} sats</span>
 						<span class="recipient mono">{review.recipient}</span>
-					</div>
-				{:else}
-					<div class="review-line">
-						<span class="overline">Sending total</span>
-						<span class="hero-number send-amount">{formatBtc(review.amount)} <em>BTC</em></span>
-						<span class="text-muted tabular"
+					{:else}
+						<span class="hero-sub tabular"
 							>{formatSats(review.amount)} sats · {review.recipients.length} recipients</span
 						>
-					</div>
-					<div class="review-arrow"><Icon name="arrow-down-left" size={20} /></div>
-					<div class="review-line">
-						<span class="overline">To recipients</span>
 						<div class="review-recipients">
 							{#each review.recipients as r, i (i)}
 								<div class="review-recipient-row">
@@ -1028,389 +1154,416 @@
 								</div>
 							{/each}
 						</div>
-					</div>
-				{/if}
-			</div>
-
-			<div class="card card-pad detail-list">
-				<div class="detail-row">
-					<span class="text-secondary">Network fee</span>
-					<span class="detail-val tabular">
-						{formatSats(review.fee)} sats
-						<span class="text-muted"
-							>· {formatFeeRate(review.feeRate)}{#if feePctOfAmount != null}
-								· {feePctOfAmount < 0.01 ? '<0.01' : feePctOfAmount.toFixed(2)}% of amount{/if}</span
-						>
-					</span>
+					{/if}
 				</div>
-				{#if review.change}
-					<div class="detail-row">
-						<span class="text-secondary">Change back to your wallet</span>
-						<span class="detail-val tabular">{formatSats(review.change.value)} sats</span>
+
+				<p class="step-lead">
+					Check every detail. Once you sign and broadcast, this transaction
+					<strong>cannot be reversed.</strong>
+				</p>
+
+				{#if chainDepthWarning}
+					<div class="attention-panel" role="status">
+						<Icon name="alert-triangle" size={16} />
+						<span>{chainDepthWarning.message}</span>
 					</div>
 				{/if}
-				{#if review.inputs.length > 0}
-					{@const totalIn = review.inputs.every((i) => i.value != null)
-						? review.inputs.reduce((s, i) => s + (i.value ?? 0), 0)
-						: null}
-					{#if totalIn != null}
-						<div class="detail-row">
-							<span class="text-secondary">Total input</span>
-							<span class="detail-val tabular">{formatSats(totalIn)} sats</span>
-						</div>
-					{/if}
-					<button
-						class="utxo-toggle"
-						aria-expanded={inputsOpen}
-						aria-controls="review-utxo-list"
-						onclick={() => (inputsOpen = !inputsOpen)}
-					>
-						<Icon name={inputsOpen ? 'chevron-down' : 'chevron-right'} size={14} />
-						<span
-							>Coins being spent ({review.inputs.length}
-							{review.inputs.length === 1 ? 'input' : 'inputs'})</span
-						>
-					</button>
-					{#if inputsOpen}
-						<div class="utxo-list fade-in" id="review-utxo-list">
-							{#each review.inputs as inp (inp.txid + inp.vout)}
-								<div class="utxo-row">
-									<span class="mono text-muted">{truncateMiddle(inp.txid, 10, 8)}:{inp.vout}</span>
-									{#if inp.value != null}
-										<span class="tabular">{formatSats(inp.value)} sats</span>
-									{/if}
-								</div>
-							{/each}
-						</div>
-					{/if}
-				{:else}
-					<p class="hint">
-						Input details aren't available for this draft — rebuild from Create to see the exact
-						coins.
-					</p>
-				{/if}
-			</div>
 
-			<!-- Signing-mass panel: advisory only, never blocks. Signing time is a
-			     property of where the coins came from — the network fee is untouched. -->
-			{#if signingMass && massLevel !== 'none'}
-				<div
-					class="mass-panel {massLevel}"
-					role={massLevel === 'red' ? 'alert' : 'status'}
-					aria-live={massLevel === 'red' ? 'assertive' : 'polite'}
-				>
-					<Icon name={massLevel === 'info' ? 'clock' : 'alert-triangle'} size={16} />
-					<div class="mass-body">
-						{#if massLevel === 'info'}
-							<strong>
-								This transaction includes coins from batch payouts. Signing may take a little
-								longer than usual on your hardware wallet.
-							</strong>
-						{:else}
-							<strong>
-								This transaction includes coins from large batch payouts (mining pools). Signing
-								may take several minutes on your hardware wallet.
-							</strong>
+				<div class="detail-list">
+					<div class="detail-row">
+						<span class="text-secondary">Network fee</span>
+						<span class="detail-val tabular">
+							{formatSats(review.fee)} sats
+							<span class="text-muted"
+								>· {formatFeeRate(review.feeRate)}{#if feePctOfAmount != null}
+									· {feePctOfAmount < 0.01 ? '<0.01' : feePctOfAmount.toFixed(2)}% of amount{/if}</span
+							>
+						</span>
+					</div>
+					{#if review.change}
+						<div class="detail-row">
+							<span class="text-secondary">Change back to your wallet</span>
+							<span class="detail-val tabular">{formatSats(review.change.value)} sats</span>
+						</div>
+					{/if}
+					{#if review.inputs.length > 0}
+						{@const totalIn = review.inputs.every((i) => i.value != null)
+							? review.inputs.reduce((s, i) => s + (i.value ?? 0), 0)
+							: null}
+						{#if totalIn != null}
+							<div class="detail-row">
+								<span class="text-secondary">Total input</span>
+								<span class="detail-val tabular">{formatSats(totalIn)} sats</span>
+							</div>
 						{/if}
-						{#if signingMass.totalSeconds}
-							<p class="mass-headline">
-								Estimated signing time: {formatSigningRange(
-									signingMass.totalSeconds.lo,
-									signingMass.totalSeconds.hi,
-									'long'
-								)}
+						<button
+							class="utxo-toggle"
+							aria-expanded={inputsOpen}
+							aria-controls="review-utxo-list"
+							onclick={() => (inputsOpen = !inputsOpen)}
+						>
+							<Icon name={inputsOpen ? 'chevron-down' : 'chevron-right'} size={14} />
+							<span
+								>Coins being spent ({review.inputs.length}
+								{review.inputs.length === 1 ? 'input' : 'inputs'})</span
+							>
+						</button>
+						{#if inputsOpen}
+							<div class="utxo-list fade-in" id="review-utxo-list">
+								{#each review.inputs as inp (inp.txid + inp.vout)}
+									<div class="utxo-row">
+										<span class="mono text-muted">{truncateMiddle(inp.txid, 10, 8)}:{inp.vout}</span>
+										{#if inp.value != null}
+											<span class="tabular">{formatSats(inp.value)} sats</span>
+										{/if}
+									</div>
+								{/each}
+							</div>
+						{/if}
+					{:else}
+						<p class="field-line muted">
+							Input details aren't available for this draft — rebuild from Create to see the exact
+							coins.
+						</p>
+					{/if}
+				</div>
+
+				<!-- Signing-mass panel: advisory only, never blocks. Signing time is a
+				     property of where the coins came from — the network fee is untouched. -->
+				{#if signingMass && massLevel !== 'none'}
+					<div
+						class="mass-panel {massLevel}"
+						role={massLevel === 'red' ? 'alert' : 'status'}
+						aria-live={massLevel === 'red' ? 'assertive' : 'polite'}
+					>
+						<Icon name={massLevel === 'info' ? 'clock' : 'alert-triangle'} size={16} />
+						<div class="mass-body">
+							{#if massLevel === 'info'}
+								<strong>
+									This transaction includes coins from batch payouts. Signing may take a little
+									longer than usual on your hardware wallet.
+								</strong>
+							{:else}
+								<strong>
+									This transaction includes coins from large batch payouts (mining pools). Signing
+									may take several minutes on your hardware wallet.
+								</strong>
+							{/if}
+							{#if signingMass.totalSeconds}
+								<p class="mass-headline">
+									Estimated signing time: {formatSigningRange(
+										signingMass.totalSeconds.lo,
+										signingMass.totalSeconds.hi,
+										'long'
+									)}
+								</p>
+							{/if}
+							{#if signingMass.perDevice?.length}
+								<p class="mass-devices tabular">{perDeviceLine(signingMass.perDevice)}</p>
+							{/if}
+							{#if massLevel === 'red' || signingMass.splitSuggested}
+								<p class="mass-split">
+									This may cause your device to time out. Consider sending as two separate
+									transactions.
+								</p>
+							{/if}
+							<p class="mass-why">
+								<Term tip={MASS_WHY_TIP}>Why does this take longer?</Term>
 							</p>
-						{/if}
-						{#if signingMass.perDevice?.length}
-							<p class="mass-devices tabular">{perDeviceLine(signingMass.perDevice)}</p>
-						{/if}
-						{#if massLevel === 'red' || signingMass.splitSuggested}
-							<p class="mass-split">
-								This may cause your device to time out. Consider sending as two separate
-								transactions.
-							</p>
-						{/if}
-						<p class="mass-why">
-							<Term tip={MASS_WHY_TIP}>Why does this take longer?</Term>
+						</div>
+					</div>
+				{/if}
+
+				<div class="row step-actions">
+					<button class="btn btn-secondary" onclick={goCreate}>
+						<Icon name="chevron-left" size={15} /> Back &amp; edit
+					</button>
+					<button class="btn btn-primary pill-lg" onclick={() => (step = 'sign')}>
+						Looks good — sign <Icon name="arrow-right" size={15} />
+					</button>
+				</div>
+			</section>
+
+		<!-- ============================================================== SIGN -->
+		{:else if step === 'sign'}
+			<section class="step-body sign-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
+				{#if review}
+					<div class="sign-hero">
+						<span class="hero-amount">{formatBtc(review.amount)} <em>BTC</em></span>
+						<p class="sign-sub">
+							to
+							{#if review.recipients.length === 1}
+								<span class="mono sub-addr">{truncateMiddle(review.recipient, 9, 4)}</span>
+							{:else}
+								{review.recipients.length} recipients
+							{/if}
+							· fee {formatFeeRate(review.feeRate)} · draft saved on your node
 						</p>
 					</div>
-				</div>
-			{/if}
+				{/if}
 
-			<div class="row step-actions">
-				<button class="btn btn-secondary" onclick={goCreate}>
-					<Icon name="chevron-left" size={15} /> Back &amp; edit
-				</button>
-				<button class="btn btn-primary" onclick={() => (step = 'sign')}>
-					Looks good — sign <Icon name="arrow-right" size={15} />
-				</button>
-			</div>
-		</section>
+				<div class="sign-grid">
+					<div class="sign-col">
+						<div class="sig-head">
+							<QuorumArc
+								total={1}
+								collected={signedComplete ? 1 : 0}
+								active={!signedComplete}
+								size={26}
+							/>
+							<h2 class="section-title">
+								Signatures · {signedComplete ? 1 : 0} of 1 collected
+							</h2>
+						</div>
 
-	<!-- ============================================================== SIGN -->
-	{:else if step === 'sign'}
-		<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
-			<div class="key-frame">
-				<span class="badge badge-accent">Key 1 of 1</span>
-				<span class="text-secondary">{signHeading}</span>
-			</div>
-
-			<HowItWorks id="send-sign">
-				<p>
-					Signing happens <strong>on your device</strong>, never here.
-					{#if walletDevice && walletDevice !== 'file'}
-						Your wallet signs with a {WALLET_DEVICE_LABELS[walletDevice]} — follow its steps below,
-						review the amount and address <em>on the device screen</em>, and approve. Prefer a
-						different method this once? Choose “Use a different method”.
-					{:else}
-						Pick how your signer receives the unsigned transaction — USB, a microSD card, QR codes,
-						or a plain file — then review the amount and address <em>on the device screen</em> and
-						approve.
-					{/if}
-					Cairn verifies that every returned signature commits to the exact transaction you reviewed
-					before it can be broadcast.
-				</p>
-			</HowItWorks>
-
-			<!-- Plain-HTTP page (e.g. stock Umbrel): the USB methods below are limited
-			     or disabled; Cairn's own HTTPS listener is the way to use them
-			     directly. Renders nothing in a secure context. -->
-			<SecureContextHelp what="plug-in USB signing" />
-
-			<div class="method-grid">
-				<!-- Generic / file method: always available, hosts its own upload UI. -->
-				{#if activeMethod === 'file'}
-					<div class="card card-pad method-active">
-						<div class="method-head">
-							<span class="method-icon"><Icon name="wallet" size={18} /></span>
-							<div>
-								<h3 class="method-title">Generic wallet / file</h3>
-								<p class="method-sub">Sparrow, ColdCard, Electrum, BlueWallet, or any PSBT-capable signer</p>
+						<div class="key-rows">
+							<div class="key-row">
+								<span class="key-name">{keyRowName}</span>
+								{#if signedComplete}
+									<span class="key-state signed"
+										><Icon name="check" size={13} strokeWidth={2.5} /> Signed</span
+									>
+								{:else}
+									<span class="key-state pending">Sign below</span>
+								{/if}
 							</div>
 						</div>
 
-						<ol class="sign-steps">
-							<li>
-								<div class="sign-step-body">
-									<span class="sign-step-title">Download the unsigned PSBT</span>
-									<a class="btn btn-secondary btn-sm" href={fileUrl} download>
-										<Icon name="arrow-down-left" size={14} /> Download .psbt
-									</a>
+						<p class="never-line">Heartwood never sees a key — signing happens on your device.</p>
+
+						<!-- Plain-HTTP page (e.g. stock Umbrel): the USB methods below are limited
+						     or disabled; Heartwood's own HTTPS listener is the way to use them
+						     directly. Renders nothing in a secure context. -->
+						<SecureContextHelp what="plug-in USB signing" />
+
+						<div class="method-grid">
+							<!-- Generic / file method: always available, hosts its own upload UI. -->
+							{#if activeMethod === 'file'}
+								<div class="method-active">
+									<div class="method-head">
+										<span class="method-icon"><Icon name="wallet" size={18} /></span>
+										<div>
+											<h3 class="method-title">Generic wallet / file</h3>
+											<p class="method-sub">
+												Sparrow, ColdCard, Electrum, BlueWallet, or any PSBT-capable signer
+											</p>
+										</div>
+									</div>
+
+									<ol class="sign-steps">
+										<li>
+											<div class="sign-step-body">
+												<span class="sign-step-title">Download the unsigned PSBT</span>
+												<a class="btn btn-secondary btn-sm" href={fileUrl} download>
+													<Icon name="arrow-down-left" size={14} /> Download .psbt
+												</a>
+											</div>
+										</li>
+										<li>
+											<div class="sign-step-body">
+												<span class="sign-step-title">Sign it in your wallet</span>
+												<span class="field-line muted">
+													Open the file in Sparrow / ColdCard / Electrum, verify the recipient and
+													amount on the device, and export the signed PSBT.
+												</span>
+											</div>
+										</li>
+										<li>
+											<div class="sign-step-body">
+												<span class="sign-step-title">Bring the signed PSBT back</span>
+												<label class="file-drop">
+													<input
+														type="file"
+														accept=".psbt,.txt,text/plain,application/octet-stream"
+														onchange={onSignedFile}
+													/>
+													<Icon name="arrow-up-right" size={15} />
+													<span>Upload signed .psbt file</span>
+												</label>
+												<div class="or-divider"><span>or paste base64 / hex</span></div>
+												<textarea
+													class="input mono"
+													rows="3"
+													placeholder="cHNidP8BA…"
+													bind:value={signedPsbtText}
+												></textarea>
+												{#if signError}
+													<div class="form-error" role="alert">{signError}</div>
+												{/if}
+												<button
+													class="btn btn-primary"
+													onclick={attachSigned}
+													disabled={attaching || signedPsbtText.trim().length === 0}
+												>
+													{#if attaching}<span class="spinner"></span> Checking signatures…{:else}Attach
+														signed transaction{/if}
+												</button>
+											</div>
+										</li>
+									</ol>
+
+									<div class="method-foot">
+										<button type="button" class="btn btn-ghost btn-sm" onclick={collapseMethod}>
+											<Icon name="x" size={14} /> Use a different method
+										</button>
+									</div>
 								</div>
-							</li>
-							<li>
-								<div class="sign-step-body">
-									<span class="sign-step-title">Sign it in your wallet</span>
-									<span class="hint">
-										Open the file in Sparrow / ColdCard / Electrum, verify the recipient and amount on
-										the device, and export the signed PSBT.
-									</span>
-								</div>
-							</li>
-							<li>
-								<div class="sign-step-body">
-									<span class="sign-step-title">Bring the signed PSBT back</span>
-									<label class="file-drop">
-										<input type="file" accept=".psbt,.txt,text/plain,application/octet-stream" onchange={onSignedFile} />
-										<Icon name="arrow-up-right" size={15} />
-										<span>Upload signed .psbt file</span>
-									</label>
-									<div class="or-divider"><span>or paste base64 / hex</span></div>
-									<textarea
-										class="input mono"
-										rows="3"
-										placeholder="cHNidP8BA…"
-										bind:value={signedPsbtText}
-									></textarea>
-									{#if signError}
-										<Banner variant="error">{signError}</Banner>
-									{/if}
-									<button
-										class="btn btn-primary"
-										onclick={attachSigned}
-										disabled={attaching || signedPsbtText.trim().length === 0}
-									>
-										{#if attaching}<span class="spinner"></span> Checking signatures…{:else}Attach signed transaction{/if}
-									</button>
-								</div>
-							</li>
-						</ol>
+							{:else}
+								<DeviceCard
+									name="Generic wallet / file"
+									hint="Sparrow, Electrum, BlueWallet, or any PSBT-capable signer — download, sign, upload"
+									icon="wallet"
+									disabled={false}
+									onselect={() => selectMethod('file')}
+								/>
+							{/if}
 
-						<div class="method-foot">
-							<button type="button" class="btn btn-ghost btn-sm" onclick={collapseMethod}>
-								<Icon name="x" size={14} /> Use a different method
-							</button>
-						</div>
-					</div>
-				{:else}
-					<DeviceCard
-						name="Generic wallet / file"
-						hint="Sparrow, Electrum, BlueWallet, or any PSBT-capable signer — download, sign, upload"
-						icon="wallet"
-						disabled={false}
-						onselect={() => selectMethod('file')}
-					/>
-				{/if}
-
-				<!-- Device signers: selecting one mounts its component; the guard-side
-				     attach path is shared with the file method via handleDeviceSigned. -->
-				{#each deviceMethods as m (m.key)}
-					{#if activeMethod === m.key && signerContext}
-						{#key signerEpoch}
-							{@const Signer = SIGNER_COMPONENTS[m.key]}
-							<Signer
-								{unsignedPsbt}
-								context={signerContext}
-								onsigned={handleDeviceSigned}
-								oncancel={collapseMethod}
-							/>
-						{/key}
-					{:else}
-						<DeviceCard
-							name={m.name}
-							hint={m.blurb}
-							icon={m.icon}
-							disabled={!mounted || !m.available()}
-							badge="Unavailable"
-							reason={mounted && !m.available() ? m.unavailableReason : undefined}
-							onselect={() => selectMethod(m.key)}
-						/>
-					{/if}
-				{/each}
-			</div>
-
-			<!-- Shared attach status for device signers: the components report their
-			     own device errors, but the substitution-guard verdict lives here. -->
-			{#if activeMethod !== null && activeMethod !== 'file'}
-				{#if attaching}
-					<!-- role="status" implies polite announcements, but the pairing is
-					     honored inconsistently across AT — the explicit aria-live makes
-					     sure the signature-progress update is actually spoken. -->
-					<div class="attach-status" role="status" aria-live="polite">
-						<span class="spinner"></span> Checking signatures against the transaction you reviewed…
-					</div>
-				{:else if signError}
-					<Banner variant="error">
-						{signError}
-						{#snippet actions()}
-							<button class="btn btn-secondary btn-sm" onclick={() => selectMethod(activeMethod!)}>
-								<Icon name="refresh" size={14} /> Try again
-							</button>
-							<button class="btn btn-ghost btn-sm" onclick={collapseMethod}>
-								Choose another method
-							</button>
-						{/snippet}
-					</Banner>
-				{/if}
-			{/if}
-
-			<div class="row step-actions">
-				<button class="btn btn-secondary" onclick={() => (step = 'review')}>
-					<Icon name="chevron-left" size={15} /> Back to review
-				</button>
-			</div>
-		</section>
-
-	<!-- =========================================================== CONFIRM -->
-	{:else if step === 'confirm' && review}
-		<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
-			<div class="confirm-warning" role="alert">
-				<Icon name="alert-triangle" size={18} />
-				<div>
-					<strong>You are about to broadcast this transaction.</strong>
-					Broadcasting is <em>irreversible</em> — once the network accepts it, the coins are gone.
-				</div>
-			</div>
-
-			<div class="card card-pad confirm-summary">
-				<div class="confirm-row">
-					<span class="text-secondary">Sending</span>
-					<span class="detail-val tabular">{formatBtc(review.amount)} BTC</span>
-				</div>
-				{#if review.recipients.length === 1}
-					<div class="confirm-row">
-						<span class="text-secondary">To</span>
-						<span class="mono confirm-recipient">{review.recipient}</span>
-					</div>
-				{:else}
-					<div class="confirm-row confirm-batch">
-						<span class="text-secondary">To {review.recipients.length} recipients</span>
-						<div class="confirm-batch-list">
-							{#each review.recipients as r, i (i)}
-								<span class="mono confirm-recipient tabular"
-									>{formatBtc(r.amount)} BTC → {truncateMiddle(r.address, 12, 10)}</span
-								>
+							<!-- Device signers: selecting one mounts its component; the guard-side
+							     attach path is shared with the file method via handleDeviceSigned. -->
+							{#each deviceMethods as m (m.key)}
+								{#if activeMethod === m.key && signerContext}
+									{#key signerEpoch}
+										{@const Signer = SIGNER_COMPONENTS[m.key]}
+										<Signer
+											{unsignedPsbt}
+											context={signerContext}
+											onsigned={handleDeviceSigned}
+											oncancel={collapseMethod}
+										/>
+									{/key}
+								{:else}
+									<DeviceCard
+										name={m.name}
+										hint={m.blurb}
+										icon={m.icon}
+										disabled={!mounted || !m.available()}
+										badge="Unavailable"
+										reason={mounted && !m.available() ? m.unavailableReason : undefined}
+										onselect={() => selectMethod(m.key)}
+									/>
+								{/if}
 							{/each}
 						</div>
-					</div>
-				{/if}
-				<div class="confirm-row">
-					<span class="text-secondary">Fee</span>
-					<span class="detail-val tabular"
-						>{formatSats(review.fee)} sats · {formatFeeRate(review.feeRate)}</span
-					>
-				</div>
-			</div>
 
-			{#if broadcastError}
-				<Banner variant="error">
-					{broadcastError}
-					{#snippet actions()}
-						{#if broadcastRejected || draft}
-							<a class="btn btn-secondary btn-sm" href={fileUrl} download>
-								<Icon name="arrow-down-left" size={14} /> Download PSBT
-							</a>
-							<button class="btn btn-ghost btn-sm" onclick={() => (step = 'sign')}>
-								Re-sign
-							</button>
+						<!-- Shared attach status for device signers: the components report their
+						     own device errors, but the substitution-guard verdict lives here. -->
+						{#if activeMethod !== null && activeMethod !== 'file'}
+							{#if attaching}
+								<!-- role="status" implies polite announcements, but the pairing is
+								     honored inconsistently across AT — the explicit aria-live makes
+								     sure the signature-progress update is actually spoken. -->
+								<div class="attach-status" role="status" aria-live="polite">
+									<span class="spinner"></span> Checking signatures against the transaction you reviewed…
+								</div>
+							{:else if signError}
+								<div class="form-error" role="alert">
+									{signError}
+									<div class="error-actions">
+										<button
+											class="btn btn-secondary btn-sm"
+											onclick={() => selectMethod(activeMethod!)}
+										>
+											<Icon name="refresh" size={14} /> Try again
+										</button>
+										<button class="btn btn-ghost btn-sm" onclick={collapseMethod}>
+											Choose another method
+										</button>
+									</div>
+								</div>
+							{/if}
 						{/if}
-					{/snippet}
-				</Banner>
-			{/if}
 
-			<div class="row step-actions">
-				<button class="btn btn-secondary" onclick={() => (step = 'sign')} disabled={broadcasting}>
-					<Icon name="chevron-left" size={15} /> Back
-				</button>
-				<button class="btn btn-primary" onclick={broadcast} disabled={broadcasting}>
-					{#if broadcasting}<span class="spinner"></span> Broadcasting…{:else}<Icon
-							name="zap"
-							size={15}
-						/> Broadcast transaction{/if}
-				</button>
-			</div>
-		</section>
-
-	<!-- ============================================================== SENT -->
-	{:else if step === 'sent'}
-		<section class="step-body fade-in sent-body" tabindex="-1" aria-label={stepAriaLabel}>
-			<div class="sent-check">
-				<Icon name="check" size={30} strokeWidth={2.5} />
-			</div>
-			<h2 class="sent-title">Broadcast!</h2>
-			<p class="text-secondary">Your transaction is on its way to the network.</p>
-
-			{#if sentTxid}
-				<a class="sent-txid mono" href={explorerUrl}>
-					{truncateMiddle(sentTxid, 12, 12)}
-					<Icon name="arrow-up-right" size={15} />
-				</a>
-				<div class="sent-copy"><CopyText value={sentTxid} display="Copy transaction ID" mono={false} /></div>
-			{/if}
-
-			{#if review}
-				<div class="card card-pad sent-summary">
-					<div class="confirm-row">
-						<span class="text-secondary">Sent</span>
-						<span class="detail-val tabular">{formatBtc(review.amount)} BTC</span>
+						<HowItWorks id="send-sign">
+							<p>
+								Signing happens <strong>on your device</strong>, never here.
+								{#if walletDevice && walletDevice !== 'file'}
+									Your wallet signs with a {WALLET_DEVICE_LABELS[walletDevice]} — follow its steps above,
+									review the amount and address <em>on the device screen</em>, and approve. Prefer a
+									different method this once? Choose “Use a different method”.
+								{:else}
+									Pick how your signer receives the unsigned transaction — USB, a microSD card, QR
+									codes, or a plain file — then review the amount and address
+									<em>on the device screen</em> and approve.
+								{/if}
+								Heartwood verifies that every returned signature commits to the exact transaction
+								you reviewed before it can be broadcast.
+							</p>
+						</HowItWorks>
 					</div>
+
+					<aside class="verify-col">
+						{#if review}
+							<h2 class="section-title">Verify on device</h2>
+							<div class="verify-list">
+								<div class="verify-row">
+									<span class="verify-key">To</span>
+									<span class="verify-val mono">
+										{#if review.recipients.length === 1}
+											{truncateMiddle(review.recipient, 12, 10)}
+										{:else}
+											{review.recipients.length} recipients
+										{/if}
+									</span>
+								</div>
+								<div class="verify-row">
+									<span class="verify-key">Amount</span>
+									<span class="verify-val tabular">{formatBtc(review.amount)} BTC</span>
+								</div>
+								<div class="verify-row">
+									<span class="verify-key">Fee</span>
+									<span class="verify-val tabular"
+										>{formatSats(review.fee)} sats · {formatFeeRate(review.feeRate)}</span
+									>
+								</div>
+								{#if review.change}
+									<div class="verify-row">
+										<span class="verify-key">Change</span>
+										<span class="verify-val tabular">
+											{formatSats(review.change.value)} sats
+											<span class="back-badge">Back to you</span>
+										</span>
+									</div>
+								{/if}
+							</div>
+							<p class="verify-note">
+								The device screen is the truth — approve only if it shows exactly this.
+							</p>
+						{/if}
+						<div class="verify-actions">
+							<a class="btn btn-secondary" href={fileUrl} download>
+								<Icon name="arrow-down-left" size={14} /> Export PSBT
+							</a>
+							<a class="btn btn-ghost" href={`/wallets/${walletId}`}>Finish later</a>
+						</div>
+						<p class="verify-note">
+							Drafts are saved — leave anytime and this page resumes where you left off.
+						</p>
+					</aside>
+				</div>
+
+				<div class="row step-actions">
+					<button class="btn btn-secondary" onclick={() => (step = 'review')}>
+						<Icon name="chevron-left" size={15} /> Back to review
+					</button>
+				</div>
+			</section>
+
+		<!-- =========================================================== CONFIRM -->
+		{:else if step === 'confirm' && review}
+			<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
+				<div class="review-hero">
+					<span class="hero-amount sm">{formatBtc(review.amount)} <em>BTC</em></span>
+					<span class="hero-sub">Signed and ready to broadcast</span>
+				</div>
+
+				<div class="detail-list">
 					{#if review.recipients.length === 1}
-						<div class="confirm-row">
+						<div class="detail-row">
 							<span class="text-secondary">To</span>
-							<span class="mono confirm-recipient">{truncateMiddle(review.recipient, 14, 12)}</span>
+							<span class="mono confirm-recipient">{review.recipient}</span>
 						</div>
 					{:else}
-						<div class="confirm-row confirm-batch">
+						<div class="detail-row confirm-batch">
 							<span class="text-secondary">To {review.recipients.length} recipients</span>
 							<div class="confirm-batch-list">
 								{#each review.recipients as r, i (i)}
@@ -1421,97 +1574,213 @@
 							</div>
 						</div>
 					{/if}
-					<div class="confirm-row">
+					<div class="detail-row">
 						<span class="text-secondary">Fee</span>
-						<span class="detail-val tabular">{formatSats(review.fee)} sats</span>
+						<span class="detail-val tabular"
+							>{formatSats(review.fee)} sats · {formatFeeRate(review.feeRate)}</span
+						>
 					</div>
 				</div>
-			{/if}
 
-			{#if showSaveOffer && sentRecipient}
-				<div class="card card-pad save-offer fade-in">
-					<div class="save-offer-head">
-						<span class="save-offer-title">Save this address for next time?</span>
-						<button
-							type="button"
-							class="save-dismiss"
-							aria-label="Dismiss"
-							onclick={() => (saveDismissed = true)}
-						>
-							<Icon name="x" size={14} />
-						</button>
-					</div>
-					<p class="save-offer-addr mono">{truncateMiddle(sentRecipient, 16, 12)}</p>
-					<div class="save-offer-row">
-						<input
-							class="input"
-							placeholder="Label — e.g. Cold storage"
-							maxlength={60}
-							bind:value={saveLabel}
-							aria-label="Label for this address"
-							onkeydown={(e) => {
-								if (e.key === 'Enter') void saveRecipient();
-							}}
-						/>
-						<button
-							class="btn btn-secondary"
-							onclick={saveRecipient}
-							disabled={savingAddress || saveLabel.trim().length === 0}
-						>
-							{#if savingAddress}<span class="spinner"></span> Saving…{:else}Save{/if}
-						</button>
-					</div>
-					{#if saveAddressError}
-						<Banner variant="error">{saveAddressError}</Banner>
-					{/if}
+				<p class="step-lead">
+					Broadcasting hands this transaction to the network. Once it takes a ring, there is no
+					undo.
+				</p>
+
+				{#if broadcastError}
+					<Banner variant="error">
+						{broadcastError}
+						{#snippet actions()}
+							{#if broadcastRejected || draft}
+								<a class="btn btn-secondary btn-sm" href={fileUrl} download>
+									<Icon name="arrow-down-left" size={14} /> Download PSBT
+								</a>
+								<button class="btn btn-ghost btn-sm" onclick={() => (step = 'sign')}>
+									Re-sign
+								</button>
+							{/if}
+						{/snippet}
+					</Banner>
+				{/if}
+
+				<div class="row step-actions">
+					<button class="btn btn-secondary" onclick={() => (step = 'sign')} disabled={broadcasting}>
+						<Icon name="chevron-left" size={15} /> Back
+					</button>
+					<button
+						class="btn btn-primary pill-lg"
+						onclick={() => (confirmOpen = true)}
+						disabled={broadcasting}
+					>
+						{#if broadcasting}<span class="spinner"></span> Broadcasting…{:else}Broadcast
+							transaction{/if}
+					</button>
 				</div>
-			{/if}
+			</section>
 
-			<div class="row step-actions" style="justify-content: center">
-				<a class="btn btn-secondary" href={`/wallets/${walletId}`}>Back to wallet</a>
-				<a class="btn btn-primary" href={`/wallets/${walletId}/send`} data-sveltekit-reload
+		<!-- ============================================================== SENT -->
+		{:else if step === 'sent'}
+			<section class="step-body fade-in sent-body" tabindex="-1" aria-label={stepAriaLabel}>
+				<!-- One-off send-stepper moment (4a): flow name left, steps right,
+				     Broadcast lit. Desktop only — 8k keeps just the SENT eyebrow. -->
+				<div class="sent-topline" aria-hidden="true">
+					<span class="sent-flow-name">Send bitcoin</span>
+					<span class="sent-steps">
+						<span class="sent-step">Amount</span><span class="sent-dot">·</span>
+						<span class="sent-step">Review</span><span class="sent-dot">·</span>
+						<span class="sent-step">Sign</span><span class="sent-dot">·</span>
+						<span class="sent-step lit">Broadcast</span>
+					</span>
+				</div>
+
+				<!-- The ring-sweep moment: two cream sweeps (once), a dashed mempool
+				     ring pulsing underneath — the transaction waiting for its first ring. -->
+				<div class="sweep-stage">
+					<span class="sweep s1"></span>
+					<span class="sweep s2"></span>
+					<BurialRings confirmations={0} direction="out" size={64} />
+				</div>
+
+				{#if review}
+					<h2 class="sent-title">{formatBtc(review.amount)} BTC is on its way</h2>
+				{:else}
+					<h2 class="sent-title">Your bitcoin is on its way</h2>
+				{/if}
+				<p class="sent-sub">
+					From {data.wallet.name} · in the mempool, waiting for its first ring{#if review}
+						· {formatFeeRate(review.feeRate)}{/if}
+				</p>
+
+				{#if sentTxid}
+					<div class="txid-pill">
+						<span class="mono">{truncateMiddle(sentTxid, 12, 12)}</span>
+						<CopyText value={sentTxid} display="Copy" mono={false} />
+					</div>
+				{/if}
+
+				{#if showSaveOffer && sentRecipient}
+					<div class="save-offer fade-in">
+						<div class="save-offer-head">
+							<span class="save-offer-title">Save this address for next time?</span>
+							<button
+								type="button"
+								class="save-dismiss"
+								aria-label="Dismiss"
+								onclick={() => (saveDismissed = true)}
+							>
+								<Icon name="x" size={14} />
+							</button>
+						</div>
+						<p class="save-offer-addr mono">{truncateMiddle(sentRecipient, 16, 12)}</p>
+						<div class="save-offer-row">
+							<input
+								class="input"
+								placeholder="Label — e.g. Cold storage"
+								maxlength={60}
+								bind:value={saveLabel}
+								aria-label="Label for this address"
+								onkeydown={(e) => {
+									if (e.key === 'Enter') void saveRecipient();
+								}}
+							/>
+							<button
+								class="btn btn-secondary"
+								onclick={saveRecipient}
+								disabled={savingAddress || saveLabel.trim().length === 0}
+							>
+								{#if savingAddress}<span class="spinner"></span> Saving…{:else}Save{/if}
+							</button>
+						</div>
+						{#if saveAddressError}
+							<div class="form-error" role="alert">{saveAddressError}</div>
+						{/if}
+					</div>
+				{/if}
+
+				<div class="row step-actions" style="justify-content: center">
+					<a class="btn btn-primary pill-lg" href={explorerUrl}>Watch it get buried</a>
+					<a class="btn btn-secondary" href={`/wallets/${walletId}`}>Done</a>
+				</div>
+				<p class="sent-caption">We'll nudge you at the first ring — and at six.</p>
+				<a class="sent-again" href={`/wallets/${walletId}/send`} data-sveltekit-reload
 					>Send another</a
 				>
-			</div>
-		</section>
-	{/if}
+			</section>
+		{/if}
+	</div>
 </div>
+
+<Modal
+	bind:open={confirmOpen}
+	title="Broadcast this transaction?"
+	message="Once it takes a ring, there is no undo."
+	confirmLabel="Broadcast"
+	onConfirm={() => void broadcast()}
+/>
 
 <Toasts />
 
 <style>
 	.send-page {
+		position: relative;
+		/* Bleed the grove field across the shell's content padding so the
+		   atmosphere isn't a visible 940px box. */
+		margin: -54px -52px -44px;
+		padding: 54px 52px 44px;
+		min-height: 100%;
+	}
+
+	.page-content {
+		position: relative;
+		z-index: 1;
 		max-width: 680px;
 		margin: 0 auto;
 	}
 
-	.page-head {
-		margin-bottom: 18px;
+	.eyebrow-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 14px;
+		margin-bottom: 26px;
 	}
 
-	.back {
+	/* Mobile flow header (8b/8c/8k) — this page composes its own back circle +
+	   centered eyebrow + spacer, so the shell's bare fallback is suppressed. */
+	:global(body:has(.hw-owns-header) .mobile-flow-header) {
+		display: none;
+	}
+
+	.flow-header {
+		display: none;
+	}
+
+	.flow-eyebrow {
 		display: inline-flex;
 		align-items: center;
-		gap: 3px;
-		color: var(--text-secondary);
-		font-size: 13px;
-		font-weight: 500;
-		margin-bottom: 8px;
+		justify-content: center;
+		gap: 7px;
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.2em;
+		text-transform: uppercase;
+		color: var(--eyebrow);
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
-	.back:hover {
-		color: var(--accent);
-	}
-
-	.stepper-wrap {
-		padding: 22px 24px;
-		margin-bottom: 24px;
+	.flow-spacer {
+		width: 32px;
+		height: 32px;
+		flex-shrink: 0;
 	}
 
 	.step-body {
 		display: flex;
 		flex-direction: column;
-		gap: 18px;
+		gap: 22px;
 	}
 
 	/* Step sections receive programmatic focus on every step change (so screen
@@ -1536,20 +1805,220 @@
 		gap: 10px;
 	}
 
-	/* ---- Create: recipient rows (batch sending) ---- */
+	.pill-lg {
+		padding: 13px 26px;
+		font-size: 15px;
+		border-radius: var(--radius-pill);
+	}
+
+	/* Tracked-caps section labels — the eyebrow grammar inside the page. */
+	.sec-label {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.18em;
+		text-transform: uppercase;
+		color: var(--eyebrow-path);
+	}
+
+	/* The toggle grammar: active bright copper on a copper tint, radius 14. */
+	.txt-toggle {
+		background: transparent;
+		border: none;
+		border-radius: 14px;
+		padding: 6px 13px;
+		font-family: var(--font-ui);
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--eyebrow-path);
+		cursor: pointer;
+		transition:
+			background 120ms var(--ease),
+			color 120ms var(--ease);
+	}
+
+	.txt-toggle:hover {
+		color: var(--text-secondary);
+	}
+
+	.txt-toggle.active {
+		background: rgba(232, 147, 90, 0.1);
+		color: var(--accent-bright);
+	}
+
+	.toggle-rate {
+		font-weight: 400;
+	}
+
+	/* ---- Create: the amount hero ---- */
+	.amount-hero {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+
+	.hero-line {
+		display: flex;
+		align-items: baseline;
+		gap: 12px;
+		min-width: 0;
+	}
+
+	/* The one number that owns the page: 86px serif on desktop (5a). */
+	.hero-input {
+		background: transparent;
+		border: none;
+		outline: none;
+		padding: 0;
+		max-width: 100%;
+		min-width: 4ch;
+		font-family: var(--font-serif);
+		font-weight: 600;
+		font-size: 86px;
+		line-height: 0.92;
+		letter-spacing: -0.015em;
+		font-variant-numeric: tabular-nums;
+		color: var(--text-hero);
+		caret-color: var(--accent);
+	}
+
+	.hero-input::placeholder {
+		color: var(--text-faint);
+	}
+
+	.hero-input[aria-invalid='true'] {
+		color: var(--attention);
+	}
+
+	/* Serif 400 · 34 in the eyebrow tone, per the 5a unit spec. */
+	.hero-unit {
+		font-family: var(--font-serif);
+		font-weight: 400;
+		font-size: 34px;
+		color: var(--eyebrow);
+	}
+
+	.hero-max {
+		font-family: var(--font-serif);
+		font-weight: 600;
+		font-size: 64px;
+		line-height: 1;
+		letter-spacing: -0.015em;
+		color: var(--text-hero);
+	}
+
+	.unit-swap {
+		align-self: center;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 34px;
+		height: 34px;
+		flex-shrink: 0;
+		border: 1px solid var(--border-control);
+		border-radius: 50%;
+		background: transparent;
+		color: var(--text-secondary);
+		cursor: pointer;
+		transition:
+			color 120ms var(--ease),
+			border-color 120ms var(--ease);
+	}
+
+	.unit-swap:hover {
+		color: var(--accent);
+		border-color: var(--border-ghost);
+	}
+
+	.hero-sub {
+		font-size: 15px;
+		color: var(--text-secondary);
+	}
+
+	.hero-sub.attention {
+		color: var(--attention);
+	}
+
+	.mode-toggles {
+		display: flex;
+		gap: 4px;
+	}
+
+	/* ---- Create: TO hairline field ---- */
+	.to-field {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.to-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.icon-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 32px;
+		height: 32px;
+		flex-shrink: 0;
+		border: 1px solid var(--border-control);
+		border-radius: var(--radius-icon-btn);
+		background: transparent;
+		color: var(--text-secondary);
+		cursor: pointer;
+		transition:
+			color 120ms var(--ease),
+			border-color 120ms var(--ease);
+	}
+
+	.icon-btn:hover:not(:disabled) {
+		color: var(--accent);
+		border-color: var(--border-ghost);
+	}
+
+	.icon-btn:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
+	}
+
+	.field-line {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		font-size: 12.5px;
+		line-height: 1.5;
+	}
+
+	.field-line.attention {
+		color: var(--attention);
+	}
+
+	.field-line.sage {
+		color: var(--sage);
+	}
+
+	.field-line.muted {
+		color: var(--text-muted);
+	}
+
+	/* ---- Create: batch rows ---- */
+	.batch-blocks {
+		display: flex;
+		flex-direction: column;
+	}
+
 	.recipient-block {
 		display: flex;
 		flex-direction: column;
-		gap: 18px;
+		gap: 12px;
+		padding: 16px 0;
+		border-bottom: 1px solid var(--hairline);
 	}
 
-	/* With several rows, each gets a light frame so its address + amount read
-	   as one unit; a single row stays frameless — exactly the classic form. */
-	.recipient-block.multi {
-		gap: 14px;
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		padding: 14px;
+	.recipient-block:first-child {
+		padding-top: 0;
 	}
 
 	.recipient-block-head {
@@ -1565,14 +2034,14 @@
 		flex-shrink: 0;
 		background: none;
 		border: none;
-		border-radius: var(--radius-chip);
+		border-radius: var(--radius-badge);
 		color: var(--text-muted);
 		cursor: pointer;
 	}
 
 	.row-remove:hover {
-		color: var(--danger, var(--text));
-		background: var(--bg);
+		color: var(--text);
+		background: var(--bg-input);
 	}
 
 	.batch-row {
@@ -1584,132 +2053,90 @@
 		text-align: right;
 	}
 
-	/* ---- Create: amount + fee ---- */
-	.amount-head {
-		justify-content: space-between;
+	.amount-input {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		border-bottom: 1px solid var(--border-subtle);
+		padding-bottom: 6px;
 	}
 
-	.seg {
-		display: inline-flex;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-control);
-		padding: 2px;
+	.batch-amount {
+		flex: 1;
+		min-width: 0;
+		background: transparent;
+		border: none;
+		outline: none;
+		padding: 4px 0;
+		font-family: var(--font-serif);
+		font-weight: 600;
+		font-size: 20px;
+		color: var(--text-hero);
+		caret-color: var(--accent);
 	}
 
-	.seg-btn {
+	.batch-amount::placeholder {
+		color: var(--text-faint);
+	}
+
+	.unit-inline {
 		background: none;
 		border: none;
-		color: var(--text-muted);
+		padding: 2px 4px;
 		font-family: var(--font-ui);
 		font-size: 12px;
 		font-weight: 600;
-		padding: 4px 12px;
-		border-radius: var(--radius-chip);
-		cursor: pointer;
-		transition:
-			background 120ms var(--ease),
-			color 120ms var(--ease);
-	}
-
-	.seg-btn.active {
-		background: var(--accent-muted);
-		color: var(--accent);
-	}
-
-	.amount-input {
-		position: relative;
-	}
-
-	.amount-input .input {
-		padding-right: 52px;
-		font-size: 18px;
-		font-family: var(--font-serif);
-		font-variation-settings: 'opsz' 40;
-	}
-
-	.amount-input .unit {
-		position: absolute;
-		right: 12px;
-		top: 50%;
-		transform: translateY(-50%);
 		color: var(--text-muted);
-		font-size: 12px;
-		font-weight: 600;
+		cursor: pointer;
 	}
 
-	.max-note {
-		display: flex;
-		align-items: center;
-		gap: 8px;
+	.unit-inline:hover {
 		color: var(--accent);
-		background: var(--accent-muted);
-		border-radius: var(--radius-control);
-		padding: 10px 12px;
-		font-size: 13px;
 	}
 
-	.fee-grid {
-		display: grid;
-		grid-template-columns: repeat(2, 1fr);
-		gap: 8px;
-	}
-
-	.fee-card {
+	/* ---- Create: fee text toggles ---- */
+	.fee-section {
 		display: flex;
 		flex-direction: column;
-		align-items: flex-start;
-		gap: 2px;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-control);
-		padding: 10px 12px;
-		cursor: pointer;
-		text-align: left;
-		transition:
-			border-color 120ms var(--ease),
-			background 120ms var(--ease);
+		gap: 10px;
+		border-top: 1px solid var(--hairline);
+		padding-top: 18px;
 	}
 
-	.fee-card:hover {
-		border-color: var(--text-muted);
-	}
-
-	.fee-card.active {
-		border-color: var(--accent);
-		background: var(--accent-muted);
-	}
-
-	.fee-label {
-		font-size: 12px;
-		font-weight: 600;
-		color: var(--text);
-	}
-
-	.fee-rate {
-		font-size: 13.5px;
-		color: var(--text-secondary);
-	}
-
-	.fee-eta {
-		font-size: 11px;
-		color: var(--text-muted);
-	}
-
-	.fee-card.custom {
-		gap: 6px;
-	}
-
-	.custom-input {
+	.fee-head {
 		display: flex;
-		align-items: center;
-		gap: 6px;
-		width: 100%;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 12px;
 	}
 
-	.custom-input .input {
-		padding: 5px 8px;
-		font-size: 13px;
+	.fee-toggles {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+	}
+
+	.custom-fee {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		max-width: 180px;
+		border-bottom: 1px solid var(--border-subtle);
+		padding-bottom: 4px;
+	}
+
+	.custom-fee-input {
+		flex: 1;
+		min-width: 0;
+		background: transparent;
+		border: none;
+		outline: none;
+		padding: 4px 0;
+		font-family: var(--font-serif);
+		font-weight: 600;
+		font-size: 17px;
+		color: var(--text-hero);
+		caret-color: var(--accent);
 	}
 
 	.unit-sm {
@@ -1718,65 +2145,92 @@
 		white-space: nowrap;
 	}
 
-	.fee-warning {
+	.fee-caption {
+		font-size: 11.5px;
+		color: var(--eyebrow-path);
+	}
+
+	.max-note {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		color: var(--accent);
+		background: var(--accent-muted);
+		border-radius: var(--radius-icon-btn);
+		padding: 10px 12px;
+		font-size: 13px;
+	}
+
+	/* Attention (never red) panels: fee typos, chain-depth notes. */
+	.attention-panel {
 		display: flex;
 		gap: 10px;
 		align-items: flex-start;
-		background: var(--warning-muted);
+		background: var(--attention-muted);
 		border: 1px solid var(--warning-border);
-		border-radius: var(--radius-control);
+		border-radius: var(--radius-icon-btn);
 		padding: 12px 14px;
 		font-size: 13px;
 		line-height: 1.55;
 		color: var(--text);
-		margin-top: 8px;
 	}
 
-	.fee-warning :global(svg) {
-		color: var(--warning);
+	.attention-panel :global(svg) {
+		color: var(--attention);
 		flex-shrink: 0;
 		margin-top: 1px;
 	}
 
-	.fee-warning strong {
+	.attention-panel strong {
 		display: block;
+	}
+
+	.error-actions {
+		display: flex;
+		gap: 8px;
+		margin-top: 10px;
 	}
 
 	/* ---- Review ---- */
 	.review-hero {
-		padding: 24px;
 		display: flex;
 		flex-direction: column;
-		gap: 12px;
-		align-items: center;
-		text-align: center;
+		gap: 8px;
 	}
 
-	.review-line {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: 5px;
-		width: 100%;
-		min-width: 0;
+	.hero-amount {
+		font-family: var(--font-serif);
+		font-weight: 600;
+		font-size: 64px;
+		line-height: 0.96;
+		letter-spacing: -0.015em;
+		font-variant-numeric: tabular-nums;
+		color: var(--text-hero);
 	}
 
-	.send-amount {
-		font-size: 34px;
+	.hero-amount.sm {
+		font-size: 44px;
 	}
 
-	.send-amount em {
+	/* 5b sub-line: "to bc1q… · fee 12 sat/vB · draft saved on your node". */
+	.sign-sub {
+		margin-top: 14px;
+		font-size: 15px;
+		color: var(--text-secondary);
+	}
+
+	.sub-addr {
+		font-size: 13.5px;
+		color: var(--on-accent-ghost);
+	}
+
+	.hero-amount em {
 		font-style: normal;
-		font-size: 0.5em;
+		font-size: 0.42em;
 		color: var(--text-secondary);
 		font-weight: 500;
 	}
 
-	.review-arrow {
-		color: var(--text-muted);
-	}
-
-	/* Batch review: one line per recipient (amount + full address). */
 	.review-recipients {
 		display: flex;
 		flex-direction: column;
@@ -1787,7 +2241,6 @@
 	.review-recipient-row {
 		display: flex;
 		flex-direction: column;
-		align-items: center;
 		gap: 4px;
 	}
 
@@ -1798,14 +2251,10 @@
 	}
 
 	.recipient {
-		font-size: 13.5px;
+		font-size: 14px;
 		word-break: break-all;
 		max-width: 100%;
-		color: var(--text);
-		background: var(--bg);
-		padding: 8px 12px;
-		border-radius: var(--radius-control);
-		border: 1px solid var(--border-subtle);
+		color: var(--text-rows);
 	}
 
 	.detail-list {
@@ -1819,17 +2268,17 @@
 		justify-content: space-between;
 		align-items: baseline;
 		gap: 12px;
-		padding: 11px 0;
-		border-bottom: 1px solid var(--border-subtle);
+		padding: 14px 0;
+		border-bottom: 1px solid var(--hairline);
 		font-size: 13.5px;
 	}
 
 	.detail-row:first-child {
-		padding-top: 0;
+		border-top: 1px solid var(--hairline);
 	}
 
 	.detail-val {
-		color: var(--text);
+		color: var(--text-rows);
 		font-weight: 500;
 		text-align: right;
 	}
@@ -1844,7 +2293,7 @@
 		font-family: var(--font-ui);
 		font-size: 13px;
 		font-weight: 500;
-		padding: 11px 0 0;
+		padding: 12px 0 0;
 		cursor: pointer;
 	}
 
@@ -1855,8 +2304,7 @@
 	.utxo-list {
 		display: flex;
 		flex-direction: column;
-		gap: 6px;
-		padding-top: 10px;
+		padding-top: 6px;
 	}
 
 	.utxo-row {
@@ -1864,27 +2312,105 @@
 		justify-content: space-between;
 		gap: 10px;
 		font-size: 12.5px;
-		padding: 7px 10px;
-		background: var(--bg);
-		border-radius: var(--radius-chip);
+		padding: 8px 0;
+		border-bottom: 1px solid var(--hairline);
+	}
+
+	.utxo-row:last-child {
+		border-bottom: none;
 	}
 
 	/* ---- Sign ---- */
-	.key-frame {
+	.sign-hero {
+		display: flex;
+		flex-direction: column;
+	}
+
+	.sign-grid {
+		display: grid;
+		grid-template-columns: 1fr;
+		gap: 36px;
+	}
+
+	@media (min-width: 900px) {
+		.sign-grid {
+			grid-template-columns: 1.35fr 1fr;
+			gap: 48px;
+			align-items: start;
+		}
+	}
+
+	.sign-col {
+		display: flex;
+		flex-direction: column;
+		gap: 18px;
+		min-width: 0;
+	}
+
+	.sig-head {
 		display: flex;
 		align-items: center;
-		gap: 10px;
-		font-size: 13.5px;
+		gap: 12px;
+	}
+
+	.section-title {
+		font-size: 17px;
+		font-weight: 600;
+		color: var(--text);
+		letter-spacing: -0.01em;
+	}
+
+	.key-rows {
+		display: flex;
+		flex-direction: column;
+	}
+
+	.key-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		padding: 14px 0;
+		border-top: 1px solid var(--hairline);
+		border-bottom: 1px solid var(--hairline);
+	}
+
+	.key-name {
+		font-size: 14.5px;
+		font-weight: 500;
+		color: var(--text-rows);
+	}
+
+	.key-state {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		font-size: 13px;
+		font-weight: 500;
+	}
+
+	/* Spec 5b: a collected signature reads bright copper, not sage. */
+	.key-state.signed {
+		color: var(--accent-bright);
+	}
+
+	.key-state.pending {
+		color: var(--accent-bright);
+	}
+
+	.never-line {
+		font-size: 12.5px;
+		color: var(--text-muted);
 	}
 
 	.method-grid {
 		display: grid;
 		grid-template-columns: 1fr;
-		gap: 12px;
 	}
 
 	.method-active {
-		border-color: var(--border);
+		padding: 18px 0;
+		border-bottom: 1px solid var(--hairline);
 	}
 
 	.method-head {
@@ -1901,7 +2427,7 @@
 		width: 36px;
 		height: 36px;
 		flex-shrink: 0;
-		border-radius: var(--radius-control);
+		border-radius: var(--radius-icon-btn);
 		background: var(--accent-muted);
 		color: var(--accent);
 	}
@@ -1939,8 +2465,8 @@
 		width: 22px;
 		height: 22px;
 		border-radius: 50%;
-		background: var(--surface-elevated);
-		border: 1px solid var(--border);
+		background: var(--bg-input);
+		border: 1px solid var(--border-control);
 		color: var(--text-secondary);
 		font-size: 12px;
 		font-weight: 600;
@@ -1967,8 +2493,8 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		border: 1px dashed var(--border);
-		border-radius: var(--radius-control);
+		border: 1px dashed var(--border-ghost);
+		border-radius: var(--radius-icon-btn);
 		padding: 12px;
 		color: var(--text-secondary);
 		font-size: 13px;
@@ -1998,7 +2524,7 @@
 		content: '';
 		flex: 1;
 		height: 1px;
-		background: var(--border-subtle);
+		background: var(--hairline);
 	}
 
 	.or-divider span {
@@ -2011,15 +2537,80 @@
 		margin-top: 16px;
 	}
 
+	/* ---- Sign: verify-on-device panel ---- */
+	.verify-col {
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
+		min-width: 0;
+	}
+
+	.verify-list {
+		display: flex;
+		flex-direction: column;
+	}
+
+	.verify-row {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		gap: 12px;
+		padding: 12px 0;
+		border-bottom: 1px solid var(--hairline);
+		font-size: 13.5px;
+	}
+
+	.verify-row:first-child {
+		border-top: 1px solid var(--hairline);
+	}
+
+	.verify-key {
+		color: var(--text-secondary);
+	}
+
+	.verify-val {
+		color: var(--text-rows);
+		font-weight: 500;
+		text-align: right;
+		word-break: break-all;
+	}
+
+	.back-badge {
+		display: inline-block;
+		margin-left: 6px;
+		padding: 2px 7px;
+		border-radius: var(--radius-badge);
+		background: var(--sage-muted);
+		color: var(--sage);
+		font-family: var(--font-ui);
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		white-space: nowrap;
+	}
+
+	.verify-note {
+		font-size: 12px;
+		color: var(--text-muted);
+		line-height: 1.5;
+	}
+
+	.verify-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+
 	/* ---- Review: signing-mass panel ----
-	   info = quiet FYI, amber = warning palette, red = strong (timeout risk).
+	   info = quiet FYI, amber = attention palette, red = strong (timeout risk).
 	   Red borrows the error palette for urgency but the copy stays about time,
 	   never safety — the coins are fine, the wait is the issue. */
 	.mass-panel {
 		display: flex;
 		gap: 10px;
 		align-items: flex-start;
-		border-radius: var(--radius-control);
+		border-radius: var(--radius-icon-btn);
 		padding: 12px 14px;
 		font-size: 13px;
 		line-height: 1.55;
@@ -2032,7 +2623,7 @@
 	}
 
 	.mass-panel.info {
-		background: var(--surface-elevated);
+		background: var(--bg-input);
 		border: 1px solid var(--border-subtle);
 	}
 
@@ -2041,38 +2632,17 @@
 	}
 
 	.mass-panel.amber {
-		background: var(--warning-muted);
+		background: var(--attention-muted);
 		border: 1px solid var(--warning-border);
 	}
 
 	.mass-panel.amber :global(svg) {
-		color: var(--warning);
+		color: var(--attention);
 	}
 
 	.mass-panel.red {
 		background: var(--error-muted);
 		border: 1px solid var(--error-border);
-	}
-
-	/* Non-blocking unconfirmed-chain-depth warning (cairn-u9ob.5). */
-	.chain-depth-warning {
-		display: flex;
-		align-items: flex-start;
-		gap: 10px;
-		background: var(--warning-muted);
-		border: 1px solid var(--warning-border);
-		border-radius: var(--radius-card);
-		padding: 12px 14px;
-		margin-bottom: 16px;
-		font-size: 13px;
-		line-height: 1.5;
-		color: var(--text);
-	}
-
-	.chain-depth-warning :global(svg) {
-		color: var(--warning);
-		flex-shrink: 0;
-		margin-top: 1px;
 	}
 
 	.mass-panel.red :global(svg) {
@@ -2110,58 +2680,19 @@
 		gap: 8px;
 		font-size: 13px;
 		color: var(--text-secondary);
-		background: var(--surface-elevated);
+		background: var(--bg-input);
 		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
+		border-radius: var(--radius-icon-btn);
 		padding: 12px 14px;
 	}
 
 	/* ---- Confirm ---- */
-	.confirm-warning {
-		display: flex;
-		gap: 10px;
-		align-items: flex-start;
-		background: var(--warning-muted);
-		border: 1px solid var(--warning-border);
-		border-radius: var(--radius-card);
-		padding: 14px 16px;
-		font-size: 13.5px;
-		line-height: 1.55;
-		color: var(--text);
-	}
-
-	.confirm-warning :global(svg) {
-		color: var(--warning);
-		flex-shrink: 0;
-		margin-top: 1px;
-	}
-
-	.confirm-warning strong {
-		display: block;
-	}
-
-	.confirm-summary,
-	.sent-summary {
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-	}
-
-	.confirm-row {
-		display: flex;
-		justify-content: space-between;
-		gap: 12px;
-		align-items: baseline;
-		font-size: 13.5px;
-	}
-
 	.confirm-recipient {
 		word-break: break-all;
 		text-align: right;
 		max-width: 70%;
 	}
 
-	/* Batch confirm/sent: the recipient cell becomes a right-aligned list. */
 	.confirm-batch {
 		align-items: flex-start;
 	}
@@ -2177,60 +2708,120 @@
 		max-width: 100%;
 	}
 
-	/* ---- Sent ---- */
+	/* ---- Sent: the grove moment ---- */
 	.sent-body {
 		align-items: center;
 		text-align: center;
-		padding-top: 12px;
+		padding-top: 8px;
+		gap: 16px;
 	}
 
-	.sent-check {
-		width: 60px;
-		height: 60px;
-		border-radius: 50%;
-		background: var(--success-muted);
-		color: var(--success);
+	/* 4a topline: flow name left, quiet stepper right, Broadcast lit. */
+	.sent-topline {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 12px;
+		width: 100%;
+	}
+
+	.sent-flow-name {
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--text-muted);
+	}
+
+	.sent-steps {
+		display: inline-flex;
+		align-items: baseline;
+		gap: 9px;
+		font-size: 12px;
+		font-weight: 500;
+		color: var(--text-faint);
+	}
+
+	.sent-step.lit {
+		color: var(--accent-bright);
+	}
+
+	.sweep-stage {
+		position: relative;
+		width: 180px;
+		height: 180px;
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		margin-bottom: 4px;
+		margin: 4px 0;
+	}
+
+	/* Two cream ring sweeps — hwSweepOnce plays ONCE (no infinite), staggered.
+	   Base opacity 0 keeps them invisible during their delay and after. */
+	.sweep {
+		position: absolute;
+		inset: 0;
+		border-radius: 50%;
+		border: 1.5px solid var(--accent-glow-strong);
+		opacity: 0;
+		transform: scale(0.18);
+		animation: hwSweepOnce 2.4s ease-out forwards;
+		pointer-events: none;
+	}
+
+	.sweep.s1 {
+		animation-delay: 0.2s;
+	}
+
+	.sweep.s2 {
+		animation-delay: 1s;
 	}
 
 	.sent-title {
 		font-family: var(--font-serif);
-		font-variation-settings: 'opsz' 48;
-		font-size: 26px;
-		font-weight: 560;
+		font-weight: 600;
+		font-size: 40px;
+		line-height: 1.1;
+		letter-spacing: -0.015em;
+		font-variant-numeric: tabular-nums;
+		color: var(--text-hero);
 	}
 
-	.sent-txid {
+	.sent-sub {
+		font-size: 13.5px;
+		color: var(--text-secondary);
+	}
+
+	.txid-pill {
 		display: inline-flex;
 		align-items: center;
-		gap: 6px;
-		font-size: 14px;
-		padding: 10px 16px;
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-control);
+		gap: 10px;
+		font-size: 13.5px;
+		padding: 9px 16px;
+		background: rgba(255, 255, 255, 0.025);
+		border: 1px solid var(--hairline);
+		border-radius: var(--radius-status-pill);
+		color: var(--text-rows);
 	}
 
-	.sent-copy {
+	.sent-caption {
+		font-size: 11.5px;
+		color: var(--eyebrow-path);
+	}
+
+	.sent-again {
 		font-size: 12.5px;
-	}
-
-	.sent-summary {
-		width: 100%;
-		text-align: left;
-		margin-top: 8px;
 	}
 
 	/* ---- Sent: save-address offer ---- */
 	.save-offer {
 		width: 100%;
+		max-width: 420px;
 		text-align: left;
 		display: flex;
 		flex-direction: column;
 		gap: 10px;
+		border-top: 1px solid var(--hairline);
+		border-bottom: 1px solid var(--hairline);
+		padding: 14px 0;
 	}
 
 	.save-offer-head {
@@ -2254,14 +2845,14 @@
 		flex-shrink: 0;
 		background: none;
 		border: none;
-		border-radius: var(--radius-chip);
+		border-radius: var(--radius-badge);
 		color: var(--text-muted);
 		cursor: pointer;
 	}
 
 	.save-dismiss:hover {
 		color: var(--text);
-		background: var(--bg);
+		background: var(--bg-input);
 	}
 
 	.save-offer-addr {
@@ -2279,31 +2870,107 @@
 		flex: 1;
 	}
 
-	@media (max-width: 520px) {
-		.fee-grid {
-			grid-template-columns: 1fr;
+	/* ---- Mobile (≤900px): flow-page composition ---- */
+	@media (max-width: 900px) {
+		.send-page {
+			margin: -20px -18px -48px;
+			padding: 16px 18px 48px;
 		}
 
-		.send-amount {
+		/* Flow-page header: back circle + centered eyebrow + spacer (8b/8c/8k);
+		   the desktop eyebrow/at-tip row retires. */
+		.flow-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 10px;
+			margin-bottom: 24px;
+		}
+
+		.eyebrow-row {
+			display: none;
+		}
+
+		.hero-line {
+			justify-content: center;
+		}
+
+		.amount-hero {
+			align-items: center;
+			text-align: center;
+		}
+
+		.hero-input {
+			font-size: 52px;
+			line-height: 1;
+			text-align: center;
+		}
+
+		.hero-max {
+			font-size: 40px;
+		}
+
+		.hero-unit {
+			font-size: 20px;
+		}
+
+		.mode-toggles {
+			justify-content: center;
+		}
+
+		.hero-amount {
+			font-size: 38px;
+		}
+
+		.hero-amount.sm {
+			font-size: 32px;
+		}
+
+		.review-hero {
+			align-items: center;
+			text-align: center;
+		}
+
+		.sign-hero {
+			align-items: center;
+			text-align: center;
+		}
+
+		.sign-sub {
+			margin-top: 8px;
+			font-size: 11.5px;
+		}
+
+		.sub-addr {
+			font-size: 10.5px;
+		}
+
+		/* 8k keeps only the SENT eyebrow — no stepper. */
+		.sent-topline {
+			display: none;
+		}
+
+		.sent-title {
 			font-size: 28px;
 		}
 
-		.confirm-recipient {
-			max-width: 60%;
+		.step-actions {
+			flex-direction: column-reverse;
+			align-items: stretch;
+		}
+
+		.step-actions :global(.btn) {
+			width: 100%;
+			min-height: 46px;
 		}
 	}
 
-	/* Touch targets: the fee tiers and the BTC/Max segment are tap targets —
-	   give them the full ≥44px hit area on touch screens and narrow viewports. */
+	/* Touch targets: text toggles are tap targets — give them the full ≥44px
+	   hit area on touch screens and narrow viewports. */
 	@media (max-width: 520px), (pointer: coarse) {
-		.seg-btn {
+		.txt-toggle {
 			min-height: 44px;
 			padding: 10px 16px;
-		}
-
-		.fee-card {
-			min-height: 44px;
-			padding: 12px 14px;
 		}
 	}
 </style>

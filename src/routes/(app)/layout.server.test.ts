@@ -13,6 +13,7 @@ import { setSetting } from '$lib/server/settings';
 import { recordAdminDisclosure, recordUserAgreement } from '$lib/server/disclosures';
 import { generateRecoveryPhrase, generateRecoveryCodes } from '$lib/server/recovery';
 import { createAnnouncement, dismissAnnouncement } from '$lib/server/announcements';
+import { resetFirstSyncStateForTests } from '$lib/server/syncStatus';
 import { load } from './+layout.server';
 
 function wipe(): void {
@@ -33,6 +34,12 @@ let member: User;
 beforeEach(() => {
 	wipe();
 	setSetting('registration_mode', 'open');
+	// Get past the first-sync gate (cairn-koy4.11): mark the chain-history
+	// cache as already built so the gates under test are what decide. The
+	// completion memo is process-wide — reset it so the settings row is what
+	// this test controls.
+	resetFirstSyncStateForTests();
+	setSetting('chainEpochs.v1', '{"seeded":"by-test"}');
 	admin = registerUser({ email: 'admin@example.com', password: PASSWORD, displayName: 'admin' });
 	member = registerUser({ email: 'member@example.com', password: PASSWORD, displayName: 'member' });
 	// Get both users past the disclosure gates so the recovery gate is what decides.
@@ -41,10 +48,15 @@ beforeEach(() => {
 });
 
 /** Run the layout load; SvelteKit's redirect() THROWS — translate it to a value. */
-async function runLoad(user: User, pathname: string): Promise<{ redirected: string | null }> {
+async function runLoad(
+	user: User,
+	pathname: string,
+	cookieJar: Record<string, string> = {}
+): Promise<{ redirected: string | null }> {
 	const event = {
 		locals: { user, flags: {} },
-		url: new URL(`http://localhost${pathname}`)
+		url: new URL(`http://localhost${pathname}`),
+		cookies: { get: (name: string) => cookieJar[name] }
 	} as unknown as Parameters<typeof load>[0];
 	try {
 		await load(event);
@@ -139,7 +151,10 @@ describe('(app) layout announcement banners (flag-gated)', () => {
 	async function loadData(flags: Record<string, boolean>): Promise<LayoutData> {
 		const event = {
 			locals: { user: member, flags },
-			url: new URL('http://localhost/wallets')
+			url: new URL('http://localhost/wallets'),
+			// beforeEach seeds chainEpochs.v1 so the first-sync gate (cairn-koy4.11)
+			// doesn't fire below, but the gate still reads cookies.get() first.
+			cookies: { get: () => undefined }
 		} as unknown as Parameters<typeof load>[0];
 		return (await load(event)) as LayoutData;
 	}
@@ -172,7 +187,8 @@ describe('(app) layout httpsPort (cairn-wgr8)', () => {
 	async function loadData(): Promise<{ httpsPort: number | null }> {
 		const event = {
 			locals: { user: member, flags: {} },
-			url: new URL('http://localhost/wallets')
+			url: new URL('http://localhost/wallets'),
+			cookies: { get: () => undefined }
 		} as unknown as Parameters<typeof load>[0];
 		return (await load(event)) as { httpsPort: number | null };
 	}
@@ -205,5 +221,49 @@ describe('(app) layout httpsPort (cairn-wgr8)', () => {
 	it('treats junk values as not running', async () => {
 		process.env.CAIRN_HTTPS_PORT = 'not-a-port';
 		expect((await loadData()).httpsPort).toBeNull();
+	});
+});
+
+// First-sync gate (cairn-koy4.11): until the once-per-install chain-history
+// cache exists, app routes hop to /sync. Pins: fires for members and admins
+// alike, exempts /recovery-setup (mid-wizard), honors the hw_skip_sync escape
+// cookie, and stops for good once the cache row exists.
+describe('(app) layout first-sync gate (cairn-koy4.11)', () => {
+	function clearHistoryCache(): void {
+		db.prepare(`DELETE FROM settings WHERE key = 'chainEpochs.v1'`).run();
+		resetFirstSyncStateForTests();
+	}
+
+	it('redirects to /sync while the chain-history cache is missing', async () => {
+		completeRecovery(admin.id);
+		clearHistoryCache();
+		expect(await runLoad(member, '/wallets')).toEqual({ redirected: '/sync' });
+		expect(await runLoad(admin, '/')).toEqual({ redirected: '/sync' });
+	});
+
+	it('exempts /recovery-setup so the wizard is not interrupted', async () => {
+		clearHistoryCache();
+		expect(await runLoad(admin, '/recovery-setup')).toEqual({ redirected: null });
+	});
+
+	it('honors the hw_skip_sync escape cookie', async () => {
+		completeRecovery(admin.id);
+		clearHistoryCache();
+		expect(await runLoad(member, '/wallets', { hw_skip_sync: '1' })).toEqual({
+			redirected: null
+		});
+	});
+
+	it('fires AFTER the recovery gate (paperwork overlaps the count)', async () => {
+		clearHistoryCache();
+		expect(await runLoad(admin, '/wallets')).toEqual({ redirected: '/recovery-setup' });
+	});
+
+	it('stops once the cache exists', async () => {
+		completeRecovery(admin.id);
+		clearHistoryCache();
+		expect(await runLoad(member, '/wallets')).toEqual({ redirected: '/sync' });
+		setSetting('chainEpochs.v1', '{"seeded":"by-test"}');
+		expect(await runLoad(member, '/wallets')).toEqual({ redirected: null });
 	});
 });

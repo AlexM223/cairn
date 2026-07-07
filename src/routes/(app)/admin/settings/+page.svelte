@@ -40,7 +40,7 @@
 </script>
 
 <svelte:head>
-	<title>Settings — Admin — Cairn</title>
+	<title>Settings — Admin — Heartwood</title>
 </svelte:head>
 
 <form
@@ -88,9 +88,9 @@
 		<div class="saved-note" role="status">Settings saved — connection updated.</div>
 	{/if}
 
-	<section class="card card-pad section">
+	<section class="hw-section section">
 		<div class="section-head">
-			<span class="card-title">Registration</span>
+			<span class="hw-title">Registration</span>
 			<p class="hint">Who can create an account on this instance.</p>
 		</div>
 		<div class="radio-group">
@@ -124,11 +124,11 @@
 		</div>
 	</section>
 
-	<section class="card card-pad section">
+	<section class="hw-section section">
 		<div class="section-head">
-			<span class="card-title">Node connection</span>
+			<span class="hw-title">Node connection</span>
 			<p class="hint">
-				Where Cairn reads chain data from. Public servers work out of the box; point it at your
+				Where Heartwood reads chain data from. Public servers work out of the box; point it at your
 				own node for full sovereignty.
 			</p>
 		</div>
@@ -301,7 +301,7 @@
 		<div class="subgroup proxy-group">
 			<span class="subgroup-title">Connection performance</span>
 			<p class="hint">
-				How many parallel connections Cairn opens to the Electrum server. More connections let
+				How many parallel connections Heartwood opens to the Electrum server. More connections let
 				wallet balance lookups run at the same time instead of queuing, which speeds up loading
 				many wallets. 1 disables pooling. Most setups are fine with the default.
 			</p>
@@ -371,7 +371,7 @@
 <form
 	method="POST"
 	action="?/saveAgreement"
-	class="card card-pad section fade-in agreement-form"
+	class="hw-section section fade-in agreement-form"
 	use:enhance={() => {
 		savingAgreement = true;
 		return async ({ update }) => {
@@ -381,7 +381,7 @@
 	}}
 >
 	<div class="section-head">
-		<span class="card-title">User agreement</span>
+		<span class="hw-title">User agreement</span>
 		<p class="hint">
 			The terms every user must accept before using this instance. Edit freely to add your own.
 			Saving a change bumps the version, so existing users re-accept on their next visit.
@@ -423,7 +423,7 @@
 <form
 	method="POST"
 	action={data.settings.instanceMode === 'team' ? '?/lockTeamMode' : '?/unlockTeamMode'}
-	class="card card-pad section fade-in"
+	class="hw-section section fade-in"
 	use:enhance={() => {
 		togglingTeamMode = true;
 		return async ({ update }) => {
@@ -433,7 +433,7 @@
 	}}
 >
 	<div class="section-head">
-		<span class="card-title">Team features</span>
+		<span class="hw-title">Team features</span>
 		<p class="hint">
 			Multi-user features — other accounts, invites, contacts, and multisig wallet sharing — stay
 			hidden until you turn this on. Nothing is deleted either way; this only shows or hides the
@@ -463,13 +463,13 @@
 	</div>
 </form>
 
-<section class="card card-pad section danger-zone fade-in">
+<section class="hw-section section danger-zone fade-in">
 	<div class="section-head">
-		<span class="card-title danger-title">Danger zone</span>
+		<span class="hw-title danger-title">Factory reset</span>
 		<p class="hint">
-			Reset this instance: deletes all users, sessions, wallets, and invites, and returns Cairn to
+			Reset this instance: deletes all users, sessions, wallets, and invites, and returns Heartwood to
 			first-run setup. Settings and node configuration are wiped too — a full factory reset.
-			Cairn only ever holds public keys, so no funds are at risk, but nothing else survives.
+			Heartwood only ever holds public keys, so no funds are at risk, but nothing else survives.
 		</p>
 	</div>
 
@@ -536,13 +536,11 @@
 
 <style>
 	.settings-form {
-		gap: 14px;
+		gap: 0;
 		max-width: 760px;
 	}
 
 	.section {
-		display: flex;
-		flex-direction: column;
 		gap: 16px;
 	}
 
@@ -558,20 +556,22 @@
 		gap: 10px;
 	}
 
+	/* Selectable options keep a fill — they're controls, not content boxes
+	   (the spec's "filled surfaces: inputs" allowance). */
 	.radio-card {
 		display: flex;
 		flex-direction: column;
 		gap: 3px;
 		padding: 12px 14px;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-control);
+		background: var(--bg-input);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-strip);
 		cursor: pointer;
 		transition: border-color 120ms var(--ease);
 	}
 
 	.radio-card:hover {
-		border-color: var(--text-muted);
+		border-color: var(--border-ghost);
 	}
 
 	.radio-card.selected,
@@ -601,7 +601,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 20px;
-		border-top: 1px solid var(--border-subtle);
+		border-top: 1px solid var(--hairline);
 		padding-top: 18px;
 	}
 
@@ -612,7 +612,7 @@
 	}
 
 	.proxy-group {
-		border-top: 1px solid var(--border-subtle);
+		border-top: 1px solid var(--hairline);
 		padding-top: 18px;
 	}
 
@@ -657,9 +657,9 @@
 
 	.saved-note {
 		font-size: 13px;
-		color: var(--success);
-		background: var(--success-muted);
-		border: 1px solid rgba(107, 191, 107, 0.3);
+		color: var(--sage);
+		background: var(--sage-muted);
+		border: 1px solid rgba(138, 160, 110, 0.3);
 		border-radius: var(--radius-control);
 		padding: 9px 12px;
 	}
@@ -667,13 +667,11 @@
 	.save-row {
 		display: flex;
 		justify-content: flex-end;
+		padding: 18px 0 26px;
 	}
 
 	.agreement-form {
 		max-width: 760px;
-		margin-top: 24px;
-		display: flex;
-		flex-direction: column;
 		gap: 16px;
 	}
 
@@ -691,9 +689,9 @@
 
 	.save-note {
 		font-size: 12.5px;
-		color: var(--success);
-		background: var(--success-muted);
-		border: 1px solid rgba(107, 191, 107, 0.3);
+		color: var(--sage);
+		background: var(--sage-muted);
+		border: 1px solid rgba(138, 160, 110, 0.3);
 		border-radius: var(--radius-control);
 		padding: 8px 12px;
 	}

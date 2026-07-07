@@ -262,7 +262,7 @@
 	onDestroy(stopCamera);
 </script>
 
-<div class="card card-pad method-active qr-signer">
+<div class="method-active qr-signer">
 	<div class="method-head">
 		<span class="method-icon"><Icon name="qr" size={18} /></span>
 		<div class="grow">
@@ -530,10 +530,11 @@
 </div>
 
 <style>
-	/* Mirrors the .method-active idiom from QrSigner so this card sits naturally
-	   in the method grid. */
+	/* Mirrors the .method-active idiom from QrSigner (hairline row, not a boxed
+	   card) so this sits flush in the method grid. */
 	.method-active {
-		border-color: var(--border);
+		padding: 18px 0;
+		border-bottom: 1px solid var(--hairline);
 	}
 
 	.method-head {
@@ -550,7 +551,7 @@
 		width: 36px;
 		height: 36px;
 		flex-shrink: 0;
-		border-radius: var(--radius-control);
+		border-radius: var(--radius-icon-btn);
 		background: var(--accent-muted);
 		color: var(--accent);
 	}
@@ -576,7 +577,7 @@
 		gap: 8px;
 		background: var(--warning-muted);
 		border: 1px solid var(--warning-border);
-		border-radius: var(--radius-card);
+		border-radius: var(--radius-icon-btn);
 		padding: 12px 14px;
 		margin-bottom: 16px;
 	}
@@ -654,8 +655,8 @@
 		width: 22px;
 		height: 22px;
 		border-radius: 50%;
-		background: var(--surface-elevated);
-		border: 1px solid var(--border);
+		background: var(--bg-input);
+		border: 1px solid var(--border-control);
 		color: var(--text-secondary);
 		font-size: 12px;
 		font-weight: 600;

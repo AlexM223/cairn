@@ -27,7 +27,7 @@
 	// REGISTERED — a one-time on-device review of the multisig's name, quorum and
 	// every cosigner key that yields an HMAC. Where that HMAC lives splits the
 	// multisig flow in two:
-	//   - multisig.multisigId present → PERSISTENT: Cairn stores the HMAC via the
+	//   - multisig.multisigId present → PERSISTENT: Heartwood stores the HMAC via the
 	//     ledger-registration API (it is not a secret; it only spares
 	//     re-approving), so later signatures from the same device skip straight
 	//     to signing.
@@ -122,7 +122,7 @@
 	// Set when a sign attempt used a STORED registration and failed — the HMAC
 	// may be stale (device reset / re-seeded), so offer re-registration.
 	let offerReregister = $state(false);
-	// The registration succeeded on-device but Cairn couldn't persist it.
+	// The registration succeeded on-device but Heartwood couldn't persist it.
 	let saveWarning = $state(false);
 
 	const busy = $derived(phase !== 'idle');
@@ -351,9 +351,9 @@
 	{#if !multisig}
 		<HowItWorks id="ledger-sign">
 			<p>
-				Your <strong>private keys never leave the Ledger</strong>. Cairn sends the unsigned
+				Your <strong>private keys never leave the Ledger</strong>. Heartwood sends the unsigned
 				transaction to the device; the Ledger shows you the amount and destination on its own
-				screen and asks you to physically approve. It returns only signatures, which Cairn merges
+				screen and asks you to physically approve. It returns only signatures, which Heartwood merges
 				back into the transaction to broadcast.
 			</p>
 			<p>
@@ -364,16 +364,16 @@
 	{:else if persistent}
 		<HowItWorks id="multisig-ledger-sign">
 			<p>
-				Your <strong>private keys never leave the Ledger</strong>. Cairn hands the device the current
+				Your <strong>private keys never leave the Ledger</strong>. Heartwood hands the device the current
 				transaction — including every signature already collected — and the Ledger shows the
 				destination and amount on its own screen for a spend from this
 				<strong>{multisig.threshold}-of-{multisig.totalKeys} multisig wallet</strong>. It returns one more
-				signature, which Cairn merges into the transaction.
+				signature, which Heartwood merges into the transaction.
 			</p>
 			<p>
 				A Ledger co-signs only for multisig wallets it has <strong>registered</strong>: a one-time on-device
 				review of the wallet's name, its {multisig.threshold}-of-{multisig.totalKeys} quorum, and every
-				cosigner key. Cairn remembers that approval, so you do it once per device — not per transaction.
+				cosigner key. Heartwood remembers that approval, so you do it once per device — not per transaction.
 			</p>
 		</HowItWorks>
 	{:else}
@@ -459,7 +459,7 @@
 						Your Ledger reviews and stores this wallet's details — the name, the
 						{multisig.threshold}-of-{multisig.totalKeys} quorum, and every cosigner key — and asks you to approve them
 						on the device. That's the Ledger protecting you: it will never quietly co-sign for a
-						wallet you haven't personally vetted on its screen. Cairn saves the approval, so
+						wallet you haven't personally vetted on its screen. Heartwood saves the approval, so
 						this happens once per device. Signing continues right after.
 					</div>
 				{:else}
@@ -528,7 +528,7 @@
 			<div class="save-warning" role="status" aria-live="polite">
 				<Icon name="alert-triangle" size={14} />
 				<span>
-					The Ledger approved the wallet, but Cairn couldn't save the registration — signing still
+					The Ledger approved the wallet, but Heartwood couldn't save the registration — signing still
 					works now, but the device may ask you to register again next time.
 				</span>
 			</div>

@@ -7,7 +7,7 @@
 
 <svelte:head>
 	<link rel="icon" href={favicon} />
-	<title>Cairn</title>
+	<title>Heartwood</title>
 </svelte:head>
 
 {@render children()}

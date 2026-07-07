@@ -4,7 +4,7 @@
 //
 //   import { toast } from '$lib/components/toast.svelte';
 //   toast.success('Profile updated.');
-//   toast.error('Could not reach Cairn to save the address.');
+//   toast.error('Could not reach Heartwood to save the address.');
 //   toast.info('Copied to clipboard.', { duration: 2500 });
 //
 // Timing is consistent app-wide: successes/info auto-dismiss quickly, errors

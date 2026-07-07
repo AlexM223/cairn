@@ -136,24 +136,24 @@
 </script>
 
 <svelte:head>
-	<title>Backup — Admin — Cairn</title>
+	<title>Backup — Admin — Heartwood</title>
 </svelte:head>
 
 <div class="stack wrap fade-in">
-	<div class="intro card card-pad">
+	<div class="intro">
 		<Icon name="info" size={16} />
 		<p>
 			A backup captures your instance's <strong>config</strong> — accounts, wallet and multisig
 			setups, settings, labels and the address book. It never contains passkeys, session tokens, or
-			private keys (Cairn only ever holds public xpubs), so your bitcoin is safe regardless. Keep a
-			recent backup as routine maintenance: if you ever lose access, spin up a fresh instance and
-			restore it.
+			private keys (Heartwood only ever holds public xpubs), so your bitcoin is safe regardless.
+			Keep a recent backup as routine maintenance: if you ever lose access, spin up a fresh
+			instance and restore it.
 		</p>
 	</div>
 
-	<section class="card card-pad section download-section" class:stale={backupStale}>
+	<section class="hw-section section" class:stale={backupStale}>
 		<div class="section-head">
-			<span class="card-title">Download backup</span>
+			<span class="hw-title">Download backup</span>
 			{#if backupStale}
 				<span class="badge badge-warning">
 					<Icon name="alert-triangle" size={11} />
@@ -209,9 +209,9 @@
 		</div>
 	</section>
 
-	<section class="card card-pad section">
+	<section class="hw-section section">
 		<div class="section-head">
-			<span class="card-title">Automatic backups</span>
+			<span class="hw-title">Automatic backups</span>
 			{#if data.schedule.enabled}
 				{#if data.schedule.lastError}
 					<span class="badge badge-error">
@@ -298,8 +298,8 @@
 		</form>
 	</section>
 
-	<section class="card card-pad section">
-		<span class="card-title">Restore</span>
+	<section class="hw-section section">
+		<span class="hw-title">Restore</span>
 		<p class="hint">
 			Restore is additive: existing accounts (matched by email) are left untouched, and imported
 			accounts arrive without passkeys — each owner reclaims their account by adding a passkey on the
@@ -336,10 +336,11 @@
 
 <style>
 	.wrap {
-		gap: 14px;
+		gap: 0;
 		max-width: 640px;
 	}
 
+	/* Lead note above the first hairline — no box. */
 	.intro {
 		display: flex;
 		gap: 10px;
@@ -347,6 +348,16 @@
 		color: var(--text-secondary);
 		font-size: 13px;
 		line-height: 1.55;
+		padding-bottom: 22px;
+		/* The first hw-section renders no top rule; this closes the intro. */
+		border-bottom: 1px solid var(--hairline);
+		margin-bottom: 24px;
+	}
+
+	.intro :global(svg) {
+		color: var(--text-muted);
+		flex-shrink: 0;
+		margin-top: 2px;
 	}
 
 	.intro strong {
@@ -354,19 +365,7 @@
 	}
 
 	.section {
-		display: flex;
-		flex-direction: column;
 		gap: 12px;
-	}
-
-	/* The primary maintenance action: give the download section a touch more
-	   presence, and a warning ring when a backup is overdue. */
-	.download-section {
-		border-color: var(--accent-muted);
-	}
-
-	.download-section.stale {
-		border-color: var(--warning-border-strong);
 	}
 
 	.section-head {
@@ -430,9 +429,9 @@
 
 	.saved-note {
 		font-size: 13px;
-		color: var(--success);
-		background: var(--success-muted);
-		border: 1px solid rgba(107, 191, 107, 0.3);
+		color: var(--sage);
+		background: var(--sage-muted);
+		border: 1px solid rgba(138, 160, 110, 0.3);
 		border-radius: var(--radius-control);
 		padding: 9px 12px;
 		line-height: 1.5;

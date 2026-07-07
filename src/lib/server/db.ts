@@ -9,7 +9,12 @@ const log = childLogger('db');
 // Exported so colocated instance state (e.g. secretKey.ts's `instance.key`) can
 // live NEXT TO the DB file on the same persistent volume — under Docker/Umbrel
 // that is the mounted /data volume (CAIRN_DB), not process.cwd().
-export const DB_PATH = env.CAIRN_DB ?? path.join(process.cwd(), 'data', 'cairn.db');
+//
+// HEARTWOOD_DB is the post-rebrand alias; CAIRN_DB stays supported indefinitely
+// because existing self-hosted installs (Umbrel/Start9/manual Docker) have real
+// databases reachable only under that name — do NOT remove the fallback.
+export const DB_PATH =
+	env.HEARTWOOD_DB ?? env.CAIRN_DB ?? path.join(process.cwd(), 'data', 'cairn.db');
 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 

@@ -96,11 +96,11 @@
 	}
 </script>
 
-<svelte:head><title>Activity log — Admin — Cairn</title></svelte:head>
+<svelte:head><title>Activity log — Admin — Heartwood</title></svelte:head>
 
 <div class="head">
 	<div>
-		<h2 class="section-title">Activity log</h2>
+		<h2 class="hw-title">Activity log</h2>
 		<p class="hint">
 			Every event on this instance — logins, wallet operations, signing sessions, server health,
 			and network activity, across all users. The per-user
@@ -109,7 +109,7 @@
 	</div>
 </div>
 
-<div class="card card-pad filters">
+<div class="filters">
 	<div class="filter-row">
 		<div class="field">
 			<label class="label" for="f-type">Event type</label>
@@ -160,7 +160,7 @@
 	{/if}
 </div>
 
-<div class="card">
+<div class="log-zone">
 	{#if events.length === 0}
 		<div class="empty">No events match these filters.</div>
 	{:else}
@@ -194,13 +194,21 @@
 
 <style>
 	.head {
-		margin-bottom: 14px;
+		margin-bottom: 18px;
+	}
+	.head .hint {
+		margin-top: 4px;
+		max-width: 62ch;
+		line-height: 1.55;
 	}
 	.hint a {
 		color: var(--accent);
 	}
+	/* Filters sit on a hairline, not in a box. */
 	.filters {
-		margin-bottom: 14px;
+		padding-bottom: 18px;
+		margin-bottom: 4px;
+		border-bottom: 1px solid var(--hairline);
 	}
 	.filter-row {
 		display: flex;
@@ -226,7 +234,8 @@
 	.count {
 		margin-left: auto;
 		color: var(--text-muted);
-		font-size: 0.85rem;
+		font-size: 12.5px;
+		font-variant-numeric: tabular-nums;
 	}
 	.table-scroll {
 		overflow-x: auto;
@@ -234,21 +243,28 @@
 	table.log {
 		width: 100%;
 		border-collapse: collapse;
-		font-size: 0.85rem;
+		font-size: 12.5px;
 	}
 	.log th,
 	.log td {
 		text-align: left;
-		padding: 8px 10px;
-		border-bottom: 1px solid var(--border-subtle);
+		padding: 10px;
+		border-bottom: 1px solid var(--hairline);
 		vertical-align: top;
 	}
 	.log th {
-		color: var(--text-muted);
+		font-size: 11px;
 		font-weight: 600;
+		letter-spacing: 0.07em;
+		text-transform: uppercase;
+		color: var(--text-muted);
 		position: sticky;
 		top: 0;
-		background: var(--bg-elevated, var(--bg));
+		background: var(--bg);
+		white-space: nowrap;
+	}
+	.log tbody tr:last-child td {
+		border-bottom: none;
 	}
 	.nowrap {
 		white-space: nowrap;
@@ -258,26 +274,41 @@
 		font-style: italic;
 	}
 	.log code {
-		font-size: 0.8rem;
+		font-family: var(--font-mono);
+		font-size: 11.5px;
 		color: var(--text-muted);
 	}
 	.msg {
 		width: 100%;
+		color: var(--text-rows);
 	}
 	.badge.lvl {
 		font-size: 0.72rem;
 		text-transform: uppercase;
 		letter-spacing: 0.03em;
+		color: var(--text-muted);
+		background: rgba(255, 255, 255, 0.04);
 	}
-	.lvl-warn td {
-		background: color-mix(in srgb, var(--warning) 8%, transparent);
+	.lvl-warn .badge.lvl {
+		color: var(--attention);
+		background: var(--attention-muted);
 	}
-	.lvl-error td {
-		background: color-mix(in srgb, var(--error) 10%, transparent);
+	.lvl-error .badge.lvl {
+		color: var(--error);
+		background: var(--error-muted);
+	}
+	/* Level accents live in the text, not row washes — hairlines, not boxes.
+	   Warn is calm amber; error keeps --error (an operational log's errors are
+	   genuine failures, not nudges). */
+	.lvl-warn .msg {
+		color: var(--attention);
+	}
+	.lvl-error .msg {
+		color: var(--error);
 	}
 	.empty,
 	.more {
-		padding: 22px;
+		padding: 26px;
 		text-align: center;
 		color: var(--text-muted);
 	}

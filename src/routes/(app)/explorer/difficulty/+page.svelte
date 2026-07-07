@@ -2,7 +2,8 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import Term from '$lib/components/Term.svelte';
-	import ExplorerNav from '$lib/components/ExplorerNav.svelte';
+	import GroveField from '$lib/components/heartwood/GroveField.svelte';
+	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
 	import { formatNumber, formatBtc, formatDuration, formatDateTime } from '$lib/format';
 	import { blockSubsidy } from '$lib/bitcoin';
 
@@ -111,15 +112,22 @@
 </script>
 
 <svelte:head>
-	<title>Difficulty — Cairn</title>
+	<title>Difficulty — Heartwood</title>
 </svelte:head>
 
-<div class="head fade-in">
-	<span class="overline">Explorer</span>
-	<h1 class="page-title">Difficulty</h1>
+<div class="diff-page">
+<GroveField volume="present" />
+<div class="page-body">
+<div class="top-row fade-in">
+	<a href="/explorer" class="back">
+		<Icon name="chevron-left" size={15} /> Explorer
+	</a>
 </div>
 
-<ExplorerNav active="difficulty" />
+<div class="head fade-in">
+	<EyebrowBreadcrumb path={['Explorer']} current="Difficulty" />
+	<h1 class="page-title">Difficulty</h1>
+</div>
 
 <HowItWorks id="difficulty">
 	<p>
@@ -143,7 +151,7 @@
 	</div>
 {:else if info}
 	<!-- Projected adjustment hero -->
-	<section class="card hero fade-in">
+	<section class="hero fade-in">
 		<span class="overline">Projected adjustment</span>
 		{#if projected !== null}
 			<span class="hero-number hero-pct tabular" class:falling={!rising}>
@@ -166,7 +174,7 @@
 	</section>
 
 	<!-- Epoch progress -->
-	<section class="card card-pad section fade-in">
+	<section class="section fade-in">
 		<div class="section-head">
 			<Icon name="clock" size={17} />
 			<span class="card-title">Epoch progress</span>
@@ -215,7 +223,7 @@
 
 	<!-- Stat cards -->
 	<section class="stats fade-in">
-		<div class="card card-pad stat">
+		<div class="stat">
 			<span class="overline">Current difficulty</span>
 			{#if diffCompact}
 				<span
@@ -227,7 +235,7 @@
 			{/if}
 			<span class="hint">hashes-per-block scale, unitless</span>
 		</div>
-		<div class="card card-pad stat">
+		<div class="stat">
 			<span class="overline">
 				Average
 				<Term
@@ -249,13 +257,13 @@
 				<span class="hint">unavailable on this backend</span>
 			{/if}
 		</div>
-		<div class="card card-pad stat">
+		<div class="stat">
 			<span class="overline">Next retarget height</span>
 			<span class="hero-number stat-hero tabular">{formatNumber(info.nextRetargetHeight)}</span>
 			<span class="hint">block that triggers the adjustment</span>
 		</div>
 		{#if halving}
-			<div class="card card-pad stat">
+			<div class="stat">
 				<span class="overline">
 					Next
 					<Term
@@ -278,7 +286,7 @@
 
 	<!-- Retarget history -->
 	{#if chart}
-		<section class="card card-pad section fade-in">
+		<section class="section fade-in">
 			<div class="section-head">
 				<Icon name="activity" size={17} />
 				<span class="card-title">Recent adjustments</span>
@@ -318,21 +326,54 @@
 		</p>
 	{/if}
 {/if}
+</div>
+</div>
 
 <style>
+	.diff-page {
+		position: relative;
+		margin: -54px -52px -44px;
+		padding: 54px 52px 44px;
+		min-height: calc(100vh - 98px);
+	}
+
+	.page-body {
+		position: relative;
+		z-index: 1;
+	}
+
+	.top-row {
+		display: flex;
+		align-items: center;
+		margin-bottom: 26px;
+	}
+
+	.back {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--text-muted);
+	}
+
+	.back:hover {
+		color: var(--accent);
+	}
+
 	.head {
 		display: flex;
 		flex-direction: column;
-		gap: 2px;
-		margin-bottom: 14px;
+		gap: 8px;
+		margin-bottom: 18px;
 	}
 
 	.hero {
 		display: flex;
 		flex-direction: column;
 		gap: 10px;
-		padding: 28px 24px;
-		margin-bottom: 14px;
+		padding: 24px 0;
+		border-top: 1px solid var(--hairline);
 	}
 
 	.hero-pct {
@@ -340,9 +381,9 @@
 		color: var(--accent);
 	}
 
-	/* Falling difficulty is not "bad" — a cool steel tone, not an error red. */
+	/* Falling difficulty is not "bad" — a quiet warm grey, never red (spec). */
 	.hero-pct.falling {
-		color: #7d8a94;
+		color: var(--text-secondary);
 	}
 
 	.hero-sentence {
@@ -357,7 +398,8 @@
 		display: flex;
 		flex-direction: column;
 		gap: 16px;
-		margin-bottom: 14px;
+		padding: 20px 0;
+		border-top: 1px solid var(--hairline);
 	}
 
 	.section-head {
@@ -382,7 +424,7 @@
 
 	.progress-track {
 		height: 12px;
-		background: var(--bg);
+		background: var(--bg-input);
 		border-radius: 6px;
 		overflow: hidden;
 	}
@@ -499,9 +541,9 @@
 		border-radius: 3px 3px 1px 1px;
 	}
 
-	/* Steel blue-grey mirrors the hero's "falling" tone — neither direction is bad. */
+	/* Dim copper mirrors the hero's quiet "falling" tone — neither direction is bad. */
 	.bar.neg {
-		background: linear-gradient(180deg, #7d8a94, #66727c);
+		background: linear-gradient(180deg, var(--accent-dim), var(--accent-dim-2));
 		border-radius: 1px 1px 3px 3px;
 	}
 
@@ -513,7 +555,7 @@
 
 	.baseline {
 		width: 100%;
-		border-top: 1px solid var(--border-subtle);
+		border-top: 1px solid var(--hairline);
 	}
 
 	.baseline.solo {
@@ -529,6 +571,18 @@
 
 	.degrade-note {
 		margin-top: 4px;
+	}
+
+	@media (max-width: 900px) {
+		.diff-page {
+			margin: -20px -18px -48px;
+			padding: 20px 18px 48px;
+			min-height: 0;
+		}
+
+		.top-row {
+			margin-bottom: 18px;
+		}
 	}
 
 	@media (max-width: 480px) {

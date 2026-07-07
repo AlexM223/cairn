@@ -82,13 +82,13 @@
 </script>
 
 <svelte:head>
-	<title>Announcements — Admin — Cairn</title>
+	<title>Announcements — Admin — Heartwood</title>
 </svelte:head>
 
 {#if !data.enabled}
 	<!-- Flag-off state: the registry says "Off = ... the admin announcements
 	     page is disabled", so no editor — just where to turn it back on. -->
-	<div class="card card-pad disabled-card fade-in">
+	<div class="disabled-note fade-in">
 		<Icon name="info" size={18} />
 		<div>
 			<div class="disabled-title">Announcement banners are turned off</div>
@@ -109,8 +109,8 @@
 		<div class="form-error" role="alert" style="margin-bottom: 14px">{form.error}</div>
 	{/if}
 
-	<div class="card card-pad editor-card fade-in">
-		<span class="card-title">{editingId === null ? 'New announcement' : 'Edit announcement'}</span>
+	<section class="hw-section editor-section fade-in">
+		<span class="hw-title">{editingId === null ? 'New announcement' : 'Edit announcement'}</span>
 		<form
 			method="POST"
 			action={editingId === null ? '?/create' : '?/update'}
@@ -250,9 +250,9 @@
 				/>
 			</div>
 		</div>
-	</div>
+	</section>
 
-	<div class="card fade-in">
+	<section class="hw-section fade-in">
 		{#if data.announcements.length === 0}
 			<div class="empty-state">
 				<div class="empty-title">No announcements yet</div>
@@ -330,7 +330,7 @@
 				</table>
 			</div>
 		{/if}
-	</div>
+	</section>
 {/if}
 
 <style>
@@ -342,14 +342,16 @@
 		max-width: 640px;
 	}
 
-	.disabled-card {
+	.disabled-note {
 		display: flex;
 		gap: 12px;
 		align-items: flex-start;
 		max-width: 640px;
+		padding: 18px 0;
+		border-bottom: 1px solid var(--hairline);
 	}
 
-	.disabled-card :global(svg) {
+	.disabled-note :global(svg) {
 		color: var(--text-muted);
 		flex-shrink: 0;
 		margin-top: 2px;
@@ -361,15 +363,12 @@
 		margin-bottom: 4px;
 	}
 
-	.disabled-card a {
+	.disabled-note a {
 		color: var(--accent);
 	}
 
-	.editor-card {
-		display: flex;
-		flex-direction: column;
+	.editor-section {
 		gap: 14px;
-		margin-bottom: 14px;
 	}
 
 	.editor-form {
@@ -423,7 +422,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
-		border-top: 1px solid var(--border-subtle);
+		border-top: 1px solid var(--hairline);
 		padding-top: 14px;
 	}
 
@@ -458,7 +457,12 @@
 		white-space: nowrap;
 	}
 
+	/* Destructive row action stays quiet until intent (no red at rest). */
 	.btn.danger {
+		color: var(--text-muted);
+	}
+
+	.btn.danger:hover:not(:disabled) {
 		color: var(--error);
 	}
 

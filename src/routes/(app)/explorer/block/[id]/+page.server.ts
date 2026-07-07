@@ -1,6 +1,7 @@
 import { error } from '@sveltejs/kit';
 import { getChain } from '$lib/server/chain';
 import { isNotFoundError, chainErrorMessage } from '$lib/server/search';
+import { getEpochStrip } from '$lib/server/chainEpochs';
 import type { PageServerLoad } from './$types';
 import type { BlockDetail, TxDetail } from '$lib/types';
 
@@ -35,5 +36,15 @@ export const load: PageServerLoad = async ({ params, url }) => {
 		txError = isNotFoundError(e) ? 'No transactions at this page.' : chainErrorMessage(e);
 	}
 
-	return { block, txs, txTotal, txPage, txError, tipHeight: tip?.height ?? null };
+	return {
+		block,
+		txs,
+		txTotal,
+		txPage,
+		txError,
+		tipHeight: tip?.height ?? null,
+		// Locator-strip dataset (cairn-koy4.7): streamed, cached hard after the
+		// first computation; resolves to null (strip hidden) rather than rejecting.
+		strip: getEpochStrip().catch(() => null)
+	};
 };

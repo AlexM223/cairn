@@ -4,6 +4,8 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import Stepper from '$lib/components/Stepper.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
+	import GroveField from '$lib/components/heartwood/GroveField.svelte';
+	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
 
 	let { data } = $props();
 
@@ -89,10 +91,10 @@
 		if (!codes) return;
 		const stamp = new Date().toISOString().slice(0, 10);
 		const lines = [
-			'Cairn account recovery codes',
-			'============================',
+			'Heartwood account recovery codes',
+			'================================',
 			'',
-			'These codes get you back INTO your Cairn account (your LOGIN) if you',
+			'These codes get you back INTO your Heartwood account (your LOGIN) if you',
 			'lose every passkey. Each code works ONCE.',
 			'',
 			'They are NOT bitcoin keys. They can never move, spend, or reveal any',
@@ -109,7 +111,7 @@
 		const url = URL.createObjectURL(blob);
 		const a = document.createElement('a');
 		a.href = url;
-		a.download = `cairn-recovery-codes-${stamp}.txt`;
+		a.download = `heartwood-recovery-codes-${stamp}.txt`;
 		document.body.appendChild(a);
 		a.click();
 		a.remove();
@@ -129,17 +131,25 @@
 </script>
 
 <svelte:head>
-	<title>Set up account recovery — Cairn</title>
+	<title>Set up account recovery — Heartwood</title>
 </svelte:head>
 
-<div class="wrap fade-in">
-	<header class="head">
-		<div class="head-icon"><Icon name="shield" size={20} /></div>
-		<div>
-			<h1 class="page-title">Set up account recovery</h1>
-			<p class="sub">A way back into Cairn if you ever lose your passkeys.</p>
-		</div>
+<div class="grove-bleed" aria-hidden="true"><GroveField volume="whisper" /></div>
+
+<div class="hw-page hw-owns-header fade-in">
+	<!-- Mobile flow header: back circle + centered eyebrow + spacer. -->
+	<header class="flow-header">
+		<BackCircle href="/settings" label="Back to settings" />
+		<span class="flow-eyebrow">ACCOUNT RECOVERY</span>
+		<span class="flow-spacer"></span>
 	</header>
+
+	<!-- Desktop eyebrow. Entry can be from Settings or first sign-in, so a
+	     plain (non-breadcrumb) eyebrow like the Settings root page. -->
+	<div class="page-eyebrow">ACCOUNT RECOVERY</div>
+
+	<h1 class="page-title">Set up account recovery</h1>
+	<p class="lede">A way back into Heartwood if you ever lose your passkeys.</p>
 
 	<div class="stepper-wrap">
 		<Stepper {steps} current={step} />
@@ -151,8 +161,8 @@
 	<div class="explainer" role="note">
 		<Icon name="info" size={16} />
 		<div>
-			<strong>This recovers your Cairn account, not your bitcoin.</strong>
-			A recovery phrase or code gets you back into Cairn (your login) if you lose all your
+			<strong>This recovers your Heartwood account, not your bitcoin.</strong>
+			A recovery phrase or code gets you back into Heartwood (your login) if you lose all your
 			passkeys. It does <strong>not</strong> access your bitcoin — your bitcoin keys stay on your
 			hardware wallet no matter what happens here.
 		</div>
@@ -163,10 +173,10 @@
 	{/if}
 
 	{#if step === 'phrase'}
-		<section class="card card-pad panel">
+		<section class="panel">
 			<div class="panel-head">
-				<span class="card-title">Your recovery phrase</span>
-				<span class="badge badge-warning">Shown once</span>
+				<h2 class="section-title">Your recovery phrase</h2>
+				<span class="shown-once">shown once</span>
 			</div>
 			<p class="panel-lead">
 				Write these 12 words down <strong>in order</strong> and keep them somewhere safe and offline.
@@ -221,14 +231,14 @@
 	{/if}
 
 	{#if step === 'codes'}
-		<section class="card card-pad panel">
+		<section class="panel">
 			<div class="panel-head">
-				<span class="card-title">Your recovery codes</span>
-				<span class="badge badge-warning">Shown once</span>
+				<h2 class="section-title">Your recovery codes</h2>
+				<span class="shown-once">shown once</span>
 			</div>
 			<p class="panel-lead">
 				A backup to your phrase: <strong>8 single-use codes</strong>. Each one works once to get back
-				into Cairn. Download or copy them and store them somewhere safe — this is the only time
+				into Heartwood. Download or copy them and store them somewhere safe — this is the only time
 				they'll be shown.
 			</p>
 
@@ -282,12 +292,12 @@
 	{/if}
 
 	{#if step === 'done'}
-		<section class="card card-pad panel done-panel">
+		<section class="panel done-panel">
 			<div class="done-badge"><Icon name="check" size={26} strokeWidth={2.25} /></div>
 			<h2 class="done-title">Account recovery is set up</h2>
 			<p class="done-lead">
 				If you ever lose every passkey, you can use your recovery phrase or a recovery code to get
-				back into Cairn. You can regenerate either at any time from Settings.
+				back into Heartwood. You can regenerate either at any time from Settings.
 			</p>
 			<div class="bitcoin-note center">
 				<Icon name="flame" size={15} />
@@ -320,7 +330,17 @@
 </div>
 
 <style>
-	.wrap {
+	/* Grove field bleeds to the viewport behind the content column. */
+	.grove-bleed {
+		position: fixed;
+		inset: 0;
+		z-index: 0;
+		pointer-events: none;
+	}
+
+	.hw-page {
+		position: relative;
+		z-index: 1;
 		max-width: 560px;
 		margin: 0 auto;
 		display: flex;
@@ -328,28 +348,58 @@
 		gap: 18px;
 	}
 
-	.head {
-		display: flex;
-		align-items: center;
-		gap: 13px;
+	/* This page composes its own mobile flow header, so the shell's
+	   bare-back-circle fallback is suppressed while it's mounted. */
+	:global(body:has(.hw-owns-header) .mobile-flow-header) {
+		display: none;
 	}
 
-	.head-icon {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 40px;
-		height: 40px;
-		flex-shrink: 0;
-		border-radius: 50%;
-		background: var(--accent-muted);
-		color: var(--accent);
+	.flow-header {
+		display: none;
 	}
 
-	.sub {
+	.page-eyebrow,
+	.flow-eyebrow {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.22em;
+		text-transform: uppercase;
+		color: var(--eyebrow);
+	}
+
+	.page-eyebrow {
+		margin-bottom: -8px;
+	}
+
+	@media (max-width: 900px) {
+		.page-eyebrow {
+			display: none;
+		}
+
+		.flow-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 10px;
+		}
+
+		.flow-eyebrow {
+			font-size: 10px;
+			letter-spacing: 0.2em;
+			text-align: center;
+		}
+
+		.flow-spacer {
+			width: 32px;
+			height: 32px;
+			flex-shrink: 0;
+		}
+	}
+
+	.lede {
 		font-size: 13px;
-		color: var(--text-muted);
-		margin-top: 2px;
+		color: var(--text-secondary);
+		margin-top: -12px;
 	}
 
 	.stepper-wrap {
@@ -362,7 +412,7 @@
 		align-items: flex-start;
 		background: var(--accent-muted);
 		border: 1px solid var(--accent-border);
-		border-radius: var(--radius-card);
+		border-radius: var(--radius-strip);
 		padding: 12px 14px;
 		font-size: 13px;
 		line-height: 1.6;
@@ -380,10 +430,13 @@
 		font-weight: 600;
 	}
 
+	/* Steps are hairline-bounded sections, not cards. */
 	.panel {
 		display: flex;
 		flex-direction: column;
 		gap: 14px;
+		padding-top: 18px;
+		border-top: 1px solid var(--hairline);
 	}
 
 	.panel-head {
@@ -391,6 +444,21 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: 10px;
+	}
+
+	.section-title {
+		font-size: 17px;
+		font-weight: 600;
+		color: var(--text);
+		letter-spacing: -0.01em;
+	}
+
+	.shown-once {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--attention);
 	}
 
 	.panel-lead {
@@ -418,7 +486,8 @@
 		padding: 4px 0;
 	}
 
-	/* Phrase grid — numbered, monospace, unmistakably an ordered set. */
+	/* Phrase grid — numbered, monospace, unmistakably an ordered set.
+	   Input-like fills are the one filled surface the grammar allows. */
 	.words {
 		list-style: none;
 		margin: 0;
@@ -439,9 +508,9 @@
 		align-items: center;
 		gap: 8px;
 		padding: 8px 10px;
-		background: var(--bg);
+		background: var(--bg-input);
 		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
+		border-radius: var(--radius-strip);
 	}
 
 	.word-num {
@@ -471,10 +540,10 @@
 		align-items: flex-start;
 		font-size: 12.5px;
 		line-height: 1.55;
-		color: var(--warning);
-		background: var(--warning-muted);
+		color: var(--attention);
+		background: var(--attention-muted);
 		border: 1px solid var(--warning-border);
-		border-radius: var(--radius-control);
+		border-radius: var(--radius-strip);
 		padding: 10px 12px;
 	}
 
@@ -496,10 +565,9 @@
 		display: flex;
 		align-items: center;
 		gap: 10px;
-		padding: 11px 12px;
-		background: var(--surface-elevated);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-control);
+		padding: 11px 0;
+		border-top: 1px solid var(--hairline);
+		border-bottom: 1px solid var(--hairline);
 		font-size: 13.5px;
 		font-weight: 500;
 		cursor: pointer;
@@ -534,9 +602,9 @@
 		font-size: 14px;
 		letter-spacing: 0.04em;
 		color: var(--text);
-		background: var(--bg);
+		background: var(--bg-input);
 		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
+		border-radius: var(--radius-strip);
 	}
 
 	.code-actions {
@@ -572,14 +640,15 @@
 		width: 52px;
 		height: 52px;
 		border-radius: 50%;
-		background: var(--success-muted);
-		color: var(--success);
+		background: var(--sage-muted);
+		color: var(--sage);
 	}
 
 	.done-title {
 		font-family: var(--font-serif);
 		font-size: 20px;
 		font-weight: 600;
+		color: var(--text-hero);
 	}
 
 	.done-lead {

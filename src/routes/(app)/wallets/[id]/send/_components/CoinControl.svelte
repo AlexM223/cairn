@@ -306,19 +306,24 @@
 		padding-top: 10px;
 	}
 
+	/* Hairline rows — no cards, no chips (the grove-field grammar). */
 	.coin-row {
 		display: flex;
 		align-items: center;
 		gap: 10px;
 		font-size: 12.5px;
-		padding: 7px 10px;
-		background: var(--bg);
-		border-radius: var(--radius-chip);
+		padding: 8px 6px;
+		border-bottom: 1px solid var(--hairline);
 		cursor: pointer;
+		transition: background-color 120ms var(--ease);
+	}
+
+	.coin-row:last-child {
+		border-bottom: none;
 	}
 
 	.coin-row:hover {
-		outline: 1px solid var(--border);
+		background: rgba(255, 255, 255, 0.018);
 	}
 
 	/* Immature coinbase: grayed out and non-interactive — the disabled checkbox
@@ -330,7 +335,7 @@
 	}
 
 	.coin-row.immature:hover {
-		outline: none;
+		background: none;
 	}
 
 	.coin-row input {

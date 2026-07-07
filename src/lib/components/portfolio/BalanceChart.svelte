@@ -4,38 +4,52 @@
 	type Point = { t: number; sats: number };
 	let { series }: { series: Point[] } = $props();
 
-	type RangeKey = '1W' | '1M' | '3M' | '6M' | '1Y' | 'ALL';
-	const RANGES: { key: RangeKey; label: string; seconds: number }[] = [
-		{ key: '1W', label: '1W', seconds: 7 * 86400 },
-		{ key: '1M', label: '1M', seconds: 30 * 86400 },
-		{ key: '3M', label: '3M', seconds: 90 * 86400 },
-		{ key: '6M', label: '6M', seconds: 180 * 86400 },
-		{ key: '1Y', label: '1Y', seconds: 365 * 86400 },
-		{ key: 'ALL', label: 'ALL', seconds: Infinity }
+	// Heartwood Home (7a): 24h / 7d / 30d range toggles with per-range paths
+	// and a delta chip. "All" is kept so long histories stay reachable.
+	type RangeKey = '24h' | '7d' | '30d' | 'all';
+	const RANGES: { key: RangeKey; label: string; seconds: number; caption: string }[] = [
+		{ key: '24h', label: '24h', seconds: 86400, caption: 'last 24 hours' },
+		{ key: '7d', label: '7d', seconds: 7 * 86400, caption: 'last 7 days' },
+		{ key: '30d', label: '30d', seconds: 30 * 86400, caption: 'last 30 days' },
+		{ key: 'all', label: 'All', seconds: Infinity, caption: 'full history' }
 	];
 
-	let activeRange = $state<RangeKey>('1M');
+	let activeRange = $state<RangeKey>('30d');
+	const range = $derived(RANGES.find((r) => r.key === activeRange)!);
 
 	// Sorted, defensive copy of the incoming series (oldest first expected, but be safe).
 	const sorted = $derived([...series].sort((a, b) => a.t - b.t));
 
 	const filtered = $derived.by(() => {
 		if (sorted.length === 0) return [];
-		const range = RANGES.find((r) => r.key === activeRange)!;
 		if (range.seconds === Infinity) return sorted;
 		const latest = sorted[sorted.length - 1].t;
 		const cutoff = latest - range.seconds;
 		return sorted.filter((p) => p.t >= cutoff);
 	});
 
-	// Layout constants for the SVG coordinate space.
-	const VB_W = 720;
-	const VB_H = 220;
-	const PAD_L = 8;
-	const PAD_R = 8;
-	const PAD_T = 16;
-	const PAD_B = 26;
-	const PLOT_W = VB_W - PAD_L - PAD_R;
+	// Per-range delta chip: change across the visible window. Sage up, calm
+	// amber down — never red (Heartwood grammar).
+	const delta = $derived.by(() => {
+		const pts = filtered;
+		if (pts.length < 2) return null;
+		const first = pts[0].sats;
+		const last = pts[pts.length - 1].sats;
+		const sats = last - first;
+		const pct = first > 0 ? (sats / first) * 100 : null;
+		return { sats, pct, dir: sats > 0 ? 'up' : sats < 0 ? 'down' : 'flat' };
+	});
+
+	// Layout: the SVG viewBox tracks the rendered width so scaling stays
+	// uniform (round dots, honest dash lengths for the draw-in).
+	let plotWidth = $state(720);
+	const VB_H = 190;
+	const PAD_L = 4;
+	const PAD_R = 10;
+	const PAD_T = 14;
+	const PAD_B = 24;
+	const VB_W = $derived(Math.max(plotWidth, 240));
+	const PLOT_W = $derived(VB_W - PAD_L - PAD_R);
 	const PLOT_H = VB_H - PAD_T - PAD_B;
 
 	const bounds = $derived.by(() => {
@@ -76,16 +90,15 @@
 		if (pts.length < 2) return '';
 		const coords = pts.map((p) => ({ x: xFor(p.t), y: yFor(p.sats) }));
 		let d = `M ${coords[0].x.toFixed(2)} ${coords[0].y.toFixed(2)}`;
-		const tension = 0.2;
 		for (let i = 0; i < coords.length - 1; i++) {
 			const p0 = coords[i - 1] ?? coords[i];
 			const p1 = coords[i];
 			const p2 = coords[i + 1];
 			const p3 = coords[i + 2] ?? p2;
-			const c1x = p1.x + ((p2.x - p0.x) / 6) * (tension / 0.2) * 1;
-			const c1y = p1.y + ((p2.y - p0.y) / 6) * (tension / 0.2) * 1;
-			const c2x = p2.x - ((p3.x - p1.x) / 6) * (tension / 0.2) * 1;
-			const c2y = p2.y - ((p3.y - p1.y) / 6) * (tension / 0.2) * 1;
+			const c1x = p1.x + (p2.x - p0.x) / 6;
+			const c1y = p1.y + (p2.y - p0.y) / 6;
+			const c2x = p2.x - (p3.x - p1.x) / 6;
+			const c2y = p2.y - (p3.y - p1.y) / 6;
 			d += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
 		}
 		return d;
@@ -101,22 +114,32 @@
 		return `${line} L ${lastX.toFixed(2)} ${baseY.toFixed(2)} L ${firstX.toFixed(2)} ${baseY.toFixed(2)} Z`;
 	});
 
-	// Horizontal gridlines (values) — a few evenly spaced levels within the padded range.
-	const gridLines = $derived.by(() => {
-		if (filtered.length < 2) return [];
-		const { minS, maxS } = bounds;
-		const COUNT = 4;
-		const lines: { y: number; sats: number }[] = [];
-		for (let i = 0; i <= COUNT; i++) {
-			const sats = minS + ((maxS - minS) * i) / COUNT;
-			lines.push({ y: yFor(sats), sats });
-		}
-		return lines;
+	const endPoint = $derived.by(() => {
+		const pts = filtered;
+		if (pts.length < 2) return null;
+		const p = pts[pts.length - 1];
+		return { x: xFor(p.t), y: yFor(p.sats) };
 	});
 
-	// X-axis date ticks.
-	function formatDate(unix: number): string {
+	// Draw-in on mount and on every range change (hwGrow): the line hides
+	// behind a dash gap as long as itself, then the offset animates to 0.
+	let lineEl = $state<SVGPathElement | null>(null);
+	let lineLen = $state(0);
+	$effect(() => {
+		void linePath;
+		if (!lineEl || !linePath) {
+			lineLen = 0;
+			return;
+		}
+		lineLen = lineEl.getTotalLength();
+	});
+
+	// X-axis ticks: dates normally, clock time on the 24h window.
+	function formatTick(unix: number): string {
 		const d = new Date(unix * 1000);
+		if (range.seconds <= 86400) {
+			return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+		}
 		return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 	}
 
@@ -132,9 +155,9 @@
 	// Up to 5 ticks, evenly spaced by TIME (not by array index) and snapped to
 	// the nearest data point — index spacing bunched ticks together on sparse
 	// series, producing adjacent identical labels like "Jul 4 … Jul 4 … Jul 6"
-	// (cairn-b4ys). A tick that would repeat the previous tick's calendar-day
-	// label (or land on the same point) is skipped rather than reformatted, so
-	// the axis stays clean: every label is distinct or absent.
+	// (cairn-b4ys). A tick that would repeat the previous tick's label (or land
+	// on the same point) is skipped rather than reformatted, so the axis stays
+	// clean: every label is distinct or absent.
 	const xTicks = $derived.by(() => {
 		const pts = filtered;
 		if (pts.length < 2) return [];
@@ -156,8 +179,8 @@
 				}
 			}
 			if (idx === lastIdx) continue; // two targets snapped to the same point
-			const label = formatDate(pts[idx].t);
-			if (label === lastLabel) continue; // same calendar day — skip the duplicate
+			const label = formatTick(pts[idx].t);
+			if (label === lastLabel) continue; // same label — skip the duplicate
 			lastIdx = idx;
 			lastLabel = label;
 			ticks.push({ x: xFor(pts[idx].t), label });
@@ -225,32 +248,54 @@
 </script>
 
 <div class="balance-chart">
-	<div class="range-row" role="group" aria-label="Chart time range">
-		{#each RANGES as r (r.key)}
-			<button
-				type="button"
-				class="range-btn"
-				class:active={activeRange === r.key}
-				aria-pressed={activeRange === r.key}
-				onclick={() => (activeRange = r.key)}
+	<div class="chart-head">
+		{#if delta}
+			<span
+				class="delta-chip tabular"
+				class:up={delta.dir === 'up'}
+				class:down={delta.dir === 'down'}
 			>
-				{r.label}
-			</button>
-		{/each}
+				{delta.dir === 'up' ? '▲' : delta.dir === 'down' ? '▼' : '—'}
+				{#if delta.pct !== null}
+					{Math.abs(delta.pct) < 0.05 && delta.sats !== 0 ? '<0.1' : Math.abs(delta.pct).toFixed(1)}%
+				{:else}
+					{formatBtc(Math.abs(delta.sats))} BTC
+				{/if}
+				<span class="delta-range">{range.label}</span>
+			</span>
+		{:else}
+			<span></span>
+		{/if}
+		<div class="range-row" role="group" aria-label="Chart time range">
+			{#each RANGES as r (r.key)}
+				<button
+					type="button"
+					class="range-btn"
+					class:active={activeRange === r.key}
+					aria-pressed={activeRange === r.key}
+					onclick={() => (activeRange = r.key)}
+				>
+					{r.label}
+				</button>
+			{/each}
+		</div>
 	</div>
 
 	{#if filtered.length < 2}
 		<div class="empty">
-			No balance history to chart yet. History starts from when a wallet is added to Cairn
-			(wallets with past transactions chart their full history), and fills in from here as
-			balances change.
+			{#if sorted.length < 2}
+				No balance history to chart yet. History starts from when a wallet is added to
+				Heartwood (wallets with past transactions chart their full history), and fills in from
+				here as balances change.
+			{:else}
+				Not enough history in the {range.caption} window yet — try a longer range.
+			{/if}
 		</div>
 	{:else}
-		<div class="chart-wrap">
+		<div class="chart-wrap" bind:clientWidth={plotWidth}>
 			<svg
 				bind:this={svgEl}
 				viewBox="0 0 {VB_W} {VB_H}"
-				preserveAspectRatio="none"
 				role="img"
 				aria-label="Balance over time"
 				onpointermove={handlePointerMove}
@@ -258,45 +303,49 @@
 			>
 				<defs>
 					<linearGradient id="balance-area-fill" x1="0" y1="0" x2="0" y2="1">
-						<stop offset="0%" stop-color="var(--accent)" stop-opacity="0.22" />
+						<stop offset="0%" stop-color="var(--accent)" stop-opacity="0.2" />
 						<stop offset="100%" stop-color="var(--accent)" stop-opacity="0" />
 					</linearGradient>
 				</defs>
 
-				<!-- Gridlines -->
-				{#each gridLines as g, i (i)}
-					<line
-						class="gridline"
-						x1={PAD_L}
-						y1={g.y}
-						x2={VB_W - PAD_R}
-						y2={g.y}
-						class:baseline={i === 0}
-					/>
-				{/each}
-
-				<!-- Area fill -->
-				<path d={areaPath} fill="url(#balance-area-fill)" />
-
-				<!-- Line -->
-				<path
-					d={linePath}
-					fill="none"
-					stroke="var(--accent)"
-					stroke-width="2"
-					stroke-linejoin="round"
-					stroke-linecap="round"
-					vector-effect="non-scaling-stroke"
+				<!-- Unboxed: a single faint baseline, no gridbox. -->
+				<line
+					class="baseline"
+					x1={PAD_L}
+					y1={PAD_T + PLOT_H}
+					x2={VB_W - PAD_R}
+					y2={PAD_T + PLOT_H}
 				/>
 
-				<!-- X-axis date ticks -->
+				{#key activeRange}
+					<!-- Area fill fades in behind the draw-in. -->
+					<path class="area" d={areaPath} fill="url(#balance-area-fill)" />
+
+					<!-- The line: hidden behind its own dash length, offset animated to 0. -->
+					<path
+						bind:this={lineEl}
+						class="line"
+						d={linePath}
+						fill="none"
+						stroke="var(--accent)"
+						stroke-width="2"
+						stroke-linejoin="round"
+						stroke-linecap="round"
+						style={lineLen > 0
+							? `stroke-dasharray:${lineLen};stroke-dashoffset:${lineLen};animation:hwGrow 1.8s ease-out forwards;`
+							: 'opacity:0'}
+					/>
+
+					<!-- Pulsing end dot appears once the line reaches it. -->
+					{#if endPoint}
+						<circle class="end-halo" cx={endPoint.x} cy={endPoint.y} r="7" />
+						<circle class="end-dot" cx={endPoint.x} cy={endPoint.y} r="3.2" />
+					{/if}
+				{/key}
+
+				<!-- X-axis ticks -->
 				{#each xTicks as tick (tick.x)}
-					<text
-						class="axis-label"
-						x={tick.x}
-						y={VB_H - 8}
-						text-anchor="middle"
-					>
+					<text class="axis-label" x={tick.x} y={VB_H - 6} text-anchor="middle">
 						{tick.label}
 					</text>
 				{/each}
@@ -332,6 +381,7 @@
 				</div>
 			{/if}
 		</div>
+		<div class="caption">balance · {range.caption}</div>
 	{/if}
 </div>
 
@@ -339,33 +389,62 @@
 	.balance-chart {
 		display: flex;
 		flex-direction: column;
-		gap: 0.75rem;
+		gap: 10px;
 		width: 100%;
 	}
 
+	.chart-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+	}
+
+	/* Delta chip: sage up, calm amber down — never red. */
+	.delta-chip {
+		display: inline-flex;
+		align-items: baseline;
+		gap: 5px;
+		font-size: 12.5px;
+		font-weight: 500;
+		color: var(--text-muted);
+	}
+
+	.delta-chip.up {
+		color: var(--sage);
+	}
+
+	.delta-chip.down {
+		color: var(--attention);
+	}
+
+	.delta-range {
+		color: var(--text-faint);
+		font-weight: 400;
+	}
+
+	/* Text toggles (Heartwood toggle grammar): active copper-bright on copper
+	   tint, radius 14; inactive quiet text — no boxed toggle group. */
 	.range-row {
 		display: flex;
-		gap: 0.25rem;
-		align-self: flex-end;
-		background: var(--surface);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-chip);
-		padding: 0.2rem;
+		gap: 2px;
 	}
 
 	.range-btn {
 		appearance: none;
 		border: none;
 		background: transparent;
-		color: var(--text-muted);
+		color: var(--eyebrow-path);
 		font-family: var(--font-ui);
-		font-size: 0.72rem;
+		font-size: 13px;
 		font-weight: 500;
-		letter-spacing: 0.02em;
-		padding: 0.28rem 0.6rem;
-		border-radius: var(--radius-chip);
+		letter-spacing: 0.01em;
+		padding: 5px 12px;
+		border-radius: var(--radius-toggle);
 		cursor: pointer;
-		transition: color 0.18s var(--ease), background 0.18s var(--ease);
+		transition:
+			color 0.15s var(--ease),
+			background 0.15s var(--ease);
 	}
 
 	.range-btn:hover {
@@ -374,14 +453,14 @@
 
 	.range-btn.active {
 		background: var(--accent-muted);
-		color: var(--accent);
+		color: var(--accent-bright);
 	}
 
 	.empty {
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		min-height: 220px;
+		min-height: 190px;
 		padding: 1.5rem;
 		text-align: center;
 		color: var(--text-muted);
@@ -398,19 +477,47 @@
 	svg {
 		display: block;
 		width: 100%;
-		height: 220px;
+		height: 190px;
 		overflow: visible;
 		touch-action: none;
 	}
 
-	.gridline {
-		stroke: var(--border-subtle);
+	.baseline {
+		stroke: var(--hairline);
 		stroke-width: 1;
-		vector-effect: non-scaling-stroke;
 	}
 
-	.gridline.baseline {
-		stroke: var(--border);
+	.area {
+		animation: hwAreaIn 1.8s ease-out both;
+	}
+
+	@keyframes hwAreaIn {
+		from {
+			opacity: 0;
+		}
+		to {
+			opacity: 1;
+		}
+	}
+
+	/* End dot: hidden until the draw-in arrives, then pulses forever. */
+	.end-dot {
+		fill: var(--accent-glow);
+		animation:
+			hwDotIn 1.7s step-end both,
+			hwPulse 2.4s ease-in-out 1.7s infinite;
+	}
+
+	.end-halo {
+		fill: var(--accent-glow);
+		opacity: 0.18;
+		animation: hwDotIn 1.7s step-end both;
+	}
+
+	@keyframes hwDotIn {
+		from {
+			opacity: 0;
+		}
 	}
 
 	.axis-label {
@@ -424,7 +531,6 @@
 		stroke-width: 1;
 		stroke-dasharray: 3 3;
 		opacity: 0.5;
-		vector-effect: non-scaling-stroke;
 	}
 
 	.dot-halo {
@@ -446,7 +552,7 @@
 		color: var(--text-faint);
 		font-variant-numeric: tabular-nums;
 		pointer-events: none;
-		background: color-mix(in srgb, var(--surface) 60%, transparent);
+		background: color-mix(in srgb, var(--bg) 60%, transparent);
 		padding: 0 0.2rem;
 		border-radius: 3px;
 	}
@@ -459,24 +565,29 @@
 		bottom: 1.9rem;
 	}
 
+	.caption {
+		font-size: 11.5px;
+		color: var(--eyebrow-path);
+	}
+
 	.tooltip {
 		position: absolute;
 		transform: translate(0, calc(-100% - 12px));
 		pointer-events: none;
-		background: var(--surface-elevated);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-control);
-		padding: 0.4rem 0.55rem;
+		background: #201a16;
+		border: 1px solid var(--border-control);
+		border-radius: var(--radius-strip);
+		padding: 0.4rem 0.6rem;
 		min-width: 120px;
-		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+		box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
 		z-index: 2;
 	}
 
 	.tooltip-balance {
-		font-family: var(--font-ui);
-		font-size: 0.82rem;
+		font-family: var(--font-serif);
+		font-size: 0.86rem;
 		font-weight: 600;
-		color: var(--text);
+		color: var(--text-rows);
 		white-space: nowrap;
 	}
 

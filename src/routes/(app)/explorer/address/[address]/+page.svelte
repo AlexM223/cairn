@@ -3,6 +3,8 @@
 	import CopyText from '$lib/components/CopyText.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
+	import GroveField from '$lib/components/heartwood/GroveField.svelte';
+	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
 	import { addressTypeInfo } from '$lib/bitcoin';
 	import {
 		formatNumber,
@@ -103,247 +105,299 @@
 </script>
 
 <svelte:head>
-	<title>Address {truncateMiddle(info.address, 8, 8)} — Cairn</title>
+	<title>Address {truncateMiddle(info.address, 8, 8)} — Heartwood</title>
 </svelte:head>
 
-<div class="head-wrap fade-in">
-	<div class="head">
-		<span class="overline">Address</span>
-		<h1 class="addr mono"><CopyText value={info.address} /></h1>
-		<div class="meta">
-			{#if typeInfo}
-				<Term tip={typeInfo.explanation}>
-					<span class="badge badge-accent">{typeInfo.label} · {typeInfo.prefix}</span>
-				</Term>
-			{:else if info.scriptType}
-				<span class="badge badge-neutral">{info.scriptType.toUpperCase()}</span>
+<div class="addr-page">
+	<GroveField volume="present" />
+	<div class="body">
+		<div class="top-row fade-in">
+			<a href="/explorer" class="back">
+				<Icon name="chevron-left" size={15} /> Explorer
+			</a>
+		</div>
+
+		<div class="head-wrap fade-in">
+			<header class="head">
+				<EyebrowBreadcrumb path={['Explorer']} current="Address" />
+				<div class="hero-row">
+					<span class="hero-number hero-bal" title="{formatSats(info.confirmedBalance)} sats">
+						{formatBtc(info.confirmedBalance)}
+					</span>
+					<span class="hero-unit">BTC</span>
+				</div>
+				<div class="addr mono"><CopyText value={info.address} /></div>
+				<div class="meta">
+					{#if typeInfo}
+						<Term tip={typeInfo.explanation}>
+							<span class="badge badge-accent">{typeInfo.label} · {typeInfo.prefix}</span>
+						</Term>
+					{:else if info.scriptType}
+						<span class="badge badge-neutral">{info.scriptType.toUpperCase()}</span>
+					{/if}
+					{#if info.used}
+						<span
+							class="badge badge-success"
+							title="This address appears in at least one transaction on the blockchain."
+							>Used</span
+						>
+					{:else}
+						<span
+							class="badge badge-neutral"
+							title="No transaction has ever touched this address. It exists only as a possibility until someone sends to it."
+							>Never used</span
+						>
+					{/if}
+					{#if firstSeen}
+						<span class="meta-date" title={formatDateTime(firstSeen)}>
+							first seen {timeAgo(firstSeen)}
+						</span>
+					{/if}
+					{#if lastSeen}
+						<span class="meta-date" title={formatDateTime(lastSeen)}>
+							last active {timeAgo(lastSeen)}
+						</span>
+					{/if}
+				</div>
+			</header>
+			{#if data.qr}
+				<div class="qr">
+					<img src={data.qr} alt="QR code for address {info.address}" width="132" height="132" />
+					<span class="hint">Scan to copy address</span>
+				</div>
 			{/if}
-			{#if info.used}
-				<span class="badge badge-success" title="This address appears in at least one transaction on the blockchain.">Used</span>
+		</div>
+
+		<!-- inline serif stats -->
+		<section class="stat-line fade-in">
+			<div class="stat">
+				<span class="stat-label">
+					<Term
+						tip="Pending change from transactions with no rings yet. It becomes part of the balance once they take their first ring."
+						>Pending</Term
+					>
+				</span>
+				<span class="stat-value tabular" title="{formatSats(info.unconfirmedBalance)} sats">
+					{#if info.unconfirmedBalance === 0}
+						—
+					{:else}
+						<span class={info.unconfirmedBalance > 0 ? 'pos' : 'neg'}>
+							{info.unconfirmedBalance > 0 ? '+' : ''}{formatBtc(info.unconfirmedBalance)} BTC
+						</span>
+					{/if}
+				</span>
+			</div>
+			<div class="stat">
+				<span class="stat-label">Transactions</span>
+				<span class="stat-value tabular">{formatNumber(info.txCount)}</span>
+			</div>
+			{#if info.totalReceived !== null}
+				<div class="stat">
+					<span class="stat-label">Total received</span>
+					<span class="stat-value tabular" title="{formatSats(info.totalReceived)} sats">
+						{formatBtc(info.totalReceived)} BTC
+					</span>
+				</div>
+			{/if}
+			{#if info.totalSent !== null && info.totalSent > 0}
+				<div class="stat">
+					<span class="stat-label">Total sent</span>
+					<span class="stat-value tabular" title="{formatSats(info.totalSent)} sats">
+						{formatBtc(info.totalSent)} BTC
+					</span>
+				</div>
+			{/if}
+		</section>
+
+		<section class="txs">
+			<div class="txs-head fade-in">
+				<span class="txs-title">History</span>
+				{#if allTxs.length > 0 && allTxs.length < info.txCount}
+					<span class="txs-count">Latest {allTxs.length} of {formatNumber(info.txCount)}</span>
+				{/if}
+			</div>
+
+			{#if data.txError}
+				<div class="form-error tx-error" role="alert">
+					<Icon name="alert-triangle" size={15} />
+					<span>Couldn't load transactions — {data.txError}</span>
+				</div>
+			{:else if allTxs.length === 0}
+				<div class="empty-state">
+					<span class="empty-title">No transactions</span>
+					<span>This address hasn't sent or received anything yet.</span>
+				</div>
 			{:else}
-				<span
-					class="badge badge-neutral"
-					title="No transaction has ever touched this address. It exists only as a possibility until someone sends to it."
-					>Never used</span
-				>
+				<div class="table-wrap">
+					<table class="table">
+						<thead>
+							<tr>
+								<th>Txid</th>
+								<th>Time</th>
+								<th class="num">Amount</th>
+								<th class="num">Balance after</th>
+								<th class="num">Fee</th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each rows as tx (tx.txid)}
+								<tr>
+									<td>
+										<a href="/explorer/tx/{tx.txid}" class="mono">{truncateMiddle(tx.txid, 10, 10)}</a>
+									</td>
+									<td>
+										{#if tx.height === 0}
+											<span
+												class="badge badge-warning"
+												title="Waiting in the mempool — no rings yet."
+												>no rings yet</span
+											>
+										{:else}
+											<span class="text-muted" title={formatDateTime(tx.time)}>{timeAgo(tx.time)}</span>
+										{/if}
+									</td>
+									<td class="num tabular">
+										{#if tx.delta !== null}
+											<span
+												class={tx.delta >= 0 ? 'pos' : 'neg'}
+												title="{formatSats(tx.delta)} sats"
+											>
+												{tx.delta >= 0 ? '+' : '−'}{formatBtc(Math.abs(tx.delta))} BTC
+											</span>
+										{:else}
+											—
+										{/if}
+									</td>
+									<td
+										class="num tabular text-secondary"
+										title="{formatSats(tx.balanceAfter)} sats — the address balance once this transaction settled"
+									>
+										{formatBtc(tx.balanceAfter)} BTC
+									</td>
+									<td class="num text-muted">
+										{tx.fee !== null ? `${formatSats(tx.fee)} sats` : '—'}
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+				{#if showLoadMore || loadMoreError}
+					<div class="load-more">
+						{#if loadMoreError}
+							<span class="hint load-more-error" role="alert">
+								Couldn't load more — {loadMoreError}
+							</span>
+						{/if}
+						<button
+							type="button"
+							class="btn btn-secondary btn-sm"
+							onclick={loadMore}
+							disabled={loadingMore}
+						>
+							{#if loadingMore}
+								<span class="spinner"></span>
+							{:else}
+								<Icon name="chevron-down" size={14} />
+							{/if}
+							{loadMoreError ? 'Retry' : 'Load more'}
+						</button>
+					</div>
+				{/if}
 			{/if}
-			{#if firstSeen}
-				<span class="meta-date" title={formatDateTime(firstSeen)}>
-					first seen {timeAgo(firstSeen)}
-				</span>
-			{/if}
-			{#if lastSeen}
-				<span class="meta-date" title={formatDateTime(lastSeen)}>
-					last active {timeAgo(lastSeen)}
-				</span>
-			{/if}
+		</section>
+
+		<div class="explain">
+			<HowItWorks id="address">
+				<p>
+					<strong>An address is a destination for bitcoin</strong> — a short encoding of the
+					conditions someone must satisfy (usually a signature from a private key) to spend coins
+					sent to it. Addresses don't hold coins themselves; the blockchain holds
+					<strong>unspent outputs</strong> locked to them, and the balance you see is their sum.
+				</p>
+				<p>
+					Formats have evolved for efficiency: Legacy (1…), script-wrapped (3…), Native SegWit
+					(bc1q…), and Taproot (bc1p…). Newer formats take less block space to spend from, which
+					means lower fees. Wallets generate a fresh address for every payment, so one wallet
+					typically controls many addresses.
+				</p>
+			</HowItWorks>
 		</div>
 	</div>
-	{#if data.qr}
-		<div class="card qr-card">
-			<img src={data.qr} alt="QR code for address {info.address}" width="140" height="140" />
-			<span class="hint">Scan to copy address</span>
-		</div>
-	{/if}
 </div>
 
-<HowItWorks id="address">
-	<p>
-		<strong>An address is a destination for bitcoin</strong> — a short encoding of the
-		conditions someone must satisfy (usually a signature from a private key) to spend coins
-		sent to it. Addresses don't hold coins themselves; the blockchain holds
-		<strong>unspent outputs</strong> locked to them, and the balance you see is their sum.
-	</p>
-	<p>
-		Formats have evolved for efficiency: Legacy (1…), script-wrapped (3…), Native SegWit
-		(bc1q…), and Taproot (bc1p…). Newer formats take less block space to spend from, which
-		means lower fees. Wallets generate a fresh address for every payment, so one wallet
-		typically controls many addresses.
-	</p>
-</HowItWorks>
-
-<section class="stats fade-in">
-	<div class="card card-pad stat">
-		<span class="overline">Confirmed balance</span>
-		<span class="hero-number stat-hero" title="{formatSats(info.confirmedBalance)} sats">
-			{formatBtc(info.confirmedBalance)}
-			<span class="unit">BTC</span>
-		</span>
-	</div>
-	<div class="card card-pad stat">
-		<span class="overline">
-			<Term
-				tip="Pending change from transactions still in the mempool. It becomes part of the confirmed balance once they're mined into a block."
-				>Unconfirmed</Term
-			>
-		</span>
-		<span class="stat-value tabular" title="{formatSats(info.unconfirmedBalance)} sats">
-			{#if info.unconfirmedBalance === 0}
-				—
-			{:else}
-				<span class={info.unconfirmedBalance > 0 ? 'pos' : 'neg'}>
-					{info.unconfirmedBalance > 0 ? '+' : ''}{formatBtc(info.unconfirmedBalance)} BTC
-				</span>
-			{/if}
-		</span>
-	</div>
-	<div class="card card-pad stat">
-		<span class="overline">Transactions</span>
-		<span class="stat-value tabular">{formatNumber(info.txCount)}</span>
-	</div>
-	{#if info.totalReceived !== null}
-		<div class="card card-pad stat">
-			<span class="overline">Total received</span>
-			<span class="stat-value tabular" title="{formatSats(info.totalReceived)} sats">
-				{formatBtc(info.totalReceived)} BTC
-			</span>
-		</div>
-	{/if}
-	{#if info.totalSent !== null && info.totalSent > 0}
-		<div class="card card-pad stat">
-			<span class="overline">Total sent</span>
-			<span class="stat-value tabular" title="{formatSats(info.totalSent)} sats">
-				{formatBtc(info.totalSent)} BTC
-			</span>
-		</div>
-	{/if}
-</section>
-
-<section class="card fade-in">
-	<div class="txs-head">
-		<Icon name="activity" size={17} />
-		<span class="card-title">Transaction history</span>
-		{#if allTxs.length > 0 && allTxs.length < info.txCount}
-			<span class="hint pages">Latest {allTxs.length} of {formatNumber(info.txCount)}</span>
-		{/if}
-	</div>
-
-	{#if data.txError}
-		<div class="form-error tx-error" role="alert">
-			<Icon name="alert-triangle" size={15} />
-			<span>Couldn't load transactions — {data.txError}</span>
-		</div>
-	{:else if allTxs.length === 0}
-		<div class="empty-state">
-			<span class="empty-title">No transactions</span>
-			<span>This address hasn't sent or received anything yet.</span>
-		</div>
-	{:else}
-		<div class="table-wrap">
-			<table class="table">
-				<thead>
-					<tr>
-						<th>Txid</th>
-						<th>Time</th>
-						<th class="num">Amount</th>
-						<th class="num">Balance after</th>
-						<th class="num">Fee</th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each rows as tx (tx.txid)}
-						<tr>
-							<td>
-								<a href="/explorer/tx/{tx.txid}" class="mono">{truncateMiddle(tx.txid, 10, 10)}</a>
-							</td>
-							<td>
-								{#if tx.height === 0}
-									<span
-										class="badge badge-warning"
-										title="Waiting in the mempool — not yet included in a block."
-										>pending</span
-									>
-								{:else}
-									<span class="text-muted" title={formatDateTime(tx.time)}>{timeAgo(tx.time)}</span>
-								{/if}
-							</td>
-							<td class="num tabular">
-								{#if tx.delta !== null}
-									<span
-										class={tx.delta >= 0 ? 'pos' : 'neg'}
-										title="{formatSats(tx.delta)} sats"
-									>
-										{tx.delta >= 0 ? '+' : '−'}{formatBtc(Math.abs(tx.delta))} BTC
-									</span>
-								{:else}
-									—
-								{/if}
-							</td>
-							<td
-								class="num tabular text-secondary"
-								title="{formatSats(tx.balanceAfter)} sats — the address balance once this transaction settled"
-							>
-								{formatBtc(tx.balanceAfter)} BTC
-							</td>
-							<td class="num text-muted">
-								{tx.fee !== null ? `${formatSats(tx.fee)} sats` : '—'}
-							</td>
-						</tr>
-					{/each}
-				</tbody>
-			</table>
-		</div>
-		{#if showLoadMore || loadMoreError}
-			<div class="load-more">
-				{#if loadMoreError}
-					<span class="hint load-more-error" role="alert">
-						Couldn't load more — {loadMoreError}
-					</span>
-				{/if}
-				<button
-					type="button"
-					class="btn btn-secondary btn-sm"
-					onclick={loadMore}
-					disabled={loadingMore}
-				>
-					{#if loadingMore}
-						<span class="spinner"></span>
-					{:else}
-						<Icon name="chevron-down" size={14} />
-					{/if}
-					{loadMoreError ? 'Retry' : 'Load more'}
-				</button>
-			</div>
-		{/if}
-	{/if}
-</section>
-
 <style>
+	.addr-page {
+		position: relative;
+		margin: -54px -52px -44px;
+		padding: 54px 52px 44px;
+		min-height: calc(100vh - 98px);
+	}
+
+	.body {
+		position: relative;
+		z-index: 1;
+	}
+
+	.top-row {
+		display: flex;
+		align-items: center;
+		margin-bottom: 26px;
+	}
+
+	.back {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--text-muted);
+	}
+
+	.back:hover {
+		color: var(--accent);
+	}
+
 	.head-wrap {
 		display: flex;
 		align-items: flex-start;
-		gap: 16px;
+		justify-content: space-between;
+		gap: 24px;
 		flex-wrap: wrap;
-		margin-bottom: 16px;
 	}
 
 	.head {
 		display: flex;
 		flex-direction: column;
-		gap: 6px;
+		gap: 0;
 		min-width: 0;
-		/* Take the row when wide; wrap the QR card below at narrow widths. */
 		flex: 1 1 320px;
 	}
 
-	.qr-card {
+	.hero-row {
 		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: 6px;
-		padding: 12px 14px 10px;
-		flex-shrink: 0;
+		align-items: baseline;
+		gap: 12px;
+		margin-top: 18px;
 	}
 
-	.qr-card img {
-		width: 140px;
-		height: 140px;
-		max-width: 100%;
+	.hero-bal {
+		font-size: 52px;
+		line-height: 1;
+		color: var(--text-hero);
+	}
+
+	.hero-unit {
+		font-family: var(--font-serif);
+		font-size: 22px;
+		font-weight: 600;
+		color: var(--text-muted);
 	}
 
 	.addr {
-		font-size: 17px;
-		font-weight: 550;
+		margin-top: 14px;
+		font-size: 13.5px;
+		color: var(--text-secondary);
 		min-width: 0;
 		word-break: break-all;
 	}
@@ -353,67 +407,104 @@
 		align-items: center;
 		gap: 8px;
 		flex-wrap: wrap;
+		margin-top: 12px;
 	}
 
 	.meta-date {
 		font-size: 12.5px;
-		color: var(--text-muted);
+		color: var(--text-faint);
 	}
 
-	.stats {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-		gap: 14px;
-		margin-bottom: 14px;
+	.qr {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 6px;
+		flex-shrink: 0;
+		padding: 10px;
+		background: var(--bg-input);
+		border-radius: var(--radius-strip);
+	}
+
+	.qr img {
+		display: block;
+		width: 132px;
+		height: 132px;
+		max-width: 100%;
+		border-radius: 6px;
+	}
+
+	/* --- inline serif stats --- */
+	.stat-line {
+		display: flex;
+		gap: 40px;
+		flex-wrap: wrap;
+		margin-top: 30px;
+		padding: 18px 0;
+		border-top: 1px solid var(--hairline);
+		border-bottom: 1px solid var(--hairline);
 	}
 
 	.stat {
 		display: flex;
 		flex-direction: column;
-		gap: 6px;
+		gap: 3px;
 	}
 
-	.stat-hero {
-		font-size: 28px;
+	.stat-label {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--text-muted);
 	}
 
 	.stat-value {
 		font-family: var(--font-serif);
-		font-size: 22px;
-		font-weight: 560;
-	}
-
-	.unit {
-		font-family: var(--font-ui);
-		font-size: 13px;
-		color: var(--text-muted);
-		font-weight: 400;
+		font-size: 20px;
+		font-weight: 600;
+		color: var(--text-rows);
 	}
 
 	.pos {
-		color: var(--success);
+		color: var(--sage);
 	}
 
+	/* Outgoing is a neutral value tone — never red (spec). */
 	.neg {
-		color: var(--error);
+		color: var(--text-secondary);
+	}
+
+	/* --- history --- */
+	.txs {
+		margin-top: 34px;
 	}
 
 	.txs-head {
 		display: flex;
-		align-items: center;
-		gap: 10px;
-		padding: 16px 20px 12px;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 12px;
+		margin-bottom: 4px;
 	}
 
-	.pages {
-		margin-left: auto;
+	.txs-title {
+		font-size: 17px;
+		font-weight: 600;
+		color: var(--text);
+		letter-spacing: -0.01em;
+	}
+
+	.txs-count {
+		font-size: 12.5px;
+		color: var(--text-faint);
 	}
 
 	.tx-error {
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		margin: 0 16px 16px;
+		margin-top: 12px;
 	}
 
 	.load-more {
@@ -422,10 +513,42 @@
 		justify-content: center;
 		gap: 12px;
 		flex-wrap: wrap;
-		padding: 12px 20px 16px;
+		padding-top: 16px;
 	}
 
 	.load-more-error {
-		color: var(--error);
+		color: var(--attention);
+	}
+
+	.explain {
+		margin-top: 40px;
+	}
+
+	@media (max-width: 900px) {
+		.addr-page {
+			margin: -20px -18px -48px;
+			padding: 20px 18px 48px;
+			min-height: 0;
+		}
+
+		.top-row {
+			margin-bottom: 18px;
+		}
+
+		.hero-bal {
+			font-size: 36px;
+		}
+
+		.hero-unit {
+			font-size: 17px;
+		}
+
+		.stat-line {
+			gap: 22px;
+		}
+
+		.stat-value {
+			font-size: 16px;
+		}
 	}
 </style>
