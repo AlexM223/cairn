@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
-	import { replaceState } from '$app/navigation';
+	import { replaceState, invalidate } from '$app/navigation';
 	import { page } from '$app/state';
 	import { onNewBlock } from '$lib/liveBlocks';
 	import Icon from '$lib/components/Icon.svelte';
@@ -18,7 +18,7 @@
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
 	import AtTipPill from '$lib/components/heartwood/AtTipPill.svelte';
 	import { formatBtc, formatSats, formatFeeRate, truncateMiddle } from '$lib/format';
-	import type { ScriptType } from '$lib/types';
+	import type { ScriptType, FeeEstimates } from '$lib/types';
 	import type { ConstructedPsbt } from '$lib/server/bitcoin/psbt';
 	import type { SavedTransaction } from '$lib/server/transactions';
 	import type { SavedAddress } from '$lib/server/addressBook';
@@ -187,18 +187,42 @@
 	// address. Advisory seeding only — everything stays editable, nothing is
 	// blocked, and unknown/spent coins are silently dropped. Ignored on resume
 	// (?tx= wins: the draft already fixed its inputs).
-	function seedConsolidate(): { coins: string[]; to: string | null } | null {
+	// The spendable set is STREAMED (see below), so the coin keys can't be
+	// validated synchronously here — this reads only the URL params. The coins
+	// are matched against the real UTXO set once it resolves (in the stream
+	// effect), keeping the page paintable before the scan returns.
+	function readConsolidateParams(): { coinKeys: string[]; to: string | null } | null {
 		if (resumeTx) return null;
 		const raw = page.url.searchParams.get('consolidate');
 		if (!raw) return null;
-		const valid = new Set(data.utxos.map((u) => `${u.txid}:${u.vout}`));
-		const coins = [...new Set(raw.split(',').map((s) => s.trim()))].filter((k) => valid.has(k));
-		if (coins.length === 0) return null;
+		const coinKeys = [...new Set(raw.split(',').map((s) => s.trim()))].filter(
+			(k) => k.length > 0
+		);
+		if (coinKeys.length === 0) return null;
 		const to = page.url.searchParams.get('to')?.trim() ?? null;
-		return { coins, to: to && looksLikeAddress(to) ? to : null };
+		return { coinKeys, to: to && looksLikeAddress(to) ? to : null };
 	}
 	// svelte-ignore state_referenced_locally — per-navigation constant
-	const consolidate = seedConsolidate();
+	const consolidateParams = readConsolidateParams();
+
+	// --- streamed network data (cairn-vknb.3) -------------------------------
+	// The Electrum/esplora-dependent half of the load STREAMS in (see
+	// +page.server.ts's `live` field): the page shell paints immediately from the
+	// cheap synchronous fields, and these fill in when the node answers. Each is
+	// seeded to a safe empty/zero default and updated once `data.live` resolves.
+	type SendLive = Awaited<(typeof data)['live']>;
+	type SendUtxo = SendLive['utxos'][number];
+	let confirmed = $state<number | null>(null);
+	let scanError = $state<string | null>(null);
+	let fees = $state<FeeEstimates | null>(null);
+	let utxos = $state<SendUtxo[]>([]);
+	// True once `data.live` has settled (resolved or degraded) — lets the UI tell
+	// "still streaming" apart from "loaded, but the node was down / had nothing".
+	let liveLoaded = $state(false);
+	// One-shot guards so the stream-resolve effect seeds derived values exactly
+	// once and never clobbers a user edit made while the data was in flight.
+	let consolidateSeeded = false;
+	let customFeeTouched = false;
 
 	// One row per output. A single row is the classic send; adding rows makes
 	// a batch payment — one transaction, several recipients, one fee.
@@ -213,15 +237,15 @@
 				amountText: r.amount > 0 ? formatBtc(r.amount, { trim: true }) : ''
 			}));
 		}
-		if (consolidate?.to) {
-			return [{ key: rowKey++, address: consolidate.to, amountText: '' }];
+		if (consolidateParams?.to) {
+			return [{ key: rowKey++, address: consolidateParams.to, amountText: '' }];
 		}
 		return [{ key: rowKey++, address: '', amountText: '' }];
 	}
 	// svelte-ignore state_referenced_locally — intentional per-load seed
 	let rows = $state<RecipientRow[]>(seedRows());
 	// Consolidation is a self-sweep of the selected coins — Max is the point.
-	let amountMode = $state<'btc' | 'max'>(consolidate ? 'max' : 'btc');
+	let amountMode = $state<'btc' | 'max'>(consolidateParams ? 'max' : 'btc');
 
 	// The hero's unit-swap circle: amounts are typed in BTC or sats. Rows seed
 	// in BTC; toggling converts every row's text in place so what the user sees
@@ -259,27 +283,71 @@
 
 	// ----------------------------------------------------- manual coin control
 	// Keys are "txid:vout". Empty = automatic selection (the default flow).
-	// A consolidation handoff seeds the coins it wants swept.
-	// svelte-ignore state_referenced_locally — intentional per-load seed
-	let selectedCoins = $state<string[]>(consolidate?.coins ?? []);
+	// Coin selection starts empty; a consolidation handoff's coins are validated
+	// against the streamed spendable set and seeded once it resolves (below).
+	let selectedCoins = $state<string[]>([]);
 
-	// Live block tip, seeded from the load and kept fresh by onNewBlock (below).
-	// Coin control maturity-checks coinbase (mining reward) coins against it, so
-	// an immature reward becomes selectable the moment its 100th block arrives.
-	// svelte-ignore state_referenced_locally — intentional per-load seed
-	let tipHeight = $state<number>(data.tipHeight);
+	// Live block tip. Seeded to 0 and filled from the streamed load, then kept
+	// fresh by onNewBlock (below). Coin control maturity-checks coinbase (mining
+	// reward) coins against it, so an immature reward becomes selectable the
+	// moment its 100th block arrives.
+	let tipHeight = $state<number>(0);
 
 	type FeeChoice = 'fast' | 'normal' | 'economy' | 'custom';
 	let feeChoice = $state<FeeChoice>('normal');
-	// svelte-ignore state_referenced_locally — intentional per-load seed
-	let customFee = $state(String(data.fees?.halfHour ?? 5));
+	// A neutral starting rate for the custom box; reseeded from the streamed
+	// half-hour estimate when it arrives, unless the user has already typed one.
+	let customFee = $state('5');
 
 	const feeRate = $derived.by(() => {
 		const fallback = Number(customFee) || 1;
-		if (feeChoice === 'fast') return data.fees?.fastest ?? fallback;
-		if (feeChoice === 'normal') return data.fees?.halfHour ?? fallback;
-		if (feeChoice === 'economy') return data.fees?.economy ?? fallback;
+		if (feeChoice === 'fast') return fees?.fastest ?? fallback;
+		if (feeChoice === 'normal') return fees?.halfHour ?? fallback;
+		if (feeChoice === 'economy') return fees?.economy ?? fallback;
 		return Math.max(1, fallback);
+	});
+
+	// Fill the streamed fields in when the server's Electrum round-trips settle.
+	// A new-block invalidate (onMount) creates a fresh `data.live`, re-running
+	// this effect so fees/tip/balance refresh — prior values stay on screen until
+	// the new snapshot resolves, so there's no skeleton flash on refresh.
+	$effect(() => {
+		const promise = data.live;
+		let stale = false;
+		void promise
+			.then((live) => {
+				if (stale) return;
+				confirmed = live.confirmed;
+				scanError = live.scanError;
+				fees = live.fees;
+				utxos = live.utxos;
+				// onNewBlock may have already advanced the tip past this snapshot.
+				if (live.tipHeight > tipHeight) tipHeight = live.tipHeight;
+				// Reseed the custom-fee box from the live half-hour rate, unless the
+				// user has already opened Custom and typed something.
+				if (!customFeeTouched && live.fees?.halfHour != null) {
+					customFee = String(live.fees.halfHour);
+				}
+				// Validate the consolidation handoff's coins against the now-known
+				// spendable set — exactly once, and never over a live user selection.
+				if (consolidateParams && !resumeTx && !consolidateSeeded) {
+					const valid = new Set(utxos.map((u) => `${u.txid}:${u.vout}`));
+					selectedCoins = consolidateParams.coinKeys.filter((k) => valid.has(k));
+					consolidateSeeded = true;
+				}
+				liveLoaded = true;
+			})
+			.catch(() => {
+				if (stale) return;
+				// The streamed scan rejected (an unexpected, non-degraded error) —
+				// surface the same graceful "couldn't reach your node" state the
+				// server's inline degrade paths use, never a broken page.
+				scanError = scanError ?? 'Could not reach your node to load spendable coins.';
+				liveLoaded = true;
+			});
+		return () => {
+			stale = true;
+		};
 	});
 
 	// "next ring ≈ N min" — the brand way to say confirmation ETA per tier.
@@ -296,7 +364,7 @@
 	// regimes (fast tier of 1-2 sat/vB) from tripping the warning on sane rates.
 	// Non-blocking: Review still forces a look at the absolute fee.
 	const feeWarning = $derived.by(() => {
-		const fast = data.fees?.fastest;
+		const fast = fees?.fastest;
 		if (fast == null || fast <= 0) return null;
 		if (feeRate <= 50 || feeRate <= fast * 3) return null;
 		const multiple = feeRate / fast;
@@ -324,7 +392,7 @@
 		if (isMax || r.amountText.trim().length === 0) return null;
 		const n = Number(r.amountText);
 		if (!Number.isFinite(n) || n <= 0) return 'Amount must be a positive number.';
-		if (data.confirmed != null && rowSats(r) > data.confirmed)
+		if (confirmed != null && rowSats(r) > confirmed)
 			return "That's more than this wallet holds.";
 		return null;
 	}
@@ -338,7 +406,7 @@
 	// purpose — the server's coin selection has the final word; this only
 	// catches the obviously-impossible case before a build is attempted.
 	const exceedsBalance = $derived(
-		!isMax && data.confirmed != null && createTotalSats > data.confirmed
+		!isMax && confirmed != null && createTotalSats > confirmed
 	);
 	const canBuild = $derived(rowsValid && feeRate >= 1 && !exceedsBalance);
 
@@ -570,7 +638,7 @@
 	// the spendable balance (`SEND · 2.6180 AVAILABLE`).
 	const crumbCurrent = $derived.by(() => {
 		if (step === 'create')
-			return data.confirmed != null ? `Send · ${formatBtc(data.confirmed)} available` : 'Send';
+			return confirmed != null ? `Send · ${formatBtc(confirmed)} available` : 'Send';
 		if (step === 'review') return 'Send · review';
 		if (step === 'sign') return 'Send · sign';
 		if (step === 'confirm') return 'Send · broadcast';
@@ -711,10 +779,18 @@
 	onMount(() => {
 		mounted = true;
 		// Keep the block tip live so coinbase-maturity in coin control updates as
-		// blocks arrive (an immature reward becomes selectable on its 100th block).
-		// onNewBlock is SSR-safe and self-throttling; unsubscribe on destroy.
+		// blocks arrive (an immature reward becomes selectable on its 100th block),
+		// and refresh the streamed fee estimates + tip on each new block by
+		// invalidating this page's load tag — reactive, never a poll. onNewBlock is
+		// SSR-safe and self-throttling; unsubscribe on destroy.
+		let lastSeen = tipHeight;
 		const unsubscribe = onNewBlock((height) => {
+			if (height <= lastSeen) return;
+			lastSeen = height;
+			// Optimistic tip bump so AtTipPill/coin-control react immediately…
 			if (height > tipHeight) tipHeight = height;
+			// …then re-run the streamed load so fees + tip refresh from the node.
+			void invalidate(`cairn:send:${walletId}`);
 		});
 		return unsubscribe;
 	});
@@ -823,22 +899,22 @@
 		<!-- ============================================================ CREATE -->
 		{#if step === 'create'}
 			<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
-				{#if data.scanError}
+				{#if scanError}
 					<Banner variant="error">
-						Couldn't reach your node to load spendable coins: {data.scanError}
+						Couldn't reach your node to load spendable coins: {scanError}
 					</Banner>
 				{/if}
 
-				{#if consolidate}
+				{#if consolidateParams}
 					<div class="max-note">
 						<Icon name="zap" size={15} />
 						<span>
-							Consolidating {consolidate.coins.length}
-							{consolidate.coins.length === 1 ? 'coin' : 'coins'} — they're preselected under
+							Consolidating {consolidateParams.coinKeys.length}
+							{consolidateParams.coinKeys.length === 1 ? 'coin' : 'coins'} — they're preselected under
 							“Choose which coins to spend”, and Max sweeps them into one new coin (minus the
 							network fee).
-							{#if consolidate.to}The recipient is your own next receive address.{:else}Enter one
-								of your own receive addresses as the recipient.{/if}
+							{#if consolidateParams.to}The recipient is your own next receive address.{:else}Enter
+								one of your own receive addresses as the recipient.{/if}
 						</span>
 					</div>
 				{/if}
@@ -878,10 +954,12 @@
 										? `${formatSats(rowSats(row))} sats`
 										: `${formatBtc(rowSats(row))} BTC`}
 								</p>
+							{:else if !liveLoaded}
+								<p class="hero-sub"><span class="skeleton">0.00000000 BTC spendable</span></p>
 							{:else}
 								<p class="hero-sub">
-									{data.confirmed != null
-										? `${formatBtc(data.confirmed)} BTC spendable`
+									{confirmed != null
+										? `${formatBtc(confirmed)} BTC spendable`
 										: 'Type an amount'}
 								</p>
 							{/if}
@@ -1031,7 +1109,7 @@
 						<span class="fee-caption">{formatFeeRate(feeRate)} · {feeEta}</span>
 					</div>
 					<div class="fee-toggles" role="group" aria-label="Fee rate">
-						{#each [{ k: 'economy', label: 'Low', rate: data.fees?.economy }, { k: 'normal', label: 'Medium', rate: data.fees?.halfHour }, { k: 'fast', label: 'High', rate: data.fees?.fastest }] as opt (opt.k)}
+						{#each [{ k: 'economy', label: 'Low', rate: fees?.economy }, { k: 'normal', label: 'Medium', rate: fees?.halfHour }, { k: 'fast', label: 'High', rate: fees?.fastest }] as opt (opt.k)}
 							<button
 								type="button"
 								class="txt-toggle"
@@ -1058,12 +1136,15 @@
 								class="custom-fee-input tabular"
 								inputmode="decimal"
 								bind:value={customFee}
+								oninput={() => (customFeeTouched = true)}
 								aria-label="Custom fee rate in sat/vB"
 							/>
 							<span class="unit-sm">sat/vB</span>
 						</div>
 					{/if}
-					{#if !data.fees}
+					{#if !liveLoaded}
+						<p class="fee-caption"><span class="skeleton">Loading live fee estimates…</span></p>
+					{:else if !fees}
 						<p class="fee-caption">Live fee estimates are unavailable — set a custom sat/vB rate.</p>
 					{/if}
 					{#if feeWarning}
@@ -1082,7 +1163,7 @@
 					{/if}
 				</div>
 
-				{#if data.utxos.length > 0}
+				{#if utxos.length > 0}
 					{#if data.flags?.coin_control === false}
 						<!-- Coin control disabled by an admin: show WHY rather than silently
 						     dropping the picker, and leave selection empty so the send uses
@@ -1096,10 +1177,10 @@
 						<div class="field">
 							<CoinControl
 								{walletId}
-								utxos={data.utxos}
+								{utxos}
 								bind:selected={selectedCoins}
 								{tipHeight}
-								initialOpen={consolidate !== null}
+								initialOpen={consolidateParams !== null}
 							/>
 						</div>
 					{/if}
