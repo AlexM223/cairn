@@ -11,6 +11,7 @@ import { startBackupHealthWatcher } from '$lib/server/backupHealth';
 import { startScheduledBackupWatcher } from '$lib/server/backup';
 import { startPortfolioWarm } from '$lib/server/portfolioWarm';
 import { startRetentionSweep } from '$lib/server/dataRetention';
+import { startFirstSync } from '$lib/server/syncStatus';
 import { migratePlaintextSecretsAtRest } from '$lib/server/secretsMigration';
 import { migrateInstanceMode } from '$lib/server/instanceModeMigration';
 import { ensureDefaultAgreementVersion } from '$lib/server/disclosures';
@@ -74,6 +75,14 @@ try {
 	startKeyHealthWatcher();
 } catch (e) {
 	errLog.error({ err: e }, 'key health watcher start failed');
+}
+// First-sync chain-history build (cairn-koy4.11): start counting rings right
+// after boot so the once-per-install walk races the user's signup flow
+// instead of waiting for their first page view. No-op once the cache exists.
+try {
+	startFirstSync();
+} catch (e) {
+	errLog.error({ err: e }, 'first sync start failed');
 }
 // Daily retention sweep (cairn-zui7): purges aged/orphaned rows from the
 // unbounded tables. Idempotent, unref'd, best-effort like the watchers above.

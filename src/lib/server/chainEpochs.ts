@@ -61,6 +61,49 @@ interface EpochCacheState {
 let mem: EpochCacheState | null = null;
 let inFlight: Promise<EpochCacheState | null> | null = null;
 
+// ---------------------------------------------------------- fetch progress
+// Live progress of the one-time boundary-timestamp build, read by the
+// first-sync screen (cairn-koy4.11). The boundary walk IS Cairn's closest real
+// analogue to "verifying the chain's history": one fetched epoch boundary per
+// growth ring, from genesis to the tip. Pure observation — nothing here
+// changes how the fetch behaves.
+
+export interface EpochFetchProgress {
+	/** True while a boundary-timestamp build is in flight. */
+	active: boolean;
+	/** Epochs the current build needs in total (0 = no build attempted yet). */
+	totalEpochs: number;
+	/** Boundary timestamps known so far (cache prefix + fetched this run). */
+	knownEpochs: number;
+	/** Timestamp of the newest known boundary — drives the "Verifying 2017" note. */
+	lastKnownTime: number | null;
+}
+
+const fetchProgress: EpochFetchProgress = {
+	active: false,
+	totalEpochs: 0,
+	knownEpochs: 0,
+	lastKnownTime: null
+};
+
+export function getEpochFetchProgress(): EpochFetchProgress {
+	return { ...fetchProgress };
+}
+
+/**
+ * Has the epoch-history cache ever been fully built on this install?
+ * Cheap (memory, then one settings-key existence check) — this is the
+ * first-sync gate's condition, so it runs on app-layout requests until true.
+ */
+export function hasEpochHistory(): boolean {
+	if (mem) return true;
+	try {
+		return getSetting(SETTING_KEY) !== null;
+	} catch {
+		return false;
+	}
+}
+
 export function epochIndexForHeight(height: number): number {
 	return Math.floor(Math.max(0, height) / EPOCH);
 }
@@ -190,6 +233,15 @@ async function fromBoundaryBlocks(
 	const missing: number[] = [];
 	for (let i = 0; i <= tipEpoch; i++) if (times[i] === null) missing.push(i);
 
+	// Seed live progress from the already-known prefix; workers advance it.
+	fetchProgress.knownEpochs = tipEpoch + 1 - missing.length;
+	for (let i = tipEpoch; i >= 0; i--) {
+		if (times[i] !== null) {
+			fetchProgress.lastKnownTime = times[i];
+			break;
+		}
+	}
+
 	let failures = 0;
 	let cursor = 0;
 	async function worker(): Promise<void> {
@@ -199,6 +251,13 @@ async function fromBoundaryBlocks(
 				const hash = await chain.esplora.getBlockHashAtHeight(idx * EPOCH);
 				const block = await chain.esplora.getBlockByHash(hash);
 				times[idx] = block.timestamp;
+				// missing[] ascends, so max() keeps the frontier moving 2009 → now
+				// even with a few concurrent workers racing.
+				fetchProgress.knownEpochs++;
+				fetchProgress.lastKnownTime = Math.max(
+					fetchProgress.lastKnownTime ?? 0,
+					block.timestamp
+				);
 			} catch (e) {
 				failures++;
 				if (failures <= 3) log.debug({ err: e, epoch: idx }, 'boundary block fetch failed');
@@ -234,6 +293,9 @@ async function ensureState(tipEpoch: number): Promise<EpochCacheState | null> {
 	}
 	// Single-flight: concurrent page loads share one computation.
 	if (!inFlight) {
+		fetchProgress.active = true;
+		fetchProgress.totalEpochs = tipEpoch + 1;
+		fetchProgress.knownEpochs = mem ? Math.min(mem.boundaryTimes.length, tipEpoch + 1) : 0;
 		inFlight = (async () => {
 			try {
 				const state =
@@ -241,9 +303,12 @@ async function ensureState(tipEpoch: number): Promise<EpochCacheState | null> {
 				if (state) {
 					mem = state;
 					persist(state);
+					fetchProgress.knownEpochs = tipEpoch + 1;
+					fetchProgress.lastKnownTime = state.boundaryTimes[tipEpoch] ?? null;
 				}
 				return state;
 			} finally {
+				fetchProgress.active = false;
 				inFlight = null;
 			}
 		})();
