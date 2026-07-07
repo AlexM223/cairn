@@ -72,10 +72,10 @@
 		status.tipHeight !== null ? status.tipHeight - Math.floor(status.tipHeight / 2016) * 2016 : null
 	);
 
-	function skipAhead() {
-		// Session-scoped escape hatch, honored by the (app) layout's sync gate —
-		// the count keeps running on the node either way.
-		document.cookie = 'hw_skip_sync=1; path=/; SameSite=Lax';
+	function goToApp() {
+		// /sync is now an OPTIONAL details view (cairn-2zxt.1) — the (app) layout no
+		// longer blocks on first sync, so this is a plain navigation back to the app
+		// (no escape cookie needed). The count keeps running on the node either way.
 		void goto('/');
 	}
 
@@ -192,8 +192,9 @@
 					</div>
 
 					<div class="foot-note">
-						You can close this — the counting continues on the node.
-						<button class="skip" onclick={skipAhead}>Continue without waiting</button>
+						You can leave this page anytime — the counting continues on the node, and the app is
+						fully usable while it runs.
+						<button class="skip" onclick={goToApp}>Back to Heartwood</button>
 					</div>
 				</div>
 			{/if}
