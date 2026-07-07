@@ -14,7 +14,11 @@
 
 import type { ScriptType, WalletDeviceType } from '$lib/types';
 
-export const WIZARD_PROGRESS_KEY = 'cairn.add-wallet-wizard.v1';
+// v2: the wizard collapsed from six steps to three (cairn-l2pn) — Key ·
+// Verify · Finish. Bumping the storage key retires v1 snapshots wholesale
+// (their step numbers mean different screens now); they age out of
+// sessionStorage on their own.
+export const WIZARD_PROGRESS_KEY = 'cairn.add-wallet-wizard.v2';
 
 /** A resume older than this is stale — likely a forgotten tab, not a reload. */
 export const WIZARD_PROGRESS_MAX_AGE_MS = 60 * 60 * 1000;
@@ -35,9 +39,9 @@ const DEVICE_TYPES: readonly WalletDeviceType[] = [
 ];
 
 export interface WizardProgress {
-	/** 0 Type · 1 Key · 2 Preview · 3 Name · 4 Device (cairn-0py6 split Name
-	 *  and Device into separate steps). The Done step is never saved. */
-	step: 0 | 1 | 2 | 3 | 4;
+	/** 0 Key · 1 Verify · 2 Finish (cairn-l2pn). The post-creation Done view
+	 *  is never saved — a created wallet clears the snapshot. */
+	step: 0 | 1 | 2;
 	method: WizardMethod | null;
 	readMethod: WizardMethod | null;
 	deviceType: WalletDeviceType | null;
@@ -112,12 +116,12 @@ export function parseSavedProgress(raw: string | null, now: number): WizardProgr
 		typeof o.keyPath === 'string' && /^m(\/\d+'?)+$/.test(o.keyPath) ? o.keyPath : null;
 
 	let step: WizardProgress['step'];
-	if (o.step === 0 || o.step === 1 || o.step === 2 || o.step === 3 || o.step === 4) step = o.step;
+	if (o.step === 0 || o.step === 1 || o.step === 2) step = o.step;
 	else return null;
 
-	// The Preview, Name and Device steps only make sense with a server-validated
-	// key and its derived addresses in hand.
-	if (step >= 2 && (!validatedXpub || !scriptType || preview.length === 0)) step = 1;
+	// The Verify and Finish steps only make sense with a server-validated key
+	// and its derived addresses in hand — clamp back to the Key step otherwise.
+	if (step >= 1 && (!validatedXpub || !scriptType || preview.length === 0)) step = 0;
 
 	return {
 		step,
@@ -137,5 +141,5 @@ export function parseSavedProgress(raw: string | null, now: number): WizardProgr
 
 /** True when a snapshot holds progress worth telling the user about. */
 export function hasMeaningfulProgress(p: WizardProgress): boolean {
-	return p.step >= 2 || (p.step === 1 && (p.method !== null || p.xpubInput.trim() !== ''));
+	return p.step >= 1 || (p.step === 0 && (p.method !== null || p.xpubInput.trim() !== ''));
 }

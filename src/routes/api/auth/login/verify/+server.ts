@@ -12,7 +12,7 @@ import {
 } from '$lib/server/auth';
 import { verifyAuthentication, readAuthChallenge, clearAuthChallenge } from '$lib/server/webauthn';
 import { sessionContextFrom } from '$lib/server/deviceTracking';
-import { loginRetryAfter, noteLoginFailure, noteLoginSuccess, tooManyAttemptsMessage } from '$lib/server/rateLimit';
+import { clientIpFor, loginRetryAfter, noteLoginFailure, noteLoginSuccess, tooManyAttemptsMessage } from '$lib/server/rateLimit';
 import { childLogger } from '$lib/server/logger';
 import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
 import type { RequestHandler } from './$types';
@@ -24,7 +24,7 @@ export const POST: RequestHandler = async (event) => {
 	const pending = readAuthChallenge(event);
 	// Single-use: consume the challenge cookie now, whatever the outcome.
 	clearAuthChallenge(event);
-	const ip = event.getClientAddress();
+	const ip = clientIpFor(event);
 
 	if (!pending || !body.response) {
 		return json({ error: 'Sign-in session expired. Start again.' }, { status: 400 });

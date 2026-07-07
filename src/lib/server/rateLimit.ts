@@ -13,6 +13,22 @@ import { getUserByEmail } from './auth';
 import { notify } from './notifications';
 import { childLogger } from './logger';
 
+/**
+ * Best-effort client IP for throttling. getClientAddress() THROWS when the
+ * configured ADDRESS_HEADER is absent from the request — which is every
+ * request on Cairn's own direct HTTPS listener, since no proxy fronts that
+ * port (cairn-kfis: this 500'd all auth endpoints on the secure address).
+ * Requests with no resolvable address fold into one shared "unknown" bucket
+ * instead; the per-email limits still apply individually.
+ */
+export function clientIpFor(event: { getClientAddress(): string }): string {
+	try {
+		return event.getClientAddress();
+	} catch {
+		return 'unknown';
+	}
+}
+
 // Security-event log so throttling/abuse is visible in /admin/logs (cairn-wbmu).
 // We log normalized emails for auth events an admin must triage, but never
 // passwords, tokens, or credentials.

@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { enhance, applyAction, deserialize } from '$app/forms';
 	import { page } from '$app/state';
-	import { goto } from '$app/navigation';
 	import { browser } from '$app/environment';
 	import { onDestroy, onMount, tick } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
@@ -32,20 +31,20 @@
 		hasMeaningfulProgress
 	} from './_components/wizardProgress';
 
-	// Name and signing-device are deliberately SEPARATE steps (cairn-0py6): the
-	// full device picker next to the name field read as "did I need to upload my
-	// key again?" to first-time users.
-	const STEPS = ['Type', 'Key', 'Preview', 'Name', 'Device', 'Done'];
+	// Three steps (cairn-l2pn): pasting a key you already have shouldn't take
+	// six screens. Key = pick a source and read/paste the key; Verify = check
+	// the derived addresses; Finish = name it and import. The old standalone
+	// Type step is a hand-off link on the Key step (multisig goes to its own
+	// wizard), and the old Device step is gone — a device-read key confirms
+	// its device inline on Finish, a pasted key picks a signer at send time.
+	// The name/device separation lesson from cairn-0py6 still holds: the full
+	// device picker never sits next to the name field uninvited.
+	const STEPS = ['Key', 'Verify', 'Finish'];
 
-	// Step 1 asks the single question that splits the two flavors. "Single key"
-	// stays in this wizard; "Multiple keys" hands off to the multisig builder.
-	let walletType = $state<'single' | 'multisig'>('single');
-
-	// Arriving via the wallets empty-state "Restore from a backup" link (?restore=1)
-	// drops the user straight onto the Key step, whose restore-box is the first
-	// thing shown — otherwise the two entry links were indistinguishable, both
-	// landing on the type picker (cairn-rfuc).
-	let step = $state(page.url.searchParams.get('restore') !== null ? 1 : 0);
+	// Both entry links ("Add a wallet" and "Restore from a backup", ?restore=1)
+	// land on the Key step, where the restore box is immediately visible —
+	// cairn-rfuc's indistinguishable-entries complaint is solved structurally.
+	let step = $state(0);
 	let xpubInput = $state('');
 	let showHelp = $state(false);
 	let validating = $state(false);
@@ -81,6 +80,9 @@
 	// downloaded (required before the wizard can finish — cairn-dcp).
 	let createdId = $state<number | null>(null);
 	let backedUp = $state(false);
+	// Every dot checks off once the wallet exists — the Finish pane swaps to
+	// the Done view in place rather than adding a step for it.
+	const indicatorStep = $derived(createdId !== null ? STEPS.length : step);
 
 	// A bare extended key, or one in key-origin/descriptor form —
 	// `[73c5da0a/84'/0'/0']zpub…`, optionally wpkh(…)-wrapped with a trailing
@@ -130,7 +132,7 @@
 		resumed = true;
 	});
 
-	// Persist on every change; once the wallet exists (Done step) the snapshot
+	// Persist on every change; once the wallet exists (Done view) the snapshot
 	// is cleared so a later visit starts a fresh wizard, not a stale resume.
 	$effect(() => {
 		const snapshot = JSON.stringify({
@@ -148,7 +150,7 @@
 			savedAt: Date.now()
 		});
 		try {
-			if (step >= 5) sessionStorage.removeItem(WIZARD_PROGRESS_KEY);
+			if (createdId !== null) sessionStorage.removeItem(WIZARD_PROGRESS_KEY);
 			else sessionStorage.setItem(WIZARD_PROGRESS_KEY, snapshot);
 		} catch {
 			// Best-effort: without storage the wizard still works, it just
@@ -161,7 +163,6 @@
 		stopQrScan();
 		resumed = false;
 		step = 0;
-		walletType = 'single';
 		method = null;
 		readMethod = null;
 		deviceType = null;
@@ -313,7 +314,7 @@
 				readMethod = from;
 				deviceType = METHOD_DEVICE[from];
 				changeDevice = false;
-				step = 2;
+				step = 1;
 			} else if (result.type === 'failure') {
 				deviceError =
 					(result.data as { error?: string } | undefined)?.error ??
@@ -611,9 +612,9 @@
 	<!-- Step indicator -->
 	<ol class="steps" aria-label="Import progress">
 		{#each STEPS as label, i (label)}
-			<li class="step-item" class:active={i === step} class:done={i < step}>
+			<li class="step-item" class:active={i === indicatorStep} class:done={i < indicatorStep}>
 				<span class="step-dot">
-					{#if i < step}
+					{#if i < indicatorStep}
 						<Icon name="check" size={11} />
 					{:else}
 						{i + 1}
@@ -625,72 +626,9 @@
 	</ol>
 
 	{#if step === 0}
-		<!-- ------------------------------------------------ Step 1: type -->
+		<!-- ------------------------------------------------- Step 1: key -->
 		<div class="card card-pad pane fade-in">
-			<span class="overline">Step 1 · What kind of wallet?</span>
-			<button
-				type="button"
-				class="type-card"
-				class:selected={walletType === 'single'}
-				aria-pressed={walletType === 'single'}
-				onclick={() => (walletType = 'single')}
-			>
-				<span class="type-icon"><Icon name="wallet" size={20} /></span>
-				<span class="type-body">
-					<span class="type-name">Single key</span>
-					<span class="type-desc">
-						A full wallet backed by one key (an xpub). Cairn tracks your balance and history from
-						the extended <strong>public</strong> key, and you spend by signing on your own device —
-						your private key never leaves it.
-					</span>
-				</span>
-				<Icon name="check" size={17} />
-			</button>
-			{#if page.data.flags?.multisig_create !== false}
-				<button
-					type="button"
-					class="type-card"
-					class:selected={walletType === 'multisig'}
-					aria-pressed={walletType === 'multisig'}
-					onclick={() => (walletType = 'multisig')}
-				>
-					<span class="type-icon"><Icon name="shield" size={20} /></span>
-					<span class="type-body">
-						<span class="type-name">Multiple keys (multisig)</span>
-						<span class="type-desc">
-							Several keys guard one wallet, and spending needs a quorum — e.g. any 2 of 3. No single
-							lost or stolen key can move the funds. Best for savings.
-						</span>
-					</span>
-					<Icon name="check" size={17} />
-				</button>
-			{:else}
-				<!-- Show the option greyed-out with the reason, so a user knows multisig
-				     exists but is turned off, not simply absent (cairn-8dup). -->
-				<div class="type-card type-card-off" aria-disabled="true">
-					<span class="type-icon"><Icon name="shield" size={20} /></span>
-					<span class="type-body">
-						<span class="type-name">Multiple keys (multisig)</span>
-						<FeatureDisabled message="Creating multisig wallets has been disabled by your administrator." />
-					</span>
-				</div>
-			{/if}
-			<div class="pane-actions">
-				<span></span>
-				<button
-					type="button"
-					class="btn btn-primary"
-					onclick={() => (walletType === 'multisig' ? goto('/wallets/multisig/new') : (step = 1))}
-				>
-					Continue
-					<Icon name="chevron-right" size={14} />
-				</button>
-			</div>
-		</div>
-	{:else if step === 1}
-		<!-- ------------------------------------------------- Step 2: key -->
-		<div class="card card-pad pane fade-in">
-			<span class="overline">Step 2 · Add your key</span>
+			<span class="overline">Step 1 · Add your key</span>
 
 			{#if method === null}
 				<p class="step-lead">
@@ -771,13 +709,27 @@
 					</p>
 				{/if}
 
-				<div class="pane-actions">
-					<button type="button" class="btn btn-ghost" onclick={() => (step = 0)}>
-						<Icon name="chevron-left" size={14} />
-						Back
-					</button>
-					<span></span>
-				</div>
+				<!-- Multisig hand-off — the old standalone "what kind of wallet?" step,
+				     collapsed to a pointer (cairn-l2pn). Still visible-but-disabled when
+				     the flag is off, so the feature reads as turned off, not absent
+				     (cairn-8dup). -->
+				{#if page.data.flags?.multisig_create !== false}
+					<div class="multisig-handoff">
+						<Icon name="shield" size={15} />
+						<span>
+							Several keys guarding one wallet (any 2 of 3, for example)?
+							<a href="/wallets/multisig/new">Set up a multisig wallet</a> instead.
+						</span>
+					</div>
+				{:else}
+					<div class="multisig-handoff" aria-disabled="true">
+						<Icon name="shield" size={15} />
+						<span>
+							Multisig wallets —
+							<FeatureDisabled message="Creating multisig wallets has been disabled by your administrator." />
+						</span>
+					</div>
+				{/if}
 			{:else}
 				<div class="key-form fade-in">
 					<div class="row" style="gap: 8px">
@@ -998,7 +950,7 @@
 										readMethod = 'paste';
 										deviceType = null;
 										changeDevice = false;
-										step = 2;
+										step = 1;
 									} else if (result.type === 'failure') {
 										previewError =
 											(result.data as { error?: string } | undefined)?.error ??
@@ -1113,10 +1065,10 @@
 				</div>
 			{/if}
 		</div>
-	{:else if step === 2}
-		<!-- --------------------------------------------- Step 3: preview -->
+	{:else if step === 1}
+		<!-- ------------------------------------- Step 2: verify addresses -->
 		<div class="card card-pad pane fade-in">
-			<span class="overline">Step 3 · Preview</span>
+			<span class="overline">Step 2 · Verify</span>
 			<div class="row" style="gap: 10px">
 				<span class="detected">Detected:</span>
 				{#if scriptType}
@@ -1156,7 +1108,7 @@
 				{/each}
 			</div>
 			<div class="pane-actions">
-				<button type="button" class="btn btn-ghost" onclick={() => (step = 1)}>
+				<button type="button" class="btn btn-ghost" onclick={() => (step = 0)}>
 					<Icon name="chevron-left" size={14} />
 					Back
 				</button>
@@ -1165,7 +1117,7 @@
 					class="btn btn-primary"
 					onclick={() => {
 						if (!name && scriptType) name = `${SCRIPT_TYPE_LABELS[scriptType]} wallet`;
-						step = 3;
+						step = 2;
 					}}
 				>
 					<Icon name="check" size={14} />
@@ -1173,44 +1125,16 @@
 				</button>
 			</div>
 		</div>
-	{:else if step === 3}
-		<!-- ------------------------------------------------ Step 4: name -->
-		<!-- Name ONLY (cairn-0py6): the device question lives on its own next
-		     step, so this screen can never read as "re-add your key". Advancing
-		     is pure client state — nothing is submitted from here. -->
+	{:else if step === 2 && createdId === null}
+		<!-- ------------------------------------- Step 3: name it, import it -->
+		<!-- The ?/create submit happens here. A pasted key gets NO device
+		     question at all (cairn-l2pn) — the signing method is picked at
+		     send time, and any PSBT wallet works. A device-read key confirms
+		     its device in one line ("Change" reveals the full picker), which
+		     keeps the cairn-0py6 lesson: the picker never sits next to the
+		     name field uninvited. -->
 		<div class="card card-pad pane fade-in">
-			<span class="overline">Step 4 · Name</span>
-			<div class="field">
-				<label class="label" for="name">What should we call it?</label>
-				<input
-					class="input"
-					id="name"
-					placeholder="e.g. Cold storage"
-					maxlength="64"
-					bind:value={name}
-				/>
-				<span class="hint">Just a label — you can't break anything here.</span>
-			</div>
-
-			<div class="pane-actions">
-				<button type="button" class="btn btn-ghost" onclick={() => (step = 2)}>
-					<Icon name="chevron-left" size={14} />
-					Back
-				</button>
-				<button type="button" class="btn btn-primary" onclick={() => (step = 4)}>
-					Continue
-					<Icon name="chevron-right" size={14} />
-				</button>
-			</div>
-		</div>
-	{:else if step === 4}
-		<!-- --------------------------------------- Step 5: signing device -->
-		<!-- The actual ?/create submit happens here, at the end of the wizard's
-		     questions. For a device-read key this is just a one-line
-		     confirmation; the full picker only appears for pasted keys (or
-		     after "Change"). -->
-		<div class="card card-pad pane fade-in">
-			<span class="overline">Step 5 · Signing device</span>
+			<span class="overline">Step 3 · Finish</span>
 			<form
 				method="POST"
 				action="?/create"
@@ -1227,10 +1151,10 @@
 								(result.data as { error?: string } | undefined)?.error ??
 								'Could not import that wallet.';
 						} else if (result.type === 'success' && result.data) {
-							// Move to the Done step (backup is optional for single-sig — the
-							// wallet reconstructs from the hardware device).
+							// Setting createdId swaps this pane to the Done view (backup is
+							// optional for single-sig — the wallet reconstructs from the
+							// hardware device).
 							createdId = (result.data as { id: number }).id;
-							step = 5;
 						} else {
 							await applyAction(result);
 						}
@@ -1245,42 +1169,56 @@
 				<input type="hidden" name="fingerprint" value={keyFingerprint ?? ''} />
 				<input type="hidden" name="derivationPath" value={keyPath ?? ''} />
 
-				{#if readMethod && readMethod !== 'paste' && !changeDevice}
-					<!-- The key came straight off a device, so we already know which one
-					     will sign — confirm it rather than re-asking. -->
-					<div class="field">
-						<span class="label">Signing device</span>
-						<div class="device-summary">
-							<span class="device-summary-body">
-								<Icon name="check" size={15} />
-								<span>
-									<strong>{deviceType ? WALLET_DEVICE_LABELS[deviceType] : 'This device'}</strong>
-									— we read this key straight from it, so that's how you'll sign.
+				<div class="field">
+					<label class="label" for="name">What should we call it?</label>
+					<input
+						class="input"
+						id="name"
+						placeholder="e.g. Cold storage"
+						maxlength="64"
+						bind:value={name}
+					/>
+					<span class="hint">Just a label — you can't break anything here.</span>
+				</div>
+
+				{#if readMethod && readMethod !== 'paste'}
+					{#if !changeDevice}
+						<!-- The key came straight off a device, so we already know which
+						     one will sign — confirm it rather than re-asking. -->
+						<div class="field">
+							<span class="label">Signing device</span>
+							<div class="device-summary">
+								<span class="device-summary-body">
+									<Icon name="check" size={15} />
+									<span>
+										<strong>{deviceType ? WALLET_DEVICE_LABELS[deviceType] : 'This device'}</strong>
+										— we read this key straight from it, so that's how you'll sign.
+									</span>
 								</span>
-							</span>
-							<button
-								type="button"
-								class="device-change"
-								onclick={() => (changeDevice = true)}
-							>
-								Change
-							</button>
+								<button
+									type="button"
+									class="device-change"
+									onclick={() => (changeDevice = true)}
+								>
+									Change
+								</button>
+							</div>
 						</div>
-					</div>
-				{:else}
-					<div class="field">
-						<span class="label">
-							Which device holds this key?
-							<span class="optional">(optional)</span>
-						</span>
-						<p class="hint" style="margin-bottom: 4px">
-							This is how you'll <Term
-								tip="Cairn prepares an unsigned transaction; you approve it on this device. Your private key never leaves it."
-								>sign when you spend</Term
-							>. Not sure? Leave it — you can pick when you send, and any PSBT wallet works.
-						</p>
-						<DevicePicker bind:selected={deviceType} />
-					</div>
+					{:else}
+						<div class="field">
+							<span class="label">
+								Which device holds this key?
+								<span class="optional">(optional)</span>
+							</span>
+							<p class="hint" style="margin-bottom: 4px">
+								This is how you'll <Term
+									tip="Cairn prepares an unsigned transaction; you approve it on this device. Your private key never leaves it."
+									>sign when you spend</Term
+								>. Not sure? Leave it — you can pick when you send, and any PSBT wallet works.
+							</p>
+							<DevicePicker bind:selected={deviceType} />
+						</div>
+					{/if}
 				{/if}
 
 				{#if createError}
@@ -1288,7 +1226,7 @@
 				{/if}
 
 				<div class="pane-actions">
-					<button type="button" class="btn btn-ghost" onclick={() => (step = 3)}>
+					<button type="button" class="btn btn-ghost" onclick={() => (step = 1)}>
 						<Icon name="chevron-left" size={14} />
 						Back
 					</button>
@@ -1299,10 +1237,10 @@
 				</div>
 			</form>
 		</div>
-	{:else if step === 5 && createdId !== null}
-		<!-- ---------------------------------------------------------- Step 6: done -->
+	{:else if createdId !== null}
+		<!-- ------------------------------------------------------------- done -->
 		<div class="card card-pad pane fade-in">
-			<span class="overline">Step 6 · Done</span>
+			<span class="overline">Done</span>
 			<h2 class="done-title">Your wallet is ready</h2>
 
 			<p class="done-sub">
@@ -1535,90 +1473,36 @@
 		margin-top: 4px;
 	}
 
-	/* --- step 1: type card --- */
+	/* --- multisig hand-off (the old type step, collapsed to a pointer) --- */
 
-	.type-card {
+	.multisig-handoff {
 		display: flex;
 		align-items: flex-start;
-		gap: 14px;
-		text-align: left;
-		padding: 16px;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-control);
-		color: inherit;
-		font: inherit;
-		cursor: pointer;
-		transition:
-			border-color 120ms var(--ease),
-			background 120ms var(--ease);
-	}
-
-	.type-card:hover {
-		border-color: var(--text-muted);
-	}
-
-	.type-card-off {
-		cursor: not-allowed;
-		opacity: 0.6;
-		border-style: dashed;
-	}
-
-	.type-card-off:hover {
-		border-color: var(--border);
-	}
-
-	/* The trailing check only reads as "selected"; hide it on the resting card. */
-	.type-card > :global(svg) {
-		opacity: 0;
-		color: var(--accent);
-		margin-top: 3px;
-	}
-
-	.type-card.selected {
-		border-color: var(--accent);
-		background: var(--accent-muted);
-	}
-
-	.type-card.selected > :global(svg) {
-		opacity: 1;
-	}
-
-	.type-icon {
-		width: 38px;
-		height: 38px;
-		flex-shrink: 0;
-		border-radius: var(--radius-control);
-		background: var(--surface-elevated);
-		color: var(--accent);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-	}
-
-	.type-body {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-		flex: 1;
-		min-width: 0;
-	}
-
-	.type-name {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		font-size: 14px;
-		font-weight: 600;
-	}
-
-	.type-desc {
+		gap: 9px;
+		margin-top: 4px;
+		padding: 10px 12px;
 		font-size: 12.5px;
 		color: var(--text-secondary);
 		line-height: 1.55;
+		border: 1px dashed var(--border-subtle);
+		border-radius: var(--radius-control);
 	}
 
-	/* --- step 2: key --- */
+	.multisig-handoff > :global(svg) {
+		color: var(--accent);
+		flex-shrink: 0;
+		margin-top: 2px;
+	}
+
+	.multisig-handoff a {
+		color: var(--accent);
+	}
+
+	.multisig-handoff[aria-disabled='true'] {
+		opacity: 0.7;
+	}
+
+	/* --- step 1: key --- */
 
 	.xpub-input {
 		resize: vertical;

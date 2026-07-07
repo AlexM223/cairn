@@ -5,7 +5,7 @@
 import { json, readJson } from '$lib/server/api';
 import { registerUser, createSession, setSessionCookie, AuthError, MIN_PASSWORD_LENGTH } from '$lib/server/auth';
 import { sessionContextFrom } from '$lib/server/deviceTracking';
-import { inviteRetryAfter, noteInviteFailure, tooManyAttemptsMessage } from '$lib/server/rateLimit';
+import { clientIpFor, inviteRetryAfter, noteInviteFailure, tooManyAttemptsMessage } from '$lib/server/rateLimit';
 import { childLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
 
@@ -22,7 +22,7 @@ export const POST: RequestHandler = async (event) => {
 	const displayName = String(body.displayName ?? '');
 	const password = String(body.password ?? '');
 	const inviteCode = String(body.inviteCode ?? '') || undefined;
-	const ip = event.getClientAddress();
+	const ip = clientIpFor(event);
 
 	if (password.length < MIN_PASSWORD_LENGTH) {
 		return json(

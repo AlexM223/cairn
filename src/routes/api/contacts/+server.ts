@@ -1,6 +1,7 @@
 import { json, readJson, requireTeamMode } from '$lib/server/api';
 import { listContacts, requestContact, ContactError } from '$lib/server/contacts';
 import {
+	clientIpFor,
 	contactRequestRetryAfter,
 	noteContactRequest,
 	tooManyAttemptsMessage
@@ -23,7 +24,7 @@ export const POST: RequestHandler = async (event) => {
 	const user = requireTeamMode(event);
 	// Rate limit before doing any work: without this, the anti-enumeration
 	// same-shape response still lets a wordlist be run at full speed (cairn-n4k4).
-	const ip = event.getClientAddress();
+	const ip = clientIpFor(event);
 	const wait = contactRequestRetryAfter(ip, user.id);
 	if (wait !== null) {
 		return json({ error: tooManyAttemptsMessage(wait), code: 'rate_limited' }, { status: 429 });

@@ -10,19 +10,8 @@ import { mustResetPassword } from '$lib/server/auth';
 import { listUnbackedWallets, shouldShowBackupReminder } from '$lib/server/backups';
 import { listActiveAnnouncementsFor } from '$lib/server/announcements';
 import { getInstanceSettings } from '$lib/server/settings';
-import { env } from '$env/dynamic/private';
+import { httpsExternalPort } from '$lib/server/httpsPort';
 import type { LayoutServerLoad } from './$types';
-
-/**
- * The host-visible port of Cairn's self-signed HTTPS listener (cairn-wgr8),
- * or null when it isn't running. CAIRN_HTTPS_EXTERNAL_PORT wins when a Docker
- * port mapping makes the outside port differ from the listen port.
- */
-function httpsExternalPort(): number | null {
-	const raw = env.CAIRN_HTTPS_EXTERNAL_PORT || env.CAIRN_HTTPS_PORT;
-	const port = raw ? Number(raw) : NaN;
-	return Number.isInteger(port) && port > 0 ? port : null;
-}
 
 export const load: LayoutServerLoad = async ({ locals, url }) => {
 	if (!locals.user) {

@@ -6,13 +6,13 @@
 import { json, readJson } from '$lib/server/api';
 import { getUserByEmail, credentialDescriptors } from '$lib/server/auth';
 import { buildAuthenticationOptions, setAuthChallenge } from '$lib/server/webauthn';
-import { loginRetryAfter, noteLoginFailure, tooManyAttemptsMessage } from '$lib/server/rateLimit';
+import { clientIpFor, loginRetryAfter, noteLoginFailure, tooManyAttemptsMessage } from '$lib/server/rateLimit';
 import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = async (event) => {
 	const body = await readJson<{ email?: string }>(event);
 	const email = String(body.email ?? '');
-	const ip = event.getClientAddress();
+	const ip = clientIpFor(event);
 
 	const wait = loginRetryAfter(ip, email);
 	if (wait !== null) return json({ error: tooManyAttemptsMessage(wait) }, { status: 429 });

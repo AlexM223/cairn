@@ -12,14 +12,14 @@ import {
 } from '$lib/server/auth';
 import { sessionContextFrom } from '$lib/server/deviceTracking';
 import { tryAdminBreakGlass, recordBreakGlassLogin } from '$lib/server/recovery';
-import { loginRetryAfter, noteLoginFailure, noteLoginSuccess, tooManyAttemptsMessage } from '$lib/server/rateLimit';
+import { clientIpFor, loginRetryAfter, noteLoginFailure, noteLoginSuccess, tooManyAttemptsMessage } from '$lib/server/rateLimit';
 import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = async (event) => {
 	const body = await readJson<{ email?: string; password?: string }>(event);
 	const email = String(body.email ?? '');
 	const password = String(body.password ?? '');
-	const ip = event.getClientAddress();
+	const ip = clientIpFor(event);
 
 	const wait = loginRetryAfter(ip, email);
 	if (wait !== null) return json({ error: tooManyAttemptsMessage(wait) }, { status: 429 });
