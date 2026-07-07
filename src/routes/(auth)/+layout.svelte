@@ -1,7 +1,16 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import Logo from '$lib/components/Logo.svelte';
+	import { maybeRedirectToSecure } from '$lib/secureRedirect';
 
-	let { children } = $props();
+	let { data, children } = $props();
+
+	// Auto-hop returning users to the secure address before sign-in
+	// (cairn-6uff) — the probe only succeeds once they've accepted the cert,
+	// so first-timers keep the plain-HTTP login untouched.
+	onMount(() => {
+		void maybeRedirectToSecure(data.httpsPort ?? null);
+	});
 </script>
 
 <div class="auth-page">

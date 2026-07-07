@@ -1,11 +1,20 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import Logo from '$lib/components/Logo.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import NotificationPanel from '$lib/components/NotificationPanel.svelte';
 	import AnnouncementBanner from '$lib/components/AnnouncementBanner.svelte';
+	import { maybeRedirectToSecure } from '$lib/secureRedirect';
 
 	let { data, children } = $props();
+
+	// Returning users who already accepted the self-signed cert land on the
+	// secure address automatically (cairn-6uff); everyone else stays put and
+	// keeps the guided SecureContextHelp flow. No-op on secure contexts.
+	onMount(() => {
+		void maybeRedirectToSecure(data.httpsPort ?? null);
+	});
 
 	// A feature the user has no access to at all is absent from the nav (not shown
 	// disabled) — same pattern as the admin-only Admin entry. The server-side gate
