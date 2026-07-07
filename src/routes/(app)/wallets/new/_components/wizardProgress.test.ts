@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
 	parseSavedProgress,
 	hasMeaningfulProgress,
+	WIZARD_PROGRESS_KEY,
 	WIZARD_PROGRESS_MAX_AGE_MS,
 	type WizardProgress
 } from './wizardProgress';
@@ -9,10 +10,10 @@ import {
 const NOW = 1_700_000_000_000;
 
 // A snapshot as the wizard writes it after a successful key validation: the
-// user is on the Preview step with a server-validated zpub in hand.
+// user is on the Verify step with a server-validated zpub in hand.
 function validSnapshot(overrides: Record<string, unknown> = {}): string {
 	return JSON.stringify({
-		step: 2,
+		step: 1,
 		method: 'paste',
 		readMethod: 'paste',
 		deviceType: null,
@@ -32,10 +33,16 @@ function validSnapshot(overrides: Record<string, unknown> = {}): string {
 }
 
 describe('parseSavedProgress', () => {
-	it('round-trips a fresh Preview-step snapshot', () => {
+	it('uses a v2 storage key — v1 snapshots (6-step numbering) never load', () => {
+		// The v2 bump (cairn-l2pn) is the migration: old snapshots stay under
+		// the old key and age out of sessionStorage on their own.
+		expect(WIZARD_PROGRESS_KEY).toBe('cairn.add-wallet-wizard.v2');
+	});
+
+	it('round-trips a fresh Verify-step snapshot', () => {
 		const p = parseSavedProgress(validSnapshot(), NOW);
 		expect(p).not.toBeNull();
-		expect(p!.step).toBe(2);
+		expect(p!.step).toBe(1);
 		expect(p!.method).toBe('paste');
 		expect(p!.scriptType).toBe('p2wpkh');
 		expect(p!.preview).toHaveLength(2);
@@ -67,30 +74,28 @@ describe('parseSavedProgress', () => {
 	});
 
 	it('rejects an unknown step outright', () => {
-		// 4 is the Device step since cairn-0py6 split Name/Device; 5 = Done,
-		// which is never saved.
+		// 2 (Finish) is the last saveable step; the Done view is never saved,
+		// and v1's steps 3–5 don't exist in the 3-step wizard (cairn-l2pn).
+		expect(parseSavedProgress(validSnapshot({ step: 3 }), NOW)).toBeNull();
 		expect(parseSavedProgress(validSnapshot({ step: 5 }), NOW)).toBeNull();
 		expect(parseSavedProgress(validSnapshot({ step: -1 }), NOW)).toBeNull();
 		expect(parseSavedProgress(validSnapshot({ step: 'preview' }), NOW)).toBeNull();
 	});
 
-	it('accepts the Device step (cairn-0py6)', () => {
-		const p = parseSavedProgress(validSnapshot({ step: 4 }), NOW);
-		expect(p!.step).toBe(4);
+	it('accepts the Finish step', () => {
+		const p = parseSavedProgress(validSnapshot({ step: 2 }), NOW);
+		expect(p!.step).toBe(2);
 	});
 
-	it('clamps Preview/Name/Device steps back to the Key step when the validated key is missing', () => {
+	it('clamps Verify/Finish steps back to the Key step when the validated key is missing', () => {
 		const noKey = parseSavedProgress(validSnapshot({ validatedXpub: '' }), NOW);
-		expect(noKey!.step).toBe(1);
+		expect(noKey!.step).toBe(0);
 
-		const noPreview = parseSavedProgress(validSnapshot({ step: 3, preview: [] }), NOW);
-		expect(noPreview!.step).toBe(1);
+		const noPreview = parseSavedProgress(validSnapshot({ step: 2, preview: [] }), NOW);
+		expect(noPreview!.step).toBe(0);
 
 		const noScript = parseSavedProgress(validSnapshot({ scriptType: null }), NOW);
-		expect(noScript!.step).toBe(1);
-
-		const noKeyDevice = parseSavedProgress(validSnapshot({ step: 4, validatedXpub: '' }), NOW);
-		expect(noKeyDevice!.step).toBe(1);
+		expect(noScript!.step).toBe(0);
 	});
 
 	it('normalizes unknown enum values to null instead of failing', () => {
@@ -100,7 +105,7 @@ describe('parseSavedProgress', () => {
 		);
 		expect(p!.method).toBeNull();
 		expect(p!.deviceType).toBeNull();
-		expect(p!.step).toBe(2); // key + preview + scriptType still valid
+		expect(p!.step).toBe(1); // key + preview + scriptType still valid
 	});
 
 	it('round-trips the key origin and nulls anything shape-invalid (cairn-alw8)', () => {
@@ -118,7 +123,7 @@ describe('parseSavedProgress', () => {
 		);
 		expect(missing!.keyFingerprint).toBeNull();
 		expect(missing!.keyPath).toBeNull();
-		expect(missing!.step).toBe(2);
+		expect(missing!.step).toBe(1);
 
 		const garbage = parseSavedProgress(
 			validSnapshot({ keyFingerprint: 'NOT-HEX!', keyPath: 'sideways' }),
@@ -141,7 +146,7 @@ describe('parseSavedProgress', () => {
 			NOW
 		);
 		expect(p!.preview).toHaveLength(1);
-		expect(p!.step).toBe(2);
+		expect(p!.step).toBe(1);
 	});
 });
 
@@ -164,22 +169,18 @@ describe('hasMeaningfulProgress', () => {
 		};
 	}
 
-	it('is false for a wizard still on the Type step', () => {
-		expect(hasMeaningfulProgress(progress({ step: 0 }))).toBe(false);
-	});
-
 	it('is false on the Key step with nothing entered', () => {
-		expect(hasMeaningfulProgress(progress({ step: 1 }))).toBe(false);
-		expect(hasMeaningfulProgress(progress({ step: 1, xpubInput: '   ' }))).toBe(false);
+		expect(hasMeaningfulProgress(progress({ step: 0 }))).toBe(false);
+		expect(hasMeaningfulProgress(progress({ step: 0, xpubInput: '   ' }))).toBe(false);
 	});
 
 	it('is true once a method is chosen or a key is typed', () => {
-		expect(hasMeaningfulProgress(progress({ step: 1, method: 'paste' }))).toBe(true);
-		expect(hasMeaningfulProgress(progress({ step: 1, xpubInput: 'zpub…' }))).toBe(true);
+		expect(hasMeaningfulProgress(progress({ step: 0, method: 'paste' }))).toBe(true);
+		expect(hasMeaningfulProgress(progress({ step: 0, xpubInput: 'zpub…' }))).toBe(true);
 	});
 
-	it('is true on the Preview and Name steps', () => {
+	it('is true on the Verify and Finish steps', () => {
+		expect(hasMeaningfulProgress(progress({ step: 1 }))).toBe(true);
 		expect(hasMeaningfulProgress(progress({ step: 2 }))).toBe(true);
-		expect(hasMeaningfulProgress(progress({ step: 3 }))).toBe(true);
 	});
 });
