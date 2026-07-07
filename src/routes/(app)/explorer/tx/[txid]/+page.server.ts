@@ -85,7 +85,12 @@ export const load: PageServerLoad = async ({ params, url }) => {
 			if (newest && newest.txid !== txid) {
 				redirect(302, `/explorer/tx/${newest.txid}?replaced=${txid}`);
 			}
-			error(404, 'Transaction not found');
+			// A syntactically valid txid the backend has no record of. Return an
+			// in-page not-found state as page DATA (matching the block and address
+			// detail pages) rather than throwing a route-level error(404) — that
+			// would bubble to the generic app-wide error page with a hardcoded
+			// message instead of a contextual "Transaction not found" (cairn-t9b6).
+			return { notFound: true as const, tx: null, replacedFrom, details: null };
 		}
 		error(502, chainErrorMessage(e));
 	}
@@ -93,6 +98,7 @@ export const load: PageServerLoad = async ({ params, url }) => {
 	const isCoinbase = tx.vin.some((v) => v.coinbase);
 
 	return {
+		notFound: false as const,
 		tx,
 		replacedFrom,
 		// Streamed, not awaited (cairn-2zxt.3): supplementary display data only.

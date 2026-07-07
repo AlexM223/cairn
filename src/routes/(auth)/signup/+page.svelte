@@ -6,7 +6,9 @@
 	let displayName = $state('');
 	let email = $state('');
 	let password = $state('');
-	let inviteCode = $state('');
+	// svelte-ignore state_referenced_locally — seeds the editable field from
+	// the ?invite= link (cairn-h3x6); the user can still edit it afterwards.
+	let inviteCode = $state(data.invite);
 	let submitting = $state(false);
 	let error = $state<string | null>(null);
 
