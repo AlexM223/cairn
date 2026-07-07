@@ -1251,3 +1251,65 @@ export async function readSingleSigKeyFromLedger(
 		}
 	}
 }
+
+/**
+ * Read the BIP-45 collaborative-vault key: the xpub at m/45' — the ROOT
+ * purpose node, deliberately NOT an account-level path (BIP-45 has no
+ * coin_type/account/script_type fields; Bastion's battle-tested sharing read
+ * hands the device the literal path "45'" the same way, as a silent read).
+ * Used by the single-sig wizard's opt-in sharing prefetch (cairn-fdlf.1) so a
+ * later collaborative-vault setup can reuse this key without another device
+ * touch. The app returns a plain xpub, which is exactly what BIP-45 keys are
+ * stored as — no SLIP-132 rewrite.
+ */
+export async function readBip45KeyFromLedger(): Promise<{
+	xpub: string;
+	fingerprint: string;
+	path: string;
+}> {
+	if (!isWebHidAvailable()) {
+		throw new LedgerError(
+			'WebHID is not available in this browser. Ledger signing needs a Chromium-based desktop browser (Chrome, Edge, or Brave) served over HTTPS or localhost.',
+			'unavailable'
+		);
+	}
+	const path = "m/45'";
+	const pathElements = parseMultisigKeyPath(path, 'BIP-45 sharing path');
+
+	// The Node globals (Buffer, process) must exist before the vendor modules evaluate.
+	await ensureNodeGlobals();
+	const [transportMod, appClientMod] = await Promise.all([
+		import('@ledgerhq/hw-transport-webhid'),
+		import('@ledgerhq/hw-app-btc/lib/newops/appClient')
+	]);
+	const { default: TransportWebHID } = transportMod;
+	const { AppClient } = appClientMod;
+
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	let transport: any;
+	try {
+		try {
+			transport = await TransportWebHID.create();
+		} catch (err) {
+			throw toLedgerError(err);
+		}
+		const client: AppClientType = new AppClient(transport);
+		let masterFp: Buffer;
+		let xpub: string;
+		try {
+			masterFp = await client.getMasterFingerprint();
+			xpub = await client.getExtendedPubkey(false, pathElements);
+		} catch (err) {
+			throw toLedgerError(err);
+		}
+		return { xpub, fingerprint: bytesToFpHex(masterFp), path };
+	} finally {
+		if (transport) {
+			try {
+				await transport.close();
+			} catch {
+				/* releasing the HID handle is best-effort */
+			}
+		}
+	}
+}

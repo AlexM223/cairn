@@ -4,6 +4,7 @@ import { derivePreviewAddresses } from '$lib/server/bitcoin/walletScan';
 import { createWallet, friendlyXpubError } from '$lib/server/wallets';
 import { getReferralBuyUrls } from '$lib/server/referrals';
 import { parseKeyOriginInput, normalizeFingerprint } from '$lib/hw/keyOrigin';
+import { rememberPrefetchedSharedKey, DeviceKeyError } from '$lib/server/deviceKeys';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -90,5 +91,47 @@ export const actions: Actions = {
 			});
 		}
 		return { created: true, id };
+	},
+
+	/**
+	 * Stash a BIP-45 sharing key the wizard just prefetched off a live device
+	 * (the "I plan to use this key in a shared wallet later" opt-in —
+	 * cairn-fdlf.1) into the known-device-keys registry (cairn-fdlf.2), along
+	 * with the primary single-sig key from the same read (best-effort). Wholly
+	 * independent of wallet creation: a failure here never blocks the wizard —
+	 * the client shows a soft notice and moves on.
+	 */
+	rememberSharedKey: async ({ request, locals }) => {
+		const form = await request.formData();
+		const field = (name: string) => String(form.get(name) ?? '').trim();
+
+		const primaryXpub = field('primaryXpub');
+		try {
+			const { shared, primary } = rememberPrefetchedSharedKey(locals.user!.id, {
+				shared: {
+					xpub: field('sharedXpub'),
+					fingerprint: field('sharedFingerprint'),
+					path: field('sharedPath')
+				},
+				primary: primaryXpub
+					? {
+							xpub: primaryXpub,
+							fingerprint: field('primaryFingerprint'),
+							path: field('primaryPath')
+						}
+					: null,
+				deviceType: field('deviceType')
+			});
+			return {
+				remembered: true,
+				fingerprint: shared.fingerprint,
+				primaryRemembered: primary !== null
+			};
+		} catch (e) {
+			return fail(400, {
+				error:
+					e instanceof DeviceKeyError ? e.message : 'Could not save the sharing key.'
+			});
+		}
 	}
 };

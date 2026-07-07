@@ -35,8 +35,9 @@ const DEVICE_TYPES: readonly WalletDeviceType[] = [
 ];
 
 export interface WizardProgress {
-	/** 0 Type · 1 Key · 2 Preview · 3 Name. The Done step is never saved. */
-	step: 0 | 1 | 2 | 3;
+	/** 0 Type · 1 Key · 2 Preview · 3 Name · 4 Device (cairn-0py6 split Name
+	 *  and Device into separate steps). The Done step is never saved. */
+	step: 0 | 1 | 2 | 3 | 4;
 	method: WizardMethod | null;
 	readMethod: WizardMethod | null;
 	deviceType: WalletDeviceType | null;
@@ -111,11 +112,11 @@ export function parseSavedProgress(raw: string | null, now: number): WizardProgr
 		typeof o.keyPath === 'string' && /^m(\/\d+'?)+$/.test(o.keyPath) ? o.keyPath : null;
 
 	let step: WizardProgress['step'];
-	if (o.step === 0 || o.step === 1 || o.step === 2 || o.step === 3) step = o.step;
+	if (o.step === 0 || o.step === 1 || o.step === 2 || o.step === 3 || o.step === 4) step = o.step;
 	else return null;
 
-	// The Preview and Name steps only make sense with a server-validated key
-	// and its derived addresses in hand.
+	// The Preview, Name and Device steps only make sense with a server-validated
+	// key and its derived addresses in hand.
 	if (step >= 2 && (!validatedXpub || !scriptType || preview.length === 0)) step = 1;
 
 	return {
