@@ -29,6 +29,10 @@ import {
 	loginWithPassword,
 	setUserPassword,
 	hasPassword,
+	bootstrapAdminFromEnv,
+	mustResetPassword,
+	completeForcedCredentialReset,
+	BOOTSTRAP_PLACEHOLDER_EMAIL,
 	AuthError
 } from './auth';
 import { createInvites, revokeInvite } from './admin';
@@ -461,5 +465,169 @@ describe('cookieSecure', () => {
 	it('malformed CAIRN_ORIGIN falls back to the request protocol', () => {
 		process.env.CAIRN_ORIGIN = 'not a url';
 		expect(cookieSecure(new URL('https://cairn.example.com/login'))).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Umbrel auto-admin bootstrap + forced first-login credential reset
+// (cairn-49xi.2). The env-supplied password lives on in the platform's install
+// UI/logs, so the account it creates must be flagged for a one-time reset —
+// and once a human has chosen their own credentials, no restart or re-run of
+// the bootstrap may ever re-raise the flag or clobber the password.
+describe('bootstrapAdminFromEnv + forced credential reset', () => {
+	const ENV_KEYS = ['CAIRN_ADMIN_PASSWORD', 'CAIRN_ADMIN_EMAIL', 'APP_PASSWORD'] as const;
+	let saved: Record<string, string | undefined>;
+
+	beforeEach(() => {
+		saved = {};
+		for (const k of ENV_KEYS) {
+			saved[k] = process.env[k];
+			delete process.env[k];
+		}
+	});
+	afterEach(() => {
+		for (const k of ENV_KEYS) {
+			if (saved[k] === undefined) delete process.env[k];
+			else process.env[k] = saved[k];
+		}
+	});
+
+	it('creates the first admin from the env password and flags must_reset_password', () => {
+		process.env.CAIRN_ADMIN_PASSWORD = 'generated-install-pw';
+		bootstrapAdminFromEnv();
+
+		expect(userCount()).toBe(1);
+		const admin = getUserByEmail(BOOTSTRAP_PLACEHOLDER_EMAIL)!;
+		expect(admin.isAdmin).toBe(true);
+		expect(mustResetPassword(admin.id)).toBe(true);
+		// The env password actually works for login.
+		expect(loginWithPassword(BOOTSTRAP_PLACEHOLDER_EMAIL, 'generated-install-pw').id).toBe(
+			admin.id
+		);
+	});
+
+	it('honors CAIRN_ADMIN_EMAIL over the placeholder', () => {
+		process.env.CAIRN_ADMIN_PASSWORD = 'generated-install-pw';
+		process.env.CAIRN_ADMIN_EMAIL = 'Operator@Example.COM';
+		bootstrapAdminFromEnv();
+		expect(getUserByEmail('operator@example.com')).not.toBeNull();
+	});
+
+	it('does nothing without an env password, or with one below the minimum length', () => {
+		bootstrapAdminFromEnv();
+		expect(userCount()).toBe(0);
+
+		process.env.CAIRN_ADMIN_PASSWORD = 'short';
+		bootstrapAdminFromEnv();
+		expect(userCount()).toBe(0);
+	});
+
+	it('flags an existing passwordless first admin when giving it the env password', () => {
+		const admin = registerAdmin(); // passkey-eligible: no password
+		expect(hasPassword(admin.id)).toBe(false);
+
+		process.env.CAIRN_ADMIN_PASSWORD = 'generated-install-pw';
+		bootstrapAdminFromEnv();
+
+		expect(hasPassword(admin.id)).toBe(true);
+		expect(mustResetPassword(admin.id)).toBe(true);
+	});
+
+	it('never touches an account that already has a password (no flag, no clobber)', () => {
+		const admin = registerUser({
+			email: 'admin@example.com',
+			displayName: 'Admin',
+			password: 'my-own-password'
+		});
+		process.env.CAIRN_ADMIN_PASSWORD = 'generated-install-pw';
+		bootstrapAdminFromEnv();
+
+		expect(mustResetPassword(admin.id)).toBe(false);
+		expect(loginWithPassword('admin@example.com', 'my-own-password').id).toBe(admin.id);
+	});
+
+	it('mustResetPassword is false for normally registered users', () => {
+		const user = registerAdmin();
+		expect(mustResetPassword(user.id)).toBe(false);
+	});
+
+	it('full lifecycle: reset clears the flag and a re-run of bootstrap never re-raises it', () => {
+		process.env.CAIRN_ADMIN_PASSWORD = 'generated-install-pw';
+		bootstrapAdminFromEnv();
+		const admin = getUserByEmail(BOOTSTRAP_PLACEHOLDER_EMAIL)!;
+
+		completeForcedCredentialReset(admin.id, {
+			email: 'real@example.com',
+			password: 'chosen-by-human'
+		});
+
+		expect(mustResetPassword(admin.id)).toBe(false);
+		expect(loginWithPassword('real@example.com', 'chosen-by-human').id).toBe(admin.id);
+		// Old placeholder email + generated password are both dead.
+		expect(getUserByEmail(BOOTSTRAP_PLACEHOLDER_EMAIL)).toBeNull();
+		expect(() => loginWithPassword('real@example.com', 'generated-install-pw')).toThrowError(
+			AuthError
+		);
+
+		// Simulated restart: env var still set (compose files don't forget), the
+		// bootstrap re-runs — flag stays down, chosen password stays.
+		bootstrapAdminFromEnv();
+		expect(mustResetPassword(admin.id)).toBe(false);
+		expect(loginWithPassword('real@example.com', 'chosen-by-human').id).toBe(admin.id);
+	});
+
+	describe('completeForcedCredentialReset validation', () => {
+		function bootstrapAdmin() {
+			process.env.CAIRN_ADMIN_PASSWORD = 'generated-install-pw';
+			bootstrapAdminFromEnv();
+			return getUserByEmail(BOOTSTRAP_PLACEHOLDER_EMAIL)!;
+		}
+
+		it('rejects an invalid email', () => {
+			const admin = bootstrapAdmin();
+			expect(() =>
+				completeForcedCredentialReset(admin.id, { email: 'nope', password: 'chosen-by-human' })
+			).toThrowError(expect.objectContaining({ code: 'invalid_email' }));
+			expect(mustResetPassword(admin.id)).toBe(true);
+		});
+
+		it('rejects keeping the placeholder email', () => {
+			const admin = bootstrapAdmin();
+			expect(() =>
+				completeForcedCredentialReset(admin.id, {
+					email: BOOTSTRAP_PLACEHOLDER_EMAIL,
+					password: 'chosen-by-human'
+				})
+			).toThrowError(expect.objectContaining({ code: 'placeholder_email' }));
+		});
+
+		it('rejects a too-short password', () => {
+			const admin = bootstrapAdmin();
+			expect(() =>
+				completeForcedCredentialReset(admin.id, { email: 'real@example.com', password: 'short' })
+			).toThrowError(expect.objectContaining({ code: 'weak_password' }));
+		});
+
+		it('rejects "resetting" to the generated install password itself', () => {
+			const admin = bootstrapAdmin();
+			expect(() =>
+				completeForcedCredentialReset(admin.id, {
+					email: 'real@example.com',
+					password: 'generated-install-pw'
+				})
+			).toThrowError(expect.objectContaining({ code: 'reused_bootstrap_password' }));
+		});
+
+		it('rejects an email another account already uses', () => {
+			const admin = bootstrapAdmin();
+			setSetting('registration_mode', 'open');
+			registerUser({ email: 'taken@example.com', displayName: 'Other' });
+			expect(() =>
+				completeForcedCredentialReset(admin.id, {
+					email: 'taken@example.com',
+					password: 'chosen-by-human'
+				})
+			).toThrowError(expect.objectContaining({ code: 'email_taken' }));
+		});
 	});
 });

@@ -8,7 +8,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { db } from '$lib/server/db';
-import { registerUser } from '$lib/server/auth';
+import { registerUser, completeForcedCredentialReset } from '$lib/server/auth';
 import { setSetting } from '$lib/server/settings';
 import { recordAdminDisclosure, recordUserAgreement } from '$lib/server/disclosures';
 import { generateRecoveryPhrase, generateRecoveryCodes } from '$lib/server/recovery';
@@ -62,6 +62,46 @@ function completeRecovery(userId: number): void {
 	generateRecoveryPhrase().store(userId);
 	generateRecoveryCodes().store(userId);
 }
+
+// Forced credential-reset gate (cairn-49xi.2): a bootstrap-created admin whose
+// password came from a deployment env var must land on /setup-admin before ANY
+// other route — including before the disclosure and recovery gates, since an
+// admin who hasn't chosen their own credentials shouldn't be onboarding yet.
+describe('(app) layout forced credential-reset gate (cairn-49xi.2)', () => {
+	function flagReset(userId: number): void {
+		db.prepare('UPDATE users SET must_reset_password = 1 WHERE id = ?').run(userId);
+	}
+
+	it('redirects a flagged user from any app path to /setup-admin', async () => {
+		flagReset(admin.id);
+		expect(await runLoad(admin, '/wallets')).toEqual({ redirected: '/setup-admin' });
+		expect(await runLoad(admin, '/')).toEqual({ redirected: '/setup-admin' });
+	});
+
+	it('fires BEFORE the disclosure and recovery gates', async () => {
+		// Strip the disclosure acceptance so both gates would otherwise apply —
+		// the reset gate must still win.
+		db.exec('DELETE FROM admin_disclosure_acceptances');
+		flagReset(admin.id);
+		expect(await runLoad(admin, '/wallets')).toEqual({ redirected: '/setup-admin' });
+	});
+
+	it('does not redirect users without the flag', async () => {
+		completeRecovery(admin.id);
+		expect(await runLoad(admin, '/wallets')).toEqual({ redirected: null });
+		expect(await runLoad(member, '/wallets')).toEqual({ redirected: null });
+	});
+
+	it('stops redirecting once the forced reset completes', async () => {
+		flagReset(admin.id);
+		completeForcedCredentialReset(admin.id, {
+			email: 'chosen@example.com',
+			password: 'chosen-by-human'
+		});
+		completeRecovery(admin.id);
+		expect(await runLoad(admin, '/wallets')).toEqual({ redirected: null });
+	});
+});
 
 describe('(app) layout recovery-setup gate (cairn-8u9j)', () => {
 	it('redirects an admin with NO recovery setup from a normal app path', async () => {
