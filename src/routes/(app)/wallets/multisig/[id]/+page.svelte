@@ -1,6 +1,8 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { enhance } from '$app/forms';
-	import { afterNavigate, goto, invalidateAll, replaceState } from '$app/navigation';
+	import { afterNavigate, goto, invalidate, invalidateAll, replaceState } from '$app/navigation';
+	import { onNewBlock } from '$lib/liveBlocks';
 	import Icon from '$lib/components/Icon.svelte';
 	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
@@ -23,6 +25,70 @@
 	import '$lib/styles/wallet-detail.css';
 
 	let { data, form } = $props();
+
+	// The Electrum-dependent slice (balance scan, receive address, tip, coinbase
+	// UTXOs, speed-up eligibility, saved txs) is STREAMED from the server
+	// (cairn-vknb.2): the multisig shell — name, keys, collaborators, backup —
+	// paints instantly from the cheap base fields while this resolves. On
+	// invalidate, the previous scan stays visible until the fresh one resolves,
+	// so there's no skeleton flash on a live refresh.
+	type MultisigScan = Awaited<(typeof data)['scan']>;
+	let scan = $state<MultisigScan | null>(null);
+	// The height we last refetched for, so a server lagging behind the SSE tip
+	// can't put resolve→invalidate into an endless loop.
+	let refetchedForHeight: number | null = null;
+	$effect(() => {
+		const promise = data.scan;
+		let stale = false;
+		void promise.then((snap) => {
+			if (stale) return;
+			scan = snap;
+			// A block arrived while this scan was in flight — refresh once more.
+			if (
+				lastSeenHeight !== null &&
+				snap.tipHeight > 0 &&
+				lastSeenHeight > snap.tipHeight &&
+				refetchedForHeight !== lastSeenHeight
+			) {
+				refetchedForHeight = lastSeenHeight;
+				void invalidate(`cairn:multisig:${data.multisig.id}`);
+			}
+		});
+		return () => {
+			stale = true;
+		};
+	});
+
+	// Live new-block updates refresh this wallet's chain-derived fields (tip,
+	// coinbase maturity, speed-up eligibility) via the existing SSE channel —
+	// never poll. Same shape as the dashboard's onNewBlock wiring.
+	let lastSeenHeight: number | null = null;
+	onMount(() =>
+		onNewBlock((height) => {
+			if (lastSeenHeight !== null && height <= lastSeenHeight) return;
+			const first = lastSeenHeight === null;
+			lastSeenHeight = height;
+			if (scan !== null && !scan.scanError && scan.tipHeight > 0) {
+				// SSE replays the current tip on connect — ignore what we already show.
+				if (height <= scan.tipHeight) return;
+				void invalidate(`cairn:multisig:${data.multisig.id}`);
+			} else if (!first) {
+				// Scan errored or still streaming — a new block is a good moment to
+				// retry, but the very first replay-on-connect isn't.
+				void invalidate(`cairn:multisig:${data.multisig.id}`);
+			}
+		})
+	);
+
+	// Convenience projections of the streamed scan. Null/empty while it streams
+	// in (the template shows a skeleton for that window) and after a scan error.
+	const scanLoading = $derived(scan === null);
+	const detail = $derived(scan?.detail ?? null);
+	const coinbaseUtxos = $derived(scan?.coinbaseUtxos ?? []);
+	const tipHeight = $derived(scan?.tipHeight ?? 0);
+	const speedUp = $derived(scan?.speedUp ?? []);
+	const savedTxs = $derived(scan?.savedTxs ?? []);
+	const scanError = $derived(scan?.scanError ?? null);
 
 	let createdDismissed = $state(false);
 
@@ -52,8 +118,8 @@
 	// Detection resolves each unconfirmed inflow to 'rbf' (we originated it and it
 	// still signals replaceability — bump it) or 'cpfp' (attach a high-fee child).
 	// See docs/CPFP-UNCONFIRMED-PLAN.md §4.
-	const speedUpByTxid = $derived<Record<string, NonNullable<typeof data.speedUp>[number]>>(
-		Object.fromEntries((data.speedUp ?? []).map((s) => [s.txid, s]))
+	const speedUpByTxid = $derived<Record<string, MultisigScan['speedUp'][number]>>(
+		Object.fromEntries(speedUp.map((s) => [s.txid, s]))
 	);
 	let speedUpTxid = $state<string | null>(null);
 	let speedUpRate = $state('');
@@ -83,7 +149,7 @@
 		speedUpTxid = txid;
 		const saved =
 			inflow.action === 'rbf'
-				? data.savedTxs.find(
+				? savedTxs.find(
 						(t) => t.txid === txid && (t.status === 'completed' || t.status === 'superseded')
 					)
 				: undefined;
@@ -100,7 +166,7 @@
 		try {
 			let res: Response;
 			if (inflow.action === 'rbf') {
-				const saved = data.savedTxs.find(
+				const saved = savedTxs.find(
 					(t) => t.txid === txid && (t.status === 'completed' || t.status === 'superseded')
 				);
 				if (!saved) {
@@ -141,7 +207,7 @@
 		}
 	}
 
-	const receive = $derived(form?.receive ?? data.receive);
+	const receive = $derived(form?.receive ?? scan?.receive ?? null);
 
 	// Copy button on the receive panel (spec 5c: Copy + Rotate pills).
 	let addrCopied = $state(false);
@@ -157,7 +223,7 @@
 	 *  still shows a confirmed tx as sealed rather than lying "no rings yet". */
 	function confirmationsOf(height: number): number {
 		if (height <= 0) return 0;
-		if (data.tipHeight > 0) return Math.max(1, data.tipHeight - height + 1);
+		if (tipHeight > 0) return Math.max(1, tipHeight - height + 1);
 		return 6;
 	}
 
@@ -200,16 +266,14 @@
 		data.multisig.keys.filter((k) => needsRegistration(k.deviceType) && !registeredAcks[k.id])
 	);
 
-	const usedAddrs = $derived((data.detail?.addresses ?? []).filter((a) => a.used));
+	const usedAddrs = $derived((detail?.addresses ?? []).filter((a) => a.used));
 	// Unused = the forward gap window on the receive chain.
-	const unusedAddrs = $derived(
-		(data.detail?.addresses ?? []).filter((a) => !a.used && a.chain === 0)
-	);
+	const unusedAddrs = $derived((detail?.addresses ?? []).filter((a) => !a.used && a.chain === 0));
 	// Change = the whole internal chain (…/1/*), used and upcoming — so you can
 	// verify where change went AND where the next spend's change will go
 	// (cairn-teyh).
 	const changeAddrs = $derived(
-		(data.detail?.addresses ?? []).filter((a) => a.chain === 1).toSorted((a, b) => a.index - b.index)
+		(detail?.addresses ?? []).filter((a) => a.chain === 1).toSorted((a, b) => a.index - b.index)
 	);
 	const shownAddrs = $derived(
 		addrFilter === 'used' ? usedAddrs : addrFilter === 'unused' ? unusedAddrs : changeAddrs
@@ -370,24 +434,35 @@
 				/>
 			</div>
 
-			{#if data.detail}
+			{#if detail}
 				<div class="hw-hero">
 					<span
 						class="hero-number hw-hero-btc"
-						title="{formatSats(data.detail.balance.confirmed)} sats"
-						>{formatBtc(data.detail.balance.confirmed)}</span
+						title="{formatSats(detail.balance.confirmed)} sats"
+						>{formatBtc(detail.balance.confirmed)}</span
 					>
 					<span class="hw-hero-unit">BTC</span>
 				</div>
 				<p class="hw-hero-sub">
-					<span class="tabular">{formatSats(data.detail.balance.confirmed)} sats</span>
-					{#if data.detail.balance.unconfirmed !== 0}
+					<span class="tabular">{formatSats(detail.balance.confirmed)} sats</span>
+					{#if detail.balance.unconfirmed !== 0}
 						<span class="hw-pending">
-							· {data.detail.balance.unconfirmed > 0 ? '+' : ''}{formatBtc(
-								data.detail.balance.unconfirmed
+							· {detail.balance.unconfirmed > 0 ? '+' : ''}{formatBtc(
+								detail.balance.unconfirmed
 							)} BTC on its way
 						</span>
 					{/if}
+				</p>
+			{:else if scanLoading}
+				<!-- Balance streams in from the server scan — skeleton until it lands. -->
+				<div class="hw-hero">
+					<span class="hero-number hw-hero-btc hw-skeleton hw-skeleton-hero" aria-hidden="true"
+						>0.00000000</span
+					>
+					<span class="hw-hero-unit">BTC</span>
+				</div>
+				<p class="hw-hero-sub">
+					<span class="hw-skeleton hw-skeleton-line" aria-hidden="true">loading balance</span>
 				</p>
 			{:else}
 				<div class="hw-hero">
@@ -454,28 +529,24 @@
 			</div>
 		{/if}
 
-		{#if data.scanError}
+		{#if scanError}
 			<!-- ------------------------------------------- scan failed -->
 			<div class="scan-error hw-scan-error">
 				<Icon name="alert-triangle" size={18} />
 				<div class="grow">
 					<div style="font-weight: 500">Can't reach the wallet scanner</div>
-					<div class="hint">{data.scanError}</div>
+					<div class="hint">{scanError}</div>
 				</div>
 				<button type="button" class="btn btn-secondary btn-sm" onclick={retry} disabled={retrying}>
 					{#if retrying}<span class="spinner"></span>{:else}<Icon name="refresh" size={14} />{/if}
 					Retry
 				</button>
 			</div>
-		{:else if data.detail}
+		{:else if detail}
 			<!-- ------------------------------------------- stepped balance chart -->
-			{#if data.detail.history.some((t) => t.height > 0)}
+			{#if detail.history.some((t) => t.height > 0)}
 				<div class="hw-chart">
-					<WalletStepChart
-						txs={data.detail.history}
-						confirmed={data.detail.balance.confirmed}
-						height={148}
-					/>
+					<WalletStepChart txs={detail.history} confirmed={detail.balance.confirmed} height={148} />
 					<p class="hw-caption">balance over time · each step is a transaction</p>
 				</div>
 			{/if}
@@ -541,9 +612,16 @@
 			<!-- ------------------------------------------- mining rewards -->
 			<!-- Coinbase (mining reward) UTXOs only — empty for a normal multisig, so
 			     the whole section is absent unless the wallet actually mined. -->
-			{#if data.coinbaseUtxos.length > 0}
-				<MiningRewards utxos={data.coinbaseUtxos} tipHeight={data.tipHeight} />
+			{#if coinbaseUtxos.length > 0}
+				<MiningRewards utxos={coinbaseUtxos} {tipHeight} />
 			{/if}
+		{:else if scanLoading}
+			<!-- Balance/history/receive stream in from the server scan — placeholder
+			     rows keep the shell from jumping when they land. -->
+			<div class="hw-scan-loading" aria-hidden="true">
+				<div class="hw-skeleton hw-skeleton-block"></div>
+				<div class="hw-skeleton hw-skeleton-block hw-skeleton-block-sm"></div>
+			</div>
 		{/if}
 
 		<!-- ------------------------------------------- keys (5d key rows) -->
@@ -630,7 +708,7 @@
 			/>
 		{/if}
 
-		{#if data.detail}
+		{#if detail}
 			<!-- ------------------------------------------- tabs -->
 			<div class="hw-toggles" role="tablist">
 				<button
@@ -641,7 +719,7 @@
 					aria-selected={tab === 'transactions'}
 					onclick={() => (tab = 'transactions')}
 				>
-					Transactions · {data.detail.history.length}
+					Transactions · {detail.history.length}
 				</button>
 				<button
 					type="button"
@@ -651,14 +729,14 @@
 					aria-selected={tab === 'addresses'}
 					onclick={() => (tab = 'addresses')}
 				>
-					Addresses · {data.detail.addresses.length}
+					Addresses · {detail.addresses.length}
 				</button>
 			</div>
 
 			{#if tab === 'transactions'}
 				<!-- Hairline tx rows with burial-ring confirmation glyphs (5d). -->
 				<section class="hw-txs" aria-label="Transactions">
-					{#if data.detail.history.length === 0}
+					{#if detail.history.length === 0}
 						<div class="empty-state">
 							<Icon name="activity" size={22} />
 							<span class="empty-title">No transactions yet</span>
@@ -668,7 +746,7 @@
 							</span>
 						</div>
 					{:else}
-						{#each data.detail.history as tx (tx.txid)}
+						{#each detail.history as tx (tx.txid)}
 							{@const conf = confirmationsOf(tx.height)}
 							<div class="hw-tx-row">
 								<BurialRings confirmations={conf} direction={tx.delta >= 0 ? 'in' : 'out'} size={30} />
@@ -1232,6 +1310,73 @@
 		padding: 16px 0;
 		border-top: 1px solid var(--hairline);
 		border-bottom: 1px solid var(--hairline);
+	}
+
+	/* --- streamed-scan skeletons (cairn-vknb.2) ---
+	   The balance/history/receive slice now streams in after the shell paints,
+	   so these placeholders hold the layout for the brief window before it lands.
+	   A soft shimmer over the hairline palette, no hard box. */
+	.hw-skeleton {
+		position: relative;
+		overflow: hidden;
+		border-radius: var(--radius-control, 8px);
+		background: var(--hairline);
+		color: transparent !important;
+		user-select: none;
+		pointer-events: none;
+	}
+
+	.hw-skeleton::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+		transform: translateX(-100%);
+		background: linear-gradient(
+			90deg,
+			transparent,
+			color-mix(in srgb, var(--text-faint) 22%, transparent),
+			transparent
+		);
+		animation: hw-shimmer 1.4s var(--ease, ease) infinite;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.hw-skeleton::after {
+			animation: none;
+		}
+	}
+
+	@keyframes hw-shimmer {
+		100% {
+			transform: translateX(100%);
+		}
+	}
+
+	.hw-skeleton-hero {
+		display: inline-block;
+		border-radius: 12px;
+	}
+
+	.hw-skeleton-line {
+		display: inline-block;
+		min-width: 160px;
+		border-radius: 6px;
+	}
+
+	.hw-scan-loading {
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
+		margin-top: 40px;
+	}
+
+	.hw-skeleton-block {
+		height: 148px;
+		width: 100%;
+	}
+
+	.hw-skeleton-block-sm {
+		height: 84px;
 	}
 
 	/* --- receive panel (5c/8d) --- */
