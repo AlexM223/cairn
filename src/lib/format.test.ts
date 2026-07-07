@@ -3,6 +3,7 @@ import {
 	formatBtc,
 	formatSats,
 	timeAgo,
+	expiresIn,
 	formatBytes,
 	formatHashrate,
 	formatFeeRate,
@@ -71,6 +72,40 @@ describe('timeAgo', () => {
 
 	it('falls back to a formatted date for 30+ days', () => {
 		expect(timeAgo(now - 86400 * 40)).toMatch(/^[A-Z][a-z]{2} \d{1,2}, \d{4}$/);
+	});
+});
+
+describe('expiresIn', () => {
+	const NOW_MS = 1_700_000_000_000; // 2023-11-14T22:13:20Z
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.setSystemTime(NOW_MS);
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	const now = NOW_MS / 1000;
+
+	it.each([
+		[null, '—'],
+		[undefined, '—'],
+		[now + 2, 'now'],
+		[now - 30, 'now'], // already past reads as "now", never "just now"
+		[now + 30, 'in 30s'],
+		[now + 59, 'in 59s'],
+		[now + 120, 'in 2m'],
+		[now + 3599, 'in 59m'],
+		[now + 7200, 'in 2h'],
+		[now + 86400 * 2, 'in 2d'],
+		[now + 86400 * 29, 'in 29d']
+	])('%s -> %s', (unix, expected) => {
+		expect(expiresIn(unix)).toBe(expected);
+	});
+
+	it('falls back to a formatted date for 30+ days out', () => {
+		expect(expiresIn(now + 86400 * 40)).toMatch(/^[A-Z][a-z]{2} \d{1,2}, \d{4}$/);
 	});
 });
 

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
-	import { timeAgo } from '$lib/format';
+	import { timeAgo, expiresIn } from '$lib/format';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
@@ -9,6 +9,12 @@
 
 	function since(iso: string): string {
 		return timeAgo(Math.floor(new Date(iso).getTime() / 1000));
+	}
+
+	// expiresAt is a FUTURE timestamp, so timeAgo/since would always read
+	// "just now" (negative diff). Use the forward-looking formatter instead.
+	function until(iso: string): string {
+		return expiresIn(Math.floor(new Date(iso).getTime() / 1000));
 	}
 </script>
 
@@ -55,7 +61,7 @@
 								{s.device}
 								{#if s.current}<span class="badge badge-success">this device</span>{/if}
 							</div>
-							<div class="row-sub">Signed in {since(s.createdAt)} · expires {since(s.expiresAt)}</div>
+							<div class="row-sub">Signed in {since(s.createdAt)} · expires {until(s.expiresAt)}</div>
 						</div>
 						{#if !s.current}
 							<form method="POST" action="?/revokeSession" use:enhance>

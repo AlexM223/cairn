@@ -21,10 +21,13 @@
 
 	let { data } = $props();
 
+	// tx is null when the backend has no record of this (well-formed) txid — the
+	// page then renders an in-page not-found state (cairn-t9b6), mirroring the
+	// block and address detail pages. All tx-derived values guard against null.
 	const tx = $derived(data.tx);
-	const isCoinbase = $derived(tx.vin.some((v) => v.coinbase));
-	const totalIn = $derived(tx.vin.reduce((sum, v) => sum + (v.value ?? 0), 0));
-	const totalOut = $derived(tx.vout.reduce((sum, v) => sum + v.value, 0));
+	const isCoinbase = $derived(tx ? tx.vin.some((v) => v.coinbase) : false);
+	const totalIn = $derived(tx ? tx.vin.reduce((sum, v) => sum + (v.value ?? 0), 0) : 0);
+	const totalOut = $derived(tx ? tx.vout.reduce((sum, v) => sum + v.value, 0) : 0);
 
 	// The decoded transaction (above) renders immediately from the awaited load.
 	// Its supplementary details — fee outlook, RBF timeline, CPFP badges, raw hex —
@@ -34,6 +37,7 @@
 	let details = $state<Details | null>(null);
 	$effect(() => {
 		const promise = data.details;
+		if (!promise) return;
 		let stale = false;
 		void promise.then((d) => {
 			if (!stale) details = d;
@@ -50,11 +54,11 @@
 	// change. (Modern wallets avoid address reuse, so absence of this badge
 	// doesn't mean absence of change — the panel copy explains the concept.)
 	const inputAddresses = $derived(
-		new Set(tx.vin.map((v) => v.address).filter((a): a is string => a !== null))
+		new Set((tx?.vin ?? []).map((v) => v.address).filter((a): a is string => a !== null))
 	);
 
 	const outlook = $derived(
-		!tx.confirmed && tx.feeRate !== null && fees ? feeOutlook(tx.feeRate, fees) : null
+		tx && !tx.confirmed && tx.feeRate !== null && fees ? feeOutlook(tx.feeRate, fees) : null
 	);
 
 	// Replace-by-fee timeline (oldest → newest). The newest entry is the only
@@ -62,13 +66,14 @@
 	// page shows a stale version.
 	const rbf = $derived(details?.rbf ?? null);
 	const newestRbf = $derived(rbf ? rbf.chain[rbf.chain.length - 1] : null);
-	const replacedByNewer = $derived(newestRbf !== null && newestRbf.txid !== tx.txid);
+	const replacedByNewer = $derived(newestRbf !== null && tx !== null && newestRbf.txid !== tx.txid);
 
 	// CPFP only matters when the package rate meaningfully differs (>5%) from
 	// this transaction's own fee rate — otherwise the child changes nothing.
 	const cpfp = $derived(details?.cpfp ?? null);
 	const cpfpActive = $derived(
 		cpfp !== null &&
+			tx !== null &&
 			tx.feeRate !== null &&
 			tx.feeRate > 0 &&
 			Math.abs(cpfp.effectiveFeeRate - tx.feeRate) / tx.feeRate > 0.05
@@ -82,7 +87,7 @@
 	let hexCopied = $state(false);
 
 	$effect(() => {
-		void tx.txid;
+		void tx?.txid;
 		openInputScripts = {};
 		openOutputScripts = {};
 		rawOpen = false;
@@ -103,7 +108,7 @@
 </script>
 
 <svelte:head>
-	<title>Tx {truncateMiddle(tx.txid, 8, 8)} — Heartwood</title>
+	<title>{tx ? `Tx ${truncateMiddle(tx.txid, 8, 8)}` : 'Transaction not found'} — Heartwood</title>
 </svelte:head>
 
 <div class="tx-page">
@@ -115,6 +120,7 @@
 			</a>
 		</div>
 
+		{#if tx}
 		<header class="head fade-in">
 			<EyebrowBreadcrumb path={['Explorer']} current="Transaction" />
 			<h1 class="txid mono"><CopyText value={tx.txid} truncate={18} /></h1>
@@ -539,6 +545,13 @@
 				</p>
 			</HowItWorks>
 		</div>
+		{:else}
+			<div class="empty-state fade-in">
+				<span class="empty-title">Transaction not found</span>
+				<span>No transaction matches this ID.</span>
+				<a href="/explorer" class="btn btn-secondary btn-sm">Back to explorer</a>
+			</div>
+		{/if}
 	</div>
 </div>
 
