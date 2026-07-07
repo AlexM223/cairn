@@ -6,7 +6,13 @@ import {
 	deleteMultisig,
 	toMultisigConfig
 } from '$lib/server/wallets/multisig';
-import { multisigAccessRole, redactMultisigKeysForViewer } from '$lib/server/multisigShares';
+import {
+	multisigAccessRole,
+	redactMultisigKeysForViewer,
+	listCollaborators
+} from '$lib/server/multisigShares';
+import { listContacts } from '$lib/server/contacts';
+import { getInstanceSettings } from '$lib/server/settings';
 import {
 	getMultisigDetail,
 	getMultisigUtxos,
@@ -46,6 +52,13 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 	// Non-owner viewers see their own key's path but not other cosigners' (plan §6).
 	const visibleKeys = redactMultisigKeysForViewer(multisig.keys, locals.user!.id, multisig.userId);
 
+	// The share-MANAGEMENT surface (Collaborators) is owner-only AND gated on team
+	// mode — the same gate the /shares API enforces (requireTeamMode). In solo mode
+	// nothing is "disabled", the instance is just narrower, so we hide the section
+	// entirely rather than showing a dead form. Read access a cosigner/viewer
+	// already has is never touched by this (cairn-7t0z.5).
+	const canManageShares = role === 'owner' && getInstanceSettings().instanceMode === 'team';
+
 	const base = {
 		// The caller's role drives which owner-only controls (share, delete,
 		// broadcast) the page renders — the server gates them regardless.
@@ -76,7 +89,21 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 		// viewer never signs, so they don't get it (plan §6).
 		descriptor: role === 'viewer' ? null : multisigToDescriptor(toMultisigConfig(multisig)),
 		// Address labels (cairn-nbsx) — shared annotations for this vault; local read.
-		addressLabels: getAddressLabels(locals.user!.id, 'multisig', id)
+		addressLabels: getAddressLabels(locals.user!.id, 'multisig', id),
+		// Sharing surface (owner + team mode only). Both lists are cheap local reads
+		// and independent of the Electrum scan, so they live on `base` and stay
+		// present even when the scan below fails. Empty for everyone else.
+		canManageShares,
+		collaborators: canManageShares ? listCollaborators(locals.user!.id, id) : [],
+		// Only accepted contacts (friends) can receive a share; the picker needs
+		// just the id/name/email to build the option list.
+		shareableContacts: canManageShares
+			? listContacts(locals.user!.id).friends.map((c) => ({
+					userId: c.userId,
+					displayName: c.displayName,
+					email: c.email
+				}))
+			: []
 	};
 
 	try {
