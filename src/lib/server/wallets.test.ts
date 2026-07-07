@@ -170,3 +170,177 @@ describe('createWallet activity event (cairn-cvcu)', () => {
 		expect(listUserFeed(user.id)).toHaveLength(0);
 	});
 });
+
+// ---- cairn-alw8: createWallet persists the key origin -----------------------------------
+//
+// Without wallets.master_fingerprint, constructPsbt never attaches
+// bip32Derivation and NO hardware wallet can sign this wallet's transactions.
+// These tests pin the fix: origin arrives (explicit fields, or embedded in the
+// key string) → stored; absent → honestly null, never fabricated.
+
+import { getWallet } from './wallets';
+
+describe('createWallet key origin (cairn-alw8)', () => {
+	function originOf(userId: number, walletId: number) {
+		const row = getWallet(userId, walletId);
+		return { fingerprint: row?.master_fingerprint ?? null, path: row?.derivation_path ?? null };
+	}
+
+	it('stores fingerprint and path passed explicitly (device-connect flow)', () => {
+		const user = makeUser('device@example.com');
+		const w = createWallet(user.id, {
+			name: 'Trezor wallet',
+			xpub: ZPUB,
+			deviceType: 'trezor',
+			fingerprint: '73C5DA0A', // devices may report uppercase — normalized
+			derivationPath: 'm/84h/0h/0h' // h-hardened — canonicalized
+		});
+		expect(originOf(user.id, w.id)).toEqual({
+			fingerprint: '73c5da0a',
+			path: "m/84'/0'/0'"
+		});
+	});
+
+	it('parses and stores an origin embedded in the key string (paste-descriptor flow)', () => {
+		const user = makeUser('descriptor@example.com');
+		const w = createWallet(user.id, {
+			name: 'Pasted',
+			xpub: `[73c5da0a/84'/0'/0']${ZPUB}`
+		});
+		expect(originOf(user.id, w.id)).toEqual({
+			fingerprint: '73c5da0a',
+			path: "m/84'/0'/0'"
+		});
+		// The stored xpub is the bare key, not the bracketed form.
+		expect(getWallet(user.id, w.id)?.xpub).toBe(ZPUB);
+	});
+
+	it('embedded origin wins over the explicit fields', () => {
+		const user = makeUser('conflict@example.com');
+		const w = createWallet(user.id, {
+			xpub: `[73c5da0a/84'/0'/0']${ZPUB}`,
+			fingerprint: 'deadbeef',
+			derivationPath: "m/44'/0'/0'"
+		});
+		expect(originOf(user.id, w.id)).toEqual({
+			fingerprint: '73c5da0a',
+			path: "m/84'/0'/0'"
+		});
+	});
+
+	it('regression guard: a bare-xpub import stores null origin (the pre-fix state)', () => {
+		const user = makeUser('bare@example.com');
+		const w = createWallet(user.id, { name: 'Bare', xpub: ZPUB });
+		// This is exactly why hardware signing was broken: no fingerprint means
+		// transactions.ts passes origin: null and the PSBT gets no bip32Derivation.
+		expect(originOf(user.id, w.id)).toEqual({ fingerprint: null, path: null });
+	});
+
+	it('treats the all-zero placeholder fingerprint as unknown, not an error', () => {
+		const user = makeUser('coldcard-placeholder@example.com');
+		const w = createWallet(user.id, {
+			xpub: ZPUB,
+			fingerprint: '00000000', // ColdCard-parser placeholder for "unknown"
+			derivationPath: "m/84'/0'/0'"
+		});
+		expect(originOf(user.id, w.id)).toEqual({ fingerprint: null, path: "m/84'/0'/0'" });
+	});
+
+	it('rejects a malformed fingerprint or path loudly instead of dropping it', () => {
+		const user = makeUser('typo@example.com');
+		expect(() => createWallet(user.id, { xpub: ZPUB, fingerprint: '73c5da0' })).toThrow(
+			/fingerprint/i
+		);
+		expect(() => createWallet(user.id, { xpub: ZPUB, fingerprint: 'not-hex!' })).toThrow(
+			/fingerprint/i
+		);
+		expect(() =>
+			createWallet(user.id, { xpub: ZPUB, derivationPath: 'four score and seven' })
+		).toThrow(/derivation path/i);
+		// Nothing landed despite three attempts.
+		const { n } = db
+			.prepare('SELECT COUNT(*) AS n FROM wallets WHERE user_id = ?')
+			.get(user.id) as { n: number };
+		expect(n).toBe(0);
+	});
+});
+
+// ---- cairn-alw8 end-to-end: created wallet → PSBT → hardware driver ---------------------
+//
+// Crosses every seam of the bug in one pass: createWallet persists the origin,
+// the wallet row feeds constructPsbt the exact way transactions.ts does, and
+// the resulting PSBT satisfies the real Trezor driver's key-origin requirement
+// (the code that used to throw "missing the key-origin information" for every
+// single-key wallet in the product).
+
+import { constructPsbt, DEFAULT_ORIGIN_PATH } from './bitcoin/psbt';
+import { Transaction } from '@scure/btc-signer';
+import { psbtHasKeyOrigin } from '$lib/hw/keyOrigin';
+import { trezorSignRequestFromPsbt } from '$lib/hw/trezor';
+import type { ScriptType } from '$lib/types';
+
+describe('created wallet signs on hardware (cairn-alw8 end-to-end)', () => {
+	const HARDENED = 0x80000000;
+	// m/84'/0'/0'/0/0 of the ZPUB test vector.
+	const RECEIVE_0 = 'bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu';
+	const RECIPIENT = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4';
+	const CHANGE_0 = 'bc1q8c6fshw2dlwun7ekn9qwf37cu2rn755upcp6el'; // m/1/0
+
+	/** A synthetic funding tx with a REAL txid, so nonWitnessUtxo verification passes. */
+	function fundingTx(): { hex: string; txid: string } {
+		const tx = new Transaction({ allowUnknownInputs: true, disableScriptCheck: true });
+		tx.addInput({ txid: '00'.repeat(32), index: 0 });
+		tx.addOutputAddress(RECEIVE_0, 100_000n);
+		return { hex: tx.hex, txid: tx.id };
+	}
+
+	/** Build a spend from the wallet row EXACTLY the way transactions.ts does. */
+	async function psbtFromWalletRow(userId: number, walletId: number): Promise<string> {
+		const wallet = getWallet(userId, walletId)!;
+		const scriptType = wallet.script_type as ScriptType;
+		// Mirror of src/lib/server/transactions.ts buildDraft's origin construction.
+		const origin = wallet.master_fingerprint
+			? {
+					fingerprint: wallet.master_fingerprint,
+					path: wallet.derivation_path ?? DEFAULT_ORIGIN_PATH[scriptType]
+				}
+			: null;
+		const fund = fundingTx();
+		const details = await constructPsbt({
+			xpub: wallet.xpub,
+			utxos: [
+				{ txid: fund.txid, vout: 0, value: 100_000, height: 800_000, address: RECEIVE_0, chain: 0, index: 0 }
+			],
+			recipients: [{ address: RECIPIENT, amount: 30_000 }],
+			feeRate: 5,
+			changeAddress: CHANGE_0,
+			changeIndex: 0,
+			origin,
+			fetchRawTx: async () => fund.hex
+		});
+		return details.psbtBase64;
+	}
+
+	it('a wallet imported with its origin yields a PSBT the Trezor driver accepts', async () => {
+		const user = makeUser('e2e-fixed@example.com');
+		const w = createWallet(user.id, { xpub: `[73c5da0a/84'/0'/0']${ZPUB}` });
+
+		const psbt = await psbtFromWalletRow(user.id, w.id);
+		expect(psbtHasKeyOrigin(psbt)).toBe(true);
+
+		// The real driver translation — this used to be unreachable for every
+		// single-key wallet. The derived path must be the full account path plus
+		// chain/index, so the device signs with the right key.
+		const req = trezorSignRequestFromPsbt(psbt);
+		expect(req.inputs[0].address_n).toEqual([84 + HARDENED, HARDENED, HARDENED, 0, 0]);
+	});
+
+	it('regression: a bare-xpub wallet still produces the origin-free PSBT the driver rejects', async () => {
+		const user = makeUser('e2e-broken@example.com');
+		const w = createWallet(user.id, { xpub: ZPUB });
+
+		const psbt = await psbtFromWalletRow(user.id, w.id);
+		expect(psbtHasKeyOrigin(psbt)).toBe(false);
+		expect(() => trezorSignRequestFromPsbt(psbt)).toThrow(/key-origin/i);
+	});
+});

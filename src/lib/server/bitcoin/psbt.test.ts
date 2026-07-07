@@ -178,6 +178,28 @@ describe('constructPsbt', () => {
 		const draft = await constructPsbt({ ...COMMON, recipients: [{ address: RECIPIENT, amount: 30_000 }], feeRate: 10 });
 		expect(() => finalizePsbt(draft.psbtBase64)).toThrow();
 	});
+
+	it('emits NO bip32Derivation without a key origin (cairn-alw8 pre-fix state)', async () => {
+		// Regression guard: this is what every single-key wallet's PSBT looked
+		// like before wallets stored master_fingerprint — no input carries
+		// key-origin data, so no hardware wallet can identify its key. The fix
+		// captures the origin at wallet creation; this pins the contract that
+		// origin: null honestly produces an origin-free PSBT (never a guessed
+		// fingerprint) while origin: {…} produces a signable one (test above).
+		const draft = await constructPsbt({
+			...COMMON,
+			origin: null,
+			recipients: [{ address: RECIPIENT, amount: 30_000 }],
+			feeRate: 10
+		});
+		const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
+		for (let i = 0; i < tx.inputsLength; i++) {
+			expect(tx.getInput(i).bip32Derivation ?? []).toHaveLength(0);
+		}
+		for (let i = 0; i < tx.outputsLength; i++) {
+			expect(tx.getOutput(i).bip32Derivation ?? []).toHaveLength(0);
+		}
+	});
 });
 
 describe('destination address types (all six)', () => {

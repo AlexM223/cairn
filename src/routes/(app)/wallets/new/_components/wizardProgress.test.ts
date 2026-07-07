@@ -24,6 +24,8 @@ function validSnapshot(overrides: Record<string, unknown> = {}): string {
 		],
 		scriptType: 'p2wpkh',
 		name: '',
+		keyFingerprint: '73c5da0a',
+		keyPath: "m/84'/0'/0'",
 		savedAt: NOW - 5_000,
 		...overrides
 	});
@@ -91,6 +93,31 @@ describe('parseSavedProgress', () => {
 		expect(p!.step).toBe(2); // key + preview + scriptType still valid
 	});
 
+	it('round-trips the key origin and nulls anything shape-invalid (cairn-alw8)', () => {
+		// A well-formed origin survives the reload — losing it would silently
+		// produce a wallet that can't hardware-sign.
+		const p = parseSavedProgress(validSnapshot(), NOW);
+		expect(p!.keyFingerprint).toBe('73c5da0a');
+		expect(p!.keyPath).toBe("m/84'/0'/0'");
+
+		// Snapshots from before the field existed, and tampered/garbage values,
+		// come back null without invalidating the rest of the snapshot.
+		const missing = parseSavedProgress(
+			validSnapshot({ keyFingerprint: undefined, keyPath: undefined }),
+			NOW
+		);
+		expect(missing!.keyFingerprint).toBeNull();
+		expect(missing!.keyPath).toBeNull();
+		expect(missing!.step).toBe(2);
+
+		const garbage = parseSavedProgress(
+			validSnapshot({ keyFingerprint: 'NOT-HEX!', keyPath: 'sideways' }),
+			NOW
+		);
+		expect(garbage!.keyFingerprint).toBeNull();
+		expect(garbage!.keyPath).toBeNull();
+	});
+
 	it('drops malformed preview rows but keeps the good ones', () => {
 		const p = parseSavedProgress(
 			validSnapshot({
@@ -120,6 +147,8 @@ describe('hasMeaningfulProgress', () => {
 			preview: [],
 			scriptType: null,
 			name: '',
+			keyFingerprint: null,
+			keyPath: null,
 			savedAt: NOW,
 			...overrides
 		};

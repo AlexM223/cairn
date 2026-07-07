@@ -45,6 +45,11 @@ export interface WizardProgress {
 	preview: { address: string; path: string }[];
 	scriptType: ScriptType | null;
 	name: string;
+	/** Key origin captured with the validated key (cairn-alw8). Losing these
+	 *  to a reload would silently produce a wallet that can't hardware-sign,
+	 *  so they ride along in the snapshot. Public data (like the xpub). */
+	keyFingerprint: string | null;
+	keyPath: string | null;
 	savedAt: number;
 }
 
@@ -96,6 +101,14 @@ export function parseSavedProgress(raw: string | null, now: number): WizardProgr
 	const validatedXpub = typeof o.validatedXpub === 'string' ? o.validatedXpub : '';
 	const preview = Array.isArray(o.preview) ? o.preview.filter(isPreviewRow) : [];
 	const name = typeof o.name === 'string' ? o.name : '';
+	// Origin fields: validated shape-only here (real validation happens at
+	// create time server-side); anything off comes back null, never a crash.
+	const keyFingerprint =
+		typeof o.keyFingerprint === 'string' && /^[0-9a-f]{8}$/.test(o.keyFingerprint)
+			? o.keyFingerprint
+			: null;
+	const keyPath =
+		typeof o.keyPath === 'string' && /^m(\/\d+'?)+$/.test(o.keyPath) ? o.keyPath : null;
 
 	let step: WizardProgress['step'];
 	if (o.step === 0 || o.step === 1 || o.step === 2 || o.step === 3) step = o.step;
@@ -115,6 +128,8 @@ export function parseSavedProgress(raw: string | null, now: number): WizardProgr
 		preview,
 		scriptType,
 		name,
+		keyFingerprint,
+		keyPath,
 		savedAt: o.savedAt
 	};
 }

@@ -54,6 +54,17 @@
 	let preview = $state<{ address: string; path: string }[]>([]);
 	let scriptType = $state<ScriptType | null>(null);
 	let validatedXpub = $state('');
+	// The key's origin — master fingerprint + account derivation path. This is
+	// what lets Cairn put bip32Derivation into PSBTs, which every hardware
+	// signer needs to find its key (cairn-alw8). Captured from the device
+	// response on a direct read, from the ColdCard export file, or parsed out
+	// of a pasted `[fingerprint/path]xpub` descriptor. null = unknown; the
+	// wallet then signs only via the generic file/PSBT passthrough.
+	let keyFingerprint = $state<string | null>(null);
+	let keyPath = $state<string | null>(null);
+	// Optional field on the paste form for wallets that export a bare key plus
+	// a separate "master fingerprint" (XFP) label.
+	let fingerprintInput = $state('');
 	let name = $state('');
 	// Which device holds this key. null = the user skipped it; the wallet then
 	// signs via the universal file/PSBT fallback. Saved on the wallet record.
@@ -63,7 +74,14 @@
 	let createdId = $state<number | null>(null);
 	let backedUp = $state(false);
 
-	const looksLikeKey = $derived(/^[xyz]pub[1-9A-HJ-NP-Za-km-z]{20,}$/.test(xpubInput.trim()));
+	// A bare extended key, or one in key-origin/descriptor form —
+	// `[73c5da0a/84'/0'/0']zpub…`, optionally wpkh(…)-wrapped with a trailing
+	// derivation suffix. The server parses the origin out at validation time.
+	const looksLikeKey = $derived(
+		/^(?:[a-z]+\()?(?:\[[0-9a-fA-F]{8}[^\]]*\]\s*)?[xyz]pub[1-9A-HJ-NP-Za-km-z]{20,}/.test(
+			xpubInput.trim()
+		)
+	);
 
 	// ------------------------------------------- progress survives page reloads
 	//
@@ -98,6 +116,8 @@
 		validatedXpub = savedProgress.validatedXpub;
 		preview = savedProgress.preview;
 		scriptType = savedProgress.scriptType;
+		keyFingerprint = savedProgress.keyFingerprint;
+		keyPath = savedProgress.keyPath;
 		if (savedProgress.name) name = savedProgress.name;
 		resumed = true;
 	});
@@ -115,6 +135,8 @@
 			preview: $state.snapshot(preview),
 			scriptType,
 			name,
+			keyFingerprint,
+			keyPath,
 			savedAt: Date.now()
 		});
 		try {
@@ -140,6 +162,9 @@
 		validatedXpub = '';
 		preview = [];
 		scriptType = null;
+		keyFingerprint = null;
+		keyPath = null;
+		fingerprintInput = '';
 		name = '';
 		previewError = null;
 		deviceError = null;
@@ -222,8 +247,15 @@
 	// A device/file/QR read produced a key: validate it server-side (deriving the
 	// preview + real script type from the key's own prefix) exactly like paste
 	// does, and remember which method got us here so Step 4 can pre-fill the
-	// device instead of re-asking.
-	async function acceptReadKey(xpub: string, from: Method) {
+	// device instead of re-asking. When the reader also handed us the key's
+	// origin (device reads and ColdCard exports always do), it rides along and
+	// takes precedence over anything parsed out of the key string — the device
+	// is the authoritative source (cairn-alw8).
+	async function acceptReadKey(
+		xpub: string,
+		from: Method,
+		origin?: { fingerprint: string; path: string }
+	) {
 		deviceError = null;
 		previewError = null;
 		const body = new FormData();
@@ -240,11 +272,23 @@
 					preview: { address: string; path: string }[];
 					scriptType: ScriptType;
 					xpub: string;
+					fingerprint: string | null;
+					path: string | null;
 				};
 				preview = d.preview;
 				scriptType = d.scriptType;
 				validatedXpub = d.xpub;
 				xpubInput = d.xpub;
+				// "00000000" is the placeholder some exports use for "unknown" —
+				// treat it as absent rather than storing a fake origin.
+				const readFp =
+					origin && /^[0-9a-fA-F]{8}$/.test(origin.fingerprint) && !/^0{8}$/.test(origin.fingerprint)
+						? origin.fingerprint.toLowerCase()
+						: null;
+				keyFingerprint = readFp ?? d.fingerprint ?? null;
+				// The path is useful on its own (config/descriptor export) even
+				// when the fingerprint is a placeholder, so it isn't tied to readFp.
+				keyPath = origin?.path ?? d.path ?? null;
 				readMethod = from;
 				deviceType = METHOD_DEVICE[from];
 				changeDevice = false;
@@ -285,7 +329,9 @@
 						: kind === 'bitbox02'
 							? await readKeyFromBitbox02(deviceScriptType)
 							: await readKeyFromJade(deviceScriptType);
-			await acceptReadKey(key.xpub, kind);
+			// The device response includes the key's origin — keep it, or every
+			// PSBT this wallet builds is unsignable on the device (cairn-alw8).
+			await acceptReadKey(key.xpub, kind, { fingerprint: key.fingerprint, path: key.path });
 		} catch (e) {
 			if (e instanceof DeviceReadUnavailable) {
 				deviceError = `Direct ${WALLET_DEVICE_LABELS[kind]} connection isn't available in this browser — paste the key instead, or scan its QR.`;
@@ -305,7 +351,10 @@
 		deviceBusy = true;
 		try {
 			const key = parseColdcardSingleSigExport(await file.text(), deviceScriptType);
-			await acceptReadKey(key.xpub, 'coldcard');
+			await acceptReadKey(key.xpub, 'coldcard', {
+				fingerprint: key.fingerprint,
+				path: key.path
+			});
 		} catch (err) {
 			deviceError = err instanceof Error ? err.message : 'Could not read that file.';
 		} finally {
@@ -409,7 +458,26 @@
 		}
 
 		if (c.format === 'cairn-wallet-config' && c.type === 'single-sig' && typeof c.xpub === 'string') {
-			xpubInput = c.xpub;
+			// Re-attach the key origin the backup recorded: with both pieces,
+			// prefill the full `[fingerprint/path]xpub` form so the origin
+			// round-trips through validation exactly like a pasted descriptor;
+			// with only a fingerprint, prefill the optional field (cairn-alw8).
+			const backupFp =
+				typeof c.masterFingerprint === 'string' &&
+				/^[0-9a-fA-F]{8}$/.test(c.masterFingerprint) &&
+				!/^0{8}$/.test(c.masterFingerprint)
+					? c.masterFingerprint.toLowerCase()
+					: null;
+			const backupPath =
+				typeof c.derivationPath === 'string' && /^m(\/\d+['hH]?)+$/.test(c.derivationPath.trim())
+					? c.derivationPath.trim()
+					: null;
+			if (backupFp && backupPath) {
+				xpubInput = `[${backupFp}/${backupPath.replace(/^m\//, '')}]${c.xpub}`;
+			} else {
+				xpubInput = c.xpub;
+				fingerprintInput = backupFp ?? '';
+			}
 			previewError = null;
 			deviceError = null;
 			// A restored key drops the user straight onto the paste method with the
@@ -798,10 +866,16 @@
 											preview: { address: string; path: string }[];
 											scriptType: ScriptType;
 											xpub: string;
+											fingerprint: string | null;
+											path: string | null;
 										};
 										preview = d.preview;
 										scriptType = d.scriptType;
 										validatedXpub = d.xpub;
+										// Origin parsed out of the pasted key (descriptor form)
+										// or the optional fingerprint field (cairn-alw8).
+										keyFingerprint = d.fingerprint ?? null;
+										keyPath = d.path ?? null;
 										readMethod = 'paste';
 										deviceType = null;
 										changeDevice = false;
@@ -823,7 +897,7 @@
 									id="xpub"
 									name="xpub"
 									rows="3"
-									placeholder="zpub6rFR7y4Q2Aij…"
+									placeholder="zpub6rFR7y4Q2Aij… or [73c5da0a/84'/0'/0']zpub6rFR7y4Q2Aij…"
 									spellcheck="false"
 									autocomplete="off"
 									bind:value={xpubInput}
@@ -834,8 +908,42 @@
 										Extended keys start with xpub, ypub or zpub — keep pasting, we'll verify
 										properly on the next step.
 									</span>
+								{:else}
+									<span class="hint">
+										If your wallet shows the key with a prefix in square brackets — like
+										[73c5da0a/84'/0'/0'] — paste the whole thing. That prefix tells your
+										signing device which key to use.
+									</span>
 								{/if}
 							</div>
+
+							{#if !/^\s*(?:[a-z]+\()?\[/.test(xpubInput)}
+								<!-- Only for bare keys: a key pasted in [fingerprint/path]xpub form
+								     already carries its origin, so don't ask twice (cairn-alw8). -->
+								<div class="field">
+									<label class="label" for="fingerprint">
+										Master fingerprint
+										<span class="optional">(optional)</span>
+									</label>
+									<input
+										class="input mono fp-input"
+										id="fingerprint"
+										name="fingerprint"
+										placeholder="e.g. 73c5da0a"
+										maxlength="8"
+										spellcheck="false"
+										autocomplete="off"
+										bind:value={fingerprintInput}
+									/>
+									<span class="hint">
+										8 characters, shown in your wallet as "master fingerprint" or "XFP".
+										Needed to <Term
+											tip="Cairn stamps this ID into every transaction it prepares, so your signing device can recognize which of its keys to sign with."
+											>sign with a hardware wallet</Term
+										> — without it you'll sign by passing files through another wallet app.
+									</span>
+								</div>
+							{/if}
 
 							{#if previewError}
 								<div class="form-error" role="alert">{previewError}</div>
@@ -894,6 +1002,13 @@
 				<span class="detected">Detected:</span>
 				{#if scriptType}
 					<span class="badge badge-accent">{SCRIPT_TYPE_LABELS[scriptType]}</span>
+				{/if}
+				{#if keyFingerprint}
+					<!-- The captured key origin, so a hardware-wallet user can check it
+					     against the fingerprint their device shows (cairn-alw8). -->
+					<span class="badge mono" title="Master fingerprint{keyPath ? ` · ${keyPath}` : ''}">
+						{keyFingerprint}
+					</span>
 				{/if}
 			</div>
 			<p class="hint" style="line-height: 1.6">
@@ -958,6 +1073,10 @@
 			>
 				<input type="hidden" name="xpub" value={validatedXpub} />
 				<input type="hidden" name="deviceType" value={deviceType ?? ''} />
+				<!-- Key origin captured on the Key step — stored on the wallet so its
+				     PSBTs carry bip32Derivation for hardware signing (cairn-alw8). -->
+				<input type="hidden" name="fingerprint" value={keyFingerprint ?? ''} />
+				<input type="hidden" name="derivationPath" value={keyPath ?? ''} />
 				<div class="field">
 					<label class="label" for="name">What should we call it?</label>
 					<input
@@ -1363,6 +1482,11 @@
 		resize: vertical;
 		word-break: break-all;
 		font-size: 13px;
+	}
+
+	/* 8 hex chars — the field doesn't need to be pastebin-wide. */
+	.fp-input {
+		max-width: 180px;
 	}
 
 	/* restore-from-backup affordance (cairn-lun6) */
