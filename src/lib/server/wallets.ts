@@ -14,6 +14,11 @@ import {
 import { childLogger } from './logger';
 import { deleteAddressLabels } from './addressLabels';
 import { recordActivity } from './activity';
+import {
+	parseKeyOriginInput,
+	normalizeFingerprint,
+	normalizeOriginPath
+} from '$lib/hw/keyOrigin';
 import type { ScriptType, WalletDeviceType, WalletSummary } from '$lib/types';
 
 const GAP_LIMIT = 20;
@@ -135,17 +140,72 @@ export async function listWallets(
 	return { wallets, errors };
 }
 
+/**
+ * Validate the caller-supplied key origin. Empty input is fine (null column);
+ * NON-empty garbage throws — silently dropping a mistyped fingerprint would
+ * quietly re-create the "hardware signing is broken" state this exists to fix
+ * (cairn-alw8). The all-zero placeholder fingerprint counts as empty: some
+ * device exports use it for "unknown".
+ */
+function normalizeOriginInput(input: {
+	fingerprint?: unknown;
+	derivationPath?: unknown;
+}): { fingerprint: string | null; path: string | null } {
+	const fpRaw = String(input.fingerprint ?? '').trim();
+	let fingerprint: string | null = null;
+	if (fpRaw && !/^0{8}$/.test(fpRaw)) {
+		fingerprint = normalizeFingerprint(fpRaw);
+		if (!fingerprint) {
+			throw new Error(
+				"That master fingerprint doesn't look right — it's exactly 8 characters of 0-9 and a-f, like 73c5da0a."
+			);
+		}
+	}
+
+	const pathRaw = String(input.derivationPath ?? '').trim();
+	let path: string | null = null;
+	if (pathRaw) {
+		path = normalizeOriginPath(pathRaw);
+		if (!path) {
+			throw new Error(
+				"That derivation path doesn't look right — it looks like m/84'/0'/0'."
+			);
+		}
+	}
+
+	return { fingerprint, path };
+}
+
 export function createWallet(
 	userId: number,
-	input: { name?: string; xpub?: string; deviceType?: unknown }
+	input: {
+		name?: string;
+		xpub?: string;
+		deviceType?: unknown;
+		/** Optional key origin: master fingerprint (8 hex chars) … */
+		fingerprint?: unknown;
+		/** … and account derivation path (e.g. m/84'/0'/0'). Without these,
+		 *  PSBTs carry no bip32Derivation and hardware signers can't sign
+		 *  (cairn-alw8). The xpub field may alternatively embed both in
+		 *  key-origin/descriptor form: `[73c5da0a/84'/0'/0']zpub…`. */
+		derivationPath?: unknown;
+	}
 ): WalletSummary {
-	const xpub = String(input.xpub ?? '').trim();
+	// The key may arrive in descriptor form with the origin embedded — that
+	// embedded origin is the most authoritative source, so it wins over the
+	// separate fields (which the wizard derives from the same string anyway).
+	const parsedInput = parseKeyOriginInput(String(input.xpub ?? ''));
+	const xpub = parsedInput.xpub;
 	let scriptType: ScriptType;
 	try {
 		scriptType = parseXpub(xpub).scriptType;
 	} catch (e) {
 		throw new Error(friendlyXpubError(e));
 	}
+
+	const explicit = normalizeOriginInput(input);
+	const masterFingerprint = parsedInput.fingerprint ?? explicit.fingerprint;
+	const derivationPath = parsedInput.path ?? explicit.path;
 
 	let name = String(input.name ?? '').trim().slice(0, 64);
 	if (!name) {
@@ -161,9 +221,10 @@ export function createWallet(
 	try {
 		const res = db
 			.prepare(
-				'INSERT INTO wallets (user_id, name, type, xpub, script_type, device_type) VALUES (?, ?, ?, ?, ?, ?)'
+				`INSERT INTO wallets (user_id, name, type, xpub, script_type, device_type, master_fingerprint, derivation_path)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 			)
-			.run(userId, name, 'xpub', xpub, scriptType, deviceType);
+			.run(userId, name, 'xpub', xpub, scriptType, deviceType, masterFingerprint, derivationPath);
 		const row = getWallet(userId, Number(res.lastInsertRowid));
 		if (!row) throw new Error('Wallet insert failed');
 		// Adding a wallet is a significant account action: surface it in the
@@ -174,7 +235,16 @@ export function createWallet(
 			level: 'success',
 			userId,
 			message: `Wallet “${name}” added`,
-			detail: { walletKind: 'wallet', walletId: row.id, scriptType, deviceType }
+			detail: {
+				walletKind: 'wallet',
+				walletId: row.id,
+				scriptType,
+				deviceType,
+				// Diagnosable from the admin log: a wallet imported WITHOUT a key
+				// origin cannot hardware-sign (cairn-alw8). Boolean only — the
+				// fingerprint itself identifies a device, so it stays out.
+				hasKeyOrigin: masterFingerprint !== null
+			}
 		});
 		return toWalletSummary(row);
 	} catch (e) {

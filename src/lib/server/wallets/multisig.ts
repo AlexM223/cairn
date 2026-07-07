@@ -16,10 +16,13 @@ import { recordActivity } from '../activity';
 import {
 	MultisigError,
 	multisigTestAddress,
+	validateMultisigKeyPaths,
+	cosignerPathPurpose,
 	type MultisigConfig,
 	type MultisigKeyDescriptor,
 	MAX_MULTISIG_KEYS
 } from '../bitcoin/multisig';
+import { detectXpubReuse } from '../cosignerDetection';
 import { parseXpub } from '../bitcoin/xpub';
 
 export type MultisigScriptType = 'p2wsh' | 'p2sh-p2wsh' | 'p2sh';
@@ -82,6 +85,16 @@ export interface MultisigRow {
 	 * (mapMultisig defaults it to 'created'). Backup safeguards key off this.
 	 */
 	source?: MultisigSource;
+	/**
+	 * The vault mode declared at creation (cairn-1kc3.6): true = collaborative
+	 * (cosigner keys shared with other people — fresh on-platform creations must
+	 * use BIP-45 m/45' paths, enforced in createMultisig), false = personal (all
+	 * the user's own keys — BIP-48 paths), null = never declared (every
+	 * pre-existing row, and creations from flows that don't ask yet — no mode
+	 * enforcement, only the universal path checks). Set once at creation; never
+	 * edited after (flipping it wouldn't re-derive already-recorded paths).
+	 */
+	collaborative?: boolean | null;
 	keys: MultisigKeyRow[];
 }
 
@@ -120,6 +133,7 @@ function mapMultisig(r: Record<string, unknown>, keys: MultisigKeyRow[]): Multis
 		receiveCursor: r.receive_cursor as number,
 		createdAt: r.created_at as string,
 		source: ((r.source as string) ?? 'created') as MultisigSource,
+		collaborative: r.collaborative == null ? null : Boolean(r.collaborative),
 		keys
 	};
 }
@@ -222,6 +236,13 @@ export function createMultisig(
 		/** Receive cursor to seed (from an imported config's startingAddressIndex),
 		 *  so a restored wallet resumes handing out fresh addresses (cairn-u161). */
 		receiveCursor?: number;
+		/** Declared vault mode (cairn-1kc3.6): true = collaborative (BIP-45 m/45'
+		 *  required on every key for fresh creations), false = personal (BIP-48;
+		 *  m/45' rejected), omitted/null = undeclared (no mode enforcement).
+		 *  Imports (source 'imported') persist the flag but are exempt from the
+		 *  enforcement — an imported wallet already exists on-chain with whatever
+		 *  paths it was built with. */
+		collaborative?: boolean | null;
 	}
 ): MultisigRow {
 	const name = params.name.trim();
@@ -244,19 +265,78 @@ export function createMultisig(
 		}
 	}
 
-	// Cryptographic validation: deriving the first address exercises threshold
-	// bounds, xpub parsing, and duplicate detection inside the library.
-	multisigTestAddress({
-		threshold: params.threshold,
-		keys: params.keys.map((k) => ({ xpub: k.xpub, fingerprint: k.fingerprint, path: k.path }))
-	});
-
 	const source: MultisigSource = params.source === 'imported' ? 'imported' : 'created';
+	const collaborative = typeof params.collaborative === 'boolean' ? params.collaborative : null;
+
+	// ONE config object feeds both validation gates below, so the sanity
+	// derivation exercises the wallet's REAL script type (cairn-1kc3.2) instead
+	// of silently defaulting to p2wsh.
+	const config: MultisigConfig = {
+		threshold: params.threshold,
+		scriptType,
+		keys: params.keys.map((k) => ({
+			xpub: k.xpub,
+			fingerprint: k.fingerprint,
+			path: k.path,
+			name: k.name
+		}))
+	};
+
+	// Path hygiene (cairn-1kc3.1/.3/.5): every declared cosigner path must carry
+	// a multisig purpose (45' or 48'), and 48' paths must match this wallet's
+	// script type and the mainnet coin type. Applies to creation AND import —
+	// imports are exempt from the BIP-45 product rule below, never from
+	// carrying single-sig or self-contradictory paths.
+	validateMultisigKeyPaths(config);
+
+	// Declared-mode enforcement (cairn-1kc3.6): the server-side backstop for the
+	// collaborative-custody rule, independent of any wizard. Skipped entirely
+	// for imports ("all imported wallets can be used for collaborative
+	// regardless of path") and when no mode was declared.
+	if (source !== 'imported' && collaborative !== null) {
+		params.keys.forEach((k, i) => {
+			const label = k.name.trim() || `key ${i + 1}`;
+			const purpose = cosignerPathPurpose(k.path);
+			if (collaborative && purpose !== 45) {
+				throw new MultisigError(
+					`${label}: a collaborative vault needs every key on the shared multisig path m/45' — this key's path is "${k.path.trim() || 'm'}". Re-export the key at m/45'.`,
+					'invalid_key'
+				);
+			}
+			if (!collaborative && purpose === 45) {
+				throw new MultisigError(
+					`${label}: m/45' marks a key as shared for collaborative custody — a personal vault's keys use a BIP-48 path (like m/48'/0'/0'/2') instead.`,
+					'invalid_key'
+				);
+			}
+		});
+	}
+
+	// Cryptographic validation: deriving the first address exercises threshold
+	// bounds, xpub parsing, duplicate detection, and the actual script-building
+	// code path this wallet will use.
+	multisigTestAddress(config);
+
+	// Cross-wallet xpub reuse (cairn-1kc3.4): computed BEFORE the insert so the
+	// new multisig's own rows can't match themselves. Non-blocking — reuse can
+	// be deliberate — but surfaced in the activity feed below, never silent.
+	const reusedKeys = detectXpubReuse(
+		userId,
+		params.keys.map((k) => k.xpub)
+	);
+
 	const info = db
 		.prepare(
-			'INSERT INTO multisigs (user_id, name, threshold, script_type, source) VALUES (?, ?, ?, ?, ?)'
+			'INSERT INTO multisigs (user_id, name, threshold, script_type, source, collaborative) VALUES (?, ?, ?, ?, ?, ?)'
 		)
-		.run(userId, name, params.threshold, scriptType, source);
+		.run(
+			userId,
+			name,
+			params.threshold,
+			scriptType,
+			source,
+			collaborative === null ? null : collaborative ? 1 : 0
+		);
 	const multisigId = Number(info.lastInsertRowid);
 
 	// Seed the receive cursor from an imported config so a backup→restore doesn't
@@ -301,6 +381,34 @@ export function createMultisig(
 			source
 		}
 	});
+
+	// Reused-key warning (cairn-1kc3.4): tell the user where the key already
+	// lives. Best-effort, never blocking; no xpubs in the detail — identity only.
+	if (reusedKeys.length > 0) {
+		const places = [
+			...new Set(
+				reusedKeys.map(
+					(r) => `${r.kind === 'wallet' ? 'wallet' : 'multisig'} “${r.walletName}”`
+				)
+			)
+		];
+		const keyCount = new Set(reusedKeys.map((r) => r.xpub)).size;
+		recordActivity({
+			type: 'key_reuse',
+			level: 'warn',
+			userId,
+			message: `${keyCount === 1 ? 'A key' : `${keyCount} keys`} in “${name}” ${keyCount === 1 ? 'is' : 'are'} already used by your ${places.join(', ')} — sharing one key across wallets weakens the protection a multisig is meant to add.`,
+			detail: {
+				walletKind: 'multisig',
+				walletId: multisigId,
+				reuse: reusedKeys.map((r) => ({
+					kind: r.kind,
+					walletId: r.walletId,
+					walletName: r.walletName
+				}))
+			}
+		});
+	}
 
 	return getMultisig(userId, multisigId)!;
 }

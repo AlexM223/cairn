@@ -14,6 +14,11 @@ const PROTOCOL_VERSION = '1.4';
 const DEFAULT_TIMEOUT_MS = 15_000;
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
+// Public Electrum servers enforce short idle-socket timeouts (commonly ~100s);
+// without a periodic keepalive an otherwise-healthy connection gets dropped
+// every ~90-120s, causing endless reconnect churn (cairn-u7bw). 45s keeps us
+// comfortably under the common thresholds while staying negligible traffic.
+const KEEPALIVE_INTERVAL_MS = 45_000;
 
 export interface ElectrumClientOptions {
 	host: string;
@@ -107,6 +112,7 @@ export class ElectrumClient extends EventEmitter {
 
 	private reconnectTimer: NodeJS.Timeout | null = null;
 	private reconnectDelay = RECONNECT_MIN_MS;
+	private keepaliveTimer: NodeJS.Timeout | null = null;
 
 	constructor(opts: ElectrumClientOptions) {
 		super();
@@ -157,6 +163,7 @@ export class ElectrumClient extends EventEmitter {
 					.then(async () => {
 						this.reconnectDelay = RECONNECT_MIN_MS;
 						await this.resubscribe();
+						this.startKeepalive();
 						if (settled) return;
 						settled = true;
 						this.connecting = null;
@@ -244,7 +251,37 @@ export class ElectrumClient extends EventEmitter {
 		return this.connecting;
 	}
 
+	/**
+	 * Keepalive against idle-socket timeouts (cairn-u7bw): while connected and
+	 * idle (no in-flight requests — real traffic already keeps the socket warm),
+	 * send a server.ping every KEEPALIVE_INTERVAL_MS. Started after each
+	 * successful handshake, stopped on disconnect/close, and unref'd like every
+	 * other background timer in this codebase so it never holds the process open.
+	 */
+	private startKeepalive(): void {
+		this.stopKeepalive();
+		this.keepaliveTimer = setInterval(() => {
+			// Only while connected and idle; rawRequest (not request) so a ping can
+			// never trigger a reconnect of its own — reconnects belong to onDisconnect.
+			if (!this.socket || this.socket.destroyed || this.pending.size > 0) return;
+			this.rawRequest('server.ping', []).catch((e: unknown) => {
+				// A failed ping means the socket is dying; the 'close' handler owns
+				// teardown and reconnect scheduling. Just leave a diagnostic trail.
+				log.debug({ err: e, server: this.server }, 'keepalive ping failed');
+			});
+		}, KEEPALIVE_INTERVAL_MS);
+		this.keepaliveTimer.unref?.();
+	}
+
+	private stopKeepalive(): void {
+		if (this.keepaliveTimer) {
+			clearInterval(this.keepaliveTimer);
+			this.keepaliveTimer = null;
+		}
+	}
+
 	private onDisconnect(): void {
+		this.stopKeepalive();
 		this.connectingSocket = null;
 		if (this.socket) {
 			this.socket.removeAllListeners();
@@ -475,6 +512,7 @@ export class ElectrumClient extends EventEmitter {
 	/** Tear down the connection and stop all reconnect attempts. */
 	close(): void {
 		this.closed = true;
+		this.stopKeepalive();
 		if (this.reconnectTimer) {
 			clearTimeout(this.reconnectTimer);
 			this.reconnectTimer = null;

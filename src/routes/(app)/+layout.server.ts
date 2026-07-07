@@ -1,11 +1,15 @@
 import { redirect } from '@sveltejs/kit';
 import {
 	hasAcceptedAdminDisclosure,
-	hasAcceptedCurrentAgreement
+	hasAcceptedCurrentAgreement,
+	getUserAgreement,
+	DEFAULT_OPERATOR
 } from '$lib/server/disclosures';
 import { hasRecoverySetup } from '$lib/server/recovery';
+import { mustResetPassword } from '$lib/server/auth';
 import { listUnbackedWallets, shouldShowBackupReminder } from '$lib/server/backups';
 import { listActiveAnnouncementsFor } from '$lib/server/announcements';
+import { getInstanceSettings } from '$lib/server/settings';
 import type { LayoutServerLoad } from './$types';
 
 export const load: LayoutServerLoad = async ({ locals, url }) => {
@@ -13,6 +17,14 @@ export const load: LayoutServerLoad = async ({ locals, url }) => {
 		const next = url.pathname === '/' ? '' : `?next=${encodeURIComponent(url.pathname)}`;
 		redirect(302, `/login${next}`);
 	}
+
+	// Forced credential-reset gate (cairn-49xi.2) — FIRST, before every other
+	// gate: a bootstrap-created admin's password came from a deployment env var
+	// that stays visible in the platform's install UI/logs, and their email is a
+	// placeholder that can't receive notifications. Until they choose their own
+	// at /setup-admin (top-level, outside this layout, so this can't loop), they
+	// shouldn't be accepting disclosures or setting up recovery either.
+	if (mustResetPassword(locals.user.id)) redirect(302, '/setup-admin');
 
 	// Disclosure gates. The acceptance screens live at top-level /disclosure and
 	// /agreement (outside this layout), so redirecting here can't loop.
@@ -50,6 +62,18 @@ export const load: LayoutServerLoad = async ({ locals, url }) => {
 		// (etc). Server-side enforcement (requireFeature) is the real gate; this is
 		// what lets the UI hide/grey features the user can't use.
 		flags: locals.flags,
+		// 'solo' | 'team' — drives whether multi-user nav (admin users/invites,
+		// contacts, wallet sharing) is shown at all. Server-side assertTeamMode()
+		// is the real gate; this is what lets the UI hide the nav entirely rather
+		// than show a disabled state (docs/SOLO-MODE-UMBREL-AUTOADMIN-PLAN.md Part 2).
+		instanceMode: getInstanceSettings().instanceMode,
+		// Admin-set operator name, surfaced in the sidebar chrome (cairn-ivae.6).
+		// Null while still the stock fallback — "operated by the operator of this
+		// Cairn instance" would be noise, so nothing renders until it's set.
+		operatorName: (() => {
+			const operator = getUserAgreement().operator;
+			return operator === DEFAULT_OPERATOR ? null : operator;
+		})(),
 		unbackedWallets: listUnbackedWallets(locals.user.id),
 		showBackupReminder: shouldShowBackupReminder(locals.user.id),
 		// Instance-wide admin announcements (active, unexpired, not dismissed by

@@ -22,18 +22,61 @@
 
 	let { data } = $props();
 
+	// The chain snapshot is STREAMED from the server (cairn-ybsv): the page
+	// paints instantly with a skeleton, then fills in when Electrum answers. On
+	// invalidate, the previous snapshot stays visible until the fresh one
+	// resolves — no skeleton flash on refresh.
+	type ChainSnapshot = Awaited<(typeof data)['chain']>;
+	let chain = $state<ChainSnapshot | null>(null);
+	// The height we last refetched for, so a server lagging behind the SSE tip
+	// can't put resolve→invalidate into an endless loop.
+	let refetchedForHeight: number | null = null;
+	$effect(() => {
+		const promise = data.chain;
+		let stale = false;
+		void promise.then((snap) => {
+			if (stale) return;
+			chain = snap;
+			// A block arrived while this snapshot was in flight — refresh once more.
+			if (
+				lastSeenHeight !== null &&
+				snap.tipHeight !== null &&
+				lastSeenHeight > snap.tipHeight &&
+				refetchedForHeight !== lastSeenHeight
+			) {
+				refetchedForHeight = lastSeenHeight;
+				void invalidate('cairn:chain');
+			}
+		});
+		return () => {
+			stale = true;
+		};
+	});
+
 	// Live new-block updates refresh only the chain snapshot — the portfolio is
 	// deliberately outside the invalidation path so wallets aren't rescanned on
 	// every block.
 	let lastSeenHeight: number | null = null;
-	onMount(() => {
-		lastSeenHeight = data.chain.tipHeight;
-		return onNewBlock((height) => {
-			if (lastSeenHeight !== null && height === lastSeenHeight) return;
+	onMount(() =>
+		onNewBlock((height) => {
+			if (lastSeenHeight !== null && height <= lastSeenHeight) return;
+			const first = lastSeenHeight === null;
 			lastSeenHeight = height;
-			invalidate('cairn:chain');
-		});
-	});
+			if (chain !== null && !chain.error && chain.tipHeight !== null) {
+				// SSE replays the current tip on connect — ignore what we already show.
+				if (height <= chain.tipHeight) return;
+				// Optimistic tip (cairn-9vav): paint the new height immediately from
+				// the SSE payload; the full snapshot (blocks/mempool/fees) refreshes in
+				// the background via the invalidate below.
+				chain = { ...chain, tipHeight: height, tipTime: Math.floor(Date.now() / 1000) };
+				void invalidate('cairn:chain');
+			} else if (!first) {
+				// Snapshot errored or still streaming — a new block is a good moment
+				// to retry, but the very first replay-on-connect isn't.
+				void invalidate('cairn:chain');
+			}
+		})
+	);
 
 	// Portfolio loads client-side, once per visit (its own endpoint so block
 	// refreshes don't rescan wallets).
@@ -119,12 +162,12 @@
 	}
 
 	const feeTiers = $derived(
-		data.chain.fees
+		chain?.fees
 			? [
-					{ label: 'Fastest', desc: '~10 min', rate: data.chain.fees.fastest },
-					{ label: 'Half hour', desc: '~30 min', rate: data.chain.fees.halfHour },
-					{ label: 'Hour', desc: '~60 min', rate: data.chain.fees.hour },
-					{ label: 'Economy', desc: 'whenever', rate: data.chain.fees.economy }
+					{ label: 'Fastest', desc: '~10 min', rate: chain.fees.fastest },
+					{ label: 'Half hour', desc: '~30 min', rate: chain.fees.halfHour },
+					{ label: 'Hour', desc: '~60 min', rate: chain.fees.hour },
+					{ label: 'Economy', desc: 'whenever', rate: chain.fees.economy }
 				]
 			: []
 	);
@@ -323,20 +366,77 @@
 {/if}
 
 <!-- ============================================================== NETWORK -->
-{#if data.chain.error}
+{#if chain === null}
+	<!-- Streamed snapshot still resolving (cairn-ybsv): paint the section shape
+	     instantly so navigation never feels frozen on Electrum round-trips. -->
+	<div class="row section-head network-head">
+		<Icon name="blocks" size={16} />
+		<span class="card-title grow">Network</span>
+		<span class="see-all skeleton">Block 000,000 · just now</span>
+	</div>
+	<div class="columns">
+		<section class="card card-pad fees fade-in">
+			<div class="row" style="gap: 10px; margin-bottom: 14px">
+				<Icon name="zap" size={17} />
+				<span class="card-title">Recommended fees</span>
+			</div>
+			<div class="fee-grid">
+				{#each ['Fastest', 'Half hour', 'Hour', 'Economy'] as label (label)}
+					<div class="fee-tier">
+						<span class="fee-label">{label}</span>
+						<span class="fee-rate tabular skeleton">00</span>
+						<span class="fee-unit">sat/vB</span>
+						<span class="fee-desc skeleton">~00 min</span>
+					</div>
+				{/each}
+			</div>
+		</section>
+		<section class="card blocks fade-in">
+			<div class="row blocks-head">
+				<Icon name="blocks" size={17} />
+				<span class="card-title grow">Recent blocks</span>
+				<a href="/explorer" class="see-all">Explorer <Icon name="arrow-right" size={13} /></a>
+			</div>
+			<div class="table-wrap">
+				<table class="table">
+					<thead>
+						<tr>
+							<th>Height</th>
+							<th>Mined</th>
+							<th class="num">Txs</th>
+							<th class="num">Size</th>
+							<th class="num">Fee range</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each [0, 1, 2, 3, 4] as i (i)}
+							<tr>
+								<td><span class="skeleton">000,000</span></td>
+								<td><span class="skeleton">00 minutes ago</span></td>
+								<td class="num"><span class="skeleton">0,000</span></td>
+								<td class="num"><span class="skeleton">0.0 MB</span></td>
+								<td class="num"><span class="skeleton">0–00 sat/vB</span></td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+		</section>
+	</div>
+{:else if chain.error}
 	<div class="card card-pad chain-error fade-in">
 		<Icon name="alert-triangle" size={18} />
 		<div>
 			<div style="font-weight: 500">Can't reach chain data sources</div>
-			<div class="hint">{data.chain.error} — check the connection in Admin → Settings.</div>
+			<div class="hint">{chain.error} — check the connection in Admin → Settings.</div>
 		</div>
 	</div>
 {:else}
 	<div class="row section-head network-head">
 		<Icon name="blocks" size={16} />
 		<span class="card-title grow">Network</span>
-		<a href="/explorer/block/{data.chain.tipHeight}" class="see-all">
-			Block {formatNumber(data.chain.tipHeight ?? 0)} · {timeAgo(data.chain.tipTime)}
+		<a href="/explorer/block/{chain.tipHeight}" class="see-all">
+			Block {formatNumber(chain.tipHeight ?? 0)} · {timeAgo(chain.tipTime)}
 		</a>
 	</div>
 	<div class="columns">
@@ -360,10 +460,10 @@
 			{:else}
 				<div class="empty-state">Fee estimates unavailable</div>
 			{/if}
-			{#if data.chain.mempool}
+			{#if chain.mempool}
 				<div class="mempool-line">
 					<span class="hint">Mempool depth</span>
-					<span class="hint tabular">{formatBytes(data.chain.mempool.vsize)} of transactions</span>
+					<span class="hint tabular">{formatBytes(chain.mempool.vsize)} of transactions</span>
 				</div>
 			{/if}
 		</section>
@@ -387,7 +487,7 @@
 						</tr>
 					</thead>
 					<tbody>
-						{#each data.chain.blocks as block (block.hash)}
+						{#each chain.blocks as block (block.hash)}
 							<tr>
 								<td>
 									<a href="/explorer/block/{block.hash}" class="block-link tabular">

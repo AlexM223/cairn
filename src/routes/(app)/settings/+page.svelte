@@ -3,14 +3,24 @@
 	import { page } from '$app/state';
 	import { timeAgo } from '$lib/format';
 	import Icon from '$lib/components/Icon.svelte';
+	import Toasts from '$lib/components/Toasts.svelte';
+	import { toast } from '$lib/components/toast.svelte';
 	import { addPasskey } from '$lib/passkey';
 	import type { CredentialInfo } from '$lib/types';
 
-	let { data, form } = $props();
+	let { data } = $props();
 
 	const user = $derived(page.data.user);
 	let savingProfile = $state(false);
 	let savingPassword = $state(false);
+
+	// Form-action results surface as toasts (cairn-ivae.5). A failed action
+	// carries its message under a per-form key (e.g. { profileError }).
+	function actionError(result: { type: string; data?: Record<string, unknown> }, key: string): string | null {
+		if (result.type !== 'failure') return null;
+		const msg = result.data?.[key];
+		return typeof msg === 'string' && msg ? msg : 'Something went wrong. Please try again.';
+	}
 
 	// Danger zone: delete my account — two-step typed confirmation, same
 	// pattern as the admin instance reset (cairn-5u2i.2).
@@ -23,24 +33,22 @@
 	const passkeys = $derived(override ?? (data.passkeys as CredentialInfo[]));
 
 	let busy = $state(false);
-	let pkError = $state<string | null>(null);
 	let editingId = $state<number | null>(null);
 	let editName = $state('');
 
 	async function onAdd() {
-		pkError = null;
 		busy = true;
 		try {
 			override = await addPasskey();
+			toast.success('Passkey added.');
 		} catch (e) {
-			pkError = e instanceof Error ? e.message : 'Could not add a passkey.';
+			toast.error(e instanceof Error ? e.message : 'Could not add a passkey.');
 		} finally {
 			busy = false;
 		}
 	}
 
 	async function onRemove(id: number, label: string) {
-		pkError = null;
 		if (!confirm(`Remove the passkey “${label}”? You'll no longer be able to sign in with it.`))
 			return;
 		busy = true;
@@ -49,8 +57,9 @@
 			const body = await res.json().catch(() => null);
 			if (!res.ok) throw new Error(body?.error || 'Could not remove that passkey.');
 			override = body.passkeys;
+			toast.success('Passkey removed.');
 		} catch (e) {
-			pkError = e instanceof Error ? e.message : 'Could not remove that passkey.';
+			toast.error(e instanceof Error ? e.message : 'Could not remove that passkey.');
 		} finally {
 			busy = false;
 		}
@@ -63,7 +72,6 @@
 
 	async function saveRename(id: number) {
 		busy = true;
-		pkError = null;
 		try {
 			const res = await fetch(`/api/auth/passkeys/${id}`, {
 				method: 'PATCH',
@@ -75,7 +83,7 @@
 			override = body.passkeys;
 			editingId = null;
 		} catch (e) {
-			pkError = e instanceof Error ? e.message : 'Could not rename that passkey.';
+			toast.error(e instanceof Error ? e.message : 'Could not rename that passkey.');
 		} finally {
 			busy = false;
 		}
@@ -122,18 +130,15 @@
 			class="stack inner"
 			use:enhance={() => {
 				savingProfile = true;
-				return async ({ update }) => {
+				return async ({ update, result }) => {
 					savingProfile = false;
 					await update({ reset: false });
+					const err = actionError(result, 'profileError');
+					if (err) toast.error(err);
+					else if (result.type === 'success') toast.success('Profile updated.');
 				};
 			}}
 		>
-			{#if form?.profileError}
-				<div class="form-error" role="alert">{form.profileError}</div>
-			{:else if form?.profileSaved}
-				<div class="saved-note" role="status">Profile updated.</div>
-			{/if}
-
 			<div class="field">
 				<label class="label" for="displayName">Display name</label>
 				<input class="input" id="displayName" name="displayName" required value={user.displayName} />
@@ -159,20 +164,22 @@
 			class="stack inner"
 			use:enhance={() => {
 				savingPassword = true;
-				return async ({ update }) => {
+				// Captured before update() reloads data — a first-time "set" flips
+				// hasPassword to true before the success message renders otherwise.
+				const hadPassword = data.hasPassword;
+				return async ({ update, result }) => {
 					savingPassword = false;
 					await update();
+					const err = actionError(result, 'passwordError');
+					if (err) toast.error(err);
+					else if (result.type === 'success') {
+						toast.success(
+							`Password ${hadPassword ? 'changed' : 'set'}. Other sessions were signed out.`
+						);
+					}
 				};
 			}}
 		>
-			{#if form?.passwordError}
-				<div class="form-error" role="alert">{form.passwordError}</div>
-			{:else if form?.passwordSaved}
-				<div class="saved-note" role="status">
-					Password {data.hasPassword ? 'changed' : 'set'}. Other sessions were signed out.
-				</div>
-			{/if}
-
 			{#if data.hasPassword}
 				<div class="field">
 					<label class="label" for="currentPassword">Current password</label>
@@ -239,10 +246,6 @@
 			Passkeys are how you sign in — biometrics or a security key, no password. Manage the devices
 			that can access this account.
 		</p>
-
-		{#if pkError}
-			<div class="form-error" role="alert">{pkError}</div>
-		{/if}
 
 		{#if passkeys.length < 2}
 			<div class="warn-note" role="status">
@@ -422,6 +425,19 @@
 	</section>
 
 	<section class="card card-pad section">
+		<span class="card-title">API access</span>
+		<p class="hint" style="margin: 4px 0 10px">
+			Create a personal access token to script against your own instance — pull balances, trigger
+			a backup from cron, or build a companion tool. Never required for normal use.
+		</p>
+		<div class="row">
+			<a href="/settings/tokens" class="btn btn-secondary btn-sm">
+				<Icon name="zap" size={14} /> Manage tokens
+			</a>
+		</div>
+	</section>
+
+	<section class="card card-pad section">
 		<span class="card-title">Terms &amp; agreement</span>
 		<p class="hint" style="margin: 4px 0 10px">
 			Review the agreement you accepted for this instance, along with Cairn's software disclaimer
@@ -447,10 +463,6 @@
 			wallet backups, recovering your wallet setup later will be much harder.
 		</p>
 
-		{#if form?.deleteError}
-			<p class="hint danger-title">{form.deleteError}</p>
-		{/if}
-
 		{#if !confirmingDelete}
 			<div>
 				<button
@@ -471,9 +483,11 @@
 				class="delete-confirm"
 				use:enhance={() => {
 					deleting = true;
-					return async ({ update }) => {
+					return async ({ update, result }) => {
 						deleting = false;
 						await update();
+						const err = actionError(result, 'deleteError');
+						if (err) toast.error(err);
 					};
 				}}
 			>
@@ -512,6 +526,8 @@
 		{/if}
 	</section>
 </div>
+
+<Toasts />
 
 <style>
 	.settings {
@@ -581,15 +597,6 @@
 	.actions {
 		display: flex;
 		justify-content: flex-end;
-	}
-
-	.saved-note {
-		font-size: 13px;
-		color: var(--success);
-		background: var(--success-muted);
-		border: 1px solid rgba(107, 191, 107, 0.3);
-		border-radius: var(--radius-control);
-		padding: 9px 12px;
 	}
 
 	.warn-note {

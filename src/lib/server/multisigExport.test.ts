@@ -302,17 +302,85 @@ describe('parseCaravanImport', () => {
 	});
 
 	it('maps Caravan address types to multisig script types', () => {
+		// Keys must carry the matching BIP-48 suffix per script type (2' = p2wsh,
+		// 1' = both p2sh forms) — a contradicting suffix is now rejected on
+		// import (cairn-1kc3.1), so these fixtures declare honest paths.
 		for (const [addressType, scriptType] of [
 			['P2WSH', 'p2wsh'],
 			['P2SH-P2WSH', 'p2sh-p2wsh'],
 			['P2SH', 'p2sh']
 		] as const) {
+			const path = scriptType === 'p2wsh' ? BIP48_PATH : "m/48'/0'/0'/1'";
 			const imported = parseCaravanImport(
-				caravanExport(makeMultisig({ scriptType: scriptType as MultisigScriptType }))
+				caravanExport(
+					makeMultisig({
+						scriptType: scriptType as MultisigScriptType,
+						keys: [
+							keyRow(0, TV1, '3442193e', path),
+							keyRow(1, TV2, 'deadbeef', path),
+							keyRow(2, TV3, '01020304', path)
+						]
+					})
+				)
 			);
 			expect(imported.scriptType).toBe(scriptType);
 			void addressType;
 		}
+	});
+
+	// ── Cosigner path acceptance on import (cairn-1kc3.1 / .3 / .5) ─────────
+
+	function blobWithPaths(addressType: string, paths: (string | undefined)[]): string {
+		const xpubs = [TV1, TV2, TV3];
+		const xfps = ['3442193e', 'deadbeef', '01020304'];
+		return JSON.stringify({
+			name: 'Pathological',
+			addressType,
+			network: 'mainnet',
+			quorum: { requiredSigners: 2, totalSigners: paths.length },
+			extendedPublicKeys: paths.map((bip32Path, i) => ({
+				name: `Key ${i + 1}`,
+				xpub: xpubs[i],
+				xfp: xfps[i],
+				...(bip32Path ? { bip32Path } : {})
+			}))
+		});
+	}
+
+	it('rejects a single-sig bip32Path with per-key attribution (cairn-1kc3.3)', () => {
+		const blob = blobWithPaths('P2WSH', [BIP48_PATH, "m/84'/0'/0'"]);
+		expect(() => parseCaravanImport(blob)).toThrow(MultisigError);
+		expect(() => parseCaravanImport(blob)).toThrow(/Key 2/);
+		expect(() => parseCaravanImport(blob)).toThrow(/single-sig/);
+		// A full receive path is just as rejected.
+		expect(() => parseCaravanImport(blobWithPaths('P2WSH', ["m/84'/0'/0'/0/0", BIP48_PATH]))).toThrow(
+			/single-sig/
+		);
+	});
+
+	it("rejects a BIP-48 suffix contradicting the file's addressType (cairn-1kc3.1)", () => {
+		// The audit's concrete case: P2WSH file, P2SH-suffix (1') path.
+		const blob = blobWithPaths('P2WSH', [BIP48_PATH, "m/48'/0'/0'/1'"]);
+		expect(() => parseCaravanImport(blob)).toThrow(/Key 2/);
+		expect(() => parseCaravanImport(blob)).toThrow(/p2wsh/);
+		// And the mirror image: P2SH file, p2wsh-suffix (2') path.
+		expect(() =>
+			parseCaravanImport(blobWithPaths('P2SH', ["m/48'/0'/0'/2'", "m/48'/0'/0'/1'"]))
+		).toThrow(/Key 1/);
+	});
+
+	it('rejects a testnet coin type inside a mainnet file (cairn-1kc3.5)', () => {
+		const blob = blobWithPaths('P2WSH', ["m/48'/1'/0'/2'", BIP48_PATH]);
+		expect(() => parseCaravanImport(blob)).toThrow(/Key 1/);
+		expect(() => parseCaravanImport(blob)).toThrow(/coin type 1/);
+		expect(() => parseCaravanImport(blob)).toThrow(/mainnet/);
+	});
+
+	it("accepts BIP-45 paths and unknown/masked paths on import (45' has no subfields; imports keep their real paths)", () => {
+		const imported = parseCaravanImport(
+			blobWithPaths('P2WSH', ["m/45'", undefined, 'm/0/0/0/0'])
+		);
+		expect(imported.keys.map((k) => k.path)).toEqual(["m/45'", 'm', 'm/0/0/0/0']);
 	});
 
 	it('tolerates unknown extra fields and missing optional metadata', () => {

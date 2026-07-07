@@ -1384,6 +1384,59 @@ export async function readSingleSigKeyFromTrezor(
 }
 
 /**
+ * Read the BIP-45 collaborative-vault key: the xpub at m/45' — the ROOT
+ * purpose node, deliberately NOT an account-level path (BIP-45 has no
+ * coin_type/account/script_type fields; Bastion's battle-tested sharing read
+ * hands the device the literal path "45'" the same way). Used by the
+ * single-sig wizard's opt-in sharing prefetch (cairn-fdlf.1) so a later
+ * collaborative-vault setup can reuse this key without another device touch.
+ * Same silent two-entry bundle as the other readers (the m-level entry
+ * recovers the master fingerprint via xfpFromXpub). The device returns a
+ * plain xpub at this nonstandard path; normalizeXpub is a passthrough for it
+ * and only guards against a SLIP-132-prefixed surprise.
+ */
+export async function readBip45KeyFromTrezor(): Promise<{
+	xpub: string;
+	fingerprint: string;
+	path: string;
+}> {
+	if (!isTrezorConnectAvailable()) {
+		throw new TrezorError(
+			'Trezor signing needs a secure browser context (HTTPS or localhost) so the Trezor Connect popup can open.',
+			'unavailable'
+		);
+	}
+	const path = "m/45'";
+	const TrezorConnect = await ensureInit();
+
+	let masterXpub: string;
+	let purposeXpub: string;
+	try {
+		const res = await TrezorConnect.getPublicKey({
+			bundle: [
+				{ path: 'm', showOnTrezor: false },
+				{ path, coin: 'btc', showOnTrezor: false }
+			]
+		});
+		if (!res.success) throw toTrezorError(res.payload);
+		const payload = res.payload;
+		if (!Array.isArray(payload) || payload.length < 2 || !payload[0]?.xpub || !payload[1]?.xpub) {
+			throw new TrezorError('The Trezor returned an unexpected key response.', 'unexpected');
+		}
+		masterXpub = payload[0].xpub;
+		purposeXpub = payload[1].xpub;
+	} catch (err) {
+		throw toTrezorError(err);
+	}
+
+	return {
+		xpub: normalizeXpub(purposeXpub),
+		fingerprint: xfpFromXpub(masterXpub),
+		path
+	};
+}
+
+/**
  * Sign a multisig (M-of-N multisig) PSBT with a Trezor and return the PSBT with
  * this device's signatures merged in (other cosigners' partialSigs preserved).
  *

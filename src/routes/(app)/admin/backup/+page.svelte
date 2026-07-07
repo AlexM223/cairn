@@ -1,8 +1,20 @@
 <script lang="ts">
+	import { enhance } from '$app/forms';
 	import Icon from '$lib/components/Icon.svelte';
 	import { timeAgo, formatDateTime } from '$lib/format';
 
-	let { data } = $props();
+	let { data, form } = $props();
+
+	// --- Scheduled backups (cairn-ivae.3) ---
+	// svelte-ignore state_referenced_locally — seeds the editable fields
+	let schedEnabled = $state(data.schedule.enabled);
+	// svelte-ignore state_referenced_locally
+	let schedInterval = $state(data.schedule.interval);
+	// svelte-ignore state_referenced_locally
+	let schedPath = $state(data.schedule.path);
+	const schedLastRunUnix = $derived(
+		data.schedule.lastRunAt ? Math.floor(Date.parse(data.schedule.lastRunAt) / 1000) : null
+	);
 
 	type Summary = {
 		usersAdded: number;
@@ -198,6 +210,95 @@
 	</section>
 
 	<section class="card card-pad section">
+		<div class="section-head">
+			<span class="card-title">Automatic backups</span>
+			{#if data.schedule.enabled}
+				{#if data.schedule.lastError}
+					<span class="badge badge-error">
+						<Icon name="alert-triangle" size={11} />
+						Last run failed
+					</span>
+				{:else if schedLastRunUnix !== null}
+					<span class="badge badge-neutral">
+						<Icon name="check" size={11} />
+						Last ran {timeAgo(schedLastRunUnix)}
+					</span>
+				{:else}
+					<span class="badge badge-neutral">Waiting for first run</span>
+				{/if}
+			{/if}
+		</div>
+		<p class="hint">
+			Write an encrypted backup to a folder on the server automatically — a mounted drive, NAS
+			path, or synced folder. Uses the same encrypted format as the download above; scheduled runs
+			also refresh the "last backup" status. The newest 30 files are kept.
+		</p>
+
+		{#if data.schedule.enabled && data.schedule.lastError}
+			<div class="form-error" role="alert">
+				The last scheduled backup failed: {data.schedule.lastError}
+			</div>
+		{/if}
+		{#if form?.error}<div class="form-error" role="alert">{form.error}</div>{/if}
+		{#if form?.scheduleSaved}
+			<div class="saved-note" role="status">Scheduled backup settings saved.</div>
+		{/if}
+
+		<form method="POST" action="?/saveSchedule" class="section" use:enhance>
+			<label class="check-row">
+				<input type="checkbox" name="enabled" bind:checked={schedEnabled} />
+				<span>Back up automatically</span>
+			</label>
+
+			{#if schedEnabled}
+				<div class="two-col">
+					<div class="field">
+						<label class="label" for="sched-interval">How often</label>
+						<select class="input" id="sched-interval" name="interval" bind:value={schedInterval}>
+							<option value="daily">Daily</option>
+							<option value="weekly">Weekly</option>
+						</select>
+					</div>
+					<div class="field">
+						<label class="label" for="sched-path">Destination folder on the server</label>
+						<input
+							class="input"
+							id="sched-path"
+							name="path"
+							type="text"
+							placeholder="/data/backups"
+							bind:value={schedPath}
+						/>
+					</div>
+				</div>
+				<div class="two-col">
+					<div class="field">
+						<label class="label" for="sched-pp">
+							Encryption passphrase{data.schedule.hasPassphrase ? ' (blank = keep current)' : ''}
+						</label>
+						<input class="input" id="sched-pp" name="passphrase" type="password" autocomplete="new-password" />
+					</div>
+					<div class="field">
+						<label class="label" for="sched-pp2">Confirm passphrase</label>
+						<input class="input" id="sched-pp2" name="confirm" type="password" autocomplete="new-password" />
+					</div>
+				</div>
+				<p class="hint">
+					Store the passphrase safely — a scheduled backup file can't be restored without it.
+				</p>
+			{:else}
+				<!-- Keep the stored values submitted so toggling off doesn't wipe them. -->
+				<input type="hidden" name="interval" value={schedInterval} />
+				<input type="hidden" name="path" value={schedPath} />
+			{/if}
+
+			<div class="actions">
+				<button class="btn btn-secondary">Save schedule</button>
+			</div>
+		</form>
+	</section>
+
+	<section class="card card-pad section">
 		<span class="card-title">Restore</span>
 		<p class="hint">
 			Restore is additive: existing accounts (matched by email) are left untouched, and imported
@@ -317,6 +418,14 @@
 
 	.file {
 		padding: 7px 10px;
+	}
+
+	.check-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 13.5px;
+		cursor: pointer;
 	}
 
 	.saved-note {

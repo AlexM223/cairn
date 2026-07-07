@@ -100,3 +100,52 @@ export async function readKeyFromJade(scriptType: ScriptType): Promise<DeviceKey
 	}
 	return callReader('jade', mod, 'readSingleSigKeyFromJade', scriptType);
 }
+
+// ------------------------------------------------- BIP-45 sharing-key prefetch
+//
+// Second live read of the SAME connected device at m/45' — the collaborative-
+// vault key — made right after a successful single-sig read when the user
+// opted in ("I plan to use this key in a shared wallet later", cairn-fdlf.1).
+// Only Ledger and Trezor support this extra read (Bastion's gating, verified
+// against physical hardware there); BitBox02/Jade are deliberately excluded
+// rather than invented. The result is stashed in the known-device-keys
+// registry (src/lib/server/deviceKeys.ts) — it never touches the single-sig
+// wallet being created.
+
+/** Devices whose drivers support the extra m/45' sharing-key read. */
+const SHARED_KEY_DEVICES: readonly Device[] = ['trezor', 'ledger'];
+
+/** Whether the wizard can prefetch a BIP-45 sharing key from this device. */
+export function supportsSharedKeyRead(device: string): boolean {
+	return (SHARED_KEY_DEVICES as readonly string[]).includes(device);
+}
+
+async function callBip45Reader(device: Device, mod: Record<string, unknown>, name: string): Promise<DeviceKey> {
+	const fn = mod[name];
+	if (typeof fn !== 'function') throw new DeviceReadUnavailable(device);
+	const result: unknown = await (fn as () => Promise<unknown>)();
+	if (!isDeviceKey(result)) {
+		throw new Error(`The ${DEVICE_LABELS[device]} returned an unexpected response.`);
+	}
+	return result;
+}
+
+/** Read the BIP-45 (m/45') sharing key from a connected Trezor. */
+export async function readSharedKeyFromTrezor(): Promise<DeviceKey> {
+	const mod = (await import('$lib/hw/trezor')) as unknown as Record<string, unknown>;
+	const available = mod.isTrezorConnectAvailable;
+	if (typeof available === 'function' && !(available as () => boolean)()) {
+		throw new DeviceReadUnavailable('trezor');
+	}
+	return callBip45Reader('trezor', mod, 'readBip45KeyFromTrezor');
+}
+
+/** Read the BIP-45 (m/45') sharing key from a connected Ledger. */
+export async function readSharedKeyFromLedger(): Promise<DeviceKey> {
+	const mod = (await import('$lib/hw/ledger')) as unknown as Record<string, unknown>;
+	const available = mod.isWebHidAvailable;
+	if (typeof available === 'function' && !(available as () => boolean)()) {
+		throw new DeviceReadUnavailable('ledger');
+	}
+	return callBip45Reader('ledger', mod, 'readBip45KeyFromLedger');
+}

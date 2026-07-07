@@ -2,6 +2,14 @@
 // Pure functions of the wallet row (xpub, script type, key origin) — no
 // network, no clock — so the descriptor is byte-deterministic and testable.
 // Mirrors multisigExport.ts (descriptorBackup) for the single-sig case.
+//
+// PRIVACY BOUNDARY (cairn-fdlf.3): these artifacts embed the wallet's
+// SINGLE-SIG derivation path (e.g. m/84'/0'/0'), which reveals the account
+// structure of the user's personal wallet. They are OWNER-facing backups
+// only — never feed them into any cosigner/contact/sharing surface. What a
+// cosigner may receive is defined in multisigShares.ts
+// (redactMultisigKeysForViewer's standing-rule comment): multisig-purpose
+// (45'/48') path data only, single-sig paths never by default.
 
 import { descriptorChecksum } from './bitcoin/multisig';
 import { DEFAULT_ORIGIN_PATH } from './bitcoin/psbt';

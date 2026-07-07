@@ -24,6 +24,8 @@ function validSnapshot(overrides: Record<string, unknown> = {}): string {
 		],
 		scriptType: 'p2wpkh',
 		name: '',
+		keyFingerprint: '73c5da0a',
+		keyPath: "m/84'/0'/0'",
 		savedAt: NOW - 5_000,
 		...overrides
 	});
@@ -65,12 +67,19 @@ describe('parseSavedProgress', () => {
 	});
 
 	it('rejects an unknown step outright', () => {
-		expect(parseSavedProgress(validSnapshot({ step: 4 }), NOW)).toBeNull();
+		// 4 is the Device step since cairn-0py6 split Name/Device; 5 = Done,
+		// which is never saved.
+		expect(parseSavedProgress(validSnapshot({ step: 5 }), NOW)).toBeNull();
 		expect(parseSavedProgress(validSnapshot({ step: -1 }), NOW)).toBeNull();
 		expect(parseSavedProgress(validSnapshot({ step: 'preview' }), NOW)).toBeNull();
 	});
 
-	it('clamps Preview/Name steps back to the Key step when the validated key is missing', () => {
+	it('accepts the Device step (cairn-0py6)', () => {
+		const p = parseSavedProgress(validSnapshot({ step: 4 }), NOW);
+		expect(p!.step).toBe(4);
+	});
+
+	it('clamps Preview/Name/Device steps back to the Key step when the validated key is missing', () => {
 		const noKey = parseSavedProgress(validSnapshot({ validatedXpub: '' }), NOW);
 		expect(noKey!.step).toBe(1);
 
@@ -79,6 +88,9 @@ describe('parseSavedProgress', () => {
 
 		const noScript = parseSavedProgress(validSnapshot({ scriptType: null }), NOW);
 		expect(noScript!.step).toBe(1);
+
+		const noKeyDevice = parseSavedProgress(validSnapshot({ step: 4, validatedXpub: '' }), NOW);
+		expect(noKeyDevice!.step).toBe(1);
 	});
 
 	it('normalizes unknown enum values to null instead of failing', () => {
@@ -89,6 +101,31 @@ describe('parseSavedProgress', () => {
 		expect(p!.method).toBeNull();
 		expect(p!.deviceType).toBeNull();
 		expect(p!.step).toBe(2); // key + preview + scriptType still valid
+	});
+
+	it('round-trips the key origin and nulls anything shape-invalid (cairn-alw8)', () => {
+		// A well-formed origin survives the reload — losing it would silently
+		// produce a wallet that can't hardware-sign.
+		const p = parseSavedProgress(validSnapshot(), NOW);
+		expect(p!.keyFingerprint).toBe('73c5da0a');
+		expect(p!.keyPath).toBe("m/84'/0'/0'");
+
+		// Snapshots from before the field existed, and tampered/garbage values,
+		// come back null without invalidating the rest of the snapshot.
+		const missing = parseSavedProgress(
+			validSnapshot({ keyFingerprint: undefined, keyPath: undefined }),
+			NOW
+		);
+		expect(missing!.keyFingerprint).toBeNull();
+		expect(missing!.keyPath).toBeNull();
+		expect(missing!.step).toBe(2);
+
+		const garbage = parseSavedProgress(
+			validSnapshot({ keyFingerprint: 'NOT-HEX!', keyPath: 'sideways' }),
+			NOW
+		);
+		expect(garbage!.keyFingerprint).toBeNull();
+		expect(garbage!.keyPath).toBeNull();
 	});
 
 	it('drops malformed preview rows but keeps the good ones', () => {
@@ -120,6 +157,8 @@ describe('hasMeaningfulProgress', () => {
 			preview: [],
 			scriptType: null,
 			name: '',
+			keyFingerprint: null,
+			keyPath: null,
 			savedAt: NOW,
 			...overrides
 		};

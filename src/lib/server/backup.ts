@@ -11,7 +11,17 @@
 // a passkey through the normal signup screen.
 
 import { randomBytes, scryptSync, createCipheriv, createDecipheriv, timingSafeEqual } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { db } from './db';
+import {
+	getSetting,
+	setSetting,
+	setSecretSetting,
+	readSecretSetting,
+	hasSecretSetting
+} from './settings';
+import { notify } from './notifications';
 import { childLogger } from './logger';
 
 const log = childLogger('backup');
@@ -375,4 +385,224 @@ export function passphrasesMatch(a: string, b: string): boolean {
 	const ba = Buffer.from(a);
 	const bb = Buffer.from(b);
 	return ba.length === bb.length && timingSafeEqual(ba, bb);
+}
+
+// ------------------------------------------------------- scheduled backups
+//
+// Opt-in automation of the manual download above (cairn-ivae.3): on a daily or
+// weekly cadence, write the same encrypted envelope to an operator-configured
+// LOCAL path (a mounted volume, NAS mount, synced folder — cloud storage
+// integrations are explicitly out of scope). The passphrase is stored via
+// setSecretSetting (encrypted at rest in instance_secrets, excluded from
+// backups by construction) so unattended runs can encrypt exactly like a
+// manual download. A successful run updates the SAME last_instance_backup_at
+// key the manual path writes, so backupHealth.ts's staleness reminder sees
+// scheduled runs and never double-reports.
+
+const K_SCHED_ENABLED = 'scheduled_backup_enabled';
+const K_SCHED_INTERVAL = 'scheduled_backup_interval'; // 'daily' | 'weekly'
+const K_SCHED_PATH = 'scheduled_backup_path';
+const K_SCHED_PASS = 'scheduled_backup_pass'; // instance_secrets (encrypted at rest)
+const K_SCHED_LAST_RUN = 'scheduled_backup_last_run_at';
+const K_SCHED_LAST_ERROR = 'scheduled_backup_last_error';
+const K_SCHED_ERROR_NOTIFIED = 'scheduled_backup_error_notified_at';
+
+export type ScheduledBackupInterval = 'daily' | 'weekly';
+
+const INTERVAL_MS: Record<ScheduledBackupInterval, number> = {
+	daily: 24 * 3_600_000,
+	weekly: 7 * 24 * 3_600_000
+};
+
+/** How often the watcher checks whether a run is due. A failed run stays due
+ *  and is retried on this cadence (silently — the admin notification below is
+ *  throttled separately). */
+const TICK_MS = 15 * 60_000;
+/** At most one "scheduled backup failed" admin notification per day, however
+ *  many retry ticks fail in between. */
+const ERROR_RENOTIFY_MS = 24 * 3_600_000;
+/** Scheduled files kept in the destination before the oldest are pruned. */
+const KEEP_FILES = 30;
+
+export interface ScheduledBackupConfig {
+	enabled: boolean;
+	interval: ScheduledBackupInterval;
+	/** Destination directory ('' = unset). */
+	path: string;
+	/** Whether an encryption passphrase is stored (never the value itself). */
+	hasPassphrase: boolean;
+	lastRunAt: string | null;
+	lastError: string | null;
+}
+
+export function getScheduledBackupConfig(): ScheduledBackupConfig {
+	const interval = getSetting(K_SCHED_INTERVAL);
+	return {
+		enabled: getSetting(K_SCHED_ENABLED) === 'true',
+		interval: interval === 'weekly' ? 'weekly' : 'daily',
+		path: getSetting(K_SCHED_PATH) ?? '',
+		hasPassphrase: hasSecretSetting(K_SCHED_PASS),
+		lastRunAt: getSetting(K_SCHED_LAST_RUN),
+		lastError: getSetting(K_SCHED_LAST_ERROR) || null
+	};
+}
+
+/**
+ * Save the schedule. `passphrase` undefined/'' = keep the stored one (it is
+ * never echoed to the form, so an untouched field must not clear it — same
+ * convention as the Core RPC password). Throws BackupError with a
+ * user-facing message on any invalid combination; the destination directory
+ * is created (and write-tested) here so a typo'd path fails at save time in
+ * front of the admin, not silently at 3am.
+ */
+export function saveScheduledBackupConfig(input: {
+	enabled: boolean;
+	interval: string;
+	path: string;
+	passphrase?: string;
+}): void {
+	if (input.interval !== 'daily' && input.interval !== 'weekly') {
+		throw new BackupError('Choose a daily or weekly schedule.');
+	}
+	const dest = input.path.trim();
+	const pass = input.passphrase ?? '';
+	if (pass && pass.length < 8) {
+		throw new BackupError('Choose a passphrase of at least 8 characters.');
+	}
+
+	if (input.enabled) {
+		if (!dest) throw new BackupError('Enter a destination folder for scheduled backups.');
+		if (!path.isAbsolute(dest)) {
+			throw new BackupError('The destination must be an absolute path on the server.');
+		}
+		if (!pass && !hasSecretSetting(K_SCHED_PASS)) {
+			throw new BackupError('Choose an encryption passphrase for scheduled backups.');
+		}
+		try {
+			fs.mkdirSync(dest, { recursive: true });
+			fs.accessSync(dest, fs.constants.W_OK);
+		} catch {
+			throw new BackupError('That folder cannot be created or written to by the server.');
+		}
+	}
+
+	setSetting(K_SCHED_ENABLED, input.enabled ? 'true' : 'false');
+	setSetting(K_SCHED_INTERVAL, input.interval);
+	setSetting(K_SCHED_PATH, dest);
+	if (pass) setSecretSetting(K_SCHED_PASS, pass);
+	log.info(
+		{ enabled: input.enabled, interval: input.interval },
+		'scheduled backup settings saved'
+	);
+}
+
+/** Prune old scheduled files, keeping the newest KEEP_FILES. Only files this
+ *  feature wrote (strict name match) are ever touched — the destination is an
+ *  operator folder that may hold anything else. Best-effort. */
+function pruneScheduledFiles(dir: string): void {
+	try {
+		const mine = fs
+			.readdirSync(dir)
+			.filter((f) => /^cairn-backup-\d{4}-\d{2}-\d{2}\.json$/.test(f))
+			.sort(); // name order IS date order for this fixed format
+		for (const f of mine.slice(0, Math.max(0, mine.length - KEEP_FILES))) {
+			fs.rmSync(path.join(dir, f), { force: true });
+		}
+	} catch (e) {
+		log.warn({ err: e, dir }, 'scheduled backup prune failed');
+	}
+}
+
+/** Surface a failed scheduled run to the admins — a silent skip would defeat
+ *  the point of automating the backup. Throttled to once per day so hourly
+ *  retry ticks against a broken destination don't flood the bell. */
+function noteScheduledFailure(nowMs: number, message: string): void {
+	setSetting(K_SCHED_LAST_ERROR, message);
+	const lastNotified = getSetting(K_SCHED_ERROR_NOTIFIED);
+	if (lastNotified) {
+		const t = Date.parse(lastNotified);
+		if (!Number.isNaN(t) && nowMs - t < ERROR_RENOTIFY_MS) return;
+	}
+	setSetting(K_SCHED_ERROR_NOTIFIED, new Date(nowMs).toISOString());
+	notify({
+		type: 'admin_server_health',
+		userId: null, // admin fan-out
+		level: 'error',
+		title: 'Scheduled backup failed',
+		body: `The automatic instance backup could not be written: ${message} Check the destination folder in Admin → Backup.`,
+		detail: { error: message },
+		link: '/admin/backup'
+	});
+}
+
+/**
+ * Run the scheduled backup if one is due. Exported for tests; the watcher
+ * below calls it on a fixed tick. Never throws — failures are recorded on
+ * scheduled_backup_last_error and (throttled) notified to admins.
+ */
+export function runScheduledBackupIfDue(nowMs = Date.now()): boolean {
+	try {
+		const cfg = getScheduledBackupConfig();
+		if (!cfg.enabled) return false;
+
+		const lastRun = cfg.lastRunAt ? Date.parse(cfg.lastRunAt) : NaN;
+		if (!Number.isNaN(lastRun) && nowMs - lastRun < INTERVAL_MS[cfg.interval]) return false;
+
+		if (!cfg.path) {
+			noteScheduledFailure(nowMs, 'No destination folder is configured.');
+			return false;
+		}
+		const passphrase = readSecretSetting(K_SCHED_PASS);
+		if (!passphrase) {
+			noteScheduledFailure(nowMs, 'No encryption passphrase is stored.');
+			return false;
+		}
+
+		const exportedAt = new Date(nowMs).toISOString();
+		const encrypted = encryptBackup(buildBackup(exportedAt), passphrase);
+		const file = path.join(cfg.path, `cairn-backup-${exportedAt.slice(0, 10)}.json`);
+		try {
+			fs.mkdirSync(cfg.path, { recursive: true });
+			// Write-then-rename so a crash mid-write can't leave a truncated file
+			// that looks like a valid (but unrestorable) backup.
+			const tmp = `${file}.tmp`;
+			fs.writeFileSync(tmp, encrypted, 'utf8');
+			fs.renameSync(tmp, file);
+		} catch (e) {
+			noteScheduledFailure(nowMs, e instanceof Error ? e.message : 'Write failed.');
+			return false;
+		}
+
+		// Same key the manual download records, so backupHealth's staleness
+		// reminder counts scheduled runs too (no double-reporting).
+		setSetting('last_instance_backup_at', exportedAt);
+		setSetting(K_SCHED_LAST_RUN, exportedAt);
+		setSetting(K_SCHED_LAST_ERROR, '');
+		pruneScheduledFiles(cfg.path);
+		log.info({ file }, 'scheduled instance backup written');
+		return true;
+	} catch (e) {
+		// Belt-and-suspenders: nothing above should throw, but a scheduler tick
+		// must never take the process down.
+		log.error({ err: e }, 'scheduled backup run failed unexpectedly');
+		return false;
+	}
+}
+
+let watcherStarted = false;
+
+/**
+ * Start the scheduled-backup ticker. Idempotent and unref'd, same shape as
+ * startBackupHealthWatcher. Called from the authenticated layout load (the
+ * earliest in-scope hook that runs on every deployment) rather than
+ * hooks.server.ts — the first request after boot arms it for the life of the
+ * process.
+ */
+export function startScheduledBackupWatcher(): void {
+	if (watcherStarted) return;
+	watcherStarted = true;
+	const interval = setInterval(() => {
+		runScheduledBackupIfDue();
+	}, TICK_MS);
+	interval.unref?.();
 }

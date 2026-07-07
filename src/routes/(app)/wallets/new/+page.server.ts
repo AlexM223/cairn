@@ -3,6 +3,8 @@ import { parseXpub } from '$lib/server/bitcoin/xpub';
 import { derivePreviewAddresses } from '$lib/server/bitcoin/walletScan';
 import { createWallet, friendlyXpubError } from '$lib/server/wallets';
 import { getReferralBuyUrls } from '$lib/server/referrals';
+import { parseKeyOriginInput, normalizeFingerprint } from '$lib/hw/keyOrigin';
+import { rememberPrefetchedSharedKey, DeviceKeyError } from '$lib/server/deviceKeys';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -15,16 +17,43 @@ export const load: PageServerLoad = async ({ locals }) => {
 };
 
 export const actions: Actions = {
-	/** Step 2 → 3: validate the pasted key and derive the first 5 receive addresses. */
+	/**
+	 * Step 2 → 3: validate the pasted key and derive the first 5 receive
+	 * addresses. The key field accepts descriptor / key-origin form
+	 * (`[73c5da0a/84'/0'/0']zpub…`) as well as a bare xpub — the embedded
+	 * origin is extracted and handed back so the wizard can store it on the
+	 * wallet, which is what makes hardware signing possible later
+	 * (cairn-alw8). An optional `fingerprint` field covers wallets that
+	 * export only the bare key plus a "master fingerprint"/XFP label.
+	 */
 	preview: async ({ request }) => {
 		const form = await request.formData();
-		const xpub = String(form.get('xpub') ?? '').trim();
+		const raw = String(form.get('xpub') ?? '').trim();
+		const parsedInput = parseKeyOriginInput(raw);
+
+		// The typed fingerprint only fills in when the key itself didn't carry
+		// one. Non-empty garbage fails loudly: silently dropping a typo would
+		// quietly re-create the broken-signing state.
+		let fingerprint = parsedInput.fingerprint;
+		const fpRaw = String(form.get('fingerprint') ?? '').trim();
+		if (!fingerprint && fpRaw && !/^0{8}$/.test(fpRaw)) {
+			fingerprint = normalizeFingerprint(fpRaw);
+			if (!fingerprint) {
+				return fail(400, {
+					error:
+						"That master fingerprint doesn't look right — it's exactly 8 characters of 0-9 and a-f, like 73c5da0a."
+				});
+			}
+		}
+
 		try {
-			const parsed = parseXpub(xpub);
+			const parsed = parseXpub(parsedInput.xpub);
 			return {
-				preview: derivePreviewAddresses(xpub, 5),
+				preview: derivePreviewAddresses(parsedInput.xpub, 5),
 				scriptType: parsed.scriptType,
-				xpub
+				xpub: parsedInput.xpub,
+				fingerprint,
+				path: parsedInput.path
 			};
 		} catch (e) {
 			return fail(400, { error: friendlyXpubError(e) });
@@ -41,15 +70,68 @@ export const actions: Actions = {
 		const name = String(form.get('name') ?? '').trim();
 		// Empty string = the user skipped it; createWallet normalizes to null.
 		const deviceType = String(form.get('deviceType') ?? '').trim();
+		// Key origin captured on the Key step (device read, ColdCard export, or
+		// parsed out of a pasted descriptor). Empty = unknown; the wallet then
+		// signs only via the file/PSBT passthrough (cairn-alw8).
+		const fingerprint = String(form.get('fingerprint') ?? '').trim();
+		const derivationPath = String(form.get('derivationPath') ?? '').trim();
 
 		let id: number;
 		try {
-			id = createWallet(locals.user!.id, { name, xpub, deviceType }).id;
+			id = createWallet(locals.user!.id, {
+				name,
+				xpub,
+				deviceType,
+				fingerprint,
+				derivationPath
+			}).id;
 		} catch (e) {
 			return fail(400, {
 				error: e instanceof Error ? e.message : 'Could not import that wallet.'
 			});
 		}
 		return { created: true, id };
+	},
+
+	/**
+	 * Stash a BIP-45 sharing key the wizard just prefetched off a live device
+	 * (the "I plan to use this key in a shared wallet later" opt-in —
+	 * cairn-fdlf.1) into the known-device-keys registry (cairn-fdlf.2), along
+	 * with the primary single-sig key from the same read (best-effort). Wholly
+	 * independent of wallet creation: a failure here never blocks the wizard —
+	 * the client shows a soft notice and moves on.
+	 */
+	rememberSharedKey: async ({ request, locals }) => {
+		const form = await request.formData();
+		const field = (name: string) => String(form.get(name) ?? '').trim();
+
+		const primaryXpub = field('primaryXpub');
+		try {
+			const { shared, primary } = rememberPrefetchedSharedKey(locals.user!.id, {
+				shared: {
+					xpub: field('sharedXpub'),
+					fingerprint: field('sharedFingerprint'),
+					path: field('sharedPath')
+				},
+				primary: primaryXpub
+					? {
+							xpub: primaryXpub,
+							fingerprint: field('primaryFingerprint'),
+							path: field('primaryPath')
+						}
+					: null,
+				deviceType: field('deviceType')
+			});
+			return {
+				remembered: true,
+				fingerprint: shared.fingerprint,
+				primaryRemembered: primary !== null
+			};
+		} catch (e) {
+			return fail(400, {
+				error:
+					e instanceof DeviceKeyError ? e.message : 'Could not save the sharing key.'
+			});
+		}
 	}
 };

@@ -1,6 +1,7 @@
 import { fail } from '@sveltejs/kit';
 import { listUsers, setUserAdmin, setUserDisabled } from '$lib/server/admin';
 import { overrideCountsByUser } from '$lib/server/featureFlags/admin';
+import { assertTeamMode } from '$lib/server/api';
 import { AuthError } from '$lib/server/auth';
 import { db } from '$lib/server/db';
 import { notify } from '$lib/server/notifications';
@@ -8,6 +9,7 @@ import type { RequestEvent } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async () => {
+	assertTeamMode();
 	// Attach each user's feature-override count so the list can badge users whose
 	// features differ from the instance default (links to their detail page).
 	const counts = overrideCountsByUser();
@@ -17,6 +19,7 @@ export const load: PageServerLoad = async () => {
 
 function userAction(fn: (id: number) => void) {
 	return async ({ request }: { request: Request }) => {
+		assertTeamMode();
 		const form = await request.formData();
 		const id = Number(form.get('id'));
 		if (!Number.isInteger(id)) return fail(400, { error: 'Invalid user id' });
@@ -46,6 +49,7 @@ function userLabel(id: number): string {
  */
 function setDisabledAction(disabled: boolean) {
 	return async ({ request, locals }: RequestEvent) => {
+		assertTeamMode();
 		const form = await request.formData();
 		const id = Number(form.get('id'));
 		if (!Number.isInteger(id)) return fail(400, { error: 'Invalid user id' });

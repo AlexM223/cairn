@@ -18,7 +18,11 @@
 		readKeyFromLedger,
 		readKeyFromBitbox02,
 		readKeyFromJade,
-		DeviceReadUnavailable
+		readSharedKeyFromTrezor,
+		readSharedKeyFromLedger,
+		supportsSharedKeyRead,
+		DeviceReadUnavailable,
+		type DeviceKey
 	} from './_components/deviceRead';
 	import { parseColdcardSingleSigExport } from './_components/coldcardImport';
 	import {
@@ -27,7 +31,10 @@
 		hasMeaningfulProgress
 	} from './_components/wizardProgress';
 
-	const STEPS = ['Type', 'Key', 'Preview', 'Name', 'Done'];
+	// Name and signing-device are deliberately SEPARATE steps (cairn-0py6): the
+	// full device picker next to the name field read as "did I need to upload my
+	// key again?" to first-time users.
+	const STEPS = ['Type', 'Key', 'Preview', 'Name', 'Device', 'Done'];
 
 	// Step 1 asks the single question that splits the two flavors. "Single key"
 	// stays in this wizard; "Multiple keys" hands off to the multisig builder.
@@ -54,6 +61,17 @@
 	let preview = $state<{ address: string; path: string }[]>([]);
 	let scriptType = $state<ScriptType | null>(null);
 	let validatedXpub = $state('');
+	// The key's origin — master fingerprint + account derivation path. This is
+	// what lets Cairn put bip32Derivation into PSBTs, which every hardware
+	// signer needs to find its key (cairn-alw8). Captured from the device
+	// response on a direct read, from the ColdCard export file, or parsed out
+	// of a pasted `[fingerprint/path]xpub` descriptor. null = unknown; the
+	// wallet then signs only via the generic file/PSBT passthrough.
+	let keyFingerprint = $state<string | null>(null);
+	let keyPath = $state<string | null>(null);
+	// Optional field on the paste form for wallets that export a bare key plus
+	// a separate "master fingerprint" (XFP) label.
+	let fingerprintInput = $state('');
 	let name = $state('');
 	// Which device holds this key. null = the user skipped it; the wallet then
 	// signs via the universal file/PSBT fallback. Saved on the wallet record.
@@ -63,7 +81,14 @@
 	let createdId = $state<number | null>(null);
 	let backedUp = $state(false);
 
-	const looksLikeKey = $derived(/^[xyz]pub[1-9A-HJ-NP-Za-km-z]{20,}$/.test(xpubInput.trim()));
+	// A bare extended key, or one in key-origin/descriptor form —
+	// `[73c5da0a/84'/0'/0']zpub…`, optionally wpkh(…)-wrapped with a trailing
+	// derivation suffix. The server parses the origin out at validation time.
+	const looksLikeKey = $derived(
+		/^(?:[a-z]+\()?(?:\[[0-9a-fA-F]{8}[^\]]*\]\s*)?[xyz]pub[1-9A-HJ-NP-Za-km-z]{20,}/.test(
+			xpubInput.trim()
+		)
+	);
 
 	// ------------------------------------------- progress survives page reloads
 	//
@@ -98,6 +123,8 @@
 		validatedXpub = savedProgress.validatedXpub;
 		preview = savedProgress.preview;
 		scriptType = savedProgress.scriptType;
+		keyFingerprint = savedProgress.keyFingerprint;
+		keyPath = savedProgress.keyPath;
 		if (savedProgress.name) name = savedProgress.name;
 		resumed = true;
 	});
@@ -115,10 +142,12 @@
 			preview: $state.snapshot(preview),
 			scriptType,
 			name,
+			keyFingerprint,
+			keyPath,
 			savedAt: Date.now()
 		});
 		try {
-			if (step >= 4) sessionStorage.removeItem(WIZARD_PROGRESS_KEY);
+			if (step >= 5) sessionStorage.removeItem(WIZARD_PROGRESS_KEY);
 			else sessionStorage.setItem(WIZARD_PROGRESS_KEY, snapshot);
 		} catch {
 			// Best-effort: without storage the wizard still works, it just
@@ -140,12 +169,17 @@
 		validatedXpub = '';
 		preview = [];
 		scriptType = null;
+		keyFingerprint = null;
+		keyPath = null;
+		fingerprintInput = '';
 		name = '';
 		previewError = null;
 		deviceError = null;
 		createError = null;
 		restoreNote = null;
 		restoreError = null;
+		planShared = false;
+		sharedKeyNotice = null;
 		try {
 			sessionStorage.removeItem(WIZARD_PROGRESS_KEY);
 		} catch {
@@ -202,6 +236,17 @@
 	let deviceError = $state<string | null>(null);
 	let coldcardInput = $state<HTMLInputElement | null>(null);
 
+	// Opt-in BIP-45 sharing-key prefetch (cairn-fdlf.1). Default OFF. When
+	// checked, a successful device read is followed by a SECOND read of the
+	// same connected device at m/45' (Trezor/Ledger only — Bastion's gating),
+	// and that key is stashed in the known-device-keys registry so a later
+	// shared-wallet setup can skip the device touch. Strictly fail-soft: the
+	// single-sig wallet's own creation never depends on any of it.
+	let planShared = $state(false);
+	// Outcome of the prefetch, shown as a soft note on the Preview step —
+	// success, an honest "skipped on this device", or a non-fatal failure.
+	let sharedKeyNotice = $state<{ tone: 'success' | 'info' | 'error'; text: string } | null>(null);
+
 	function pickMethod(m: Method) {
 		method = m;
 		deviceError = null;
@@ -222,8 +267,15 @@
 	// A device/file/QR read produced a key: validate it server-side (deriving the
 	// preview + real script type from the key's own prefix) exactly like paste
 	// does, and remember which method got us here so Step 4 can pre-fill the
-	// device instead of re-asking.
-	async function acceptReadKey(xpub: string, from: Method) {
+	// device instead of re-asking. When the reader also handed us the key's
+	// origin (device reads and ColdCard exports always do), it rides along and
+	// takes precedence over anything parsed out of the key string — the device
+	// is the authoritative source (cairn-alw8).
+	async function acceptReadKey(
+		xpub: string,
+		from: Method,
+		origin?: { fingerprint: string; path: string }
+	) {
 		deviceError = null;
 		previewError = null;
 		const body = new FormData();
@@ -240,11 +292,23 @@
 					preview: { address: string; path: string }[];
 					scriptType: ScriptType;
 					xpub: string;
+					fingerprint: string | null;
+					path: string | null;
 				};
 				preview = d.preview;
 				scriptType = d.scriptType;
 				validatedXpub = d.xpub;
 				xpubInput = d.xpub;
+				// "00000000" is the placeholder some exports use for "unknown" —
+				// treat it as absent rather than storing a fake origin.
+				const readFp =
+					origin && /^[0-9a-fA-F]{8}$/.test(origin.fingerprint) && !/^0{8}$/.test(origin.fingerprint)
+						? origin.fingerprint.toLowerCase()
+						: null;
+				keyFingerprint = readFp ?? d.fingerprint ?? null;
+				// The path is useful on its own (config/descriptor export) even
+				// when the fingerprint is a placeholder, so it isn't tied to readFp.
+				keyPath = origin?.path ?? d.path ?? null;
 				readMethod = from;
 				deviceType = METHOD_DEVICE[from];
 				changeDevice = false;
@@ -276,6 +340,7 @@
 		if (deviceBusy) return;
 		deviceBusy = true;
 		deviceError = null;
+		sharedKeyNotice = null;
 		try {
 			const key =
 				kind === 'trezor'
@@ -285,7 +350,50 @@
 						: kind === 'bitbox02'
 							? await readKeyFromBitbox02(deviceScriptType)
 							: await readKeyFromJade(deviceScriptType);
-			await acceptReadKey(key.xpub, kind);
+
+			// Opt-in sharing-key prefetch (cairn-fdlf.1): a second read of the SAME
+			// still-connected device at m/45', made while the user's hands are
+			// already on it. Strictly fail-soft — whatever happens here, the
+			// single-sig import below proceeds untouched.
+			let sharedKey: DeviceKey | null = null;
+			let sharedSkip: string | null = null;
+			if (planShared) {
+				if (supportsSharedKeyRead(kind)) {
+					try {
+						sharedKey =
+							kind === 'trezor' ? await readSharedKeyFromTrezor() : await readSharedKeyFromLedger();
+					} catch (e) {
+						sharedSkip =
+							e instanceof Error ? e.message : 'The device declined the extra sharing-key read.';
+					}
+				} else {
+					sharedSkip = `the ${WALLET_DEVICE_LABELS[kind]} doesn't support the extra sharing-key read yet. When you set up a shared wallet, just connect this device again.`;
+				}
+			}
+
+			// The device response includes the key's origin — keep it, or every
+			// PSBT this wallet builds is unsignable on the device (cairn-alw8).
+			await acceptReadKey(key.xpub, kind, { fingerprint: key.fingerprint, path: key.path });
+
+			// Only stash the sharing key once the primary key validated (the wizard
+			// advanced past this step); the registry write is best-effort too.
+			if (!deviceError && sharedKey) {
+				const saved = await persistSharedKey(sharedKey, key, kind);
+				sharedKeyNotice = saved
+					? {
+							tone: 'success',
+							text: "Sharing key saved. When you set up a shared (multisig) wallet with this device, you won't need to plug it in again."
+						}
+					: {
+							tone: 'error',
+							text: "Your wallet key was read fine, but the extra sharing key couldn't be saved — you can read it again when you set up a shared wallet."
+						};
+			} else if (!deviceError && sharedSkip) {
+				sharedKeyNotice = {
+					tone: 'info',
+					text: `Your wallet key was read fine, but the extra sharing key was skipped: ${sharedSkip}`
+				};
+			}
 		} catch (e) {
 			if (e instanceof DeviceReadUnavailable) {
 				deviceError = `Direct ${WALLET_DEVICE_LABELS[kind]} connection isn't available in this browser — paste the key instead, or scan its QR.`;
@@ -297,6 +405,37 @@
 		}
 	}
 
+	/**
+	 * Write the prefetched m/45' key (plus the primary key from the same read,
+	 * best-effort) into the known-device-keys registry (cairn-fdlf.2). Returns
+	 * whether the save succeeded — the caller turns that into a soft notice,
+	 * never a blocker.
+	 */
+	async function persistSharedKey(shared: DeviceKey, primary: DeviceKey, kind: Method): Promise<boolean> {
+		const body = new FormData();
+		body.set('sharedXpub', shared.xpub);
+		body.set('sharedFingerprint', shared.fingerprint);
+		body.set('sharedPath', shared.path);
+		body.set('primaryXpub', primary.xpub);
+		body.set('primaryFingerprint', primary.fingerprint);
+		body.set('primaryPath', primary.path);
+		body.set('deviceType', METHOD_DEVICE[kind] ?? '');
+		try {
+			const res = await fetch('?/rememberSharedKey', {
+				method: 'POST',
+				headers: { 'x-sveltekit-action': 'true' },
+				body
+			});
+			const result = deserialize(await res.text());
+			return (
+				result.type === 'success' &&
+				(result.data as { remembered?: boolean } | undefined)?.remembered === true
+			);
+		} catch {
+			return false;
+		}
+	}
+
 	async function handleColdcardFile(e: Event) {
 		const input = e.currentTarget as HTMLInputElement;
 		const file = input.files?.[0];
@@ -305,7 +444,10 @@
 		deviceBusy = true;
 		try {
 			const key = parseColdcardSingleSigExport(await file.text(), deviceScriptType);
-			await acceptReadKey(key.xpub, 'coldcard');
+			await acceptReadKey(key.xpub, 'coldcard', {
+				fingerprint: key.fingerprint,
+				path: key.path
+			});
 		} catch (err) {
 			deviceError = err instanceof Error ? err.message : 'Could not read that file.';
 		} finally {
@@ -409,7 +551,26 @@
 		}
 
 		if (c.format === 'cairn-wallet-config' && c.type === 'single-sig' && typeof c.xpub === 'string') {
-			xpubInput = c.xpub;
+			// Re-attach the key origin the backup recorded: with both pieces,
+			// prefill the full `[fingerprint/path]xpub` form so the origin
+			// round-trips through validation exactly like a pasted descriptor;
+			// with only a fingerprint, prefill the optional field (cairn-alw8).
+			const backupFp =
+				typeof c.masterFingerprint === 'string' &&
+				/^[0-9a-fA-F]{8}$/.test(c.masterFingerprint) &&
+				!/^0{8}$/.test(c.masterFingerprint)
+					? c.masterFingerprint.toLowerCase()
+					: null;
+			const backupPath =
+				typeof c.derivationPath === 'string' && /^m(\/\d+['hH]?)+$/.test(c.derivationPath.trim())
+					? c.derivationPath.trim()
+					: null;
+			if (backupFp && backupPath) {
+				xpubInput = `[${backupFp}/${backupPath.replace(/^m\//, '')}]${c.xpub}`;
+			} else {
+				xpubInput = c.xpub;
+				fingerprintInput = backupFp ?? '';
+			}
 			previewError = null;
 			deviceError = null;
 			// A restored key drops the user straight onto the paste method with the
@@ -670,6 +831,27 @@
 						</div>
 					{/if}
 
+					<!-- Opt-in sharing-key prefetch (cairn-fdlf.1): asked upfront, in the
+					     same device-connect step, so the extra m/45' read happens while
+					     the device is already plugged in and unlocked. Default off. -->
+					{#if method === 'trezor' || method === 'ledger' || method === 'bitbox02' || method === 'jade'}
+						<label class="share-opt-in">
+							<input type="checkbox" bind:checked={planShared} />
+							<span>
+								I plan to use this key in a <strong>shared (multisig) wallet</strong> later.
+								{#if supportsSharedKeyRead(method)}
+									Cairn will also read its sharing key now, so you won't need to plug this
+									device in again when you set that up.
+								{:else}
+									<span class="share-opt-in-caveat">
+										(The extra sharing-key read isn't supported on the
+										{WALLET_DEVICE_LABELS[method]} yet — Cairn will skip it and let you know.)
+									</span>
+								{/if}
+							</span>
+						</label>
+					{/if}
+
 					{#if method === 'trezor' || method === 'ledger'}
 						<div class="connect-box">
 							<p class="connect-copy">
@@ -798,10 +980,16 @@
 											preview: { address: string; path: string }[];
 											scriptType: ScriptType;
 											xpub: string;
+											fingerprint: string | null;
+											path: string | null;
 										};
 										preview = d.preview;
 										scriptType = d.scriptType;
 										validatedXpub = d.xpub;
+										// Origin parsed out of the pasted key (descriptor form)
+										// or the optional fingerprint field (cairn-alw8).
+										keyFingerprint = d.fingerprint ?? null;
+										keyPath = d.path ?? null;
 										readMethod = 'paste';
 										deviceType = null;
 										changeDevice = false;
@@ -823,7 +1011,7 @@
 									id="xpub"
 									name="xpub"
 									rows="3"
-									placeholder="zpub6rFR7y4Q2Aij…"
+									placeholder="zpub6rFR7y4Q2Aij… or [73c5da0a/84'/0'/0']zpub6rFR7y4Q2Aij…"
 									spellcheck="false"
 									autocomplete="off"
 									bind:value={xpubInput}
@@ -834,8 +1022,42 @@
 										Extended keys start with xpub, ypub or zpub — keep pasting, we'll verify
 										properly on the next step.
 									</span>
+								{:else}
+									<span class="hint">
+										If your wallet shows the key with a prefix in square brackets — like
+										[73c5da0a/84'/0'/0'] — paste the whole thing. That prefix tells your
+										signing device which key to use.
+									</span>
 								{/if}
 							</div>
+
+							{#if !/^\s*(?:[a-z]+\()?\[/.test(xpubInput)}
+								<!-- Only for bare keys: a key pasted in [fingerprint/path]xpub form
+								     already carries its origin, so don't ask twice (cairn-alw8). -->
+								<div class="field">
+									<label class="label" for="fingerprint">
+										Master fingerprint
+										<span class="optional">(optional)</span>
+									</label>
+									<input
+										class="input mono fp-input"
+										id="fingerprint"
+										name="fingerprint"
+										placeholder="e.g. 73c5da0a"
+										maxlength="8"
+										spellcheck="false"
+										autocomplete="off"
+										bind:value={fingerprintInput}
+									/>
+									<span class="hint">
+										8 characters, shown in your wallet as "master fingerprint" or "XFP".
+										Needed to <Term
+											tip="Cairn stamps this ID into every transaction it prepares, so your signing device can recognize which of its keys to sign with."
+											>sign with a hardware wallet</Term
+										> — without it you'll sign by passing files through another wallet app.
+									</span>
+								</div>
+							{/if}
 
 							{#if previewError}
 								<div class="form-error" role="alert">{previewError}</div>
@@ -895,7 +1117,27 @@
 				{#if scriptType}
 					<span class="badge badge-accent">{SCRIPT_TYPE_LABELS[scriptType]}</span>
 				{/if}
+				{#if keyFingerprint}
+					<!-- The captured key origin, so a hardware-wallet user can check it
+					     against the fingerprint their device shows (cairn-alw8). -->
+					<span class="badge mono" title="Master fingerprint{keyPath ? ` · ${keyPath}` : ''}">
+						{keyFingerprint}
+					</span>
+				{/if}
 			</div>
+			{#if sharedKeyNotice}
+				<!-- Outcome of the opt-in sharing-key prefetch (cairn-fdlf.1). Always
+				     soft: the wallet import itself already succeeded. -->
+				<div
+					class="shared-note"
+					class:shared-note-success={sharedKeyNotice.tone === 'success'}
+					class:shared-note-error={sharedKeyNotice.tone === 'error'}
+					role="status"
+				>
+					<Icon name={sharedKeyNotice.tone === 'success' ? 'check' : 'info'} size={14} />
+					<span>{sharedKeyNotice.text}</span>
+				</div>
+			{/if}
 			<p class="hint" style="line-height: 1.6">
 				These are the first five receive addresses derived from your key. Check they match
 				your wallet's receive addresses before continuing.
@@ -928,8 +1170,42 @@
 		</div>
 	{:else if step === 3}
 		<!-- ------------------------------------------------ Step 4: name -->
+		<!-- Name ONLY (cairn-0py6): the device question lives on its own next
+		     step, so this screen can never read as "re-add your key". Advancing
+		     is pure client state — nothing is submitted from here. -->
 		<div class="card card-pad pane fade-in">
 			<span class="overline">Step 4 · Name</span>
+			<div class="field">
+				<label class="label" for="name">What should we call it?</label>
+				<input
+					class="input"
+					id="name"
+					placeholder="e.g. Cold storage"
+					maxlength="64"
+					bind:value={name}
+				/>
+				<span class="hint">Just a label — you can't break anything here.</span>
+			</div>
+
+			<div class="pane-actions">
+				<button type="button" class="btn btn-ghost" onclick={() => (step = 2)}>
+					<Icon name="chevron-left" size={14} />
+					Back
+				</button>
+				<button type="button" class="btn btn-primary" onclick={() => (step = 4)}>
+					Continue
+					<Icon name="chevron-right" size={14} />
+				</button>
+			</div>
+		</div>
+	{:else if step === 4}
+		<!-- --------------------------------------- Step 5: signing device -->
+		<!-- The actual ?/create submit happens here, at the end of the wizard's
+		     questions. For a device-read key this is just a one-line
+		     confirmation; the full picker only appears for pasted keys (or
+		     after "Change"). -->
+		<div class="card card-pad pane fade-in">
+			<span class="overline">Step 5 · Signing device</span>
 			<form
 				method="POST"
 				action="?/create"
@@ -949,7 +1225,7 @@
 							// Move to the Done step (backup is optional for single-sig — the
 							// wallet reconstructs from the hardware device).
 							createdId = (result.data as { id: number }).id;
-							step = 4;
+							step = 5;
 						} else {
 							await applyAction(result);
 						}
@@ -957,19 +1233,12 @@
 				}}
 			>
 				<input type="hidden" name="xpub" value={validatedXpub} />
+				<input type="hidden" name="name" value={name} />
 				<input type="hidden" name="deviceType" value={deviceType ?? ''} />
-				<div class="field">
-					<label class="label" for="name">What should we call it?</label>
-					<input
-						class="input"
-						id="name"
-						name="name"
-						placeholder="e.g. Cold storage"
-						maxlength="64"
-						bind:value={name}
-					/>
-					<span class="hint">Just a label — you can't break anything here.</span>
-				</div>
+				<!-- Key origin captured on the Key step — stored on the wallet so its
+				     PSBTs carry bip32Derivation for hardware signing (cairn-alw8). -->
+				<input type="hidden" name="fingerprint" value={keyFingerprint ?? ''} />
+				<input type="hidden" name="derivationPath" value={keyPath ?? ''} />
 
 				{#if readMethod && readMethod !== 'paste' && !changeDevice}
 					<!-- The key came straight off a device, so we already know which one
@@ -1014,7 +1283,7 @@
 				{/if}
 
 				<div class="pane-actions">
-					<button type="button" class="btn btn-ghost" onclick={() => (step = 2)}>
+					<button type="button" class="btn btn-ghost" onclick={() => (step = 3)}>
 						<Icon name="chevron-left" size={14} />
 						Back
 					</button>
@@ -1025,10 +1294,10 @@
 				</div>
 			</form>
 		</div>
-	{:else if step === 4 && createdId !== null}
-		<!-- ---------------------------------------------------------- Step 5: done -->
+	{:else if step === 5 && createdId !== null}
+		<!-- ---------------------------------------------------------- Step 6: done -->
 		<div class="card card-pad pane fade-in">
-			<span class="overline">Step 5 · Done</span>
+			<span class="overline">Step 6 · Done</span>
 			<h2 class="done-title">Your wallet is ready</h2>
 
 			<p class="done-sub">
@@ -1365,6 +1634,11 @@
 		font-size: 13px;
 	}
 
+	/* 8 hex chars — the field doesn't need to be pastebin-wide. */
+	.fp-input {
+		max-width: 180px;
+	}
+
 	/* restore-from-backup affordance (cairn-lun6) */
 	.restore-box {
 		display: flex;
@@ -1609,6 +1883,63 @@
 		flex-direction: column;
 		gap: 12px;
 		align-items: flex-start;
+	}
+
+	/* Opt-in sharing-key prefetch checkbox (cairn-fdlf.1). */
+	.share-opt-in {
+		display: flex;
+		align-items: flex-start;
+		gap: 9px;
+		padding: 10px 12px;
+		font-size: 12.5px;
+		line-height: 1.55;
+		color: var(--text-secondary);
+		background: var(--bg);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-control);
+		cursor: pointer;
+	}
+
+	.share-opt-in input {
+		margin-top: 2px;
+		flex-shrink: 0;
+		accent-color: var(--accent);
+	}
+
+	.share-opt-in strong {
+		color: var(--text);
+	}
+
+	.share-opt-in-caveat {
+		color: var(--text-muted);
+	}
+
+	/* Preview-step outcome of the sharing-key prefetch — always a soft note. */
+	.shared-note {
+		display: flex;
+		align-items: flex-start;
+		gap: 8px;
+		padding: 9px 12px;
+		font-size: 12.5px;
+		line-height: 1.55;
+		color: var(--text-secondary);
+		background: var(--bg);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-control);
+	}
+
+	.shared-note :global(svg) {
+		flex-shrink: 0;
+		margin-top: 2px;
+		color: var(--accent);
+	}
+
+	.shared-note-success :global(svg) {
+		color: var(--success);
+	}
+
+	.shared-note-error :global(svg) {
+		color: var(--warning, var(--accent));
 	}
 
 	.connect-copy {

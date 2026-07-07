@@ -71,6 +71,14 @@
 		</nav>
 
 		<div class="sidebar-foot">
+			{#if data.operatorName}
+				<!-- The one operator-branding surface (cairn-ivae.6): who runs this
+				     instance, visible day-to-day and linked to the full terms. Updates
+				     on the next navigation after the admin changes it — no restart. -->
+				<a href="/terms" class="operator-note truncate" title="Operated by {data.operatorName}">
+					operated by <strong>{data.operatorName}</strong>
+				</a>
+			{/if}
 			<a href="/terms" class="terms-link">Terms</a>
 			<div class="user-chip">
 				<div class="avatar">{data.user.displayName.slice(0, 1).toUpperCase()}</div>
@@ -199,6 +207,22 @@
 	.sidebar-foot {
 		padding: 12px 10px;
 		border-top: 1px solid var(--border-subtle);
+	}
+
+	.operator-note {
+		display: block;
+		font-size: 11px;
+		color: var(--text-muted);
+		padding: 2px 6px 0;
+	}
+
+	.operator-note strong {
+		color: var(--text-secondary);
+		font-weight: 500;
+	}
+
+	.operator-note:hover strong {
+		color: var(--accent);
 	}
 
 	.terms-link {

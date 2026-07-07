@@ -1,4 +1,4 @@
-import { json, readJson, requireUser } from '$lib/server/api';
+import { json, readJson, requireTeamMode } from '$lib/server/api';
 import { listContacts, requestContact, ContactError } from '$lib/server/contacts';
 import {
 	contactRequestRetryAfter,
@@ -9,7 +9,7 @@ import type { RequestHandler } from './$types';
 
 /** GET /api/contacts — the caller's friends, incoming and outgoing requests. */
 export const GET: RequestHandler = async (event) => {
-	const user = requireUser(event);
+	const user = requireTeamMode(event);
 	return json(listContacts(user.id));
 };
 
@@ -20,7 +20,7 @@ export const GET: RequestHandler = async (event) => {
  * auto-accepted.
  */
 export const POST: RequestHandler = async (event) => {
-	const user = requireUser(event);
+	const user = requireTeamMode(event);
 	// Rate limit before doing any work: without this, the anti-enumeration
 	// same-shape response still lets a wordlist be run at full speed (cairn-n4k4).
 	const ip = event.getClientAddress();

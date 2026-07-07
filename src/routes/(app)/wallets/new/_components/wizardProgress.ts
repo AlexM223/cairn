@@ -35,8 +35,9 @@ const DEVICE_TYPES: readonly WalletDeviceType[] = [
 ];
 
 export interface WizardProgress {
-	/** 0 Type · 1 Key · 2 Preview · 3 Name. The Done step is never saved. */
-	step: 0 | 1 | 2 | 3;
+	/** 0 Type · 1 Key · 2 Preview · 3 Name · 4 Device (cairn-0py6 split Name
+	 *  and Device into separate steps). The Done step is never saved. */
+	step: 0 | 1 | 2 | 3 | 4;
 	method: WizardMethod | null;
 	readMethod: WizardMethod | null;
 	deviceType: WalletDeviceType | null;
@@ -45,6 +46,11 @@ export interface WizardProgress {
 	preview: { address: string; path: string }[];
 	scriptType: ScriptType | null;
 	name: string;
+	/** Key origin captured with the validated key (cairn-alw8). Losing these
+	 *  to a reload would silently produce a wallet that can't hardware-sign,
+	 *  so they ride along in the snapshot. Public data (like the xpub). */
+	keyFingerprint: string | null;
+	keyPath: string | null;
 	savedAt: number;
 }
 
@@ -96,13 +102,21 @@ export function parseSavedProgress(raw: string | null, now: number): WizardProgr
 	const validatedXpub = typeof o.validatedXpub === 'string' ? o.validatedXpub : '';
 	const preview = Array.isArray(o.preview) ? o.preview.filter(isPreviewRow) : [];
 	const name = typeof o.name === 'string' ? o.name : '';
+	// Origin fields: validated shape-only here (real validation happens at
+	// create time server-side); anything off comes back null, never a crash.
+	const keyFingerprint =
+		typeof o.keyFingerprint === 'string' && /^[0-9a-f]{8}$/.test(o.keyFingerprint)
+			? o.keyFingerprint
+			: null;
+	const keyPath =
+		typeof o.keyPath === 'string' && /^m(\/\d+'?)+$/.test(o.keyPath) ? o.keyPath : null;
 
 	let step: WizardProgress['step'];
-	if (o.step === 0 || o.step === 1 || o.step === 2 || o.step === 3) step = o.step;
+	if (o.step === 0 || o.step === 1 || o.step === 2 || o.step === 3 || o.step === 4) step = o.step;
 	else return null;
 
-	// The Preview and Name steps only make sense with a server-validated key
-	// and its derived addresses in hand.
+	// The Preview, Name and Device steps only make sense with a server-validated
+	// key and its derived addresses in hand.
 	if (step >= 2 && (!validatedXpub || !scriptType || preview.length === 0)) step = 1;
 
 	return {
@@ -115,6 +129,8 @@ export function parseSavedProgress(raw: string | null, now: number): WizardProgr
 		preview,
 		scriptType,
 		name,
+		keyFingerprint,
+		keyPath,
 		savedAt: o.savedAt
 	};
 }

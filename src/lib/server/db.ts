@@ -506,6 +506,22 @@ db.exec(`
 	}
 }
 
+// Forced first-login credential reset (cairn-49xi.2). 1 = this account's
+// password came from a deployment env var (CAIRN_ADMIN_PASSWORD — Umbrel shows
+// the generated value on its install card and keeps it in logs indefinitely),
+// so the first login is routed through a one-time "choose your own password and
+// email" step (/setup-admin) before any other app route. Set only by
+// bootstrapAdminFromEnv() (auth.ts) when it writes an env-supplied password;
+// cleared by completeForcedCredentialReset(). Guarded and idempotent.
+{
+	const userCols = (db.prepare('PRAGMA table_info(users)').all() as { name: string }[]).map(
+		(c) => c.name
+	);
+	if (!userCols.includes('must_reset_password')) {
+		db.exec('ALTER TABLE users ADD COLUMN must_reset_password INTEGER NOT NULL DEFAULT 0');
+	}
+}
+
 // Account recovery secrets — how a user gets back INTO Cairn (their LOGIN) after
 // losing every passkey, NOT how they recover bitcoin. These secrets restore the
 // login only; they can never move or reveal bitcoin, whose keys live entirely on
@@ -862,6 +878,24 @@ db.exec(`
 	}
 }
 
+// The vault's declared mode at creation (cairn-1kc3.6): 1 = collaborative
+// (cosigner keys shared with other people — fresh on-platform creations must
+// use BIP-45 m/45' paths, enforced server-side in createMultisig), 0 = personal
+// (all the user's own keys — BIP-48 paths; m/45' rejected), NULL = never
+// declared (every pre-existing row, and creations from flows that don't ask
+// yet — no mode enforcement). A DIFFERENT axis from `source` above: a fresh
+// vault can be personal or collaborative, and an imported vault is exempt from
+// the BIP-45 rule regardless of this flag. Set once at creation, never edited
+// after — flipping it later wouldn't re-derive already-recorded key paths.
+{
+	const msCols = (db.prepare('PRAGMA table_info(multisigs)').all() as { name: string }[]).map(
+		(c) => c.name
+	);
+	if (!msCols.includes('collaborative')) {
+		db.exec('ALTER TABLE multisigs ADD COLUMN collaborative INTEGER');
+	}
+}
+
 // Multisig RBF: a replacement draft points at the txid it was built to replace;
 // the original row is marked 'superseded' when the replacement broadcasts —
 // mirroring the single-sig transactions.replaces_txid column. Guarded and
@@ -966,4 +1000,34 @@ db.exec(`
 		value_enc  TEXT NOT NULL,
 		updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 	);
+`);
+
+// Known-device-keys registry (cairn-fdlf.2, see src/lib/server/deviceKeys.ts).
+// One row per (user, master fingerprint, purpose): the account xpub last read
+// off that hardware device at that purpose's path, so a later wizard session
+// can reuse it instead of forcing another live device touch (the single-sig
+// wizard's BIP-45 prefetch writes here — cairn-fdlf.1; the multisig wizard
+// read-path is cairn-fdlf.4). Modeled on Bastion's master_keys table
+// (UNIQUE(user_id, xfp, purpose)). purpose keeps the single-sig ('44'/'49'/
+// '84'/'86'), personal-multisig ('48'), and collaborative-vault ('45') key
+// families as strictly separate rows — deviceKeys.ts validates it against a
+// closed enum and requires the path to match, so the families can never be
+// conflated. Convenience cache only: wallets/multisig_keys stay the source of
+// truth. share_opt_in is cairn-fdlf.3's sharing flag (default off; column
+// only, enforcement is that future bead).
+db.exec(`
+	CREATE TABLE IF NOT EXISTS device_keys (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		fingerprint  TEXT NOT NULL,               -- 8 lowercase hex master fingerprint
+		purpose      TEXT NOT NULL,               -- '44'|'49'|'84'|'86'|'48'|'45'
+		xpub         TEXT NOT NULL,               -- account-level xpub last read
+		path         TEXT NOT NULL,               -- e.g. "m/45'", "m/84'/0'/0'"
+		device_type  TEXT,                        -- 'trezor'|'ledger'|…; NULL = unknown
+		share_opt_in INTEGER NOT NULL DEFAULT 0,  -- cairn-fdlf.3 (single-sig rows)
+		created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		UNIQUE (user_id, fingerprint, purpose)
+	);
+	CREATE INDEX IF NOT EXISTS idx_device_keys_user ON device_keys(user_id, fingerprint);
 `);

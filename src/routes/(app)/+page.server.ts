@@ -3,7 +3,7 @@ import { getChain } from '$lib/server/chain';
 import type { PageServerLoad } from './$types';
 import type { BlockSummary, FeeEstimates, MempoolSummary } from '$lib/types';
 
-interface ChainSnapshot {
+export interface ChainSnapshot {
 	tipHeight: number | null;
 	tipTime: number | null;
 	hashrate: number | null;
@@ -44,11 +44,18 @@ async function loadChainSnapshot(): Promise<ChainSnapshot> {
 	}
 }
 
-export const load: PageServerLoad = async ({ locals, depends }) => {
+export const load: PageServerLoad = async ({ locals, depends, parent }) => {
 	// New-block SSE events invalidate this tag only — the portfolio is fetched
 	// client-side from /api/portfolio so wallet scans aren't retriggered by
 	// every block (see the portfolio endpoint).
 	depends('cairn:chain');
+
+	// The layout's load() redirects to /login when locals.user is null, but
+	// SvelteKit runs layout and page loads concurrently unless the page
+	// explicitly depends on the layout — without this, an anonymous/expired
+	// request can hit the locals.user!.id assertion below before the layout's
+	// redirect takes effect, 500ing instead of redirecting (cairn-ydxi).
+	await parent();
 
 	// Either flavor counts — a multisig-only user still has a portfolio.
 	const hasWallets =
@@ -63,7 +70,12 @@ export const load: PageServerLoad = async ({ locals, depends }) => {
 		).n) > 0;
 
 	return {
-		chain: await loadChainSnapshot(),
+		// Streamed, not awaited (SvelteKit 2 leaves top-level promises alone):
+		// navigating to the dashboard paints immediately with a skeleton while the
+		// Electrum round-trips (blocks + mempool + fees + hashrate) resolve in the
+		// background (cairn-ybsv). loadChainSnapshot never rejects — failures
+		// resolve to an error-shaped snapshot the page renders as a banner.
+		chain: loadChainSnapshot(),
 		hasWallets
 	};
 };

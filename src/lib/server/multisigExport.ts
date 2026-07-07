@@ -7,6 +7,7 @@ import { HDKey } from '@scure/bip32';
 import {
 	parseDescriptor,
 	multisigToDescriptor,
+	validateCosignerKeyPath,
 	MultisigError,
 	MAX_MULTISIG_KEYS
 } from './bitcoin/multisig';
@@ -286,11 +287,20 @@ export function parseCaravanImport(text: string): CaravanImport {
 		}
 		seenXpubs.add(xpub);
 		const xfp = typeof k.xfp === 'string' ? k.xfp.trim() : '';
+		const path =
+			typeof k.bip32Path === 'string' && k.bip32Path.trim() ? k.bip32Path.trim() : 'm';
+		// Path hygiene with per-key attribution (cairn-1kc3.1/.3/.5): a declared
+		// single-sig path, a BIP-48 script-type suffix contradicting the file's
+		// addressType, or a non-mainnet coin type fails HERE, at import preview,
+		// naming the offending key — not later at creation with a generic error.
+		// (Unknown "m" and Caravan's masked all-zeros paths pass untouched, and
+		// BIP-45 m/45' paths have no script/coin fields to check.)
+		validateCosignerKeyPath(path, scriptType, `Key ${i + 1}`);
 		return {
 			name: typeof k.name === 'string' && k.name.trim() ? k.name.trim() : `Key ${i + 1}`,
 			xpub,
 			fingerprint: /^[0-9a-fA-F]{8}$/.test(xfp) ? xfp.toLowerCase() : '00000000',
-			path: typeof k.bip32Path === 'string' && k.bip32Path.trim() ? k.bip32Path.trim() : 'm'
+			path
 		};
 	});
 

@@ -1,4 +1,4 @@
-import { json, readJson, requireUser } from '$lib/server/api';
+import { json, readJson, requireTeamMode } from '$lib/server/api';
 import {
 	updateMultisigShare,
 	revokeMultisigShare,
@@ -18,7 +18,7 @@ function parseId(param: string): number | null {
  * and/or reassign their keys: { role?, keyIds? }.
  */
 export const PATCH: RequestHandler = async (event) => {
-	const user = requireUser(event);
+	const user = requireTeamMode(event);
 	const id = parseId(event.params.id);
 	const shareId = parseId(event.params.shareId);
 	if (id === null || shareId === null) return json({ error: 'Not found' }, { status: 404 });
@@ -40,7 +40,7 @@ export const PATCH: RequestHandler = async (event) => {
 
 /** DELETE /api/wallets/multisig/:id/shares/:shareId — revoke a share (owner only). */
 export const DELETE: RequestHandler = async (event) => {
-	const user = requireUser(event);
+	const user = requireTeamMode(event);
 	const id = parseId(event.params.id);
 	const shareId = parseId(event.params.shareId);
 	if (id === null || shareId === null || !revokeMultisigShare(user.id, shareId)) {

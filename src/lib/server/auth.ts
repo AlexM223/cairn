@@ -28,7 +28,10 @@ export const SESSION_COOKIE = 'cairn_session';
 
 // ---------- Sessions ----------
 
-function hashToken(token: string): string {
+/** SHA-256 hex digest of an opaque bearer secret. Shared by sessions here and
+ *  personal API tokens (apiTokens.ts) so both stores use the identical
+ *  hash-only-at-rest scheme — the raw value is never persisted anywhere. */
+export function hashToken(token: string): string {
 	return createHash('sha256').update(token).digest('hex');
 }
 
@@ -262,12 +265,26 @@ export function setAuthMode(mode: AuthMode): void {
 	).run(mode);
 }
 
+/** The stand-in email bootstrapAdminFromEnv() writes when CAIRN_ADMIN_EMAIL is
+ *  unset. It exists purely so the bootstrap has SOMETHING to insert before a
+ *  human ever logs in — notification emails sent to it go nowhere, so the
+ *  forced-reset step (/setup-admin) refuses to let it be the long-term address. */
+export const BOOTSTRAP_PLACEHOLDER_EMAIL = 'admin@cairn.local';
+
 /**
  * Non-interactive admin bootstrap for deployment tooling (Umbrel surfaces the
  * password in its own UI). If CAIRN_ADMIN_PASSWORD (or APP_PASSWORD) is set:
  * create the first admin with it, or give an existing passwordless first admin
  * that password. Never clobbers a password the operator already chose. Runs
  * once at server start (see hooks.server.ts).
+ *
+ * Either way the password it writes came from an env var that lives on in the
+ * deployment platform's install UI/logs, so the account is marked
+ * must_reset_password — the (app) layout gate then forces a one-time
+ * "choose your own password and email" step (/setup-admin, cairn-49xi.2)
+ * before any other route. Idempotent by construction: once the human resets
+ * (or an operator sets any password), password_hash is non-null, both branches
+ * below are dead, and the flag can never be re-raised by a restart.
  */
 export function bootstrapAdminFromEnv(): void {
 	const pw = env.CAIRN_ADMIN_PASSWORD ?? env.APP_PASSWORD;
@@ -278,13 +295,77 @@ export function bootstrapAdminFromEnv(): void {
 		| undefined;
 
 	if (!first) {
-		const email = (env.CAIRN_ADMIN_EMAIL ?? 'admin@cairn.local').trim().toLowerCase();
+		const email = (env.CAIRN_ADMIN_EMAIL ?? BOOTSTRAP_PLACEHOLDER_EMAIL).trim().toLowerCase();
 		db.prepare(
-			'INSERT INTO users (email, password_hash, display_name, is_admin) VALUES (?, ?, ?, 1)'
+			'INSERT INTO users (email, password_hash, display_name, is_admin, must_reset_password) VALUES (?, ?, ?, 1, 1)'
 		).run(email, hashPassword(pw), 'Admin');
+		log.info(
+			{ event: 'admin_bootstrapped', email },
+			'first admin created from env password; forced credential reset pending'
+		);
 	} else if (!first.password_hash) {
 		setUserPassword(first.id, pw);
+		db.prepare('UPDATE users SET must_reset_password = 1 WHERE id = ?').run(first.id);
+		log.info(
+			{ event: 'admin_bootstrapped', userId: first.id },
+			'env password set on passwordless first admin; forced credential reset pending'
+		);
 	}
+}
+
+/** Whether this user still has to complete the forced first-login credential
+ *  reset (see bootstrapAdminFromEnv). Checked by the (app) layout gate. */
+export function mustResetPassword(userId: number): boolean {
+	const row = db.prepare('SELECT must_reset_password FROM users WHERE id = ?').get(userId) as
+		| { must_reset_password: number }
+		| undefined;
+	return row?.must_reset_password === 1;
+}
+
+/**
+ * Complete the forced first-login reset (cairn-49xi.2): set an operator-chosen
+ * password AND a real notification email in one step, then clear the flag.
+ * Both are required together by design (2026-07-06 decision): a solo user who
+ * keeps the placeholder email gets no backup reminders or send confirmations
+ * and never learns why. Throws AuthError on any problem; the caller is
+ * responsible for rotating sessions afterwards (the generated password was
+ * visible to anyone who saw the install screen).
+ */
+export function completeForcedCredentialReset(
+	userId: number,
+	input: { email: string; password: string }
+): void {
+	const email = input.email.trim().toLowerCase();
+	if (!EMAIL_RE.test(email)) throw new AuthError('Enter a valid email address.', 'invalid_email');
+	if (email === BOOTSTRAP_PLACEHOLDER_EMAIL)
+		throw new AuthError(
+			'Enter your own email address — this placeholder can’t receive anything.',
+			'placeholder_email'
+		);
+	if (input.password.length < MIN_PASSWORD_LENGTH)
+		throw new AuthError(
+			`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
+			'weak_password'
+		);
+	// The whole point is to retire the generated install password — it stays
+	// visible in the deployment platform's setup screen and logs, so "resetting"
+	// to the same value would change nothing.
+	const bootstrapPw = env.CAIRN_ADMIN_PASSWORD ?? env.APP_PASSWORD;
+	if (bootstrapPw && input.password === bootstrapPw)
+		throw new AuthError(
+			'Choose a different password — the generated install password stays visible on your platform’s setup screen.',
+			'reused_bootstrap_password'
+		);
+	const taken = db.prepare('SELECT id FROM users WHERE email = ? AND id != ?').get(email, userId);
+	if (taken) throw new AuthError('That email is already in use.', 'email_taken');
+
+	db.prepare(
+		'UPDATE users SET email = ?, password_hash = ?, must_reset_password = 0 WHERE id = ?'
+	).run(email, hashPassword(input.password), userId);
+	log.info(
+		{ event: 'forced_credential_reset_completed', userId, email },
+		'bootstrap admin set their own password and email'
+	);
 }
 
 // ---------- Registration / users ----------

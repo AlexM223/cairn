@@ -1,21 +1,27 @@
 <script lang="ts">
 	import { page } from '$app/state';
 
-	let { children } = $props();
+	let { data, children } = $props();
 
-	const tabs = [
-		{ href: '/admin', label: 'Overview' },
-		{ href: '/admin/activity', label: 'Activity' },
-		{ href: '/admin/users', label: 'Users' },
-		{ href: '/admin/invites', label: 'Invites' },
-		{ href: '/admin/settings', label: 'Settings' },
-		{ href: '/admin/feature-flags', label: 'Feature flags' },
-		{ href: '/admin/notifications', label: 'Notifications' },
-		{ href: '/admin/announcements', label: 'Announcements' },
-		{ href: '/admin/referral-settings', label: 'Referrals' },
-		{ href: '/admin/logs', label: 'Logs' },
-		{ href: '/admin/backup', label: 'Backup' }
-	];
+	// Users/Invites are multi-user MANAGEMENT surfaces — hidden outright in solo
+	// mode rather than shown-but-disabled (docs/SOLO-MODE-UMBREL-AUTOADMIN-PLAN.md
+	// Part 2). The routes themselves 404 via assertTeamMode() regardless of this
+	// list, so this is purely "don't advertise a tab that 404s."
+	const tabs = $derived(
+		[
+			{ href: '/admin', label: 'Overview' },
+			{ href: '/admin/activity', label: 'Activity' },
+			{ href: '/admin/users', label: 'Users', teamOnly: true },
+			{ href: '/admin/invites', label: 'Invites', teamOnly: true },
+			{ href: '/admin/settings', label: 'Settings' },
+			{ href: '/admin/feature-flags', label: 'Feature flags' },
+			{ href: '/admin/notifications', label: 'Notifications' },
+			{ href: '/admin/announcements', label: 'Announcements' },
+			{ href: '/admin/referral-settings', label: 'Referrals' },
+			{ href: '/admin/logs', label: 'Logs' },
+			{ href: '/admin/backup', label: 'Backup' }
+		].filter((tab) => !tab.teamOnly || data.instanceMode === 'team')
+	);
 
 	function isActive(href: string): boolean {
 		if (href === '/admin') return page.url.pathname === '/admin';

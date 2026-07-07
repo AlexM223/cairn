@@ -2,15 +2,70 @@ import { error, json } from '@sveltejs/kit';
 import type { RequestEvent } from '@sveltejs/kit';
 import type { SessionUser } from '$lib/types';
 import { FEATURE_FLAGS_BY_KEY } from './featureFlags/registry';
-import { isFeatureEnabled } from './featureFlags/resolve';
+import { isFeatureEnabled, resolveAllFlags } from './featureFlags/resolve';
+import { getInstanceSettings } from './settings';
+import {
+	getApiTokenUser,
+	bearerRetryAfter,
+	noteBearerFailure,
+	noteBearerSuccess
+} from './apiTokens';
+import { tooManyAttemptsMessage } from './rateLimit';
 import { childLogger } from './logger';
 
 const flagLog = childLogger('feature-flags');
 
-/** Guard for /api routes: 401 JSON error when not signed in. */
+/** Best-effort client IP for the Bearer failure throttle. getClientAddress()
+ *  throws in contexts with no connection info — fold those into one bucket. */
+function clientIp(event: RequestEvent): string {
+	try {
+		return event.getClientAddress();
+	} catch {
+		return 'unknown';
+	}
+}
+
+/**
+ * Resolve an `Authorization: Bearer cairn_…` header to a user (cairn-ivae.1).
+ * Returns null when the header is absent; THROWS 401/429 when a token was
+ * presented but is invalid/revoked/expired or the IP is spraying bad tokens —
+ * an explicit-but-wrong credential must never fall through to the generic
+ * "authentication required" path as if nothing was sent. On success the
+ * request's locals are populated exactly as the cookie path in
+ * hooks.server.ts would have: same user, and flags re-resolved for that user
+ * so per-user feature overrides apply to token requests too.
+ */
+function bearerUser(event: RequestEvent): SessionUser | null {
+	// Optional-chained like requireFeature's event.request?.method — some test
+	// harness events carry no request at all.
+	const header = event.request?.headers.get('authorization');
+	if (!header?.startsWith('Bearer ')) return null;
+	const token = header.slice('Bearer '.length).trim();
+	if (!token) return null;
+
+	const ip = clientIp(event);
+	const wait = bearerRetryAfter(ip);
+	if (wait !== null) error(429, tooManyAttemptsMessage(wait));
+
+	const user = getApiTokenUser(token);
+	if (!user) {
+		noteBearerFailure(ip);
+		error(401, 'Invalid or revoked API token');
+	}
+	noteBearerSuccess(ip);
+	event.locals.user = user;
+	event.locals.flags = resolveAllFlags(user.id);
+	return user;
+}
+
+/** Guard for /api routes: 401 JSON error when not signed in. Accepts the
+ *  session cookie (resolved in hooks.server.ts) OR a personal API token via
+ *  `Authorization: Bearer` — both yield the same SessionUser context. */
 export function requireUser(event: RequestEvent): SessionUser {
-	if (!event.locals.user) error(401, 'Authentication required');
-	return event.locals.user;
+	if (event.locals.user) return event.locals.user;
+	const tokenUser = bearerUser(event);
+	if (tokenUser) return tokenUser;
+	error(401, 'Authentication required');
 }
 
 /** Guard for /api/admin routes: 403 when not an admin. */
@@ -43,6 +98,28 @@ export function requireFeature(event: RequestEvent, key: string): SessionUser {
 		);
 		error(403, def.userMessage);
 	}
+	return user;
+}
+
+/**
+ * Guard for the multi-user MANAGEMENT surfaces only — admin users/invites,
+ * contacts, and multisig-share creation/editing — gated on instanceMode ===
+ * 'team' (docs/SOLO-MODE-UMBREL-AUTOADMIN-PLAN.md Part 2). A 404, not a 403:
+ * solo mode hides these outright rather than showing a "disabled by your
+ * administrator" message, since nothing disabled them — the instance is just
+ * narrower. Never gates the READ path a cosigner/viewer already uses to
+ * access a wallet already shared with them (that's a separate check, e.g.
+ * getViewableMultisig) — an owner toggling back to solo must not silently
+ * revoke access they already granted (cairn-7t0z.5).
+ */
+export function assertTeamMode(): void {
+	if (getInstanceSettings().instanceMode !== 'team') error(404, 'Not found');
+}
+
+/** Same as {@link assertTeamMode}, for /api routes: also requires sign-in. */
+export function requireTeamMode(event: RequestEvent): SessionUser {
+	const user = requireUser(event);
+	assertTeamMode();
 	return user;
 }
 

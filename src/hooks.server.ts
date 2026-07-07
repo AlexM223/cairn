@@ -8,6 +8,7 @@ import { startNotificationQueueWorker } from '$lib/server/notificationQueue';
 import { startAddressWatcher } from '$lib/server/addressWatcher';
 import { startKeyHealthWatcher } from '$lib/server/keyHealth';
 import { startBackupHealthWatcher } from '$lib/server/backupHealth';
+import { startScheduledBackupWatcher } from '$lib/server/backup';
 import { startPortfolioWarm } from '$lib/server/portfolioWarm';
 import { startRetentionSweep } from '$lib/server/dataRetention';
 import { migratePlaintextSecretsAtRest } from '$lib/server/secretsMigration';
@@ -96,6 +97,14 @@ try {
 	startPortfolioWarm();
 } catch (e) {
 	errLog.error({ err: e }, 'portfolio warm start failed');
+}
+// Opt-in scheduled instance backups (cairn-ivae.3): fires whenever the
+// configured daily/weekly interval is due. Idempotent, unref'd, no-op until an
+// admin enables it from /admin/backup.
+try {
+	startScheduledBackupWatcher();
+} catch (e) {
+	errLog.error({ err: e }, 'scheduled backup watcher start failed');
 }
 
 // Static assets and build output aren't worth a log line each (and the SPA
