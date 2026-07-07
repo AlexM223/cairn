@@ -184,7 +184,7 @@
 		overflow-y: auto;
 		background: var(--surface-elevated);
 		border: 1px solid var(--border);
-		border-radius: var(--radius-control);
+		border-radius: var(--radius-toggle);
 		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
 		padding: 4px;
 	}
@@ -195,7 +195,7 @@
 		justify-content: space-between;
 		gap: 8px;
 		padding: 8px 10px;
-		border-radius: var(--radius-chip);
+		border-radius: var(--radius-icon-btn);
 		cursor: pointer;
 	}
 
@@ -233,7 +233,7 @@
 		height: 24px;
 		background: none;
 		border: none;
-		border-radius: var(--radius-chip);
+		border-radius: var(--radius-badge);
 		color: var(--text-muted);
 		cursor: pointer;
 	}

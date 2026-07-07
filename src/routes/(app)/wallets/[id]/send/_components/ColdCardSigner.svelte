@@ -81,7 +81,7 @@
 	}
 </script>
 
-<div class="card card-pad method-active coldcard">
+<div class="method-active coldcard">
 	<div class="method-head">
 		<span class="method-icon"><Icon name="shield" size={18} /></span>
 		<div class="grow">
@@ -219,10 +219,12 @@
 </div>
 
 <style>
-	/* Mirrors the .method-active idiom from the Sign step so this card sits
-	   naturally alongside the generic-file method and the coming-soon tiles. */
+	/* Mirrors the .method-active idiom from the Sign step's send/+page (hairline
+	   row, not a boxed card) so this sits flush alongside the generic-file
+	   method and the coming-soon tiles in the same method-grid. */
 	.method-active {
-		border-color: var(--border);
+		padding: 18px 0;
+		border-bottom: 1px solid var(--hairline);
 	}
 
 	.method-head {
@@ -239,7 +241,7 @@
 		width: 36px;
 		height: 36px;
 		flex-shrink: 0;
-		border-radius: var(--radius-control);
+		border-radius: var(--radius-icon-btn);
 		background: var(--accent-muted);
 		color: var(--accent);
 	}
@@ -266,7 +268,7 @@
 		gap: 8px;
 		background: var(--warning-muted);
 		border: 1px solid var(--warning-border);
-		border-radius: var(--radius-card);
+		border-radius: var(--radius-icon-btn);
 		padding: 12px 14px;
 		margin-bottom: 16px;
 	}
@@ -335,8 +337,8 @@
 		width: 22px;
 		height: 22px;
 		border-radius: 50%;
-		background: var(--surface-elevated);
-		border: 1px solid var(--border);
+		background: var(--bg-input);
+		border: 1px solid var(--border-control);
 		color: var(--text-secondary);
 		font-size: 12px;
 		font-weight: 600;
@@ -376,8 +378,8 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		border: 1px dashed var(--border);
-		border-radius: var(--radius-control);
+		border: 1px dashed var(--border-ghost);
+		border-radius: var(--radius-icon-btn);
 		padding: 12px;
 		color: var(--text-secondary);
 		font-size: 13px;

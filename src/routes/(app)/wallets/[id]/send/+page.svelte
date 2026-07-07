@@ -15,6 +15,8 @@
 	import QuorumArc from '$lib/components/heartwood/QuorumArc.svelte';
 	import BurialRings from '$lib/components/heartwood/BurialRings.svelte';
 	import Modal from '$lib/components/heartwood/Modal.svelte';
+	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
+	import AtTipPill from '$lib/components/heartwood/AtTipPill.svelte';
 	import { formatBtc, formatSats, formatFeeRate, truncateMiddle } from '$lib/format';
 	import type { ScriptType } from '$lib/types';
 	import type { ConstructedPsbt } from '$lib/server/bitcoin/psbt';
@@ -786,12 +788,36 @@
 	<title>Send · {data.wallet.name} · Heartwood</title>
 </svelte:head>
 
-<div class="send-page" bind:this={pageEl}>
+<div class="send-page hw-owns-header" bind:this={pageEl}>
 	<GroveField volume={step === 'sent' ? 'grove' : 'present'} />
 
 	<div class="page-content">
+		<!-- Mobile flow header (8b/8c): back circle + centered eyebrow + spacer.
+		     The Sent moment (8k) drops the back circle — there is no "back" from
+		     a broadcast, only Done. -->
+		<header class="flow-header">
+			{#if step === 'sent'}
+				<span class="flow-spacer"></span>
+			{:else}
+				<BackCircle href={`/wallets/${walletId}`} />
+			{/if}
+			<span class="flow-eyebrow">
+				{#if step === 'sign'}
+					Sign
+					<QuorumArc total={1} collected={signedComplete ? 1 : 0} active={!signedComplete} size={18} />
+					{signedComplete ? 1 : 0} of 1
+				{:else if step === 'sent'}
+					Sent
+				{:else}
+					Send · {data.wallet.name}
+				{/if}
+			</span>
+			<span class="flow-spacer"></span>
+		</header>
+
 		<div class="eyebrow-row">
 			<EyebrowBreadcrumb path={[data.wallet.name]} current={crumbCurrent} />
+			<AtTipPill height={tipHeight} pulseKey={tipHeight} />
 		</div>
 
 		<!-- ============================================================ CREATE -->
@@ -997,9 +1023,13 @@
 					</p>
 				{/if}
 
-				<!-- FEE: text toggles, not a dropdown. -->
+				<!-- FEE: text toggles, not a dropdown. Label left, live rate + "next
+				     ring" ETA right (5a). -->
 				<div class="fee-section">
-					<span class="sec-label">Fee</span>
+					<div class="fee-head">
+						<span class="sec-label">Fee</span>
+						<span class="fee-caption">{formatFeeRate(feeRate)} · {feeEta}</span>
+					</div>
 					<div class="fee-toggles" role="group" aria-label="Fee rate">
 						{#each [{ k: 'economy', label: 'Low', rate: data.fees?.economy }, { k: 'normal', label: 'Medium', rate: data.fees?.halfHour }, { k: 'fast', label: 'High', rate: data.fees?.fastest }] as opt (opt.k)}
 							<button
@@ -1033,9 +1063,6 @@
 							<span class="unit-sm">sat/vB</span>
 						</div>
 					{/if}
-					<p class="fee-caption">
-						{formatFeeRate(feeRate)} · {feeEta}
-					</p>
 					{#if !data.fees}
 						<p class="fee-caption">Live fee estimates are unavailable — set a custom sat/vB rate.</p>
 					{/if}
@@ -1262,7 +1289,16 @@
 			<section class="step-body sign-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
 				{#if review}
 					<div class="sign-hero">
-						<span class="hero-amount sm">{formatBtc(review.amount)} <em>BTC</em></span>
+						<span class="hero-amount">{formatBtc(review.amount)} <em>BTC</em></span>
+						<p class="sign-sub">
+							to
+							{#if review.recipients.length === 1}
+								<span class="mono sub-addr">{truncateMiddle(review.recipient, 9, 4)}</span>
+							{:else}
+								{review.recipients.length} recipients
+							{/if}
+							· fee {formatFeeRate(review.feeRate)} · draft saved on your node
+						</p>
 					</div>
 				{/if}
 
@@ -1585,13 +1621,16 @@
 		<!-- ============================================================== SENT -->
 		{:else if step === 'sent'}
 			<section class="step-body fade-in sent-body" tabindex="-1" aria-label={stepAriaLabel}>
-				<!-- One-off inline stepper moment: Broadcast lit. -->
-				<div class="sent-steps" aria-hidden="true">
-					<span class="sent-step done">Create</span>
-					<span class="sent-step-line"></span>
-					<span class="sent-step done">Sign</span>
-					<span class="sent-step-line"></span>
-					<span class="sent-step lit">Broadcast</span>
+				<!-- One-off send-stepper moment (4a): flow name left, steps right,
+				     Broadcast lit. Desktop only — 8k keeps just the SENT eyebrow. -->
+				<div class="sent-topline" aria-hidden="true">
+					<span class="sent-flow-name">Send bitcoin</span>
+					<span class="sent-steps">
+						<span class="sent-step">Amount</span><span class="sent-dot">·</span>
+						<span class="sent-step">Review</span><span class="sent-dot">·</span>
+						<span class="sent-step">Sign</span><span class="sent-dot">·</span>
+						<span class="sent-step lit">Broadcast</span>
+					</span>
 				</div>
 
 				<!-- The ring-sweep moment: two cream sweeps (once), a dashed mempool
@@ -1608,8 +1647,8 @@
 					<h2 class="sent-title">Your bitcoin is on its way</h2>
 				{/if}
 				<p class="sent-sub">
-					From {data.wallet.name} · no rings yet — waiting in the mempool{#if review}
-						· fee {formatSats(review.fee)} sats{/if}
+					From {data.wallet.name} · in the mempool, waiting for its first ring{#if review}
+						· {formatFeeRate(review.feeRate)}{/if}
 				</p>
 
 				{#if sentTxid}
@@ -1700,7 +1739,42 @@
 
 	.eyebrow-row {
 		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 14px;
 		margin-bottom: 26px;
+	}
+
+	/* Mobile flow header (8b/8c/8k) — this page composes its own back circle +
+	   centered eyebrow + spacer, so the shell's bare fallback is suppressed. */
+	:global(body:has(.hw-owns-header) .mobile-flow-header) {
+		display: none;
+	}
+
+	.flow-header {
+		display: none;
+	}
+
+	.flow-eyebrow {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 7px;
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.2em;
+		text-transform: uppercase;
+		color: var(--eyebrow);
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.flow-spacer {
+		width: 32px;
+		height: 32px;
+		flex-shrink: 0;
 	}
 
 	.step-body {
@@ -1789,6 +1863,7 @@
 		min-width: 0;
 	}
 
+	/* The one number that owns the page: 86px serif on desktop (5a). */
 	.hero-input {
 		background: transparent;
 		border: none;
@@ -1798,8 +1873,8 @@
 		min-width: 4ch;
 		font-family: var(--font-serif);
 		font-weight: 600;
-		font-size: 64px;
-		line-height: 1;
+		font-size: 86px;
+		line-height: 0.92;
 		letter-spacing: -0.015em;
 		font-variant-numeric: tabular-nums;
 		color: var(--text-hero);
@@ -1814,17 +1889,18 @@
 		color: var(--attention);
 	}
 
+	/* Serif 400 · 34 in the eyebrow tone, per the 5a unit spec. */
 	.hero-unit {
 		font-family: var(--font-serif);
-		font-weight: 600;
-		font-size: 26px;
-		color: var(--text-secondary);
+		font-weight: 400;
+		font-size: 34px;
+		color: var(--eyebrow);
 	}
 
 	.hero-max {
 		font-family: var(--font-serif);
 		font-weight: 600;
-		font-size: 56px;
+		font-size: 64px;
 		line-height: 1;
 		letter-spacing: -0.015em;
 		color: var(--text-hero);
@@ -2027,6 +2103,13 @@
 		padding-top: 18px;
 	}
 
+	.fee-head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 12px;
+	}
+
 	.fee-toggles {
 		display: flex;
 		flex-wrap: wrap;
@@ -2118,8 +2201,8 @@
 	.hero-amount {
 		font-family: var(--font-serif);
 		font-weight: 600;
-		font-size: 56px;
-		line-height: 1;
+		font-size: 64px;
+		line-height: 0.96;
 		letter-spacing: -0.015em;
 		font-variant-numeric: tabular-nums;
 		color: var(--text-hero);
@@ -2127,6 +2210,18 @@
 
 	.hero-amount.sm {
 		font-size: 44px;
+	}
+
+	/* 5b sub-line: "to bc1q… · fee 12 sat/vB · draft saved on your node". */
+	.sign-sub {
+		margin-top: 14px;
+		font-size: 15px;
+		color: var(--text-secondary);
+	}
+
+	.sub-addr {
+		font-size: 13.5px;
+		color: var(--on-accent-ghost);
 	}
 
 	.hero-amount em {
@@ -2228,6 +2323,7 @@
 	/* ---- Sign ---- */
 	.sign-hero {
 		display: flex;
+		flex-direction: column;
 	}
 
 	.sign-grid {
@@ -2293,8 +2389,9 @@
 		font-weight: 500;
 	}
 
+	/* Spec 5b: a collected signature reads bright copper, not sage. */
 	.key-state.signed {
-		color: var(--sage);
+		color: var(--accent-bright);
 	}
 
 	.key-state.pending {
@@ -2619,33 +2716,32 @@
 		gap: 16px;
 	}
 
-	.sent-steps {
+	/* 4a topline: flow name left, quiet stepper right, Broadcast lit. */
+	.sent-topline {
 		display: flex;
-		align-items: center;
-		gap: 10px;
-		font-size: 11px;
-		font-weight: 600;
-		letter-spacing: 0.18em;
-		text-transform: uppercase;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 12px;
+		width: 100%;
 	}
 
-	.sent-step {
-		color: var(--eyebrow-path);
+	.sent-flow-name {
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--text-muted);
 	}
 
-	.sent-step.done {
-		color: var(--accent-dim);
+	.sent-steps {
+		display: inline-flex;
+		align-items: baseline;
+		gap: 9px;
+		font-size: 12px;
+		font-weight: 500;
+		color: var(--text-faint);
 	}
 
 	.sent-step.lit {
 		color: var(--accent-bright);
-		text-shadow: 0 0 14px rgba(232, 147, 90, 0.45);
-	}
-
-	.sent-step-line {
-		width: 26px;
-		height: 1px;
-		background: var(--hairline);
 	}
 
 	.sweep-stage {
@@ -2778,12 +2874,21 @@
 	@media (max-width: 900px) {
 		.send-page {
 			margin: -20px -18px -48px;
-			padding: 8px 18px 48px;
+			padding: 16px 18px 48px;
+		}
+
+		/* Flow-page header: back circle + centered eyebrow + spacer (8b/8c/8k);
+		   the desktop eyebrow/at-tip row retires. */
+		.flow-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 10px;
+			margin-bottom: 24px;
 		}
 
 		.eyebrow-row {
-			justify-content: center;
-			margin-bottom: 20px;
+			display: none;
 		}
 
 		.hero-line {
@@ -2796,7 +2901,8 @@
 		}
 
 		.hero-input {
-			font-size: 46px;
+			font-size: 52px;
+			line-height: 1;
 			text-align: center;
 		}
 
@@ -2805,7 +2911,7 @@
 		}
 
 		.hero-unit {
-			font-size: 19px;
+			font-size: 20px;
 		}
 
 		.mode-toggles {
@@ -2826,7 +2932,22 @@
 		}
 
 		.sign-hero {
-			justify-content: center;
+			align-items: center;
+			text-align: center;
+		}
+
+		.sign-sub {
+			margin-top: 8px;
+			font-size: 11.5px;
+		}
+
+		.sub-addr {
+			font-size: 10.5px;
+		}
+
+		/* 8k keeps only the SENT eyebrow — no stepper. */
+		.sent-topline {
+			display: none;
 		}
 
 		.sent-title {
@@ -2841,10 +2962,6 @@
 		.step-actions :global(.btn) {
 			width: 100%;
 			min-height: 46px;
-		}
-
-		.step-actions .batch-total {
-			width: auto;
 		}
 	}
 
