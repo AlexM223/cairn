@@ -2,16 +2,70 @@ import { error, json } from '@sveltejs/kit';
 import type { RequestEvent } from '@sveltejs/kit';
 import type { SessionUser } from '$lib/types';
 import { FEATURE_FLAGS_BY_KEY } from './featureFlags/registry';
-import { isFeatureEnabled } from './featureFlags/resolve';
+import { isFeatureEnabled, resolveAllFlags } from './featureFlags/resolve';
 import { getInstanceSettings } from './settings';
+import {
+	getApiTokenUser,
+	bearerRetryAfter,
+	noteBearerFailure,
+	noteBearerSuccess
+} from './apiTokens';
+import { tooManyAttemptsMessage } from './rateLimit';
 import { childLogger } from './logger';
 
 const flagLog = childLogger('feature-flags');
 
-/** Guard for /api routes: 401 JSON error when not signed in. */
+/** Best-effort client IP for the Bearer failure throttle. getClientAddress()
+ *  throws in contexts with no connection info — fold those into one bucket. */
+function clientIp(event: RequestEvent): string {
+	try {
+		return event.getClientAddress();
+	} catch {
+		return 'unknown';
+	}
+}
+
+/**
+ * Resolve an `Authorization: Bearer cairn_…` header to a user (cairn-ivae.1).
+ * Returns null when the header is absent; THROWS 401/429 when a token was
+ * presented but is invalid/revoked/expired or the IP is spraying bad tokens —
+ * an explicit-but-wrong credential must never fall through to the generic
+ * "authentication required" path as if nothing was sent. On success the
+ * request's locals are populated exactly as the cookie path in
+ * hooks.server.ts would have: same user, and flags re-resolved for that user
+ * so per-user feature overrides apply to token requests too.
+ */
+function bearerUser(event: RequestEvent): SessionUser | null {
+	// Optional-chained like requireFeature's event.request?.method — some test
+	// harness events carry no request at all.
+	const header = event.request?.headers.get('authorization');
+	if (!header?.startsWith('Bearer ')) return null;
+	const token = header.slice('Bearer '.length).trim();
+	if (!token) return null;
+
+	const ip = clientIp(event);
+	const wait = bearerRetryAfter(ip);
+	if (wait !== null) error(429, tooManyAttemptsMessage(wait));
+
+	const user = getApiTokenUser(token);
+	if (!user) {
+		noteBearerFailure(ip);
+		error(401, 'Invalid or revoked API token');
+	}
+	noteBearerSuccess(ip);
+	event.locals.user = user;
+	event.locals.flags = resolveAllFlags(user.id);
+	return user;
+}
+
+/** Guard for /api routes: 401 JSON error when not signed in. Accepts the
+ *  session cookie (resolved in hooks.server.ts) OR a personal API token via
+ *  `Authorization: Bearer` — both yield the same SessionUser context. */
 export function requireUser(event: RequestEvent): SessionUser {
-	if (!event.locals.user) error(401, 'Authentication required');
-	return event.locals.user;
+	if (event.locals.user) return event.locals.user;
+	const tokenUser = bearerUser(event);
+	if (tokenUser) return tokenUser;
+	error(401, 'Authentication required');
 }
 
 /** Guard for /api/admin routes: 403 when not an admin. */

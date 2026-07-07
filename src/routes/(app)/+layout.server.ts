@@ -1,13 +1,22 @@
 import { redirect } from '@sveltejs/kit';
 import {
 	hasAcceptedAdminDisclosure,
-	hasAcceptedCurrentAgreement
+	hasAcceptedCurrentAgreement,
+	getUserAgreement,
+	DEFAULT_OPERATOR
 } from '$lib/server/disclosures';
 import { hasRecoverySetup } from '$lib/server/recovery';
 import { listUnbackedWallets, shouldShowBackupReminder } from '$lib/server/backups';
 import { listActiveAnnouncementsFor } from '$lib/server/announcements';
 import { getInstanceSettings } from '$lib/server/settings';
+import { startScheduledBackupWatcher } from '$lib/server/backup';
 import type { LayoutServerLoad } from './$types';
+
+// Arm the scheduled-backup ticker (cairn-ivae.3). Module scope, so it runs
+// once when the first authenticated page loads and is a no-op forever after —
+// the earliest hook available without touching hooks.server.ts. An instance
+// nobody has visited since boot has nothing new to back up anyway.
+startScheduledBackupWatcher();
 
 export const load: LayoutServerLoad = async ({ locals, url }) => {
 	if (!locals.user) {
@@ -56,6 +65,13 @@ export const load: LayoutServerLoad = async ({ locals, url }) => {
 		// is the real gate; this is what lets the UI hide the nav entirely rather
 		// than show a disabled state (docs/SOLO-MODE-UMBREL-AUTOADMIN-PLAN.md Part 2).
 		instanceMode: getInstanceSettings().instanceMode,
+		// Admin-set operator name, surfaced in the sidebar chrome (cairn-ivae.6).
+		// Null while still the stock fallback — "operated by the operator of this
+		// Cairn instance" would be noise, so nothing renders until it's set.
+		operatorName: (() => {
+			const operator = getUserAgreement().operator;
+			return operator === DEFAULT_OPERATOR ? null : operator;
+		})(),
 		unbackedWallets: listUnbackedWallets(locals.user.id),
 		showBackupReminder: shouldShowBackupReminder(locals.user.id),
 		// Instance-wide admin announcements (active, unexpired, not dismissed by
