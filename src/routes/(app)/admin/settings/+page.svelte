@@ -254,47 +254,10 @@
 					</div>
 				</div>
 
-				<div class="subgroup">
-					<span class="subgroup-title">
-						Bitcoin Core RPC <span class="badge badge-neutral">optional</span>
-					</span>
-					<p class="hint">Stored for upcoming features; not used by the explorer yet.</p>
-					<div class="row-fields">
-						<div class="field grow">
-							<label class="label" for="coreRpcUrl">RPC URL</label>
-							<input
-								class="input mono"
-								id="coreRpcUrl"
-								name="coreRpcUrl"
-								placeholder="http://127.0.0.1:8332"
-								value={data.settings.coreRpcUrl ?? ''}
-							/>
-						</div>
-						<div class="field">
-							<label class="label" for="coreRpcUser">User</label>
-							<input
-								class="input mono"
-								id="coreRpcUser"
-								name="coreRpcUser"
-								value={data.settings.coreRpcUser ?? ''}
-							/>
-						</div>
-						<div class="field">
-							<label class="label" for="coreRpcPass">Password</label>
-							<input
-								class="input mono"
-								id="coreRpcPass"
-								name="coreRpcPass"
-								type="password"
-								autocomplete="new-password"
-								placeholder={data.settings.hasCoreRpcPass ? '•••••••• (unchanged)' : ''}
-							/>
-							{#if data.settings.hasCoreRpcPass}
-								<span class="hint">A password is stored. Leave blank to keep it.</span>
-							{/if}
-						</div>
-					</div>
-				</div>
+				<!-- Bitcoin Core RPC fields (coreRpcUrl/User/Pass) are intentionally hidden here --
+				     they are stored but not yet consumed by anything (cairn-zoz8: the Esplora-removal
+				     epic reintroduces this subgroup, functional, once ChainService actually talks to
+				     Core RPC). Do not show a not-used-yet field to users in the meantime. -->
 			</div>
 		{/if}
 
