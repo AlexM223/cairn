@@ -425,6 +425,19 @@
 	</section>
 
 	<section class="card card-pad section">
+		<span class="card-title">API access</span>
+		<p class="hint" style="margin: 4px 0 10px">
+			Create a personal access token to script against your own instance — pull balances, trigger
+			a backup from cron, or build a companion tool. Never required for normal use.
+		</p>
+		<div class="row">
+			<a href="/settings/tokens" class="btn btn-secondary btn-sm">
+				<Icon name="zap" size={14} /> Manage tokens
+			</a>
+		</div>
+	</section>
+
+	<section class="card card-pad section">
 		<span class="card-title">Terms &amp; agreement</span>
 		<p class="hint" style="margin: 4px 0 10px">
 			Review the agreement you accepted for this instance, along with Cairn's software disclaimer

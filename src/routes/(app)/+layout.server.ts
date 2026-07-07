@@ -9,14 +9,7 @@ import { hasRecoverySetup } from '$lib/server/recovery';
 import { listUnbackedWallets, shouldShowBackupReminder } from '$lib/server/backups';
 import { listActiveAnnouncementsFor } from '$lib/server/announcements';
 import { getInstanceSettings } from '$lib/server/settings';
-import { startScheduledBackupWatcher } from '$lib/server/backup';
 import type { LayoutServerLoad } from './$types';
-
-// Arm the scheduled-backup ticker (cairn-ivae.3). Module scope, so it runs
-// once when the first authenticated page loads and is a no-op forever after —
-// the earliest hook available without touching hooks.server.ts. An instance
-// nobody has visited since boot has nothing new to back up anyway.
-startScheduledBackupWatcher();
 
 export const load: LayoutServerLoad = async ({ locals, url }) => {
 	if (!locals.user) {
