@@ -99,6 +99,38 @@ const state: WatchState = {
 	tipHeight: 0
 };
 
+// ---------------------------------------------------------------- scan progress
+
+export interface WatcherScanProgress {
+	/** startAddressWatcher() has been called (scan begins ~10s later). */
+	started: boolean;
+	/** The startup baseline pass has completed at least once. */
+	baselined: boolean;
+	/** Addresses currently watched across all wallets. */
+	totalAddresses: number;
+	/** Watched addresses whose history has been recorded (baselined). */
+	scannedAddresses: number;
+}
+
+/**
+ * Live view of the initial address-history scan, read by the first-sync
+ * screen (cairn-koy4.11). Observation only. baselinedScripthashes can retain
+ * entries for scripthashes dropped from the watch set (client swap), so the
+ * scanned count is clamped to the current total.
+ */
+export function getWatcherScanProgress(): WatcherScanProgress {
+	let scanned = 0;
+	for (const sh of state.byScripthash.keys()) {
+		if (state.baselinedScripthashes.has(sh)) scanned++;
+	}
+	return {
+		started: state.started,
+		baselined: state.baselined,
+		totalAddresses: state.byScripthash.size,
+		scannedAddresses: scanned
+	};
+}
+
 // ------------------------------------------------------------- address enumeration
 
 interface WalletRow {

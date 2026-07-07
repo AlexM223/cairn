@@ -11,9 +11,10 @@ import { listUnbackedWallets, shouldShowBackupReminder } from '$lib/server/backu
 import { listActiveAnnouncementsFor } from '$lib/server/announcements';
 import { getInstanceSettings } from '$lib/server/settings';
 import { httpsExternalPort } from '$lib/server/httpsPort';
+import { isFirstSyncComplete } from '$lib/server/syncStatus';
 import type { LayoutServerLoad } from './$types';
 
-export const load: LayoutServerLoad = async ({ locals, url }) => {
+export const load: LayoutServerLoad = async ({ locals, url, cookies }) => {
 	if (!locals.user) {
 		const next = url.pathname === '/' ? '' : `?next=${encodeURIComponent(url.pathname)}`;
 		redirect(302, `/login${next}`);
@@ -49,6 +50,22 @@ export const load: LayoutServerLoad = async ({ locals, url }) => {
 		const status = hasRecoverySetup(locals.user.id);
 		const recoveryComplete = status.phrase && status.codesRemaining > 0;
 		if (!recoveryComplete) redirect(302, '/recovery-setup');
+	}
+
+	// First-sync gate (cairn-koy4.11) — LAST, so signup/disclosure/recovery all
+	// finish first (that paperwork usefully overlaps the count). Until the
+	// once-per-install chain-history cache exists, app pages hop to the
+	// full-screen first-sync experience at top-level /sync (outside this
+	// layout, so it can't loop — same shape as /disclosure). /recovery-setup is
+	// exempt (it lives under this layout mid-wizard), and the screen's
+	// "continue without waiting" escape sets a session cookie honored here so
+	// nobody is ever trapped behind an unreachable chain backend.
+	if (
+		url.pathname !== '/recovery-setup' &&
+		cookies.get('hw_skip_sync') !== '1' &&
+		!isFirstSyncComplete()
+	) {
+		redirect(302, '/sync');
 	}
 
 	// Two separate backup nudges:
