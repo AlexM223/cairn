@@ -27,6 +27,7 @@ import {
 	RECOVERY_GRANT_TTL_MS
 } from '$lib/server/recovery';
 import {
+	clientIpFor,
 	recoveryRetryAfter,
 	noteRecoveryAttempt,
 	tooManyAttemptsMessage
@@ -48,7 +49,7 @@ export const POST: RequestHandler = async (event) => {
 	const email = String(body.email ?? '');
 	const phrase = body.phrase != null ? String(body.phrase) : undefined;
 	const code = body.code != null ? String(body.code) : undefined;
-	const ip = event.getClientAddress();
+	const ip = clientIpFor(event);
 
 	// Rate limit on BOTH email and IP (5/hour), before touching the DB.
 	const wait = recoveryRetryAfter(ip, email);

@@ -6,7 +6,7 @@
 import { json, readJson } from '$lib/server/api';
 import { assertCanRegister, reclaimableUserId, credentialDescriptors, AuthError } from '$lib/server/auth';
 import { buildRegistrationOptions, setRegChallenge } from '$lib/server/webauthn';
-import { inviteRetryAfter, noteInviteFailure, tooManyAttemptsMessage } from '$lib/server/rateLimit';
+import { clientIpFor, inviteRetryAfter, noteInviteFailure, tooManyAttemptsMessage } from '$lib/server/rateLimit';
 import { childLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
 
@@ -17,7 +17,7 @@ export const POST: RequestHandler = async (event) => {
 	const email = String(body.email ?? '');
 	const displayName = String(body.displayName ?? '');
 	const inviteCode = String(body.inviteCode ?? '') || undefined;
-	const ip = event.getClientAddress();
+	const ip = clientIpFor(event);
 
 	// Throttle invite-code guessing before touching anything.
 	const wait = inviteRetryAfter(ip);
