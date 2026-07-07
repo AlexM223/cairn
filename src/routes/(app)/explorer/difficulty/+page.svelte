@@ -9,7 +9,26 @@
 
 	let { data } = $props();
 
-	const info = $derived(data.info);
+	// Difficulty info + adjustment history are STREAMED (cairn-2zxt.3): the page
+	// chrome (back link, heading, explainer) paints instantly with a skeleton,
+	// then the numbers fill in when the backend answers. loadDifficulty never
+	// rejects — a failure resolves to `error`.
+	type DiffData = Awaited<(typeof data)['difficulty']>;
+	let diff = $state<DiffData | null>(null);
+	$effect(() => {
+		const promise = data.difficulty;
+		let stale = false;
+		void promise.then((d) => {
+			if (!stale) diff = d;
+		});
+		return () => {
+			stale = true;
+		};
+	});
+	const loading = $derived(diff === null);
+	const info = $derived(diff?.info ?? null);
+	const history = $derived(diff?.history ?? null);
+	const chainError = $derived(diff?.error ?? null);
 
 	/** "+3.42%" / "-1.20%" with a fixed number of decimals. */
 	function signedPercent(n: number, dp = 2): string {
@@ -90,8 +109,8 @@
 	// Bars for the retarget history chart, scaled to the largest swing.
 	const BAR_CAP = 64; // px, tallest bar
 	const chart = $derived.by(() => {
-		if (!data.history || data.history.length < 2) return null;
-		const entries = data.history.filter((h) => h.changePercent !== null).slice(-10);
+		if (!history || history.length < 2) return null;
+		const entries = history.filter((h) => h.changePercent !== null).slice(-10);
 		if (entries.length === 0) return null;
 		const maxAbs = Math.max(...entries.map((e) => Math.abs(e.changePercent as number)), 0.1);
 		return {
@@ -144,11 +163,29 @@
 	</p>
 </HowItWorks>
 
-{#if data.error}
+{#if chainError}
 	<div class="form-error" role="alert">
-		Can't reach chain data sources — {data.error}.
+		Can't reach chain data sources — {chainError}.
 		<a href="/explorer/difficulty">Retry</a>
 	</div>
+{:else if loading}
+	<!-- Streamed placeholder: hero + stat scaffold while difficulty data lands. -->
+	<section class="hero fade-in" aria-busy="true" aria-label="Loading difficulty">
+		<span class="overline">Projected adjustment</span>
+		<span class="hero-number hero-pct tabular skeleton">+0.00%</span>
+		<p class="hero-sentence skeleton">
+			Based on how fast blocks have arrived this epoch, difficulty is expected to change soon.
+		</p>
+	</section>
+	<section class="stats fade-in">
+		{#each [0, 1, 2, 3] as i (i)}
+			<div class="stat">
+				<span class="overline skeleton">Loading</span>
+				<span class="hero-number stat-hero tabular skeleton">000</span>
+				<span class="hint skeleton">placeholder detail</span>
+			</div>
+		{/each}
+	</section>
 {:else if info}
 	<!-- Projected adjustment hero -->
 	<section class="hero fade-in">
@@ -320,7 +357,7 @@
 				during the epoch.
 			</span>
 		</section>
-	{:else if data.history === null}
+	{:else if history === null}
 		<p class="hint degrade-note">
 			Adjustment history needs a mempool.space-compatible backend.
 		</p>
