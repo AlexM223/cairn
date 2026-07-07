@@ -122,14 +122,14 @@
 </div>
 
 <style>
+	/* Unboxed disclosure (hairlines-not-boxes): a copper hairline on the left
+	   marks the expanded region instead of a framed panel. */
 	.asd {
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
-		padding: 12px 14px;
-		background: var(--bg);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
+		padding: 4px 0 8px 14px;
+		border-left: 2px solid var(--accent-dim-2);
 		font-size: 12.5px;
 	}
 
@@ -197,7 +197,7 @@
 		line-height: 1.6;
 		word-break: break-all;
 		color: var(--text-secondary);
-		background: var(--surface-elevated);
+		background: var(--bg-input);
 		border-radius: var(--radius-control);
 		padding: 8px 10px;
 	}

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
+	import KeyCategoryIcon from './KeyCategoryIcon.svelte';
 	import { DEVICE_LABELS } from '../labels';
 	import { accountFromPath } from './keyHealth';
 
@@ -24,13 +25,24 @@
 		keyInfo,
 		scriptType,
 		receiveAddress,
-		onVerified
+		onVerified,
+		category = null,
+		emergency = false,
+		flag = null,
+		flagTitle = undefined
 	}: {
 		multisigId: number;
 		keyInfo: KeyInfo;
 		scriptType: ScriptType;
 		receiveAddress: string | null;
 		onVerified: (keyId: number, lastVerifiedAt: string) => void;
+		/** Key category (hardware/mobile/recovery) — renders the category glyph. */
+		category?: string | null;
+		/** Recovery keys get a quiet "emergency" tag. */
+		emergency?: boolean;
+		/** Optional amber nudge tag (e.g. "Registered?") with a hover explanation. */
+		flag?: string | null;
+		flagTitle?: string;
 	} = $props();
 
 	let expanded = $state(false);
@@ -56,13 +68,15 @@
 	const isDeviceCheck = $derived(isDeviceKey && deviceAccount !== null);
 	const deviceLabel = $derived(keyInfo.deviceType ? DEVICE_LABELS[keyInfo.deviceType] : 'this key');
 
+	// Spec 5d's stale-key string shape ("6 mo since signed"), adapted honestly
+	// to what this row actually tracks — health checks, not signatures.
 	function lastVerifiedLabel(ts: string | null): string {
-		if (!ts) return 'Never checked';
+		if (!ts) return 'never checked';
 		const days = Math.floor((Date.now() - Date.parse(ts)) / 86_400_000);
-		if (days <= 0) return 'Checked today';
-		if (days === 1) return 'Checked yesterday';
-		if (days < 60) return `Checked ${days} days ago`;
-		return `Checked ${Math.floor(days / 30)} months ago`;
+		if (days <= 0) return 'checked today';
+		if (days === 1) return 'checked yesterday';
+		if (days < 60) return `checked ${days} days ago`;
+		return `${Math.floor(days / 30)} mo since checked`;
 	}
 
 	async function postVerified(body: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -97,7 +111,7 @@
 				// Guard: the UI only offers the device check when the account was
 				// inferred, but never probe a guessed derivation.
 				throw new Error(
-					`This key's stored derivation path (${keyInfo.path}) isn't the standard BIP-48 layout, so Cairn can't re-read it from the device — verify it manually against the receive address instead.`
+					`This key's stored derivation path (${keyInfo.path}) isn't the standard BIP-48 layout, so Heartwood can't re-read it from the device — verify it manually against the receive address instead.`
 				);
 			}
 			let reading: { xpub: string; fingerprint: string };
@@ -151,17 +165,33 @@
 
 <div class="khr" class:expanded>
 	<div class="khr-row">
+		<!-- Spec 5d: stale = copper dot + amber "N mo since checked"; a fresh key
+		     gets a quiet sage dot instead. -->
+		<span class="khr-dot" class:stale aria-hidden="true"></span>
+		{#if category}
+			<span class="khr-cat" title={category}><KeyCategoryIcon {category} size={15} /></span>
+		{/if}
 		<span class="khr-name truncate">{keyInfo.name}</span>
 		{#if keyInfo.deviceType}
 			<span class="khr-sub">{DEVICE_LABELS[keyInfo.deviceType]}</span>
 		{/if}
+		{#if keyInfo.fingerprint !== '00000000'}
+			<span class="khr-sub mono">{keyInfo.fingerprint}</span>
+		{/if}
+		{#if emergency}
+			<span class="khr-tag" title="For emergencies only — you won't use this key day to day.">
+				emergency
+			</span>
+		{/if}
+		{#if flag}
+			<span class="khr-flag" title={flagTitle}>{flag}</span>
+		{/if}
 		<span class="khr-when" class:stale>
-			{#if stale}<Icon name="clock" size={12} />{:else}<Icon name="check" size={12} />{/if}
 			{lastVerifiedLabel(verifiedAt)}
 		</span>
 		<button
 			type="button"
-			class="btn btn-ghost btn-sm"
+			class="khr-check"
 			aria-expanded={expanded}
 			onclick={() => (expanded = !expanded)}
 		>
@@ -174,7 +204,7 @@
 		<div class="khr-panel fade-in">
 			{#if isDeviceCheck}
 				<p class="khr-copy">
-					Cairn asks the {deviceLabel} for its public key and compares it with what this wallet
+					Heartwood asks the {deviceLabel} for its public key and compares it with what this wallet
 					stores. Nothing is signed, and nothing secret ever leaves the device — a match proves
 					it still holds the exact key this wallet expects.
 				</p>
@@ -186,13 +216,13 @@
 				{#if isDeviceKey}
 					<p class="khr-copy">
 						This {deviceLabel} key was stored with a non-standard derivation path
-						(<span class="mono">{keyInfo.path}</span>), so Cairn can't ask the device for it
+						(<span class="mono">{keyInfo.path}</span>), so Heartwood can't ask the device for it
 						directly — a live re-read would look at the wrong derivation. Verify it by hand
 						against the wallet's current receive address instead:
 					</p>
 				{:else}
 					<p class="khr-copy">
-						Cairn can't talk to this key directly, so verify it by hand against the wallet's current
+						Heartwood can't talk to this key directly, so verify it by hand against the wallet's current
 						receive address:
 					</p>
 				{/if}
@@ -275,9 +305,10 @@
 </div>
 
 <style>
+	/* Hairline key rows (5d): dot + name + device, amber stale string right. */
 	.khr {
-		border-top: 1px solid var(--border-subtle);
-		padding: 8px 0;
+		border-top: 1px solid var(--hairline);
+		padding: 12px 0;
 	}
 
 	.khr-row {
@@ -287,49 +318,108 @@
 		min-width: 0;
 	}
 
+	/* Status dot — sage when recently checked, copper when stale (spec 5d). */
+	.khr-dot {
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		flex-shrink: 0;
+		background: var(--sage);
+	}
+
+	.khr-dot.stale {
+		background: var(--accent);
+	}
+
 	.khr-name {
-		font-size: 13px;
+		font-size: 14px;
 		font-weight: 500;
-		color: var(--text);
+		color: var(--text-rows);
 		max-width: 220px;
 	}
 
 	.khr-sub {
-		font-size: 11px;
+		font-size: 11.5px;
 		color: var(--text-muted);
 	}
 
-	.khr-when {
+	.khr-cat {
 		display: inline-flex;
-		align-items: center;
-		gap: 5px;
+		color: var(--accent);
+		flex-shrink: 0;
+	}
+
+	.khr-tag {
+		font-size: 10.5px;
+		color: var(--text-faint);
+		border: 1px solid var(--border-control);
+		border-radius: var(--radius-badge);
+		padding: 1px 7px;
+		white-space: nowrap;
+	}
+
+	.khr-flag {
+		font-size: 10.5px;
+		font-weight: 600;
+		color: var(--attention);
+		background: var(--attention-muted);
+		border-radius: var(--radius-badge);
+		padding: 1px 7px;
+		white-space: nowrap;
+	}
+
+	.khr-when {
 		margin-left: auto;
 		font-size: 12px;
-		color: var(--success);
+		color: var(--text-muted);
+		white-space: nowrap;
 	}
 
 	.khr-when.stale {
-		color: var(--warning);
+		color: var(--attention);
 	}
 
-	.khr-row .btn :global(svg) {
+	.khr-check {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		flex-shrink: 0;
+		background: none;
+		border: none;
+		padding: 4px 6px;
+		margin: -4px 0;
+		border-radius: var(--radius-toggle);
+		font: inherit;
+		font-size: 12px;
+		font-weight: 500;
+		color: var(--text-muted);
+		cursor: pointer;
+		transition:
+			color 120ms var(--ease),
+			background 120ms var(--ease);
+	}
+
+	.khr-check:hover {
+		color: var(--accent-bright);
+		background: var(--accent-muted);
+	}
+
+	.khr-check :global(svg) {
 		transition: transform 150ms var(--ease);
 	}
 
-	.khr.expanded .khr-row .btn :global(svg) {
+	.khr.expanded .khr-check :global(svg) {
 		transform: rotate(180deg);
 	}
 
+	/* Expanded check panel: quietly indented under the row, no box. */
 	.khr-panel {
 		display: flex;
 		flex-direction: column;
 		align-items: flex-start;
 		gap: 10px;
-		margin-top: 10px;
-		padding: 12px 14px;
-		background: var(--bg);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
+		margin-top: 12px;
+		padding-left: 17px;
 	}
 
 	.khr-copy {
@@ -347,41 +437,51 @@
 	}
 
 	.khr-warn-text {
-		color: var(--warning);
+		color: var(--attention);
 	}
 
 	.khr-addr {
 		font-size: 13px;
 	}
 
+	/* Check outcomes: colored text over a hairline, not tinted boxes. */
 	.khr-result {
 		display: flex;
 		align-items: flex-start;
 		gap: 8px;
 		font-size: 12.5px;
 		line-height: 1.6;
-		padding: 9px 12px;
-		border-radius: var(--radius-control);
+		padding-top: 10px;
+		border-top: 1px solid var(--hairline);
 		width: 100%;
 	}
 
 	.khr-result :global(svg) {
+		flex-shrink: 0;
 		margin-top: 2px;
 	}
 
 	.khr-ok {
-		color: var(--success);
-		background: var(--success-muted);
-		border: 1px solid rgba(107, 191, 107, 0.3);
+		color: var(--sage);
+	}
+
+	.khr-ok span {
+		color: var(--text-secondary);
+	}
+
+	.khr-ok strong {
+		color: var(--text);
 	}
 
 	.khr-warn {
-		color: var(--warning);
-		background: var(--warning-muted, rgba(230, 180, 80, 0.12));
-		border: 1px solid rgba(230, 180, 80, 0.35);
+		color: var(--attention);
+	}
+
+	.khr-warn span {
+		color: var(--text-secondary);
 	}
 
 	.khr-warn strong {
-		color: inherit;
+		color: var(--attention);
 	}
 </style>

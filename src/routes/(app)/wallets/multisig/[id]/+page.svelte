@@ -6,11 +6,16 @@
 	import CopyText from '$lib/components/CopyText.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import MiningRewards from '$lib/components/MiningRewards.svelte';
+	import GroveField from '$lib/components/heartwood/GroveField.svelte';
+	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
+	import QuorumArc from '$lib/components/heartwood/QuorumArc.svelte';
+	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
+	import WalletStepChart from '../../[id]/_components/WalletStepChart.svelte';
+	import { copyToClipboard } from '$lib/clipboard';
 	import { formatBtc, formatSats, timeAgo, truncateMiddle } from '$lib/format';
-	import KeyCategoryIcon from '../_components/KeyCategoryIcon.svelte';
 	import KeyHealthRow from '../_components/KeyHealthRow.svelte';
 	import AddressScriptDetails from '../_components/AddressScriptDetails.svelte';
-	import { KEY_CATEGORY_LABELS, DEVICE_LABELS, MULTISIG_SCRIPT_LABELS } from '../labels';
+	import { MULTISIG_SCRIPT_LABELS } from '../labels';
 	// Layout/styling shared with the single-sig detail page (namespaced under
 	// the root's .wallet-detail class); this page's style block keeps only what
 	// differs.
@@ -136,6 +141,24 @@
 	}
 
 	const receive = $derived(form?.receive ?? data.receive);
+
+	// Copy button on the receive panel (spec 5c: Copy + Rotate pills).
+	let addrCopied = $state(false);
+	async function copyAddress() {
+		if (!receive) return;
+		if (await copyToClipboard(receive.address)) {
+			addrCopied = true;
+			setTimeout(() => (addrCopied = false), 1500);
+		}
+	}
+
+	/** Confirmation depth for the burial-rings glyph. Unknown tip (scan hiccup)
+	 *  still shows a confirmed tx as sealed rather than lying "no rings yet". */
+	function confirmationsOf(height: number): number {
+		if (height <= 0) return 0;
+		if (data.tipHeight > 0) return Math.max(1, data.tipHeight - height + 1);
+		return 6;
+	}
 
 	// Backup nudge: gentle reminder until the config has been downloaded. Source
 	// of truth is the server-tracked wallet_backups table (data.backedUp); the
@@ -312,813 +335,990 @@
 </script>
 
 <svelte:head>
-	<title>{data.multisig.name} — Cairn</title>
+	<title>{data.multisig.name} — Heartwood</title>
 </svelte:head>
 
-<div class="detail wallet-detail fade-in">
-	<a href="/wallets" class="back-link">
-		<Icon name="chevron-left" size={14} />
-		Wallets
-	</a>
-
-	{#if data.created && !createdDismissed}
-		<div class="created-banner" role="status">
-			<Icon name="check" size={15} />
-			<span class="grow">
-				Wallet created — fund it with a small test amount first, and keep your backup file safe.
-			</span>
-			<button
-				type="button"
-				class="banner-dismiss"
-				aria-label="Dismiss"
-				onclick={() => (createdDismissed = true)}
-			>
-				<Icon name="x" size={14} />
-			</button>
-		</div>
-	{/if}
-
-	<!-- Header -->
-	<div class="head row">
-		<div class="row grow head-title" style="gap: 12px; min-width: 0">
-			<h1 class="page-title truncate">{data.multisig.name}</h1>
-			<span class="badge badge-accent quorum-badge">
-				<Icon name="shield" size={12} />
-				{data.multisig.threshold} of {data.multisig.keys.length}
-			</span>
-			<span class="badge badge-neutral">{MULTISIG_SCRIPT_LABELS[data.multisig.scriptType]}</span>
-		</div>
-		<!-- Signing surface: hidden from a pure viewer (they can't co-sign). -->
-		{#if data.role !== 'viewer'}
-			{#if data.flags?.send === false}
+<div class="wallet-detail hw-page fade-in">
+	<GroveField volume="present" />
+	<div class="hw-content">
+		{#if data.created && !createdDismissed}
+			<div class="created-banner" role="status">
+				<Icon name="check" size={15} />
+				<span class="grow">
+					Wallet created — fund it with a small test amount first, and keep your backup file safe.
+				</span>
 				<button
 					type="button"
-					class="btn btn-primary btn-sm"
-					disabled
-					title="Sending has been disabled by your administrator."
+					class="banner-dismiss"
+					aria-label="Dismiss"
+					onclick={() => (createdDismissed = true)}
 				>
-					<Icon name="arrow-up-right" size={14} />
-					Send
+					<Icon name="x" size={14} />
 				</button>
-			{:else}
-				<a href="/wallets/multisig/{data.multisig.id}/send" class="btn btn-primary btn-sm">
-					<Icon name="arrow-up-right" size={14} />
-					Send
-				</a>
-			{/if}
-			<a href="#backup" class="btn btn-secondary btn-sm backup-btn">
-				<Icon name="arrow-down-left" size={14} />
-				Download backup
-				{#if needsBackup}
-					<span class="backup-dot" title="No backup downloaded yet"></span>
-				{/if}
-			</a>
-		{/if}
-		{#if data.flags?.csv_export !== false}
-			<a
-				href="/api/wallets/multisig/{data.multisig.id}/history.csv"
-				class="btn btn-ghost btn-sm"
-				download
-				title="Download this wallet's transaction history as a CSV file"
-			>
-				<Icon name="arrow-down-left" size={14} />
-				Export history
-			</a>
-		{:else}
-			<FeatureDisabled message="CSV export has been disabled by your administrator." />
-		{/if}
-		<!-- Removing the wallet is owner-only (the delete action 404s otherwise). -->
-		{#if data.role !== 'owner'}
-			<!-- no delete control for shared collaborators -->
-		{:else if !confirmDelete}
-			<button
-				type="button"
-				class="btn btn-ghost btn-sm delete-trigger"
-				onclick={() => (confirmDelete = true)}
-			>
-				<Icon name="trash" size={14} />
-				Delete
-			</button>
-		{:else}
-			<form
-				method="POST"
-				action="?/delete"
-				class="delete-confirm"
-				use:enhance={() => {
-					deleting = true;
-					return async ({ update }) => {
-						deleting = false;
-						await update();
-					};
-				}}
-			>
-				<div class="row" style="gap: 8px">
-					<span class="confirm-text">Really delete? Your keys keep the money — but Cairn stops watching it.</span>
-					<button class="btn btn-danger btn-sm" disabled={deleting}>
-						{#if deleting}<span class="spinner"></span>{/if}
-						Delete wallet
-					</button>
-					<button
-						type="button"
-						class="btn btn-ghost btn-sm"
-						onclick={() => (confirmDelete = false)}
-						disabled={deleting}
-					>
-						Cancel
-					</button>
-				</div>
-				<p class="delete-backup-warning">
-					<Icon name="alert-triangle" size={16} />
-					<span>
-						This removes the multisig wallet from Cairn. Make sure you have your backup file (every
-						public key and the descriptor) and your signing devices — Cairn can't recover it for you.
-					</span>
-				</p>
-			</form>
-		{/if}
-	</div>
-	<p class="hint watch-note">
-		<Icon name="shield" size={12} />
-		<Term
-			tip="Spending needs signatures from that many of your keys. Cairn tracks the balance and builds transactions, but only your keys can approve them — your private keys never leave your devices."
-			>{data.multisig.threshold} of {data.multisig.keys.length} keys required to spend</Term
-		>
-	</p>
-
-	{#if staleKeys.length > 0 && !nudgeDismissed}
-		<div class="keycheck-nudge" role="status">
-			<Icon name="clock" size={16} />
-			<div class="grow">
-				<div class="nudge-title">When did you last check your keys?</div>
-				<p class="nudge-copy">
-					A key you can't access is a key you don't have. Check each one now and then —
-					especially before you need them. {staleKeys.length === 1
-						? `"${staleKeys[0].name}" hasn't`
-						: `${staleKeys.length} of your keys haven't`} been checked in over six months.
-				</p>
 			</div>
-			<button
-				type="button"
-				class="banner-dismiss"
-				aria-label="Dismiss reminder"
-				onclick={dismissNudge}
-			>
-				<Icon name="x" size={14} />
-			</button>
-		</div>
-	{/if}
+		{/if}
 
-	<!-- Keys -->
-	<section class="card card-pad keys-card">
-		<div class="row" style="gap: 8px">
-			<Icon name="shield" size={15} />
-			<span class="card-title grow">
-				{data.multisig.threshold} of {data.multisig.keys.length} keys required to spend
-			</span>
-		</div>
-		<div class="key-chips">
-			{#each data.multisig.keys as key (key.id)}
-				<span class="key-chip" title="{KEY_CATEGORY_LABELS[key.category]}{key.path !== 'm' ? ` · ${key.path}` : ''}">
-					<KeyCategoryIcon category={key.category} size={14} />
-					<span class="key-chip-name truncate">{key.name}</span>
-					{#if key.deviceType}
-						<span class="key-chip-sub">{DEVICE_LABELS[key.deviceType]}</span>
-					{/if}
-					{#if key.fingerprint !== '00000000'}
-						<span class="key-chip-sub mono">{key.fingerprint}</span>
-					{/if}
-					{#if key.category === 'recovery'}
-						<span class="key-chip-tag" title="For emergencies only — you won't use this key day to day.">
-							emergency
-						</span>
-					{/if}
-					{#if needsRegistration(key.deviceType) && !registeredAcks[key.id]}
-						<span class="key-chip-flag" title="This device refuses to sign for multisig wallets it hasn't registered — see below.">
-							Registered?
-						</span>
-					{/if}
-				</span>
-			{/each}
-		</div>
-
-		<div class="key-health">
-			<div class="key-health-head">
-				<span class="key-health-title">
-					<Term
-						tip="Devices die, PINs get forgotten, and a device restored from the wrong seed keeps working for everything except this wallet. A quick check proves each key still derives this wallet — before you need it to."
-						>Key checks</Term
-					>
-				</span>
-				<span class="hint">Confirm each key still works now and then.</span>
-			</div>
-			{#each data.multisig.keys as key (key.id)}
-				<KeyHealthRow
-					multisigId={data.multisig.id}
-					keyInfo={{
-						id: key.id,
-						name: key.name,
-						deviceType: key.deviceType,
-						fingerprint: key.fingerprint,
-						path: key.path,
-						lastVerifiedAt: keyVerifiedAt(key)
-					}}
-					scriptType={data.multisig.scriptType}
-					receiveAddress={receive?.address ?? null}
-					onVerified={handleKeyVerified}
+		<!-- ------------------------------------------- eyebrow + hero (5d) -->
+		<header class="hw-head">
+			<div class="hw-eyebrow">
+				<EyebrowBreadcrumb
+					path={['Wallets', data.multisig.name]}
+					current="{data.multisig.threshold}-of-{data.multisig.keys.length} · {MULTISIG_SCRIPT_LABELS[
+						data.multisig.scriptType
+					]}"
 				/>
-			{/each}
-		</div>
+			</div>
 
-		{#if unregisteredKeys.length > 0}
-			<div class="register-callout">
-				<span class="register-title">
-					<Icon name="alert-triangle" size={14} />
-					One-time step: teach {unregisteredKeys.length === 1
-						? `"${unregisteredKeys[0].name}"`
-						: 'these devices'} this wallet
-				</span>
-				<p class="register-copy">
-					A ColdCard (and SeedSigner/Passport) <strong>only signs for multisig wallets it knows</strong>
-					— it will refuse this one until registered. Download the registration file, copy it
-					to the microSD card, then on the ColdCard: <strong>Settings → Multisig Wallets →
-					Import from SD</strong>. The device shows this wallet's {data.multisig.threshold}-of-{data.multisig.keys.length}
-					quorum and keys — confirm, and it's done.
+			{#if data.detail}
+				<div class="hw-hero">
+					<span
+						class="hero-number hw-hero-btc"
+						title="{formatSats(data.detail.balance.confirmed)} sats"
+						>{formatBtc(data.detail.balance.confirmed)}</span
+					>
+					<span class="hw-hero-unit">BTC</span>
+				</div>
+				<p class="hw-hero-sub">
+					<span class="tabular">{formatSats(data.detail.balance.confirmed)} sats</span>
+					{#if data.detail.balance.unconfirmed !== 0}
+						<span class="hw-pending">
+							· {data.detail.balance.unconfirmed > 0 ? '+' : ''}{formatBtc(
+								data.detail.balance.unconfirmed
+							)} BTC on its way
+						</span>
+					{/if}
 				</p>
-				<div class="row" style="gap: 8px; flex-wrap: wrap">
-					<a href="/api/wallets/multisig/{data.multisig.id}/coldcard" class="btn btn-secondary btn-sm" download>
-						Download registration file
-					</a>
-					{#each unregisteredKeys as key (key.id)}
+			{:else}
+				<div class="hw-hero">
+					<span class="hero-number hw-hero-btc hw-hero-muted">—</span>
+				</div>
+			{/if}
+
+			<div class="hw-pills">
+				<!-- Signing surface: hidden from a pure viewer (they can't co-sign). -->
+				{#if data.role !== 'viewer'}
+					{#if data.flags?.send === false}
 						<button
 							type="button"
-							class="btn btn-ghost btn-sm"
-							onclick={() => markRegistered(key.id)}
+							class="btn btn-primary hw-pill"
+							disabled
+							title="Sending has been disabled by your administrator."
 						>
-							<Icon name="check" size={13} />
-							{key.name} is registered
+							<Icon name="arrow-up-right" size={15} />
+							Send
 						</button>
-					{/each}
+					{:else}
+						<a href="/wallets/multisig/{data.multisig.id}/send" class="btn btn-primary hw-pill">
+							<Icon name="arrow-up-right" size={15} />
+							Send
+						</a>
+					{/if}
+				{/if}
+				<a href="#receive" class="btn btn-secondary hw-pill">
+					<Icon name="arrow-down-left" size={15} />
+					Receive
+				</a>
+			</div>
+
+			<p class="hw-sign-note">
+				<QuorumArc total={data.multisig.keys.length} collected={data.multisig.threshold} size={16} />
+				<Term
+					tip="Spending needs signatures from that many of your keys. Heartwood tracks the balance and builds transactions, but only your keys can approve them — your private keys never leave your devices."
+					>{data.multisig.threshold} of {data.multisig.keys.length} keys required to spend</Term
+				>
+			</p>
+		</header>
+
+		{#if staleKeys.length > 0 && !nudgeDismissed}
+			<!-- Stale-key nudge: calm amber over a hairline, never a warning box. -->
+			<div class="keycheck-nudge" role="status">
+				<Icon name="clock" size={16} />
+				<div class="grow">
+					<div class="nudge-title">When did you last check your keys?</div>
+					<p class="nudge-copy">
+						A key you can't access is a key you don't have. Check each one now and then —
+						especially before you need them. {staleKeys.length === 1
+							? `"${staleKeys[0].name}" hasn't`
+							: `${staleKeys.length} of your keys haven't`} been checked in over six months.
+					</p>
 				</div>
+				<button
+					type="button"
+					class="banner-dismiss"
+					aria-label="Dismiss reminder"
+					onclick={dismissNudge}
+				>
+					<Icon name="x" size={14} />
+				</button>
 			</div>
 		{/if}
-	</section>
 
-	{#if data.scanError}
-		<!-- ------------------------------------------- scan failed -->
-		<div class="card card-pad scan-error">
-			<Icon name="alert-triangle" size={18} />
-			<div class="grow">
-				<div style="font-weight: 500">Can't reach the wallet scanner</div>
-				<div class="hint">{data.scanError}</div>
+		{#if data.scanError}
+			<!-- ------------------------------------------- scan failed -->
+			<div class="scan-error hw-scan-error">
+				<Icon name="alert-triangle" size={18} />
+				<div class="grow">
+					<div style="font-weight: 500">Can't reach the wallet scanner</div>
+					<div class="hint">{data.scanError}</div>
+				</div>
+				<button type="button" class="btn btn-secondary btn-sm" onclick={retry} disabled={retrying}>
+					{#if retrying}<span class="spinner"></span>{:else}<Icon name="refresh" size={14} />{/if}
+					Retry
+				</button>
 			</div>
-			<button type="button" class="btn btn-secondary btn-sm" onclick={retry} disabled={retrying}>
-				{#if retrying}<span class="spinner"></span>{:else}<Icon name="refresh" size={14} />{/if}
-				Retry
-			</button>
-		</div>
-	{:else if data.detail}
-		<div class="top-grid">
-			<!-- ------------------------------------------- balance hero -->
-			<section class="card card-pad balance-card">
-				<span class="overline">Confirmed balance</span>
-				<div class="balance-line">
-					<span
-						class="hero-number balance-btc"
-						title="{formatSats(data.detail.balance.confirmed)} sats"
-					>
-						{formatBtc(data.detail.balance.confirmed)}
-					</span>
-					<span class="balance-unit">BTC</span>
+		{:else if data.detail}
+			<!-- ------------------------------------------- stepped balance chart -->
+			{#if data.detail.history.some((t) => t.height > 0)}
+				<div class="hw-chart">
+					<WalletStepChart
+						txs={data.detail.history}
+						confirmed={data.detail.balance.confirmed}
+						height={148}
+					/>
+					<p class="hw-caption">balance over time · each step is a transaction</p>
 				</div>
-				{#if data.detail.balance.unconfirmed !== 0}
-					<span class="badge badge-warning" style="align-self: flex-start">
-						<Icon name="clock" size={12} />
-						{data.detail.balance.unconfirmed > 0 ? '+' : ''}{formatBtc(
-							data.detail.balance.unconfirmed
-						)} BTC pending
-					</span>
-				{/if}
-				<span class="hint tabular">≈ {formatSats(data.detail.balance.confirmed)} sats</span>
-			</section>
+			{/if}
 
-			<!-- ------------------------------------------- receive -->
-			<section class="card card-pad receive-card">
-				<div class="row" style="gap: 8px">
-					<Icon name="arrow-down-left" size={15} />
-					<span class="card-title grow">Receive</span>
-					{#if receive}
-						<span class="hint mono">0/{receive.index}</span>
-					{/if}
-				</div>
-				{#if receive}
-					<div class="receive-body">
-						<img
-							class="qr"
-							src={receive.qr}
-							alt="QR code for {receive.address}"
-							width="110"
-							height="110"
-						/>
-						<div class="receive-meta">
-							<div class="receive-addr">
-								<CopyText value={receive.address} truncate={13} />
+			<!-- ------------------------------------------- receive (spec 5c/8d) -->
+			{#if receive}
+				<section class="hw-section hw-receive" id="receive">
+					<div class="hw-receive-grid">
+						<div class="hw-qr-wrap">
+							<img
+								class="hw-qr"
+								src={receive.qr}
+								alt="QR code for {receive.address}"
+								width="300"
+								height="300"
+							/>
+						</div>
+						<div class="hw-receive-meta">
+							<h2 class="hw-receive-headline">A fresh address, every time.</h2>
+							<div class="hw-addr-row">
+								<span class="mono hw-addr">{receive.address}</span>
+								<span class="hw-addr-path mono">…/0/{receive.index}</span>
 							</div>
-							<span class="hint">
-								Before a large deposit, cross-check this address in another tool (Sparrow can
-								open your backup file) — two tools agreeing proves the wallet is built from
-								your keys alone.
-							</span>
 							{#if form?.receiveError}
 								<div class="form-error" role="alert">{form.receiveError}</div>
 							{/if}
-							<form
-								method="POST"
-								action="?/receive"
-								use:enhance={() => {
-									generating = true;
-									return async ({ update }) => {
-										generating = false;
-										await update({ reset: false });
-									};
-								}}
-							>
-								<input type="hidden" name="current" value={receive.index} />
-								<button class="btn btn-secondary btn-sm" disabled={generating}>
-									{#if generating}<span class="spinner"></span>{:else}<Icon
-											name="refresh"
-											size={13}
-										/>{/if}
-									Generate next address
+							<div class="hw-receive-actions">
+								<button type="button" class="btn btn-secondary hw-pill" onclick={copyAddress}>
+									<Icon name={addrCopied ? 'check' : 'copy'} size={14} />
+									{addrCopied ? 'Copied' : 'Copy'}
 								</button>
-							</form>
+								<form
+									method="POST"
+									action="?/receive"
+									use:enhance={() => {
+										generating = true;
+										return async ({ update }) => {
+											generating = false;
+											await update({ reset: false });
+										};
+									}}
+								>
+									<input type="hidden" name="current" value={receive.index} />
+									<button class="btn btn-secondary hw-pill" disabled={generating}>
+										{#if generating}<span class="spinner"></span>{:else}<Icon
+												name="refresh"
+												size={14}
+											/>{/if}
+										Rotate
+									</button>
+								</form>
+							</div>
+							<p class="hw-caption">
+								A new address for every payment keeps your history private. Before a large
+								deposit, cross-check this address in another tool (Sparrow can open your backup
+								file) — two tools agreeing proves the wallet is built from your keys alone.
+							</p>
 						</div>
 					</div>
-				{/if}
-			</section>
-		</div>
+				</section>
+			{/if}
 
-		<!-- ------------------------------------------- mining rewards -->
-		<!-- Coinbase (mining reward) UTXOs only — empty for a normal multisig, so
-		     the whole section is absent unless the wallet actually mined. -->
-		{#if data.coinbaseUtxos.length > 0}
-			<MiningRewards utxos={data.coinbaseUtxos} tipHeight={data.tipHeight} />
+			<!-- ------------------------------------------- mining rewards -->
+			<!-- Coinbase (mining reward) UTXOs only — empty for a normal multisig, so
+			     the whole section is absent unless the wallet actually mined. -->
+			{#if data.coinbaseUtxos.length > 0}
+				<MiningRewards utxos={data.coinbaseUtxos} tipHeight={data.tipHeight} />
+			{/if}
 		{/if}
 
-		<!-- ------------------------------------------- backup / export -->
-		<!-- Registration/backup exports carry full key origins; only signers (owner
-		     or cosigner) can reach these endpoints, so a pure viewer never sees them. -->
-		{#if data.role !== 'viewer'}
-		<section class="card card-pad backup-card" id="backup">
-			<div class="row" style="gap: 8px">
-				<Icon name="arrow-down-left" size={15} />
-				<span class="card-title grow">
-					<Term
-						tip="Save this file somewhere safe. It's how you recover this wallet in another wallet app if needed."
-						>Download backup</Term
-					>
-				</span>
-				{#if needsBackup}
-					<span class="badge badge-warning">
-						<Icon name="alert-triangle" size={11} />
-						not downloaded yet
-					</span>
-				{/if}
-			</div>
-			<p class="backup-copy">
-				The backup describes the wallet — quorum and public keys — so any descriptor wallet can
-				find your money again. It <strong>can't spend</strong>; spending always needs
-				{data.multisig.threshold} of your keys. Store it with your seed backups.
-			</p>
-			<div class="row" style="gap: 8px; flex-wrap: wrap">
-				<a
-					href="/api/wallets/multisig/{data.multisig.id}/caravan"
-					class="btn btn-primary btn-sm"
-					download
-					onclick={markBackupDownloaded}
-				>
-					Wallet config (JSON)
-				</a>
-				<a
-					href="/api/wallets/multisig/{data.multisig.id}/coldcard"
-					class="btn btn-secondary btn-sm"
-					download
-					onclick={markBackupDownloaded}
-				>
-					ColdCard file
-				</a>
-				<a
-					href="/api/wallets/multisig/{data.multisig.id}/descriptor?download=1"
-					class="btn btn-ghost btn-sm"
-					download
-					onclick={markBackupDownloaded}
-				>
-					Descriptor (.txt)
-				</a>
-				{#if data.role === 'owner'}
-					<a
-						href="/api/wallets/multisig/{data.multisig.id}/backup-pdf"
-						class="btn btn-secondary btn-sm"
-						download
-						onclick={markBackupDownloaded}
-					>
-						<Icon name="shield" size={13} /> Printable backup (PDF)
-					</a>
-				{/if}
-			</div>
-			<div class="backup-notes">
+		<!-- ------------------------------------------- keys (5d key rows) -->
+		<section class="hw-section" aria-label="Keys">
+			<div class="hw-section-head">
+				<h2 class="hw-section-title">Keys · {data.multisig.threshold} of {data.multisig.keys.length}</h2>
 				<span class="hint">
-					<strong>Wallet config</strong> — opens directly in Sparrow, Caravan and Unchained.
-					· <strong>ColdCard file</strong> — put it on the microSD so the ColdCard (or
-					Passport/Keystone/SeedSigner) recognizes the wallet before co-signing.
-					· <strong>Descriptor</strong> — the raw text form, for Bitcoin Core and power users.
+					<Term
+						tip="Devices die, PINs get forgotten, and a device restored from the wrong seed keeps working for everything except this wallet. A quick check proves each key still derives this wallet — before you need it to."
+						>Confirm each key still works now and then.</Term
+					>
 				</span>
-				{#if data.descriptor}
-					<div class="descriptor-line">
-						<span class="hint">Descriptor:</span>
-						<CopyText value={data.descriptor} truncate={18} />
-					</div>
-				{/if}
 			</div>
-		</section>
-		{/if}
+			<div class="key-rows">
+				{#each data.multisig.keys as key (key.id)}
+					<KeyHealthRow
+						multisigId={data.multisig.id}
+						keyInfo={{
+							id: key.id,
+							name: key.name,
+							deviceType: key.deviceType,
+							fingerprint: key.fingerprint,
+							path: key.path,
+							lastVerifiedAt: keyVerifiedAt(key)
+						}}
+						scriptType={data.multisig.scriptType}
+						receiveAddress={receive?.address ?? null}
+						onVerified={handleKeyVerified}
+						category={key.category}
+						emergency={key.category === 'recovery'}
+						flag={needsRegistration(key.deviceType) && !registeredAcks[key.id]
+							? 'Registered?'
+							: null}
+						flagTitle="This device refuses to sign for multisig wallets it hasn't registered — see below."
+					/>
+				{/each}
+			</div>
 
-		<!-- ------------------------------------------- tabs -->
-		<div class="tabs" role="tablist">
-			<button
-				type="button"
-				role="tab"
-				class="tab"
-				class:active={tab === 'transactions'}
-				aria-selected={tab === 'transactions'}
-				onclick={() => (tab = 'transactions')}
-			>
-				Transactions
-				<span class="tab-count">{data.detail.history.length}</span>
-			</button>
-			<button
-				type="button"
-				role="tab"
-				class="tab"
-				class:active={tab === 'addresses'}
-				aria-selected={tab === 'addresses'}
-				onclick={() => (tab = 'addresses')}
-			>
-				Addresses
-				<span class="tab-count">{data.detail.addresses.length}</span>
-			</button>
-		</div>
-
-		{#if tab === 'transactions'}
-			<section class="card">
-				{#if data.detail.history.length === 0}
-					<div class="empty-state">
-						<Icon name="activity" size={22} />
-						<span class="empty-title">No transactions yet</span>
-						<span>
-							Send a small test amount to the receive address above — it'll show up here once
-							the network sees it.
-						</span>
-					</div>
-				{:else}
-					<div class="table-wrap">
-						<table class="table">
-							<thead>
-								<tr>
-									<th>Transaction</th>
-									<th></th>
-									<th class="num">Amount</th>
-									<th>When</th>
-									<th class="num">Fee</th>
-								</tr>
-							</thead>
-							<tbody>
-								{#each data.detail.history as tx (tx.txid)}
-									<tr>
-										<td>
-											<a href="/explorer/tx/{tx.txid}" class="mono">
-												{truncateMiddle(tx.txid, 8, 8)}
-											</a>
-										</td>
-										<td>
-											<span class="dir" class:in={tx.delta >= 0} class:out={tx.delta < 0}>
-												<Icon
-													name={tx.delta >= 0 ? 'arrow-down-left' : 'arrow-up-right'}
-													size={14}
-												/>
-												{tx.delta >= 0 ? 'Received' : 'Sent'}
-											</span>
-										</td>
-										<td class="num">
-											<span
-												class="delta tabular"
-												class:in={tx.delta >= 0}
-												class:out={tx.delta < 0}
-												title="{formatSats(tx.delta)} sats"
-											>
-												{tx.delta > 0 ? '+' : ''}{formatBtc(tx.delta)} BTC
-											</span>
-										</td>
-										<td>
-											{#if tx.height <= 0}
-												<span class="badge badge-warning">
-													<Icon name="clock" size={11} />
-													pending
-												</span>
-											{:else}
-												<span class="text-muted">{timeAgo(tx.time)}</span>
-											{/if}
-										</td>
-										<td class="num text-muted">
-											{tx.fee != null ? `${formatSats(tx.fee)} sats` : '—'}
-										</td>
-									</tr>
-								{/each}
-							</tbody>
-						</table>
-					</div>
-				{/if}
-			</section>
-		{:else}
-			<section class="card">
-				<div class="chips">
-					<button
-						type="button"
-						class="chip"
-						class:active={addrFilter === 'used'}
-						onclick={() => (addrFilter = 'used')}
-					>
-						Used {usedAddrs.length}
-					</button>
-					<button
-						type="button"
-						class="chip"
-						class:active={addrFilter === 'unused'}
-						onclick={() => (addrFilter = 'unused')}
-					>
-						Unused {unusedAddrs.length}
-					</button>
-					<button
-						type="button"
-						class="chip"
-						class:active={addrFilter === 'change'}
-						onclick={() => (addrFilter = 'change')}
-					>
-						Change {changeAddrs.length}
-					</button>
-				</div>
-				{#if shownAddrs.length === 0}
-					<div class="empty-state">
-						<span class="empty-title">
-							{addrFilter === 'used'
-								? 'No used addresses yet'
-								: addrFilter === 'unused'
-									? 'No unused addresses in the window'
-									: 'No change addresses in the window'}
-						</span>
-					</div>
-				{:else}
-					<p class="addr-verify-hint">
-						Every address here is built from your {data.multisig.keys.length} public keys alone —
-						open <strong>Details</strong> on any row for the exact script and derivation paths,
-						so you can verify this address on any other wallet tool.
+			{#if unregisteredKeys.length > 0}
+				<div class="register-callout">
+					<span class="register-title">
+						<Icon name="alert-triangle" size={14} />
+						One-time step: teach {unregisteredKeys.length === 1
+							? `"${unregisteredKeys[0].name}"`
+							: 'these devices'} this wallet
+					</span>
+					<p class="register-copy">
+						A ColdCard (and SeedSigner/Passport) <strong>only signs for multisig wallets it knows</strong>
+						— it will refuse this one until registered. Download the registration file, copy it
+						to the microSD card, then on the ColdCard: <strong>Settings → Multisig Wallets →
+						Import from SD</strong>. The device shows this wallet's {data.multisig.threshold}-of-{data.multisig.keys.length}
+						quorum and keys — confirm, and it's done.
 					</p>
-					<div class="table-wrap">
-						<table class="table">
-							<thead>
-								<tr>
-									<th>Path</th>
-									<th>Address</th>
-									<th>Label</th>
-									<th class="num">Balance</th>
-									<th class="num">Txs</th>
-									<th></th>
-								</tr>
-							</thead>
-							<tbody>
-								{#each shownAddrs as addr (addr.address)}
-									<tr>
-										<td class="path-cell">
-											{#if sharedBasePath}
-												<span class="mono text-muted path-text">
-													<CopyText
-														value={`${sharedBasePath}/${addr.chain}/${addr.index}`}
-														display={`…/${addr.chain}/${addr.index}`}
-													/>
-												</span>
-											{:else}
-												<Term
-													tip="Each of this wallet's keys uses its own base path, so only this receive/change suffix is shared — open Details for every key's full path."
-												>
-													<span class="mono text-muted path-text">/{addr.chain}/{addr.index}</span>
-												</Term>
-											{/if}
-											{#if addr.chain === 1}
-												<span
-													class="chg-chip"
-													title="An internal address — leftovers from your own spends land here."
-													>change</span
-												>
-											{/if}
-										</td>
-										<td class="addr-cell">
-											<CopyText value={addr.address} truncate={12} />
-										</td>
-										<td class="addr-label-cell">
-											{#if editingAddr === addr.address}
+					<div class="row" style="gap: 8px; flex-wrap: wrap">
+						<a href="/api/wallets/multisig/{data.multisig.id}/coldcard" class="btn btn-secondary btn-sm" download>
+							Download registration file
+						</a>
+						{#each unregisteredKeys as key (key.id)}
+							<button
+								type="button"
+								class="btn btn-ghost btn-sm"
+								onclick={() => markRegistered(key.id)}
+							>
+								<Icon name="check" size={13} />
+								{key.name} is registered
+							</button>
+						{/each}
+					</div>
+				</div>
+			{/if}
+		</section>
+
+		{#if data.detail}
+			<!-- ------------------------------------------- tabs -->
+			<div class="hw-toggles" role="tablist">
+				<button
+					type="button"
+					role="tab"
+					class="hw-toggle"
+					class:active={tab === 'transactions'}
+					aria-selected={tab === 'transactions'}
+					onclick={() => (tab = 'transactions')}
+				>
+					Transactions · {data.detail.history.length}
+				</button>
+				<button
+					type="button"
+					role="tab"
+					class="hw-toggle"
+					class:active={tab === 'addresses'}
+					aria-selected={tab === 'addresses'}
+					onclick={() => (tab = 'addresses')}
+				>
+					Addresses · {data.detail.addresses.length}
+				</button>
+			</div>
+
+			{#if tab === 'transactions'}
+				<!-- Hairline tx rows with burial-ring confirmation glyphs (5d). -->
+				<section class="hw-txs" aria-label="Transactions">
+					{#if data.detail.history.length === 0}
+						<div class="empty-state">
+							<Icon name="activity" size={22} />
+							<span class="empty-title">No transactions yet</span>
+							<span>
+								Send a small test amount to the receive address above — it'll show up here once
+								the network sees it.
+							</span>
+						</div>
+					{:else}
+						{#each data.detail.history as tx (tx.txid)}
+							{@const conf = confirmationsOf(tx.height)}
+							<div class="hw-tx-row">
+								<BurialRings confirmations={conf} direction={tx.delta >= 0 ? 'in' : 'out'} size={30} />
+								<div class="hw-tx-main">
+									<span class="hw-tx-title">{tx.delta >= 0 ? 'Received' : 'Sent'}</span>
+									<span class="hw-tx-meta">
+										{burialRingsLabel(conf)}
+										· <a href="/explorer/tx/{tx.txid}" class="mono hw-tx-link">{truncateMiddle(tx.txid, 8, 8)}</a>
+										{#if tx.fee != null}
+											· fee {formatSats(tx.fee)} sats
+										{/if}
+									</span>
+									{#if tx.height <= 0 && speedUpByTxid[tx.txid] && data.role !== 'viewer'}
+										{#if speedUpTxid === tx.txid}
+											<form
+												class="bump-form"
+												onsubmit={(e) => {
+													e.preventDefault();
+													submitSpeedUp(tx.txid);
+												}}
+											>
+												<label class="hint" for="speedup-rate-{tx.txid}">Target rate</label>
 												<input
-													class="input addr-label-input"
-													bind:value={addrEditValue}
-													maxlength="120"
-													placeholder="e.g. donation address"
-													use:focusAddrInput
-													onkeydown={(e) => {
-														if (e.key === 'Enter') saveAddrLabel();
-														else if (e.key === 'Escape') cancelAddrLabelEdit();
-													}}
-													onblur={saveAddrLabel}
+													id="speedup-rate-{tx.txid}"
+													class="input bump-input"
+													type="number"
+													min="1"
+													step="any"
+													bind:value={speedUpRate}
+													disabled={speedingUp}
 												/>
-											{:else if addressLabels[addr.address]}
+												<span class="hint">sat/vB</span>
+												<button class="btn btn-primary btn-sm" type="submit" disabled={speedingUp}>
+													{#if speedingUp}<span class="spinner"></span>{/if}
+													Speed up
+												</button>
 												<button
 													type="button"
-													class="addr-label-btn has-label"
-													onclick={() => startAddrLabelEdit(addr.address)}
-													title="Edit label"
+													class="btn btn-ghost btn-sm"
+													disabled={speedingUp}
+													onclick={() => (speedUpTxid = null)}
 												>
-													{addressLabels[addr.address]}
+													Cancel
 												</button>
-											{:else}
-												<button
-													type="button"
-													class="addr-label-btn add-label"
-													onclick={() => startAddrLabelEdit(addr.address)}
-												>
-													+ Add label
-												</button>
+											</form>
+											{#if speedUpError}
+												<div class="form-error bump-error" role="alert">{speedUpError}</div>
 											{/if}
-										</td>
-										<td class="num" title="{formatSats(addr.balance)} sats">
-											{#if addr.balance !== 0}
-												{formatBtc(addr.balance)}
-											{:else}
-												<span class="text-muted">0</span>
-											{/if}
-										</td>
-										<td class="num text-muted">{addr.txCount}</td>
-										<td class="num">
+										{:else}
 											<button
 												type="button"
-												class="detail-toggle"
-												class:open={openAddrKey === `${addr.chain}/${addr.index}`}
-												aria-expanded={openAddrKey === `${addr.chain}/${addr.index}`}
-												onclick={() => toggleAddrDetail(addr.chain, addr.index)}
+												class="btn btn-ghost btn-sm speed-up-btn"
+												onclick={() => openSpeedUp(tx.txid)}
+												title={speedUpByTxid[tx.txid].action === 'rbf'
+													? 'Replace this transaction with a higher-fee version (RBF).'
+													: 'Add a higher-fee child transaction so miners confirm them together (CPFP).'}
 											>
-												Details
-												<Icon name="chevron-down" size={12} />
+												<Icon name="zap" size={13} />
+												Speed up
 											</button>
-										</td>
+										{/if}
+									{/if}
+								</div>
+								<div class="hw-tx-right">
+									<span
+										class="hw-tx-amount tabular"
+										class:in={tx.delta >= 0}
+										title="{formatSats(tx.delta)} sats"
+									>
+										{tx.delta > 0 ? '+' : ''}{formatBtc(tx.delta)}
+									</span>
+									<span class="hw-tx-when">
+										{tx.height <= 0 ? 'in the mempool' : timeAgo(tx.time)}
+									</span>
+								</div>
+							</div>
+						{/each}
+					{/if}
+				</section>
+			{:else}
+				<section class="hw-table-section">
+					<div class="chips">
+						<button
+							type="button"
+							class="chip"
+							class:active={addrFilter === 'used'}
+							onclick={() => (addrFilter = 'used')}
+						>
+							Used {usedAddrs.length}
+						</button>
+						<button
+							type="button"
+							class="chip"
+							class:active={addrFilter === 'unused'}
+							onclick={() => (addrFilter = 'unused')}
+						>
+							Unused {unusedAddrs.length}
+						</button>
+						<button
+							type="button"
+							class="chip"
+							class:active={addrFilter === 'change'}
+							onclick={() => (addrFilter = 'change')}
+						>
+							Change {changeAddrs.length}
+						</button>
+					</div>
+					{#if shownAddrs.length === 0}
+						<div class="empty-state">
+							<span class="empty-title">
+								{addrFilter === 'used'
+									? 'No used addresses yet'
+									: addrFilter === 'unused'
+										? 'No unused addresses in the window'
+										: 'No change addresses in the window'}
+							</span>
+						</div>
+					{:else}
+						<p class="addr-verify-hint">
+							Every address here is built from your {data.multisig.keys.length} public keys alone —
+							open <strong>Details</strong> on any row for the exact script and derivation paths,
+							so you can verify this address on any other wallet tool.
+						</p>
+						<div class="table-wrap">
+							<table class="table">
+								<thead>
+									<tr>
+										<th>Path</th>
+										<th>Address</th>
+										<th>Label</th>
+										<th class="num">Balance</th>
+										<th class="num">Txs</th>
+										<th></th>
 									</tr>
-									{#if openAddrKey === `${addr.chain}/${addr.index}`}
-										<tr class="addr-detail-row">
-											<td colspan="6">
-												<AddressScriptDetails
-													multisigId={data.multisig.id}
-													chain={addr.chain}
-													index={addr.index}
-												/>
+								</thead>
+								<tbody>
+									{#each shownAddrs as addr (addr.address)}
+										<tr>
+											<td class="path-cell">
+												{#if sharedBasePath}
+													<span class="mono text-muted path-text">
+														<CopyText
+															value={`${sharedBasePath}/${addr.chain}/${addr.index}`}
+															display={`…/${addr.chain}/${addr.index}`}
+														/>
+													</span>
+												{:else}
+													<Term
+														tip="Each of this wallet's keys uses its own base path, so only this receive/change suffix is shared — open Details for every key's full path."
+													>
+														<span class="mono text-muted path-text">/{addr.chain}/{addr.index}</span>
+													</Term>
+												{/if}
+												{#if addr.chain === 1}
+													<span
+														class="chg-chip"
+														title="An internal address — leftovers from your own spends land here."
+														>change</span
+													>
+												{/if}
+											</td>
+											<td class="addr-cell">
+												<CopyText value={addr.address} truncate={12} />
+											</td>
+											<td class="addr-label-cell">
+												{#if editingAddr === addr.address}
+													<input
+														class="input addr-label-input"
+														bind:value={addrEditValue}
+														maxlength="120"
+														placeholder="e.g. donation address"
+														use:focusAddrInput
+														onkeydown={(e) => {
+															if (e.key === 'Enter') saveAddrLabel();
+															else if (e.key === 'Escape') cancelAddrLabelEdit();
+														}}
+														onblur={saveAddrLabel}
+													/>
+												{:else if addressLabels[addr.address]}
+													<button
+														type="button"
+														class="addr-label-btn has-label"
+														onclick={() => startAddrLabelEdit(addr.address)}
+														title="Edit label"
+													>
+														{addressLabels[addr.address]}
+													</button>
+												{:else}
+													<button
+														type="button"
+														class="addr-label-btn add-label"
+														onclick={() => startAddrLabelEdit(addr.address)}
+													>
+														+ Add label
+													</button>
+												{/if}
+											</td>
+											<td class="num" title="{formatSats(addr.balance)} sats">
+												{#if addr.balance !== 0}
+													{formatBtc(addr.balance)}
+												{:else}
+													<span class="text-muted">0</span>
+												{/if}
+											</td>
+											<td class="num text-muted">{addr.txCount}</td>
+											<td class="num">
+												<button
+													type="button"
+													class="detail-toggle"
+													class:open={openAddrKey === `${addr.chain}/${addr.index}`}
+													aria-expanded={openAddrKey === `${addr.chain}/${addr.index}`}
+													onclick={() => toggleAddrDetail(addr.chain, addr.index)}
+												>
+													Details
+													<Icon name="chevron-down" size={12} />
+												</button>
 											</td>
 										</tr>
-									{/if}
-								{/each}
-							</tbody>
-						</table>
+										{#if openAddrKey === `${addr.chain}/${addr.index}`}
+											<tr class="addr-detail-row">
+												<td colspan="6">
+													<AddressScriptDetails
+														multisigId={data.multisig.id}
+														chain={addr.chain}
+														index={addr.index}
+													/>
+												</td>
+											</tr>
+										{/if}
+									{/each}
+								</tbody>
+							</table>
+						</div>
+						{#if shownAddrs.some((a) => a.chain === 1)}
+							<p class="change-note">
+								<Icon name="info" size={13} />
+								<span>
+									Rows marked <span class="chg-chip">change</span> are this wallet's internal
+									addresses. When you spend, whatever isn't sent to the recipient comes back to
+									one of these — same keys, same {data.multisig.threshold}-of-{data.multisig.keys.length}
+									quorum, just a separate branch so payments you receive stay apart from your own
+									leftovers. Seeing them here is normal; that money never left the wallet.
+								</span>
+							</p>
+						{/if}
+					{/if}
+				</section>
+			{/if}
+
+			<!-- ------------------------------------------- export config -->
+			<!-- Registration/backup exports carry full key origins; only signers (owner
+			     or cosigner) can reach these endpoints, so a pure viewer never sees them. -->
+			{#if data.role !== 'viewer'}
+				<section class="hw-section" id="backup">
+					<div class="hw-section-head">
+						<h2 class="hw-section-title">
+							<Term
+								tip="Save this file somewhere safe. It's how you recover this wallet in another wallet app if needed."
+								>Export config</Term
+							>
+						</h2>
+						{#if needsBackup}
+							<span class="badge badge-warning">
+								<Icon name="alert-triangle" size={11} />
+								not downloaded yet
+							</span>
+						{:else if backupDone}
+							<span class="badge badge-success" title="A copy of this wallet's config has been downloaded">
+								<Icon name="check" size={11} />
+								downloaded
+							</span>
+						{/if}
 					</div>
-					{#if shownAddrs.some((a) => a.chain === 1)}
-						<p class="change-note">
-							<Icon name="info" size={13} />
+					<p class="backup-copy">
+						The backup describes the wallet — quorum and public keys — so any descriptor wallet can
+						find your money again. It <strong>can't spend</strong>; spending always needs
+						{data.multisig.threshold} of your keys. Store it with your seed backups.
+					</p>
+					<div class="row" style="gap: 8px; flex-wrap: wrap">
+						<a
+							href="/api/wallets/multisig/{data.multisig.id}/caravan"
+							class="btn btn-secondary btn-sm"
+							download
+							onclick={markBackupDownloaded}
+						>
+							Wallet config (JSON)
+						</a>
+						<a
+							href="/api/wallets/multisig/{data.multisig.id}/coldcard"
+							class="btn btn-secondary btn-sm"
+							download
+							onclick={markBackupDownloaded}
+						>
+							ColdCard file
+						</a>
+						<a
+							href="/api/wallets/multisig/{data.multisig.id}/descriptor?download=1"
+							class="btn btn-ghost btn-sm"
+							download
+							onclick={markBackupDownloaded}
+						>
+							Descriptor (.txt)
+						</a>
+						{#if data.role === 'owner'}
+							<a
+								href="/api/wallets/multisig/{data.multisig.id}/backup-pdf"
+								class="btn btn-ghost btn-sm"
+								download
+								onclick={markBackupDownloaded}
+							>
+								<Icon name="shield" size={13} /> Printable backup (PDF)
+							</a>
+						{/if}
+						{#if data.flags?.csv_export !== false}
+							<a
+								href="/api/wallets/multisig/{data.multisig.id}/history.csv"
+								class="btn btn-ghost btn-sm"
+								download
+								title="Download this wallet's transaction history as a CSV file"
+							>
+								History (CSV)
+							</a>
+						{:else}
+							<FeatureDisabled message="CSV export has been disabled by your administrator." />
+						{/if}
+					</div>
+					<div class="backup-notes">
+						<p class="hw-caption">
+							<strong>Wallet config</strong> — opens directly in Sparrow, Caravan and Unchained.
+							· <strong>ColdCard file</strong> — put it on the microSD so the ColdCard (or
+							Passport/Keystone/SeedSigner) recognizes the wallet before co-signing.
+							· <strong>Descriptor</strong> — the raw text form, for Bitcoin Core and power users.
+						</p>
+						{#if data.descriptor}
+							<div class="descriptor-line">
+								<span class="hint">Descriptor:</span>
+								<CopyText value={data.descriptor} truncate={18} />
+							</div>
+						{/if}
+					</div>
+				</section>
+			{/if}
+		{/if}
+
+		<!-- ------------------------------------------- delete (quiet footer) -->
+		<!-- Removing the wallet is owner-only (the delete action 404s otherwise). -->
+		{#if data.role === 'owner'}
+			<div class="hw-danger">
+				{#if !confirmDelete}
+					<button type="button" class="hw-danger-trigger" onclick={() => (confirmDelete = true)}>
+						Remove this wallet from Heartwood…
+					</button>
+				{:else}
+					<form
+						method="POST"
+						action="?/delete"
+						class="delete-confirm"
+						use:enhance={() => {
+							deleting = true;
+							return async ({ update }) => {
+								deleting = false;
+								await update();
+							};
+						}}
+					>
+						<p class="delete-backup-warning">
+							<Icon name="alert-triangle" size={16} />
 							<span>
-								Rows marked <span class="chg-chip">change</span> are this wallet's internal
-								addresses. When you spend, whatever isn't sent to the recipient comes back to
-								one of these — same keys, same {data.multisig.threshold}-of-{data.multisig.keys.length}
-								quorum, just a separate branch so payments you receive stay apart from your own
-								leftovers. Seeing them here is normal; that money never left the wallet.
+								This removes the multisig wallet from Heartwood — your keys keep the money, but
+								Heartwood stops watching it. Make sure you have your backup file (every public
+								key and the descriptor) and your signing devices — Heartwood can't recover it
+								for you.
 							</span>
 						</p>
-					{/if}
+						<div class="row" style="gap: 8px">
+							<span class="confirm-text">Really delete?</span>
+							<button class="btn btn-danger btn-sm" disabled={deleting}>
+								{#if deleting}<span class="spinner"></span>{/if}
+								Delete wallet
+							</button>
+							<button
+								type="button"
+								class="btn btn-ghost btn-sm"
+								onclick={() => (confirmDelete = false)}
+								disabled={deleting}
+							>
+								Cancel
+							</button>
+						</div>
+					</form>
 				{/if}
-			</section>
+			</div>
 		{/if}
-	{/if}
+	</div>
 </div>
 
 <style>
-	/* Shared layout (header, grid, tabs, tables, labels) comes from
-	   $lib/styles/wallet-detail.css; only what differs from the single-sig
-	   detail page lives here. */
-
-	.head {
-		gap: 10px;
-	}
-
-	.quorum-badge {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-	}
-
-	.backup-btn {
+	/* The Heartwood grove field needs a positioned ancestor; content rides
+	   above it at z-index 1. Shared table/label/chip styles come from
+	   $lib/styles/wallet-detail.css. */
+	.hw-page {
 		position: relative;
 	}
 
-	.backup-dot {
-		width: 7px;
-		height: 7px;
-		border-radius: 50%;
-		background: var(--warning);
-		flex-shrink: 0;
+	.hw-content {
+		position: relative;
+		z-index: 1;
+		display: flex;
+		flex-direction: column;
 	}
 
-	.delete-backup-warning {
+	/* --- eyebrow + hero --- */
+
+	.hw-head {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+	}
+
+	.hw-eyebrow {
+		margin-bottom: 18px;
+		max-width: 100%;
+	}
+
+	.hw-hero {
+		display: flex;
+		align-items: baseline;
+		gap: 12px;
+		min-width: 0;
+		max-width: 100%;
+	}
+
+	.hw-hero-btc {
+		font-size: clamp(44px, 7vw, 72px);
+		line-height: 0.95;
+		color: var(--text-hero);
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.hw-hero-muted {
+		color: var(--text-muted);
+	}
+
+	.hw-hero-unit {
+		font-family: var(--font-serif);
+		font-weight: 600;
+		font-size: clamp(20px, 3vw, 30px);
+		color: var(--text-secondary);
+	}
+
+	.hw-hero-sub {
+		margin-top: 14px;
+		font-size: 15px;
+		color: var(--text-secondary);
+	}
+
+	.hw-pending {
+		color: var(--attention);
+	}
+
+	.hw-pills {
+		display: flex;
+		gap: 12px;
+		margin-top: 28px;
+		align-self: stretch;
+	}
+
+	.hw-pill {
+		height: 52px;
+		padding: 0 30px;
+		font-size: 15px;
+		font-weight: 600;
+		border-radius: var(--radius-pill);
+	}
+
+	.hw-sign-note {
+		display: inline-flex;
+		align-items: center;
+		gap: 7px;
+		flex-wrap: wrap;
+		margin: 18px 0 0;
+		font-size: 12px;
+		color: var(--text-muted);
+	}
+
+	/* --- stale-key nudge: calm amber, hairline-bounded, no box --- */
+
+	.keycheck-nudge {
 		display: flex;
 		align-items: flex-start;
-		gap: 8px;
-		max-width: 460px;
-		padding: 9px 12px;
-		font-size: 12.5px;
-		line-height: 1.55;
-		color: var(--warning);
-		background: var(--warning-muted, rgba(230, 180, 80, 0.1));
-		border: 1px solid rgba(230, 180, 80, 0.35);
-		border-radius: var(--radius-control);
+		gap: 12px;
+		margin-top: 32px;
+		padding: 14px 0;
+		border-top: 1px solid var(--hairline);
+		border-bottom: 1px solid var(--hairline);
+		color: var(--attention);
 	}
 
-	.delete-backup-warning :global(svg) {
+	.keycheck-nudge :global(svg) {
+		margin-top: 2px;
 		flex-shrink: 0;
-		margin-top: 1px;
+	}
+
+	.nudge-title {
+		font-size: 13px;
+		font-weight: 600;
+	}
+
+	.nudge-copy {
+		margin-top: 3px;
+		font-size: 12.5px;
+		line-height: 1.6;
+		color: var(--text-secondary);
+	}
+
+	/* --- unboxed stepped chart --- */
+
+	.hw-chart {
+		margin-top: 40px;
+	}
+
+	.hw-caption {
+		margin-top: 8px;
+		font-size: 11.5px;
+		color: var(--eyebrow-path);
+		line-height: 1.6;
+	}
+
+	.hw-caption strong {
+		color: var(--text-muted);
+		font-weight: 500;
+	}
+
+	/* --- hairline sections (no cards) --- */
+
+	.hw-section {
+		border-top: 1px solid var(--hairline);
+		margin-top: 40px;
+		padding-top: 22px;
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.hw-section-head {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		flex-wrap: wrap;
+	}
+
+	.hw-section-title {
+		font-size: 17px;
+		font-weight: 600;
+		color: var(--text);
+	}
+
+	.hw-scan-error {
+		margin-top: 36px;
+		padding: 16px 0;
+		border-top: 1px solid var(--hairline);
+		border-bottom: 1px solid var(--hairline);
+	}
+
+	/* --- receive panel (5c/8d) --- */
+
+	.hw-receive-grid {
+		display: grid;
+		grid-template-columns: auto 1fr;
+		gap: 44px;
+		align-items: center;
+	}
+
+	.hw-qr-wrap {
+		padding: 10px;
+	}
+
+	.hw-qr {
+		display: block;
+		width: 300px;
+		height: 300px;
+		image-rendering: pixelated;
+	}
+
+	.hw-receive-meta {
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
+		min-width: 0;
+	}
+
+	.hw-receive-headline {
+		font-size: 22px;
+		font-weight: 600;
+		letter-spacing: -0.01em;
+		color: var(--text-hero);
+	}
+
+	.hw-addr-row {
+		border-bottom: 1px solid var(--hairline);
+		padding-bottom: 12px;
+		display: flex;
+		flex-direction: column;
+		gap: 5px;
+		min-width: 0;
+	}
+
+	.hw-addr {
+		font-size: 15px;
+		color: var(--text-rows);
+		word-break: break-all;
+		line-height: 1.5;
+	}
+
+	.hw-addr-path {
+		font-size: 11px;
+		color: var(--text-faint);
+	}
+
+	.hw-receive-actions {
+		display: flex;
+		gap: 10px;
+		flex-wrap: wrap;
+	}
+
+	@media (max-width: 860px) {
+		.hw-receive-grid {
+			grid-template-columns: 1fr;
+			gap: 22px;
+			justify-items: center;
+			text-align: center;
+		}
+
+		.hw-receive-meta {
+			align-items: center;
+			width: 100%;
+		}
+
+		.hw-addr-row {
+			align-items: center;
+			width: 100%;
+		}
+
+		.hw-qr {
+			width: 228px;
+			height: 228px;
+		}
 	}
 
 	/* --- keys --- */
 
-	.keys-card {
+	.key-rows {
 		display: flex;
 		flex-direction: column;
-		gap: 12px;
-		margin-bottom: 14px;
 	}
 
-	.key-chips {
-		display: flex;
-		gap: 8px;
-		flex-wrap: wrap;
-	}
-
-	.key-chip {
-		display: inline-flex;
-		align-items: center;
-		gap: 7px;
-		padding: 6px 11px;
-		background: var(--bg);
-		border: 1px solid var(--border-subtle);
-		border-radius: 99px;
-		font-size: 12.5px;
-		color: var(--accent);
-		max-width: 100%;
-	}
-
-	.key-chip-name {
-		color: var(--text);
-		font-weight: 500;
-	}
-
-	.key-chip-sub {
-		color: var(--text-muted);
-		font-size: 11px;
-	}
-
-	.key-chip-tag {
-		font-size: 10.5px;
-		color: var(--text-muted);
-		border: 1px solid var(--border);
-		border-radius: 99px;
-		padding: 1px 7px;
-	}
-
-	.key-chip-flag {
-		font-size: 10.5px;
-		font-weight: 600;
-		color: var(--warning);
-		background: var(--warning-muted, rgba(230, 180, 80, 0.12));
-		border-radius: 99px;
-		padding: 1px 7px;
-	}
-
+	/* Registration is a genuine one-time blocker, so it keeps a little more
+	   presence than a nudge — copper-tinted text over hairlines, still no box. */
 	.register-callout {
 		display: flex;
 		flex-direction: column;
 		gap: 9px;
-		padding: 13px 14px;
-		background: var(--accent-muted);
-		border: 1px solid var(--accent-border);
-		border-radius: var(--radius-control);
+		padding: 14px 0 4px;
+		border-top: 1px solid var(--hairline);
 	}
 
 	.register-title {
@@ -1127,7 +1327,7 @@
 		gap: 7px;
 		font-size: 13px;
 		font-weight: 600;
-		color: var(--accent);
+		color: var(--attention);
 	}
 
 	.register-copy {
@@ -1140,36 +1340,155 @@
 		color: var(--text);
 	}
 
-	/* --- top grid --- */
+	/* --- text-toggle tab row (Heartwood toggle grammar) --- */
 
-	.top-grid {
-		margin-bottom: 14px;
+	.hw-toggles {
+		display: flex;
+		gap: 6px;
+		flex-wrap: wrap;
+		margin-top: 44px;
+		padding-bottom: 12px;
+		border-bottom: 1px solid var(--hairline);
 	}
 
-	/* --- backup --- */
-
-	.backup-card {
-		border-color: var(--accent-border);
+	.hw-toggle {
+		background: none;
+		border: none;
+		border-radius: var(--radius-toggle);
+		padding: 6px 13px;
+		font: inherit;
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--eyebrow-path);
+		cursor: pointer;
+		font-variant-numeric: tabular-nums;
+		transition:
+			color 120ms var(--ease),
+			background 120ms var(--ease);
 	}
 
-	.backup-notes {
+	.hw-toggle:hover {
+		color: var(--text-secondary);
+	}
+
+	.hw-toggle.active {
+		color: var(--accent-bright);
+		background: var(--accent-muted);
+	}
+
+	/* --- hairline tx rows with burial rings --- */
+
+	.hw-txs {
 		display: flex;
 		flex-direction: column;
-		gap: 8px;
 	}
 
-	.descriptor-line {
+	.hw-tx-row {
 		display: flex;
 		align-items: center;
-		gap: 8px;
-		font-size: 12.5px;
+		gap: 14px;
+		padding: 15px 0;
+		border-bottom: 1px solid var(--hairline);
 		min-width: 0;
 	}
 
-	/* --- address transparency (cairn-h73) --- */
+	.hw-tx-main {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+	}
+
+	.hw-tx-title {
+		font-size: 14.5px;
+		font-weight: 500;
+		color: var(--text-rows);
+	}
+
+	.hw-tx-meta {
+		font-size: 12px;
+		color: var(--text-muted);
+		display: inline-flex;
+		align-items: baseline;
+		gap: 5px;
+		flex-wrap: wrap;
+	}
+
+	.hw-tx-link {
+		color: var(--text-muted);
+		font-size: 11.5px;
+	}
+
+	.hw-tx-link:hover {
+		color: var(--accent);
+	}
+
+	.hw-tx-right {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-end;
+		gap: 3px;
+		flex-shrink: 0;
+	}
+
+	.hw-tx-amount {
+		font-family: var(--font-serif);
+		font-weight: 600;
+		font-size: 16px;
+		font-variant-numeric: tabular-nums;
+		color: var(--text-value, #cbbfb3);
+	}
+
+	.hw-tx-amount.in {
+		color: var(--sage);
+	}
+
+	.hw-tx-when {
+		font-size: 11.5px;
+		color: var(--text-faint);
+	}
+
+	/* --- speed up (RBF/CPFP) --- */
+
+	.bump-form {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+		margin-top: 6px;
+	}
+
+	.bump-input {
+		width: 90px;
+		font-size: 12.5px;
+		padding: 4px 8px;
+	}
+
+	.speed-up-btn {
+		gap: 4px;
+		align-self: flex-start;
+		margin-top: 4px;
+	}
+
+	.bump-error {
+		flex-basis: 100%;
+		font-size: 12.5px;
+	}
+
+	/* --- addresses tab keeps the shared table; give it breathing room --- */
+
+	.hw-table-section {
+		display: flex;
+		flex-direction: column;
+	}
+
+	.hw-table-section .chips {
+		padding: 14px 0 10px;
+	}
 
 	.addr-verify-hint {
-		padding: 10px 14px 0;
+		padding: 0 0 10px;
 		font-size: 12.5px;
 		line-height: 1.6;
 		color: var(--text-muted);
@@ -1188,24 +1507,12 @@
 		font-size: 12px;
 	}
 
-	.chg-chip {
-		display: inline-block;
-		font-size: 10.5px;
-		font-weight: 500;
-		color: var(--text-muted);
-		border: 1px solid var(--border);
-		border-radius: 99px;
-		padding: 1px 7px;
-		margin-left: 6px;
-		vertical-align: middle;
-	}
-
 	.detail-toggle {
 		display: inline-flex;
 		align-items: center;
 		gap: 4px;
 		background: none;
-		border: 1px solid var(--border);
+		border: 1px solid var(--border-control);
 		border-radius: 99px;
 		padding: 3px 10px;
 		color: var(--text-secondary);
@@ -1235,72 +1542,116 @@
 		padding: 6px 14px 14px;
 	}
 
-	.change-note {
+	/* --- export config --- */
+
+	.backup-copy {
+		margin: 0;
+		max-width: 640px;
+	}
+
+	.backup-notes {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.descriptor-line {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 12.5px;
+		min-width: 0;
+	}
+
+	/* --- delete (quiet footer) --- */
+
+	.hw-danger {
+		margin-top: 48px;
+		padding-top: 16px;
+		border-top: 1px solid var(--hairline);
+	}
+
+	.hw-danger-trigger {
+		background: none;
+		border: none;
+		padding: 0;
+		font: inherit;
+		font-size: 12.5px;
+		color: var(--text-faint);
+		cursor: pointer;
+	}
+
+	.hw-danger-trigger:hover {
+		color: var(--error);
+	}
+
+	.confirm-text {
+		white-space: nowrap;
+	}
+
+	.delete-confirm {
+		align-items: flex-start;
+	}
+
+	.delete-backup-warning {
 		display: flex;
 		align-items: flex-start;
 		gap: 8px;
-		padding: 12px 14px;
-		border-top: 1px solid var(--border-subtle);
+		max-width: 460px;
+		margin: 0;
+		padding: 8px 12px;
 		font-size: 12.5px;
-		line-height: 1.65;
-		color: var(--text-muted);
-	}
-
-	.change-note :global(svg) {
-		margin-top: 3px;
-	}
-
-	.change-note .chg-chip {
-		margin-left: 0;
-	}
-
-	/* --- key health (cairn-hvp) --- */
-
-	.keycheck-nudge {
-		display: flex;
-		align-items: flex-start;
-		gap: 12px;
-		padding: 12px 14px;
-		margin-bottom: 14px;
-		background: var(--warning-muted, rgba(230, 180, 80, 0.1));
-		border: 1px solid rgba(230, 180, 80, 0.35);
-		border-radius: var(--radius-control);
+		line-height: 1.45;
 		color: var(--warning);
+		background: var(--warning-muted);
+		border: 1px solid var(--warning);
+		border-radius: var(--radius-control);
 	}
 
-	.keycheck-nudge :global(svg) {
-		margin-top: 2px;
+	.delete-backup-warning :global(svg) {
+		flex-shrink: 0;
+		margin-top: 1px;
 	}
 
-	.nudge-title {
-		font-size: 13px;
-		font-weight: 600;
-	}
+	/* --- mobile (≤900px per Heartwood responsive rules) --- */
 
-	.nudge-copy {
-		margin-top: 3px;
-		font-size: 12.5px;
-		line-height: 1.6;
-		color: var(--text-secondary);
-	}
+	@media (max-width: 900px) {
+		.hw-head {
+			align-items: center;
+			text-align: center;
+		}
 
-	.key-health {
-		display: flex;
-		flex-direction: column;
-	}
+		.hw-eyebrow {
+			align-self: center;
+		}
 
-	.key-health-head {
-		display: flex;
-		align-items: baseline;
-		gap: 10px;
-		padding-bottom: 8px;
-	}
+		.hw-hero-btc {
+			font-size: clamp(38px, 11vw, 48px);
+		}
 
-	.key-health-title {
-		font-size: 12px;
-		font-weight: 600;
-		letter-spacing: 0.05em;
-		text-transform: uppercase;
-		color: var(--text-secondary);
+		.hw-pills {
+			flex-direction: column;
+		}
+
+		.hw-pill {
+			width: 100%;
+			height: 48px;
+		}
+
+		.hw-sign-note {
+			justify-content: center;
+		}
+
+		.hw-chart {
+			margin-top: 30px;
+		}
+
+		.hw-tx-title {
+			font-size: 13px;
+		}
+
+		.hw-tx-amount {
+			font-size: 14px;
+		}
 	}
 </style>
