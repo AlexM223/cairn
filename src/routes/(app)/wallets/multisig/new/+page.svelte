@@ -16,6 +16,9 @@
 		readKeyFromLedger,
 		readKeyFromBitbox02,
 		readKeyFromJade,
+		readCollabKeyFromTrezor,
+		readCollabKeyFromLedger,
+		supportsCollaborativeRead,
 		DeviceReadUnavailable
 	} from './_components/deviceRead';
 	import { parseColdcardExport } from './_components/coldcardImport';
@@ -149,6 +152,53 @@
 	}
 
 	let keys = $state<WizardKey[]>([]);
+
+	// --- vault mode (cairn-fdlf.4/.5): shared vs personal, asked once per vault ---
+	//
+	// Decides which purpose every FRESH key read/paste targets: collaborative →
+	// BIP-45 (m/45', no script-type field), personal → BIP-48 with the wallet's
+	// script-type suffix (today's behavior). Locked once the first key is added
+	// (one vault never mixes 45'- and 48'-purpose cosigners); imports skip the
+	// question entirely — an imported config keeps whatever paths it has.
+	type VaultMode = 'collaborative' | 'personal';
+	let vaultMode = $state<VaultMode | null>(null);
+
+	// Known-device-keys registry rows (cairn-fdlf.2) usable in this vault —
+	// fetched when the mode is chosen, offered so the user can reuse a key that
+	// was already read off a device instead of plugging it in again.
+	type KnownKey = { fingerprint: string; xpub: string; path: string; deviceType: string | null };
+	let knownKeys = $state<KnownKey[]>([]);
+
+	const personalPathHint = $derived(
+		scriptType === 'p2wsh' ? "m/48'/0'/0'/2'" : "m/48'/0'/0'/1'"
+	);
+	// Registry offers not already used by an added key (fingerprint is the
+	// reliable identity; xpub is compared too in case a fingerprintless paste
+	// duplicated one).
+	const reusableKnownKeys = $derived(
+		knownKeys.filter(
+			(r) => !keys.some((k) => k.fingerprint === r.fingerprint || k.xpub === r.xpub)
+		)
+	);
+
+	async function chooseVaultMode(mode: VaultMode) {
+		vaultMode = mode;
+		knownKeys = [];
+		// Reuse offers enhance the step; a failed lookup just means none show.
+		const res = await callAction<{ knownKeys: KnownKey[] }>(
+			'knownKeys',
+			{ intent: mode, scriptType },
+			''
+		);
+		if (res.ok) knownKeys = res.data.knownKeys ?? [];
+	}
+
+	function changeVaultMode() {
+		// Only offered while no keys are added — the mode is locked per vault.
+		vaultMode = null;
+		knownKeys = [];
+		resetKeyForm();
+	}
 
 	// The first-class ways a key arrives — none of them "advanced".
 	type Method = 'trezor' | 'ledger' | 'bitbox02' | 'jade' | 'coldcard' | 'qr' | 'paste';
@@ -312,7 +362,10 @@
 		}
 	}
 
-	async function submitKey(): Promise<boolean> {
+	/** `readFrom` names the device a LIVE in-browser read came from (so the
+	 *  server can cache the key in the device-keys registry); omitted for
+	 *  paste/file/QR/reuse. */
+	async function submitKey(readFrom?: string): Promise<boolean> {
 		if (adding) return false;
 		adding = true;
 		addError = null;
@@ -325,7 +378,12 @@
 					deviceType: keyDevice ?? '',
 					xpub: pasteValue,
 					fingerprint: fpValue,
-					path: pathValue
+					path: pathValue,
+					// Declared vault mode + script type: the server rejects a key that
+					// contradicts the intent NOW instead of at the final create step.
+					intent: vaultMode ?? '',
+					scriptType,
+					readFrom: readFrom ?? ''
 				},
 				"Couldn't add that key — double-check it and try again."
 			);
@@ -364,19 +422,35 @@
 		deviceBusy = true;
 		addError = null;
 		try {
-			const reader =
-				kind === 'trezor'
-					? readKeyFromTrezor
-					: kind === 'ledger'
-						? readKeyFromLedger
-						: kind === 'bitbox02'
-							? readKeyFromBitbox02
-							: readKeyFromJade;
-			const key = await reader(scriptType);
+			let key: { xpub: string; fingerprint: string; path: string };
+			if (vaultMode === 'collaborative') {
+				// Shared vault: read the BIP-45 purpose node m/45' — no script-type
+				// branching, no path picker (cairn-fdlf.4). Trezor/Ledger only; the
+				// template shows the paste fallback for BitBox02/Jade before this
+				// can run, but guard anyway.
+				if (!supportsCollaborativeRead(kind)) {
+					addError = `The ${CONNECT_LABELS[kind]} can't export the shared-vault key (m/45') through the browser — paste it instead. "Where do I find this key?" below has the steps.`;
+					method = 'paste';
+					keyDevice = kind;
+					showWhereFind = true;
+					return;
+				}
+				key = await (kind === 'trezor' ? readCollabKeyFromTrezor() : readCollabKeyFromLedger());
+			} else {
+				const reader =
+					kind === 'trezor'
+						? readKeyFromTrezor
+						: kind === 'ledger'
+							? readKeyFromLedger
+							: kind === 'bitbox02'
+								? readKeyFromBitbox02
+								: readKeyFromJade;
+				key = await reader(scriptType);
+			}
 			pasteValue = key.xpub;
 			fpValue = key.fingerprint;
 			pathValue = key.path;
-			await submitKey();
+			await submitKey(kind);
 		} catch (e) {
 			if (e instanceof DeviceReadUnavailable) {
 				addError = `Direct ${CONNECT_LABELS[kind]} connection isn't available in this browser — paste the key instead. "Where do I find this key?" below has the steps.`;
@@ -389,6 +463,28 @@
 		} finally {
 			deviceBusy = false;
 		}
+	}
+
+	/** Device label for a registry row ('Trezor', …), or a generic fallback. */
+	function knownKeyLabel(row: KnownKey): string {
+		const label = row.deviceType
+			? DEVICE_LABELS[row.deviceType as Exclude<MultisigDeviceType, null>]
+			: undefined;
+		return label ?? 'Saved key';
+	}
+
+	/** Add a key straight from the device-keys registry — no device touch
+	 *  (cairn-fdlf.4's reuse-before-fresh-read). */
+	async function reuseKnownKey(row: KnownKey) {
+		if (adding) return;
+		addError = null;
+		if (!keyName.trim() && row.deviceType) keyName = `My ${knownKeyLabel(row)}`;
+		keyCategory = 'hardware';
+		keyDevice = (row.deviceType ?? 'file') as MultisigDeviceType;
+		pasteValue = row.xpub;
+		fpValue = row.fingerprint;
+		pathValue = row.path;
+		await submitKey();
 	}
 
 	async function handleColdcardFile(e: Event) {
@@ -539,6 +635,11 @@
 			importedStartIndex = imported.startingAddressIndex ?? 0;
 			// The user already holds this config — no mandatory backup on the Done step.
 			configImported = true;
+			// Imports keep whatever paths they were built with — the collaborative-
+			// vs-personal question only applies to keys derived fresh in this wizard
+			// (cairn-fdlf.4's scope boundary), so any earlier answer is cleared.
+			vaultMode = null;
+			knownKeys = [];
 			showImport = false;
 			importText = '';
 		} finally {
@@ -608,7 +709,9 @@
 					scriptType,
 					keys: JSON.stringify(keys),
 					source: configImported ? 'imported' : 'created',
-					startingAddressIndex: String(configImported ? importedStartIndex : 0)
+					startingAddressIndex: String(configImported ? importedStartIndex : 0),
+					// '' when the vault-mode question was never asked (imports).
+					collaborative: vaultMode === null ? '' : String(vaultMode === 'collaborative')
 				},
 				"Couldn't create the wallet — your keys are still here, try again."
 			);
@@ -1079,6 +1182,12 @@
 										? ` · ${DEVICE_LABELS[key.deviceType]}`
 										: ''}{key.fingerprint !== '00000000' ? ` · ${key.fingerprint}` : ''}
 								</span>
+								{#if key.path && key.path !== 'm'}
+									<!-- The key's derivation path, as a quiet secondary detail
+									     (cairn-3mhi) — it matters when cross-checking against
+									     another tool or re-exporting from a device. -->
+									<span class="slot-path mono" title="Derivation path">{key.path}</span>
+								{/if}
 								{#if key.fingerprint === '00000000'}
 									<span class="slot-flag">
 										<Icon name="info" size={11} />
@@ -1128,7 +1237,96 @@
 							: `Add key ${keys.length + 1} of ${totalKeys}`}
 					</span>
 
-					{#if method === null}
+					{#if method === null && vaultMode === null && keys.length === 0}
+						<!-- Vault-mode question (cairn-fdlf.4/.5): asked once, before any key
+						     is added, because it decides which key path every device read and
+						     paste must use. Locked once the first key lands. -->
+						<p class="hint">
+							First, one question — it decides which key Cairn reads from your devices.
+							Is this wallet shared with other people, or all yours?
+						</p>
+						<div class="mode-grid">
+							<button type="button" class="method-card" onclick={() => chooseVaultMode('personal')}>
+								<span class="method-title">Just my own keys</span>
+								<span class="method-desc">
+									Every key is yours, on your own devices — a personal multisig. The most
+									common setup.
+								</span>
+							</button>
+							<button
+								type="button"
+								class="method-card"
+								onclick={() => chooseVaultMode('collaborative')}
+							>
+								<span class="method-title">Shared with other people</span>
+								<span class="method-desc">
+									Family, business partners or a service each hold their own key —
+									collaborative custody.
+								</span>
+							</button>
+						</div>
+						<p class="hint mode-note">
+							Shared vaults use the common multisig path (<span class="mono">m/45'</span>) every
+							cosigner's wallet understands; personal vaults use the standard path for this
+							wallet type (<span class="mono">{personalPathHint}</span>). You can't mix the two
+							in one vault.
+						</p>
+					{:else if method === null}
+						{#if vaultMode !== null}
+							<div class="mode-banner" role="status">
+								<Icon name={vaultMode === 'collaborative' ? 'users' : 'shield'} size={14} />
+								<span class="mode-banner-text">
+									{#if vaultMode === 'collaborative'}
+										Shared vault — every key uses the shared multisig path
+										<span class="mono">m/45'</span>.
+									{:else}
+										Personal multisig — keys use the standard path
+										<span class="mono">{personalPathHint}</span>.
+									{/if}
+								</span>
+								{#if keys.length === 0}
+									<button type="button" class="mode-change" onclick={changeVaultMode}>
+										Change
+									</button>
+								{/if}
+							</div>
+						{/if}
+
+						{#if reusableKnownKeys.length > 0}
+							<!-- Reuse-before-fresh-read (cairn-fdlf.4): keys already read off a
+							     device (e.g. the single-sig wizard's sharing prefetch) — no
+							     need to plug the device in again. -->
+							<div class="known-keys">
+								<span class="known-title">
+									<Icon name="check" size={14} />
+									Keys Cairn already knows
+								</span>
+								<p class="hint">
+									You've read these from your devices before — reuse one without plugging
+									anything in.
+								</p>
+								{#each reusableKnownKeys as row (row.fingerprint)}
+									<div class="known-row">
+										<span class="known-meta">
+											<span class="known-name">{knownKeyLabel(row)}</span>
+											<span class="known-sub">
+												<span class="mono">{row.fingerprint}</span> ·
+												<span class="mono">{row.path}</span>
+											</span>
+										</span>
+										<button
+											type="button"
+											class="btn btn-secondary btn-sm"
+											disabled={adding}
+											onclick={() => reuseKnownKey(row)}
+										>
+											Use this key
+										</button>
+									</div>
+								{/each}
+							</div>
+						{/if}
+
 						<p class="hint">Where does this key live?</p>
 						<div class="method-grid">
 							{#each METHOD_CARDS as m (m.key)}
@@ -1175,28 +1373,69 @@
 
 							{#if method === 'trezor' || method === 'ledger' || method === 'bitbox02' || method === 'jade'}
 								<div class="connect-box">
-									<p class="connect-copy">
-										Plug in your {CONNECT_LABELS[method]} and unlock it.
-										Cairn reads the multisig key straight from the device — the key it reads can
-										<strong>watch, never spend</strong>.
-										{#if method === 'jade'}
-											Pick the Jade from your browser's serial-port prompt.
-										{:else if method === 'bitbox02'}
-											On a first connection, confirm the pairing code on the BitBox02.
-										{/if}
-									</p>
-									<button
-										type="button"
-										class="btn btn-primary"
-										disabled={deviceBusy || adding}
-										onclick={() => connectDevice(method as ConnectMethod)}
-									>
-										{#if deviceBusy || adding}<span class="spinner"></span>{/if}
-										Connect {CONNECT_LABELS[method]}
-									</button>
+									{#if vaultMode === 'collaborative' && !supportsCollaborativeRead(method)}
+										<!-- BitBox02/Jade can't export the m/45' shared-vault key through
+										     the browser (see deviceRead.ts's gate notes) — clear message +
+										     the paste fallback, never a confusing failure at connect time. -->
+										<p class="connect-copy">
+											The {CONNECT_LABELS[method]} can't export the shared-vault key
+											(<span class="mono">m/45'</span>) through the browser — that direct read
+											only works for Trezor and Ledger. You can still use this device: export
+											its <span class="mono">m/45'</span> key with
+											<strong>Electrum</strong> (its default for this kind of multisig) or
+											<strong>Sparrow</strong> (set the derivation path when adding the
+											keystore), then paste it here.
+										</p>
+										<button
+											type="button"
+											class="btn btn-primary"
+											onclick={() => {
+												const d = keyDevice;
+												method = 'paste';
+												keyDevice = d;
+												showWhereFind = true;
+											}}
+										>
+											Paste the key instead
+										</button>
+									{:else}
+										<p class="connect-copy">
+											Plug in your {CONNECT_LABELS[method]} and unlock it.
+											Cairn reads the multisig key straight from the device — the key it reads can
+											<strong>watch, never spend</strong>.
+											{#if vaultMode === 'collaborative'}
+												Because this vault is shared, the key is read from the shared multisig
+												path <span class="mono">m/45'</span>.
+											{/if}
+											{#if method === 'jade'}
+												Pick the Jade from your browser's serial-port prompt.
+											{:else if method === 'bitbox02'}
+												On a first connection, confirm the pairing code on the BitBox02.
+											{/if}
+										</p>
+										<button
+											type="button"
+											class="btn btn-primary"
+											disabled={deviceBusy || adding}
+											onclick={() => connectDevice(method as ConnectMethod)}
+										>
+											{#if deviceBusy || adding}<span class="spinner"></span>{/if}
+											Connect {CONNECT_LABELS[method]}
+										</button>
+									{/if}
 								</div>
 							{:else if method === 'coldcard'}
 								<div class="connect-box">
+									{#if vaultMode === 'collaborative'}
+										<p class="connect-copy">
+											Heads up: the ColdCard's Generic JSON export contains its
+											personal-multisig (BIP-48) keys — not the shared-vault key
+											(<span class="mono">m/45'</span>) this wallet needs. Export the
+											<span class="mono">m/45'</span> key with <strong>Electrum</strong> or
+											<strong>Sparrow</strong> instead and use "Enter it as text instead"
+											below.
+										</p>
+									{/if}
 									<p class="connect-copy">
 										On the ColdCard: <strong>Advanced/Tools → Export Wallet → Generic JSON</strong>.
 										Move the microSD card to this computer, then choose the
@@ -1225,6 +1464,11 @@
 										On the device, find <strong>Export xpub</strong> (or "show wallet key as
 										QR") and hold the code up to your camera. The key in the QR can
 										<strong>watch, never spend</strong>.
+										{#if vaultMode === 'collaborative'}
+											Because this vault is shared, the QR must carry the
+											<span class="mono">m/45'</span> key <em>with</em> its origin info
+											(fingerprint + path) — a bare key can't be checked for a shared vault.
+										{/if}
 									</p>
 									{#if scanning}
 										<!-- svelte-ignore a11y_media_has_caption — live camera feed; the sr-only status below announces it -->
@@ -1257,6 +1501,36 @@
 								</div>
 							{:else}
 								<!-- paste a public key -->
+								{#if vaultMode === 'collaborative'}
+									<!-- BIP-45 export instructions (cairn-fdlf.5): the user can't be
+									     told to look in Trezor Suite / Ledger Live — their consumer
+									     apps have no custom-path export. Electrum/Sparrow are the
+									     bridging tools that can actually produce an m/45' key. -->
+									<div class="collab-paste-note">
+										<Icon name="info" size={15} />
+										<div class="collab-paste-body">
+											<p>
+												<strong>This vault is shared, so the key must be exported at
+												<span class="mono">m/45'</span></strong> — the common multisig path
+												every cosigner's wallet understands.
+											</p>
+											<p>
+												Where to get it: <strong>Electrum</strong> exports multisig hardware
+												keys at m/45' by default (pick the "legacy" multisig type);
+												in <strong>Sparrow</strong> or <strong>Specter</strong>, set the
+												derivation path to <span class="mono">m/45'</span> when adding the
+												keystore. Trezor Suite and Ledger Live can't export it from their own
+												apps — use one of the tools above, or connect the device directly on
+												the previous screen.
+											</p>
+											<p>
+												Paste the <strong>full form</strong> —
+												<span class="mono">[fingerprint/45']xpub…</span> — not just the bare
+												key, so Cairn can check it belongs to this vault.
+											</p>
+										</div>
+									</div>
+								{/if}
 								<div class="field">
 									<label class="label" for="key-xpub">
 										Paste the
@@ -1269,7 +1543,9 @@
 										id="key-xpub"
 										class="input mono xpub-input"
 										rows="3"
-										placeholder="xpub6D…, Zpub6y…, or [a1b2c3d4/48'/0'/0'/2']xpub6D…"
+										placeholder={vaultMode === 'collaborative'
+											? "[a1b2c3d4/45']xpub6D…"
+											: "xpub6D…, Zpub6y…, or [a1b2c3d4/48'/0'/0'/2']xpub6D…"}
 										spellcheck="false"
 										autocomplete="off"
 										bind:value={pasteValue}
@@ -1333,12 +1609,20 @@
 									<label class="custom-field grow">
 										<span class="label">
 											<Term
-												tip="Where in the device's key tree this key lives. m/48'/0'/0'/2' is the standard for native-segwit multisig — leave blank if unsure."
+												tip={vaultMode === 'collaborative'
+													? "Where in the device's key tree this key lives. A shared vault's keys come from m/45' — required here so Cairn can check the key."
+													: "Where in the device's key tree this key lives. m/48'/0'/0'/2' is the standard for native-segwit multisig — leave blank if unsure."}
 												>Derivation path</Term
 											>
-											<span class="optional">(optional)</span>
+											<span class="optional"
+												>{vaultMode === 'collaborative' ? '' : '(optional)'}</span
+											>
 										</span>
-										<input class="input mono" placeholder="m/48'/0'/0'/2'" bind:value={pathValue} />
+										<input
+											class="input mono"
+											placeholder={vaultMode === 'collaborative' ? "m/45'" : "m/48'/0'/0'/2'"}
+											bind:value={pathValue}
+										/>
 									</label>
 								</div>
 								<span class="hint">
@@ -1359,30 +1643,62 @@
 										</span>
 									</button>
 									{#if showWhereFind}
-										<div class="disclosure-body fade-in where-list">
-											<p>
-												<strong>Trezor</strong> — connect it directly (pick Trezor on the
-												previous screen), or read it with Sparrow: New Wallet → Multisig →
-												Connected Hardware Wallet, then copy the xpub shown.
-											</p>
-											<p>
-												<strong>Ledger</strong> — Ledger Live doesn't show multisig keys.
-												Connect it directly here, or read it with Sparrow the same way.
-											</p>
-											<p>
-												<strong>ColdCard</strong> — Advanced/Tools → Export Wallet → Generic
-												JSON to the microSD card, then pick ColdCard on the previous screen.
-											</p>
-											<p>
-												<strong>Sparrow / other software</strong> — look for "Export xpub" or
-												"Master public key" for multisig, at the path
-												<span class="mono">m/48'/0'/0'/2'</span>.
-											</p>
-											<p>
-												<strong>Someone else's key</strong> — a cosigner can send you their
-												xpub by any channel; it's safe to share. Paste it exactly as received.
-											</p>
-										</div>
+										{#if vaultMode === 'collaborative'}
+											<!-- Shared-vault (m/45') export steps — bridging tools only;
+											     the vendors' own consumer apps can't do a custom-path
+											     export (cairn-fdlf.5). -->
+											<div class="disclosure-body fade-in where-list">
+												<p>
+													<strong>Trezor or Ledger</strong> — connect it directly (pick it on
+													the previous screen) and Cairn reads the
+													<span class="mono">m/45'</span> key itself. Their own apps (Trezor
+													Suite, Ledger Live) can't export this key — use Electrum or Sparrow
+													below if you can't connect directly.
+												</p>
+												<p>
+													<strong>Electrum</strong> — create a multisig wallet with the device
+													and pick the "legacy" multisig type; Electrum reads the key at
+													<span class="mono">m/45'</span> by default. Copy the master public
+													key it shows.
+												</p>
+												<p>
+													<strong>Sparrow / Specter</strong> — when adding the keystore, set
+													the derivation path to <span class="mono">m/45'</span> (Sparrow's own
+													default is a different, personal-multisig path), then copy the xpub.
+												</p>
+												<p>
+													<strong>Someone else's key</strong> — ask your cosigner for their
+													<span class="mono">m/45'</span> export in the full
+													<span class="mono">[fingerprint/45']xpub…</span> form; it's safe to
+													send over any channel. Paste it exactly as received.
+												</p>
+											</div>
+										{:else}
+											<div class="disclosure-body fade-in where-list">
+												<p>
+													<strong>Trezor</strong> — connect it directly (pick Trezor on the
+													previous screen), or read it with Sparrow: New Wallet → Multisig →
+													Connected Hardware Wallet, then copy the xpub shown.
+												</p>
+												<p>
+													<strong>Ledger</strong> — Ledger Live doesn't show multisig keys.
+													Connect it directly here, or read it with Sparrow the same way.
+												</p>
+												<p>
+													<strong>ColdCard</strong> — Advanced/Tools → Export Wallet → Generic
+													JSON to the microSD card, then pick ColdCard on the previous screen.
+												</p>
+												<p>
+													<strong>Sparrow / other software</strong> — look for "Export xpub" or
+													"Master public key" for multisig, at the path
+													<span class="mono">m/48'/0'/0'/2'</span>.
+												</p>
+												<p>
+													<strong>Someone else's key</strong> — a cosigner can send you their
+													xpub by any channel; it's safe to share. Paste it exactly as received.
+												</p>
+											</div>
+										{/if}
 									{/if}
 								</div>
 
@@ -1391,7 +1707,7 @@
 										type="button"
 										class="btn btn-primary"
 										disabled={adding || !pasteValue.trim() || pasteIsPrivate}
-										onclick={submitKey}
+										onclick={() => submitKey()}
 									>
 										{#if adding}<span class="spinner"></span>{/if}
 										<Icon name="plus" size={14} />
@@ -1558,6 +1874,16 @@
 					<span class="hint">Quorum</span>
 					<span>{threshold} of {totalKeys} keys required to spend</span>
 				</div>
+				{#if vaultMode !== null}
+					<div class="confirm-row">
+						<span class="hint">Vault type</span>
+						<span>
+							{vaultMode === 'collaborative'
+								? 'Shared with other people (collaborative custody)'
+								: 'Personal — all keys are yours'}
+						</span>
+					</div>
+				{/if}
 				<div class="confirm-row">
 					<span class="hint">Keys</span>
 					<span>{keys.map((k) => k.name).join(' · ')}</span>
@@ -2248,6 +2574,12 @@
 		color: var(--text-muted);
 	}
 
+	/* The key's derivation path — quiet secondary detail (cairn-3mhi). */
+	.slot-path {
+		font-size: 11px;
+		color: var(--text-muted);
+	}
+
 	.slot-flag {
 		display: inline-flex;
 		align-items: flex-start;
@@ -2314,6 +2646,134 @@
 		display: grid;
 		grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 		gap: 10px;
+	}
+
+	/* --- vault-mode question + banner (cairn-fdlf.4/.5) --- */
+
+	.mode-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+		gap: 10px;
+	}
+
+	.mode-note {
+		line-height: 1.6;
+	}
+
+	.mode-banner {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 9px 12px;
+		font-size: 12.5px;
+		color: var(--text-secondary);
+		background: var(--accent-muted);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-control);
+	}
+
+	.mode-banner :global(svg) {
+		color: var(--accent);
+		flex-shrink: 0;
+	}
+
+	.mode-banner-text {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.mode-change {
+		background: none;
+		border: none;
+		padding: 0;
+		font: inherit;
+		font-size: 12px;
+		color: var(--accent);
+		cursor: pointer;
+		text-decoration: underline;
+	}
+
+	/* --- known-device-keys reuse offers (cairn-fdlf.4) --- */
+
+	.known-keys {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		padding: 12px 14px;
+		background: var(--bg);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-control);
+	}
+
+	.known-title {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 12.5px;
+		font-weight: 600;
+	}
+
+	.known-title :global(svg) {
+		color: var(--success);
+	}
+
+	.known-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 10px;
+	}
+
+	.known-meta {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+		min-width: 0;
+	}
+
+	.known-name {
+		font-size: 13px;
+		font-weight: 500;
+	}
+
+	.known-sub {
+		font-size: 11.5px;
+		color: var(--text-muted);
+	}
+
+	/* --- collaborative paste instructions (cairn-fdlf.5) --- */
+
+	.collab-paste-note {
+		display: flex;
+		align-items: flex-start;
+		gap: 10px;
+		padding: 11px 13px;
+		font-size: 12.5px;
+		background: var(--accent-muted);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-control);
+		line-height: 1.6;
+	}
+
+	.collab-paste-note :global(svg) {
+		color: var(--accent);
+		flex-shrink: 0;
+		margin-top: 2px;
+	}
+
+	.collab-paste-body {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	.collab-paste-body p {
+		margin: 0;
+		color: var(--text-secondary);
+	}
+
+	.collab-paste-body strong {
+		color: var(--text);
 	}
 
 	/* Narrow screens: one full-width card per row keeps labels readable. */

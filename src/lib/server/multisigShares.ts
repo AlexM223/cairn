@@ -276,6 +276,23 @@ export function multisigAccessRole(
  * never redacted (they're needed to tell keys apart and aren't secret). The
  * owner always sees everything. See the plan §6 (adapted from Bastion's
  * redactConfigForViewer).
+ *
+ * STANDING RULE — derivation-path exposure to cosigners (cairn-fdlf.3):
+ * anything handed to a cosigner/contact (this redaction, multisigExport.ts's
+ * artifacts, invite payloads, any future "share wallet config" feature) may
+ * carry MULTISIG-purpose path data only — 45' (shared vaults) or 48'
+ * (personal multisig) — because those paths are, by definition, what the
+ * cosigner needs to co-operate the wallet. A device's SINGLE-SIG paths
+ * (44'/49'/84'/86'), including rows the device-keys registry
+ * (src/lib/server/deviceKeys.ts) may hold for the SAME fingerprint, are
+ * private: they leak the existence and account structure of the user's other
+ * wallets. Never assemble a cosigner-facing payload by asking "everything we
+ * know about this fingerprint" — read the specific multisig key rows (as
+ * here), or the registry at an explicit multisig purpose. A single-sig
+ * registry row may only ever be shared when that row's share_opt_in is set
+ * AND the feature explicitly asks for single-sig data. Bastion enforces the
+ * same rule (master_keys.share_opt_in default 0; federation_shared_keys has
+ * no path column at all).
  */
 export function redactMultisigKeysForViewer(
 	keys: MultisigKeyRow[],
