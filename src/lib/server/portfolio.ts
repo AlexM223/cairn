@@ -25,6 +25,39 @@ const log = childLogger('portfolio');
 /** How often a portfolio fetch is allowed to record a new snapshot tick. */
 const SNAPSHOT_INTERVAL_MS = 60 * 60 * 1000; // once per hour
 
+/**
+ * Per-wallet budget for a dashboard scan (cairn-3gvb/cairn-hy8z): a full
+ * gap-limit scan makes many sequential Electrum round-trips, each individually
+ * bounded by the client's own 15s request timeout, but a stuck proxy/server
+ * can chain enough retries+fallbacks to stall a single wallet for minutes —
+ * and since every wallet scan runs concurrently, ONE stuck wallet used to hang
+ * the entire dashboard response (Promise.all only resolves once every promise
+ * settles). Racing each scan against this timeout guarantees the whole
+ * response always settles in bounded time; a timed-out wallet is excluded
+ * from totals exactly like any other scan failure, and can complete "for
+ * real" on the next poll if its ScanCache entry lands in the meantime.
+ */
+export const PORTFOLIO_SCAN_TIMEOUT_MS = 20_000;
+
+/** The tip lookup is a single cheap Electrum call, not a full scan — a much
+ *  tighter budget is enough, and it must not be allowed to stall the wallet
+ *  scans that follow it in this function. */
+const TIP_LOOKUP_TIMEOUT_MS = 8_000;
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Race `promise` against a timeout that rejects, never resolves. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+	return Promise.race([
+		promise,
+		sleep(ms).then((): never => {
+			throw new Error(`${label} timed out after ${ms}ms`);
+		})
+	]);
+}
+
 interface ScannedWallet {
 	kind: WalletKind;
 	id: number;
@@ -321,14 +354,14 @@ export async function getPortfolioDetail(userId: number): Promise<PortfolioDetai
 	// Tip height for confirmations — best-effort; unconfirmed rows report 0 anyway.
 	let tipHeight = 0;
 	try {
-		tipHeight = (await getChain().getTip()).height;
+		tipHeight = (await withTimeout(getChain().getTip(), TIP_LOOKUP_TIMEOUT_MS, 'tip lookup')).height;
 	} catch {
 		tipHeight = 0;
 	}
 
 	const scanned = await Promise.all<ScannedWallet | null>([
 		...wallets.map((w) =>
-			scanWallet(w.xpub).then(
+			withTimeout(scanWallet(w.xpub), PORTFOLIO_SCAN_TIMEOUT_MS, `wallet ${w.id} scan`).then(
 				(scan): ScannedWallet => ({
 					kind: 'wallet',
 					id: w.id,
@@ -337,16 +370,21 @@ export async function getPortfolioDetail(userId: number): Promise<PortfolioDetai
 					scan
 				}),
 				(err) => {
-					// A scan failure (e.g. Electrum down) silently drops this wallet from
-					// the dashboard totals, understating the balance — at least leave a
-					// trace to diagnose the partial outage (cairn-ednl).
+					// A scan failure (e.g. Electrum down, or the timeout above) silently
+					// drops this wallet from the dashboard totals, understating the
+					// balance — at least leave a trace to diagnose the partial outage
+					// (cairn-ednl), and never let one stuck wallet hang the whole
+					// dashboard response (cairn-3gvb/cairn-hy8z): every branch of this
+					// Promise.all is now guaranteed to settle within
+					// PORTFOLIO_SCAN_TIMEOUT_MS regardless of how long the underlying
+					// scan actually takes.
 					log.warn({ err, walletId: w.id, kind: 'wallet' }, 'portfolio scan failed; wallet excluded from totals');
 					return null;
 				}
 			)
 		),
 		...multisigs.map((m) =>
-			scanMultisig(m).then(
+			withTimeout(scanMultisig(m), PORTFOLIO_SCAN_TIMEOUT_MS, `multisig ${m.id} scan`).then(
 				(scan): ScannedWallet => ({
 					kind: 'multisig',
 					id: m.id,
