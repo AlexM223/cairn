@@ -452,33 +452,41 @@ export function assertCanRegister(input: {
 }
 
 /**
- * Create a user (passkey-only — no password). Re-validates eligibility, consumes
- * the invite if one is required, and inserts the row. The caller then attaches
- * the first passkey; do both inside one transaction so a half-registered account
- * can never exist. Returns the new user.
+ * Create a user given an ALREADY-COMPUTED password hash (or null for a
+ * passkey-only account). Re-validates eligibility, consumes the invite if one
+ * is required, and inserts the row. The caller then attaches the first
+ * passkey; do both inside one transaction so a half-registered account can
+ * never exist. Returns the new user.
+ *
+ * INVARIANT (cairn-jlrb): this function contains NO `await` — directly or
+ * transitively (assertCanRegister, redeemInvite, notify(), and the INSERT are
+ * all synchronous node:sqlite/notify calls). It is deliberately plain sync,
+ * not async, so that's structurally verifiable by inspection. This lets
+ * callers run it inside an open `db.exec('BEGIN')` transaction (see
+ * register/verify/+server.ts): node:sqlite's DatabaseSync is a single
+ * synchronous connection, so any real await here (e.g. scrypt hashing, which
+ * yields to the libuv threadpool) would let a concurrent request's own BEGIN
+ * interleave and roll back THIS request's still-open transaction. If a future
+ * caller needs an async step (like hashing a password), do it BEFORE opening
+ * the transaction and pass the result in as `passwordHash` — see
+ * registerUser() below, and the same pattern in recovery.ts's
+ * generateRecoveryCodes().store() / mintAdminRecoveryCode().
  */
-export async function registerUser(input: RegisterInput): Promise<SessionUser> {
+export function registerUserWithHash(
+	input: RegisterInput,
+	passwordHash: string | null
+): SessionUser {
 	const email = input.email.trim().toLowerCase();
 	const displayName = input.displayName.trim();
 	const inviteCode = input.inviteCode?.trim();
 
 	const { isFirstUser } = assertCanRegister({ email, displayName, inviteCode });
 
-	// Password is optional (a passkey-only account leaves it null); when present
-	// it must be strong enough.
-	const password = input.password;
-	if (password != null && password.length < MIN_PASSWORD_LENGTH)
-		throw new AuthError(
-			`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
-			'weak_password'
-		);
-
 	// Consume the invite only now, on the real create.
 	if (!isFirstUser && getInstanceSettings().registrationMode === 'invite' && inviteCode) {
 		redeemInvite(inviteCode);
 	}
 
-	const passwordHash = password ? await hashPassword(password) : null;
 	const result = db
 		.prepare('INSERT INTO users (email, password_hash, display_name, is_admin) VALUES (?, ?, ?, ?)')
 		.run(email, passwordHash, displayName, isFirstUser ? 1 : 0);
@@ -512,6 +520,30 @@ export async function registerUser(input: RegisterInput): Promise<SessionUser> {
 		displayName,
 		isAdmin: isFirstUser
 	};
+}
+
+/**
+ * Public registration entry point: validates the (optional) password's
+ * strength, hashes it — the only async step — and THEN creates the user via
+ * the transaction-safe registerUserWithHash() core. Safe to call on its own
+ * (not inside a transaction), which is what every caller except
+ * register/verify/+server.ts does; that route has no password to hash (a
+ * passkey-only signup) so it calls registerUserWithHash() directly with
+ * `passwordHash: null` from inside its BEGIN/COMMIT instead of going through
+ * this wrapper.
+ */
+export async function registerUser(input: RegisterInput): Promise<SessionUser> {
+	// Password is optional (a passkey-only account leaves it null); when present
+	// it must be strong enough.
+	const password = input.password;
+	if (password != null && password.length < MIN_PASSWORD_LENGTH)
+		throw new AuthError(
+			`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
+			'weak_password'
+		);
+
+	const passwordHash = password ? await hashPassword(password) : null;
+	return registerUserWithHash(input, passwordHash);
 }
 
 /** Look up a user by id. Null when unknown/disabled. */

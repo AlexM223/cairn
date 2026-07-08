@@ -9,7 +9,7 @@
 
 import { json, readJson } from '$lib/server/api';
 import { db } from '$lib/server/db';
-import { registerUser, addCredential, createSession, setSessionCookie, AuthError } from '$lib/server/auth';
+import { registerUserWithHash, addCredential, createSession, setSessionCookie, AuthError } from '$lib/server/auth';
 import { verifyRegistration, readRegChallenge, clearRegChallenge } from '$lib/server/webauthn';
 import { sessionContextFrom } from '$lib/server/deviceTracking';
 import { childLogger } from '$lib/server/logger';
@@ -56,14 +56,24 @@ export const POST: RequestHandler = async (event) => {
 
 	// Create the account and its first passkey atomically — never leave
 	// a user with no way to sign in, nor a credential with no user.
+	// A passkey signup never has a password, so this calls the
+	// transaction-safe registerUserWithHash() core directly (passwordHash:
+	// null) instead of the registerUser() wrapper — that core is guaranteed
+	// to contain no `await`, which is required here: node:sqlite's
+	// DatabaseSync only supports one transaction at a time, so any await
+	// between BEGIN and COMMIT would let a concurrent request's own BEGIN
+	// interleave and roll back THIS transaction (cairn-jlrb).
 	db.exec('BEGIN');
 	let user;
 	try {
-		user = await registerUser({
-			email: pending.email,
-			displayName: pending.displayName ?? '',
-			inviteCode: pending.inviteCode
-		});
+		user = registerUserWithHash(
+			{
+				email: pending.email,
+				displayName: pending.displayName ?? '',
+				inviteCode: pending.inviteCode
+			},
+			null
+		);
 		addCredential(user.id, newCredential);
 		db.exec('COMMIT');
 	} catch (e) {
