@@ -11,6 +11,7 @@
 
 	import Icon from '$lib/components/Icon.svelte';
 	import { timeAgo } from '$lib/format';
+	import { createResilientEventSource } from '$lib/sseReconnect';
 	import { onMount } from 'svelte';
 
 	// Mirrors the server's ActivityEvent (kept local so this client component
@@ -168,14 +169,22 @@
 	}
 
 	onMount(() => {
-		// Prime the badge, then subscribe to the live push. EventSource handles
-		// reconnects; SSR-safe because onMount only runs in the browser.
+		// Prime the badge, then subscribe to the live push.
+		//
+		// This component is mounted once in the persistent sidebar for the
+		// whole session, so its SSE connection has to survive indefinitely —
+		// including mobile OSes silently killing a backgrounded EventSource,
+		// which the browser's native auto-reconnect doesn't reliably recover
+		// from once the tab is foregrounded again. createResilientEventSource
+		// (cairn-pk85) ports the same visibility/staleness reconnect
+		// hardening liveBlocks.ts uses for the new-block stream. SSR-safe:
+		// it no-ops if called outside the browser, but onMount only runs
+		// client-side anyway.
 		void load();
 
-		let source: EventSource | null = null;
-		if (typeof EventSource !== 'undefined') {
-			source = new EventSource('/api/notifications/stream');
-			source.addEventListener('notification', (ev: MessageEvent) => {
+		const unsubscribeStream = createResilientEventSource('/api/notifications/stream', {
+			eventName: 'notification',
+			onMessage: (ev) => {
 				try {
 					const data = JSON.parse(ev.data as string) as { unread?: unknown };
 					if (typeof data.unread === 'number') unread = data.unread;
@@ -184,12 +193,12 @@
 				}
 				// If the panel is open, refresh the list too so new rows appear.
 				if (open) void load();
-			});
-		}
+			}
+		});
 
 		document.addEventListener('click', onDocClick);
 		return () => {
-			source?.close();
+			unsubscribeStream();
 			document.removeEventListener('click', onDocClick);
 		};
 	});
