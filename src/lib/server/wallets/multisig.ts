@@ -11,7 +11,6 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { createBase58check } from '@scure/base';
 import { db } from '../db';
-import { deleteAddressLabels } from '../addressLabels';
 import { recordActivity } from '../activity';
 import {
 	MultisigError,
@@ -24,6 +23,10 @@ import {
 } from '../bitcoin/multisig';
 import { detectXpubReuse } from '../cosignerDetection';
 import { parseXpub } from '../bitcoin/xpub';
+// Cyclic with ../multisigScan (it imports several things from this module),
+// but safe: both sides only reach into the other from inside function bodies,
+// never at module top level, so ESM's live bindings resolve fine either way.
+import { invalidateMultisigCache } from '../multisigScan';
 
 export type MultisigScriptType = 'p2wsh' | 'p2sh-p2wsh' | 'p2sh';
 export const MULTISIG_SCRIPT_TYPES: MultisigScriptType[] = ['p2wsh', 'p2sh-p2wsh', 'p2sh'];
@@ -286,8 +289,11 @@ export function createMultisig(
 	// a multisig purpose (45' or 48'), and 48' paths must match this wallet's
 	// script type and the mainnet coin type. Applies to creation AND import —
 	// imports are exempt from the BIP-45 product rule below, never from
-	// carrying single-sig or self-contradictory paths.
-	validateMultisigKeyPaths(config);
+	// carrying single-sig or self-contradictory paths. 'import' mode (cairn-acft)
+	// additionally tolerates the historical legacy-P2SH 1'-suffix label instead
+	// of hard-rejecting it — an imported wallet already exists on-chain with
+	// whatever path label it was built with.
+	validateMultisigKeyPaths(config, { mode: source === 'imported' ? 'import' : 'create' });
 
 	// Declared-mode enforcement (cairn-1kc3.6): the server-side backstop for the
 	// collaborative-custody rule, independent of any wizard. Skipped entirely
@@ -414,17 +420,21 @@ export function createMultisig(
 }
 
 export function deleteMultisig(userId: number, id: number): boolean {
+	// Fetch the full row (keys included) before it's gone — invalidateMultisigCache
+	// needs the key set/threshold/script type to compute the scan-cache key.
+	const row = getMultisig(userId, id);
+	if (!row) return false;
+	// The polymorphic (wallet_kind, wallet_id) child tables — notified_txids,
+	// address_labels, wallet_backups, backup_missing_notified, balance_snapshots —
+	// have no real FK to multisigs, but db.ts's trg_multisigs_delete_children
+	// trigger sweeps all of them on this DELETE (cairn-97ui).
 	const info = db.prepare('DELETE FROM multisigs WHERE id = ? AND user_id = ?').run(id, userId);
 	if (info.changes > 0) {
-		// notified_txids has no FK to multisigs (cairn-zari) and won't cascade —
-		// clear this multisig's dedup rows explicitly to avoid orphans.
-		db.prepare("DELETE FROM notified_txids WHERE wallet_kind = 'multisig' AND wallet_id = ?").run(id);
-		// address_labels has no FK to multisigs either — clear explicitly (cairn-nbsx).
-		deleteAddressLabels('multisig', id);
-		// Same no-FK shape for the backup-status ledgers — a reused id must not
-		// inherit the old wallet's "already backed up" state (cairn-zui7.6).
-		db.prepare("DELETE FROM wallet_backups WHERE wallet_kind = 'multisig' AND wallet_id = ?").run(id);
-		db.prepare("DELETE FROM backup_missing_notified WHERE wallet_kind = 'multisig' AND wallet_id = ?").run(id);
+		// Drop the in-memory scan cache AND its persisted row (cairn-ez9y) —
+		// mirrors deleteWallet's invalidateWalletCache. Without this the
+		// persisted wallet_scan_cache row survives and seedScanCachesFromDb
+		// resurrects the deleted multisig's stale scan into RAM on every restart.
+		invalidateMultisigCache(row);
 	}
 	return info.changes > 0;
 }

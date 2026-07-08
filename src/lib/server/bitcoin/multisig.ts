@@ -6,11 +6,12 @@
 //                 BIP-48 script-type 2' convention)
 //   - p2sh-p2wsh  sh(wsh(sortedmulti(M, ...)))  3…    (wrapped segwit; BIP-48
 //                 script-type 1')
-//   - p2sh        sh(sortedmulti(M, ...))       3…    (legacy; BIP-48
-//                 script-type 1' as well — BIP-48 gives BOTH p2sh forms the
-//                 same 1' suffix, and only p2wsh gets 2'. That affects path
-//                 GUIDANCE only; derivation always uses the paths the user's
-//                 keys actually carry.)
+//   - p2sh        sh(sortedmulti(M, ...))       3…    (legacy; BIP-48 defines
+//                 NO script-type suffix for bare P2SH — 1' is p2sh-p2wsh's
+//                 slot, not this one. The ecosystem convention here is BIP-45
+//                 (m/45'); Trezor's own 0' extension is tolerated too
+//                 (cairn-acft). That affects path GUIDANCE only; derivation
+//                 always uses the paths the user's keys actually carry.)
 // Taproot multisig (tr() descriptors) is deliberately NOT supported: on-chain
 // key-path multisig needs MuSig2 and script-path needs FROST or huge leaf
 // trees, and hardware/coordinator support for either is still immature —
@@ -257,40 +258,84 @@ const SINGLE_SIG_PURPOSES = new Map<number, string>([
 	[86, 'BIP-86 taproot single-sig']
 ]);
 
-/** BIP-48 script-type suffix (4th component) per script form: only p2wsh gets
- *  2'; BOTH p2sh forms share 1' (see file header). */
-const BIP48_SUFFIX: Record<MultisigScriptType, number> = {
+/** BIP-48 script-type suffix (4th component) for p2wsh and p2sh-p2wsh: 2' and
+ *  1' respectively (see file header). Bare legacy p2sh has NO suffix defined
+ *  by BIP-48 at all — the ecosystem convention is BIP-45 (m/45', already
+ *  accepted unconditionally below) — so it is deliberately absent here and
+ *  handled as a special case in validateCosignerKeyPath instead of through
+ *  this table. */
+const BIP48_SUFFIX: Record<'p2wsh' | 'p2sh-p2wsh', number> = {
 	p2wsh: 2,
-	'p2sh-p2wsh': 1,
-	p2sh: 1
+	'p2sh-p2wsh': 1
 };
+
+/** Trezor firmware's own extension for a bare-P2SH account (confirmed against
+ *  trezor-firmware's keychain.py): m/48'/coin'/account'/0' — BIP-48 leaves 0'
+ *  undefined, so this doesn't collide with anything, and it's the one path a
+ *  Trezor can actually hand back for a legacy multisig account today. Tolerated
+ *  here so a Trezor-read key isn't needlessly rejected; still not preferred —
+ *  m/45' remains the primary, cross-tool legacy-P2SH convention. */
+const LEGACY_P2SH_TREZOR_SUFFIX = 0;
 
 /** Hardened-marker-stripped value of one path component. */
 const unhardened = (i: number): number => (i >= HARDENED ? i - HARDENED : i);
 
+/** 'create' (default) is the strict gate for a NEW record — fresh wizard build
+ *  or "save this parsed config" — where a lying path can still poison a
+ *  from-seed recovery or a hardware-wallet display. 'import' is the read of an
+ *  EXISTING config a user already holds (Caravan/Unchained JSON, a bare
+ *  descriptor, or Cairn's own "Download backup" round-trip): the wallet already
+ *  exists on-chain, defined by its xpubs, so a known-historical path label
+ *  gets a warning instead of a hard rejection (cairn-acft — see the bare-p2sh
+ *  1' branch below, the one case that differs by mode). */
+export type CosignerPathMode = 'create' | 'import';
+
 /**
  * Validate one cosigner's declared origin path for acceptance into a multisig.
+ * Returns a warning string when the path is accepted but worth flagging to the
+ * user (import mode only); undefined when there's nothing to say.
  *
  * Accepted:
  *   - "m" / "" — unknown origin (the watch-only convention), and Caravan's
  *     masked depth-preserving all-zeros paths ("m/0/0/0/0")
  *   - m/45'/… — BIP-45, the collaborative-custody purpose; its structure
  *     (purpose'/cosigner_index/change/address_index) has no coin-type or
- *     script-type field, so nothing further to cross-check
+ *     script-type field, so nothing further to cross-check. This is the
+ *     primary convention for BARE legacy P2SH (Coldcard, Sparrow, Electrum,
+ *     Caravan/Unchained all default legacy-P2SH multisig here) — BIP-48 never
+ *     defined a suffix for it (cairn-acft).
  *   - m/48'/coin'/account'/script'… — BIP-48, where coin must be 0 (mainnet is
  *     the only network Cairn tracks, cairn-1kc3.5) and script must match the
- *     multisig's script form (cairn-1kc3.1)
+ *     multisig's script form (cairn-1kc3.1): 2' for p2wsh, 1' for p2sh-p2wsh.
+ *     For bare p2sh, 1' is the P2SH-P2WSH slot and is REJECTED on CREATE —
+ *     accepting it would mask exactly the wrong-key paste (a nested-SegWit
+ *     account key) this validator exists to catch, and poison seed recovery
+ *     for a key that really came from m/45' (cairn-acft). On IMPORT it is
+ *     instead accepted with a warning: older Cairn HW drivers genuinely
+ *     derived legacy-P2SH keys at this exact path (a real bug, fixed for new
+ *     keys only), so a wallet — and Cairn's own "Download backup" export of
+ *     it — can legitimately carry this label; refusing the import would
+ *     dangle the "re-export at m/45'" advice in front of a user for whom that
+ *     re-derives a DIFFERENT xpub, making their restored wallet watch the
+ *     wrong addresses. The sole accepted BIP-48 form for bare p2sh in CREATE
+ *     mode is Trezor's own 0' extension (m/48'/0'/0'/0'), which BIP-48 leaves
+ *     undefined and which is the one path Trezor's firmware can actually hand
+ *     back for a legacy multisig account; 0' is accepted the same way in
+ *     import mode too, no warning needed since it was never mis-derived.
  *
- * Everything else is rejected (cairn-1kc3.3) — single-sig purposes above all:
- * a single-sig path recorded on a multisig key makes from-seed recovery derive
- * the wrong key in every path-trusting tool, and leaks the existence of a
- * single-sig wallet into every export a cosigner receives.
+ * Everything else is rejected in both modes (cairn-1kc3.3) — single-sig
+ * purposes above all: a single-sig path recorded on a multisig key makes
+ * from-seed recovery derive the wrong key in every path-trusting tool, and
+ * leaks the existence of a single-sig wallet into every export a cosigner
+ * receives.
  */
 export function validateCosignerKeyPath(
 	path: string,
 	scriptType: MultisigScriptType | undefined,
-	label: string
-): void {
+	label: string,
+	opts: { mode?: CosignerPathMode } = {}
+): string | undefined {
+	const mode = opts.mode ?? 'create';
 	let indexes: number[];
 	try {
 		indexes = parsePath(path);
@@ -320,6 +365,28 @@ export function validateCosignerKeyPath(
 		}
 		const st = scriptType ?? 'p2wsh';
 		const suffix = unhardened(indexes[3]);
+		if (st === 'p2sh') {
+			// No BIP-48 suffix is defined for bare legacy P2SH. Tolerate only
+			// Trezor's 0' extension; everything else is rejected, calling out 1'
+			// by name since that's a NESTED-SEGWIT key's slot and the mistake this
+			// check exists to catch (cairn-acft) — EXCEPT on import, where 1' is a
+			// known historical label (see the doc comment above) and gets a
+			// warning instead of a hard stop.
+			if (suffix === LEGACY_P2SH_TREZOR_SUFFIX) return;
+			if (suffix === 1) {
+				if (mode === 'import') {
+					return `${label}: this key's path "${shown}" is a label an earlier version of Heartwood recorded for legacy P2SH keys. The key itself is unaffected — this import is safe.`;
+				}
+				throw new MultisigError(
+					`${label}: the path "${shown}" is a nested-SegWit (P2SH-P2WSH) key (BIP-48 script type 1') — legacy P2SH multisig keys use m/45' instead. If this key really is from a legacy P2SH wallet, re-export it at m/45' — or, if you're restoring an existing wallet's backup file, use Import instead, which accepts it.`,
+					'invalid_key'
+				);
+			}
+			throw new MultisigError(
+				`${label}: the path "${shown}" declares BIP-48 script type ${suffix}', but legacy P2SH multisig has no defined BIP-48 path — legacy P2SH multisig keys use m/45' instead.`,
+				'invalid_key'
+			);
+		}
 		if (suffix !== BIP48_SUFFIX[st]) {
 			throw new MultisigError(
 				`${label}: the path "${shown}" declares BIP-48 script type ${suffix}' but this multisig is ${st}, which uses …/${BIP48_SUFFIX[st]}' — re-export this key at the right path for this wallet type.`,
@@ -350,12 +417,20 @@ export function validateCosignerKeyPath(
 }
 
 /** Whole-config acceptance gate: every key's declared path validated against
- *  the config's script form. Called by createMultisig and the import parsers. */
-export function validateMultisigKeyPaths(config: MultisigConfig): void {
+ *  the config's script form. Called by createMultisig and the import parsers.
+ *  Returns any import-mode warnings collected along the way (empty in create
+ *  mode, which never produces one — see validateCosignerKeyPath). */
+export function validateMultisigKeyPaths(
+	config: MultisigConfig,
+	opts: { mode?: CosignerPathMode } = {}
+): string[] {
 	const scriptType = multisigScriptType(config);
+	const warnings: string[] = [];
 	(config.keys ?? []).forEach((key, i) => {
-		validateCosignerKeyPath(key.path, scriptType, key.name?.trim() || `key ${i + 1}`);
+		const warning = validateCosignerKeyPath(key.path, scriptType, key.name?.trim() || `key ${i + 1}`, opts);
+		if (warning) warnings.push(warning);
 	});
+	return warnings;
 }
 
 /**

@@ -198,13 +198,22 @@ export function primeMultisigScanCache(descriptorKey: string, result: MultisigSc
 }
 
 /** Drop cached scan results for one multisig, or all when omitted. Also removes
- *  the persisted row(s) so a deleted multisig's stale scan can never re-seed. */
+ *  the persisted row(s) so a deleted multisig's stale scan can never re-seed.
+ *  Computing the cache key requires a resolvable config (threshold + keys); a
+ *  malformed/partial row (e.g. deleted before its keys ever got inserted) can
+ *  never have produced a cache entry in the first place, so that's swallowed
+ *  rather than thrown — this must never block a deletion from completing. */
 export function invalidateMultisigCache(multisig?: MultisigRow): void {
 	if (multisig === undefined) {
 		scanCache.clear();
 		clearPersistedScans('multisig');
 	} else {
-		const key = cacheKey(multisig);
+		let key: string;
+		try {
+			key = cacheKey(multisig);
+		} catch {
+			return;
+		}
 		scanCache.delete(key);
 		deletePersistedScan(key);
 	}

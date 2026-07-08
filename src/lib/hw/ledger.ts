@@ -500,9 +500,9 @@ function parseMultisigKeyPath(path: string, label: string): number[] {
 }
 
 /**
- * The BIP-48 account path for a multisig cosigner key: m/48'/0'/{account}'/{script}'
- * where the script suffix is 2' for p2wsh and 1' for BOTH p2sh forms (BIP-48
- * gives p2sh and p2sh-p2wsh the same 1' — only native p2wsh gets 2'). Mainnet
+ * The BIP-48 account path for a FRESH multisig cosigner key: m/48'/0'/{account}'/{script}'
+ * where the script suffix is 2' for p2wsh and 1' for p2sh-p2wsh. Throws for
+ * bare p2sh — no longer a creation option (cairn-acft; see common.ts). Mainnet
  * only, matching the rest of Cairn. Exported for unit testing.
  */
 export function multisigAccountPath(scriptType: MultisigScriptType, account = 0): string {

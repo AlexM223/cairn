@@ -108,11 +108,11 @@ export function singleSigAccountPath(scriptType: ScriptType, account = 0): numbe
 export type { MultisigScriptType } from './common';
 
 /**
- * The BIP-48 account path for a multisig cosigner key:
+ * The BIP-48 account path for a FRESH multisig cosigner key:
  * m/48'/0'/{account}'/{script}' where the script suffix is 2' for p2wsh and 1'
- * for BOTH p2sh forms (BIP-48 gives p2sh and p2sh-p2wsh the same 1' — only
- * native p2wsh gets 2'). Returned as a hardened-offset index array. Mainnet
- * only. Exported for unit testing.
+ * for p2sh-p2wsh. Throws for bare p2sh — no longer a creation option
+ * (cairn-acft; see common.ts). Returned as a hardened-offset index array.
+ * Mainnet only. Exported for unit testing.
  */
 export function multisigAccountPathIndexes(scriptType: MultisigScriptType, account = 0): number[] {
 	return sharedMultisigAccountPathIndexes(scriptType, account, jadeFail);

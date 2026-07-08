@@ -8,13 +8,23 @@ import { setSetting } from './settings';
 import {
 	compareMultisigKey,
 	createMultisig,
+	deleteMultisig,
 	getMultisig,
 	markKeyVerified,
+	toMultisigConfig,
 	type NewMultisigKey,
 	type MultisigKeyRow,
 	type MultisigRow
 } from './wallets/multisig';
-import { multisigAddressAt, multisigAddressDetailAt } from './multisigScan';
+import {
+	multisigAddressAt,
+	multisigAddressDetailAt,
+	primeMultisigScanCache,
+	scanMultisig,
+	type MultisigScanResult
+} from './multisigScan';
+import { multisigToDescriptor } from './bitcoin/multisig';
+import { persistScanResult } from './scanCachePersist';
 
 // Deterministic cosigner fixtures: master seeds 0x01…, accounts at the BIP-48
 // wsh path — same construction as multisigScan.test.ts / multisig.test.ts so all
@@ -365,19 +375,23 @@ describe('createMultisig cosigner path validation (cairn-1kc3.1/.3)', () => {
 		expect(ms.keys.map((k) => k.path)).toEqual(["m/45'", "m/45'", 'm']);
 	});
 
-	it('accepts a p2sh wallet whose keys carry the 1\' suffix — proving the real scriptType flows into validation and the sanity derivation (cairn-1kc3.2)', () => {
+	it("accepts a p2sh wallet whose keys carry Trezor's 0' suffix — proving the real scriptType flows into validation and the sanity derivation (cairn-1kc3.2)", () => {
 		const user = makeUser('p2sh@example.com');
 		// Before cairn-1kc3.2 the acceptance config dropped scriptType, so
-		// everything validated as if p2wsh — under which these 1'-suffix keys
+		// everything validated as if p2wsh — under which these 0'-suffix keys
 		// would be wrongly rejected (and 2'-suffix keys wrongly accepted below).
+		// BIP-48 defines no suffix for bare p2sh at all; 0' is Trezor firmware's
+		// own extension for it (m/45' is the other accepted convention) — 1' is
+		// deliberately NOT valid here, since that's p2sh-p2wsh's slot and
+		// accepting it on a p2sh wallet would mask a wrong-key paste (cairn-acft).
 		const ms = createMultisig(user.id, {
 			name: 'Legacy vault',
 			threshold: 2,
 			scriptType: 'p2sh',
 			keys: [
-				newKeyAt(1, 'A', "m/48'/0'/0'/1'"),
-				newKeyAt(2, 'B', "m/48'/0'/0'/1'"),
-				newKeyAt(3, 'C', "m/48'/0'/0'/1'")
+				newKeyAt(1, 'A', "m/48'/0'/0'/0'"),
+				newKeyAt(2, 'B', "m/48'/0'/0'/0'"),
+				newKeyAt(3, 'C', "m/48'/0'/0'/0'")
 			]
 		});
 		expect(ms.scriptType).toBe('p2sh');
@@ -388,7 +402,7 @@ describe('createMultisig cosigner path validation (cairn-1kc3.1/.3)', () => {
 				scriptType: 'p2sh',
 				keys: [newKey(4, 'A'), newKey(5, 'B'), newKey(6, 'C')] // 2' suffix
 			})
-		).toThrow(/2'.*p2sh/);
+		).toThrow(/2'.*P2SH/);
 	});
 
 	it('applies the universal checks to imports too — a single-sig path never enters (cairn-1kc3.3 rule 3)', () => {
@@ -401,6 +415,98 @@ describe('createMultisig cosigner path validation (cairn-1kc3.1/.3)', () => {
 				keys: [newKeyAt(1, 'K', "m/44'/0'/0'")]
 			})
 		).toThrow(/single-sig/);
+	});
+
+	it("tolerates a legacy-P2SH key's historical 1' suffix on import, but still rejects it on fresh creation (cairn-acft)", () => {
+		const user = makeUser('legacyimport@example.com');
+		const legacyKeys = [
+			newKeyAt(1, 'A', "m/48'/0'/0'/1'"),
+			newKeyAt(2, 'B', "m/48'/0'/0'/1'"),
+			newKeyAt(3, 'C', "m/48'/0'/0'/1'")
+		];
+		// A from-scratch build (the default source) still hard-rejects the
+		// nested-SegWit-slot label on a p2sh wallet.
+		expect(() =>
+			createMultisig(user.id, { name: 'Fresh', threshold: 2, scriptType: 'p2sh', keys: legacyKeys })
+		).toThrow(MultisigError);
+		// The SAME keys succeed when saved as an import — Cairn's own "Download
+		// backup" export of an old wallet round-trips instead of being refused.
+		const ms = createMultisig(user.id, {
+			name: 'Restored',
+			threshold: 2,
+			scriptType: 'p2sh',
+			source: 'imported',
+			keys: legacyKeys
+		});
+		expect(ms.keys.map((k) => k.path)).toEqual(["m/48'/0'/0'/1'", "m/48'/0'/0'/1'", "m/48'/0'/0'/1'"]);
+	});
+});
+
+// ---- cairn-acft: a STORED legacy-P2SH wallet keeps working ---------------------
+//
+// validateCosignerKeyPath (tightened just above) runs ONLY at ACCEPTANCE time —
+// createMultisig and the Caravan import parser (multisigExport.ts). It is never
+// consulted when a wallet is loaded, has its addresses derived, or is spent from:
+// the origin path is metadata for display/hardware-wallet matching, and the
+// address math is a pure function of the xpub. A wallet whose keys carry the
+// now-rejected m/48'/…/1' label on a bare-p2sh wallet (exactly what the HW
+// drivers used to derive before cairn-acft's fix) must keep deriving, showing
+// balance, and spending — blocking those operations would strand real funds
+// over a label. This test inserts such a row directly (createMultisig itself now
+// refuses it, proven first) to lock in that the load/spend path stays silent.
+import { deriveMultisigAddress, validateCosignerKeyPath } from './bitcoin/multisig';
+import { constructMultisigPsbt } from './bitcoin/multisigPsbt';
+import { Transaction, NETWORK } from '@scure/btc-signer';
+
+describe('a stored legacy-P2SH wallet keeps loading and spending (cairn-acft)', () => {
+	it("loads, derives its address, and builds a spend PSBT for keys carrying the now-rejected 1' suffix", async () => {
+		const user = makeUser('legacy-p2sh-survivor@example.com');
+		const legacyPath = "m/48'/0'/0'/1'"; // nested-SegWit's BIP-48 slot — invalid on a p2sh wallet
+		const keys = [newKeyAt(1, 'A', legacyPath), newKeyAt(2, 'B', legacyPath), newKeyAt(3, 'C', legacyPath)];
+
+		// Prove this exact wallet could NOT be created fresh today — the tightened
+		// rule really does apply here, both directly and via createMultisig.
+		expect(() => validateCosignerKeyPath(legacyPath, 'p2sh', 'A')).toThrow(MultisigError);
+		expect(() =>
+			createMultisig(user.id, { name: 'Would be rejected', threshold: 2, scriptType: 'p2sh', keys })
+		).toThrow(MultisigError);
+
+		// Insert the same keys directly — bypassing createMultisig's validation —
+		// simulating a wallet that already existed before the tightening shipped.
+		const multisigId = Number(
+			db
+				.prepare('INSERT INTO multisigs (user_id, name, threshold, script_type) VALUES (?, ?, ?, ?)')
+				.run(user.id, 'Legacy survivor', 2, 'p2sh').lastInsertRowid
+		);
+		keys.forEach((k, i) => {
+			db.prepare(
+				'INSERT INTO multisig_keys (multisig_id, position, name, category, device_type, xpub, fingerprint, path) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+			).run(multisigId, i, k.name, k.category, k.deviceType ?? null, k.xpub, k.fingerprint, k.path);
+		});
+
+		// Load exactly the way the app does — no re-validation anywhere on this path.
+		const row = getMultisig(user.id, multisigId);
+		expect(row).not.toBeNull();
+		expect(row!.keys.map((k) => k.path)).toEqual([legacyPath, legacyPath, legacyPath]);
+		const cfg = toMultisigConfig(row!);
+
+		// Address derivation works — the xpub drives the math, not the path.
+		const address = deriveMultisigAddress(cfg, 0, 0).address;
+		expect(address).toMatch(/^3/); // bare p2sh mainnet address
+
+		// A spend PSBT builds too (legacy p2sh needs the raw previous tx for nonWitnessUtxo).
+		const fund = new Transaction({ allowUnknownInputs: true, disableScriptCheck: true });
+		fund.addInput({ txid: '00'.repeat(32), index: 0 });
+		fund.addOutputAddress(address, 200_000n, NETWORK);
+		const draft = await constructMultisigPsbt({
+			config: cfg,
+			utxos: [{ txid: fund.id, vout: 0, value: 200_000, height: 800_000, address, chain: 0, index: 0 }],
+			recipients: [{ address: 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4', amount: 50_000 }],
+			feeRate: 5,
+			changeIndex: 0,
+			fetchRawTx: async () => fund.hex
+		});
+		expect(draft.psbtBase64).toBeTruthy();
 	});
 });
 
@@ -546,5 +652,75 @@ describe('createMultisig xpub reuse warning (cairn-1kc3.4)', () => {
 			keys: [newKey(8, 'X'), newKey(9, 'Y')]
 		});
 		expect(listUserFeed(user.id).filter((e) => e.type === 'key_reuse')).toHaveLength(0);
+	});
+});
+
+// ---- cairn-ez9y: deleteMultisig must invalidate the scan cache ------------------
+
+describe('deleteMultisig cache invalidation (cairn-ez9y)', () => {
+	const emptyScan: MultisigScanResult = { addresses: [], txs: [], confirmed: 0, unconfirmed: 0 };
+
+	function cacheKeyFor(multisig: MultisigRow): string {
+		return multisigToDescriptor(toMultisigConfig(multisig));
+	}
+
+	function persistedRowExists(key: string): boolean {
+		return (
+			(
+				db.prepare('SELECT COUNT(*) AS n FROM wallet_scan_cache WHERE cache_key = ?').get(key) as {
+					n: number;
+				}
+			).n > 0
+		);
+	}
+
+	it('deleting a multisig drops its in-memory scan cache entry', async () => {
+		const user = makeUser('cache-owner@example.com');
+		const ms = makeMultisig(user.id);
+		const key = cacheKeyFor(ms);
+
+		// Seed the in-memory cache with a sentinel result.
+		const sentinelA: MultisigScanResult = { ...emptyScan, confirmed: 111 };
+		primeMultisigScanCache(key, sentinelA);
+		expect((await scanMultisig(ms)).confirmed).toBe(111);
+
+		expect(deleteMultisig(user.id, ms.id)).toBe(true);
+
+		// If the delete had left the in-memory slot in place, priming a second
+		// sentinel would be a no-op (prime() only fills an empty/expired slot)
+		// and the stale 111 would still be served.
+		const sentinelB: MultisigScanResult = { ...emptyScan, confirmed: 222 };
+		primeMultisigScanCache(key, sentinelB);
+		expect((await scanMultisig(ms)).confirmed).toBe(222);
+	});
+
+	it('deleting a multisig removes the persisted wallet_scan_cache row', () => {
+		const user = makeUser('cache-owner2@example.com');
+		const ms = makeMultisig(user.id);
+		const key = cacheKeyFor(ms);
+
+		persistScanResult('multisig', key, { ...emptyScan, confirmed: 333 });
+		expect(persistedRowExists(key)).toBe(true);
+
+		expect(deleteMultisig(user.id, ms.id)).toBe(true);
+
+		// Not just absent from the live cache — gone from the DB row that
+		// seedScanCachesFromDb (portfolioWarm.ts) reads back on every restart.
+		expect(persistedRowExists(key)).toBe(false);
+	});
+
+	it('a failed (non-owned) delete leaves both caches alone', async () => {
+		const owner = makeUser('cache-real-owner@example.com');
+		const other = makeUser('cache-attacker@example.com');
+		const ms = makeMultisig(owner.id);
+		const key = cacheKeyFor(ms);
+
+		persistScanResult('multisig', key, { ...emptyScan, confirmed: 444 });
+		primeMultisigScanCache(key, { ...emptyScan, confirmed: 444 });
+
+		expect(deleteMultisig(other.id, ms.id)).toBe(false);
+
+		expect(persistedRowExists(key)).toBe(true);
+		expect((await scanMultisig(ms)).confirmed).toBe(444);
 	});
 });

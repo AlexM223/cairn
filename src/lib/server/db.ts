@@ -765,6 +765,71 @@ db.exec(`
 	}
 }
 
+// Polymorphic child-table cleanup (cairn-97ui). balance_snapshots, wallet_backups,
+// address_labels, backup_missing_notified, and notified_txids all key off a
+// (wallet_kind, wallet_id) pair rather than a real foreign key — SQLite has no
+// polymorphic FK, so ON DELETE CASCADE can never reach them on its own. The two
+// triggers below sweep all five whenever a wallets or multisigs row goes,
+// covering every delete path in one place: deleteWallet()/deleteMultisig() (a
+// direct DELETE) AND user deletion (wallets.user_id/multisigs.user_id cascade
+// via a real FK — SQLite still fires a table's AFTER DELETE triggers when a row
+// is removed by an FK action, since foreign_keys=ON above). deleteWallet,
+// deleteMultisig, and accountDeletion.ts no longer hand-roll this cleanup — do
+// not resurrect per-table DELETEs there; add a new child table to BOTH trigger
+// bodies here instead, and the introspective test in deleteCascade.test.ts will
+// fail loudly if a new (wallet_kind, wallet_id) table is ever added without one.
+//
+// (multisig_shares also has a `wallet_kind` column, but it is NOT part of this
+// scheme — see the comment on that table below. Its parent link is a real
+// `multisig_id` FK with ON DELETE CASCADE, so it already cascades correctly and
+// is deliberately excluded here.)
+//
+// DROP + CREATE (not `CREATE TRIGGER IF NOT EXISTS`) so a future edit to a
+// trigger body — e.g. a sixth table — actually redeploys to existing databases
+// instead of silently never taking effect.
+db.exec(`
+	DROP TRIGGER IF EXISTS trg_wallets_delete_children;
+	CREATE TRIGGER trg_wallets_delete_children AFTER DELETE ON wallets BEGIN
+		DELETE FROM balance_snapshots WHERE wallet_kind = 'wallet' AND wallet_id = OLD.id;
+		DELETE FROM wallet_backups WHERE wallet_kind = 'wallet' AND wallet_id = OLD.id;
+		DELETE FROM address_labels WHERE wallet_kind = 'wallet' AND wallet_id = OLD.id;
+		DELETE FROM backup_missing_notified WHERE wallet_kind = 'wallet' AND wallet_id = OLD.id;
+		DELETE FROM notified_txids WHERE wallet_kind = 'wallet' AND wallet_id = OLD.id;
+	END;
+
+	DROP TRIGGER IF EXISTS trg_multisigs_delete_children;
+	CREATE TRIGGER trg_multisigs_delete_children AFTER DELETE ON multisigs BEGIN
+		DELETE FROM balance_snapshots WHERE wallet_kind = 'multisig' AND wallet_id = OLD.id;
+		DELETE FROM wallet_backups WHERE wallet_kind = 'multisig' AND wallet_id = OLD.id;
+		DELETE FROM address_labels WHERE wallet_kind = 'multisig' AND wallet_id = OLD.id;
+		DELETE FROM backup_missing_notified WHERE wallet_kind = 'multisig' AND wallet_id = OLD.id;
+		DELETE FROM notified_txids WHERE wallet_kind = 'multisig' AND wallet_id = OLD.id;
+	END;
+`);
+
+// One-time-in-spirit orphan purge: rows left behind by wallets/multisigs that
+// were deleted BEFORE the triggers above existed (deleteWallet/deleteMultisig's
+// old hand-written cleanup missed balance_snapshots entirely, so those rows in
+// particular have been silently accumulating). Unconditional and safe to run on
+// every startup rather than gated behind a "have we run this" flag: wallets.id
+// and multisigs.id are non-null INTEGER PRIMARY KEYs, so the NOT IN subqueries
+// below can never hit the classic NULL-poisoned-NOT-IN footgun, and once the
+// historical orphans are gone this is a cheap no-op scan on every subsequent
+// boot.
+for (const table of [
+	'balance_snapshots',
+	'wallet_backups',
+	'address_labels',
+	'backup_missing_notified',
+	'notified_txids'
+]) {
+	db.exec(`
+		DELETE FROM ${table}
+		 WHERE (wallet_kind = 'wallet' AND wallet_id NOT IN (SELECT id FROM wallets))
+		    OR (wallet_kind = 'multisig' AND wallet_id NOT IN (SELECT id FROM multisigs))
+	`);
+}
+
 // Key-health nudge throttle. key_health_due fires when a multisig key hasn't
 // been verified in ~180 days; this column records the last time we notified for
 // THAT key so we don't nag more than once per 30 days. Guarded/idempotent ALTER,

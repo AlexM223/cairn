@@ -95,7 +95,7 @@ describe('singleSigAccountPath', () => {
 });
 
 describe('multisigAccountPathIndexes', () => {
-	it("maps p2wsh to the BIP-48 2' suffix and both p2sh forms to 1'", () => {
+	it("maps p2wsh to the BIP-48 2' suffix and p2sh-p2wsh to 1'", () => {
 		expect(multisigAccountPathIndexes('p2wsh')).toEqual([
 			48 + HARDENED,
 			0 + HARDENED,
@@ -108,12 +108,10 @@ describe('multisigAccountPathIndexes', () => {
 			0 + HARDENED,
 			1 + HARDENED
 		]);
-		expect(multisigAccountPathIndexes('p2sh')).toEqual([
-			48 + HARDENED,
-			0 + HARDENED,
-			0 + HARDENED,
-			1 + HARDENED
-		]);
+	});
+
+	it('rejects bare p2sh — no longer a creation option (cairn-acft)', () => {
+		expect(() => multisigAccountPathIndexes('p2sh')).toThrow(JadeError);
 	});
 
 	it('honours a non-default account index and rejects bogus ones', () => {

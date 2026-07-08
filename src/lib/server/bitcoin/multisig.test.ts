@@ -516,13 +516,29 @@ describe('validateCosignerKeyPath', () => {
 		}
 	});
 
-	it('accepts BIP-48 paths whose script-type suffix matches the wallet (2\' = p2wsh, 1\' = both p2sh forms)', () => {
+	it("accepts BIP-48 paths whose script-type suffix matches the wallet (2' = p2wsh, 1' = p2sh-p2wsh)", () => {
 		expect(() => validateCosignerKeyPath("m/48'/0'/0'/2'", 'p2wsh', 'k')).not.toThrow();
 		expect(() => validateCosignerKeyPath("m/48'/0'/7'/2'", 'p2wsh', 'k')).not.toThrow();
-		expect(() => validateCosignerKeyPath("m/48'/0'/0'/1'", 'p2sh', 'k')).not.toThrow();
 		expect(() => validateCosignerKeyPath("m/48'/0'/0'/1'", 'p2sh-p2wsh', 'k')).not.toThrow();
 		// h/H hardened markers are equivalent to apostrophes.
 		expect(() => validateCosignerKeyPath('m/48h/0h/0h/2h', 'p2wsh', 'k')).not.toThrow();
+	});
+
+	it("accepts m/45' and Trezor's m/48'/0'/0'/0' for bare legacy P2SH; rejects everything else BIP-48 (cairn-acft)", () => {
+		// BIP-45 is the primary, cross-tool legacy-P2SH convention.
+		expect(() => validateCosignerKeyPath("m/45'", 'p2sh', 'k')).not.toThrow();
+		expect(() => validateCosignerKeyPath("m/45'/0/0/0", 'p2sh', 'k')).not.toThrow();
+		// Trezor firmware's own 0' extension (BIP-48 leaves 0' undefined).
+		expect(() => validateCosignerKeyPath("m/48'/0'/0'/0'", 'p2sh', 'k')).not.toThrow();
+		expect(() => validateCosignerKeyPath("m/48'/0'/7'/0'", 'p2sh', 'k')).not.toThrow();
+		// 1' is the p2sh-p2wsh (nested-SegWit) slot — accepting it on a bare
+		// P2SH wallet would mask exactly the wrong-key paste this validator
+		// exists to catch, and poison seed recovery for a key that really came
+		// from m/45'.
+		rejects("m/48'/0'/0'/1'", 'p2sh', /nested-SegWit.*m\/45'/);
+		// Any other BIP-48 suffix is likewise rejected — bare P2SH simply has
+		// no defined BIP-48 path.
+		rejects("m/48'/0'/0'/2'", 'p2sh', /no defined BIP-48 path.*m\/45'/);
 	});
 
 	it('rejects every single-sig purpose, naming the BIP (cairn-1kc3.3)', () => {
@@ -546,10 +562,11 @@ describe('validateCosignerKeyPath', () => {
 	it("rejects a BIP-48 suffix contradicting the wallet's script type (cairn-1kc3.1)", () => {
 		// The audit's concrete case: P2WSH wallet, P2SH-suffix path.
 		rejects("m/48'/0'/0'/1'", 'p2wsh', /script type 1'.*p2wsh/);
-		rejects("m/48'/0'/0'/2'", 'p2sh', /script type 2'.*p2sh/);
 		rejects("m/48'/0'/0'/2'", 'p2sh-p2wsh', /script type 2'.*p2sh-p2wsh/);
-		// Unknown suffixes (e.g. 3' — no BIP-48 meaning) are rejected too.
+		// Unknown suffixes (e.g. 3' — no BIP-48 meaning at all) are rejected too.
 		rejects("m/48'/0'/0'/3'", 'p2wsh', /script type 3'/);
+		// Bare p2sh has its own rejection shape (cairn-acft) — covered in the
+		// dedicated "accepts m/45' and Trezor's m/48'/0'/0'/0'…" test above.
 	});
 
 	it('rejects a truncated BIP-48 path', () => {
@@ -575,13 +592,13 @@ describe('validateMultisigKeyPaths', () => {
 			threshold: 2,
 			scriptType: 'p2sh',
 			keys: [
-				{ ...KEYS[0], path: "m/48'/0'/0'/1'", name: 'Trezor' },
-				{ ...KEYS[1], path: "m/48'/0'/0'/2'", name: 'Ledger' },
-				{ ...KEYS[2], path: "m/48'/0'/0'/1'", name: 'Backup' }
+				{ ...KEYS[0], path: "m/48'/0'/0'/0'", name: 'Trezor' },
+				{ ...KEYS[1], path: "m/48'/0'/0'/1'", name: 'Nested-SegWit key' },
+				{ ...KEYS[2], path: "m/45'", name: 'Backup' }
 			]
 		};
-		expect(() => validateMultisigKeyPaths(config)).toThrow(/Ledger/);
-		config.keys[1] = { ...config.keys[1], path: "m/48'/0'/0'/1'" };
+		expect(() => validateMultisigKeyPaths(config)).toThrow(/Nested-SegWit key/);
+		config.keys[1] = { ...config.keys[1], path: "m/48'/0'/0'/0'" };
 		expect(() => validateMultisigKeyPaths(config)).not.toThrow();
 	});
 

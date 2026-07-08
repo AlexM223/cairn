@@ -161,6 +161,10 @@ export interface CaravanImport {
 	 *  backup→restore round-trip doesn't reissue already-used addresses
 	 *  (cairn-u161). 0 when the file omits it. */
 	startingAddressIndex: number;
+	/** Non-fatal, import-mode-only notices about an accepted key path (cairn-acft)
+	 *  — e.g. a legacy-P2SH key carrying the historical 1' suffix label. Empty
+	 *  when nothing is worth flagging. Safe to show verbatim. */
+	warnings: string[];
 }
 
 const ADDRESS_TYPE_TO_SCRIPT: Record<string, MultisigScriptType> = {
@@ -260,6 +264,7 @@ export function parseCaravanImport(text: string): CaravanImport {
 		);
 	}
 	const seenXpubs = new Set<string>();
+	const warnings: string[] = [];
 	const keys = rawKeys.map((entry, i) => {
 		const k = (entry ?? {}) as Record<string, unknown>;
 		const xpub = typeof k.xpub === 'string' ? k.xpub.trim() : '';
@@ -294,8 +299,11 @@ export function parseCaravanImport(text: string): CaravanImport {
 		// addressType, or a non-mainnet coin type fails HERE, at import preview,
 		// naming the offending key — not later at creation with a generic error.
 		// (Unknown "m" and Caravan's masked all-zeros paths pass untouched, and
-		// BIP-45 m/45' paths have no script/coin fields to check.)
-		validateCosignerKeyPath(path, scriptType, `Key ${i + 1}`);
+		// BIP-45 m/45' paths have no script/coin fields to check.) Import mode
+		// (cairn-acft): a historical legacy-P2SH 1'-suffix label is accepted with
+		// a warning instead of rejected — see validateCosignerKeyPath's doc.
+		const warning = validateCosignerKeyPath(path, scriptType, `Key ${i + 1}`, { mode: 'import' });
+		if (warning) warnings.push(warning);
 		return {
 			name: typeof k.name === 'string' && k.name.trim() ? k.name.trim() : `Key ${i + 1}`,
 			xpub,
@@ -328,7 +336,8 @@ export function parseCaravanImport(text: string): CaravanImport {
 		threshold,
 		totalKeys: keys.length,
 		keys,
-		startingAddressIndex
+		startingAddressIndex,
+		warnings
 	};
 }
 
