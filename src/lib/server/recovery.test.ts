@@ -6,6 +6,7 @@ import {
 	verifyRecoveryPhrase,
 	generateRecoveryCodes,
 	consumeRecoveryCode,
+	mintAdminRecoveryCode,
 	hasRecoverySetup,
 	normalizePhrase,
 	normalizeCode,
@@ -187,6 +188,61 @@ describe('recovery codes', () => {
 		const admin = registerAdmin();
 		expect(consumeRecoveryCode(admin.id, 'ABCDE-FGHJK')).toBe(false);
 		expect(consumeRecoveryCode(999999, 'ABCDE-FGHJK')).toBe(false);
+	});
+});
+
+// --------------------------------------------------------- admin-minted codes
+
+describe('mintAdminRecoveryCode (cairn-j1q9)', () => {
+	it('mints exactly one redeemable code', () => {
+		const admin = registerAdmin();
+		const code = mintAdminRecoveryCode(admin.id);
+		expect(hasRecoverySetup(admin.id).codesRemaining).toBe(1);
+		expect(consumeRecoveryCode(admin.id, code)).toBe(true);
+	});
+
+	it('never lets the unused count exceed RECOVERY_CODE_COUNT (deletes unused before inserting)', () => {
+		const admin = registerAdmin();
+		// Mint the same user a code 10 times in a row — if this didn't delete the
+		// prior unused code first, unused rows would pile up past
+		// RECOVERY_CODE_COUNT and consumeRecoveryCode's constant-work scan (which
+		// iterates exactly that many rows) could never reach the newest one.
+		let last = '';
+		for (let i = 0; i < RECOVERY_CODE_COUNT + 2; i++) {
+			last = mintAdminRecoveryCode(admin.id);
+		}
+		expect(hasRecoverySetup(admin.id).codesRemaining).toBe(1);
+		expect(consumeRecoveryCode(admin.id, last)).toBe(true);
+	});
+
+	it('leaves an existing regular-generated set intact in count but supersedes it — old codes stop working', () => {
+		const admin = registerAdmin();
+		const original = generateRecoveryCodes();
+		original.store(admin.id);
+		expect(hasRecoverySetup(admin.id).codesRemaining).toBe(RECOVERY_CODE_COUNT);
+
+		const minted = mintAdminRecoveryCode(admin.id);
+		// All the original unused codes were replaced by the single minted one.
+		expect(hasRecoverySetup(admin.id).codesRemaining).toBe(1);
+		expect(consumeRecoveryCode(admin.id, original.codes[0])).toBe(false);
+		expect(consumeRecoveryCode(admin.id, minted)).toBe(true);
+	});
+
+	it('does not disturb an already-USED code row (only unused ones are cleared)', () => {
+		const admin = registerAdmin();
+		const original = generateRecoveryCodes();
+		original.store(admin.id);
+		expect(consumeRecoveryCode(admin.id, original.codes[0])).toBe(true); // now used
+
+		mintAdminRecoveryCode(admin.id);
+		// The used row from before is untouched (still 1 used + 1 new unused).
+		const { used, total } = db
+			.prepare(
+				'SELECT COUNT(*) AS total, SUM(CASE WHEN used_at IS NOT NULL THEN 1 ELSE 0 END) AS used FROM account_recovery_codes WHERE user_id = ?'
+			)
+			.get(admin.id) as { used: number; total: number };
+		expect(total).toBe(2);
+		expect(used).toBe(1);
 	});
 });
 

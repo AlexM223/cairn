@@ -29,7 +29,8 @@ import { parseXpub, deriveAddress, addressToScripthash, scriptPubKeyHex } from '
 import { deriveMultisigAddress } from './bitcoin/multisig';
 import { toMultisigConfig, type MultisigRow, type MultisigKeyRow } from './wallets/multisig';
 import { notify } from './notifications';
-import { verifyTxInclusion } from './bitcoin/spv';
+import { verifyTxInclusion, parseBlockHeader, blockHash, meetsTarget, bitsToTarget } from './bitcoin/spv';
+import type { BlockHeader } from './bitcoin/spv';
 import { childLogger } from './logger';
 import type { ChainService } from './chain/index';
 import type { ElectrumHeader, ElectrumHistoryItem } from './electrum/client';
@@ -52,6 +53,23 @@ const CONFIRM_THRESHOLD = 1;
 // How often to re-enumerate wallets and pick up newly created ones. See
 // startAddressWatcher for why this is a poll rather than a wallet-creation hook.
 const REFRESH_INTERVAL_MS = 5 * 60_000;
+
+// How many recently observed tip headers to keep for the self-calibrating
+// difficulty floor (cairn-8kbw). ~144 is a day of mainnet blocks — plenty to
+// smooth over normal difficulty-adjustment swings while still being cheap.
+const TIP_CACHE_SIZE = 144;
+
+// A header's own bits are self-consistent by definition (that's what
+// meetsTarget checks) — that alone only proves SOME real hashpower was spent,
+// not "at current difficulty". This factor caps how much easier than the
+// hardest recently observed tip a header may claim to be before SPV
+// verification refuses to trust it against a live single Electrum server, and
+// also gates which new tips are admitted into the cache in the first place, so
+// one bad tip can't drag the floor down for the ones after it. 4x is loose
+// enough to ride out normal retargets (mainnet retargets by at most 4x in
+// either direction every 2016 blocks) while still making casual forgery cost
+// real mining work.
+const DIFFICULTY_FLOOR_FACTOR = 4n;
 
 type WalletKind = 'wallet' | 'multisig';
 
@@ -85,6 +103,15 @@ interface WatchState {
 	/** Best known chain-tip height, updated on every 'header' event. Used as the
 	 *  upper bound for SPV proofs (reject a tx claiming a height above the tip). */
 	tipHeight: number;
+	/** Rolling cache of the last ~TIP_CACHE_SIZE headers this watcher has itself
+	 *  observed and accepted straight off the live Electrum header stream:
+	 *  height → { blockHash, expanded target }. This is the self-calibrating
+	 *  difficulty floor for cairn-8kbw — verifyTxInclusion's own-bits PoW check
+	 *  proves a header is internally self-consistent, not that it reflects real
+	 *  network difficulty; a proof for a height we've directly observed is
+	 *  pinned to that exact hash, and a proof for any other height must clear
+	 *  DIFFICULTY_FLOOR_FACTOR × the hardest target we've actually seen. */
+	tipCache: Map<number, { hash: string; target: bigint }>;
 }
 
 const state: WatchState = {
@@ -96,7 +123,8 @@ const state: WatchState = {
 	baselined: false,
 	baselinedScripthashes: new Set(),
 	inFlight: new Set(),
-	tipHeight: 0
+	tipHeight: 0,
+	tipCache: new Map()
 };
 
 // ---------------------------------------------------------------- scan progress
@@ -380,11 +408,84 @@ async function tipHeightNow(chain: ChainService): Promise<number> {
 	}
 }
 
+/** The hardest (numerically smallest) target among the cached tips, or 0n if empty. */
+function maxCachedTarget(): bigint {
+	let max = 0n;
+	for (const { target } of state.tipCache.values()) {
+		if (target > max) max = target;
+	}
+	return max;
+}
+
+/**
+ * Fold a freshly streamed chain-tip header into the difficulty-floor cache
+ * (cairn-8kbw). Every header the pool emits already had to satisfy its own
+ * `bits` before Electrum would relay it as a tip, but we re-check that here
+ * too rather than trusting the emitter — and, once the cache holds anything,
+ * also reject a tip whose target is more than DIFFICULTY_FLOOR_FACTOR easier
+ * than the hardest tip we've already accepted. That keeps one bad/weak header
+ * from dragging the floor down for every proof after it. Purely additive to
+ * the cache: a rejected header is just never recorded, never thrown.
+ */
+function acceptHeaderIntoCache(header: ElectrumHeader | null | undefined): void {
+	if (!header || typeof header.height !== 'number' || typeof header.hex !== 'string') return;
+	if (!Number.isInteger(header.height) || header.height <= 0) return;
+
+	let parsed: BlockHeader;
+	try {
+		parsed = parseBlockHeader(header.hex);
+	} catch {
+		log.warn({ height: header.height }, 'rejected streamed tip header: unparseable');
+		return;
+	}
+
+	const hash = blockHash(header.hex);
+	if (!meetsTarget(hash, parsed.bits)) {
+		log.warn({ height: header.height }, 'rejected streamed tip header: fails its own PoW target');
+		return;
+	}
+
+	const target = bitsToTarget(parsed.bits);
+	const priorMax = maxCachedTarget();
+	if (priorMax > 0n && target > priorMax * DIFFICULTY_FLOOR_FACTOR) {
+		log.warn(
+			{ height: header.height, target: target.toString(), priorMax: priorMax.toString() },
+			'rejected streamed tip header: target implausibly weak vs recently observed chain'
+		);
+		return;
+	}
+
+	state.tipCache.set(header.height, { hash, target });
+
+	// Prune down to the newest TIP_CACHE_SIZE entries (keyed by height, so a
+	// reorg that replaces a cached height simply overwrites it above).
+	if (state.tipCache.size > TIP_CACHE_SIZE) {
+		const heights = [...state.tipCache.keys()].sort((a, b) => a - b);
+		for (let i = 0; i < heights.length - TIP_CACHE_SIZE; i++) {
+			state.tipCache.delete(heights[i]);
+		}
+	}
+}
+
 /**
  * True only when `txid` at `height` is provably confirmed: the Electrum server
  * supplies a merkle branch and the block header, and both the header's PoW and
  * the branch check out. On any fetch/verify failure we return false (fail
  * closed: do not notify, do not record — a later event can retry).
+ *
+ * Checking a header's hash against its own `bits` alone (verifyTxInclusion's
+ * base check) only proves internal self-consistency, not real network
+ * difficulty — a hostile Electrum server can invent a trivially-easy header
+ * and "confirm" a forged tx in milliseconds (cairn-8kbw). Since this watcher
+ * has only one Electrum server as its source of truth (ElectrumPool is many
+ * sockets to that one server, not independent sources), there's no second feed
+ * to cross-check against. Instead we anchor against the live header stream
+ * this watcher already consumes (state.tipCache, see acceptHeaderIntoCache):
+ * a proof for a height we've directly observed must match that exact block
+ * hash; a proof for any other height must clear the difficulty floor
+ * calibrated off recently observed real tips. A cold cache (no tips accepted
+ * yet — e.g. right at startup, before headersSubscribe's first callback)
+ * defers rather than guessing.
  */
 async function spvVerifyConfirmed(txid: string, height: number): Promise<boolean> {
 	if (height <= 0) return false; // mempool: no inclusion proof is possible yet
@@ -395,12 +496,38 @@ async function spvVerifyConfirmed(txid: string, height: number): Promise<boolean
 			chain.electrum.getBlockHeader(height),
 			tipHeightNow(chain)
 		]);
+
+		const cached = state.tipCache.get(height);
+		if (cached) {
+			// We observed this exact height ourselves off the live header stream —
+			// the proof's header must be that same block, byte for byte. A mismatch
+			// here means either a forged header or a legitimate reorg since we
+			// cached it; either way we fail closed (defer, don't blacklist) and the
+			// next event retries against fresh data as the cache rolls forward.
+			if (blockHash(headerHex) !== cached.hash) {
+				log.warn(
+					{ txid, height },
+					'SPV verification deferred — header does not match the block we independently observed at this height (forged header or reorg)'
+				);
+				return false;
+			}
+		} else if (state.tipCache.size === 0) {
+			// No calibrated difficulty floor yet at all — don't trust any header's
+			// own-bits claim on its own. Defer; headersSubscribe seeds the cache
+			// shortly after connect and the next confirmation event retries.
+			log.warn({ txid, height }, 'SPV verification deferred — no observed chain tips yet to calibrate against');
+			return false;
+		}
+
 		const res = verifyTxInclusion({
 			txid,
 			height,
 			proof: { merkle: proof.merkle, pos: proof.pos },
 			headerHex,
-			tipHeight
+			tipHeight,
+			// Only needed for the not-independently-observed-height path; harmless
+			// (redundant with the exact-hash check above) when cached is set.
+			maxTarget: cached ? undefined : maxCachedTarget() * DIFFICULTY_FLOOR_FACTOR
 		});
 		if (!res.ok) {
 			log.warn(
@@ -651,6 +778,10 @@ export async function refreshWatches(): Promise<void> {
 	if (state.electrum !== electrum) {
 		detachListeners();
 		state.byScripthash.clear();
+		// A swapped client may point at a different server (or, in tests, a
+		// different chain entirely) — last-observed-tip data from the old client
+		// isn't a valid difficulty floor for headers the new one reports.
+		state.tipCache.clear();
 		state.electrum = electrum;
 		attachListeners(electrum);
 	}
@@ -774,6 +905,7 @@ function attachListeners(electrum: ElectrumPool): void {
 		if (header && typeof header.height === 'number' && header.height > state.tipHeight) {
 			state.tipHeight = header.height;
 		}
+		acceptHeaderIntoCache(header);
 		void handleNewBlock().catch((e) => log.error({ err: e }, 'new-block handler threw'));
 	};
 	electrum.on('scripthash', state.onScripthash);
@@ -825,3 +957,13 @@ export function startAddressWatcher(): void {
 	}, REFRESH_INTERVAL_MS);
 	refresh.unref?.();
 }
+
+// Exported for tests (cairn-8kbw difficulty-floor cache: addressWatcherSpv.test.ts).
+export const _internals = {
+	state,
+	acceptHeaderIntoCache,
+	spvVerifyConfirmed,
+	maxCachedTarget,
+	TIP_CACHE_SIZE,
+	DIFFICULTY_FLOOR_FACTOR
+};

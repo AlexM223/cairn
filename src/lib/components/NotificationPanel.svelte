@@ -91,6 +91,7 @@
 		admin_server_health: 'server',
 		admin_user_disabled: 'users',
 		admin_settings_changed: 'settings',
+		admin_recovery_code_minted: 'shield',
 		security_failed_login: 'shield',
 		security_new_passkey: 'shield',
 		security_password_changed: 'shield',

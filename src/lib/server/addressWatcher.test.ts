@@ -47,8 +47,26 @@ vi.mock('./chain/index', () => ({
 
 // The SPV inclusion proof is out of scope here (it has its own unit tests);
 // forging a PoW-valid header for a fixture is not practical, so accept the tx.
+// The header-cache helpers (parseBlockHeader/blockHash/meetsTarget/
+// bitsToTarget — cairn-8kbw's difficulty-floor calibration) are stubbed the
+// same way: any streamed 'header' event the watcher receives is accepted into
+// its cache, so spvVerifyConfirmed never falls into the (correct, but
+// out-of-scope-here) cold-cache defer. blockHash is stubbed as identity so a
+// cached height's exact-hash check trivially matches whatever fake header hex
+// this file uses.
 vi.mock('./bitcoin/spv', () => ({
-	verifyTxInclusion: () => ({ ok: true })
+	verifyTxInclusion: () => ({ ok: true }),
+	parseBlockHeader: () => ({
+		version: 1,
+		prevHash: '0'.repeat(64),
+		merkleRoot: '0'.repeat(64),
+		time: 0,
+		bits: 0x207fffff,
+		nonce: 0
+	}),
+	blockHash: (hex: string) => hex,
+	meetsTarget: () => true,
+	bitsToTarget: () => 1n
 }));
 
 const notifyMock = vi.fn();
@@ -118,6 +136,12 @@ beforeAll(async () => {
 	await vi.advanceTimersByTimeAsync(10_500);
 	vi.useRealTimers();
 	expect(pool.subscribeScripthash).toHaveBeenCalled();
+
+	// Seed the difficulty-floor cache (cairn-8kbw) with one fake streamed tip so
+	// spvVerifyConfirmed's cold-cache defer never fires below — this file's own
+	// scope is scriptPubKey attribution, not SPV, which the mock above already
+	// short-circuits to always-ok.
+	pool.emit('header', { height: 1, hex: '00'.repeat(80) });
 });
 
 // ---- tests --------------------------------------------------------------------

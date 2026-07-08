@@ -312,7 +312,8 @@
 				{ type: 'admin_restore', label: 'Backup restored', desc: 'An encrypted instance backup was restored — flags any imported accounts.' },
 				{ type: 'admin_server_health', label: 'Server health', desc: 'Node connection down, reconnect looping, or disk space low.' },
 				{ type: 'admin_user_disabled', label: 'User disabled or re-enabled', desc: 'Another admin disabled or re-enabled a user account.' },
-				{ type: 'admin_settings_changed', label: 'Instance settings changed', desc: 'A security-relevant instance setting was changed by an admin.' }
+				{ type: 'admin_settings_changed', label: 'Instance settings changed', desc: 'A security-relevant instance setting was changed by an admin.' },
+				{ type: 'admin_recovery_code_minted', label: 'Recovery code minted', desc: 'An admin minted a recovery code for a restored account.' }
 			]
 		}
 	];

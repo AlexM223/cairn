@@ -8,8 +8,10 @@ export function listUsers(): AdminUserInfo[] {
 	const rows = db
 		.prepare(
 			`SELECT u.id, u.email, u.display_name, u.is_admin, u.disabled, u.created_at, u.last_login,
+			        u.password_hash,
 			        (SELECT COUNT(*) FROM wallets w WHERE w.user_id = u.id)
-			          + (SELECT COUNT(*) FROM multisigs m WHERE m.user_id = u.id) AS wallet_count
+			          + (SELECT COUNT(*) FROM multisigs m WHERE m.user_id = u.id) AS wallet_count,
+			        (SELECT COUNT(*) FROM user_credentials c WHERE c.user_id = u.id) AS credential_count
 			 FROM users u ORDER BY u.created_at ASC`
 		)
 		.all() as {
@@ -20,7 +22,9 @@ export function listUsers(): AdminUserInfo[] {
 		disabled: number;
 		created_at: string;
 		last_login: string | null;
+		password_hash: string | null;
 		wallet_count: number;
+		credential_count: number;
 	}[];
 
 	return rows.map((r) => ({
@@ -31,7 +35,11 @@ export function listUsers(): AdminUserInfo[] {
 		disabled: r.disabled === 1,
 		createdAt: r.created_at,
 		lastActivity: activityBucket(r.last_login),
-		walletCount: r.wallet_count
+		walletCount: r.wallet_count,
+		// The shape a backup restore produces (cairn-j1q9): no passkey AND no
+		// password — this account cannot sign in until an admin mints it a
+		// recovery code.
+		needsRecoveryCode: r.credential_count === 0 && !r.password_hash
 	}));
 }
 

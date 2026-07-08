@@ -24,6 +24,11 @@
 		addresses: number;
 		labels: number;
 		settings: number;
+		// One single-use recovery code per newly-restored account (cairn-j1q9) —
+		// shown once here so this admin can hand each owner a way back in. A
+		// restored account has no password and no passkeys (backups never
+		// contain credentials), so this is its ONLY path to sign in.
+		reclaimCodes: { email: string; code: string }[];
 	};
 
 	// How stale before we warn: 30 days without a fresh instance backup. Also
@@ -301,9 +306,9 @@
 	<section class="hw-section section">
 		<span class="hw-title">Restore</span>
 		<p class="hint">
-			Restore is additive: existing accounts (matched by email) are left untouched, and imported
-			accounts arrive without passkeys — each owner reclaims their account by adding a passkey on the
-			normal sign-in screen.
+			Restore is additive: existing accounts (matched by email) are left untouched. Imported accounts
+			arrive with no password and no passkeys — each gets a single-use recovery code below that you
+			hand its owner out-of-band; they redeem it at the recover-access screen to sign back in.
 		</p>
 		{#if restoreError}<div class="form-error" role="alert">{restoreError}</div>{/if}
 		{#if summary}
@@ -316,6 +321,18 @@
 					? ''
 					: 's'}, and {summary.settings} setting{summary.settings === 1 ? '' : 's'}.
 			</div>
+			{#if summary.reclaimCodes.length > 0}
+				<div class="saved-note" role="status" style="margin-top: 8px">
+					<strong>Recovery codes — shown once, save them now:</strong>
+					<ul class="reclaim-codes">
+						{#each summary.reclaimCodes as rc (rc.email)}
+							<li><span class="mono">{rc.code}</span> — {rc.email}</li>
+						{/each}
+					</ul>
+					Send each code to its owner out-of-band. They redeem it at
+					<code>/recover</code> to set a new passkey or password and sign back in.
+				</div>
+			{/if}
 		{/if}
 		<div class="field">
 			<label class="label" for="file">Backup file</label>
@@ -435,5 +452,18 @@
 		border-radius: var(--radius-control);
 		padding: 9px 12px;
 		line-height: 1.5;
+	}
+
+	.reclaim-codes {
+		list-style: none;
+		margin: 6px 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+	}
+
+	.reclaim-codes .mono {
+		font-weight: 600;
 	}
 </style>

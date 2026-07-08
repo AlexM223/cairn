@@ -172,6 +172,41 @@ export function generateRecoveryCodes(): GeneratedCodes {
 }
 
 /**
+ * Mint a single admin-issued recovery code for `userId` (cairn-j1q9). This is
+ * the out-of-band replacement for the old public "reclaim by email" path: an
+ * account restored from a backup arrives with no password and no passkeys (a
+ * backup never contains credentials), so it has no way back in on its own. An
+ * admin hands the owner this one code out-of-band; they redeem it at /recover.
+ *
+ * Deletes the user's existing UNUSED codes FIRST, then inserts exactly one new
+ * one — this preserves the <= RECOVERY_CODE_COUNT unused-codes invariant
+ * consumeRecoveryCode's constant-work scan depends on (it iterates exactly
+ * RECOVERY_CODE_COUNT rows; a 9th unused code would silently never be checked
+ * and so could never be redeemed). Already-USED codes are left alone — they
+ * don't count toward the invariant and are harmless history. Runs in one
+ * transaction so a crash between the delete and insert can't leave the user
+ * with zero codes. Returns the plaintext code — shown once, never persisted.
+ */
+export function mintAdminRecoveryCode(userId: number): string {
+	const code = makeCode();
+	db.exec('BEGIN');
+	try {
+		db.prepare('DELETE FROM account_recovery_codes WHERE user_id = ? AND used_at IS NULL').run(
+			userId
+		);
+		db.prepare('INSERT INTO account_recovery_codes (user_id, code_hash) VALUES (?, ?)').run(
+			userId,
+			hashPassword(normalizeCode(code))
+		);
+		db.exec('COMMIT');
+	} catch (e) {
+		db.exec('ROLLBACK');
+		throw e;
+	}
+	return code;
+}
+
+/**
  * Verify a submitted recovery code against the user's UNUSED codes and, on a
  * match, atomically mark that one code used so it can never be spent twice
  * (even under concurrency). Returns whether a code was consumed. NEVER throws;

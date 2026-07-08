@@ -512,26 +512,6 @@ export function hasNoCredentials(userId: number): boolean {
 	return n === 0;
 }
 
-/**
- * The id of an existing account this email is allowed to RECLAIM by adding a
- * passkey (rather than registering fresh), or null. Reclaim is how a
- * credential-less account restored from a backup gets a passkey and becomes
- * usable again. Only credential-less, non-disabled accounts qualify, so an
- * account that already has a passkey can never be taken over this way.
- *
- * SECURITY (cairn-cpb5): an ADMIN account is never reclaimable this way. Reclaim
- * deliberately bypasses the registration-mode/invite gate, so letting it confer
- * admin would be a privilege-escalation path. Backup restore already forces
- * imported accounts to non-admin, so a credential-less admin row should not
- * exist — but this is the belt-and-suspenders check regardless of how one arose.
- * Such a row must be handled by an existing admin, not self-reclaimed.
- */
-export function reclaimableUserId(email: string): number | null {
-	const user = getUserByEmail(email);
-	if (user && !user.isAdmin && hasNoCredentials(user.id)) return user.id;
-	return null;
-}
-
 /** Look up a user by email for the login ceremony. Null when unknown/disabled. */
 export function getUserByEmail(email: string): SessionUser | null {
 	const row = db

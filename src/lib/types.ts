@@ -280,6 +280,14 @@ export interface AdminUserInfo {
 	 */
 	lastActivity: 'recent' | 'inactive' | 'never';
 	walletCount: number;
+	/**
+	 * True when this account has neither a passkey nor a password — the shape a
+	 * backup restore produces (cairn-j1q9). Such an account cannot sign in at
+	 * all until an admin mints it a recovery code (POST /api/admin/users
+	 * { mintRecoveryCode: true }); the users list badges these so they don't go
+	 * unnoticed.
+	 */
+	needsRecoveryCode: boolean;
 }
 
 export type RegistrationMode = 'open' | 'invite' | 'closed';

@@ -32,8 +32,9 @@ vi.mock('./logger', () => ({
 }));
 
 import { db } from './db';
-import { registerUser, addCredential, getUserByEmail, hasNoCredentials, listCredentials } from './auth';
+import { registerUser, addCredential, getUserByEmail, hasNoCredentials, hasPassword, listCredentials } from './auth';
 import { buildBackup, encryptBackup, decryptBackup, restoreBackup, BackupError } from './backup';
+import { consumeRecoveryCode } from './recovery';
 
 function wipe(): void {
 	db.exec(
@@ -139,6 +140,44 @@ describe('restore', () => {
 			.prepare('SELECT xpub FROM wallets WHERE user_id = ?')
 			.all(restoredBob!.id) as { xpub: string }[];
 		expect(wallets.map((w) => w.xpub)).toContain('xpubBOB');
+	});
+
+	it('mints a redeemable recovery code for each newly-restored account (cairn-j1q9)', () => {
+		const admin = registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+		const bob = registerUser({ email: 'bob@example.com', displayName: 'Bob' });
+		const data = buildBackup('t');
+		db.prepare('DELETE FROM users WHERE id = ?').run(bob.id);
+
+		const summary = restoreBackup(data);
+		// Only bob was newly inserted (admin already existed → skipped, no code).
+		expect(summary.reclaimCodes).toHaveLength(1);
+		expect(summary.reclaimCodes[0].email).toBe('bob@example.com');
+
+		const restoredBob = getUserByEmail('bob@example.com')!;
+		expect(hasNoCredentials(restoredBob.id)).toBe(true);
+		expect(hasPassword(restoredBob.id)).toBe(false);
+		// The minted code actually redeems for the right (remapped) account.
+		expect(consumeRecoveryCode(restoredBob.id, summary.reclaimCodes[0].code)).toBe(true);
+		// Sanity: it does NOT redeem for an unrelated account.
+		expect(consumeRecoveryCode(admin.id, summary.reclaimCodes[0].code)).toBe(false);
+	});
+
+	it('does not mint a code for a disabled restored account', () => {
+		registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+		const data = buildBackup('t');
+		data.users.push({
+			id: 8888,
+			email: 'disabled@example.com',
+			display_name: 'Disabled',
+			is_admin: 0,
+			disabled: 1,
+			created_at: 't',
+			last_login: null
+		});
+
+		const summary = restoreBackup(data);
+		expect(summary.usersAdded).toBe(1);
+		expect(summary.reclaimCodes).toHaveLength(0);
 	});
 
 	it('does not clobber an existing account with the same email', () => {
