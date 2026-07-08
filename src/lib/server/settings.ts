@@ -138,6 +138,18 @@ export function getInstanceSettings(): InstanceSettings {
 }
 
 /**
+ * Just the instance mode ('solo' | 'team'), without the full settings-table
+ * scan + core_rpc_pass decrypt that getInstanceSettings() does (cairn-xlrm).
+ * The (app) layout load needs only this one field on every navigation, so
+ * this is a single keyed lookup instead of getInstanceSettings()'s ~2 queries
+ * (settings table + instance_secrets) plus decryption work that's irrelevant
+ * here. Same fallback semantics as getInstanceSettings().instanceMode.
+ */
+export function getInstanceMode(): InstanceMode {
+	return (getSetting('instance_mode') as InstanceMode | null) ?? DEFAULTS.instanceMode;
+}
+
+/**
  * Instance settings safe to serialize to the client: the stored Core RPC
  * password is replaced by a presence flag so the secret never leaves the
  * server.

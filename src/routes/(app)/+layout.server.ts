@@ -1,8 +1,8 @@
 import { redirect } from '@sveltejs/kit';
-import { getUserAgreement, DEFAULT_OPERATOR } from '$lib/server/disclosures';
+import { getUserAgreementOperator, DEFAULT_OPERATOR } from '$lib/server/disclosures';
 import { listUnbackedWallets, shouldShowBackupReminder } from '$lib/server/backups';
 import { listActiveAnnouncementsFor } from '$lib/server/announcements';
-import { getInstanceSettings } from '$lib/server/settings';
+import { getInstanceMode } from '$lib/server/settings';
 import { httpsExternalPort } from '$lib/server/httpsPort';
 import { isFirstSyncComplete } from '$lib/server/syncStatus';
 import type { LayoutServerLoad } from './$types';
@@ -63,12 +63,18 @@ export const load: LayoutServerLoad = async ({ locals }) => {
 		// contacts, wallet sharing) is shown at all. Server-side assertTeamMode()
 		// is the real gate; this is what lets the UI hide the nav entirely rather
 		// than show a disabled state (docs/SOLO-MODE-UMBREL-AUTOADMIN-PLAN.md Part 2).
-		instanceMode: getInstanceSettings().instanceMode,
+		// getInstanceMode() (not getInstanceSettings().instanceMode) — cairn-xlrm:
+		// this load runs on every navigation, and the full getInstanceSettings()
+		// pulls + decrypts core_rpc_pass for no reason when only this one field
+		// is needed here.
+		instanceMode: getInstanceMode(),
 		// Admin-set operator name, surfaced in the sidebar chrome (cairn-ivae.6).
 		// Null while still the stock fallback — "operated by the operator of this
 		// Cairn instance" would be noise, so nothing renders until it's set.
+		// getUserAgreementOperator() (not getUserAgreement().operator) — cairn-xlrm:
+		// avoids fetching the (unused here) agreement text + version too.
 		operatorName: (() => {
-			const operator = getUserAgreement().operator;
+			const operator = getUserAgreementOperator();
 			return operator === DEFAULT_OPERATOR ? null : operator;
 		})(),
 		unbackedWallets: listUnbackedWallets(locals.user.id),
