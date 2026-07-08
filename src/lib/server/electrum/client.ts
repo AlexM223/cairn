@@ -156,10 +156,46 @@ export class ElectrumClient extends EventEmitter {
 
 		this.connecting = new Promise<void>((resolve, reject) => {
 			let settled = false;
+
+			// Deadline for the initial dial only (direct — non-proxy — TCP connect or
+			// TLS handshake). The idle-socket timeout is deliberately disabled below
+			// (`s.setTimeout(0)`, cairn-u7bw) so the keepalive can hold a healthy
+			// connection open indefinitely; that also means it does nothing to bound a
+			// *dial* that never completes — a backend that black-holes the SYN (or an
+			// initial TLS byte) and never RSTs leaves this promise pending forever, and
+			// every caller up the chain (scanWallet, getWalletDetail/listWallets, the
+			// streamed page load) hangs with it (cairn-vn48). This timer is separate
+			// from that idle timeout and only covers the connect/handshake phase. The
+			// SOCKS5 path is untouched — it already gets its own connect timeout via
+			// SocksClient's `timeout` option.
+			let connectTimer: NodeJS.Timeout | null = null;
+			const armConnectTimeout = (): void => {
+				connectTimer = setTimeout(() => {
+					connectTimer = null;
+					if (this.connectingSocket) {
+						this.connectingSocket.destroy();
+						this.connectingSocket = null;
+					}
+					fail(
+						new Error(
+							`Electrum connect to ${this.host}:${this.port} timed out after ${this.timeoutMs}ms`
+						)
+					);
+				}, this.timeoutMs);
+				connectTimer.unref?.();
+			};
+			const disarmConnectTimeout = (): void => {
+				if (connectTimer) {
+					clearTimeout(connectTimer);
+					connectTimer = null;
+				}
+			};
+
 			const fail = (err: Error) => {
 				if (settled) return;
 				settled = true;
 				this.connecting = null;
+				disarmConnectTimeout();
 				// Feed the instance-wide transport-health signal (cairn-hy8z): a failed
 				// dial — proxy rejection, TLS error, connect timeout — is what makes the
 				// "can't reach the Bitcoin network" banner appear instead of leaving the
@@ -170,6 +206,9 @@ export class ElectrumClient extends EventEmitter {
 
 			let socket: net.Socket;
 			const onReady = () => {
+				// The dial succeeded — the connect-timeout's job is done, regardless of
+				// what happens next (cairn-vn48).
+				disarmConnectTimeout();
 				// close() may have been called while the TCP/TLS handshake was in
 				// flight — don't adopt the socket or start the protocol handshake.
 				if (this.closed) {
@@ -261,9 +300,11 @@ export class ElectrumClient extends EventEmitter {
 							setImmediate(onReady);
 						}
 					} else if (this.useTls) {
+						armConnectTimeout();
 						socket = wrapTls();
 						attach(socket);
 					} else {
+						armConnectTimeout();
 						socket = net.connect({ host: this.host, port: this.port }, onReady);
 						attach(socket);
 					}

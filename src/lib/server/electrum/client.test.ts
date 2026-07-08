@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import net from 'node:net';
 import tls from 'node:tls';
+import { EventEmitter } from 'node:events';
 import { ElectrumClient } from './client';
 import type { ElectrumHeader } from './client';
 
@@ -232,6 +233,34 @@ function reply(socket: net.Socket, id: number, result: unknown): void {
 
 function notify(socket: net.Socket, method: string, params: unknown[]): void {
 	socket.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n');
+}
+
+interface FakeConnectingSocket extends EventEmitter {
+	destroyed: boolean;
+	destroy: ReturnType<typeof vi.fn>;
+	setEncoding: ReturnType<typeof vi.fn>;
+	setTimeout: ReturnType<typeof vi.fn>;
+	write: ReturnType<typeof vi.fn>;
+}
+
+/**
+ * A stand-in for a `net.Socket` mid-dial: just enough of the socket API for
+ * `attach()`/`armConnectTimeout()` (client.ts) to operate on, with no real
+ * transport underneath. Lets the connect-timeout tests (cairn-vn48) simulate
+ * a backend that never finishes connecting (or connects on command)
+ * deterministically, instead of depending on real — and in a sandboxed test
+ * runner, potentially unreliable — black-hole network behavior.
+ */
+function makeFakeConnectingSocket(): FakeConnectingSocket {
+	const socket = new EventEmitter() as FakeConnectingSocket;
+	socket.destroyed = false;
+	socket.destroy = vi.fn(() => {
+		socket.destroyed = true;
+	});
+	socket.setEncoding = vi.fn();
+	socket.setTimeout = vi.fn();
+	socket.write = vi.fn();
+	return socket;
 }
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -711,4 +740,76 @@ describe('ElectrumClient', () => {
 		// And the client is fully usable again on the new connection.
 		await expect(client.request('server.ping')).resolves.toBeNull();
 	}, 8000);
+
+	// ------------------------------------------------------------- connect timeout
+
+	it('rejects instead of hanging forever when the initial direct TCP connect never completes (cairn-vn48)', async () => {
+		const timeoutMs = 500;
+		const fakeSocket = makeFakeConnectingSocket();
+		// Simulate a dead/unreachable backend that black-holes the SYN: the
+		// 'connect' callback net.connect() would normally invoke never fires, and
+		// no 'error'/'close' event happens either. Without a connect-level
+		// deadline this hangs ensureConnected() -- and every caller up the chain
+		// (scanWallet, getWalletDetail/listWallets, the streamed page load) --
+		// forever.
+		const connectSpy = vi
+			.spyOn(net, 'connect')
+			.mockImplementation((() => fakeSocket as unknown as net.Socket) as unknown as typeof net.connect);
+
+		vi.useFakeTimers();
+		try {
+			const client = new ElectrumClient({ host: '192.0.2.1', port: 50001, tls: false, timeoutMs });
+			cleanups.push(() => client.close());
+
+			const assertion = expect(client.request('server.ping')).rejects.toThrow(
+				new RegExp(`Electrum connect to 192\\.0\\.2\\.1:50001 timed out after ${timeoutMs}ms`)
+			);
+			await vi.advanceTimersByTimeAsync(timeoutMs);
+			await assertion;
+
+			// The dead socket must be torn down, not left dangling.
+			expect(fakeSocket.destroy).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+			connectSpy.mockRestore();
+		}
+	});
+
+	it('clears the connect-timeout timer once the socket connects, so it cannot fire later', async () => {
+		const timeoutMs = 300;
+		const fakeSocket = makeFakeConnectingSocket();
+		let connectCb: (() => void) | undefined;
+		const connectSpy = vi.spyOn(net, 'connect').mockImplementation(((
+			_opts: unknown,
+			cb?: () => void
+		) => {
+			connectCb = cb;
+			return fakeSocket as unknown as net.Socket;
+		}) as unknown as typeof net.connect);
+		const clearSpy = vi.spyOn(global, 'clearTimeout');
+
+		try {
+			const client = new ElectrumClient({ host: '127.0.0.1', port: 1, tls: false, timeoutMs });
+			cleanups.push(() => client.close());
+
+			// Kick off the connect; the eventual outcome of the full handshake is
+			// irrelevant here (the fake socket can never complete it) -- only the
+			// connect phase is under test.
+			(client as unknown as { ensureConnected(): Promise<void> }).ensureConnected().catch(() => {});
+			await Promise.resolve();
+			expect(connectSpy).toHaveBeenCalled();
+			const clearCallsBeforeConnect = clearSpy.mock.calls.length;
+
+			// Simulate the OS-level TCP connect completing right away.
+			connectCb?.();
+
+			// onReady() must disarm the connect-timeout timer synchronously, and the
+			// socket must not have been torn down by it.
+			expect(clearSpy.mock.calls.length).toBeGreaterThan(clearCallsBeforeConnect);
+			expect(fakeSocket.destroy).not.toHaveBeenCalled();
+		} finally {
+			connectSpy.mockRestore();
+			clearSpy.mockRestore();
+		}
+	});
 });
