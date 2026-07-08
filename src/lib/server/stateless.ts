@@ -102,7 +102,11 @@ export function parseStatelessSource(source: string): { config: StatelessConfig;
 				path: k.path
 			})),
 			// A bare descriptor carries no receive cursor.
-			startingAddressIndex: 0
+			startingAddressIndex: 0,
+			// This branch never calls validateMultisigKeyPaths (pre-existing —
+			// stateless descriptor import has always been acceptance-agnostic here,
+			// unlike the persistent import routes), so there's nothing to collect.
+			warnings: []
 		};
 	}
 

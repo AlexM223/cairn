@@ -29,19 +29,23 @@ function wipe(): void {
 let alice: number;
 let bob: number;
 
-beforeEach(() => {
+beforeEach(async () => {
 	wipe();
 	setSetting('registration_mode', 'open');
-	alice = registerUser({
-		email: 'alice@example.com',
-		password: 'correct horse battery',
-		displayName: 'alice'
-	}).id;
-	bob = registerUser({
-		email: 'bob@example.com',
-		password: 'correct horse battery',
-		displayName: 'bob'
-	}).id;
+	alice = (
+		await registerUser({
+			email: 'alice@example.com',
+			password: 'correct horse battery',
+			displayName: 'alice'
+		})
+	).id;
+	bob = (
+		await registerUser({
+			email: 'bob@example.com',
+			password: 'correct horse battery',
+			displayName: 'bob'
+		})
+	).id;
 });
 
 describe('buildAccountExport (cairn-5u2i.3)', () => {

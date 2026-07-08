@@ -1,18 +1,15 @@
 // POST /api/auth/register/verify { response, name? }
 // Verifies the new passkey against the stashed challenge, then creates the user
 // and stores the credential in one transaction, and signs them in.
+//
+// cairn-j1q9: no longer handles "reclaim" (attaching a passkey to an existing
+// credential-less account) — that public, email-only path was a silent
+// account-takeover vector. A restored account now gets back in only via
+// /recover with a single-use code an admin mints for them.
 
 import { json, readJson } from '$lib/server/api';
 import { db } from '$lib/server/db';
-import {
-	registerUser,
-	addCredential,
-	createSession,
-	setSessionCookie,
-	getUserById,
-	hasNoCredentials,
-	AuthError
-} from '$lib/server/auth';
+import { registerUserWithHash, addCredential, createSession, setSessionCookie, AuthError } from '$lib/server/auth';
 import { verifyRegistration, readRegChallenge, clearRegChallenge } from '$lib/server/webauthn';
 import { sessionContextFrom } from '$lib/server/deviceTracking';
 import { childLogger } from '$lib/server/logger';
@@ -57,42 +54,26 @@ export const POST: RequestHandler = async (event) => {
 		name: body.name ?? null
 	};
 
-	// Reclaim: attach the passkey to an existing credential-less account
-	// (restored from a backup) instead of creating a new one.
-	if (pending.reclaimUserId != null) {
-		const existing = getUserById(pending.reclaimUserId);
-		// Re-check under the same request that it is still reclaimable (no race).
-		// An admin account is never reclaimable via passkey signup (cairn-cpb5): the
-		// reclaim path skips the registration-mode gate, so it must never confer
-		// admin. Backup restore already forces imports to non-admin; this is the
-		// second line of defence.
-		if (!existing || existing.isAdmin || !hasNoCredentials(existing.id)) {
-			clearRegChallenge(event);
-			return json({ error: 'That account can no longer be reclaimed.' }, { status: 400 });
-		}
-		try {
-			addCredential(existing.id, newCredential);
-		} catch (e) {
-			clearRegChallenge(event);
-			log.error({ err: e, userId: existing.id }, 'reclaim add credential failed');
-			return json({ error: 'Could not reclaim the account.' }, { status: 500 });
-		}
-		clearRegChallenge(event);
-		const { token, expiresAt } = createSession(existing.id, sessionContextFrom(event));
-		setSessionCookie(event.cookies, token, expiresAt, event.url);
-		return json({ user: existing });
-	}
-
-	// Otherwise create the account and its first passkey atomically — never leave
+	// Create the account and its first passkey atomically — never leave
 	// a user with no way to sign in, nor a credential with no user.
+	// A passkey signup never has a password, so this calls the
+	// transaction-safe registerUserWithHash() core directly (passwordHash:
+	// null) instead of the registerUser() wrapper — that core is guaranteed
+	// to contain no `await`, which is required here: node:sqlite's
+	// DatabaseSync only supports one transaction at a time, so any await
+	// between BEGIN and COMMIT would let a concurrent request's own BEGIN
+	// interleave and roll back THIS transaction (cairn-jlrb).
 	db.exec('BEGIN');
 	let user;
 	try {
-		user = registerUser({
-			email: pending.email,
-			displayName: pending.displayName ?? '',
-			inviteCode: pending.inviteCode
-		});
+		user = registerUserWithHash(
+			{
+				email: pending.email,
+				displayName: pending.displayName ?? '',
+				inviteCode: pending.inviteCode
+			},
+			null
+		);
 		addCredential(user.id, newCredential);
 		db.exec('COMMIT');
 	} catch (e) {

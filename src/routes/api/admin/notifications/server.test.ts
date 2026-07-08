@@ -21,10 +21,10 @@ function wipe(): void {
 const PASSWORD = 'correct horse battery';
 let admin: { id: number; email: string; displayName: string; isAdmin: boolean };
 
-beforeEach(() => {
+beforeEach(async () => {
 	wipe();
 	setSetting('registration_mode', 'open');
-	const u = registerUser({ email: 'admin@example.com', password: PASSWORD, displayName: 'admin' });
+	const u = await registerUser({ email: 'admin@example.com', password: PASSWORD, displayName: 'admin' });
 	admin = { id: u.id, email: u.email, displayName: u.displayName, isAdmin: true };
 	// Stored SMTP relay with credentials, TLS on — the state the guard protects.
 	setSetting('smtp_host', 'smtp.example.com');

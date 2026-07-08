@@ -79,6 +79,17 @@ export function getUserAgreement(): UserAgreement {
 }
 
 /**
+ * Just the operator display name, without the two extra SQL round trips
+ * getUserAgreement() makes for the (unused-by-this-caller) agreement text and
+ * version (cairn-xlrm). The (app) layout's sidebar chrome only ever reads
+ * `.operator`, but it runs on every navigation, so this is a single keyed
+ * lookup instead of three. Same fallback semantics as getUserAgreement().
+ */
+export function getUserAgreementOperator(): string {
+	return getSetting(K_OPERATOR) ?? DEFAULT_OPERATOR;
+}
+
+/**
  * Startup migration (called from hooks.server.ts): an instance still on the
  * STOCK agreement (no customized text saved) picks up edits to
  * DEFAULT_USER_AGREEMENT automatically — but the stored version must bump too,

@@ -8,8 +8,10 @@ export function listUsers(): AdminUserInfo[] {
 	const rows = db
 		.prepare(
 			`SELECT u.id, u.email, u.display_name, u.is_admin, u.disabled, u.created_at, u.last_login,
+			        u.password_hash,
 			        (SELECT COUNT(*) FROM wallets w WHERE w.user_id = u.id)
-			          + (SELECT COUNT(*) FROM multisigs m WHERE m.user_id = u.id) AS wallet_count
+			          + (SELECT COUNT(*) FROM multisigs m WHERE m.user_id = u.id) AS wallet_count,
+			        (SELECT COUNT(*) FROM user_credentials c WHERE c.user_id = u.id) AS credential_count
 			 FROM users u ORDER BY u.created_at ASC`
 		)
 		.all() as {
@@ -20,7 +22,9 @@ export function listUsers(): AdminUserInfo[] {
 		disabled: number;
 		created_at: string;
 		last_login: string | null;
+		password_hash: string | null;
 		wallet_count: number;
+		credential_count: number;
 	}[];
 
 	return rows.map((r) => ({
@@ -31,7 +35,11 @@ export function listUsers(): AdminUserInfo[] {
 		disabled: r.disabled === 1,
 		createdAt: r.created_at,
 		lastActivity: activityBucket(r.last_login),
-		walletCount: r.wallet_count
+		walletCount: r.wallet_count,
+		// The shape a backup restore produces (cairn-j1q9): no passkey AND no
+		// password — this account cannot sign in until an admin mints it a
+		// recovery code.
+		needsRecoveryCode: r.credential_count === 0 && !r.password_hash
 	}));
 }
 
@@ -105,27 +113,38 @@ export function deleteUser(id: number): void {
  * wiped along with everything else — that is intentional.
  */
 export function resetInstance(): void {
-	db.exec(`
-		BEGIN;
-		DELETE FROM wallets;
-		DELETE FROM invites;
-		DELETE FROM sessions;
-		DELETE FROM users;
-		DELETE FROM settings;
-		-- Instance-wide activity (events.user_id IS NULL) and the notified-txid
-		-- ledger have no FK target to cascade from, so they must be cleared
-		-- explicitly. Otherwise a new operator sees the prior instance's activity
-		-- history and dedup state, contradicting the "nothing else survives" copy
-		-- in the reset danger-zone (cairn-5s8y, cairn-zari).
-		DELETE FROM events;
-		DELETE FROM notified_txids;
-		-- Instance-level marketing content also has no user FK to cascade from
-		-- (dismissals do cascade with users; the announcements/referral rows
-		-- themselves belong to the instance being reset).
-		DELETE FROM announcements;
-		DELETE FROM multisig_service_referrals;
-		COMMIT;
-	`);
+	db.prepare('BEGIN').run();
+	try {
+		// feature_flags/user_feature_flags.updated_by have no ON DELETE action —
+		// a plain `DELETE FROM users` would violate the FK (cairn-hl87). Clear
+		// them before the user rows go, same idiom as deleteOwnAccount.
+		db.prepare('UPDATE feature_flags SET updated_by = NULL').run();
+		db.prepare('UPDATE user_feature_flags SET updated_by = NULL').run();
+
+		db.exec(`
+			DELETE FROM wallets;
+			DELETE FROM invites;
+			DELETE FROM sessions;
+			DELETE FROM users;
+			DELETE FROM settings;
+			-- Instance-wide activity (events.user_id IS NULL) and the notified-txid
+			-- ledger have no FK target to cascade from, so they must be cleared
+			-- explicitly. Otherwise a new operator sees the prior instance's activity
+			-- history and dedup state, contradicting the "nothing else survives" copy
+			-- in the reset danger-zone (cairn-5s8y, cairn-zari).
+			DELETE FROM events;
+			DELETE FROM notified_txids;
+			-- Instance-level marketing content also has no user FK to cascade from
+			-- (dismissals do cascade with users; the announcements/referral rows
+			-- themselves belong to the instance being reset).
+			DELETE FROM announcements;
+			DELETE FROM multisig_service_referrals;
+		`);
+		db.prepare('COMMIT').run();
+	} catch (e) {
+		db.prepare('ROLLBACK').run();
+		throw e;
+	}
 }
 
 // ---------- Invites ----------

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
 	import Term from '$lib/components/Term.svelte';
+	import { goto } from '$app/navigation';
 	import { formatSats } from '$lib/format';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
@@ -312,7 +313,8 @@
 				{ type: 'admin_restore', label: 'Backup restored', desc: 'An encrypted instance backup was restored — flags any imported accounts.' },
 				{ type: 'admin_server_health', label: 'Server health', desc: 'Node connection down, reconnect looping, or disk space low.' },
 				{ type: 'admin_user_disabled', label: 'User disabled or re-enabled', desc: 'Another admin disabled or re-enabled a user account.' },
-				{ type: 'admin_settings_changed', label: 'Instance settings changed', desc: 'A security-relevant instance setting was changed by an admin.' }
+				{ type: 'admin_settings_changed', label: 'Instance settings changed', desc: 'A security-relevant instance setting was changed by an admin.' },
+				{ type: 'admin_recovery_code_minted', label: 'Recovery code minted', desc: 'An admin minted a recovery code for a restored account.' }
 			]
 		}
 	];
@@ -513,8 +515,18 @@
 		<span class="flow-spacer"></span>
 	</header>
 
-	<!-- Desktop eyebrow breadcrumb, linking back to Settings. -->
-	<a class="crumb-link" href="/settings">
+	<!-- Desktop eyebrow breadcrumb, linking back to Settings. Navigates via
+	     goto(..., { replaceState: true }) rather than a plain <a> so it
+	     replaces the current history entry instead of pushing a new one —
+	     otherwise Back alternates between here and /settings (cairn-ojvs). -->
+	<a
+		class="crumb-link"
+		href="/settings"
+		onclick={(e) => {
+			e.preventDefault();
+			goto('/settings', { replaceState: true });
+		}}
+	>
 		<EyebrowBreadcrumb path={['Settings']} current="Notifications" />
 	</a>
 

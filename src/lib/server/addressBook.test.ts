@@ -30,13 +30,13 @@ function makeUser(email: string) {
 }
 
 describe('address book', () => {
-	it('listSavedAddresses returns an empty list for a fresh user', () => {
-		const user = makeUser('owner@example.com');
+	it('listSavedAddresses returns an empty list for a fresh user', async () => {
+		const user = await makeUser('owner@example.com');
 		expect(listSavedAddresses(user.id)).toEqual([]);
 	});
 
-	it('saveAddress creates an entry with a trimmed label and lists it back', () => {
-		const user = makeUser('owner@example.com');
+	it('saveAddress creates an entry with a trimmed label and lists it back', async () => {
+		const user = await makeUser('owner@example.com');
 		const { entry, created } = saveAddress(user.id, { address: ` ${ADDR_A} `, label: '  Cold storage  ' });
 
 		expect(created).toBe(true);
@@ -46,8 +46,8 @@ describe('address book', () => {
 		expect(listSavedAddresses(user.id)).toEqual([entry]);
 	});
 
-	it('saveAddress rejects invalid or empty addresses', () => {
-		const user = makeUser('owner@example.com');
+	it('saveAddress rejects invalid or empty addresses', async () => {
+		const user = await makeUser('owner@example.com');
 		for (const address of ['', '   ', 'not an address', ADDR_A.slice(0, -1) + 'b']) {
 			try {
 				saveAddress(user.id, { address, label: 'nope' });
@@ -60,8 +60,8 @@ describe('address book', () => {
 		expect(listSavedAddresses(user.id)).toEqual([]);
 	});
 
-	it(`saveAddress requires a 1–${ADDRESS_LABEL_MAX} character label for a new address`, () => {
-		const user = makeUser('owner@example.com');
+	it(`saveAddress requires a 1–${ADDRESS_LABEL_MAX} character label for a new address`, async () => {
+		const user = await makeUser('owner@example.com');
 		for (const label of [undefined, '', '   ', 'x'.repeat(ADDRESS_LABEL_MAX + 1)]) {
 			try {
 				saveAddress(user.id, { address: ADDR_A, label });
@@ -76,8 +76,8 @@ describe('address book', () => {
 		expect(entry.label).toHaveLength(ADDRESS_LABEL_MAX);
 	});
 
-	it('re-saving an existing address touches it instead of duplicating', () => {
-		const user = makeUser('owner@example.com');
+	it('re-saving an existing address touches it instead of duplicating', async () => {
+		const user = await makeUser('owner@example.com');
 		const first = saveAddress(user.id, { address: ADDR_A, label: 'Cold storage' });
 
 		// Pure touch (no label): bumps last_used_at, keeps the label.
@@ -98,8 +98,8 @@ describe('address book', () => {
 		expect(n).toBe(1);
 	});
 
-	it('the (user_id, address) uniqueness constraint holds at the database level', () => {
-		const user = makeUser('owner@example.com');
+	it('the (user_id, address) uniqueness constraint holds at the database level', async () => {
+		const user = await makeUser('owner@example.com');
 		saveAddress(user.id, { address: ADDR_A, label: 'Cold storage' });
 		expect(() =>
 			db
@@ -108,9 +108,9 @@ describe('address book', () => {
 		).toThrow(/UNIQUE/i);
 	});
 
-	it('entries are isolated per user: two users may save the same address', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('entries are isolated per user: two users may save the same address', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 
 		const a = saveAddress(alice.id, { address: ADDR_A, label: 'Exchange' });
 		const b = saveAddress(bob.id, { address: ADDR_A, label: 'My exchange' });
@@ -125,8 +125,8 @@ describe('address book', () => {
 		expect(listSavedAddresses(alice.id)).toEqual([a.entry]);
 	});
 
-	it('deleteSavedAddress removes an owned entry and is false otherwise', () => {
-		const user = makeUser('owner@example.com');
+	it('deleteSavedAddress removes an owned entry and is false otherwise', async () => {
+		const user = await makeUser('owner@example.com');
 		const { entry } = saveAddress(user.id, { address: ADDR_A, label: 'Cold storage' });
 
 		expect(deleteSavedAddress(user.id, entry.id)).toBe(true);
@@ -135,8 +135,8 @@ describe('address book', () => {
 		expect(deleteSavedAddress(user.id, 9999)).toBe(false);
 	});
 
-	it('lists recently used entries first, then never-used ones by label', () => {
-		const user = makeUser('owner@example.com');
+	it('lists recently used entries first, then never-used ones by label', async () => {
+		const user = await makeUser('owner@example.com');
 		saveAddress(user.id, { address: ADDR_A, label: 'Zebra fund' });
 		saveAddress(user.id, { address: ADDR_B, label: 'Alpha fund' });
 

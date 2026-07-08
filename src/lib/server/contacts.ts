@@ -194,16 +194,28 @@ export function removeContact(userId: number, contactId: number): boolean {
 		| undefined;
 	if (!row) return false;
 
-	db.prepare('DELETE FROM contacts WHERE id = ?').run(contactId);
-	log.info({ userId, contactId }, 'contact relationship removed');
-
-	// Ending the contact relationship also ends any multisig access it enabled:
+	// Delete the contact row and revoke any multisig access it enabled in ONE
+	// transaction. Ending the contact relationship also ends any access:
 	// sharing requires an accepted contact, so revoke shares in BOTH directions
 	// between the two users (cairn-2oex). A pending, not-yet-linked contact
-	// (contact_user_id NULL) can have no shares.
-	if (row.contact_user_id != null) {
-		revokeAllSharesBetween(row.user_id, row.contact_user_id);
+	// (contact_user_id NULL) can have no shares. Previously the DELETE committed
+	// before the revoke ran, so a revoke failure left access retained while the
+	// contact looked gone in the UI — and retrying was a no-op since the row was
+	// already deleted (cairn-lweg). Doing both under BEGIN/COMMIT/ROLLBACK means
+	// a revoke failure leaves the contact (and its access) fully intact, so the
+	// caller can see the failure and retry.
+	db.prepare('BEGIN').run();
+	try {
+		db.prepare('DELETE FROM contacts WHERE id = ?').run(contactId);
+		if (row.contact_user_id != null) {
+			revokeAllSharesBetween(row.user_id, row.contact_user_id);
+		}
+		db.prepare('COMMIT').run();
+	} catch (e) {
+		db.prepare('ROLLBACK').run();
+		throw e;
 	}
+	log.info({ userId, contactId }, 'contact relationship removed');
 	return true;
 }
 

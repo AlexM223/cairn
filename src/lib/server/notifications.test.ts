@@ -48,16 +48,16 @@ function payload(over: Partial<NotificationPayload> = {}): NotificationPayload {
 }
 
 describe('resolveRecipients', () => {
-	it('returns no external targets by default (DEFAULT_PREFERENCES is in-app only)', () => {
-		const u = makeUser('a@example.com');
+	it('returns no external targets by default (DEFAULT_PREFERENCES is in-app only)', async () => {
+		const u = await makeUser('a@example.com');
 		// Even if a channel were configured, defaults enable only in-app.
 		vi.spyOn(CHANNELS.email, 'isConfigured').mockReturnValue(true);
 		const targets = resolveRecipients(payload({ userId: u.id }));
 		expect(targets).toEqual([]);
 	});
 
-	it('enqueues a saved+enabled external channel only when isConfigured() is true', () => {
-		const u = makeUser('b@example.com');
+	it('enqueues a saved+enabled external channel only when isConfigured() is true', async () => {
+		const u = await makeUser('b@example.com');
 		db.prepare(
 			`INSERT INTO notification_preferences (user_id, event_type, channel, enabled)
 			 VALUES (?, 'tx_received', 'email', 1)`
@@ -74,8 +74,8 @@ describe('resolveRecipients', () => {
 		]);
 	});
 
-	it('a saved enabled=0 row suppresses a channel the default would have enabled', () => {
-		const u = makeUser('c@example.com');
+	it('a saved enabled=0 row suppresses a channel the default would have enabled', async () => {
+		const u = await makeUser('c@example.com');
 		vi.spyOn(CHANNELS.email, 'isConfigured').mockReturnValue(true);
 		vi.spyOn(CHANNELS.telegram, 'isConfigured').mockReturnValue(true);
 		// Pretend the default for a custom event enables email; user disables it.
@@ -95,10 +95,10 @@ describe('resolveRecipients', () => {
 		}
 	});
 
-	it('userId null fans out to every enabled admin, skipping disabled admins and non-admins', () => {
-		const admin1 = makeUser('admin1@example.com'); // first user is admin by bootstrap
-		const admin2 = makeUser('admin2@example.com');
-		const plainUser = makeUser('user@example.com');
+	it('userId null fans out to every enabled admin, skipping disabled admins and non-admins', async () => {
+		const admin1 = await makeUser('admin1@example.com'); // first user is admin by bootstrap
+		const admin2 = await makeUser('admin2@example.com');
+		const plainUser = await makeUser('user@example.com');
 		setUserAdmin(admin2.id, true);
 		// plainUser stays non-admin.
 
@@ -116,8 +116,8 @@ describe('resolveRecipients', () => {
 		expect(targets.every((t) => t.channel === 'ntfy')).toBe(true);
 	});
 
-	it('never enqueues the in-app channel', () => {
-		const u = makeUser('d@example.com');
+	it('never enqueues the in-app channel', async () => {
+		const u = await makeUser('d@example.com');
 		// Force every channel configured; in-app has no plugin so it can't appear.
 		for (const ch of Object.values(CHANNELS)) vi.spyOn(ch, 'isConfigured').mockReturnValue(true);
 		const original = DEFAULT_PREFERENCES['tx_received'];
@@ -160,8 +160,8 @@ describe('notify() stage isolation (cairn-potk, fix cairn-s0p5)', () => {
 		vi.spyOn(CHANNELS.email, 'isConfigured').mockReturnValue(true);
 	}
 
-	it('an in-app write failure does not drop the external-channel enqueue', () => {
-		const u = makeUser('iso-a@example.com');
+	it('an in-app write failure does not drop the external-channel enqueue', async () => {
+		const u = await makeUser('iso-a@example.com');
 		enableEmail(u.id);
 		// Registration itself may record activity — count only notify()'s call.
 		vi.mocked(recordActivity).mockClear();
@@ -181,7 +181,7 @@ describe('notify() stage isolation (cairn-potk, fix cairn-s0p5)', () => {
 	});
 
 	it('an external-enqueue failure does not prevent the in-app write', async () => {
-		const u = makeUser('iso-b@example.com');
+		const u = await makeUser('iso-b@example.com');
 		db.exec('DELETE FROM events'); // clear any signup noise before asserting
 		enableEmail(u.id);
 		// Pin the REAL in-app write (don't rely on restoreAllMocks reinstating the

@@ -6,7 +6,8 @@ import {
 	bitsToTarget,
 	meetsTarget,
 	merkleRootFromProof,
-	verifyTxInclusion
+	verifyTxInclusion,
+	MAX_256_BIT_VALUE
 } from './spv';
 
 // ── Independent reference merkle implementation (Node crypto, not the module's
@@ -51,6 +52,50 @@ function synthTxids(n: number): string[] {
 		Buffer.from(createHash('sha256').update(`leaf-${i}`).digest()).toString('hex')
 	);
 }
+
+// ── Header encoder + miner (cairn-8kbw), independent of parseBlockHeader —
+// lets these tests build genuinely PoW-valid synthetic headers at a chosen
+// (loose) target instead of only ever using the one real mainnet fixture.
+interface HeaderFields {
+	version: number;
+	prevHash: string;
+	merkleRoot: string;
+	time: number;
+	bits: number;
+	nonce: number;
+}
+function encodeHeader(f: HeaderFields): string {
+	const buf = Buffer.alloc(80);
+	buf.writeInt32LE(f.version, 0);
+	Buffer.from(f.prevHash, 'hex').reverse().copy(buf, 4);
+	Buffer.from(f.merkleRoot, 'hex').reverse().copy(buf, 36);
+	buf.writeUInt32LE(f.time, 68);
+	buf.writeUInt32LE(f.bits, 72);
+	buf.writeUInt32LE(f.nonce, 76);
+	return buf.toString('hex');
+}
+/** Mine a real nonce so the header satisfies its own `bits`. Cheap for any of
+ *  the loose ("regtest-style") targets used below. */
+function mineHeader(fields: Omit<HeaderFields, 'nonce'>): string {
+	for (let nonce = 0; nonce < 500_000; nonce++) {
+		const hex = encodeHeader({ ...fields, nonce });
+		if (meetsTarget(blockHash(hex), fields.bits)) return hex;
+	}
+	throw new Error('mining did not converge — target too tight for a test fixture');
+}
+/** A single-tx block's header: merkle root IS the (sole) txid, empty branch. */
+function mineSingleTxHeader(bits: number, txid: string, time: number): string {
+	return mineHeader({ version: 1, prevHash: '00'.repeat(32), merkleRoot: txid, time, bits });
+}
+function txidFor(seed: string): string {
+	return createHash('sha256').update(seed).digest('hex');
+}
+
+// Regtest's real genesis `bits`: an intentionally huge/easy target. Used to
+// pin down that the absurd-exponent ceiling clamp does NOT also reject
+// legitimately loose regtest/testnet-style difficulty (cairn-8kbw explicitly
+// requires regtest/testnet keep working — no hardcoded mainnet powLimit).
+const REGTEST_BITS = 0x207fffff;
 
 // Real mainnet fixtures — canonical, independently checkable on any block explorer.
 //
@@ -190,5 +235,90 @@ describe('verifyTxInclusion', () => {
 		expect(
 			verifyTxInclusion({ ...good, proof: { merkle: ['zz'.repeat(32)], pos: 0 } })
 		).toMatchObject({ ok: false, reason: 'bad_proof' });
+	});
+});
+
+// cairn-8kbw: the header's own `bits` field alone only proves internal
+// self-consistency (a hostile Electrum server can invent a trivially-easy
+// target and mine it in milliseconds). These tests cover the two independent
+// hardenings: an outright ceiling on absurd-exponent target encodings, and the
+// optional maxTarget parameter callers use to enforce a real difficulty floor.
+describe('absurd-target rejection (bits encoding a target >= 2^256)', () => {
+	// exponent 0x24 (36): shift = 8*(36-3) = 264 bits, so even a mantissa of 1
+	// alone pushes the target's top bit past 2^256's, i.e. every possible
+	// 256-bit hash would trivially "satisfy" it — not a real difficulty at all.
+	const ABSURD_BITS = 0x24000001;
+
+	it('bitsToTarget expands past MAX_256_BIT_VALUE for an absurd exponent', () => {
+		expect(bitsToTarget(ABSURD_BITS)).toBeGreaterThan(MAX_256_BIT_VALUE);
+	});
+
+	it('meetsTarget rejects ANY hash — including an all-zero, minimal one — against an absurd target', () => {
+		expect(meetsTarget('00'.repeat(32), ABSURD_BITS)).toBe(false);
+		expect(meetsTarget('ff'.repeat(32), ABSURD_BITS)).toBe(false);
+	});
+
+	it("verifyTxInclusion rejects a header with an absurd-exponent bits as 'insufficient_pow'", () => {
+		// Splice BLOCK1's real, otherwise-untouched header to carry the absurd
+		// bits value (little-endian uint32 at header byte offset 72).
+		const bitsLE = Buffer.alloc(4);
+		bitsLE.writeUInt32LE(ABSURD_BITS, 0);
+		const absurdHeader = BLOCK1.header.slice(0, 144) + bitsLE.toString('hex') + BLOCK1.header.slice(152);
+		expect(
+			verifyTxInclusion({
+				txid: BLOCK1.merkleRoot,
+				height: 1,
+				proof: { merkle: [], pos: 0 },
+				headerHex: absurdHeader,
+				tipHeight: 900_000
+			})
+		).toMatchObject({
+			ok: false,
+			reason: 'insufficient_pow'
+		});
+	});
+});
+
+describe('weak_target rejection via verifyTxInclusion({ maxTarget })', () => {
+	// A genuinely PoW-valid, regtest-style header (real mining work, just at an
+	// intentionally loose difficulty) — self-consistent, so the base PoW check
+	// alone passes it; only a caller-supplied maxTarget can catch it as "too
+	// weak to trust as a real confirmation" (e.g. cairn-8kbw's cache-derived
+	// difficulty floor).
+	const txid = txidFor('weak-target-fixture');
+	const headerHex = mineSingleTxHeader(REGTEST_BITS, txid, 1_700_000_001);
+	const proof = { txid, height: 500, proof: { merkle: [] as string[], pos: 0 }, headerHex, tipHeight: 900_000 };
+
+	it('passes with no maxTarget supplied (self-consistency only)', () => {
+		expect(verifyTxInclusion(proof)).toEqual({ ok: true });
+	});
+
+	it('passes when maxTarget is looser than (or equal to) the header target', () => {
+		const target = bitsToTarget(REGTEST_BITS);
+		expect(verifyTxInclusion({ ...proof, maxTarget: target })).toEqual({ ok: true });
+		expect(verifyTxInclusion({ ...proof, maxTarget: target * 100n })).toEqual({ ok: true });
+	});
+
+	it('rejects with weak_target when maxTarget is tighter than the header target', () => {
+		expect(verifyTxInclusion({ ...proof, maxTarget: 1n })).toMatchObject({
+			ok: false,
+			reason: 'weak_target'
+		});
+	});
+});
+
+describe('regtest-style huge-target header (cairn-8kbw edge case: must keep working)', () => {
+	it('a genuinely mined, real-PoW regtest-difficulty header passes full verification', () => {
+		const txid = txidFor('regtest-full-pass');
+		const headerHex = mineSingleTxHeader(REGTEST_BITS, txid, 1_700_000_002);
+		expect(
+			verifyTxInclusion({
+				txid,
+				height: 42,
+				proof: { merkle: [], pos: 0 },
+				headerHex,
+				tipHeight: 1000
+			})
+		).toEqual({ ok: true });
 	});
 });

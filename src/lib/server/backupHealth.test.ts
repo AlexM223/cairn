@@ -33,10 +33,12 @@ function eventsOfType(type: string): { user_id: number | null; message: string }
 
 let userId: number;
 
-beforeEach(() => {
+beforeEach(async () => {
 	wipe();
 	setSetting('registration_mode', 'open');
-	userId = registerUser({ email: 'owner@example.com', password: 'correct horse battery', displayName: 'owner' }).id;
+	userId = (
+		await registerUser({ email: 'owner@example.com', password: 'correct horse battery', displayName: 'owner' })
+	).id;
 });
 
 describe('backup_missing detector (cairn-evp9)', () => {

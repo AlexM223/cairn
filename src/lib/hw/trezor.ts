@@ -52,6 +52,7 @@ export type TrezorErrorCode =
 	| 'no_device' // no Trezor found, or it disconnected mid-flow
 	| 'bad_psbt' // the PSBT lacks the data Trezor Connect needs
 	| 'wrong_device' // the connected Trezor holds none of the multisig's keys
+	| 'timeout' // the device/popup did not respond within DEVICE_TIMEOUT_MS (cairn-zv34)
 	| 'unexpected'; // anything else
 
 export class TrezorError extends HwError<TrezorErrorCode> {
@@ -62,6 +63,51 @@ export class TrezorError extends HwError<TrezorErrorCode> {
 
 /** Builds this driver's typed error for the shared common.ts helpers. */
 const trezorFail = (message: string): TrezorError => new TrezorError(message, 'unexpected');
+
+/**
+ * Budget for one real device/popup round-trip — a Connect call that may block
+ * on the popup opening, PIN entry, or an on-screen approval. Without this, a
+ * frozen device, an unattended popup, or a disconnect mid-call leaves the
+ * awaited promise unresolved forever, trapping the signer UI in its busy
+ * state with no escape but a full page reload (cairn-zv34). 45s is generous
+ * for "open the popup, unlock, review and approve on-screen" while still
+ * bounding a genuinely hung request. Mirrors the *_TIMEOUT_MS naming
+ * convention used elsewhere (e.g. server/electrum/client.ts's DEFAULT_TIMEOUT_MS).
+ */
+const DEVICE_TIMEOUT_MS = 45_000;
+
+/**
+ * Race a real device/popup round-trip against DEVICE_TIMEOUT_MS. Trezor
+ * Connect exposes no reliable cancellation hook for a call already sent, so
+ * this cannot abort the underlying request — it only bounds how long the
+ * CALLER waits, which is enough to let the UI recover to an actionable error
+ * state instead of hanging forever. Rejects with a typed TrezorError coded
+ * 'timeout' (never 'unexpected') so the UI can show a specific "didn't
+ * respond" message rather than a generic failure.
+ */
+function withDeviceTimeout<T>(p: Promise<T>, label: string): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => {
+			reject(
+				new TrezorError(
+					`Your Trezor did not respond while ${label}. Make sure the Connect popup is open, the device is unlocked, and try again.`,
+					'timeout'
+				)
+			);
+		}, DEVICE_TIMEOUT_MS);
+		timer.unref?.();
+		p.then(
+			(v) => {
+				clearTimeout(timer);
+				resolve(v);
+			},
+			(err: unknown) => {
+				clearTimeout(timer);
+				reject(err);
+			}
+		);
+	});
+}
 
 /**
  * True in any browser. Unlike Ledger's WebHID, Trezor Connect works
@@ -497,13 +543,20 @@ async function ensureInit(): Promise<TrezorConnectApi> {
 				typeof mod.default?.init === 'function'
 					? mod.default
 					: (unwrapped.default as TrezorConnectApi);
-			await TrezorConnect.init({
-				// Trezor requires a developer manifest on every integration. Cairn is
-				// self-hosted open source, so these identify the app, not a company.
-				manifest: { appName: 'Heartwood', email: 'admin@cairn.local', appUrl: window.location.origin },
-				lazyLoad: false,
-				popup: true
-			});
+			await withDeviceTimeout(
+				TrezorConnect.init({
+					// Trezor requires a developer manifest on every integration. Cairn is
+					// self-hosted open source, so these identify the app, not a company.
+					manifest: {
+						appName: 'Heartwood',
+						email: 'admin@cairn.local',
+						appUrl: window.location.origin
+					},
+					lazyLoad: false,
+					popup: true
+				}),
+				'opening the Trezor Connect popup'
+			);
 			return TrezorConnect;
 		})().catch((err) => {
 			initPromise = null;
@@ -553,11 +606,14 @@ export async function signPsbtWithTrezor(unsignedPsbtBase64: string): Promise<st
 	// Wrong-device guard (silent read — nothing shown on the device screen).
 	let account: { publicKey: string; chainCode: string };
 	try {
-		const res = await TrezorConnect.getPublicKey({
-			path: [...accountPath],
-			coin: 'btc',
-			showOnTrezor: false
-		});
+		const res = await withDeviceTimeout(
+			TrezorConnect.getPublicKey({
+				path: [...accountPath],
+				coin: 'btc',
+				showOnTrezor: false
+			}),
+			'reading the account key'
+		);
 		if (!res.success) throw toTrezorError(res.payload);
 		account = res.payload;
 	} catch (err) {
@@ -568,17 +624,20 @@ export async function signPsbtWithTrezor(unsignedPsbtBase64: string): Promise<st
 	// The device shows the outputs and blocks on physical approval.
 	let signatures: string[];
 	try {
-		const res = await TrezorConnect.signTransaction({
-			coin: request.coin,
-			inputs: request.inputs,
-			outputs: request.outputs,
-			...(request.refTxs ? { refTxs: request.refTxs } : {}),
-			version: request.version,
-			locktime: request.locktime,
-			// Cairn broadcasts through its own node after the server-side
-			// substitution guard — never let Connect push the transaction itself.
-			push: false
-		});
+		const res = await withDeviceTimeout(
+			TrezorConnect.signTransaction({
+				coin: request.coin,
+				inputs: request.inputs,
+				outputs: request.outputs,
+				...(request.refTxs ? { refTxs: request.refTxs } : {}),
+				version: request.version,
+				locktime: request.locktime,
+				// Cairn broadcasts through its own node after the server-side
+				// substitution guard — never let Connect push the transaction itself.
+				push: false
+			}),
+			'signing the transaction'
+		);
 		if (!res.success) throw toTrezorError(res.payload);
 		signatures = res.payload.signatures;
 	} catch (err) {
@@ -721,9 +780,9 @@ export function xfpFromXpub(xpub: string): string {
 }
 
 /**
- * The BIP-48 account path for a multisig cosigner key: m/48'/0'/{account}'/{script}'
- * where the script suffix is 2' for p2wsh and 1' for BOTH p2sh forms (BIP-48
- * gives p2sh and p2sh-p2wsh the same 1' — only native p2wsh gets 2'). Mainnet
+ * The BIP-48 account path for a FRESH multisig cosigner key: m/48'/0'/{account}'/{script}'
+ * where the script suffix is 2' for p2wsh and 1' for p2sh-p2wsh. Throws for
+ * bare p2sh — no longer a creation option (cairn-acft; see common.ts). Mainnet
  * only, matching the rest of Cairn. Exported for unit testing.
  */
 export function multisigAccountPath(scriptType: MultisigScriptType, account = 0): string {
@@ -1271,12 +1330,15 @@ export async function readMultisigKeyFromTrezor(
 	let masterXpub: string;
 	let accountXpub: string;
 	try {
-		const res = await TrezorConnect.getPublicKey({
-			bundle: [
-				{ path: 'm', showOnTrezor: false },
-				{ path, coin: 'btc', showOnTrezor: false }
-			]
-		});
+		const res = await withDeviceTimeout(
+			TrezorConnect.getPublicKey({
+				bundle: [
+					{ path: 'm', showOnTrezor: false },
+					{ path, coin: 'btc', showOnTrezor: false }
+				]
+			}),
+			'reading the account key'
+		);
 		if (!res.success) throw toTrezorError(res.payload);
 		const payload = res.payload;
 		if (!Array.isArray(payload) || payload.length < 2 || !payload[0]?.xpub || !payload[1]?.xpub) {
@@ -1361,12 +1423,15 @@ export async function readSingleSigKeyFromTrezor(
 	let masterXpub: string;
 	let accountXpub: string;
 	try {
-		const res = await TrezorConnect.getPublicKey({
-			bundle: [
-				{ path: 'm', showOnTrezor: false },
-				{ path, coin: 'btc', showOnTrezor: false }
-			]
-		});
+		const res = await withDeviceTimeout(
+			TrezorConnect.getPublicKey({
+				bundle: [
+					{ path: 'm', showOnTrezor: false },
+					{ path, coin: 'btc', showOnTrezor: false }
+				]
+			}),
+			'reading the account key'
+		);
 		if (!res.success) throw toTrezorError(res.payload);
 		const payload = res.payload;
 		if (!Array.isArray(payload) || payload.length < 2 || !payload[0]?.xpub || !payload[1]?.xpub) {
@@ -1414,12 +1479,15 @@ export async function readBip45KeyFromTrezor(): Promise<{
 	let masterXpub: string;
 	let purposeXpub: string;
 	try {
-		const res = await TrezorConnect.getPublicKey({
-			bundle: [
-				{ path: 'm', showOnTrezor: false },
-				{ path, coin: 'btc', showOnTrezor: false }
-			]
-		});
+		const res = await withDeviceTimeout(
+			TrezorConnect.getPublicKey({
+				bundle: [
+					{ path: 'm', showOnTrezor: false },
+					{ path, coin: 'btc', showOnTrezor: false }
+				]
+			}),
+			'reading the account key'
+		);
 		if (!res.success) throw toTrezorError(res.payload);
 		const payload = res.payload;
 		if (!Array.isArray(payload) || payload.length < 2 || !payload[0]?.xpub || !payload[1]?.xpub) {
@@ -1478,12 +1546,15 @@ export async function signMultisigPsbtWithTrezor(params: MultisigSignParams): Pr
 	let masterXpub: string;
 	let accountReads: { xpub: string }[];
 	try {
-		const res = await TrezorConnect.getPublicKey({
-			bundle: [
-				{ path: 'm', showOnTrezor: false },
-				...originPaths.map((p) => ({ path: p, coin: 'btc', showOnTrezor: false }))
-			]
-		});
+		const res = await withDeviceTimeout(
+			TrezorConnect.getPublicKey({
+				bundle: [
+					{ path: 'm', showOnTrezor: false },
+					...originPaths.map((p) => ({ path: p, coin: 'btc', showOnTrezor: false }))
+				]
+			}),
+			'reading the account keys'
+		);
 		if (!res.success) throw toTrezorError(res.payload);
 		const payload = res.payload;
 		if (!Array.isArray(payload) || payload.length < 1 + originPaths.length || !payload[0]?.xpub) {
@@ -1501,17 +1572,20 @@ export async function signMultisigPsbtWithTrezor(params: MultisigSignParams): Pr
 	// The device shows each output on its own screen and blocks on approval.
 	let signatures: string[];
 	try {
-		const res = await TrezorConnect.signTransaction({
-			coin: request.coin,
-			inputs: request.inputs,
-			outputs: request.outputs,
-			...(request.refTxs ? { refTxs: request.refTxs } : {}),
-			version: request.version,
-			locktime: request.locktime,
-			// Cairn broadcasts through its own node after the server-side
-			// substitution guard — never let Connect push the transaction itself.
-			push: false
-		});
+		const res = await withDeviceTimeout(
+			TrezorConnect.signTransaction({
+				coin: request.coin,
+				inputs: request.inputs,
+				outputs: request.outputs,
+				...(request.refTxs ? { refTxs: request.refTxs } : {}),
+				version: request.version,
+				locktime: request.locktime,
+				// Cairn broadcasts through its own node after the server-side
+				// substitution guard — never let Connect push the transaction itself.
+				push: false
+			}),
+			'signing the transaction'
+		);
 		if (!res.success) throw toTrezorError(res.payload);
 		signatures = res.payload.signatures;
 	} catch (err) {

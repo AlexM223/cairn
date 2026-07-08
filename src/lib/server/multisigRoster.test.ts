@@ -94,9 +94,9 @@ function progressFor(multisig: MultisigRow, signedKeyIndexes: number[]): Multisi
 }
 
 describe('multisig sign-session roster', () => {
-	it('freezes the roster as {owner} ∪ {assigned users} and notifies everyone but the creator', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('freezes the roster as {owner} ∪ {assigned users} and notifies everyone but the creator', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		const { multisig, tx } = scenario(alice.id, [
 			{ fp: 'aaaaaaaa', path: "m/48'/0'/0'/2'", assignedUserId: alice.id },
 			{ fp: 'bbbbbbbb', path: "m/48'/0'/0'/2'", assignedUserId: bob.id },
@@ -123,9 +123,9 @@ describe('multisig sign-session roster', () => {
 		expect(aliceEvents.n).toBe(0);
 	});
 
-	it('reconciles has_signed from real PSBT progress: a cosigner whose key is signed shows signed', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('reconciles has_signed from real PSBT progress: a cosigner whose key is signed shows signed', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		const { multisig, tx } = scenario(alice.id, [
 			{ fp: 'aaaaaaaa', path: "m/48'/0'/0'/2'", assignedUserId: alice.id },
 			{ fp: 'bbbbbbbb', path: "m/48'/0'/0'/2'", assignedUserId: bob.id }
@@ -143,9 +143,9 @@ describe('multisig sign-session roster', () => {
 		expect(view.find((m) => m.userId === alice.id)?.isOwner).toBe(true);
 	});
 
-	it('credits the owner the unassigned "remaining" keys when reconciling', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('credits the owner the unassigned "remaining" keys when reconciling', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		// Alice owns but holds no explicitly-assigned key; key 0 is unassigned
 		// (hers to sign), key 1 is Bob's.
 		const { multisig, tx } = scenario(alice.id, [
@@ -160,9 +160,9 @@ describe('multisig sign-session roster', () => {
 		expect(status.waitingOn).toContain(bob.id);
 	});
 
-	it('notifies every roster member when quorum is met (ready to broadcast)', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('notifies every roster member when quorum is met (ready to broadcast)', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		const { multisig, tx } = scenario(alice.id, [
 			{ fp: 'aaaaaaaa', path: "m/48'/0'/0'/2'", assignedUserId: alice.id },
 			{ fp: 'bbbbbbbb', path: "m/48'/0'/0'/2'", assignedUserId: bob.id }

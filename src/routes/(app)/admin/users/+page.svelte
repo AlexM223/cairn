@@ -19,6 +19,33 @@
 		inactive: 'Inactive 30+ days',
 		never: 'Never logged in'
 	} as const;
+
+	// Minting a recovery code (cairn-j1q9): the out-of-band way back in for a
+	// restored account (no passkey, no password — see needsRecoveryCode). Shown
+	// once per mint, keyed by user id, and never persisted client-side beyond
+	// this page's lifetime.
+	let mintedCodes = $state<Record<number, string>>({});
+	let mintError = $state<string | null>(null);
+	let minting = $state<number | null>(null);
+
+	async function mintRecoveryCode(id: number) {
+		mintError = null;
+		minting = id;
+		try {
+			const res = await fetch('/api/admin/users', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ id, mintRecoveryCode: true })
+			});
+			const body = await res.json().catch(() => null);
+			if (!res.ok) throw new Error(body?.error || 'Could not mint a recovery code.');
+			mintedCodes = { ...mintedCodes, [id]: body.code };
+		} catch (e) {
+			mintError = e instanceof Error ? e.message : 'Could not mint a recovery code.';
+		} finally {
+			minting = null;
+		}
+	}
 </script>
 
 <svelte:head>
@@ -27,6 +54,9 @@
 
 {#if form?.error}
 	<div class="form-error" role="alert" style="margin-bottom: 14px">{form.error}</div>
+{/if}
+{#if mintError}
+	<div class="form-error" role="alert" style="margin-bottom: 14px">{mintError}</div>
 {/if}
 
 <div class="hw-section fade-in">
@@ -56,9 +86,23 @@
 											{user.overrideCount} override{user.overrideCount === 1 ? '' : 's'}
 										</span>
 									{/if}
+									{#if user.needsRecoveryCode}
+										<span
+											class="override-badge needs-code"
+											title="No passkey and no password — restored from a backup. Mint a recovery code to give this owner a way back in."
+										>
+											Needs recovery code
+										</span>
+									{/if}
 								</span>
 								<span class="user-email">{user.email}</span>
 							</a>
+							{#if mintedCodes[user.id]}
+								<div class="minted-code" role="status">
+									<strong>{mintedCodes[user.id]}</strong> — copy this now, it won't be shown again. Send
+									it to {user.email} out-of-band; they redeem it at /recover.
+								</div>
+							{/if}
 						</td>
 						<td>
 							{#if user.isAdmin}
@@ -79,6 +123,16 @@
 						<td class="text-muted">{ACTIVITY_LABEL[user.lastActivity as keyof typeof ACTIVITY_LABEL] ?? 'Never logged in'}</td>
 						<td>
 							<div class="actions">
+								{#if user.needsRecoveryCode && !user.disabled}
+									<button
+										type="button"
+										class="btn btn-ghost btn-sm"
+										disabled={minting === user.id}
+										onclick={() => mintRecoveryCode(user.id)}
+									>
+										{minting === user.id ? 'Minting…' : 'Mint recovery code'}
+									</button>
+								{/if}
 								<form method="POST" action={user.isAdmin ? '?/demote' : '?/promote'} use:enhance>
 									<input type="hidden" name="id" value={user.id} />
 									<button class="btn btn-ghost btn-sm" disabled={user.id === me?.id}>
@@ -140,6 +194,24 @@
 		padding: 1px 5px;
 		margin-left: 5px;
 		vertical-align: 1px;
+	}
+
+	.needs-code {
+		color: var(--error);
+		background: color-mix(in srgb, var(--error) 14%, transparent);
+	}
+
+	.minted-code {
+		margin-top: 4px;
+		font-size: 11.5px;
+		line-height: 1.4;
+		color: var(--text-muted);
+		max-width: 260px;
+	}
+
+	.minted-code strong {
+		font-family: var(--font-mono, ui-monospace, monospace);
+		color: var(--text);
 	}
 
 	.user-email {

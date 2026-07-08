@@ -96,8 +96,8 @@ async function signedTxid(): Promise<string> {
 	return tx.id;
 }
 
-function seedWallet(userEmail: string): { userId: number; walletId: number } {
-	const user = registerUser({ email: userEmail, password: 'correct horse battery', displayName: 'u' });
+async function seedWallet(userEmail: string): Promise<{ userId: number; walletId: number }> {
+	const user = await registerUser({ email: userEmail, password: 'correct horse battery', displayName: 'u' });
 	const res = db
 		.prepare(
 			"INSERT INTO wallets (user_id, name, type, xpub, script_type) VALUES (?, 'W', 'xpub', ?, 'p2wpkh')"
@@ -122,9 +122,9 @@ function seedTx(
 }
 
 describe('transaction lifecycle', () => {
-	it('scopes reads to the owning user', () => {
-		const alice = seedWallet('alice@example.com');
-		const bob = seedWallet('bob@example.com');
+	it('scopes reads to the owning user', async () => {
+		const alice = await seedWallet('alice@example.com');
+		const bob = await seedWallet('bob@example.com');
 		const txId = seedTx(alice.walletId);
 
 		expect(getTransaction(alice.userId, alice.walletId, txId)).not.toBeNull();
@@ -135,8 +135,8 @@ describe('transaction lifecycle', () => {
 		expect(listTransactions(bob.userId, alice.walletId)).toBeNull();
 	});
 
-	it('lists a wallet transactions newest first', () => {
-		const { userId, walletId } = seedWallet('a@example.com');
+	it('lists a wallet transactions newest first', async () => {
+		const { userId, walletId } = await seedWallet('a@example.com');
 		seedTx(walletId);
 		seedTx(walletId);
 		const list = listTransactions(userId, walletId);
@@ -144,8 +144,8 @@ describe('transaction lifecycle', () => {
 		expect(list![0].id).toBeGreaterThan(list![1].id);
 	});
 
-	it('advances status and stores a signed PSBT', () => {
-		const { userId, walletId } = seedWallet('a@example.com');
+	it('advances status and stores a signed PSBT', async () => {
+		const { userId, walletId } = await seedWallet('a@example.com');
 		const txId = seedTx(walletId);
 		const updated = updateTransaction(userId, walletId, txId, {
 			status: 'awaiting_signature',
@@ -155,8 +155,8 @@ describe('transaction lifecycle', () => {
 		expect(updated?.psbt).toBe('c2lnbmVk');
 	});
 
-	it('keeps completed transactions (not deletable)', () => {
-		const { userId, walletId } = seedWallet('a@example.com');
+	it('keeps completed transactions (not deletable)', async () => {
+		const { userId, walletId } = await seedWallet('a@example.com');
 		const draft = seedTx(walletId, 'draft');
 		const done = seedTx(walletId, 'completed', 'ff'.repeat(32));
 
@@ -167,8 +167,24 @@ describe('transaction lifecycle', () => {
 		expect(getTransaction(userId, walletId, done)).not.toBeNull();
 	});
 
+	// cairn-up0q: the old check-then-delete raced broadcastTransaction's
+	// atomic claim — a delete could land between the claim and the trailing
+	// status='completed' update, wiping a row for a tx already on the
+	// network. Simulate the claim directly (as broadcastTransaction's claim
+	// UPDATE would leave it mid-flight) and assert the delete is refused.
+	it('refuses to delete a transaction with an in-flight broadcast claim', async () => {
+		const { userId, walletId } = await seedWallet('a@example.com');
+		const txId = seedTx(walletId, 'awaiting_signature');
+		db.prepare(
+			"UPDATE transactions SET broadcast_started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?"
+		).run(txId);
+
+		expect(deleteTransaction(userId, walletId, txId)).toBe(false);
+		expect(getTransaction(userId, walletId, txId)).not.toBeNull();
+	});
+
 	it('refuses to broadcast an already-broadcast transaction before touching the network', async () => {
-		const { userId, walletId } = seedWallet('a@example.com');
+		const { userId, walletId } = await seedWallet('a@example.com');
 		const done = seedTx(walletId, 'completed', 'ab'.repeat(32));
 		// The already-sent guard runs before any finalize/network call, so this
 		// rejects deterministically with no chain access.
@@ -179,14 +195,14 @@ describe('transaction lifecycle', () => {
 	});
 
 	it('refuses to broadcast an unknown transaction', async () => {
-		const { userId, walletId } = seedWallet('a@example.com');
+		const { userId, walletId } = await seedWallet('a@example.com');
 		await expect(broadcastTransaction(userId, walletId, 99999)).rejects.toMatchObject({
 			code: 'not_found'
 		});
 	});
 
 	it('broadcasts a fully signed transaction and records the LOCALLY-computed txid', async () => {
-		const { userId, walletId } = seedWallet('a@example.com');
+		const { userId, walletId } = await seedWallet('a@example.com');
 		const signed = await signedPsbt();
 		const txId = seedTx(walletId, 'awaiting_signature', null, signed);
 		// An honest server echoes back the real txid (the double-SHA256 of the tx
@@ -203,7 +219,7 @@ describe('transaction lifecycle', () => {
 	});
 
 	it('refuses to record a broadcast whose server-reported txid differs from ours (cairn-ziwm)', async () => {
-		const { userId, walletId } = seedWallet('a@example.com');
+		const { userId, walletId } = await seedWallet('a@example.com');
 		const txId = seedTx(walletId, 'awaiting_signature', null, await signedPsbt());
 		// A malicious/misbehaving server claims success with a txid it invented for a
 		// broadcast it never performed.
@@ -219,7 +235,7 @@ describe('transaction lifecycle', () => {
 	});
 
 	it('lets exactly one of two concurrent broadcasts through (atomic claim)', async () => {
-		const { userId, walletId } = seedWallet('a@example.com');
+		const { userId, walletId } = await seedWallet('a@example.com');
 		const txId = seedTx(walletId, 'awaiting_signature', null, await signedPsbt());
 
 		// First call claims the row and parks on the (unresolved) network send;
@@ -242,7 +258,7 @@ describe('transaction lifecycle', () => {
 	});
 
 	it('releases the claim when broadcast fails, so the user can retry', async () => {
-		const { userId, walletId } = seedWallet('a@example.com');
+		const { userId, walletId } = await seedWallet('a@example.com');
 		const txId = seedTx(walletId, 'awaiting_signature', null, await signedPsbt());
 
 		broadcastMock.mockRejectedValueOnce(new Error('mempool full'));
@@ -261,7 +277,7 @@ describe('transaction lifecycle', () => {
 	});
 
 	it('rejects a corrupt signed PSBT with a plain corruption message, not the substitution guard', async () => {
-		const { userId, walletId } = seedWallet('a@example.com');
+		const { userId, walletId } = await seedWallet('a@example.com');
 		const txId = seedTx(walletId, 'awaiting_signature', null, await signedPsbt());
 		// Keep the magic bytes, drop the tail: recognizably a PSBT, unreadable.
 		const corrupt = base64.encode(base64.decode(await signedPsbt()).slice(0, 20));
@@ -274,8 +290,8 @@ describe('transaction lifecycle', () => {
 		expect(broadcastMock).not.toHaveBeenCalled();
 	});
 
-	it('removes transactions when their wallet is deleted (cascade)', () => {
-		const { userId, walletId } = seedWallet('a@example.com');
+	it('removes transactions when their wallet is deleted (cascade)', async () => {
+		const { userId, walletId } = await seedWallet('a@example.com');
 		const txId = seedTx(walletId);
 		db.prepare('DELETE FROM wallets WHERE id = ?').run(walletId);
 		expect(
@@ -286,8 +302,8 @@ describe('transaction lifecycle', () => {
 });
 
 describe('batch row storage (recipients column)', () => {
-	it('round-trips a batch recipient breakdown through the recipients JSON column', () => {
-		const { userId, walletId } = seedWallet('batch@example.com');
+	it('round-trips a batch recipient breakdown through the recipients JSON column', async () => {
+		const { userId, walletId } = await seedWallet('batch@example.com');
 		const recipients = [
 			{ address: RECIPIENT, amount: 20_000 },
 			{ address: 'bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3', amount: 30_000 }
@@ -308,15 +324,15 @@ describe('batch row storage (recipients column)', () => {
 		expect(tx!.amount).toBe(50_000);
 	});
 
-	it('derives a length-1 recipients array for single-recipient rows (NULL column)', () => {
-		const { userId, walletId } = seedWallet('single@example.com');
+	it('derives a length-1 recipients array for single-recipient rows (NULL column)', async () => {
+		const { userId, walletId } = await seedWallet('single@example.com');
 		const txId = seedTx(walletId); // seedTx never touches the recipients column
 		const tx = getTransaction(userId, walletId, txId);
 		expect(tx!.recipients).toEqual([{ address: 'bc1qexample', amount: 1000 }]);
 	});
 
-	it('falls back to the single-recipient shape when the JSON column is garbage', () => {
-		const { userId, walletId } = seedWallet('garbage@example.com');
+	it('falls back to the single-recipient shape when the JSON column is garbage', async () => {
+		const { userId, walletId } = await seedWallet('garbage@example.com');
 		const res = db
 			.prepare(
 				`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate, recipients)
@@ -373,8 +389,8 @@ describe('bumpTransaction (RBF fee bumping)', () => {
 	}
 
 	/** A wallet whose xpub is real (bump re-derives the change address from it). */
-	function seedRealWallet(email: string): { userId: number; walletId: number } {
-		const user = registerUser({ email, password: 'correct horse battery', displayName: 'u' });
+	async function seedRealWallet(email: string): Promise<{ userId: number; walletId: number }> {
+		const user = await registerUser({ email, password: 'correct horse battery', displayName: 'u' });
 		const res = db
 			.prepare(
 				`INSERT INTO wallets (user_id, name, type, xpub, script_type, master_fingerprint, derivation_path)
@@ -415,7 +431,7 @@ describe('bumpTransaction (RBF fee bumping)', () => {
 	});
 
 	it('builds a replacement spending identical inputs with the same recipient and amount', async () => {
-		const { userId, walletId } = seedRealWallet('rbf@example.com');
+		const { userId, walletId } = await seedRealWallet('rbf@example.com');
 		const orig = await seedBroadcastOriginal(walletId);
 
 		const { draft, details } = await bumpTransaction(userId, walletId, orig.txId, 25);
@@ -441,7 +457,7 @@ describe('bumpTransaction (RBF fee bumping)', () => {
 	});
 
 	it('bumps a batch original preserving every recipient output', async () => {
-		const { userId, walletId } = seedRealWallet('rbf-batch@example.com');
+		const { userId, walletId } = await seedRealWallet('rbf-batch@example.com');
 		const RECIPIENT_2 = 'bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3';
 		const recipients = [
 			{ address: RECIPIENT, amount: 20_000 },
@@ -489,7 +505,7 @@ describe('bumpTransaction (RBF fee bumping)', () => {
 	});
 
 	it('rejects a fee rate at or below the original effective rate', async () => {
-		const { userId, walletId } = seedRealWallet('rbf@example.com');
+		const { userId, walletId } = await seedRealWallet('rbf@example.com');
 		const orig = await seedBroadcastOriginal(walletId);
 		const origRate = getTransaction(userId, walletId, orig.txId)!.feeRate;
 
@@ -502,7 +518,7 @@ describe('bumpTransaction (RBF fee bumping)', () => {
 	});
 
 	it('enforces the BIP-125 rule-4 absolute fee minimum (old fee + vsize sats)', async () => {
-		const { userId, walletId } = seedRealWallet('rbf@example.com');
+		const { userId, walletId } = await seedRealWallet('rbf@example.com');
 		const orig = await seedBroadcastOriginal(walletId);
 		const origRate = getTransaction(userId, walletId, orig.txId)!.feeRate;
 
@@ -516,7 +532,7 @@ describe('bumpTransaction (RBF fee bumping)', () => {
 	});
 
 	it('rejects when change cannot absorb the higher fee', async () => {
-		const { userId, walletId } = seedRealWallet('rbf@example.com');
+		const { userId, walletId } = await seedRealWallet('rbf@example.com');
 		const orig = await seedBroadcastOriginal(walletId);
 		// change ≈ 69k sats; at 500 sat/vB the fee (~73k) overruns it.
 		await expect(bumpTransaction(userId, walletId, orig.txId, 500)).rejects.toMatchObject({
@@ -525,7 +541,7 @@ describe('bumpTransaction (RBF fee bumping)', () => {
 	});
 
 	it('rejects an original that does not signal RBF', async () => {
-		const { userId, walletId } = seedRealWallet('rbf@example.com');
+		const { userId, walletId } = await seedRealWallet('rbf@example.com');
 		// Hand-built with default (0xffffffff) sequences — like rows created
 		// before Cairn started setting RBF_SEQUENCE on every input.
 		const legacy = new Transaction({ allowUnknownInputs: true, disableScriptCheck: true });
@@ -548,7 +564,7 @@ describe('bumpTransaction (RBF fee bumping)', () => {
 	});
 
 	it('rejects an already-confirmed original', async () => {
-		const { userId, walletId } = seedRealWallet('rbf@example.com');
+		const { userId, walletId } = await seedRealWallet('rbf@example.com');
 		const orig = await seedBroadcastOriginal(walletId);
 		getTxMock.mockResolvedValue({ confirmed: true });
 		await expect(bumpTransaction(userId, walletId, orig.txId, 25)).rejects.toMatchObject({
@@ -557,7 +573,7 @@ describe('bumpTransaction (RBF fee bumping)', () => {
 	});
 
 	it('rejects non-broadcast rows, superseded rows, and duplicate replacements', async () => {
-		const { userId, walletId } = seedRealWallet('rbf@example.com');
+		const { userId, walletId } = await seedRealWallet('rbf@example.com');
 		const draftRow = seedTx(walletId, 'draft');
 		await expect(bumpTransaction(userId, walletId, draftRow, 25)).rejects.toMatchObject({
 			code: 'not_bumpable'
@@ -581,7 +597,7 @@ describe('bumpTransaction (RBF fee bumping)', () => {
 	});
 
 	it('marks the original superseded when the replacement broadcasts', async () => {
-		const { userId, walletId } = seedRealWallet('rbf@example.com');
+		const { userId, walletId } = await seedRealWallet('rbf@example.com');
 		const orig = await seedBroadcastOriginal(walletId);
 		const { draft } = await bumpTransaction(userId, walletId, orig.txId, 25);
 

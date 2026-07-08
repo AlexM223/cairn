@@ -99,6 +99,11 @@
 	let done = $state(false);
 	let error = $state<string | null>(null);
 	let wrongDevice = $state(false);
+	// Set when the driver's device call hit its DEVICE_TIMEOUT_MS budget
+	// (cairn-zv34) rather than a normal on-device rejection — a frozen,
+	// unpaired, or locked BitBox02. The `finally` below already recovers
+	// `signing` to false; this only adds a more specific hint.
+	let timedOut = $state(false);
 
 	onMount(() => {
 		mounted = true;
@@ -108,6 +113,7 @@
 	async function connectAndSign() {
 		error = null;
 		wrongDevice = false;
+		timedOut = false;
 		signing = true;
 		try {
 			let signed: string;
@@ -147,12 +153,16 @@
 			onsigned(signed);
 		} catch (err) {
 			// signPsbtWithBitbox02 throws typed, plain-language Bitbox02Errors; the
-			// wrong_device case names the mismatch. Anything else is surfaced.
+			// wrong_device case names the mismatch, timeout means the device never
+			// responded within the driver's budget. Anything else is surfaced.
 			if (err instanceof Bitbox02Error) {
 				error = err.message;
 				wrongDevice = err.code === 'wrong_device';
+				timedOut = err.code === 'timeout';
 			} else {
 				error = 'The BitBox02 request failed unexpectedly.';
+				wrongDevice = false;
+				timedOut = false;
 			}
 		} finally {
 			signing = false;
@@ -385,6 +395,10 @@
 					<p class="hint" style="margin-top: 6px">
 						Plug in the BitBox02 that holds <strong>{multisig.keyName}</strong>'s key — or pick a
 						different key chip above to sign with the device you have connected.
+					</p>
+				{:else if timedOut}
+					<p class="hint" style="margin-top: 6px">
+						Check that the BitBox02 is unlocked and awake, then try again.
 					</p>
 				{/if}
 			</div>

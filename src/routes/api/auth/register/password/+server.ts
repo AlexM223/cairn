@@ -3,7 +3,14 @@
 // admin. A passkey can be added later in settings.
 
 import { json, readJson } from '$lib/server/api';
-import { registerUser, createSession, setSessionCookie, AuthError, MIN_PASSWORD_LENGTH } from '$lib/server/auth';
+import {
+	registerUserWithHash,
+	hashPassword,
+	createSession,
+	setSessionCookie,
+	AuthError,
+	MIN_PASSWORD_LENGTH
+} from '$lib/server/auth';
 import { sessionContextFrom } from '$lib/server/deviceTracking';
 import { clientIpFor, inviteRetryAfter, noteInviteFailure, tooManyAttemptsMessage } from '$lib/server/rateLimit';
 import { childLogger } from '$lib/server/logger';
@@ -35,7 +42,12 @@ export const POST: RequestHandler = async (event) => {
 	if (wait !== null) return json({ error: tooManyAttemptsMessage(wait) }, { status: 429 });
 
 	try {
-		const user = registerUser({ email, displayName, password, inviteCode });
+		// Hash before the (transaction-free, but consistent with the
+		// transaction-safe shape used by registerUserWithHash — cairn-jlrb)
+		// registration call — this route has a real password, unlike the
+		// passkey-signup path in register/verify/+server.ts which passes null.
+		const passwordHash = await hashPassword(password);
+		const user = registerUserWithHash({ email, displayName, inviteCode }, passwordHash);
 		const { token, expiresAt } = createSession(user.id, sessionContextFrom(event));
 		setSessionCookie(event.cookies, token, expiresAt, event.url);
 		return json({ user }, { status: 201 });

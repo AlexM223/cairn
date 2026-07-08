@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import net from 'node:net';
 import tls from 'node:tls';
+import { EventEmitter } from 'node:events';
 import { ElectrumClient } from './client';
 import type { ElectrumHeader } from './client';
 
@@ -232,6 +233,34 @@ function reply(socket: net.Socket, id: number, result: unknown): void {
 
 function notify(socket: net.Socket, method: string, params: unknown[]): void {
 	socket.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n');
+}
+
+interface FakeConnectingSocket extends EventEmitter {
+	destroyed: boolean;
+	destroy: ReturnType<typeof vi.fn>;
+	setEncoding: ReturnType<typeof vi.fn>;
+	setTimeout: ReturnType<typeof vi.fn>;
+	write: ReturnType<typeof vi.fn>;
+}
+
+/**
+ * A stand-in for a `net.Socket` mid-dial: just enough of the socket API for
+ * `attach()`/`armConnectTimeout()` (client.ts) to operate on, with no real
+ * transport underneath. Lets the connect-timeout tests (cairn-vn48) simulate
+ * a backend that never finishes connecting (or connects on command)
+ * deterministically, instead of depending on real — and in a sandboxed test
+ * runner, potentially unreliable — black-hole network behavior.
+ */
+function makeFakeConnectingSocket(): FakeConnectingSocket {
+	const socket = new EventEmitter() as FakeConnectingSocket;
+	socket.destroyed = false;
+	socket.destroy = vi.fn(() => {
+		socket.destroyed = true;
+	});
+	socket.setEncoding = vi.fn();
+	socket.setTimeout = vi.fn();
+	socket.write = vi.fn();
+	return socket;
 }
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -614,4 +643,173 @@ describe('ElectrumClient', () => {
 		await new Promise((resolve) => setTimeout(resolve, 1300));
 		expect(handshakes).toBe(1);
 	}, 8000);
+
+	// ------------------------------------------------------- malformed messages
+
+	it('ignores a bare `null` (or other non-object) JSON-RPC line instead of crashing', async () => {
+		const server = await withServer((req, socket) => {
+			if (req.method === 'echo') {
+				// Malformed lines a buggy/hostile server might send: JSON.parse accepts
+				// all of these, but none of them is a property-accessible message
+				// object (cairn-ek9s). They must be dropped, not crash the process.
+				socket.write('null\n');
+				socket.write('42\n');
+				socket.write('"just a string"\n');
+				socket.write('[1,2,3]\n');
+				reply(socket, req.id, req.params[0]);
+				return true;
+			}
+		});
+
+		const client = makeClient(server.port);
+		await expect(client.request('echo', ['still alive'])).resolves.toBe('still alive');
+	});
+
+	it('recovers when a message handler throws during dispatch()', async () => {
+		let subscriberSocket: net.Socket | null = null;
+		const server = await withServer((req, socket) => {
+			if (req.method === 'blockchain.headers.subscribe') {
+				subscriberSocket = socket;
+				reply(socket, req.id, { height: 1, hex: 'aa'.repeat(80) });
+				return true;
+			}
+			if (req.method === 'echo') {
+				reply(socket, req.id, req.params[0]);
+				return true;
+			}
+		});
+
+		const client = makeClient(server.port);
+		await client.headersSubscribe();
+		client.once('header', () => {
+			// Simulate a buggy consumer listener; dispatch() must not let this
+			// propagate up through the socket 'data' handler (cairn-ek9s).
+			throw new Error('listener boom');
+		});
+
+		notify(subscriberSocket!, 'blockchain.headers.subscribe', [{ height: 2, hex: 'bb'.repeat(80) }]);
+		// Give onData a turn to process the notification (and the throwing listener).
+		await new Promise((resolve) => setImmediate(resolve));
+
+		// Still usable afterward proves the throw was contained.
+		await expect(client.request('echo', ['still alive'])).resolves.toBe('still alive');
+	});
+
+	// --------------------------------------------------------------- keepalive
+
+	it('destroys a zombie connection when the keepalive ping fails, and reconnects', async () => {
+		let handshakes = 0;
+		const server = await withServer((req, socket) => {
+			if (req.method === 'server.version') {
+				handshakes++;
+				return;
+			}
+			if (req.method === 'blockchain.headers.subscribe') {
+				reply(socket, req.id, { height: handshakes, hex: 'aa'.repeat(80) });
+				return true;
+			}
+			if (req.method === 'server.ping') {
+				// The first connection's socket goes silent (TCP stays "established"
+				// but the peer never answers again) -- a classic zombie/NAT-timeout
+				// scenario (cairn-jhj6). Every later connection answers normally.
+				if (handshakes === 1) return true; // swallow it
+				reply(socket, req.id, null);
+				return true;
+			}
+		});
+
+		const client = new ElectrumClient({
+			host: '127.0.0.1',
+			port: server.port,
+			tls: false,
+			timeoutMs: 150,
+			keepaliveIntervalMs: 100
+		});
+		cleanups.push(() => client.close());
+
+		await client.headersSubscribe(); // first connect; handshakes === 1
+		expect(handshakes).toBe(1);
+
+		// The keepalive ping (100ms) goes unanswered and times out (150ms); that
+		// failure must destroy the socket and drive a reconnect via the existing
+		// backoff machinery, since headersSubscribed keeps reconnect eager.
+		const reconnected = new Promise<void>((resolve) => client.once('connect', () => resolve()));
+		await reconnected;
+		expect(handshakes).toBeGreaterThanOrEqual(2);
+
+		// And the client is fully usable again on the new connection.
+		await expect(client.request('server.ping')).resolves.toBeNull();
+	}, 8000);
+
+	// ------------------------------------------------------------- connect timeout
+
+	it('rejects instead of hanging forever when the initial direct TCP connect never completes (cairn-vn48)', async () => {
+		const timeoutMs = 500;
+		const fakeSocket = makeFakeConnectingSocket();
+		// Simulate a dead/unreachable backend that black-holes the SYN: the
+		// 'connect' callback net.connect() would normally invoke never fires, and
+		// no 'error'/'close' event happens either. Without a connect-level
+		// deadline this hangs ensureConnected() -- and every caller up the chain
+		// (scanWallet, getWalletDetail/listWallets, the streamed page load) --
+		// forever.
+		const connectSpy = vi
+			.spyOn(net, 'connect')
+			.mockImplementation((() => fakeSocket as unknown as net.Socket) as unknown as typeof net.connect);
+
+		vi.useFakeTimers();
+		try {
+			const client = new ElectrumClient({ host: '192.0.2.1', port: 50001, tls: false, timeoutMs });
+			cleanups.push(() => client.close());
+
+			const assertion = expect(client.request('server.ping')).rejects.toThrow(
+				new RegExp(`Electrum connect to 192\\.0\\.2\\.1:50001 timed out after ${timeoutMs}ms`)
+			);
+			await vi.advanceTimersByTimeAsync(timeoutMs);
+			await assertion;
+
+			// The dead socket must be torn down, not left dangling.
+			expect(fakeSocket.destroy).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+			connectSpy.mockRestore();
+		}
+	});
+
+	it('clears the connect-timeout timer once the socket connects, so it cannot fire later', async () => {
+		const timeoutMs = 300;
+		const fakeSocket = makeFakeConnectingSocket();
+		let connectCb: (() => void) | undefined;
+		const connectSpy = vi.spyOn(net, 'connect').mockImplementation(((
+			_opts: unknown,
+			cb?: () => void
+		) => {
+			connectCb = cb;
+			return fakeSocket as unknown as net.Socket;
+		}) as unknown as typeof net.connect);
+		const clearSpy = vi.spyOn(global, 'clearTimeout');
+
+		try {
+			const client = new ElectrumClient({ host: '127.0.0.1', port: 1, tls: false, timeoutMs });
+			cleanups.push(() => client.close());
+
+			// Kick off the connect; the eventual outcome of the full handshake is
+			// irrelevant here (the fake socket can never complete it) -- only the
+			// connect phase is under test.
+			(client as unknown as { ensureConnected(): Promise<void> }).ensureConnected().catch(() => {});
+			await Promise.resolve();
+			expect(connectSpy).toHaveBeenCalled();
+			const clearCallsBeforeConnect = clearSpy.mock.calls.length;
+
+			// Simulate the OS-level TCP connect completing right away.
+			connectCb?.();
+
+			// onReady() must disarm the connect-timeout timer synchronously, and the
+			// socket must not have been torn down by it.
+			expect(clearSpy.mock.calls.length).toBeGreaterThan(clearCallsBeforeConnect);
+			expect(fakeSocket.destroy).not.toHaveBeenCalled();
+		} finally {
+			connectSpy.mockRestore();
+			clearSpy.mockRestore();
+		}
+	});
 });

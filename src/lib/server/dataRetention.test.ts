@@ -87,13 +87,15 @@ function wipeData(): void {
 	);
 }
 
-function seedUserAndWallet(): void {
+async function seedUserAndWallet(): Promise<void> {
 	setSetting('registration_mode', 'open');
-	userId = registerUser({
-		email: 'user@example.com',
-		password: 'correct horse battery',
-		displayName: 'user'
-	}).id;
+	userId = (
+		await registerUser({
+			email: 'user@example.com',
+			password: 'correct horse battery',
+			displayName: 'user'
+		})
+	).id;
 	walletId = Number(
 		db
 			.prepare(
@@ -119,9 +121,9 @@ function snapshotCount(): number {
 }
 
 describe('purgeBalanceSnapshots (cairn-zui7.2)', () => {
-	beforeEach(() => {
+	beforeEach(async () => {
 		wipeData();
-		seedUserAndWallet();
+		await seedUserAndWallet();
 	});
 
 	it('keeps recent rows hourly, downsamples old rows to one per wallet per day', () => {
@@ -173,9 +175,9 @@ describe('purgeBalanceSnapshots (cairn-zui7.2)', () => {
 });
 
 describe('purgeNotificationQueue (cairn-zui7.3)', () => {
-	beforeEach(() => {
+	beforeEach(async () => {
 		wipeData();
-		seedUserAndWallet();
+		await seedUserAndWallet();
 	});
 
 	function queueRow(status: string, ageDays: number): number {
@@ -211,9 +213,9 @@ describe('purgeNotificationQueue (cairn-zui7.3)', () => {
 });
 
 describe('purgeStaleKnownDevices (cairn-zui7.5)', () => {
-	beforeEach(() => {
+	beforeEach(async () => {
 		wipeData();
-		seedUserAndWallet();
+		await seedUserAndWallet();
 		db.exec('DELETE FROM known_devices');
 	});
 
@@ -234,9 +236,9 @@ describe('purgeStaleKnownDevices (cairn-zui7.5)', () => {
 });
 
 describe('purgeExpiredAuthRows (cairn-zui7.4)', () => {
-	beforeEach(() => {
+	beforeEach(async () => {
 		wipeData();
-		seedUserAndWallet();
+		await seedUserAndWallet();
 	});
 
 	function session(expiresAt: string, tokenHash: string): number {

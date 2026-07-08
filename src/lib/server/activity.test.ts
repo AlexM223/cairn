@@ -44,9 +44,9 @@ describe('activity user feed vs admin log split', () => {
 		expect(isUserFeedType('some_future_operational_event')).toBe(false);
 	});
 
-	it('user feed shows only the user OWN relevant events — no instance, operational, or other-user events', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('user feed shows only the user OWN relevant events — no instance, operational, or other-user events', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 
 		clearEvents();
 		recordActivity({ type: 'tx_received', userId: alice.id, message: 'Payment received — 0.05 BTC' });
@@ -68,9 +68,9 @@ describe('activity user feed vs admin log split', () => {
 		expect(feed.every((e) => e.scope === 'you')).toBe(true);
 	});
 
-	it('admin log sees EVERYTHING — all users, instance-wide, and operational events', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('admin log sees EVERYTHING — all users, instance-wide, and operational events', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		clearEvents();
 		recordActivity({ type: 'tx_received', userId: alice.id, message: 'Alice payment' });
 		recordActivity({ type: 'tx_received', userId: bob.id, message: 'Bob payment' });
@@ -88,8 +88,8 @@ describe('activity user feed vs admin log split', () => {
 		expect(blockRow?.userId).toBeNull();
 	});
 
-	it('admin log withholds raw detail by default; includeDetail restores it (cairn-o1dp.5)', () => {
-		const alice = makeUser('alice@example.com');
+	it('admin log withholds raw detail by default; includeDetail restores it (cairn-o1dp.5)', async () => {
+		const alice = await makeUser('alice@example.com');
 		clearEvents();
 		recordActivity({
 			type: 'broadcast',
@@ -109,9 +109,9 @@ describe('activity user feed vs admin log split', () => {
 		expect(full.events[0].detail).toEqual({ txid: 'a'.repeat(64), multisigId: 7 });
 	});
 
-	it('admin log filters by type, level, user, and message search', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('admin log filters by type, level, user, and message search', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		clearEvents();
 		recordActivity({ type: 'tx_received', userId: alice.id, message: 'Alice payment received' });
 		recordActivity({ type: 'broadcast', level: 'success', userId: alice.id, message: 'Alice sent funds' });
@@ -126,8 +126,8 @@ describe('activity user feed vs admin log split', () => {
 		expect(listAllActivity({ search: 'ALICE' }).total).toBe(2); // case-insensitive
 	});
 
-	it('unread count and mark-read operate on the user feed only', () => {
-		const alice = makeUser('alice@example.com');
+	it('unread count and mark-read operate on the user feed only', async () => {
+		const alice = await makeUser('alice@example.com');
 		clearEvents();
 		recordActivity({ type: 'tx_received', userId: alice.id, message: 'p1' });
 		recordActivity({ type: 'tx_confirmed', userId: alice.id, message: 'p2' });

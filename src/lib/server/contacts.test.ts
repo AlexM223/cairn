@@ -6,7 +6,7 @@
 // now calls revokeAllSharesBetween — shares in BOTH directions are dropped and
 // key assignments cleared.
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { db } from './db';
 import { registerUser } from './auth';
 import { setSetting } from './settings';
@@ -18,6 +18,21 @@ import {
 	listContacts
 } from './contacts';
 import { shareMultisig, multisigAccessRole } from './multisigShares';
+
+// Lets a single test force revokeAllSharesBetween to throw, to prove
+// removeContact's transaction rolls back the DELETE too (cairn-lweg). All
+// other tests pass through to the real implementation.
+let shouldThrowOnRevoke = false;
+vi.mock('./multisigShares', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('./multisigShares')>();
+	return {
+		...actual,
+		revokeAllSharesBetween: (...args: Parameters<typeof actual.revokeAllSharesBetween>) => {
+			if (shouldThrowOnRevoke) throw new Error('relay down mid-revoke');
+			return actual.revokeAllSharesBetween(...args);
+		}
+	};
+});
 
 function wipe(): void {
 	db.exec(
@@ -76,9 +91,9 @@ function shareCount(): number {
 }
 
 describe('contact lifecycle (arrange sanity)', () => {
-	it('request → accept makes an accepted contact both sides can see', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('request → accept makes an accepted contact both sides can see', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		befriend(alice, bob);
 
 		expect(areContacts(alice.id, bob.id)).toBe(true);
@@ -89,9 +104,9 @@ describe('contact lifecycle (arrange sanity)', () => {
 });
 
 describe('removeContact revokes multisig access (cairn-cgip, fix cairn-2oex)', () => {
-	it('removing a contact deletes their share and clears their assigned key', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('removing a contact deletes their share and clears their assigned key', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		const contactId = befriend(alice, bob);
 
 		const ms = makeMultisig(alice.id);
@@ -111,9 +126,9 @@ describe('removeContact revokes multisig access (cairn-cgip, fix cairn-2oex)', (
 		expect(areContacts(alice.id, bob.id)).toBe(false);
 	});
 
-	it('revocation is bidirectional and applies when the TARGET side unfriends', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('revocation is bidirectional and applies when the TARGET side unfriends', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		const contactId = befriend(alice, bob); // alice requested; bob is contact_user_id
 
 		const aliceMs = makeMultisig(alice.id, 'Alice vault');
@@ -134,10 +149,10 @@ describe('removeContact revokes multisig access (cairn-cgip, fix cairn-2oex)', (
 		expect(assignedUserOf(bobKey)).toBeNull();
 	});
 
-	it('a third party’s shares survive an unrelated contact removal', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
-		const carol = makeUser('carol@example.com');
+	it('a third party’s shares survive an unrelated contact removal', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
+		const carol = await makeUser('carol@example.com');
 		const bobContactId = befriend(alice, bob);
 		befriend(alice, carol);
 
@@ -151,10 +166,10 @@ describe('removeContact revokes multisig access (cairn-cgip, fix cairn-2oex)', (
 		expect(multisigAccessRole(carol.id, ms)).toBe('viewer'); // untouched
 	});
 
-	it('an uninvolved user cannot remove the relationship (and nothing is revoked)', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
-		const mallory = makeUser('mallory@example.com');
+	it('an uninvolved user cannot remove the relationship (and nothing is revoked)', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
+		const mallory = await makeUser('mallory@example.com');
 		const contactId = befriend(alice, bob);
 		const ms = makeMultisig(alice.id);
 		shareMultisig(alice.id, ms, bob.id, 'viewer');
@@ -163,5 +178,41 @@ describe('removeContact revokes multisig access (cairn-cgip, fix cairn-2oex)', (
 
 		expect(areContacts(alice.id, bob.id)).toBe(true);
 		expect(multisigAccessRole(bob.id, ms)).toBe('viewer');
+	});
+});
+
+describe('removeContact failure atomicity (cairn-lweg)', () => {
+	afterEach(() => {
+		shouldThrowOnRevoke = false;
+	});
+
+	it('rolls back the contact deletion when revoking shares throws — access is never silently retained', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
+		const contactId = befriend(alice, bob);
+		const ms = makeMultisig(alice.id);
+		const key = makeKey(ms, 0);
+		shareMultisig(alice.id, ms, bob.id, 'cosigner', [key]);
+
+		shouldThrowOnRevoke = true;
+		expect(() => removeContact(alice.id, contactId)).toThrow('relay down mid-revoke');
+
+		// Before the fix, the DELETE committed before the (throwing) revoke ran:
+		// the contact would look gone in the UI while bob's share/key access
+		// silently survived, and a retry would be a no-op since the row was
+		// already gone. With both steps in one transaction, a mid-revoke failure
+		// must leave EVERYTHING intact — contact row, share, and key assignment.
+		expect(areContacts(alice.id, bob.id)).toBe(true);
+		expect(shareCount()).toBe(1);
+		expect(assignedUserOf(key)).toBe(bob.id);
+		expect(multisigAccessRole(bob.id, ms)).toBe('cosigner');
+
+		// And a retry (once the transient failure clears) actually succeeds,
+		// rather than being a no-op against an already-deleted row.
+		shouldThrowOnRevoke = false;
+		expect(removeContact(alice.id, contactId)).toBe(true);
+		expect(areContacts(alice.id, bob.id)).toBe(false);
+		expect(shareCount()).toBe(0);
+		expect(assignedUserOf(key)).toBeNull();
 	});
 });

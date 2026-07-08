@@ -56,9 +56,9 @@ function wipe(): void {
 	);
 }
 
-function seedWallet(): { userId: number; walletId: number } {
+async function seedWallet(): Promise<{ userId: number; walletId: number }> {
 	setSetting('registration_mode', 'open');
-	const user = registerUser({ email: 'a@example.com', password: 'correct horse battery', displayName: 'u' });
+	const user = await registerUser({ email: 'a@example.com', password: 'correct horse battery', displayName: 'u' });
 	const res = db
 		.prepare(
 			"INSERT INTO wallets (user_id, name, type, xpub, script_type, master_fingerprint, derivation_path) VALUES (?, 'W', 'xpub', ?, 'p2wpkh', '73c5da0a', ?)"
@@ -189,7 +189,7 @@ describe('detectUnconfirmedInflows (stuck-tx detection §4, cairn-u9ob.2)', () =
 
 describe('buildCpfpDraft', () => {
 	it('forces the stuck output as input and prices the package at the target rate', async () => {
-		const { userId, walletId } = seedWallet();
+		const { userId, walletId } = await seedWallet();
 		const PARENT = fundingTx(100_000);
 		stubUnconfirmedOutputOn(PARENT, 100_000);
 		// buildCpfpDraft looks the parent up for its real vsize + fee.
@@ -213,7 +213,7 @@ describe('buildCpfpDraft', () => {
 	});
 
 	it('refuses when the parent already meets the target (CPFP not needed)', async () => {
-		const { userId, walletId } = seedWallet();
+		const { userId, walletId } = await seedWallet();
 		const PARENT = fundingTx(100_000);
 		stubUnconfirmedOutputOn(PARENT, 100_000);
 		// Parent pays 2000 over 200 vB = 10 sat/vB; target 5 needs nothing extra.
@@ -225,7 +225,7 @@ describe('buildCpfpDraft', () => {
 	});
 
 	it('refuses when the unconfirmed coin is too small to pay the CPFP fee', async () => {
-		const { userId, walletId } = seedWallet();
+		const { userId, walletId } = await seedWallet();
 		const PARENT = fundingTx(1_000); // tiny output
 		stubUnconfirmedOutputOn(PARENT, 1_000);
 		getTxMock.mockResolvedValue({ vin: [{}], confirmed: false, vsize: 500, fee: 200 });
@@ -236,7 +236,7 @@ describe('buildCpfpDraft', () => {
 	});
 
 	it('refuses when the wallet has no unconfirmed output on that transaction', async () => {
-		const { userId, walletId } = seedWallet();
+		const { userId, walletId } = await seedWallet();
 		const PARENT = fundingTx(100_000);
 		// The only coin is CONFIRMED (height > 0) — nothing to CPFP.
 		scanWalletMock.mockResolvedValue({
@@ -255,7 +255,7 @@ describe('buildCpfpDraft', () => {
 	});
 
 	it('refuses to CPFP an already-confirmed parent', async () => {
-		const { userId, walletId } = seedWallet();
+		const { userId, walletId } = await seedWallet();
 		const PARENT = fundingTx(100_000);
 		stubUnconfirmedOutputOn(PARENT, 100_000);
 		getTxMock.mockResolvedValue({ vin: [{}], confirmed: true, vsize: 200, fee: 200 });

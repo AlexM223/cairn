@@ -53,7 +53,7 @@ export const actions: Actions = {
 		}
 
 		try {
-			completeForcedCredentialReset(locals.user.id, { email, password });
+			await completeForcedCredentialReset(locals.user.id, { email, password });
 		} catch (e) {
 			if (e instanceof AuthError) return fail(400, { error: e.message, email });
 			throw e;

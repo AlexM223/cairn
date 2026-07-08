@@ -38,6 +38,48 @@ import path from 'node:path';
 import process from 'node:process';
 import { ensureCert } from './scripts/tls-cert.mjs';
 
+/**
+ * Process-level crash guard (cairn-ldvt-adjacent), boot-phase fallback.
+ *
+ * There is no `process.on('uncaughtException' | 'unhandledRejection')`
+ * anywhere else in the app, so before this a stray throw (e.g. inside the SSE
+ * heartbeat setInterval) or rejection (e.g. an Electrum data-listener error)
+ * killed the whole process for every user with nothing but a bare Node stack
+ * trace on stdout — no structured log line, no context.
+ *
+ * This has to be the very first thing that runs, before anything else in
+ * this file (cert generation, listener bind) has a chance to throw. It can't
+ * use the real app logger ($lib/server/logger's childLogger): this file is a
+ * plain Node script that runs before Vite/SvelteKit's `$lib` alias resolution
+ * exists, so that module isn't importable yet. console.error is the best
+ * available fallback for this narrow window — it still lands in `docker
+ * logs`/journald, just without the structured/rotating-file treatment.
+ *
+ * src/hooks.server.ts installs the same guard using the real logger and,
+ * because it loads later (SvelteKit's server bundle is imported below, after
+ * the listeners are already bound), REPLACES these fallback listeners the
+ * moment it runs — see the comment there. In launch modes that never run this
+ * file (`vite dev`/`vite preview`, or adapter-node's own `build/index.js`),
+ * hooks.server.ts's registration is the only one that ever fires, so the app
+ * is still covered.
+ */
+if (process.listenerCount('uncaughtException') === 0) {
+	process.on('uncaughtException', (err) => {
+		console.error('cairn: uncaughtException (boot-phase fallback, exiting) —', err);
+		// A synchronous throw means the process state is unknown. This is a
+		// wallet app — never keep serving requests in an undefined state.
+		// Exit non-zero so the container/supervisor restart policy takes over.
+		process.exit(1);
+	});
+	process.on('unhandledRejection', (reason) => {
+		// Log-only, deliberately NOT process.exit() here: a single benign
+		// stray rejection (e.g. a fire-and-forget promise somewhere in a
+		// dependency) would otherwise turn into a crash loop. This matches
+		// the same policy the real handler in hooks.server.ts uses.
+		console.error('cairn: unhandledRejection (boot-phase fallback, not exiting) —', reason);
+	});
+}
+
 const httpPort = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? '0.0.0.0';
 const httpsPort = process.env.CAIRN_HTTPS_PORT ? Number(process.env.CAIRN_HTTPS_PORT) : null;

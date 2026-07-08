@@ -22,7 +22,6 @@ import {
 	updateCredentialCounter,
 	renameCredential,
 	deleteCredential,
-	reclaimableUserId,
 	hasNoCredentials,
 	hashPassword,
 	verifyPassword,
@@ -52,24 +51,24 @@ function registerAdmin() {
 }
 
 describe('registerUser', () => {
-	it('makes the first user an admin with no invite required', () => {
-		const user = registerAdmin();
+	it('makes the first user an admin with no invite required', async () => {
+		const user = await registerAdmin();
 		expect(user.isAdmin).toBe(true);
 		expect(user.email).toBe('admin@example.com');
 		expect(userCount()).toBe(1);
 	});
 
-	it('requires an invite code for the second user in default invite mode', () => {
-		registerAdmin();
-		expect(() => registerUser({ email: 'b@example.com', displayName: 'B' })).toThrowError(
+	it('requires an invite code for the second user in default invite mode', async () => {
+		await registerAdmin();
+		await expect(registerUser({ email: 'b@example.com', displayName: 'B' })).rejects.toThrowError(
 			expect.objectContaining({ code: 'invite_required' })
 		);
 	});
 
-	it('accepts a valid invite and increments used_count', () => {
-		const admin = registerAdmin();
+	it('accepts a valid invite and increments used_count', async () => {
+		const admin = await registerAdmin();
 		const [invite] = createInvites({ createdBy: admin.id, count: 1 });
-		const user = registerUser({ email: 'b@example.com', displayName: 'B', inviteCode: invite.code });
+		const user = await registerUser({ email: 'b@example.com', displayName: 'B', inviteCode: invite.code });
 		expect(user.isAdmin).toBe(false);
 
 		const row = db.prepare('SELECT used_count FROM invites WHERE id = ?').get(invite.id) as {
@@ -78,95 +77,95 @@ describe('registerUser', () => {
 		expect(row.used_count).toBe(1);
 	});
 
-	it('rejects an exhausted invite', () => {
-		const admin = registerAdmin();
+	it('rejects an exhausted invite', async () => {
+		const admin = await registerAdmin();
 		const [invite] = createInvites({ createdBy: admin.id, count: 1, maxUses: 1 });
-		registerUser({ email: 'b@example.com', displayName: 'B', inviteCode: invite.code });
-		expect(() =>
+		await registerUser({ email: 'b@example.com', displayName: 'B', inviteCode: invite.code });
+		await expect(
 			registerUser({ email: 'c@example.com', displayName: 'C', inviteCode: invite.code })
-		).toThrowError(expect.objectContaining({ code: 'bad_invite' }));
+		).rejects.toThrowError(expect.objectContaining({ code: 'bad_invite' }));
 	});
 
-	it('rejects a revoked invite', () => {
-		const admin = registerAdmin();
+	it('rejects a revoked invite', async () => {
+		const admin = await registerAdmin();
 		const [invite] = createInvites({ createdBy: admin.id, count: 1 });
 		revokeInvite(invite.id);
-		expect(() =>
+		await expect(
 			registerUser({ email: 'b@example.com', displayName: 'B', inviteCode: invite.code })
-		).toThrowError(expect.objectContaining({ code: 'bad_invite' }));
+		).rejects.toThrowError(expect.objectContaining({ code: 'bad_invite' }));
 	});
 
-	it('rejects everyone after the first user in closed mode', () => {
-		registerAdmin();
+	it('rejects everyone after the first user in closed mode', async () => {
+		await registerAdmin();
 		setSetting('registration_mode', 'closed');
-		expect(() => registerUser({ email: 'b@example.com', displayName: 'B' })).toThrowError(
+		await expect(registerUser({ email: 'b@example.com', displayName: 'B' })).rejects.toThrowError(
 			expect.objectContaining({ code: 'closed' })
 		);
 	});
 
-	it('needs no invite in open mode', () => {
-		registerAdmin();
+	it('needs no invite in open mode', async () => {
+		await registerAdmin();
 		setSetting('registration_mode', 'open');
-		const user = registerUser({ email: 'b@example.com', displayName: 'B' });
+		const user = await registerUser({ email: 'b@example.com', displayName: 'B' });
 		expect(user.isAdmin).toBe(false);
 		expect(userCount()).toBe(2);
 	});
 
-	it('rejects a duplicate email (case-insensitively)', () => {
-		registerAdmin();
+	it('rejects a duplicate email (case-insensitively)', async () => {
+		await registerAdmin();
 		setSetting('registration_mode', 'open');
-		expect(() => registerUser({ email: 'ADMIN@example.com', displayName: 'Dup' })).toThrowError(
+		await expect(registerUser({ email: 'ADMIN@example.com', displayName: 'Dup' })).rejects.toThrowError(
 			expect.objectContaining({ code: 'email_taken' })
 		);
 	});
 
-	it('rejects an invalid email', () => {
-		expect(() => registerUser({ email: 'not-an-email', displayName: 'A' })).toThrowError(
+	it('rejects an invalid email', async () => {
+		await expect(registerUser({ email: 'not-an-email', displayName: 'A' })).rejects.toThrowError(
 			expect.objectContaining({ code: 'invalid_email' })
 		);
 	});
 
-	it('rejects an empty display name', () => {
-		expect(() => registerUser({ email: 'a@example.com', displayName: '   ' })).toThrowError(
+	it('rejects an empty display name', async () => {
+		await expect(registerUser({ email: 'a@example.com', displayName: '   ' })).rejects.toThrowError(
 			expect.objectContaining({ code: 'invalid_name' })
 		);
 	});
 
-	it('rejects a weak password', () => {
-		expect(() =>
+	it('rejects a weak password', async () => {
+		await expect(
 			registerUser({ email: 'a@example.com', displayName: 'A', password: 'short' })
-		).toThrowError(expect.objectContaining({ code: 'weak_password' }));
+		).rejects.toThrowError(expect.objectContaining({ code: 'weak_password' }));
 	});
 
-	it('stores a password hash only when a password is given', () => {
-		const withPw = registerUser({ email: 'p@example.com', displayName: 'P', password: 'longenough' });
+	it('stores a password hash only when a password is given', async () => {
+		const withPw = await registerUser({ email: 'p@example.com', displayName: 'P', password: 'longenough' });
 		expect(hasPassword(withPw.id)).toBe(true);
 		setSetting('registration_mode', 'open');
-		const noPw = registerUser({ email: 'n@example.com', displayName: 'N' });
+		const noPw = await registerUser({ email: 'n@example.com', displayName: 'N' });
 		expect(hasPassword(noPw.id)).toBe(false);
 	});
 });
 
 describe('passwords', () => {
-	it('hashPassword / verifyPassword round-trips and rejects wrong/tampered', () => {
-		const stored = hashPassword('correct horse battery');
+	it('hashPassword / verifyPassword round-trips and rejects wrong/tampered', async () => {
+		const stored = await hashPassword('correct horse battery');
 		expect(stored).toMatch(/^scrypt:16384:8:1:/);
-		expect(verifyPassword('correct horse battery', stored)).toBe(true);
-		expect(verifyPassword('wrong', stored)).toBe(false);
-		expect(verifyPassword('correct horse battery', 'not-a-hash')).toBe(false);
+		expect(await verifyPassword('correct horse battery', stored)).toBe(true);
+		expect(await verifyPassword('wrong', stored)).toBe(false);
+		expect(await verifyPassword('correct horse battery', 'not-a-hash')).toBe(false);
 		// Two hashes of the same password differ (salted).
-		expect(hashPassword('x-password')).not.toBe(hashPassword('x-password'));
+		expect(await hashPassword('x-password')).not.toBe(await hashPassword('x-password'));
 	});
 
-	it('loginWithPassword succeeds and normalizes email', () => {
-		const admin = registerUser({ email: 'admin@example.com', displayName: 'Admin', password: 'cairn2025x' });
-		expect(loginWithPassword('  ADMIN@Example.com ', 'cairn2025x').id).toBe(admin.id);
+	it('loginWithPassword succeeds and normalizes email', async () => {
+		const admin = await registerUser({ email: 'admin@example.com', displayName: 'Admin', password: 'cairn2025x' });
+		expect((await loginWithPassword('  ADMIN@Example.com ', 'cairn2025x')).id).toBe(admin.id);
 	});
 
-	it('uses the same error for unknown email, no password, and wrong password', () => {
-		registerUser({ email: 'admin@example.com', displayName: 'Admin', password: 'cairn2025x' });
+	it('uses the same error for unknown email, no password, and wrong password', async () => {
+		await registerUser({ email: 'admin@example.com', displayName: 'Admin', password: 'cairn2025x' });
 		setSetting('registration_mode', 'open');
-		registerUser({ email: 'nopw@example.com', displayName: 'NoPw' }); // passkey-only, no password
+		await registerUser({ email: 'nopw@example.com', displayName: 'NoPw' }); // passkey-only, no password
 
 		const codes: string[] = [];
 		for (const [email, pw] of [
@@ -175,7 +174,7 @@ describe('passwords', () => {
 			['nopw@example.com', 'cairn2025x']
 		] as const) {
 			try {
-				loginWithPassword(email, pw);
+				await loginWithPassword(email, pw);
 			} catch (e) {
 				codes.push((e as AuthError).code);
 			}
@@ -183,33 +182,43 @@ describe('passwords', () => {
 		expect(codes).toEqual(['bad_credentials', 'bad_credentials', 'bad_credentials']);
 	});
 
-	it('rejects a disabled user even with the right password', () => {
-		const admin = registerUser({ email: 'admin@example.com', displayName: 'Admin', password: 'cairn2025x' });
+	it('rejects a disabled user even with the right password', async () => {
+		const admin = await registerUser({ email: 'admin@example.com', displayName: 'Admin', password: 'cairn2025x' });
 		db.prepare('UPDATE users SET disabled = 1 WHERE id = ?').run(admin.id);
-		expect(() => loginWithPassword('admin@example.com', 'cairn2025x')).toThrowError(
+		await expect(loginWithPassword('admin@example.com', 'cairn2025x')).rejects.toThrowError(
 			expect.objectContaining({ code: 'disabled' })
 		);
 	});
 
-	it('setUserPassword sets a first password on a passkey-only account', () => {
-		const admin = registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+	it('setUserPassword sets a first password on a passkey-only account', async () => {
+		const admin = await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
 		expect(hasPassword(admin.id)).toBe(false);
-		setUserPassword(admin.id, 'brandnew-pass');
+		await setUserPassword(admin.id, 'brandnew-pass');
 		expect(hasPassword(admin.id)).toBe(true);
-		expect(loginWithPassword('admin@example.com', 'brandnew-pass').id).toBe(admin.id);
+		expect((await loginWithPassword('admin@example.com', 'brandnew-pass')).id).toBe(admin.id);
+	});
+
+	// cairn-48hm: guards the "a Promise is always truthy" footgun — every caller
+	// of verifyPassword MUST await it (`if (verifyPassword(...))` would always be
+	// true now that it returns a Promise). Exercise the async path directly for
+	// both outcomes.
+	it('verifyPassword resolves false for a wrong password and true for the correct one', async () => {
+		const stored = await hashPassword('the-real-password');
+		await expect(verifyPassword('the-real-password', stored)).resolves.toBe(true);
+		await expect(verifyPassword('not-the-real-password', stored)).resolves.toBe(false);
 	});
 });
 
 describe('lookups', () => {
-	it('getUserByEmail normalizes case and skips disabled users', () => {
-		const admin = registerAdmin();
+	it('getUserByEmail normalizes case and skips disabled users', async () => {
+		const admin = await registerAdmin();
 		expect(getUserByEmail('  ADMIN@Example.com ')?.id).toBe(admin.id);
 		db.prepare('UPDATE users SET disabled = 1 WHERE id = ?').run(admin.id);
 		expect(getUserByEmail('admin@example.com')).toBeNull();
 	});
 
-	it('getUserById returns null for unknown/disabled', () => {
-		const admin = registerAdmin();
+	it('getUserById returns null for unknown/disabled', async () => {
+		const admin = await registerAdmin();
 		expect(getUserById(admin.id)?.email).toBe('admin@example.com');
 		expect(getUserById(9999)).toBeNull();
 	});
@@ -229,8 +238,8 @@ describe('passkey credentials', () => {
 		};
 	}
 
-	it('adds and lists a credential (metadata only)', () => {
-		const admin = registerAdmin();
+	it('adds and lists a credential (metadata only)', async () => {
+		const admin = await registerAdmin();
 		addCredential(admin.id, makeCred());
 		const list = listCredentials(admin.id);
 		expect(list).toHaveLength(1);
@@ -238,8 +247,8 @@ describe('passkey credentials', () => {
 		expect(list[0].transports).toEqual(['internal', 'hybrid']);
 	});
 
-	it('round-trips the public key and reports it for auth', () => {
-		const admin = registerAdmin();
+	it('round-trips the public key and reports it for auth', async () => {
+		const admin = await registerAdmin();
 		addCredential(admin.id, makeCred());
 		const rec = getCredentialForAuth('cred-a');
 		expect(rec?.userId).toBe(admin.id);
@@ -249,8 +258,8 @@ describe('passkey credentials', () => {
 		expect(getCredentialForAuth('nope')).toBeNull();
 	});
 
-	it('credentialExists and descriptors reflect stored credentials', () => {
-		const admin = registerAdmin();
+	it('credentialExists and descriptors reflect stored credentials', async () => {
+		const admin = await registerAdmin();
 		addCredential(admin.id, makeCred());
 		expect(credentialExists('cred-a')).toBe(true);
 		expect(credentialExists('cred-x')).toBe(false);
@@ -259,16 +268,16 @@ describe('passkey credentials', () => {
 		]);
 	});
 
-	it('updates the replay counter and last_used', () => {
-		const admin = registerAdmin();
+	it('updates the replay counter and last_used', async () => {
+		const admin = await registerAdmin();
 		addCredential(admin.id, makeCred());
 		updateCredentialCounter('cred-a', 42);
 		expect(getCredentialForAuth('cred-a')!.credential.counter).toBe(42);
 		expect(listCredentials(admin.id)[0].lastUsedAt).not.toBeNull();
 	});
 
-	it('renames a credential (only the owner)', () => {
-		const admin = registerAdmin();
+	it('renames a credential (only the owner)', async () => {
+		const admin = await registerAdmin();
 		addCredential(admin.id, makeCred());
 		const id = listCredentials(admin.id)[0].id;
 		expect(renameCredential(admin.id, id, 'My iPhone')).toBe(true);
@@ -276,8 +285,8 @@ describe('passkey credentials', () => {
 		expect(renameCredential(admin.id, 99999, 'x')).toBe(false);
 	});
 
-	it('refuses to remove the last passkey but allows removing others', () => {
-		const admin = registerAdmin();
+	it('refuses to remove the last passkey but allows removing others', async () => {
+		const admin = await registerAdmin();
 		addCredential(admin.id, makeCred({ credentialId: 'cred-a', name: 'Phone' }));
 		const firstId = listCredentials(admin.id)[0].id;
 		expect(() => deleteCredential(admin.id, firstId)).toThrowError(
@@ -289,39 +298,31 @@ describe('passkey credentials', () => {
 		expect(listCredentials(admin.id)).toHaveLength(1);
 	});
 
-	it('credentials cascade-delete with the user', () => {
-		const admin = registerAdmin();
+	it('credentials cascade-delete with the user', async () => {
+		const admin = await registerAdmin();
 		addCredential(admin.id, makeCred());
 		db.prepare('DELETE FROM users WHERE id = ?').run(admin.id);
 		expect(getCredentialForAuth('cred-a')).toBeNull();
 	});
 
-	it('reclaim: only a credential-less NON-ADMIN account can be reclaimed', () => {
-		const admin = registerAdmin();
-		addCredential(admin.id, makeCred()); // admin has a passkey — not the reclaim shape
+	it('hasNoCredentials reflects a restored (credential-less) account (cairn-j1q9)', async () => {
+		await registerAdmin(); // first user takes the admin slot
 		// A normal, credential-less account — the shape a backup restore produces.
+		// (The public "reclaim by email" path this used to enable is gone; such an
+		// account now gets back in only via /recover with an admin-minted code.)
 		setSetting('registration_mode', 'open');
-		const bob = registerUser({ email: 'bob@example.com', displayName: 'Bob' });
+		const bob = await registerUser({ email: 'bob@example.com', displayName: 'Bob' });
 		expect(bob.isAdmin).toBe(false);
 		expect(hasNoCredentials(bob.id)).toBe(true);
-		expect(reclaimableUserId('bob@example.com')).toBe(bob.id);
-		expect(reclaimableUserId('ghost@example.com')).toBeNull();
-
-		// A credential-less ADMIN account is NEVER reclaimable (cairn-cpb5): reclaim
-		// bypasses the registration gate, so it must not be a path to admin.
-		db.prepare('UPDATE users SET is_admin = 1 WHERE id = ?').run(bob.id);
-		expect(reclaimableUserId('bob@example.com')).toBeNull();
-		db.prepare('UPDATE users SET is_admin = 0 WHERE id = ?').run(bob.id);
 
 		addCredential(bob.id, makeCred({ credentialId: 'cred-bob' }));
-		// Once a normal account has a passkey it can never be reclaimed (taken over).
-		expect(reclaimableUserId('bob@example.com')).toBeNull();
+		expect(hasNoCredentials(bob.id)).toBe(false);
 	});
 });
 
 describe('sessions', () => {
-	it('createSession -> getSessionUser roundtrip', () => {
-		const admin = registerAdmin();
+	it('createSession -> getSessionUser roundtrip', async () => {
+		const admin = await registerAdmin();
 		const { token, expiresAt } = createSession(admin.id);
 		expect(expiresAt.getTime()).toBeGreaterThan(Date.now());
 
@@ -334,21 +335,21 @@ describe('sessions', () => {
 		});
 	});
 
-	it('returns null for a bogus token and for undefined', () => {
-		registerAdmin();
+	it('returns null for a bogus token and for undefined', async () => {
+		await registerAdmin();
 		expect(getSessionUser('bogus-token')).toBeNull();
 		expect(getSessionUser(undefined)).toBeNull();
 	});
 
-	it('destroySession kills the session', () => {
-		const admin = registerAdmin();
+	it('destroySession kills the session', async () => {
+		const admin = await registerAdmin();
 		const { token } = createSession(admin.id);
 		destroySession(token);
 		expect(getSessionUser(token)).toBeNull();
 	});
 
-	it('an expired session returns null and is deleted from the table', () => {
-		const admin = registerAdmin();
+	it('an expired session returns null and is deleted from the table', async () => {
+		const admin = await registerAdmin();
 		const token = 'expired-token';
 		const tokenHash = createHash('sha256').update(token).digest('hex');
 		db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)').run(
@@ -364,15 +365,15 @@ describe('sessions', () => {
 		expect(row.n).toBe(0);
 	});
 
-	it('returns null for a disabled user with a live session', () => {
-		const admin = registerAdmin();
+	it('returns null for a disabled user with a live session', async () => {
+		const admin = await registerAdmin();
 		const { token } = createSession(admin.id);
 		db.prepare('UPDATE users SET disabled = 1 WHERE id = ?').run(admin.id);
 		expect(getSessionUser(token)).toBeNull();
 	});
 
-	it('destroyUserSessions removes all of a user\'s sessions', () => {
-		const admin = registerAdmin();
+	it('destroyUserSessions removes all of a user\'s sessions', async () => {
+		const admin = await registerAdmin();
 		const a = createSession(admin.id);
 		const b = createSession(admin.id);
 		destroyUserSessions(admin.id);
@@ -492,142 +493,142 @@ describe('bootstrapAdminFromEnv + forced credential reset', () => {
 		}
 	});
 
-	it('creates the first admin from the env password and flags must_reset_password', () => {
+	it('creates the first admin from the env password and flags must_reset_password', async () => {
 		process.env.CAIRN_ADMIN_PASSWORD = 'generated-install-pw';
-		bootstrapAdminFromEnv();
+		await bootstrapAdminFromEnv();
 
 		expect(userCount()).toBe(1);
 		const admin = getUserByEmail(BOOTSTRAP_PLACEHOLDER_EMAIL)!;
 		expect(admin.isAdmin).toBe(true);
 		expect(mustResetPassword(admin.id)).toBe(true);
 		// The env password actually works for login.
-		expect(loginWithPassword(BOOTSTRAP_PLACEHOLDER_EMAIL, 'generated-install-pw').id).toBe(
+		expect((await loginWithPassword(BOOTSTRAP_PLACEHOLDER_EMAIL, 'generated-install-pw')).id).toBe(
 			admin.id
 		);
 	});
 
-	it('honors CAIRN_ADMIN_EMAIL over the placeholder', () => {
+	it('honors CAIRN_ADMIN_EMAIL over the placeholder', async () => {
 		process.env.CAIRN_ADMIN_PASSWORD = 'generated-install-pw';
 		process.env.CAIRN_ADMIN_EMAIL = 'Operator@Example.COM';
-		bootstrapAdminFromEnv();
+		await bootstrapAdminFromEnv();
 		expect(getUserByEmail('operator@example.com')).not.toBeNull();
 	});
 
-	it('does nothing without an env password, or with one below the minimum length', () => {
-		bootstrapAdminFromEnv();
+	it('does nothing without an env password, or with one below the minimum length', async () => {
+		await bootstrapAdminFromEnv();
 		expect(userCount()).toBe(0);
 
 		process.env.CAIRN_ADMIN_PASSWORD = 'short';
-		bootstrapAdminFromEnv();
+		await bootstrapAdminFromEnv();
 		expect(userCount()).toBe(0);
 	});
 
-	it('flags an existing passwordless first admin when giving it the env password', () => {
-		const admin = registerAdmin(); // passkey-eligible: no password
+	it('flags an existing passwordless first admin when giving it the env password', async () => {
+		const admin = await registerAdmin(); // passkey-eligible: no password
 		expect(hasPassword(admin.id)).toBe(false);
 
 		process.env.CAIRN_ADMIN_PASSWORD = 'generated-install-pw';
-		bootstrapAdminFromEnv();
+		await bootstrapAdminFromEnv();
 
 		expect(hasPassword(admin.id)).toBe(true);
 		expect(mustResetPassword(admin.id)).toBe(true);
 	});
 
-	it('never touches an account that already has a password (no flag, no clobber)', () => {
-		const admin = registerUser({
+	it('never touches an account that already has a password (no flag, no clobber)', async () => {
+		const admin = await registerUser({
 			email: 'admin@example.com',
 			displayName: 'Admin',
 			password: 'my-own-password'
 		});
 		process.env.CAIRN_ADMIN_PASSWORD = 'generated-install-pw';
-		bootstrapAdminFromEnv();
+		await bootstrapAdminFromEnv();
 
 		expect(mustResetPassword(admin.id)).toBe(false);
-		expect(loginWithPassword('admin@example.com', 'my-own-password').id).toBe(admin.id);
+		expect((await loginWithPassword('admin@example.com', 'my-own-password')).id).toBe(admin.id);
 	});
 
-	it('mustResetPassword is false for normally registered users', () => {
-		const user = registerAdmin();
+	it('mustResetPassword is false for normally registered users', async () => {
+		const user = await registerAdmin();
 		expect(mustResetPassword(user.id)).toBe(false);
 	});
 
-	it('full lifecycle: reset clears the flag and a re-run of bootstrap never re-raises it', () => {
+	it('full lifecycle: reset clears the flag and a re-run of bootstrap never re-raises it', async () => {
 		process.env.CAIRN_ADMIN_PASSWORD = 'generated-install-pw';
-		bootstrapAdminFromEnv();
+		await bootstrapAdminFromEnv();
 		const admin = getUserByEmail(BOOTSTRAP_PLACEHOLDER_EMAIL)!;
 
-		completeForcedCredentialReset(admin.id, {
+		await completeForcedCredentialReset(admin.id, {
 			email: 'real@example.com',
 			password: 'chosen-by-human'
 		});
 
 		expect(mustResetPassword(admin.id)).toBe(false);
-		expect(loginWithPassword('real@example.com', 'chosen-by-human').id).toBe(admin.id);
+		expect((await loginWithPassword('real@example.com', 'chosen-by-human')).id).toBe(admin.id);
 		// Old placeholder email + generated password are both dead.
 		expect(getUserByEmail(BOOTSTRAP_PLACEHOLDER_EMAIL)).toBeNull();
-		expect(() => loginWithPassword('real@example.com', 'generated-install-pw')).toThrowError(
+		await expect(loginWithPassword('real@example.com', 'generated-install-pw')).rejects.toThrowError(
 			AuthError
 		);
 
 		// Simulated restart: env var still set (compose files don't forget), the
 		// bootstrap re-runs — flag stays down, chosen password stays.
-		bootstrapAdminFromEnv();
+		await bootstrapAdminFromEnv();
 		expect(mustResetPassword(admin.id)).toBe(false);
-		expect(loginWithPassword('real@example.com', 'chosen-by-human').id).toBe(admin.id);
+		expect((await loginWithPassword('real@example.com', 'chosen-by-human')).id).toBe(admin.id);
 	});
 
 	describe('completeForcedCredentialReset validation', () => {
-		function bootstrapAdmin() {
+		async function bootstrapAdmin() {
 			process.env.CAIRN_ADMIN_PASSWORD = 'generated-install-pw';
-			bootstrapAdminFromEnv();
+			await bootstrapAdminFromEnv();
 			return getUserByEmail(BOOTSTRAP_PLACEHOLDER_EMAIL)!;
 		}
 
-		it('rejects an invalid email', () => {
-			const admin = bootstrapAdmin();
-			expect(() =>
+		it('rejects an invalid email', async () => {
+			const admin = await bootstrapAdmin();
+			await expect(
 				completeForcedCredentialReset(admin.id, { email: 'nope', password: 'chosen-by-human' })
-			).toThrowError(expect.objectContaining({ code: 'invalid_email' }));
+			).rejects.toThrowError(expect.objectContaining({ code: 'invalid_email' }));
 			expect(mustResetPassword(admin.id)).toBe(true);
 		});
 
-		it('rejects keeping the placeholder email', () => {
-			const admin = bootstrapAdmin();
-			expect(() =>
+		it('rejects keeping the placeholder email', async () => {
+			const admin = await bootstrapAdmin();
+			await expect(
 				completeForcedCredentialReset(admin.id, {
 					email: BOOTSTRAP_PLACEHOLDER_EMAIL,
 					password: 'chosen-by-human'
 				})
-			).toThrowError(expect.objectContaining({ code: 'placeholder_email' }));
+			).rejects.toThrowError(expect.objectContaining({ code: 'placeholder_email' }));
 		});
 
-		it('rejects a too-short password', () => {
-			const admin = bootstrapAdmin();
-			expect(() =>
+		it('rejects a too-short password', async () => {
+			const admin = await bootstrapAdmin();
+			await expect(
 				completeForcedCredentialReset(admin.id, { email: 'real@example.com', password: 'short' })
-			).toThrowError(expect.objectContaining({ code: 'weak_password' }));
+			).rejects.toThrowError(expect.objectContaining({ code: 'weak_password' }));
 		});
 
-		it('rejects "resetting" to the generated install password itself', () => {
-			const admin = bootstrapAdmin();
-			expect(() =>
+		it('rejects "resetting" to the generated install password itself', async () => {
+			const admin = await bootstrapAdmin();
+			await expect(
 				completeForcedCredentialReset(admin.id, {
 					email: 'real@example.com',
 					password: 'generated-install-pw'
 				})
-			).toThrowError(expect.objectContaining({ code: 'reused_bootstrap_password' }));
+			).rejects.toThrowError(expect.objectContaining({ code: 'reused_bootstrap_password' }));
 		});
 
-		it('rejects an email another account already uses', () => {
-			const admin = bootstrapAdmin();
+		it('rejects an email another account already uses', async () => {
+			const admin = await bootstrapAdmin();
 			setSetting('registration_mode', 'open');
-			registerUser({ email: 'taken@example.com', displayName: 'Other' });
-			expect(() =>
+			await registerUser({ email: 'taken@example.com', displayName: 'Other' });
+			await expect(
 				completeForcedCredentialReset(admin.id, {
 					email: 'taken@example.com',
 					password: 'chosen-by-human'
 				})
-			).toThrowError(expect.objectContaining({ code: 'email_taken' }));
+			).rejects.toThrowError(expect.objectContaining({ code: 'email_taken' }));
 		});
 	});
 });

@@ -24,12 +24,14 @@ beforeEach(() => {
 	setSetting('registration_mode', 'open');
 });
 
-function makeUser(email: string, opts: { admin?: boolean } = {}): number {
-	const id = registerUser({
-		email,
-		password: 'correct horse battery',
-		displayName: email.split('@')[0]
-	}).id;
+async function makeUser(email: string, opts: { admin?: boolean } = {}): Promise<number> {
+	const id = (
+		await registerUser({
+			email,
+			password: 'correct horse battery',
+			displayName: email.split('@')[0]
+		})
+	).id;
 	if (opts.admin) db.prepare('UPDATE users SET is_admin = 1 WHERE id = ?').run(id);
 	return id;
 }
@@ -41,9 +43,9 @@ function count(table: string, where: string, ...params: (string | number)[]): nu
 }
 
 describe('deleteOwnAccount', () => {
-	it('removes the user and everything they own, including the no-FK ledger rows', () => {
-		makeUser('admin@example.com', { admin: true }); // instance keeps an admin
-		const uid = makeUser('leaver@example.com');
+	it('removes the user and everything they own, including the no-FK ledger rows', async () => {
+		await makeUser('admin@example.com', { admin: true }); // instance keeps an admin
+		const uid = await makeUser('leaver@example.com');
 
 		const walletId = Number(
 			db
@@ -75,11 +77,11 @@ describe('deleteOwnAccount', () => {
 		expect(count('invites', 'created_by = ?', uid)).toBe(0);
 	});
 
-	it('removes only the share row for a multisig the user participated in — the wallet survives', () => {
-		makeUser('admin@example.com', { admin: true });
-		const owner = makeUser('owner@example.com');
-		const leaver = makeUser('leaver@example.com');
-		const other = makeUser('other@example.com');
+	it('removes only the share row for a multisig the user participated in — the wallet survives', async () => {
+		await makeUser('admin@example.com', { admin: true });
+		const owner = await makeUser('owner@example.com');
+		const leaver = await makeUser('leaver@example.com');
+		const other = await makeUser('other@example.com');
 
 		const msId = Number(
 			db.prepare("INSERT INTO multisigs (user_id, name, threshold) VALUES (?, 'Shared', 2)").run(owner)
@@ -100,15 +102,15 @@ describe('deleteOwnAccount', () => {
 		expect(count('multisig_shares', 'shared_with_id = ?', leaver)).toBe(0);
 	});
 
-	it('refuses to delete the only active administrator', () => {
-		const soleAdmin = makeUser('admin@example.com', { admin: true });
-		makeUser('user@example.com');
+	it('refuses to delete the only active administrator', async () => {
+		const soleAdmin = await makeUser('admin@example.com', { admin: true });
+		await makeUser('user@example.com');
 
 		expect(() => deleteOwnAccount(soleAdmin)).toThrow(AuthError);
 		expect(count('users', 'id = ?', soleAdmin)).toBe(1); // nothing deleted
 
 		// With a second admin present, self-deletion works.
-		makeUser('admin2@example.com', { admin: true });
+		await makeUser('admin2@example.com', { admin: true });
 		deleteOwnAccount(soleAdmin);
 		expect(count('users', 'id = ?', soleAdmin)).toBe(0);
 	});

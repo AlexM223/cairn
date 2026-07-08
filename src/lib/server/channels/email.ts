@@ -38,6 +38,16 @@ import type {
 
 const log = childLogger('notify:email');
 
+// Nodemailer's defaults are 2min connection / 10min socket — far longer than a
+// black-holing SMTP host (e.g. a malicious or misconfigured personal relay)
+// needs to stall the whole notification queue worker, which processes rows
+// sequentially under a single-flight guard. Bound all three phases; matches
+// webhook.ts's REQUEST_TIMEOUT_MS of 10s for the connect/greeting phases, with
+// a longer allowance for the socket once data is flowing (cairn-a2b6).
+const SMTP_CONNECTION_TIMEOUT_MS = 10_000;
+const SMTP_GREETING_TIMEOUT_MS = 10_000;
+const SMTP_SOCKET_TIMEOUT_MS = 30_000;
+
 /** Shown when neither personal nor instance SMTP is configured — distinguishes
  *  the two escape routes a user has (bring your own, or ask the admin). */
 const NO_SMTP_MESSAGE =
@@ -243,7 +253,10 @@ async function sendMail(smtp: SmtpConfig, parts: MailParts): Promise<ChannelSend
 		// the admin explicitly chose 'starttls', and forbid upgrade for 'none'.
 		requireTLS: smtp.tls === 'starttls',
 		ignoreTLS: smtp.tls === 'none',
-		auth: smtp.user ? { user: smtp.user, pass: smtp.pass ?? '' } : undefined
+		auth: smtp.user ? { user: smtp.user, pass: smtp.pass ?? '' } : undefined,
+		connectionTimeout: SMTP_CONNECTION_TIMEOUT_MS,
+		greetingTimeout: SMTP_GREETING_TIMEOUT_MS,
+		socketTimeout: SMTP_SOCKET_TIMEOUT_MS
 	});
 	try {
 		await transporter.sendMail({

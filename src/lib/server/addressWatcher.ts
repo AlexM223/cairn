@@ -29,7 +29,8 @@ import { parseXpub, deriveAddress, addressToScripthash, scriptPubKeyHex } from '
 import { deriveMultisigAddress } from './bitcoin/multisig';
 import { toMultisigConfig, type MultisigRow, type MultisigKeyRow } from './wallets/multisig';
 import { notify } from './notifications';
-import { verifyTxInclusion } from './bitcoin/spv';
+import { verifyTxInclusion, parseBlockHeader, blockHash, meetsTarget, bitsToTarget } from './bitcoin/spv';
+import type { BlockHeader } from './bitcoin/spv';
 import { childLogger } from './logger';
 import type { ChainService } from './chain/index';
 import type { ElectrumHeader, ElectrumHistoryItem } from './electrum/client';
@@ -52,6 +53,23 @@ const CONFIRM_THRESHOLD = 1;
 // How often to re-enumerate wallets and pick up newly created ones. See
 // startAddressWatcher for why this is a poll rather than a wallet-creation hook.
 const REFRESH_INTERVAL_MS = 5 * 60_000;
+
+// How many recently observed tip headers to keep for the self-calibrating
+// difficulty floor (cairn-8kbw). ~144 is a day of mainnet blocks — plenty to
+// smooth over normal difficulty-adjustment swings while still being cheap.
+const TIP_CACHE_SIZE = 144;
+
+// A header's own bits are self-consistent by definition (that's what
+// meetsTarget checks) — that alone only proves SOME real hashpower was spent,
+// not "at current difficulty". This factor caps how much easier than the
+// hardest recently observed tip a header may claim to be before SPV
+// verification refuses to trust it against a live single Electrum server, and
+// also gates which new tips are admitted into the cache in the first place, so
+// one bad tip can't drag the floor down for the ones after it. 4x is loose
+// enough to ride out normal retargets (mainnet retargets by at most 4x in
+// either direction every 2016 blocks) while still making casual forgery cost
+// real mining work.
+const DIFFICULTY_FLOOR_FACTOR = 4n;
 
 type WalletKind = 'wallet' | 'multisig';
 
@@ -85,6 +103,15 @@ interface WatchState {
 	/** Best known chain-tip height, updated on every 'header' event. Used as the
 	 *  upper bound for SPV proofs (reject a tx claiming a height above the tip). */
 	tipHeight: number;
+	/** Rolling cache of the last ~TIP_CACHE_SIZE headers this watcher has itself
+	 *  observed and accepted straight off the live Electrum header stream:
+	 *  height → { blockHash, expanded target }. This is the self-calibrating
+	 *  difficulty floor for cairn-8kbw — verifyTxInclusion's own-bits PoW check
+	 *  proves a header is internally self-consistent, not that it reflects real
+	 *  network difficulty; a proof for a height we've directly observed is
+	 *  pinned to that exact hash, and a proof for any other height must clear
+	 *  DIFFICULTY_FLOOR_FACTOR × the hardest target we've actually seen. */
+	tipCache: Map<number, { hash: string; target: bigint }>;
 }
 
 const state: WatchState = {
@@ -96,7 +123,8 @@ const state: WatchState = {
 	baselined: false,
 	baselinedScripthashes: new Set(),
 	inFlight: new Set(),
-	tipHeight: 0
+	tipHeight: 0,
+	tipCache: new Map()
 };
 
 // ---------------------------------------------------------------- scan progress
@@ -318,6 +346,33 @@ function recordTxid(w: Watched, txid: string): boolean {
 	}
 }
 
+/**
+ * True when the wallet/multisig `w` refers to still has a DB row backing it.
+ * Belt-and-braces guard (cairn-uzgu / cairn-gakd Phase 1) for handleScripthashChange:
+ * refreshWatches' desired-vs-current diff and deleteWallet/deleteMultisig's
+ * unwatch calls are the normal ways a stale entry gets dropped from
+ * state.byScripthash, but a delete path that bypasses both (e.g. account
+ * deletion's FK cascade, which never touches this module) can still leave one
+ * lingering until the next periodic refresh. This check stops that lingering
+ * entry from ever notifying in the meantime. Fails closed on a query error —
+ * treated the same as "gone" — since a missed notification is far cheaper
+ * than one that deep-links to a 404, and the entry simply re-baselines on the
+ * next refresh if the wallet is actually still there.
+ */
+function walletStillExists(w: Watched): boolean {
+	try {
+		const table = w.kind === 'multisig' ? 'multisigs' : 'wallets';
+		const row = db.prepare(`SELECT 1 FROM ${table} WHERE id = ?`).get(w.walletId);
+		return row !== undefined;
+	} catch (e) {
+		log.warn(
+			{ err: e, walletId: w.walletId, kind: w.kind },
+			'existence check failed; treating as deleted'
+		);
+		return false;
+	}
+}
+
 // --------------------------------------------------------------------- helpers
 
 /** A wallet-relative name for the notification body (best-effort, plain). */
@@ -380,11 +435,84 @@ async function tipHeightNow(chain: ChainService): Promise<number> {
 	}
 }
 
+/** The hardest (numerically smallest) target among the cached tips, or 0n if empty. */
+function maxCachedTarget(): bigint {
+	let max = 0n;
+	for (const { target } of state.tipCache.values()) {
+		if (target > max) max = target;
+	}
+	return max;
+}
+
+/**
+ * Fold a freshly streamed chain-tip header into the difficulty-floor cache
+ * (cairn-8kbw). Every header the pool emits already had to satisfy its own
+ * `bits` before Electrum would relay it as a tip, but we re-check that here
+ * too rather than trusting the emitter — and, once the cache holds anything,
+ * also reject a tip whose target is more than DIFFICULTY_FLOOR_FACTOR easier
+ * than the hardest tip we've already accepted. That keeps one bad/weak header
+ * from dragging the floor down for every proof after it. Purely additive to
+ * the cache: a rejected header is just never recorded, never thrown.
+ */
+function acceptHeaderIntoCache(header: ElectrumHeader | null | undefined): void {
+	if (!header || typeof header.height !== 'number' || typeof header.hex !== 'string') return;
+	if (!Number.isInteger(header.height) || header.height <= 0) return;
+
+	let parsed: BlockHeader;
+	try {
+		parsed = parseBlockHeader(header.hex);
+	} catch {
+		log.warn({ height: header.height }, 'rejected streamed tip header: unparseable');
+		return;
+	}
+
+	const hash = blockHash(header.hex);
+	if (!meetsTarget(hash, parsed.bits)) {
+		log.warn({ height: header.height }, 'rejected streamed tip header: fails its own PoW target');
+		return;
+	}
+
+	const target = bitsToTarget(parsed.bits);
+	const priorMax = maxCachedTarget();
+	if (priorMax > 0n && target > priorMax * DIFFICULTY_FLOOR_FACTOR) {
+		log.warn(
+			{ height: header.height, target: target.toString(), priorMax: priorMax.toString() },
+			'rejected streamed tip header: target implausibly weak vs recently observed chain'
+		);
+		return;
+	}
+
+	state.tipCache.set(header.height, { hash, target });
+
+	// Prune down to the newest TIP_CACHE_SIZE entries (keyed by height, so a
+	// reorg that replaces a cached height simply overwrites it above).
+	if (state.tipCache.size > TIP_CACHE_SIZE) {
+		const heights = [...state.tipCache.keys()].sort((a, b) => a - b);
+		for (let i = 0; i < heights.length - TIP_CACHE_SIZE; i++) {
+			state.tipCache.delete(heights[i]);
+		}
+	}
+}
+
 /**
  * True only when `txid` at `height` is provably confirmed: the Electrum server
  * supplies a merkle branch and the block header, and both the header's PoW and
  * the branch check out. On any fetch/verify failure we return false (fail
  * closed: do not notify, do not record — a later event can retry).
+ *
+ * Checking a header's hash against its own `bits` alone (verifyTxInclusion's
+ * base check) only proves internal self-consistency, not real network
+ * difficulty — a hostile Electrum server can invent a trivially-easy header
+ * and "confirm" a forged tx in milliseconds (cairn-8kbw). Since this watcher
+ * has only one Electrum server as its source of truth (ElectrumPool is many
+ * sockets to that one server, not independent sources), there's no second feed
+ * to cross-check against. Instead we anchor against the live header stream
+ * this watcher already consumes (state.tipCache, see acceptHeaderIntoCache):
+ * a proof for a height we've directly observed must match that exact block
+ * hash; a proof for any other height must clear the difficulty floor
+ * calibrated off recently observed real tips. A cold cache (no tips accepted
+ * yet — e.g. right at startup, before headersSubscribe's first callback)
+ * defers rather than guessing.
  */
 async function spvVerifyConfirmed(txid: string, height: number): Promise<boolean> {
 	if (height <= 0) return false; // mempool: no inclusion proof is possible yet
@@ -395,12 +523,38 @@ async function spvVerifyConfirmed(txid: string, height: number): Promise<boolean
 			chain.electrum.getBlockHeader(height),
 			tipHeightNow(chain)
 		]);
+
+		const cached = state.tipCache.get(height);
+		if (cached) {
+			// We observed this exact height ourselves off the live header stream —
+			// the proof's header must be that same block, byte for byte. A mismatch
+			// here means either a forged header or a legitimate reorg since we
+			// cached it; either way we fail closed (defer, don't blacklist) and the
+			// next event retries against fresh data as the cache rolls forward.
+			if (blockHash(headerHex) !== cached.hash) {
+				log.warn(
+					{ txid, height },
+					'SPV verification deferred — header does not match the block we independently observed at this height (forged header or reorg)'
+				);
+				return false;
+			}
+		} else if (state.tipCache.size === 0) {
+			// No calibrated difficulty floor yet at all — don't trust any header's
+			// own-bits claim on its own. Defer; headersSubscribe seeds the cache
+			// shortly after connect and the next confirmation event retries.
+			log.warn({ txid, height }, 'SPV verification deferred — no observed chain tips yet to calibrate against');
+			return false;
+		}
+
 		const res = verifyTxInclusion({
 			txid,
 			height,
 			proof: { merkle: proof.merkle, pos: proof.pos },
 			headerHex,
-			tipHeight
+			tipHeight,
+			// Only needed for the not-independently-observed-height path; harmless
+			// (redundant with the exact-hash check above) when cached is set.
+			maxTarget: cached ? undefined : maxCachedTarget() * DIFFICULTY_FLOOR_FACTOR
 		});
 		if (!res.ok) {
 			log.warn(
@@ -430,6 +584,17 @@ async function handleScripthashChange(scripthash: string): Promise<void> {
 	if (!state.baselined) return;
 	const w = state.byScripthash.get(scripthash);
 	if (!w) return;
+	// cairn-uzgu / cairn-gakd Phase 1: never notify for a wallet/multisig that no
+	// longer exists, and drop the stale subscription from state right here — the
+	// belt-and-braces stop for the QA-visible symptom (a 404-deep-link
+	// notification) even when a lingering entry hasn't been pruned yet by
+	// refreshWatches' diff or an unwatch call. See walletStillExists.
+	if (!walletStillExists(w)) {
+		state.byScripthash.delete(scripthash);
+		state.baselinedScripthashes.delete(scripthash);
+		state.inFlight.delete(scripthash);
+		return;
+	}
 	if (state.inFlight.has(scripthash)) return;
 	state.inFlight.add(scripthash);
 	try {
@@ -488,6 +653,19 @@ async function handleScripthashChange(scripthash: string): Promise<void> {
 			} catch (e) {
 				log.warn({ err: e, txid }, 'tx detail fetch failed; recording without amount');
 			}
+
+			// cairn-mo36: re-check liveness immediately before the write, after the
+			// last await on this path (getTx above) and with nothing async between
+			// this check and recordTxid/notify below. Closes the TOCTOU window where
+			// a synchronous delete (deleteWallet/deleteMultisig's unwatch calls, or
+			// refreshWatches' periodic prune) lands in one of this handler's earlier
+			// awaits (baselineScripthash/getHistory/spvVerifyConfirmed/getTx) after it
+			// already passed the top-of-function walletStillExists check. Every
+			// removal path clears state.byScripthash synchronously, so this one
+			// in-memory check catches all of them without a DB round-trip. The rest
+			// of `history` belongs to the same now-gone wallet, so bail out of the
+			// whole handler rather than just this txid.
+			if (!state.byScripthash.has(scripthash)) return;
 
 			// First sighting wins the insert (guards the reconnect re-emit race).
 			if (!recordTxid(w, txid)) continue;
@@ -638,6 +816,48 @@ async function handleNewBlock(): Promise<void> {
 // --------------------------------------------------------------------- lifecycle
 
 /**
+ * Drop every scripthash currently watched for one wallet/multisig from local
+ * state — byScripthash, baselinedScripthashes, and inFlight. Local-only, no
+ * Electrum I/O: unsubscribing the underlying socket-level subscription is
+ * Phase 2 (cairn-gakd), so the server may still push a status change for a
+ * scripthash we've forgotten — walletStillExists in handleScripthashChange is
+ * what makes that harmless once it arrives.
+ */
+function forgetWatchesFor(kind: WalletKind, walletId: number): number {
+	let removed = 0;
+	for (const [scripthash, w] of state.byScripthash) {
+		if (w.kind === kind && w.walletId === walletId) {
+			state.byScripthash.delete(scripthash);
+			state.baselinedScripthashes.delete(scripthash);
+			state.inFlight.delete(scripthash);
+			removed++;
+		}
+	}
+	return removed;
+}
+
+/**
+ * Forget a deleted single-sig wallet's watched addresses immediately
+ * (cairn-uzgu / cairn-gakd Phase 1). Called from wallets.ts's deleteWallet
+ * right after its DB delete succeeds. Synchronous and side-effect-free beyond
+ * the local Maps/Sets above, so it's safe to call from a non-async caller.
+ */
+export function unwatchWallet(walletId: number): void {
+	const removed = forgetWatchesFor('wallet', walletId);
+	if (removed > 0) log.info({ walletId, removed }, 'dropped watcher state for deleted wallet');
+}
+
+/**
+ * Forget a deleted multisig's watched addresses immediately (cairn-uzgu /
+ * cairn-gakd Phase 1). Called from wallets/multisig.ts's deleteMultisig right
+ * after its DB delete succeeds.
+ */
+export function unwatchMultisig(multisigId: number): void {
+	const removed = forgetWatchesFor('multisig', multisigId);
+	if (removed > 0) log.info({ multisigId, removed }, 'dropped watcher state for deleted multisig');
+}
+
+/**
  * (Re)build the watch set and (re)subscribe. Safe to call repeatedly — after a
  * new wallet is created, or after reconfigureChain swapped the Electrum client.
  * Subscribes only scripthashes we aren't already watching on the current client.
@@ -651,6 +871,10 @@ export async function refreshWatches(): Promise<void> {
 	if (state.electrum !== electrum) {
 		detachListeners();
 		state.byScripthash.clear();
+		// A swapped client may point at a different server (or, in tests, a
+		// different chain entirely) — last-observed-tip data from the old client
+		// isn't a valid difficulty floor for headers the new one reports.
+		state.tipCache.clear();
 		state.electrum = electrum;
 		attachListeners(electrum);
 	}
@@ -663,6 +887,27 @@ export async function refreshWatches(): Promise<void> {
 		} catch {
 			// Undecodable address — skip.
 		}
+	}
+
+	// Prune anything we're holding that's no longer desired (cairn-uzgu /
+	// cairn-gakd Phase 1): general sweep that catches every deletion path, not
+	// just deleteWallet/deleteMultisig's direct unwatch calls above — e.g.
+	// account deletion's FK cascade, which never reaches this module. Local
+	// state only; the Electrum-side subscription itself lives on until the
+	// socket cycles (unsubscribe RPC is Phase 2), but a pruned entry can never
+	// notify again (it's gone from byScripthash) and walletStillExists in
+	// handleScripthashChange covers the gap for anything not yet pruned.
+	let pruned = 0;
+	for (const scripthash of state.byScripthash.keys()) {
+		if (!desired.has(scripthash)) {
+			state.byScripthash.delete(scripthash);
+			state.baselinedScripthashes.delete(scripthash);
+			state.inFlight.delete(scripthash);
+			pruned++;
+		}
+	}
+	if (pruned > 0) {
+		log.info({ pruned, total: state.byScripthash.size }, 'stale address subscriptions pruned');
 	}
 
 	let subscribed = 0;
@@ -732,6 +977,14 @@ async function baselineScripthash(scripthash: string, w: Watched): Promise<numbe
 		 VALUES (?, ?, ?, ?, 1)`
 	);
 	const history = await chain.electrum.getHistory(scripthash);
+	// cairn-mo36: the wallet/multisig this scripthash belongs to can be deleted
+	// (deleteWallet/deleteMultisig's unwatch calls, or refreshWatches' periodic
+	// prune) while the getHistory round-trip above was in flight. Every removal
+	// path clears state.byScripthash synchronously (forgetWatchesFor), so
+	// re-checking it here — with no further await before the inserts below —
+	// closes that window: a since-deleted wallet never gets confirmed=1 rows
+	// written for it.
+	if (!state.byScripthash.has(scripthash)) return 0;
 	for (const item of history) {
 		insert.run(w.kind, w.walletId, w.userId, item.tx_hash);
 	}
@@ -774,6 +1027,7 @@ function attachListeners(electrum: ElectrumPool): void {
 		if (header && typeof header.height === 'number' && header.height > state.tipHeight) {
 			state.tipHeight = header.height;
 		}
+		acceptHeaderIntoCache(header);
 		void handleNewBlock().catch((e) => log.error({ err: e }, 'new-block handler threw'));
 	};
 	electrum.on('scripthash', state.onScripthash);
@@ -825,3 +1079,13 @@ export function startAddressWatcher(): void {
 	}, REFRESH_INTERVAL_MS);
 	refresh.unref?.();
 }
+
+// Exported for tests (cairn-8kbw difficulty-floor cache: addressWatcherSpv.test.ts).
+export const _internals = {
+	state,
+	acceptHeaderIntoCache,
+	spvVerifyConfirmed,
+	maxCachedTarget,
+	TIP_CACHE_SIZE,
+	DIFFICULTY_FLOOR_FACTOR
+};

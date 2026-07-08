@@ -6,6 +6,7 @@
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
+	import CairnChart from '$lib/components/heartwood/CairnChart.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import { formatNumber, formatBtc, formatBytes, formatFeeRate, timeAgo } from '$lib/format';
 
@@ -72,21 +73,16 @@
 		return bands.map((b) => ({ ...b, share: b.vsize / max }));
 	});
 
-	// Sparkline geometry for the 2-hour trend.
-	const spark = $derived.by(() => {
+	// Trend chart series for the 2-hour backlog history (cairn-49wy: now
+	// rendered by the shared CairnChart rather than a hand-rolled SVG path).
+	const trendSeries = $derived.by(() => {
 		if (!trend || trend.length < 2) return null;
-		const points = trend;
-		const maxV = Math.max(...points.map((p) => p.vsize), 1);
-		const minT = points[0].time;
-		const spanT = Math.max(points[points.length - 1].time - minT, 1);
-		const path = points
-			.map((p, i) => {
-				const x = ((p.time - minT) / spanT) * 100;
-				const y = 34 - (p.vsize / maxV) * 30;
-				return `${i === 0 ? 'M' : 'L'}${x.toFixed(2)},${y.toFixed(2)}`;
-			})
-			.join(' ');
-		return { path, maxV, from: points[0].time, to: points[points.length - 1].time };
+		return [
+			{
+				points: trend.map((p) => ({ x: p.time, y: p.vsize })),
+				label: 'Backlog'
+			}
+		];
 	});
 
 	const tiers = $derived(
@@ -268,25 +264,17 @@
 			</div>
 
 			<!-- Trend -->
-			{#if spark}
+			{#if trendSeries}
 				<section class="section fade-in">
 					<div class="section-head">
 						<span class="section-title">Backlog over the last two hours</span>
 					</div>
-					<svg viewBox="0 0 100 36" preserveAspectRatio="none" class="spark" aria-hidden="true">
-						<path
-							d={spark.path}
-							fill="none"
-							stroke="var(--accent)"
-							stroke-width="0.8"
-							vector-effect="non-scaling-stroke"
-						/>
-					</svg>
-					<div class="spark-axis">
-						<span class="hint">{timeAgo(spark.from)}</span>
-						<span class="hint">peak {formatBytes(spark.maxV)}</span>
-						<span class="hint">now</span>
-					</div>
+					<CairnChart
+						series={trendSeries}
+						height={140}
+						xFormat={(v) => timeAgo(v)}
+						yFormat={(v) => formatBytes(Math.max(v, 0))}
+					/>
 				</section>
 			{:else if projected === null}
 				<p class="hint degrade-note">
@@ -572,17 +560,6 @@
 
 	.band-size {
 		color: var(--text-muted);
-	}
-
-	.spark {
-		width: 100%;
-		height: 90px;
-		display: block;
-	}
-
-	.spark-axis {
-		display: flex;
-		justify-content: space-between;
 	}
 
 	.degrade-note {

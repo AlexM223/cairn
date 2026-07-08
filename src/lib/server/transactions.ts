@@ -911,10 +911,21 @@ export async function bumpTransaction(
 
 export function deleteTransaction(userId: number, walletId: number, txId: number): boolean {
 	if (!getTransaction(userId, walletId, txId)) return false;
-	// Completed (and superseded — they were broadcast too) transactions are
-	// history — deleting them would erase the record that a broadcast happened.
-	const status = getTransaction(userId, walletId, txId)?.status;
-	if (status === 'completed' || status === 'superseded') return false;
-	db.prepare('DELETE FROM transactions WHERE id = ?').run(txId);
-	return true;
+	// cairn-up0q: this used to be a status read followed by a separate DELETE,
+	// which raced broadcastTransaction's atomic claim — a concurrent delete
+	// could pass the status check and land between the claim (which sets
+	// broadcast_started_at) and the trailing status='completed' update,
+	// erasing the only record that funds had already moved on the network.
+	// A single conditional DELETE closes that window: completed/superseded
+	// transactions are history, and anything with an in-flight broadcast
+	// claim is refused too — guard and delete are now one atomic statement.
+	const result = db
+		.prepare(
+			`DELETE FROM transactions
+			 WHERE id = ? AND wallet_id = ?
+			   AND status NOT IN ('completed', 'superseded')
+			   AND broadcast_started_at IS NULL`
+		)
+		.run(txId, walletId);
+	return Number(result.changes) > 0;
 }

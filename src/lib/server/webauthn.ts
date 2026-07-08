@@ -153,8 +153,6 @@ export interface RegChallenge {
 	email?: string;
 	displayName?: string;
 	inviteCode?: string;
-	/** Reclaim context — attach this passkey to an existing credential-less account. */
-	reclaimUserId?: number;
 	/** Add-passkey context — an existing signed-in user is registering another credential. */
 	userId?: number;
 }

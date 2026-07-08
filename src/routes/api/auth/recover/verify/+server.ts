@@ -62,7 +62,7 @@ export const POST: RequestHandler = async (event) => {
 	const hasPhrase = typeof phrase === 'string' && phrase.trim().length > 0;
 	const hasCode = typeof code === 'string' && code.trim().length > 0;
 	if (hasPhrase === hasCode) {
-		dummyVerify(phrase ?? code ?? '');
+		await dummyVerify(phrase ?? code ?? '');
 		return json(GENERIC_FAILURE, { status: 400 });
 	}
 
@@ -70,17 +70,17 @@ export const POST: RequestHandler = async (event) => {
 
 	// Absent user → dummy verify (constant-time), same generic failure.
 	if (!user) {
-		dummyVerify(phrase ?? code ?? '');
+		await dummyVerify(phrase ?? code ?? '');
 		return json(GENERIC_FAILURE, { status: 401 });
 	}
 
 	let ok = false;
 	if (hasPhrase) {
 		// A phrase is reusable — verifying does not consume it.
-		ok = verifyRecoveryPhrase(user.id, phrase!);
+		ok = await verifyRecoveryPhrase(user.id, phrase!);
 	} else {
 		// A code is single-use — consuming marks it used, even on success.
-		ok = consumeRecoveryCode(user.id, code!);
+		ok = await consumeRecoveryCode(user.id, code!);
 	}
 
 	if (!ok) return json(GENERIC_FAILURE, { status: 401 });

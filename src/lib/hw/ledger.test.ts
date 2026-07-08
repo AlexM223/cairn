@@ -457,10 +457,13 @@ describe('sanitizeMultisigPolicyName', () => {
 });
 
 describe('multisigAccountPath (Ledger)', () => {
-	it("maps p2wsh to the BIP-48 2' suffix and both p2sh forms to 1'", () => {
+	it("maps p2wsh to the BIP-48 2' suffix and p2sh-p2wsh to 1'", () => {
 		expect(multisigAccountPath('p2wsh')).toBe("m/48'/0'/0'/2'");
 		expect(multisigAccountPath('p2sh-p2wsh')).toBe("m/48'/0'/0'/1'");
-		expect(multisigAccountPath('p2sh')).toBe("m/48'/0'/0'/1'");
+	});
+
+	it('rejects bare p2sh — no longer a creation option (cairn-acft)', () => {
+		expect(() => multisigAccountPath('p2sh')).toThrow(LedgerError);
 	});
 
 	it('honours a non-default account index and rejects bogus ones', () => {

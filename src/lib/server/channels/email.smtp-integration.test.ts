@@ -135,7 +135,7 @@ let smtp: Awaited<ReturnType<typeof startFakeSmtpServer>>;
 beforeEach(async () => {
 	wipe();
 	setSetting('registration_mode', 'open');
-	const user = registerUser({
+	const user = await registerUser({
 		email: 'realuser@example.com',
 		password: 'correct horse battery',
 		displayName: 'realuser'

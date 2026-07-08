@@ -302,15 +302,19 @@ describe('parseCaravanImport', () => {
 	});
 
 	it('maps Caravan address types to multisig script types', () => {
-		// Keys must carry the matching BIP-48 suffix per script type (2' = p2wsh,
-		// 1' = both p2sh forms) — a contradicting suffix is now rejected on
-		// import (cairn-1kc3.1), so these fixtures declare honest paths.
+		// Keys must carry the matching BIP-48 suffix per script type: 2' for
+		// p2wsh, 1' for p2sh-p2wsh — a contradicting suffix is rejected on
+		// import (cairn-1kc3.1). Bare p2sh has no BIP-48 suffix of its own; 0'
+		// is Trezor firmware's accepted extension for it (1' is p2sh-p2wsh's
+		// slot and is rejected there — cairn-acft), so these fixtures declare
+		// honest paths per script type.
 		for (const [addressType, scriptType] of [
 			['P2WSH', 'p2wsh'],
 			['P2SH-P2WSH', 'p2sh-p2wsh'],
 			['P2SH', 'p2sh']
 		] as const) {
-			const path = scriptType === 'p2wsh' ? BIP48_PATH : "m/48'/0'/0'/1'";
+			const path =
+				scriptType === 'p2wsh' ? BIP48_PATH : scriptType === 'p2sh-p2wsh' ? "m/48'/0'/0'/1'" : "m/48'/0'/0'/0'";
 			const imported = parseCaravanImport(
 				caravanExport(
 					makeMultisig({
@@ -367,6 +371,22 @@ describe('parseCaravanImport', () => {
 		expect(() =>
 			parseCaravanImport(blobWithPaths('P2SH', ["m/48'/0'/0'/2'", "m/48'/0'/0'/1'"]))
 		).toThrow(/Key 1/);
+	});
+
+	it("tolerates a legacy-P2SH key's historical 1'-suffix label on import instead of rejecting it (cairn-acft)", () => {
+		// Older Cairn HW drivers genuinely derived bare-p2sh keys at the
+		// P2SH-P2WSH slot (48'/…/1') — a real bug, fixed for NEW keys only. An
+		// existing wallet — and Cairn's own "Download backup" export of it —
+		// can legitimately carry that label, so import accepts it (with a
+		// warning) rather than dangling "re-export at m/45'" in front of a user
+		// for whom that would derive a DIFFERENT, wrong xpub.
+		const blob = blobWithPaths('P2SH', ["m/48'/0'/0'/1'", "m/48'/0'/0'/1'"]);
+		const imported = parseCaravanImport(blob);
+		expect(imported.scriptType).toBe('p2sh');
+		expect(imported.keys.map((k) => k.path)).toEqual(["m/48'/0'/0'/1'", "m/48'/0'/0'/1'"]);
+		expect(imported.warnings).toHaveLength(2);
+		expect(imported.warnings[0]).toMatch(/Key 1/);
+		expect(imported.warnings[0]).toMatch(/earlier version of Heartwood/);
 	});
 
 	it('rejects a testnet coin type inside a mainnet file (cairn-1kc3.5)', () => {

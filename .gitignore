@@ -35,3 +35,15 @@ npm-debug.log*
 
 # Runtime data (SQLite database)
 data/
+
+# Internal-only material — never belongs in the public repo
+.beads/
+.hw-emu-test/
+.ms-signer.mjs
+docs/*PLAN*.md
+docs/*AUDIT*.md
+docs/*REVIEW*.md
+docs/*RESULTS*.md
+docs/*RETROSPECTIVE*.md
+docs/*COMPARISON*.md
+docs/HANDOFF-*.md

@@ -41,7 +41,9 @@ function parseSource(source: string): CaravanImport {
 	// Path hygiene at the import boundary (cairn-1kc3.1/.3/.5): parseDescriptor
 	// itself stays acceptance-agnostic (exports round-trip stored wallets
 	// through it), so the check lives here where a NEW record is being accepted.
-	validateMultisigKeyPaths(config);
+	// Import mode (cairn-acft) tolerates a historical legacy-P2SH 1'-suffix
+	// label with a warning instead of rejecting it outright.
+	const warnings = validateMultisigKeyPaths(config, { mode: 'import' });
 	return {
 		name: '',
 		// parseDescriptor reports the wrapper it recognized: wsh() → p2wsh,
@@ -57,7 +59,8 @@ function parseSource(source: string): CaravanImport {
 			path: k.path
 		})),
 		// A bare descriptor carries no receive cursor.
-		startingAddressIndex: 0
+		startingAddressIndex: 0,
+		warnings
 	};
 }
 

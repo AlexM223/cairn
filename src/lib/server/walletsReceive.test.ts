@@ -74,7 +74,7 @@ function makeWallet(userId: number): number {
 
 describe('receive-address rotation reuse (cairn-2ic5)', () => {
 	it('reuses the scanned window: repeated rotates advance without re-scanning', async () => {
-		const user = makeUser('reuse@example.com');
+		const user = await makeUser('reuse@example.com');
 		const id = makeWallet(user.id);
 		const row = getWallet(user.id, id)!;
 		mocks.findNextUnusedIndex.mockResolvedValue(3);
@@ -94,7 +94,7 @@ describe('receive-address rotation reuse (cairn-2ic5)', () => {
 	});
 
 	it('re-scans when a rotate would probe at/past the gap-window ceiling', async () => {
-		const user = makeUser('ceiling@example.com');
+		const user = await makeUser('ceiling@example.com');
 		const id = makeWallet(user.id);
 		const row = getWallet(user.id, id)!;
 		mocks.findNextUnusedIndex.mockResolvedValue(3);
@@ -111,7 +111,7 @@ describe('receive-address rotation reuse (cairn-2ic5)', () => {
 	});
 
 	it('safety: never serves an index below the known used-boundary from cache', async () => {
-		const user = makeUser('safety@example.com');
+		const user = await makeUser('safety@example.com');
 		const id = makeWallet(user.id);
 		const row = getWallet(user.id, id)!;
 		// Known boundary is 10: indices below it may already be used.
@@ -130,7 +130,7 @@ describe('receive-address rotation reuse (cairn-2ic5)', () => {
 	});
 
 	it('re-scans once the reuse window is older than its TTL', async () => {
-		const user = makeUser('ttl@example.com');
+		const user = await makeUser('ttl@example.com');
 		const id = makeWallet(user.id);
 		const row = getWallet(user.id, id)!;
 		mocks.findNextUnusedIndex.mockResolvedValue(3);
@@ -144,5 +144,61 @@ describe('receive-address rotation reuse (cairn-2ic5)', () => {
 		const r = await nextReceiveAddress(user.id, id, 3);
 		expect(mocks.findNextUnusedIndex).toHaveBeenCalledTimes(2);
 		expect(r?.index).toBe(4);
+	});
+});
+
+// ---- cairn-2qa4: concurrent issuance must never hand out the same address -----
+//
+// nextReceiveAddress reads the cursor, awaits a (possibly slow) gap scan, then
+// writes the cursor back. Two concurrent callers used to both read the same
+// stale cursor before either wrote, derive the same index, and hand out the
+// same address. It's now serialized per wallet (keyedLock.ts) and the cursor
+// write is monotonic (MAX) as defense-in-depth.
+describe('nextReceiveAddress concurrency and cursor safety (cairn-2qa4)', () => {
+	it('two concurrent calls for the same wallet serialize and hand out different indexes', async () => {
+		const user = await makeUser('race@example.com');
+		const id = makeWallet(user.id);
+		let scans = 0;
+		// A real (short) delay stands in for the slow Electrum gap scan: it opens
+		// an actual async gap between the two callers' read-scan-derive-write
+		// critical sections, so this exercises the same interleaving window a
+		// live 30s scan would.
+		mocks.findNextUnusedIndex.mockImplementation(async () => {
+			scans++;
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			return 3;
+		});
+
+		const [r1, r2] = await Promise.all([
+			nextReceiveAddress(user.id, id),
+			nextReceiveAddress(user.id, id)
+		]);
+
+		expect(r1!.index).not.toBe(r2!.index);
+		expect([r1!.index, r2!.index].sort()).toEqual([3, 4]);
+		expect(r1!.address).not.toBe(r2!.address);
+		// The lock made the second caller wait for the first's write, so it saw
+		// the already-known (still fresh) gap window and never needed its own scan.
+		expect(scans).toBe(1);
+		expect(getWallet(user.id, id)!.receive_cursor).toBe(5);
+	});
+
+	it('never regresses the cursor: a late/lower write loses to MAX()', async () => {
+		const user = await makeUser('monotonic@example.com');
+		const id = makeWallet(user.id);
+		mocks.findNextUnusedIndex.mockResolvedValue(10);
+
+		const r = await nextReceiveAddress(user.id, id);
+		expect(r?.index).toBe(10);
+		expect(getWallet(user.id, id)!.receive_cursor).toBe(11);
+
+		// Simulate a late/out-of-order writer proposing a lower cursor directly —
+		// the MAX() in the UPDATE must refuse to regress it.
+		db.prepare('UPDATE wallets SET receive_cursor = MAX(receive_cursor, ?) WHERE id = ?').run(2, id);
+		expect(getWallet(user.id, id)!.receive_cursor).toBe(11);
+
+		// A genuinely higher write still advances it normally.
+		db.prepare('UPDATE wallets SET receive_cursor = MAX(receive_cursor, ?) WHERE id = ?').run(20, id);
+		expect(getWallet(user.id, id)!.receive_cursor).toBe(20);
 	});
 });

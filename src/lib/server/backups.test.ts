@@ -41,8 +41,8 @@ function makeMultisig(userId: number, name: string, source: 'created' | 'importe
 }
 
 describe('wallet-config backup tracking', () => {
-	it('only multisigs CREATED from scratch need a backup — single-sig never nags', () => {
-		const user = makeUser('a@example.com');
+	it('only multisigs CREATED from scratch need a backup — single-sig never nags', async () => {
+		const user = await makeUser('a@example.com');
 		createWallet(user.id, { name: 'Savings', xpub: XPUB }); // single-sig
 		const ms = makeMultisig(user.id, 'Family vault', 'created');
 
@@ -51,14 +51,14 @@ describe('wallet-config backup tracking', () => {
 		expect(unbacked[0]).toMatchObject({ kind: 'multisig', id: ms, name: 'Family vault' });
 	});
 
-	it('an IMPORTED multisig never appears in the unbacked list', () => {
-		const user = makeUser('a@example.com');
+	it('an IMPORTED multisig never appears in the unbacked list', async () => {
+		const user = await makeUser('a@example.com');
 		makeMultisig(user.id, 'Imported vault', 'imported');
 		expect(listUnbackedWallets(user.id)).toHaveLength(0);
 	});
 
-	it('markBackedUp drops a created multisig from the unbacked list', () => {
-		const user = makeUser('a@example.com');
+	it('markBackedUp drops a created multisig from the unbacked list', async () => {
+		const user = await makeUser('a@example.com');
 		const ms = makeMultisig(user.id, 'Family vault', 'created');
 		expect(listUnbackedWallets(user.id)).toHaveLength(1);
 
@@ -68,8 +68,8 @@ describe('wallet-config backup tracking', () => {
 		expect(listUnbackedWallets(user.id)).toHaveLength(0);
 	});
 
-	it('markBackedUp is idempotent but refreshes downloaded_at (single-sig, table mechanics)', () => {
-		const user = makeUser('a@example.com');
+	it('markBackedUp is idempotent but refreshes downloaded_at (single-sig, table mechanics)', async () => {
+		const user = await makeUser('a@example.com');
 		const wallet = createWallet(user.id, { name: 'Savings', xpub: XPUB });
 
 		markBackedUp(user.id, 'wallet', wallet.id);
@@ -85,9 +85,9 @@ describe('wallet-config backup tracking', () => {
 		expect(rows[0].downloaded_at).not.toBe('2000-01-01T00:00:00.000Z'); // refreshed
 	});
 
-	it('unbacked list is scoped per user', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('unbacked list is scoped per user', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		makeMultisig(alice.id, 'Alice vault', 'created');
 		makeMultisig(bob.id, "Bob's vault", 'created');
 
@@ -97,8 +97,8 @@ describe('wallet-config backup tracking', () => {
 	});
 
 	describe('90-day reminder (created multisig only)', () => {
-		it('stays quiet when the user has no created-multisig backups', () => {
-			const user = makeUser('a@example.com');
+		it('stays quiet when the user has no created-multisig backups', async () => {
+			const user = await makeUser('a@example.com');
 			// Single-sig + imported multisig backups do NOT drive the reminder.
 			const wallet = createWallet(user.id, { name: 'Savings', xpub: XPUB });
 			markBackedUp(user.id, 'wallet', wallet.id);
@@ -109,8 +109,8 @@ describe('wallet-config backup tracking', () => {
 			expect(shouldShowBackupReminder(user.id)).toBe(false);
 		});
 
-		it('fires when a created multisig backup is older than the window and undismissed', () => {
-			const user = makeUser('a@example.com');
+		it('fires when a created multisig backup is older than the window and undismissed', async () => {
+			const user = await makeUser('a@example.com');
 			const ms = makeMultisig(user.id, 'Family vault', 'created');
 			markBackedUp(user.id, 'multisig', ms);
 			db.prepare(
@@ -120,8 +120,8 @@ describe('wallet-config backup tracking', () => {
 			expect(shouldShowBackupReminder(user.id)).toBe(true);
 		});
 
-		it('is silenced by a recent dismissal, then returns once the dismissal ages out', () => {
-			const user = makeUser('a@example.com');
+		it('is silenced by a recent dismissal, then returns once the dismissal ages out', async () => {
+			const user = await makeUser('a@example.com');
 			const ms = makeMultisig(user.id, 'Family vault', 'created');
 			markBackedUp(user.id, 'multisig', ms);
 			db.prepare(

@@ -24,6 +24,7 @@ export const NOTIFICATION_EVENT_TYPES = [
 	'admin_server_health', // node connection down, Electrum reconnect looping, disk space, etc.
 	'admin_user_disabled', // an admin disabled or re-enabled a user account (cairn-5gpv.8)
 	'admin_settings_changed', // a security-relevant instance setting was changed (cairn-5gpv.8)
+	'admin_recovery_code_minted', // an admin minted a recovery code for a credential-less restored account (cairn-j1q9)
 	'security_failed_login', // N failed login attempts against one account (ties into rateLimit.ts)
 	'security_new_passkey', // a new passkey (or recovery credential) was added to an account
 	'security_password_changed', // an account's password was changed (cairn-5gpv.5)

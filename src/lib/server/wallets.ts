@@ -11,8 +11,9 @@ import {
 	findNextUnusedIndex,
 	type WalletScanResult
 } from './bitcoin/walletScan';
+import { unwatchWallet } from './addressWatcher';
+import { withLock } from './keyedLock';
 import { childLogger } from './logger';
-import { deleteAddressLabels } from './addressLabels';
 import { recordActivity } from './activity';
 import {
 	parseKeyOriginInput,
@@ -283,20 +284,19 @@ export function setWalletDevice(
 export function deleteWallet(userId: number, id: number): boolean {
 	const row = getWallet(userId, id);
 	if (!row) return false;
+	// The polymorphic (wallet_kind, wallet_id) child tables — notified_txids,
+	// address_labels, wallet_backups, backup_missing_notified, balance_snapshots —
+	// have no real FK to wallets, but db.ts's trg_wallets_delete_children trigger
+	// sweeps all of them on this DELETE (cairn-97ui). Only the app-side effects
+	// that can't move into SQL stay here.
 	db.prepare('DELETE FROM wallets WHERE id = ? AND user_id = ?').run(id, userId);
-	// notified_txids has no FK to wallets (cairn-zari), so it won't cascade —
-	// clear this wallet's dedup rows explicitly to avoid orphans accumulating.
-	db.prepare("DELETE FROM notified_txids WHERE wallet_kind = 'wallet' AND wallet_id = ?").run(id);
-	// address_labels has no FK to wallets (id isn't unique across kinds) — clear
-	// this wallet's rows explicitly so annotations don't orphan (cairn-nbsx).
-	deleteAddressLabels('wallet', id);
-	// wallet_backups / backup_missing_notified share the same no-FK
-	// (wallet_kind, wallet_id) shape — clear them too, or a reused wallet id
-	// could read as "already backed up" (cairn-zui7.6).
-	db.prepare("DELETE FROM wallet_backups WHERE wallet_kind = 'wallet' AND wallet_id = ?").run(id);
-	db.prepare("DELETE FROM backup_missing_notified WHERE wallet_kind = 'wallet' AND wallet_id = ?").run(id);
 	invalidateWalletCache(row.xpub);
 	forgetReceiveWindow(row.xpub);
+	// cairn-uzgu / cairn-gakd Phase 1: drop this wallet's scripthashes from the
+	// address watcher's local state so it stops manufacturing orphaned
+	// notified_txids rows and firing notifications that deep-link to a 404
+	// wallet page. Electrum-side unsubscribe is Phase 2 (cairn-gakd).
+	unwatchWallet(id);
 	return true;
 }
 
@@ -421,35 +421,42 @@ export async function nextReceiveAddress(
 	id: number,
 	afterIndex?: number
 ): Promise<{ address: string; path: string; index: number } | null> {
-	const wallet = getWallet(userId, id);
-	if (!wallet) return null;
+	// cairn-2qa4: serialize issuance per wallet. Without this, two concurrent
+	// callers could both read the same cursor, await the same gap scan, derive
+	// the same index, and hand out the same address. `getWallet` below is the
+	// first read in the critical section, so a caller queued behind another
+	// only reads the cursor once the earlier caller's write has landed.
+	return withLock(`wallet:${id}`, async () => {
+		const wallet = getWallet(userId, id);
+		if (!wallet) return null;
 
-	const after = Number.isInteger(afterIndex) ? (afterIndex as number) : -1;
-	// The index we'd hand out before any gap clamp — the furthest of the cursor
-	// and one past the address on display. (The scanned used-boundary joins the
-	// max below once we know it.)
-	const want = Math.max(wallet.receive_cursor, after + 1);
+		const after = Number.isInteger(afterIndex) ? (afterIndex as number) : -1;
+		// The index we'd hand out before any gap clamp — the furthest of the cursor
+		// and one past the address on display. (The scanned used-boundary joins the
+		// max below once we know it.)
+		const want = Math.max(wallet.receive_cursor, after + 1);
 
-	// Fast path (cairn-2ic5): if a recent scan already told us the used-boundary
-	// and `want` lands on a known-unused address strictly inside the gap window,
-	// advance without re-scanning. Anything at or past the window ceiling still
-	// forces a real scan, since that's exactly where a stale boundary could hand
-	// out a wrong index.
-	const cached = knownNextUnused(wallet.xpub);
-	const nextUnused =
-		cached !== null && want >= cached && want <= cached + GAP_LIMIT - 1
-			? cached
-			: await resolveReceiveNextUnused(wallet.xpub);
+		// Fast path (cairn-2ic5): if a recent scan already told us the used-boundary
+		// and `want` lands on a known-unused address strictly inside the gap window,
+		// advance without re-scanning. Anything at or past the window ceiling still
+		// forces a real scan, since that's exactly where a stale boundary could hand
+		// out a wrong index.
+		const cached = knownNextUnused(wallet.xpub);
+		const nextUnused =
+			cached !== null && want >= cached && want <= cached + GAP_LIMIT - 1
+				? cached
+				: await resolveReceiveNextUnused(wallet.xpub);
 
-	const idx = clampToGap(Math.max(nextUnused, wallet.receive_cursor, after + 1), nextUnused);
-	const { address, path } = deriveAddress(parseXpub(wallet.xpub), 0, idx);
+		const idx = clampToGap(Math.max(nextUnused, wallet.receive_cursor, after + 1), nextUnused);
+		const { address, path } = deriveAddress(parseXpub(wallet.xpub), 0, idx);
 
-	db.prepare('UPDATE wallets SET receive_cursor = ? WHERE id = ? AND user_id = ?').run(
-		Math.min(idx + 1, nextUnused + GAP_LIMIT),
-		id,
-		userId
-	);
-	return { address, path, index: idx };
+		// cairn-2qa4: MAX as defense-in-depth — even under an unforeseen race the
+		// cursor can only advance, never regress to a lower, already-issued value.
+		db.prepare(
+			'UPDATE wallets SET receive_cursor = MAX(receive_cursor, ?) WHERE id = ? AND user_id = ?'
+		).run(Math.min(idx + 1, nextUnused + GAP_LIMIT), id, userId);
+		return { address, path, index: idx };
+	});
 }
 
 /**

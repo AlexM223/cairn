@@ -171,17 +171,26 @@ export interface MultisigSignKey {
 // ------------------------------------------------------------- account paths
 
 /**
- * The BIP-48 account path for a multisig cosigner key, as hardened-offset
+ * The BIP-48 account path for a FRESH multisig cosigner key, as hardened-offset
  * indexes: m/48'/0'/{account}'/{script}' where the script suffix is 2' for
- * p2wsh and 1' for BOTH p2sh forms (BIP-48 gives p2sh and p2sh-p2wsh the same
- * 1' — only native p2wsh gets 2'). Mainnet only, matching the rest of Cairn.
+ * p2wsh and 1' for p2sh-p2wsh. Legacy bare p2sh is deliberately NOT derivable
+ * here: BIP-48 defines no suffix for it, deriving 1' would collide with
+ * p2sh-p2wsh's slot (a wrong-key-paste footgun), and Heartwood no longer
+ * offers bare P2SH as a new-wallet creation option — an existing legacy P2SH
+ * wallet is brought in via import instead, keeping whatever origin path it
+ * actually carries (cairn-acft). Mainnet only, matching the rest of Cairn.
  */
 export function multisigAccountPathIndexes(
 	scriptType: MultisigScriptType,
 	account: number,
 	fail: (message: string) => Error
 ): number[] {
-	if (scriptType !== 'p2wsh' && scriptType !== 'p2sh-p2wsh' && scriptType !== 'p2sh') {
+	if (scriptType === 'p2sh') {
+		throw fail(
+			'Legacy P2SH multisig wallets can no longer be created fresh — Heartwood can only derive a new cosigner key for Native SegWit (P2WSH) or Nested SegWit (P2SH-P2WSH). Already have a legacy P2SH multisig? Import it instead.'
+		);
+	}
+	if (scriptType !== 'p2wsh' && scriptType !== 'p2sh-p2wsh') {
 		throw fail(`Unsupported multisig script type "${scriptType}".`);
 	}
 	if (!Number.isInteger(account) || account < 0 || account >= HARDENED) {

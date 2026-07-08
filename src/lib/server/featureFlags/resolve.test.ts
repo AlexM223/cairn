@@ -26,39 +26,39 @@ function makeUser() {
 const KEY = 'send';
 
 describe('isFeatureEnabled — resolution precedence (docs/FEATURE-FLAGS-PLAN.md §1.2)', () => {
-	it('global absent + user absent → true (registry default)', () => {
-		const u = makeUser();
+	it('global absent + user absent → true (registry default)', async () => {
+		const u = await makeUser();
 		expect(isFeatureEnabled(KEY, u.id)).toBe(true);
 	});
 
-	it('global true + user absent → true', () => {
-		const u = makeUser();
+	it('global true + user absent → true', async () => {
+		const u = await makeUser();
 		setGlobalFlag(KEY, true, u.id);
 		expect(isFeatureEnabled(KEY, u.id)).toBe(true);
 	});
 
-	it('global false + user absent → false', () => {
-		const u = makeUser();
+	it('global false + user absent → false', async () => {
+		const u = await makeUser();
 		setGlobalFlag(KEY, false, u.id);
 		expect(isFeatureEnabled(KEY, u.id)).toBe(false);
 	});
 
-	it('global true + user false → false (admin restricts one user)', () => {
-		const u = makeUser();
+	it('global true + user false → false (admin restricts one user)', async () => {
+		const u = await makeUser();
 		setGlobalFlag(KEY, true, u.id);
 		setUserOverride(u.id, KEY, false, u.id);
 		expect(isFeatureEnabled(KEY, u.id)).toBe(false);
 	});
 
-	it('global false + user true → true (admin grants one user an exception)', () => {
-		const u = makeUser();
+	it('global false + user true → true (admin grants one user an exception)', async () => {
+		const u = await makeUser();
 		setGlobalFlag(KEY, false, u.id);
 		setUserOverride(u.id, KEY, true, u.id);
 		expect(isFeatureEnabled(KEY, u.id)).toBe(true);
 	});
 
-	it('clearing a user override reverts to the global value', () => {
-		const u = makeUser();
+	it('clearing a user override reverts to the global value', async () => {
+		const u = await makeUser();
 		setGlobalFlag(KEY, false, u.id);
 		setUserOverride(u.id, KEY, true, u.id);
 		expect(isFeatureEnabled(KEY, u.id)).toBe(true);
@@ -66,23 +66,23 @@ describe('isFeatureEnabled — resolution precedence (docs/FEATURE-FLAGS-PLAN.md
 		expect(isFeatureEnabled(KEY, u.id)).toBe(false);
 	});
 
-	it('a null (logged-out/system) context resolves the global value, ignoring any user rows', () => {
-		const u = makeUser();
+	it('a null (logged-out/system) context resolves the global value, ignoring any user rows', async () => {
+		const u = await makeUser();
 		setGlobalFlag(KEY, false, u.id);
 		setUserOverride(u.id, KEY, true, u.id);
 		expect(isFeatureEnabled(KEY, null)).toBe(false);
 	});
 
-	it('throws on an unknown flag key rather than silently granting/denying', () => {
-		const u = makeUser();
+	it('throws on an unknown flag key rather than silently granting/denying', async () => {
+		const u = await makeUser();
 		expect(() => isFeatureEnabled('not_a_real_flag', u.id)).toThrow(/Unknown feature flag/);
 		expect(() => isFeatureEnabled('not_a_real_flag', null)).toThrow(/Unknown feature flag/);
 	});
 });
 
 describe('resolveAllFlags', () => {
-	it('migration safety: every registered flag resolves true against an empty database', () => {
-		const u = makeUser();
+	it('migration safety: every registered flag resolves true against an empty database', async () => {
+		const u = await makeUser();
 		const resolvedForUser = resolveAllFlags(u.id);
 		const resolvedGlobal = resolveAllFlags(null);
 		for (const def of FEATURE_FLAGS) {
@@ -94,8 +94,8 @@ describe('resolveAllFlags', () => {
 		expect(Object.keys(resolvedForUser).sort()).toEqual(FEATURE_FLAGS.map((f) => f.key).sort());
 	});
 
-	it('overlays user overrides over global rows over registry defaults in one pass', () => {
-		const u = makeUser();
+	it('overlays user overrides over global rows over registry defaults in one pass', async () => {
+		const u = await makeUser();
 		setGlobalFlag('explorer', false, u.id); // global off
 		setGlobalFlag('send', false, u.id); // global off
 		setUserOverride(u.id, 'send', true, u.id); // user exception → on
@@ -129,8 +129,8 @@ describe('requireFeature — enforcement', () => {
 		expect(statusOf(() => requireFeature(fakeEvent(null), 'send'))).toBe(401);
 	});
 
-	it('403s with the flag userMessage when the resolved flag is off (via locals.flags)', () => {
-		const u = makeUser();
+	it('403s with the flag userMessage when the resolved flag is off (via locals.flags)', async () => {
+		const u = await makeUser();
 		let thrown: unknown;
 		try {
 			requireFeature(fakeEvent(u.id, { send: false }), 'send');
@@ -143,14 +143,14 @@ describe('requireFeature — enforcement', () => {
 		);
 	});
 
-	it('returns the user when the flag is on (via locals.flags)', () => {
-		const u = makeUser();
+	it('returns the user when the flag is on (via locals.flags)', async () => {
+		const u = await makeUser();
 		const user = requireFeature(fakeEvent(u.id, { send: true }), 'send');
 		expect(user.id).toBe(u.id);
 	});
 
-	it('falls back to a DB read when locals.flags is absent', () => {
-		const u = makeUser();
+	it('falls back to a DB read when locals.flags is absent', async () => {
+		const u = await makeUser();
 		setGlobalFlag('send', false, u.id);
 		// No flags on the event → requireFeature must read the DB and see the off row.
 		expect(statusOf(() => requireFeature(fakeEvent(u.id), 'send'))).toBe(403);

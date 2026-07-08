@@ -39,10 +39,10 @@ describe('listUsers activity bucketing', () => {
 		db.prepare('UPDATE users SET last_login = ? WHERE id = ?').run(iso, id);
 	}
 
-	it('buckets last_login into recent / inactive / never and omits the raw timestamp', () => {
-		const fresh = makeUser('fresh@example.com');
-		const dormant = makeUser('dormant@example.com');
-		const never = makeUser('never@example.com');
+	it('buckets last_login into recent / inactive / never and omits the raw timestamp', async () => {
+		const fresh = await makeUser('fresh@example.com');
+		const dormant = await makeUser('dormant@example.com');
+		const never = await makeUser('never@example.com');
 		setLastLogin(fresh.id, new Date(Date.now() - 2 * 24 * 60 * 60_000).toISOString());
 		setLastLogin(dormant.id, new Date(Date.now() - 90 * 24 * 60 * 60_000).toISOString());
 		setLastLogin(never.id, null);
@@ -58,30 +58,30 @@ describe('listUsers activity bucketing', () => {
 });
 
 describe('admin guards', () => {
-	it('setUserAdmin refuses to demote the only admin', () => {
-		const admin = makeUser('admin@example.com');
+	it('setUserAdmin refuses to demote the only admin', async () => {
+		const admin = await makeUser('admin@example.com');
 		expect(() => setUserAdmin(admin.id, false)).toThrowError(
 			expect.objectContaining({ code: 'last_admin' })
 		);
 	});
 
-	it('setUserDisabled refuses to disable the only admin', () => {
-		const admin = makeUser('admin@example.com');
+	it('setUserDisabled refuses to disable the only admin', async () => {
+		const admin = await makeUser('admin@example.com');
 		expect(() => setUserDisabled(admin.id, true)).toThrowError(
 			expect.objectContaining({ code: 'last_admin' })
 		);
 	});
 
-	it('deleteUser refuses to delete the only admin', () => {
-		const admin = makeUser('admin@example.com');
+	it('deleteUser refuses to delete the only admin', async () => {
+		const admin = await makeUser('admin@example.com');
 		expect(() => deleteUser(admin.id)).toThrowError(
 			expect.objectContaining({ code: 'last_admin' })
 		);
 	});
 
-	it('demoting works once a second admin exists', () => {
-		const admin = makeUser('admin@example.com');
-		const second = makeUser('second@example.com');
+	it('demoting works once a second admin exists', async () => {
+		const admin = await makeUser('admin@example.com');
+		const second = await makeUser('second@example.com');
 		setUserAdmin(second.id, true);
 		setUserAdmin(admin.id, false);
 
@@ -90,9 +90,9 @@ describe('admin guards', () => {
 		expect(users.find((u) => u.id === second.id)?.isAdmin).toBe(true);
 	});
 
-	it('disabling an admin works once a second admin exists, and kills their sessions', () => {
-		const admin = makeUser('admin@example.com');
-		const second = makeUser('second@example.com');
+	it('disabling an admin works once a second admin exists, and kills their sessions', async () => {
+		const admin = await makeUser('admin@example.com');
+		const second = await makeUser('second@example.com');
 		setUserAdmin(second.id, true);
 
 		const { token } = createSession(admin.id);
@@ -116,9 +116,9 @@ describe('admin guards', () => {
 		expect(() => deleteUser(9999)).toThrowError(expect.objectContaining({ code: 'not_found' }));
 	});
 
-	it('deleteUser cascades to sessions and wallets', () => {
-		makeUser('admin@example.com');
-		const user = makeUser('user@example.com');
+	it('deleteUser cascades to sessions and wallets', async () => {
+		await makeUser('admin@example.com');
+		const user = await makeUser('user@example.com');
 		createSession(user.id);
 		db.prepare(
 			"INSERT INTO wallets (user_id, name, xpub, script_type) VALUES (?, 'w', 'xpub-test', 'p2wpkh')"
@@ -139,8 +139,8 @@ describe('admin guards', () => {
 });
 
 describe('invites', () => {
-	it('createInvites creates the requested batch with CAIRN-prefixed codes', () => {
-		const admin = makeUser('admin@example.com');
+	it('createInvites creates the requested batch with CAIRN-prefixed codes', async () => {
+		const admin = await makeUser('admin@example.com');
 		const invites = createInvites({ createdBy: admin.id, count: 3, label: 'friends' });
 		expect(invites).toHaveLength(3);
 		for (const invite of invites) {
@@ -153,15 +153,15 @@ describe('invites', () => {
 		expect(new Set(invites.map((i) => i.code)).size).toBe(3);
 	});
 
-	it('revokeInvite flips status to revoked', () => {
-		const admin = makeUser('admin@example.com');
+	it('revokeInvite flips status to revoked', async () => {
+		const admin = await makeUser('admin@example.com');
 		const [invite] = createInvites({ createdBy: admin.id, count: 1 });
 		revokeInvite(invite.id);
 		expect(listInvites().find((i) => i.id === invite.id)?.status).toBe('revoked');
 	});
 
-	it('reports exhausted and expired statuses', () => {
-		const admin = makeUser('admin@example.com');
+	it('reports exhausted and expired statuses', async () => {
+		const admin = await makeUser('admin@example.com');
 		const [used, expired] = createInvites({ createdBy: admin.id, count: 2, maxUses: 1 });
 		db.prepare('UPDATE invites SET used_count = 1 WHERE id = ?').run(used.id);
 		db.prepare('UPDATE invites SET expires_at = ? WHERE id = ?').run(
@@ -175,9 +175,9 @@ describe('invites', () => {
 });
 
 describe('resetInstance', () => {
-	it('wipes users, sessions, wallets, invites and settings', () => {
-		const admin = makeUser('admin@example.com');
-		const user = makeUser('user@example.com');
+	it('wipes users, sessions, wallets, invites and settings', async () => {
+		const admin = await makeUser('admin@example.com');
+		const user = await makeUser('user@example.com');
 		createSession(admin.id);
 		createSession(user.id);
 		createInvites({ createdBy: admin.id, count: 2 });
@@ -192,15 +192,15 @@ describe('resetInstance', () => {
 			expect(n, table).toBe(0);
 		}
 		// Back to first-run: the next registration becomes the admin.
-		const fresh = registerUser({ email: 'new@example.com', password: PASSWORD, displayName: 'new' });
+		const fresh = await registerUser({ email: 'new@example.com', password: PASSWORD, displayName: 'new' });
 		expect(fresh.isAdmin).toBe(true);
 	});
 
 	// cairn-fsfa: events.user_id NULL (instance-wide activity) has no FK to cascade
 	// from, so the pre-fix reset left the prior instance's activity history visible
 	// to the next operator — contradicting the "nothing else survives" reset copy.
-	it('deletes instance-wide (user_id NULL) events as well as per-user ones', () => {
-		const admin = makeUser('admin@example.com');
+	it('deletes instance-wide (user_id NULL) events as well as per-user ones', async () => {
+		const admin = await makeUser('admin@example.com');
 		db.prepare(
 			"INSERT INTO events (user_id, type, level, message) VALUES (NULL, 'network_up', 'info', 'Connected to electrum.example')"
 		).run();
@@ -216,8 +216,8 @@ describe('resetInstance', () => {
 
 	// cairn-h8xo: notified_txids has no FK either (cairn-zari) — the pre-fix reset
 	// carried the old instance's notification-dedup ledger into the next one.
-	it('clears the whole notified_txids dedup ledger', () => {
-		const admin = makeUser('admin@example.com');
+	it('clears the whole notified_txids dedup ledger', async () => {
+		const admin = await makeUser('admin@example.com');
 		db.prepare(
 			"INSERT INTO notified_txids (wallet_kind, wallet_id, user_id, txid) VALUES ('wallet', 1, ?, ?)"
 		).run(admin.id, 'a'.repeat(64));
@@ -230,15 +230,41 @@ describe('resetInstance', () => {
 		const { n } = db.prepare('SELECT COUNT(*) AS n FROM notified_txids').get() as { n: number };
 		expect(n).toBe(0);
 	});
+
+	// cairn-hl87: feature_flags/user_feature_flags.updated_by reference users(id)
+	// with no ON DELETE action. Before the fix, DELETE FROM users threw an FK
+	// violation with no ROLLBACK, leaving the shared connection with an open
+	// transaction that broke every later BEGIN until process restart.
+	it('succeeds and leaves no open transaction when a feature flag has been toggled', async () => {
+		const admin = await makeUser('admin@example.com');
+		db.prepare('INSERT INTO feature_flags (key, enabled, updated_by) VALUES (?, ?, ?)').run(
+			'some-flag',
+			1,
+			admin.id
+		);
+		db.prepare(
+			'INSERT INTO user_feature_flags (user_id, key, enabled, updated_by) VALUES (?, ?, ?, ?)'
+		).run(admin.id, 'some-flag', 0, admin.id);
+
+		expect(() => resetInstance()).not.toThrow();
+
+		const { n } = db.prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number };
+		expect(n).toBe(0);
+
+		// A subsequent BEGIN must succeed — proof the reset's own transaction was
+		// actually committed/rolled back rather than left open.
+		db.prepare('BEGIN').run();
+		db.prepare('COMMIT').run();
+	});
 });
 
 describe('instanceStats', () => {
 	// cairn-ogi7: the wallets stat must count single-sig AND multisig wallets
 	// (cairn-xqfb). The old fixture had zero rows in both tables, so a regression
 	// back to counting only `wallets` would have passed unnoticed.
-	it('counts users, active admins, active invites, and wallets across both tables', () => {
-		const admin = makeUser('admin@example.com');
-		const user = makeUser('user@example.com');
+	it('counts users, active admins, active invites, and wallets across both tables', async () => {
+		const admin = await makeUser('admin@example.com');
+		const user = await makeUser('user@example.com');
 		const [invite] = createInvites({ createdBy: admin.id, count: 2 });
 		revokeInvite(invite.id);
 		// One single-sig and one multisig, owned by different users → wallets: 2.

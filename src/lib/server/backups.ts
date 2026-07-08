@@ -88,21 +88,6 @@ export function listUnbackedWallets(userId: number): UnbackedWallet[] {
  *  nudge for fresh copies. */
 const REMINDER_DAYS = 90;
 
-/** The most recent moment this user downloaded a backup of a CREATED-from-scratch
- *  multisig, as an ISO string — or null if never. Scoped like the banner: only
- *  created multisigs are ever reminded, so single-sig and imported-multisig
- *  downloads don't factor into the 90-day nudge. */
-function lastBackupAt(userId: number): string | null {
-	const row = db
-		.prepare(
-			`SELECT MAX(b.downloaded_at) AS latest
-			 FROM wallet_backups b JOIN multisigs m ON m.id = b.wallet_id
-			 WHERE b.user_id = ? AND b.wallet_kind = 'multisig' AND m.source = 'created'`
-		)
-		.get(userId) as { latest: string | null } | undefined;
-	return row?.latest ?? null;
-}
-
 /** Whether an ISO timestamp is older than REMINDER_DAYS ago (null = never, so
  *  treated as stale). */
 function olderThanWindow(iso: string | null): boolean {
@@ -118,18 +103,30 @@ function olderThanWindow(iso: string | null): boolean {
  * older than 90 days AND they haven't dismissed the reminder within the last 90
  * days. A user with no backups at all is handled by the separate unbacked
  * banner (listUnbackedWallets), so this stays quiet for them.
+ *
+ * One round trip (cairn-xlrm): this used to be two sequential queries (latest
+ * backup timestamp, then — only if that existed and was stale — the dismissal
+ * row), which serializes badly since this runs on every (app) layout load.
+ * Fetching both in a single query with subselects costs the same as the
+ * cheap (no-backups) path used to and is strictly fewer round trips whenever
+ * a dismissal check would have run at all.
  */
 export function shouldShowBackupReminder(userId: number): boolean {
-	const latest = lastBackupAt(userId);
-	// No backups on record → the unbacked banner owns that case; don't double up.
-	if (!latest) return false;
-	if (!olderThanWindow(latest)) return false;
-
 	const row = db
-		.prepare('SELECT dismissed_at FROM backup_reminders WHERE user_id = ?')
-		.get(userId) as { dismissed_at: string | null } | undefined;
+		.prepare(
+			`SELECT
+				(SELECT MAX(b.downloaded_at)
+				 FROM wallet_backups b JOIN multisigs m ON m.id = b.wallet_id
+				 WHERE b.user_id = ? AND b.wallet_kind = 'multisig' AND m.source = 'created') AS latest,
+				(SELECT dismissed_at FROM backup_reminders WHERE user_id = ?) AS dismissed_at`
+		)
+		.get(userId, userId) as { latest: string | null; dismissed_at: string | null };
+
+	// No backups on record → the unbacked banner owns that case; don't double up.
+	if (!row.latest) return false;
+	if (!olderThanWindow(row.latest)) return false;
 	// A recent dismissal silences the reminder for another full window.
-	return olderThanWindow(row?.dismissed_at ?? null);
+	return olderThanWindow(row.dismissed_at);
 }
 
 /** Record that the user dismissed the periodic reminder now, silencing it for

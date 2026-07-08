@@ -74,11 +74,11 @@ describe('failed password login (auth.ts)', () => {
 	const RIGHT_PW = 'correct horse battery';
 	const WRONG_PW = 'Tr0ub4dor&3-wrong';
 
-	it('emits a security warn with the email — and never the password string', () => {
-		registerUser({ email: 'victim@example.com', displayName: 'Victim', password: RIGHT_PW });
+	it('emits a security warn with the email — and never the password string', async () => {
+		await registerUser({ email: 'victim@example.com', displayName: 'Victim', password: RIGHT_PW });
 		captured.calls.length = 0; // drop the user_registered info line
 
-		expect(() => loginWithPassword('victim@example.com', WRONG_PW)).toThrowError(
+		await expect(loginWithPassword('victim@example.com', WRONG_PW)).rejects.toThrowError(
 			expect.objectContaining({ code: 'bad_credentials' })
 		);
 
@@ -97,20 +97,20 @@ describe('failed password login (auth.ts)', () => {
 		expect(text).not.toContain(RIGHT_PW);
 	});
 
-	it('an unknown email still logs the failure (same event, no user leak beyond the email)', () => {
-		expect(() => loginWithPassword('ghost@example.com', WRONG_PW)).toThrowError();
+	it('an unknown email still logs the failure (same event, no user leak beyond the email)', async () => {
+		await expect(loginWithPassword('ghost@example.com', WRONG_PW)).rejects.toThrowError();
 		const failed = eventsNamed('password_login_failed');
 		expect(failed).toHaveLength(1);
 		expect(failed[0].args[0]).toMatchObject({ email: 'ghost@example.com' });
 		expect(allLoggedText()).not.toContain(WRONG_PW);
 	});
 
-	it('a disabled account with the right password logs a denial (not silence)', () => {
-		const u = registerUser({ email: 'off@example.com', displayName: 'Off', password: RIGHT_PW });
+	it('a disabled account with the right password logs a denial (not silence)', async () => {
+		const u = await registerUser({ email: 'off@example.com', displayName: 'Off', password: RIGHT_PW });
 		db.prepare('UPDATE users SET disabled = 1 WHERE id = ?').run(u.id);
 		captured.calls.length = 0;
 
-		expect(() => loginWithPassword('off@example.com', RIGHT_PW)).toThrowError(
+		await expect(loginWithPassword('off@example.com', RIGHT_PW)).rejects.toThrowError(
 			expect.objectContaining({ code: 'disabled' })
 		);
 		const denied = eventsNamed('password_login_denied');

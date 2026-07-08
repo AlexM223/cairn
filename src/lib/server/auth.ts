@@ -1,4 +1,4 @@
-import { randomBytes, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
+import { randomBytes, createHash, scrypt, timingSafeEqual } from 'node:crypto';
 import type { Cookies } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { db } from './db';
@@ -170,19 +170,40 @@ const KEY_LEN = 32;
 /** Minimum acceptable password length. */
 export const MIN_PASSWORD_LENGTH = 8;
 
-export function hashPassword(password: string): string {
+// cairn-48hm: scryptSync ran on the MAIN thread — at N=16384/r=8 that's ~150-300ms
+// of FULL event-loop freeze per call on a Pi 4 (Cortex-A72), during which Electrum
+// IO, SSE heartbeats, and every other user's request stall. This Promise wrapper
+// around the callback form of scrypt runs on the libuv threadpool instead, so the
+// event loop stays free. Cost params are unchanged — only sync-vs-async moved.
+// (A hand-rolled wrapper, rather than `promisify(scrypt)`, because scrypt's
+// overloaded callback signature doesn't promisify cleanly with the options arg.)
+function scryptAsync(
+	password: string,
+	salt: Buffer,
+	keylen: number,
+	options: { N: number; r: number; p: number }
+): Promise<Buffer> {
+	return new Promise((resolve, reject) => {
+		scrypt(password, salt, keylen, options, (err, derivedKey) => {
+			if (err) reject(err);
+			else resolve(derivedKey);
+		});
+	});
+}
+
+export async function hashPassword(password: string): Promise<string> {
 	const salt = randomBytes(16);
-	const hash = scryptSync(password, salt, KEY_LEN, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P });
+	const hash = await scryptAsync(password, salt, KEY_LEN, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P });
 	return `scrypt:${SCRYPT_N}:${SCRYPT_R}:${SCRYPT_P}:${salt.toString('base64')}:${hash.toString('base64')}`;
 }
 
-export function verifyPassword(password: string, stored: string): boolean {
+export async function verifyPassword(password: string, stored: string): Promise<boolean> {
 	const parts = stored.split(':');
 	if (parts.length !== 6 || parts[0] !== 'scrypt') return false;
 	const [, nStr, rStr, pStr, saltB64, hashB64] = parts;
 	const salt = Buffer.from(saltB64, 'base64');
 	const expected = Buffer.from(hashB64, 'base64');
-	const actual = scryptSync(password, salt, expected.length, {
+	const actual = await scryptAsync(password, salt, expected.length, {
 		N: parseInt(nStr, 10),
 		r: parseInt(rStr, 10),
 		p: parseInt(pStr, 10)
@@ -191,8 +212,8 @@ export function verifyPassword(password: string, stored: string): boolean {
 }
 
 /** Set (or replace) a user's password. */
-export function setUserPassword(userId: number, password: string): void {
-	db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(password), userId);
+export async function setUserPassword(userId: number, password: string): Promise<void> {
+	db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(await hashPassword(password), userId);
 }
 
 /** Whether a user currently has a password set (vs passkey-only). */
@@ -208,7 +229,7 @@ export function hasPassword(userId: number): boolean {
  * unknown email, an account with no password, and a wrong password, so it never
  * reveals which accounts exist or use passwords.
  */
-export function loginWithPassword(email: string, password: string): SessionUser {
+export async function loginWithPassword(email: string, password: string): Promise<SessionUser> {
 	const row = db
 		.prepare(
 			'SELECT id, email, password_hash, display_name, is_admin, disabled FROM users WHERE email = ?'
@@ -225,7 +246,7 @@ export function loginWithPassword(email: string, password: string): SessionUser 
 		| undefined;
 
 	const normalizedEmail = email.trim().toLowerCase();
-	if (!row || !row.password_hash || !verifyPassword(password, row.password_hash)) {
+	if (!row || !row.password_hash || !(await verifyPassword(password, row.password_hash))) {
 		log.warn({ event: 'password_login_failed', email: normalizedEmail }, 'password login failed: bad credentials');
 		throw new AuthError('Invalid email or password.', 'bad_credentials');
 	}
@@ -286,7 +307,7 @@ export const BOOTSTRAP_PLACEHOLDER_EMAIL = 'admin@cairn.local';
  * (or an operator sets any password), password_hash is non-null, both branches
  * below are dead, and the flag can never be re-raised by a restart.
  */
-export function bootstrapAdminFromEnv(): void {
+export async function bootstrapAdminFromEnv(): Promise<void> {
 	const pw = env.CAIRN_ADMIN_PASSWORD ?? env.APP_PASSWORD;
 	if (!pw || pw.length < MIN_PASSWORD_LENGTH) return;
 
@@ -298,13 +319,13 @@ export function bootstrapAdminFromEnv(): void {
 		const email = (env.CAIRN_ADMIN_EMAIL ?? BOOTSTRAP_PLACEHOLDER_EMAIL).trim().toLowerCase();
 		db.prepare(
 			'INSERT INTO users (email, password_hash, display_name, is_admin, must_reset_password) VALUES (?, ?, ?, 1, 1)'
-		).run(email, hashPassword(pw), 'Admin');
+		).run(email, await hashPassword(pw), 'Admin');
 		log.info(
 			{ event: 'admin_bootstrapped', email },
 			'first admin created from env password; forced credential reset pending'
 		);
 	} else if (!first.password_hash) {
-		setUserPassword(first.id, pw);
+		await setUserPassword(first.id, pw);
 		db.prepare('UPDATE users SET must_reset_password = 1 WHERE id = ?').run(first.id);
 		log.info(
 			{ event: 'admin_bootstrapped', userId: first.id },
@@ -331,10 +352,10 @@ export function mustResetPassword(userId: number): boolean {
  * responsible for rotating sessions afterwards (the generated password was
  * visible to anyone who saw the install screen).
  */
-export function completeForcedCredentialReset(
+export async function completeForcedCredentialReset(
 	userId: number,
 	input: { email: string; password: string }
-): void {
+): Promise<void> {
 	const email = input.email.trim().toLowerCase();
 	if (!EMAIL_RE.test(email)) throw new AuthError('Enter a valid email address.', 'invalid_email');
 	if (email === BOOTSTRAP_PLACEHOLDER_EMAIL)
@@ -361,7 +382,7 @@ export function completeForcedCredentialReset(
 
 	db.prepare(
 		'UPDATE users SET email = ?, password_hash = ?, must_reset_password = 0 WHERE id = ?'
-	).run(email, hashPassword(input.password), userId);
+	).run(email, await hashPassword(input.password), userId);
 	log.info(
 		{ event: 'forced_credential_reset_completed', userId, email },
 		'bootstrap admin set their own password and email'
@@ -431,26 +452,35 @@ export function assertCanRegister(input: {
 }
 
 /**
- * Create a user (passkey-only — no password). Re-validates eligibility, consumes
- * the invite if one is required, and inserts the row. The caller then attaches
- * the first passkey; do both inside one transaction so a half-registered account
- * can never exist. Returns the new user.
+ * Create a user given an ALREADY-COMPUTED password hash (or null for a
+ * passkey-only account). Re-validates eligibility, consumes the invite if one
+ * is required, and inserts the row. The caller then attaches the first
+ * passkey; do both inside one transaction so a half-registered account can
+ * never exist. Returns the new user.
+ *
+ * INVARIANT (cairn-jlrb): this function contains NO `await` — directly or
+ * transitively (assertCanRegister, redeemInvite, notify(), and the INSERT are
+ * all synchronous node:sqlite/notify calls). It is deliberately plain sync,
+ * not async, so that's structurally verifiable by inspection. This lets
+ * callers run it inside an open `db.exec('BEGIN')` transaction (see
+ * register/verify/+server.ts): node:sqlite's DatabaseSync is a single
+ * synchronous connection, so any real await here (e.g. scrypt hashing, which
+ * yields to the libuv threadpool) would let a concurrent request's own BEGIN
+ * interleave and roll back THIS request's still-open transaction. If a future
+ * caller needs an async step (like hashing a password), do it BEFORE opening
+ * the transaction and pass the result in as `passwordHash` — see
+ * registerUser() below, and the same pattern in recovery.ts's
+ * generateRecoveryCodes().store() / mintAdminRecoveryCode().
  */
-export function registerUser(input: RegisterInput): SessionUser {
+export function registerUserWithHash(
+	input: RegisterInput,
+	passwordHash: string | null
+): SessionUser {
 	const email = input.email.trim().toLowerCase();
 	const displayName = input.displayName.trim();
 	const inviteCode = input.inviteCode?.trim();
 
 	const { isFirstUser } = assertCanRegister({ email, displayName, inviteCode });
-
-	// Password is optional (a passkey-only account leaves it null); when present
-	// it must be strong enough.
-	const password = input.password;
-	if (password != null && password.length < MIN_PASSWORD_LENGTH)
-		throw new AuthError(
-			`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
-			'weak_password'
-		);
 
 	// Consume the invite only now, on the real create.
 	if (!isFirstUser && getInstanceSettings().registrationMode === 'invite' && inviteCode) {
@@ -459,7 +489,7 @@ export function registerUser(input: RegisterInput): SessionUser {
 
 	const result = db
 		.prepare('INSERT INTO users (email, password_hash, display_name, is_admin) VALUES (?, ?, ?, ?)')
-		.run(email, password ? hashPassword(password) : null, displayName, isFirstUser ? 1 : 0);
+		.run(email, passwordHash, displayName, isFirstUser ? 1 : 0);
 
 	const newUserId = Number(result.lastInsertRowid);
 
@@ -492,6 +522,30 @@ export function registerUser(input: RegisterInput): SessionUser {
 	};
 }
 
+/**
+ * Public registration entry point: validates the (optional) password's
+ * strength, hashes it — the only async step — and THEN creates the user via
+ * the transaction-safe registerUserWithHash() core. Safe to call on its own
+ * (not inside a transaction), which is what every caller except
+ * register/verify/+server.ts does; that route has no password to hash (a
+ * passkey-only signup) so it calls registerUserWithHash() directly with
+ * `passwordHash: null` from inside its BEGIN/COMMIT instead of going through
+ * this wrapper.
+ */
+export async function registerUser(input: RegisterInput): Promise<SessionUser> {
+	// Password is optional (a passkey-only account leaves it null); when present
+	// it must be strong enough.
+	const password = input.password;
+	if (password != null && password.length < MIN_PASSWORD_LENGTH)
+		throw new AuthError(
+			`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
+			'weak_password'
+		);
+
+	const passwordHash = password ? await hashPassword(password) : null;
+	return registerUserWithHash(input, passwordHash);
+}
+
 /** Look up a user by id. Null when unknown/disabled. */
 export function getUserById(id: number): SessionUser | null {
 	const row = db
@@ -510,26 +564,6 @@ export function hasNoCredentials(userId: number): boolean {
 		.prepare('SELECT COUNT(*) AS n FROM user_credentials WHERE user_id = ?')
 		.get(userId) as { n: number };
 	return n === 0;
-}
-
-/**
- * The id of an existing account this email is allowed to RECLAIM by adding a
- * passkey (rather than registering fresh), or null. Reclaim is how a
- * credential-less account restored from a backup gets a passkey and becomes
- * usable again. Only credential-less, non-disabled accounts qualify, so an
- * account that already has a passkey can never be taken over this way.
- *
- * SECURITY (cairn-cpb5): an ADMIN account is never reclaimable this way. Reclaim
- * deliberately bypasses the registration-mode/invite gate, so letting it confer
- * admin would be a privilege-escalation path. Backup restore already forces
- * imported accounts to non-admin, so a credential-less admin row should not
- * exist — but this is the belt-and-suspenders check regardless of how one arose.
- * Such a row must be handled by an existing admin, not self-reclaimed.
- */
-export function reclaimableUserId(email: string): number | null {
-	const user = getUserByEmail(email);
-	if (user && !user.isAdmin && hasNoCredentials(user.id)) return user.id;
-	return null;
 }
 
 /** Look up a user by email for the login ceremony. Null when unknown/disabled. */

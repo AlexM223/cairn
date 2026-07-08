@@ -30,16 +30,25 @@ const log = childLogger('recovery');
 
 // A pre-computed scrypt hash of a throwaway value, used to spend equivalent CPU
 // when the real secret is absent so timing can't reveal whether a user/secret
-// exists. Computed once at module load.
-const DUMMY_HASH = hashPassword('cairn-recovery-dummy-verify-target');
+// exists. hashPassword is async (cairn-48hm), so this can no longer be a plain
+// module-load constant — computed lazily on first use and cached, rather than
+// via top-level await (this repo has previously had to back out a top-level-
+// await build plugin; see backup.ts / build history).
+let dummyHashPromise: Promise<string> | null = null;
+function getDummyHash(): Promise<string> {
+	if (!dummyHashPromise) {
+		dummyHashPromise = hashPassword('cairn-recovery-dummy-verify-target');
+	}
+	return dummyHashPromise;
+}
 
 /**
  * Burn one scrypt verification's worth of work and return false. Call this
  * instead of returning early when the target user or secret does not exist, so
  * the "unknown" path costs the same as a real "wrong secret" path.
  */
-export function dummyVerify(input: string): boolean {
-	verifyPassword(input, DUMMY_HASH);
+export async function dummyVerify(input: string): Promise<boolean> {
+	await verifyPassword(input, await getDummyHash());
 	return false;
 }
 
@@ -62,7 +71,7 @@ export interface GeneratedPhrase {
 	/** The 12-word phrase to show the user ONCE. Never persisted in plaintext. */
 	phrase: string;
 	/** Persist the (hashed) phrase for `userId`, replacing any existing one. */
-	store(userId: number): void;
+	store(userId: number): Promise<void>;
 }
 
 /**
@@ -76,8 +85,8 @@ export function generateRecoveryPhrase(): GeneratedPhrase {
 	const phrase = generateMnemonic(wordlist, 128); // 128 bits → 12 words
 	return {
 		phrase,
-		store(userId: number): void {
-			const hash = hashPassword(normalizePhrase(phrase));
+		async store(userId: number): Promise<void> {
+			const hash = await hashPassword(normalizePhrase(phrase));
 			// Replace any existing phrase (UNIQUE on user_id).
 			db.prepare(
 				`INSERT INTO account_recovery_phrases (user_id, phrase_hash)
@@ -96,7 +105,7 @@ export function generateRecoveryPhrase(): GeneratedPhrase {
  * absence isn't observable via timing). A phrase is reusable: verifying it does
  * NOT consume it.
  */
-export function verifyRecoveryPhrase(userId: number, input: string): boolean {
+export async function verifyRecoveryPhrase(userId: number, input: string): Promise<boolean> {
 	const normalized = normalizePhrase(input);
 	const row = db
 		.prepare('SELECT phrase_hash FROM account_recovery_phrases WHERE user_id = ?')
@@ -140,7 +149,7 @@ export interface GeneratedCodes {
 	/** The 8 plaintext codes to show the user ONCE. Never persisted in plaintext. */
 	codes: string[];
 	/** Persist the (individually hashed) codes for `userId`, replacing the prior set. */
-	store(userId: number): void;
+	store(userId: number): Promise<void>;
 }
 
 /**
@@ -153,7 +162,11 @@ export function generateRecoveryCodes(): GeneratedCodes {
 	const codes = Array.from({ length: RECOVERY_CODE_COUNT }, makeCode);
 	return {
 		codes,
-		store(userId: number): void {
+		async store(userId: number): Promise<void> {
+			// Hash everything BEFORE opening the transaction — node:sqlite has no
+			// async transaction support, and the scrypt hashing (cairn-48hm) must
+			// not happen synchronously inside a BEGIN/COMMIT block.
+			const hashes = await Promise.all(codes.map((code) => hashPassword(normalizeCode(code))));
 			const insert = db.prepare(
 				'INSERT INTO account_recovery_codes (user_id, code_hash) VALUES (?, ?)'
 			);
@@ -161,7 +174,7 @@ export function generateRecoveryCodes(): GeneratedCodes {
 			db.exec('BEGIN');
 			try {
 				del.run(userId);
-				for (const code of codes) insert.run(userId, hashPassword(normalizeCode(code)));
+				for (const hash of hashes) insert.run(userId, hash);
 				db.exec('COMMIT');
 			} catch (e) {
 				db.exec('ROLLBACK');
@@ -169,6 +182,43 @@ export function generateRecoveryCodes(): GeneratedCodes {
 			}
 		}
 	};
+}
+
+/**
+ * Mint a single admin-issued recovery code for `userId` (cairn-j1q9). This is
+ * the out-of-band replacement for the old public "reclaim by email" path: an
+ * account restored from a backup arrives with no password and no passkeys (a
+ * backup never contains credentials), so it has no way back in on its own. An
+ * admin hands the owner this one code out-of-band; they redeem it at /recover.
+ *
+ * Deletes the user's existing UNUSED codes FIRST, then inserts exactly one new
+ * one — this preserves the <= RECOVERY_CODE_COUNT unused-codes invariant
+ * consumeRecoveryCode's constant-work scan depends on (it iterates exactly
+ * RECOVERY_CODE_COUNT rows; a 9th unused code would silently never be checked
+ * and so could never be redeemed). Already-USED codes are left alone — they
+ * don't count toward the invariant and are harmless history. Runs in one
+ * transaction so a crash between the delete and insert can't leave the user
+ * with zero codes. Returns the plaintext code — shown once, never persisted.
+ */
+export async function mintAdminRecoveryCode(userId: number): Promise<string> {
+	const code = makeCode();
+	// Hash before opening the transaction — see generateRecoveryCodes().store for why.
+	const hash = await hashPassword(normalizeCode(code));
+	db.exec('BEGIN');
+	try {
+		db.prepare('DELETE FROM account_recovery_codes WHERE user_id = ? AND used_at IS NULL').run(
+			userId
+		);
+		db.prepare('INSERT INTO account_recovery_codes (user_id, code_hash) VALUES (?, ?)').run(
+			userId,
+			hash
+		);
+		db.exec('COMMIT');
+	} catch (e) {
+		db.exec('ROLLBACK');
+		throw e;
+	}
+	return code;
 }
 
 /**
@@ -191,7 +241,7 @@ export function generateRecoveryCodes(): GeneratedCodes {
  * (changes === 1); the loser sees changes === 0, so exactly one consumption
  * succeeds.
  */
-export function consumeRecoveryCode(userId: number, code: string): boolean {
+export async function consumeRecoveryCode(userId: number, code: string): Promise<boolean> {
 	const normalized = normalizeCode(code);
 	// Invariant: a user has at most RECOVERY_CODE_COUNT unused codes (a set of 8
 	// is minted at once and regeneration replaces the set), so iterating exactly
@@ -206,12 +256,12 @@ export function consumeRecoveryCode(userId: number, code: string): boolean {
 	for (let i = 0; i < RECOVERY_CODE_COUNT; i++) {
 		const row = rows[i];
 		if (!row) {
-			dummyVerify(normalized);
+			await dummyVerify(normalized);
 			continue;
 		}
 		// Record only the first match but keep verifying the rest, so the number
 		// of scrypt ops never depends on the match position.
-		if (verifyPassword(normalized, row.code_hash) && matchedId === null) {
+		if ((await verifyPassword(normalized, row.code_hash)) && matchedId === null) {
 			matchedId = row.id;
 		}
 	}

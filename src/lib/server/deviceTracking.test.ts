@@ -28,10 +28,12 @@ const UA_B = 'Mozilla/5.0 (iPhone; iOS 17) Safari/605';
 
 let userId: number;
 
-beforeEach(() => {
+beforeEach(async () => {
 	wipe();
 	setSetting('registration_mode', 'open');
-	userId = registerUser({ email: 'u@example.com', password: 'correct horse battery', displayName: 'u' }).id;
+	userId = (
+		await registerUser({ email: 'u@example.com', password: 'correct horse battery', displayName: 'u' })
+	).id;
 });
 
 describe('new-device detection (cairn-5gpv.6)', () => {

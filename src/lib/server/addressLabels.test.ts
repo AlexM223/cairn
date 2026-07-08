@@ -41,18 +41,19 @@ function makeMultisig(userId: number): number {
 	);
 }
 
-function makeUser(email: string): number {
-	return registerUser({
+async function makeUser(email: string): Promise<number> {
+	const user = await registerUser({
 		email,
 		password: 'correct horse battery',
 		displayName: email.split('@')[0]
-	}).id;
+	});
+	return user.id;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
 	wipe();
 	setSetting('registration_mode', 'open');
-	uid = makeUser('owner@example.com');
+	uid = await makeUser('owner@example.com');
 	walletId = makeWallet(uid);
 	walletId2 = makeWallet(uid);
 	msId = makeMultisig(uid);
@@ -108,8 +109,8 @@ describe('addressLabels', () => {
 // route-level gating: a direct call with someone else's wallet id must throw,
 // never silently read or write.
 describe('addressLabels internal access re-check (cairn-o1dp.3)', () => {
-	it('denies reads and writes against another user’s wallet', () => {
-		const stranger = makeUser('stranger@example.com');
+	it('denies reads and writes against another user’s wallet', async () => {
+		const stranger = await makeUser('stranger@example.com');
 		setAddressLabel(uid, 'wallet', walletId, ADDR_A, 'mine');
 
 		expect(() => getAddressLabels(stranger, 'wallet', walletId)).toThrow(LabelAccessError);
@@ -124,10 +125,10 @@ describe('addressLabels internal access re-check (cairn-o1dp.3)', () => {
 		expect(() => getAddressLabels(uid, 'wallet', 999_999)).toThrow(LabelAccessError);
 	});
 
-	it('multisig: any participant reads; only owner/cosigner writes', () => {
-		const cosigner = makeUser('cosigner@example.com');
-		const viewer = makeUser('viewer@example.com');
-		const outsider = makeUser('outsider@example.com');
+	it('multisig: any participant reads; only owner/cosigner writes', async () => {
+		const cosigner = await makeUser('cosigner@example.com');
+		const viewer = await makeUser('viewer@example.com');
+		const outsider = await makeUser('outsider@example.com');
 		const share = db.prepare(
 			'INSERT INTO multisig_shares (multisig_id, owner_id, shared_with_id, role) VALUES (?, ?, ?, ?)'
 		);

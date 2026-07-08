@@ -308,8 +308,10 @@ export const actions: Actions = {
 						const config = parseDescriptor(source);
 						// Path hygiene at the import boundary (cairn-1kc3.1/.3/.5), same
 						// as the API import route: parseDescriptor itself stays
-						// acceptance-agnostic (exports round-trip through it).
-						validateMultisigKeyPaths(config);
+						// acceptance-agnostic (exports round-trip through it). Import mode
+						// (cairn-acft) tolerates a historical legacy-P2SH 1'-suffix label
+						// with a warning instead of rejecting it outright.
+						const warnings = validateMultisigKeyPaths(config, { mode: 'import' });
 						return {
 							name: '',
 							// parseDescriptor reports the wrapper it recognized: wsh() →
@@ -319,7 +321,8 @@ export const actions: Actions = {
 							scriptType: config.scriptType ?? ('p2wsh' as const),
 							threshold: config.threshold,
 							totalKeys: config.keys.length,
-							keys: config.keys.map((k, i) => ({ name: `Key ${i + 1}`, ...k }))
+							keys: config.keys.map((k, i) => ({ name: `Key ${i + 1}`, ...k })),
+							warnings
 						};
 					})();
 			// Anti-enumeration-safe: does any of these cosigner keys belong to one of

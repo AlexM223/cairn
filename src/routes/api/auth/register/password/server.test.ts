@@ -24,14 +24,16 @@ let adminId: number;
 // Distinct IP per request so the invite rate limiter never couples tests.
 let ipSeq = 0;
 
-beforeEach(() => {
+beforeEach(async () => {
 	wipe();
 	// First user registers freely and becomes admin; everyone after needs an invite.
-	adminId = registerUser({
-		email: 'admin@example.com',
-		password: 'correct horse battery',
-		displayName: 'Admin'
-	}).id;
+	adminId = (
+		await registerUser({
+			email: 'admin@example.com',
+			password: 'correct horse battery',
+			displayName: 'Admin'
+		})
+	).id;
 	setSetting('registration_mode', 'invite');
 });
 

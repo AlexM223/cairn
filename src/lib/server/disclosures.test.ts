@@ -29,12 +29,14 @@ beforeEach(() => {
 	setSetting('registration_mode', 'open');
 });
 
-function makeUser(email: string): number {
-	return registerUser({
-		email,
-		password: 'correct horse battery',
-		displayName: email.split('@')[0]
-	}).id;
+async function makeUser(email: string): Promise<number> {
+	return (
+		await registerUser({
+			email,
+			password: 'correct horse battery',
+			displayName: email.split('@')[0]
+		})
+	).id;
 }
 
 describe('default agreement content (cairn-5u2i.1)', () => {
@@ -49,9 +51,9 @@ describe('default agreement content (cairn-5u2i.1)', () => {
 });
 
 describe('ensureDefaultAgreementVersion', () => {
-	it('bumps a stock instance to the current default version — and re-prompts prior acceptors', () => {
+	it('bumps a stock instance to the current default version — and re-prompts prior acceptors', async () => {
 		// A user accepted back when the stored version was the implicit 1.
-		const uid = makeUser('user@example.com');
+		const uid = await makeUser('user@example.com');
 		expect(getUserAgreement().version).toBe(1);
 		recordUserAgreement(uid, '198.51.100.7');
 		expect(hasAcceptedCurrentAgreement(uid)).toBe(true);

@@ -41,7 +41,7 @@ function makeUser(email: string) {
 }
 
 /** Minimal RequestEvent for the GET handler. */
-function getEvent(user: ReturnType<typeof registerUser> | null): Parameters<typeof GET>[0] {
+function getEvent(user: Awaited<ReturnType<typeof registerUser>> | null): Parameters<typeof GET>[0] {
 	return {
 		locals: { user },
 		params: {},
@@ -50,7 +50,7 @@ function getEvent(user: ReturnType<typeof registerUser> | null): Parameters<type
 	} as unknown as Parameters<typeof GET>[0];
 }
 
-async function getWalletsAs(user: ReturnType<typeof registerUser>) {
+async function getWalletsAs(user: Awaited<ReturnType<typeof registerUser>>) {
 	const res = await GET(getEvent(user));
 	expect(res.status).toBe(200);
 	return (await res.json()) as {
@@ -71,14 +71,14 @@ describe('GET /api/wallets', () => {
 	});
 
 	it('an authenticated user with no wallets gets 200 and an empty list', async () => {
-		const alice = makeUser('alice@example.com');
+		const alice = await makeUser('alice@example.com');
 		const body = await getWalletsAs(alice);
 		expect(body.wallets).toEqual([]);
 		expect(body.errors).toEqual({});
 	});
 
 	it('a wallet created via createWallet() appears in the response', async () => {
-		const alice = makeUser('alice@example.com');
+		const alice = await makeUser('alice@example.com');
 		const wallet = createWallet(alice.id, { name: 'Savings', xpub: XPUB });
 
 		const body = await getWalletsAs(alice);
@@ -91,8 +91,8 @@ describe('GET /api/wallets', () => {
 	});
 
 	it("never includes another user's wallets (wrong-owner leak guard)", async () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		const aliceWallet = createWallet(alice.id, { name: 'Alice savings', xpub: XPUB });
 
 		// Bob has nothing — Alice's wallet must not leak into his response.

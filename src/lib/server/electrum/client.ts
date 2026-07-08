@@ -44,6 +44,12 @@ export interface ElectrumClientOptions {
 	 */
 	socks5Host?: string | null;
 	socks5Port?: number | null;
+	/**
+	 * Interval in ms between idle keepalive pings (default 45000, see
+	 * KEEPALIVE_INTERVAL_MS). Overridable mainly so tests can exercise the
+	 * stale-connection liveness check (cairn-jhj6) without waiting 45s.
+	 */
+	keepaliveIntervalMs?: number;
 }
 
 export interface ElectrumBalance {
@@ -105,6 +111,7 @@ export class ElectrumClient extends EventEmitter {
 	private readonly timeoutMs: number;
 	private readonly socks5Host: string | null;
 	private readonly socks5Port: number | null;
+	private readonly keepaliveIntervalMs: number;
 
 	private socket: net.Socket | null = null;
 	/** Socket for a connection still being established — see close(). */
@@ -131,6 +138,7 @@ export class ElectrumClient extends EventEmitter {
 		this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 		this.socks5Host = opts.socks5Host || null;
 		this.socks5Port = opts.socks5Port || null;
+		this.keepaliveIntervalMs = opts.keepaliveIntervalMs ?? KEEPALIVE_INTERVAL_MS;
 		// Consumers may not attach an 'error' listener; never let EventEmitter throw.
 		this.on('error', () => {});
 	}
@@ -148,10 +156,46 @@ export class ElectrumClient extends EventEmitter {
 
 		this.connecting = new Promise<void>((resolve, reject) => {
 			let settled = false;
+
+			// Deadline for the initial dial only (direct — non-proxy — TCP connect or
+			// TLS handshake). The idle-socket timeout is deliberately disabled below
+			// (`s.setTimeout(0)`, cairn-u7bw) so the keepalive can hold a healthy
+			// connection open indefinitely; that also means it does nothing to bound a
+			// *dial* that never completes — a backend that black-holes the SYN (or an
+			// initial TLS byte) and never RSTs leaves this promise pending forever, and
+			// every caller up the chain (scanWallet, getWalletDetail/listWallets, the
+			// streamed page load) hangs with it (cairn-vn48). This timer is separate
+			// from that idle timeout and only covers the connect/handshake phase. The
+			// SOCKS5 path is untouched — it already gets its own connect timeout via
+			// SocksClient's `timeout` option.
+			let connectTimer: NodeJS.Timeout | null = null;
+			const armConnectTimeout = (): void => {
+				connectTimer = setTimeout(() => {
+					connectTimer = null;
+					if (this.connectingSocket) {
+						this.connectingSocket.destroy();
+						this.connectingSocket = null;
+					}
+					fail(
+						new Error(
+							`Electrum connect to ${this.host}:${this.port} timed out after ${this.timeoutMs}ms`
+						)
+					);
+				}, this.timeoutMs);
+				connectTimer.unref?.();
+			};
+			const disarmConnectTimeout = (): void => {
+				if (connectTimer) {
+					clearTimeout(connectTimer);
+					connectTimer = null;
+				}
+			};
+
 			const fail = (err: Error) => {
 				if (settled) return;
 				settled = true;
 				this.connecting = null;
+				disarmConnectTimeout();
 				// Feed the instance-wide transport-health signal (cairn-hy8z): a failed
 				// dial — proxy rejection, TLS error, connect timeout — is what makes the
 				// "can't reach the Bitcoin network" banner appear instead of leaving the
@@ -162,6 +206,9 @@ export class ElectrumClient extends EventEmitter {
 
 			let socket: net.Socket;
 			const onReady = () => {
+				// The dial succeeded — the connect-timeout's job is done, regardless of
+				// what happens next (cairn-vn48).
+				disarmConnectTimeout();
 				// close() may have been called while the TCP/TLS handshake was in
 				// flight — don't adopt the socket or start the protocol handshake.
 				if (this.closed) {
@@ -253,9 +300,11 @@ export class ElectrumClient extends EventEmitter {
 							setImmediate(onReady);
 						}
 					} else if (this.useTls) {
+						armConnectTimeout();
 						socket = wrapTls();
 						attach(socket);
 					} else {
+						armConnectTimeout();
 						socket = net.connect({ host: this.host, port: this.port }, onReady);
 						attach(socket);
 					}
@@ -279,13 +328,29 @@ export class ElectrumClient extends EventEmitter {
 		this.keepaliveTimer = setInterval(() => {
 			// Only while connected and idle; rawRequest (not request) so a ping can
 			// never trigger a reconnect of its own — reconnects belong to onDisconnect.
-			if (!this.socket || this.socket.destroyed || this.pending.size > 0) return;
+			const socket = this.socket;
+			if (!socket || socket.destroyed || this.pending.size > 0) return;
 			this.rawRequest('server.ping', []).catch((e: unknown) => {
-				// A failed ping means the socket is dying; the 'close' handler owns
-				// teardown and reconnect scheduling. Just leave a diagnostic trail.
-				log.debug({ err: e, server: this.server }, 'keepalive ping failed');
+				// A missed/failed keepalive means the socket is a zombie: TCP still
+				// looks "established" but the peer has stopped answering (dead NAT
+				// mapping, wedged server). Left alone, every future request would
+				// silently eat a full request timeout against a socket that will
+				// never respond (cairn-jhj6). Destroy it so the existing
+				// 'close' -> onDisconnect -> backoff-reconnect path takes over —
+				// reuse that machinery rather than starting a second reconnect loop
+				// here. Re-check this.socket === socket first: a reconnect may have
+				// already replaced it while this ping was in flight.
+				if (this.socket === socket && !socket.destroyed) {
+					log.warn(
+						{ err: e, server: this.server },
+						'keepalive ping failed; destroying stale connection'
+					);
+					socket.destroy();
+				} else {
+					log.debug({ err: e, server: this.server }, 'keepalive ping failed on a stale socket');
+				}
 			});
-		}, KEEPALIVE_INTERVAL_MS);
+		}, this.keepaliveIntervalMs);
 		this.keepaliveTimer.unref?.();
 	}
 
@@ -363,13 +428,28 @@ export class ElectrumClient extends EventEmitter {
 			const line = this.buffer.slice(0, idx).trim();
 			this.buffer = this.buffer.slice(idx + 1);
 			if (!line) continue;
-			let msg: JsonRpcMessage;
+			let parsed: unknown;
 			try {
-				msg = JSON.parse(line) as JsonRpcMessage;
+				parsed = JSON.parse(line);
 			} catch {
 				continue; // ignore malformed lines
 			}
-			this.dispatch(msg);
+			// JSON.parse happily accepts bare `null`, numbers, strings, arrays, etc.
+			// dispatch() does property access assuming an object -- feeding it
+			// anything else throws a TypeError. A single such line from a buggy or
+			// hostile server must not crash the process (cairn-ek9s).
+			if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+				log.warn(
+					{ server: this.server, line: line.slice(0, 200) },
+					'ignoring non-object Electrum message'
+				);
+				continue;
+			}
+			try {
+				this.dispatch(parsed as JsonRpcMessage);
+			} catch (e) {
+				log.warn({ err: e, server: this.server }, 'dispatch() threw for an Electrum message; ignoring');
+			}
 		}
 	}
 

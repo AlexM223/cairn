@@ -32,8 +32,9 @@ vi.mock('./logger', () => ({
 }));
 
 import { db } from './db';
-import { registerUser, addCredential, getUserByEmail, hasNoCredentials, listCredentials } from './auth';
+import { registerUser, addCredential, getUserByEmail, hasNoCredentials, hasPassword, listCredentials } from './auth';
 import { buildBackup, encryptBackup, decryptBackup, restoreBackup, BackupError } from './backup';
+import { consumeRecoveryCode } from './recovery';
 
 function wipe(): void {
 	db.exec(
@@ -56,52 +57,52 @@ function makeWallet(userId: number, xpub: string) {
 const PP = 'a-strong-passphrase';
 
 describe('encrypt / decrypt', () => {
-	it('round-trips a backup with the right passphrase', () => {
-		registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+	it('round-trips a backup with the right passphrase', async () => {
+		await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
 		const data = buildBackup('2026-07-05T00:00:00.000Z');
-		const blob = encryptBackup(data, PP);
-		const back = decryptBackup(blob, PP);
+		const blob = await encryptBackup(data, PP);
+		const back = await decryptBackup(blob, PP);
 		expect(back.users).toHaveLength(1);
 		expect(back.users[0]).toMatchObject({ email: 'admin@example.com' });
 	});
 
-	it('rejects a wrong passphrase', () => {
-		const blob = encryptBackup(buildBackup('t'), PP);
-		expect(() => decryptBackup(blob, 'wrong-passphrase')).toThrowError(BackupError);
+	it('rejects a wrong passphrase', async () => {
+		const blob = await encryptBackup(buildBackup('t'), PP);
+		await expect(decryptBackup(blob, 'wrong-passphrase')).rejects.toThrowError(BackupError);
 	});
 
-	it('rejects non-backup / corrupt input', () => {
-		expect(() => decryptBackup('not json', PP)).toThrowError(BackupError);
-		expect(() => decryptBackup('{"format":"other"}', PP)).toThrowError(BackupError);
+	it('rejects non-backup / corrupt input', async () => {
+		await expect(decryptBackup('not json', PP)).rejects.toThrowError(BackupError);
+		await expect(decryptBackup('{"format":"other"}', PP)).rejects.toThrowError(BackupError);
 	});
 
-	it('never includes credentials or password material', () => {
-		const admin = registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+	it('never includes credentials or password material', async () => {
+		const admin = await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
 		addCredential(admin.id, {
 			credentialId: 'c1',
 			publicKey: new Uint8Array([9, 9, 9]),
 			counter: 0,
 			name: 'Phone'
 		});
-		const blob = encryptBackup(buildBackup('t'), PP);
+		const blob = await encryptBackup(buildBackup('t'), PP);
 		// The plaintext (decrypted) must not carry credential fields.
-		const text = JSON.stringify(decryptBackup(blob, PP));
+		const text = JSON.stringify(await decryptBackup(blob, PP));
 		expect(text).not.toContain('credential');
 		expect(text).not.toContain('public_key');
 		expect(text).not.toContain('password');
 		expect(text).not.toContain('token');
 	});
 
-	it('excludes secret settings like the Bitcoin Core RPC password', () => {
-		registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+	it('excludes secret settings like the Bitcoin Core RPC password', async () => {
+		await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
 		db.prepare("INSERT INTO settings (key, value) VALUES ('core_rpc_pass', 'supersecret')").run();
 		const data = buildBackup('t');
 		expect(data.settings.some((s) => s.key === 'core_rpc_pass')).toBe(false);
 		expect(JSON.stringify(data)).not.toContain('supersecret');
 	});
 
-	it('excludes instance_secrets by construction — even an innocently-named key (cairn-e9mz.4)', () => {
-		registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+	it('excludes instance_secrets by construction — even an innocently-named key (cairn-e9mz.4)', async () => {
+		await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
 		// A key the SENSITIVE_SETTING regex would NOT catch: exclusion must come
 		// from the table never being exported, not from name-based filtering.
 		db.prepare(
@@ -114,9 +115,9 @@ describe('encrypt / decrypt', () => {
 });
 
 describe('restore', () => {
-	it('additively restores missing accounts and their wallets, credential-less', () => {
-		const admin = registerUser({ email: 'admin@example.com', displayName: 'Admin' });
-		const bob = registerUser({ email: 'bob@example.com', displayName: 'Bob' });
+	it('additively restores missing accounts and their wallets, credential-less', async () => {
+		const admin = await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+		const bob = await registerUser({ email: 'bob@example.com', displayName: 'Bob' });
 		makeWallet(bob.id, 'xpubBOB');
 
 		const data = buildBackup('t');
@@ -124,7 +125,7 @@ describe('restore', () => {
 		// Simulate a fresh instance where only the admin exists (bob is gone).
 		db.prepare('DELETE FROM users WHERE id = ?').run(bob.id); // wallets cascade
 
-		const summary = restoreBackup(data);
+		const summary = await restoreBackup(data);
 		expect(summary.usersAdded).toBe(1); // bob
 		expect(summary.usersSkipped).toBe(1); // admin already exists
 		expect(summary.wallets).toBe(1);
@@ -141,8 +142,46 @@ describe('restore', () => {
 		expect(wallets.map((w) => w.xpub)).toContain('xpubBOB');
 	});
 
-	it('does not clobber an existing account with the same email', () => {
-		const admin = registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+	it('mints a redeemable recovery code for each newly-restored account (cairn-j1q9)', async () => {
+		const admin = await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+		const bob = await registerUser({ email: 'bob@example.com', displayName: 'Bob' });
+		const data = buildBackup('t');
+		db.prepare('DELETE FROM users WHERE id = ?').run(bob.id);
+
+		const summary = await restoreBackup(data);
+		// Only bob was newly inserted (admin already existed → skipped, no code).
+		expect(summary.reclaimCodes).toHaveLength(1);
+		expect(summary.reclaimCodes[0].email).toBe('bob@example.com');
+
+		const restoredBob = getUserByEmail('bob@example.com')!;
+		expect(hasNoCredentials(restoredBob.id)).toBe(true);
+		expect(hasPassword(restoredBob.id)).toBe(false);
+		// The minted code actually redeems for the right (remapped) account.
+		expect(await consumeRecoveryCode(restoredBob.id, summary.reclaimCodes[0].code)).toBe(true);
+		// Sanity: it does NOT redeem for an unrelated account.
+		expect(await consumeRecoveryCode(admin.id, summary.reclaimCodes[0].code)).toBe(false);
+	});
+
+	it('does not mint a code for a disabled restored account', async () => {
+		await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+		const data = buildBackup('t');
+		data.users.push({
+			id: 8888,
+			email: 'disabled@example.com',
+			display_name: 'Disabled',
+			is_admin: 0,
+			disabled: 1,
+			created_at: 't',
+			last_login: null
+		});
+
+		const summary = await restoreBackup(data);
+		expect(summary.usersAdded).toBe(1);
+		expect(summary.reclaimCodes).toHaveLength(0);
+	});
+
+	it('does not clobber an existing account with the same email', async () => {
+		const admin = await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
 		addCredential(admin.id, {
 			credentialId: 'c1',
 			publicKey: new Uint8Array([1]),
@@ -151,15 +190,15 @@ describe('restore', () => {
 		});
 		const data = buildBackup('t');
 
-		const summary = restoreBackup(data);
+		const summary = await restoreBackup(data);
 		expect(summary.usersSkipped).toBe(1);
 		expect(summary.usersAdded).toBe(0);
 		// The admin's passkey is untouched.
 		expect(hasNoCredentials(admin.id)).toBe(false);
 	});
 
-	it('forces imported accounts to non-admin, never trusting the backup is_admin flag (cairn-cpb5)', () => {
-		registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+	it('forces imported accounts to non-admin, never trusting the backup is_admin flag (cairn-cpb5)', async () => {
+		await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
 		const data = buildBackup('t');
 		// Craft a hostile backup: an extra credential-less row claiming admin — the
 		// exact shape an attacker would social-engineer an admin into restoring.
@@ -173,7 +212,7 @@ describe('restore', () => {
 			last_login: null
 		});
 
-		const summary = restoreBackup(data);
+		const summary = await restoreBackup(data);
 		expect(summary.usersAdded).toBe(1);
 		expect(summary.adminDowngraded).toBe(1);
 
@@ -182,8 +221,8 @@ describe('restore', () => {
 		expect(imported!.isAdmin).toBe(false); // demoted despite is_admin: 1 in the file
 	});
 
-	it('logs one warning per skipped row with table context, and counts only successful inserts (cairn-yjs5 / cairn-sd3n)', () => {
-		registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+	it('logs one warning per skipped row with table context, and counts only successful inserts (cairn-yjs5 / cairn-sd3n)', async () => {
+		await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
 		const data = buildBackup('t');
 
 		// A new user whose child rows include deliberate constraint violations —
@@ -247,7 +286,7 @@ describe('restore', () => {
 		data.saved_addresses.push(addr('Exchange'), addr('Exchange again'));
 
 		logMock.warn.mockClear();
-		const summary = restoreBackup(data);
+		const summary = await restoreBackup(data);
 
 		// The summary counts only rows that actually landed.
 		expect(summary.usersAdded).toBe(1);
@@ -299,13 +338,13 @@ describe('restore', () => {
 		expect(addrs.map((a) => a.label)).toEqual(['Exchange']);
 	});
 
-	it('restores settings', () => {
-		registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+	it('restores settings', async () => {
+		await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
 		db.prepare("INSERT INTO settings (key, value) VALUES ('electrum_host', 'my.node')").run();
 		const data = buildBackup('t');
 
 		db.prepare("DELETE FROM settings WHERE key = 'electrum_host'").run();
-		restoreBackup(data);
+		await restoreBackup(data);
 		const row = db.prepare("SELECT value FROM settings WHERE key = 'electrum_host'").get() as {
 			value: string;
 		};

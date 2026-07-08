@@ -87,11 +87,23 @@ export const GET: RequestHandler = async (event) => {
 			// Keep proxies from idling the connection out. Also our chance to
 			// notice that reconfigureChain() replaced the client we're pinned to.
 			heartbeat = setInterval(() => {
-				if (getChain().electrum !== electrum) {
+				// cairn-ldvt: getChain() lazily rebuilds the ChainService when
+				// reconfigureChain() nulled the singleton, and construction can throw.
+				// This callback runs inside a raw setInterval with no caller to catch
+				// it, so an uncaught throw here would escape to the process-level crash
+				// guard and take the whole process down, killing every connected user's
+				// stream. Contain it to just this one connection instead: end this
+				// stream and let the browser's EventSource reconnect to a fresh handler.
+				try {
+					if (getChain().electrum !== electrum) {
+						endStream();
+						return;
+					}
+					send(`: ping\n\n`);
+				} catch (e) {
+					log.warn({ err: e }, 'sse heartbeat failed');
 					endStream();
-					return;
 				}
-				send(`: ping\n\n`);
 			}, HEARTBEAT_MS);
 			heartbeat.unref?.();
 		},

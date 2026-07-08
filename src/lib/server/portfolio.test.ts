@@ -86,12 +86,12 @@ function makeWallet(name: string, xpub: string): number {
 	return Number(res.lastInsertRowid);
 }
 
-beforeEach(() => {
+beforeEach(async () => {
 	db.exec(
 		'DELETE FROM balance_snapshots; DELETE FROM wallets; DELETE FROM sessions; DELETE FROM users; DELETE FROM settings;'
 	);
 	setSetting('registration_mode', 'open');
-	userId = registerUser({ email: 'folio@example.com', displayName: 'Folio' }).id;
+	userId = (await registerUser({ email: 'folio@example.com', displayName: 'Folio' })).id;
 
 	logMock.warn.mockClear();
 	mocks.scanWallet.mockReset();

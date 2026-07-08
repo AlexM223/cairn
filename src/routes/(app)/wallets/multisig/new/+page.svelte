@@ -3,6 +3,7 @@
 	import { deserialize } from '$app/forms';
 	import { page } from '$app/state';
 	import { pushState, replaceState } from '$app/navigation';
+	import { browser } from '$app/environment';
 	import Icon from '$lib/components/Icon.svelte';
 	import SecureContextHelp from '$lib/components/signing/SecureContextHelp.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
@@ -25,6 +26,11 @@
 		DeviceReadUnavailable
 	} from './_components/deviceRead';
 	import { parseColdcardExport } from './_components/coldcardImport';
+	import {
+		WIZARD_PROGRESS_KEY,
+		parseSavedMultisigProgress,
+		hasMeaningfulMultisigProgress
+	} from './_components/wizardProgress';
 
 	let { data } = $props();
 
@@ -184,8 +190,10 @@
 		)
 	);
 
-	async function chooseVaultMode(mode: VaultMode) {
-		vaultMode = mode;
+	// Split out from chooseVaultMode so a sessionStorage-restored vaultMode
+	// (cairn-1u41 — the mode itself is snapshotted, but the fetched offers
+	// aren't) can re-fetch the reuse offers on mount too.
+	async function refreshKnownKeys(mode: VaultMode) {
 		knownKeys = [];
 		// Reuse offers enhance the step; a failed lookup just means none show.
 		const res = await callAction<{ knownKeys: KnownKey[] }>(
@@ -194,6 +202,11 @@
 			''
 		);
 		if (res.ok) knownKeys = res.data.knownKeys ?? [];
+	}
+
+	async function chooseVaultMode(mode: VaultMode) {
+		vaultMode = mode;
+		await refreshKnownKeys(mode);
 	}
 
 	function changeVaultMode() {
@@ -603,7 +616,14 @@
 		/** Receive cursor from the imported config, restored so we don't reissue
 		 *  already-used addresses (cairn-u161). */
 		startingAddressIndex?: number;
+		/** Non-fatal notices about an accepted key path (cairn-acft) — e.g. a
+		 *  legacy-P2SH key carrying an older path label. Safe to show verbatim. */
+		warnings?: string[];
 	}
+	// Shown once, right after a successful import — not part of the reload-resume
+	// snapshot (same treatment as importedNote/cosignerMatches: one-time import
+	// affordance, not core wizard state).
+	let importWarnings = $state<string[]>([]);
 
 	async function handleImport() {
 		if (importing) return;
@@ -621,6 +641,7 @@
 			}
 			const { imported } = res.data;
 			cosignerMatches = res.data.cosignerMatches ?? [];
+			importWarnings = imported.warnings ?? [];
 			preset = 'custom';
 			customM = imported.threshold;
 			customN = imported.totalKeys;
@@ -745,6 +766,105 @@
 	const hasColdcardKey = $derived(keys.some((k) => k.deviceType === 'coldcard'));
 	const hasQrKey = $derived(keys.some((k) => k.deviceType === 'qr'));
 
+	// ------------------------------------------- progress survives page reloads (cairn-1u41)
+	//
+	// Everything above is ephemeral component state, so a full-page reload used to
+	// restart the wizard from scratch — on Umbrel, app_proxy's auth layer can force
+	// exactly such a reload mid-wizard. That is far costlier here than in the
+	// single-sig wizard (whose wizardProgress.ts this mirrors): each cosigner key
+	// can cost a physical hardware-device ceremony, so losing progress after adding
+	// 4 of 5 keys means redoing 4 ceremonies. A sessionStorage snapshot (tab-scoped,
+	// public-key data only) lets a remounted wizard resume at the step it actually
+	// reached. Captured at init, applied after hydration (onMount) so the
+	// server-rendered markup is never contradicted. Phase 1 of cairn-1u41 —
+	// sessionStorage only, no server-side draft persistence.
+	const savedProgress = browser ? parseSavedMultisigProgress(safeReadProgress(), Date.now()) : null;
+	// True after a resume: shows the "picked up where you left off" note.
+	let resumed = $state(false);
+
+	function safeReadProgress(): string | null {
+		try {
+			return sessionStorage.getItem(WIZARD_PROGRESS_KEY);
+		} catch {
+			return null; // storage blocked (private mode etc.) — just start fresh
+		}
+	}
+
+	// Persist on every change; once the wallet exists (Done view) the snapshot is
+	// cleared so a later visit starts a fresh wizard, not a stale resume. A single
+	// reactive effect (not a write-through on addKey) is enough — Svelte flushes
+	// effects on a microtask after the mutation, well within the window before any
+	// reload could plausibly interrupt the NEXT key's ceremony.
+	$effect(() => {
+		const snapshot = JSON.stringify({
+			step,
+			preset,
+			customM,
+			customN,
+			scriptType,
+			keys: $state.snapshot(keys),
+			vaultMode,
+			configImported,
+			importedStartIndex,
+			multisigName,
+			savedAt: Date.now()
+		});
+		try {
+			if (createdId !== null) sessionStorage.removeItem(WIZARD_PROGRESS_KEY);
+			else sessionStorage.setItem(WIZARD_PROGRESS_KEY, snapshot);
+		} catch {
+			// Best-effort: without storage the wizard still works, it just can't
+			// survive a reload.
+		}
+	});
+
+	/** The escape hatch on the resume note: forget the snapshot, start clean. */
+	function startOver() {
+		resumed = false;
+		step = 'why';
+		preset = '2of3';
+		customM = 2;
+		customN = 3;
+		scriptType = 'p2wsh';
+		keys = [];
+		vaultMode = null;
+		knownKeys = [];
+		configImported = false;
+		importedStartIndex = 0;
+		multisigName = '';
+		namePrefilledFromImport = false;
+		verified = false;
+		previewAddresses = [];
+		previewError = null;
+		createError = null;
+		resetKeyForm();
+		try {
+			sessionStorage.removeItem(WIZARD_PROGRESS_KEY);
+		} catch {
+			// Already reset in memory; a stale snapshot will age out.
+		}
+		// Collapse the history stack back to a single step-0 entry so a Back press
+		// after "Start over" doesn't strand the user on a now-empty later screen.
+		try {
+			replaceState('', { wizardStep: 0 });
+		} catch {
+			// Router not ready (mid-hydration) — the back-button aid just no-ops.
+		}
+	}
+
+	/** Clears any in-flight resume snapshot before an explicit exit — the Cancel
+	 *  link on the Why step (the only way out of the wizard short of finishing
+	 *  it). Only meaningful once real progress exists (Cancel appears before any
+	 *  keys are ever collected), but harmless either way. */
+	function clearProgressOnExit() {
+		try {
+			sessionStorage.removeItem(WIZARD_PROGRESS_KEY);
+		} catch {
+			// Best-effort — a lingering snapshot just offers a resume on the next
+			// visit; it ages out on its own within the hour.
+		}
+	}
+
 	// -------------------------------------------------------------- navigation
 	//
 	// The wizard's screen lives in `step`, not the URL — it stays
@@ -804,14 +924,47 @@
 		if (typeof target === 'number' && target !== stepIndex) applyStepFromHistory(target);
 	}
 
-	onMount(() => {
-		// Seed the first entry ('why', index 0). This wizard always starts there
-		// (no mid-flow resume), so a single replaceState is enough.
+	/** Rebuild the history stack to match the current step (handles a mid-wizard
+	 *  resume — cairn-1u41 — the same way the single-sig wizard does). */
+	function seedStepHistory() {
 		try {
 			replaceState('', { wizardStep: 0 });
+			const target = STEPS.findIndex((s) => s.key === step);
+			for (let i = 1; i <= target; i++) pushState('', { wizardStep: i });
 		} catch {
-			// Router mid-hydration — degrade gracefully; nav still works.
+			// Router not ready — degrade gracefully; navigation still works, the
+			// Back button just isn't step-aware.
 		}
+	}
+
+	onMount(() => {
+		if (savedProgress && hasMeaningfulMultisigProgress(savedProgress)) {
+			step = savedProgress.step;
+			preset = savedProgress.preset;
+			customM = savedProgress.customM;
+			customN = savedProgress.customN;
+			scriptType = savedProgress.scriptType;
+			keys = savedProgress.keys;
+			vaultMode = savedProgress.vaultMode;
+			configImported = savedProgress.configImported;
+			importedStartIndex = savedProgress.importedStartIndex;
+			multisigName = savedProgress.multisigName;
+			resumed = true;
+			// Two side effects that the normal advanceTo()-driven transitions
+			// perform but a direct state restore skips (a resume doesn't replay
+			// the button clicks that got the user there the first time):
+			// re-fetch the known-device-key reuse offers for the restored vault
+			// mode, and re-run the address preview if landing back on Review.
+			if (vaultMode !== null) void refreshKnownKeys(vaultMode);
+			if (step === 'review') void loadPreview();
+		}
+		// Browser Back should retreat one wizard screen (cairn-aiyw), not leave
+		// the wizard outright. Rebuild the whole 0..step history stack — not just
+		// the current entry — so a resume landing mid-wizard is Back-able right
+		// away. Runs AFTER the restore above so it seeds against the (possibly
+		// restored) step; pushState/replaceState never fire popstate, so this
+		// can't race or loop with onPopState below.
+		seedStepHistory();
 		window.addEventListener('popstate', onPopState);
 		return () => window.removeEventListener('popstate', onPopState);
 	});
@@ -856,6 +1009,18 @@
 		<p class="wizard-sub">
 			Money that needs several of your keys to move — no single point of failure.
 		</p>
+
+		{#if resumed}
+			<!-- A reload (or coming back to the tab) landed mid-wizard and we restored
+			     the saved progress — say so, with a way out to a clean start. Every key
+			     already collected survived; only an in-progress "add one key" form
+			     entry (if any) was lost (cairn-1u41). -->
+			<div class="resume-note" role="status">
+				<Icon name="info" size={14} />
+				<span class="grow">Picked up where you left off.</span>
+				<button type="button" class="resume-reset" onclick={startOver}>Start over</button>
+			</div>
+		{/if}
 
 		<!-- Step indicator — the Send flow's quiet text-step grammar (5a/4a), same
 		     pattern as the single-sig wizard. -->
@@ -932,6 +1097,20 @@
 				<div class="imported-note" role="status">
 					<Icon name="check" size={14} />
 					{importedNote}
+				</div>
+			{/if}
+
+			{#if importWarnings.length > 0}
+				<!-- Non-fatal import notices (cairn-acft) — e.g. a legacy-P2SH key
+				     carrying an older path label. Calm and factual: nothing to fix,
+				     nothing at risk, the import is safe as-is. -->
+				<div class="cosigner-hint" role="status">
+					<Icon name="info" size={15} />
+					<div>
+						{#each importWarnings as w (w)}
+							<p>{w}</p>
+						{/each}
+					</div>
 				</div>
 			{/if}
 
@@ -1093,12 +1272,14 @@
 								</span>
 							</span>
 						</label>
-						<label class="radio-row">
-							<input type="radio" name="scriptType" value="p2sh" bind:group={scriptType} />
+						<label class="radio-row radio-row-disabled" aria-disabled="true">
+							<input type="radio" name="scriptType" value="p2sh" bind:group={scriptType} disabled />
 							<span class="radio-text">
-								<span class="radio-name">Legacy (P2SH)</span>
+								<span class="radio-name">Legacy (P2SH) — import only</span>
 								<span class="radio-desc">
-									Highest fees; for compatibility with very old setups only.
+									Higher fees, and no longer offered for new wallets. Already have a legacy
+									P2SH multisig from another tool? Use "Already have this wallet in another
+									app? Import it" below instead — Heartwood still loads and spends it.
 								</span>
 							</span>
 						</label>
@@ -1214,7 +1395,7 @@
 			{/if}
 
 			<div class="pane-actions">
-				<a href="/wallets" class="btn btn-ghost">Cancel</a>
+				<a href="/wallets" class="btn btn-ghost" onclick={clearProgressOnExit}>Cancel</a>
 				<button
 					type="button"
 					class="btn btn-primary"
@@ -2202,6 +2383,48 @@
 		margin: 0 0 24px;
 	}
 
+	/* --- resume note (shown after a mid-wizard reload restored progress —
+	   cairn-1u41), matching the single-sig wizard's version --- */
+
+	.resume-note {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-bottom: 14px;
+		padding: 8px 12px;
+		font-size: 12.5px;
+		color: var(--text-secondary);
+		background: var(--surface);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-control);
+	}
+
+	.resume-note :global(svg) {
+		color: var(--accent);
+		flex-shrink: 0;
+	}
+
+	.resume-note .grow {
+		flex: 1;
+	}
+
+	.resume-reset {
+		flex-shrink: 0;
+		background: none;
+		border: none;
+		padding: 0;
+		font: inherit;
+		font-size: 12.5px;
+		color: var(--accent);
+		text-decoration: underline;
+		text-underline-offset: 3px;
+		cursor: pointer;
+	}
+
+	.resume-reset:hover {
+		color: var(--text);
+	}
+
 	/* --- step indicator — quiet text-step grammar (word + connecting line,
 	   no dots/circles), matching the single-sig wizard and the Send flow --- */
 
@@ -2648,6 +2871,18 @@
 		font-size: 12px;
 		color: var(--text-secondary);
 		line-height: 1.5;
+	}
+
+	/* Greyed-out row: legacy P2SH is import-only, no longer a creation option
+	   (cairn-acft) — muted like .method-card.disabled, not hidden, so someone
+	   with an existing legacy wallet is routed to import instead of concluding
+	   Heartwood can't handle it. */
+	.radio-row-disabled {
+		cursor: not-allowed;
+	}
+
+	.radio-row-disabled .radio-name {
+		color: var(--text-secondary);
 	}
 
 	.import-input {

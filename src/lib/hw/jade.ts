@@ -66,6 +66,7 @@ export type JadeErrorCode =
 	| 'rejected' // user declined on-device
 	| 'bad_psbt' // the PSBT could not be read / signed
 	| 'wrong_device' // the connected Jade holds none of the multisig's keys
+	| 'timeout' // the device did not respond within DEVICE_TIMEOUT_MS (cairn-zv34)
 	| 'unexpected'; // anything else
 
 export class JadeError extends HwError<JadeErrorCode> {
@@ -76,6 +77,54 @@ export class JadeError extends HwError<JadeErrorCode> {
 
 /** Builds this driver's typed error for the shared common.ts helpers. */
 const jadeFail = (message: string): JadeError => new JadeError(message, 'unexpected');
+
+/**
+ * Budget for one real device round-trip — a jadets/Web-Serial call that may
+ * block on PIN entry or an on-screen approval. Without this, a frozen,
+ * PIN-locked, or disconnected-mid-call Jade leaves the awaited promise
+ * unresolved forever, trapping the signer UI in its busy state with no escape
+ * but a full page reload (cairn-zv34). 45s is generous for "unlock, review
+ * and approve on-screen" while still bounding a genuinely hung device.
+ * Mirrors the *_TIMEOUT_MS naming convention used elsewhere (e.g.
+ * server/electrum/client.ts's DEFAULT_TIMEOUT_MS). Distinct from jadets' own
+ * internal RPC-call timeout (see toJadeError's "timed out" branch, which maps
+ * THAT library-level timeout to 'unexpected') — this is Cairn's outer backstop
+ * for calls the library itself never gives up on.
+ */
+const DEVICE_TIMEOUT_MS = 45_000;
+
+/**
+ * Race a real device round-trip against DEVICE_TIMEOUT_MS. jadets exposes no
+ * cancellation hook for a call already sent, so this cannot abort the
+ * underlying operation — it only bounds how long the CALLER waits, which is
+ * enough to let the UI recover to an actionable error state instead of
+ * hanging forever. Rejects with a typed JadeError coded 'timeout' (never
+ * 'unexpected') so the UI can show a specific "didn't respond" message rather
+ * than a generic failure.
+ */
+function withDeviceTimeout<T>(p: Promise<T>, label: string): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => {
+			reject(
+				new JadeError(
+					`Your Jade did not respond while ${label}. Make sure it's unlocked and try again.`,
+					'timeout'
+				)
+			);
+		}, DEVICE_TIMEOUT_MS);
+		timer.unref?.();
+		p.then(
+			(v) => {
+				clearTimeout(timer);
+				resolve(v);
+			},
+			(err: unknown) => {
+				clearTimeout(timer);
+				reject(err);
+			}
+		);
+	});
+}
 
 /** True only in a browser that exposes Web Serial (Chromium desktop, secure
  *  context). Jade USB shares Ledger's Chromium-only posture. */
@@ -108,11 +157,11 @@ export function singleSigAccountPath(scriptType: ScriptType, account = 0): numbe
 export type { MultisigScriptType } from './common';
 
 /**
- * The BIP-48 account path for a multisig cosigner key:
+ * The BIP-48 account path for a FRESH multisig cosigner key:
  * m/48'/0'/{account}'/{script}' where the script suffix is 2' for p2wsh and 1'
- * for BOTH p2sh forms (BIP-48 gives p2sh and p2sh-p2wsh the same 1' — only
- * native p2wsh gets 2'). Returned as a hardened-offset index array. Mainnet
- * only. Exported for unit testing.
+ * for p2sh-p2wsh. Throws for bare p2sh — no longer a creation option
+ * (cairn-acft; see common.ts). Returned as a hardened-offset index array.
+ * Mainnet only. Exported for unit testing.
  */
 export function multisigAccountPathIndexes(scriptType: MultisigScriptType, account = 0): number[] {
 	return sharedMultisigAccountPathIndexes(scriptType, account, jadeFail);
@@ -506,14 +555,17 @@ async function openJade(): Promise<{
 	};
 
 	try {
-		await jade.connect();
+		await withDeviceTimeout(jade.connect(), 'connecting');
 	} catch (err) {
 		await dispose();
 		throw toJadeError(err);
 	}
 
 	try {
-		const ok = await jade.authUser(JADE_NETWORK, makeHttpRelay());
+		const ok = await withDeviceTimeout(
+			jade.authUser(JADE_NETWORK, makeHttpRelay()),
+			'unlocking'
+		);
 		if (ok === false) {
 			throw new JadeError(
 				'Could not unlock the Jade. Enter your PIN on the device, then try again.',
@@ -546,8 +598,14 @@ export async function readSingleSigKeyFromJade(
 		let rawXpub: string;
 		let fingerprint: string | null;
 		try {
-			rawXpub = await jade.getXpub(JADE_NETWORK, pathIndexes);
-			fingerprint = await jade.getMasterFingerPrint(JADE_NETWORK);
+			rawXpub = await withDeviceTimeout(
+				jade.getXpub(JADE_NETWORK, pathIndexes),
+				'reading the account key'
+			);
+			fingerprint = await withDeviceTimeout(
+				jade.getMasterFingerPrint(JADE_NETWORK),
+				'reading the device fingerprint'
+			);
 		} catch (err) {
 			throw toJadeError(err);
 		}
@@ -582,8 +640,14 @@ export async function readMultisigKeyFromJade(
 		let xpub: string;
 		let fingerprint: string | null;
 		try {
-			xpub = await jade.getXpub(JADE_NETWORK, pathIndexes);
-			fingerprint = await jade.getMasterFingerPrint(JADE_NETWORK);
+			xpub = await withDeviceTimeout(
+				jade.getXpub(JADE_NETWORK, pathIndexes),
+				'reading the account key'
+			);
+			fingerprint = await withDeviceTimeout(
+				jade.getMasterFingerPrint(JADE_NETWORK),
+				'reading the device fingerprint'
+			);
 		} catch (err) {
 			throw toJadeError(err);
 		}
@@ -622,8 +686,15 @@ export async function registerMultisigWithJade(
 			let reading: { xpub: string; fingerprint: string };
 			try {
 				const derivation = parseKeyPath(params.expectedKey.path, 'expected key');
-				const xpub = await jade.getXpub(JADE_NETWORK, derivation);
-				const fingerprint = (await jade.getMasterFingerPrint(JADE_NETWORK)) ?? '';
+				const xpub: string = await withDeviceTimeout(
+					jade.getXpub(JADE_NETWORK, derivation),
+					'reading the account key'
+				);
+				const fingerprint: string =
+					(await withDeviceTimeout(
+						jade.getMasterFingerPrint(JADE_NETWORK),
+						'reading the device fingerprint'
+					)) ?? '';
 				reading = { xpub: (xpub ?? '').trim(), fingerprint: fingerprint.toLowerCase() };
 			} catch (err) {
 				throw toJadeError(err);
@@ -638,7 +709,10 @@ export async function registerMultisigWithJade(
 
 		let ok: boolean;
 		try {
-			ok = await jade.registerMultisig(JADE_NETWORK, name, descriptor);
+			ok = await withDeviceTimeout(
+				jade.registerMultisig(JADE_NETWORK, name, descriptor),
+				'registering the multisig wallet'
+			);
 		} catch (err) {
 			throw toJadeError(err);
 		}
@@ -677,7 +751,10 @@ export async function signPsbtWithJade(
 	try {
 		let signed: Uint8Array;
 		try {
-			signed = await jade.signPSBT(JADE_NETWORK, psbtBytes);
+			signed = await withDeviceTimeout(
+				jade.signPSBT(JADE_NETWORK, psbtBytes),
+				'signing the transaction'
+			);
 		} catch (err) {
 			throw toJadeError(err);
 		}

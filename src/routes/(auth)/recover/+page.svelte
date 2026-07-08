@@ -18,12 +18,19 @@
 	let passkeySupported = $state(true);
 
 	// Once verify succeeds we hold the grant (via httpOnly cookie) and prompt the
-	// user to create a new passkey to finish.
+	// user to finish with a new passkey OR a new password.
 	let verified = $state(false);
 	let displayName = $state('');
+	let newPassword = $state('');
+	let confirmPassword = $state('');
 
 	onMount(() => {
-		passkeySupported = browserSupportsWebAuthn();
+		// WebAuthn also needs a secure context — a plain-HTTP Umbrel deployment
+		// (http://umbrel.local) reports browserSupportsWebAuthn() true but any
+		// ceremony there fails outright, so gate on both (cairn-nhfe). The "Set a
+		// new password instead" form below is the completion path that always
+		// works, regardless of this check.
+		passkeySupported = browserSupportsWebAuthn() && window.isSecureContext;
 	});
 
 	// The one generic failure message the client shows. It intentionally mirrors
@@ -127,6 +134,43 @@
 			if (!verifyRes.ok) throw new Error(done?.error || 'Could not finish recovery.');
 
 			// Signed in for real now.
+			await goto('/', { invalidateAll: true });
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Something went wrong. Start again.';
+		} finally {
+			submitting = false;
+		}
+	}
+
+	// Second completion path (cairn-nhfe): finish recovery by setting a new
+	// password instead of a passkey. Always available — this is what makes
+	// recovery work on a plain-HTTP deployment where WebAuthn can't run.
+	async function setNewPassword(e: SubmitEvent) {
+		e.preventDefault();
+		error = null;
+
+		if (newPassword.length < 8) {
+			error = 'Password must be at least 8 characters.';
+			return;
+		}
+		if (newPassword !== confirmPassword) {
+			error = 'Passwords do not match.';
+			return;
+		}
+
+		// Shares the `submitting` flag with registerNewPasskey so the two
+		// completion paths can't both be in flight at once — whichever the user
+		// starts first disables the other button until it resolves.
+		submitting = true;
+		try {
+			const res = await fetch('/api/auth/recover/password', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ password: newPassword })
+			});
+			const body = await res.json().catch(() => null);
+			if (!res.ok) throw new Error(body?.error || 'Could not finish recovery.');
+
 			await goto('/', { invalidateAll: true });
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Something went wrong. Start again.';
@@ -241,10 +285,11 @@
 {:else}
 	<div class="stack">
 		<div class="intro">
-			<h1>Set up a new passkey</h1>
+			<h1>Finish recovering your account</h1>
 			<p class="sub">
-				{#if displayName}Welcome back, {displayName}. {/if}Your identity is verified. Create a new
-				passkey on this device to finish and sign in.
+				{#if displayName}Welcome back, {displayName}. {/if}Your identity is verified. Finish with a
+				new passkey{passkeySupported ? '' : ' (unavailable on this connection)'} or set a new
+				password.
 			</p>
 		</div>
 
@@ -252,21 +297,60 @@
 			<div class="form-error" role="alert">{error}</div>
 		{/if}
 
-		{#if !passkeySupported}
-			<div class="form-error" role="alert">
-				This browser can't create passkeys. Open Heartwood in a browser that supports them (or on a
-				device with a screen lock) to finish recovery.
-			</div>
-		{:else}
+		{#if passkeySupported}
 			<button class="btn btn-primary" onclick={registerNewPasskey} disabled={submitting}>
 				{#if submitting}<span class="spinner"></span>{/if}
 				Create a new passkey
 			</button>
+
+			<div class="or-divider" role="separator">or</div>
 		{/if}
 
+		<form class="stack" onsubmit={setNewPassword}>
+			{#if !passkeySupported}
+				<p class="hint" style="text-align: center; margin-bottom: -4px">
+					This browser or connection can't create passkeys — set a new password to finish instead.
+				</p>
+			{/if}
+
+			<div class="field">
+				<label class="label" for="newPassword">New password</label>
+				<input
+					class="input"
+					id="newPassword"
+					name="newPassword"
+					type="password"
+					autocomplete="new-password"
+					minlength="8"
+					disabled={submitting}
+					bind:value={newPassword}
+				/>
+			</div>
+
+			<div class="field">
+				<label class="label" for="confirmPassword">Confirm new password</label>
+				<input
+					class="input"
+					id="confirmPassword"
+					name="confirmPassword"
+					type="password"
+					autocomplete="new-password"
+					minlength="8"
+					disabled={submitting}
+					bind:value={confirmPassword}
+				/>
+				<p class="hint">At least 8 characters.</p>
+			</div>
+
+			<button class="btn {passkeySupported ? 'btn-secondary' : 'btn-primary'}" disabled={submitting}>
+				{#if submitting}<span class="spinner"></span>{/if}
+				Set new password
+			</button>
+		</form>
+
 		<div class="reassure" role="note">
-			<strong>Reminder:</strong> this new passkey only signs you in to Heartwood. It has no access to
-			your bitcoin, which stays secured on your hardware wallet.
+			<strong>Reminder:</strong> this only restores your Heartwood sign-in. It has no access to your
+			bitcoin, which stays secured on your hardware wallet.
 		</div>
 
 		<p class="alt"><a href="/login">Cancel and go back</a></p>
@@ -350,6 +434,14 @@
 		margin-top: 6px;
 		font-size: 12px;
 		color: var(--text-muted);
+	}
+
+	.or-divider {
+		text-align: center;
+		font-size: 11.5px;
+		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
 	}
 
 	/* Hairlines, not boxes: the reassurance note reads as a quiet aside

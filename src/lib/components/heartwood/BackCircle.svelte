@@ -3,15 +3,28 @@
 	// flow knows its destination (e.g. back to the wallet); with no href it
 	// falls back to browser history. Callers compose the full flow-header row
 	// (circle + centered eyebrow + 32px spacer) themselves.
+	//
+	// The href branch navigates via goto(..., { replaceState: true }) rather
+	// than a plain <a> so it replaces the current history entry instead of
+	// pushing a new one. Otherwise a flow page (href back to a hub) followed
+	// by the hub's own history.back() creates an infinite back-forth loop
+	// (cairn-y7ac).
+	import { goto } from '$app/navigation';
 	import Icon from '$lib/components/Icon.svelte';
 
 	let { href = null, label = 'Back' }: { href?: string | null; label?: string } = $props();
 </script>
 
 {#if href}
-	<a {href} class="back-circle" aria-label={label} title={label}>
+	<button
+		type="button"
+		class="back-circle"
+		aria-label={label}
+		title={label}
+		onclick={() => goto(href, { replaceState: true })}
+	>
 		<Icon name="chevron-left" size={16} />
-	</a>
+	</button>
 {:else}
 	<button
 		type="button"

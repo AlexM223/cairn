@@ -58,8 +58,8 @@ function notifiedCount(kind: 'wallet' | 'multisig', walletId: number): number {
 }
 
 describe('notified_txids cleanup on wallet deletion (cairn-h8xo)', () => {
-	it('deleteWallet clears that wallet’s dedup rows — and only those', () => {
-		const user = makeUser('owner@example.com');
+	it('deleteWallet clears that wallet’s dedup rows — and only those', async () => {
+		const user = await makeUser('owner@example.com');
 		const gone = makeWallet(user.id);
 		const kept = makeWallet(user.id);
 
@@ -77,9 +77,9 @@ describe('notified_txids cleanup on wallet deletion (cairn-h8xo)', () => {
 		expect(notifiedCount('multisig', gone)).toBe(1); // other kind untouched
 	});
 
-	it('a failed (non-owned) deleteWallet leaves the dedup rows alone', () => {
-		const owner = makeUser('owner@example.com');
-		const other = makeUser('other@example.com');
+	it('a failed (non-owned) deleteWallet leaves the dedup rows alone', async () => {
+		const owner = await makeUser('owner@example.com');
+		const other = await makeUser('other@example.com');
 		const wallet = makeWallet(owner.id);
 		seedNotified('wallet', wallet, owner.id, 'a'.repeat(64));
 
@@ -87,8 +87,8 @@ describe('notified_txids cleanup on wallet deletion (cairn-h8xo)', () => {
 		expect(notifiedCount('wallet', wallet)).toBe(1);
 	});
 
-	it('deleteMultisig clears that multisig’s dedup rows — and only those', () => {
-		const user = makeUser('owner@example.com');
+	it('deleteMultisig clears that multisig’s dedup rows — and only those', async () => {
+		const user = await makeUser('owner@example.com');
 		const gone = makeMultisig(user.id);
 		const kept = makeMultisig(user.id);
 
@@ -105,9 +105,9 @@ describe('notified_txids cleanup on wallet deletion (cairn-h8xo)', () => {
 		expect(notifiedCount('wallet', gone)).toBe(1);
 	});
 
-	it('a failed (non-owned) deleteMultisig leaves the dedup rows alone', () => {
-		const owner = makeUser('owner@example.com');
-		const other = makeUser('other@example.com');
+	it('a failed (non-owned) deleteMultisig leaves the dedup rows alone', async () => {
+		const owner = await makeUser('owner@example.com');
+		const other = await makeUser('other@example.com');
 		const ms = makeMultisig(owner.id);
 		seedNotified('multisig', ms, owner.id, 'a'.repeat(64));
 
@@ -137,8 +137,8 @@ describe('backup-status ledger cleanup on wallet deletion (cairn-zui7.6)', () =>
 		).n;
 	}
 
-	it('deleteWallet clears both ledgers for that wallet, kind-scoped', () => {
-		const user = makeUser('owner@example.com');
+	it('deleteWallet clears both ledgers for that wallet, kind-scoped', async () => {
+		const user = await makeUser('owner@example.com');
 		const gone = makeWallet(user.id);
 		seedBackupRows('wallet', gone, user.id);
 		// A multisig row with the same numeric id — must survive.
@@ -151,8 +151,8 @@ describe('backup-status ledger cleanup on wallet deletion (cairn-zui7.6)', () =>
 		expect(ledgerCount('backup_missing_notified', 'multisig', gone)).toBe(1);
 	});
 
-	it('deleteMultisig clears both ledgers for that multisig, kind-scoped', () => {
-		const user = makeUser('owner@example.com');
+	it('deleteMultisig clears both ledgers for that multisig, kind-scoped', async () => {
+		const user = await makeUser('owner@example.com');
 		const gone = makeMultisig(user.id);
 		seedBackupRows('multisig', gone, user.id);
 		seedBackupRows('wallet', gone, user.id);

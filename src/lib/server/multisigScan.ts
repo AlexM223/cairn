@@ -19,9 +19,11 @@ import { getChain } from './chain/index';
 import { GAP_LIMIT, runGapScan, ScanCache, type GapScannedFields } from './bitcoin/gapLimitScanner';
 import type { ElectrumHistoryItem } from './electrum/client';
 import type { SpendableUtxo } from './bitcoin/psbt';
+import { withLock } from './keyedLock';
 import {
 	toMultisigConfig,
 	bumpReceiveCursor,
+	getMultisig,
 	listMultisigs,
 	getViewableMultisig,
 	type MultisigRow
@@ -198,13 +200,22 @@ export function primeMultisigScanCache(descriptorKey: string, result: MultisigSc
 }
 
 /** Drop cached scan results for one multisig, or all when omitted. Also removes
- *  the persisted row(s) so a deleted multisig's stale scan can never re-seed. */
+ *  the persisted row(s) so a deleted multisig's stale scan can never re-seed.
+ *  Computing the cache key requires a resolvable config (threshold + keys); a
+ *  malformed/partial row (e.g. deleted before its keys ever got inserted) can
+ *  never have produced a cache entry in the first place, so that's swallowed
+ *  rather than thrown — this must never block a deletion from completing. */
 export function invalidateMultisigCache(multisig?: MultisigRow): void {
 	if (multisig === undefined) {
 		scanCache.clear();
 		clearPersistedScans('multisig');
 	} else {
-		const key = cacheKey(multisig);
+		let key: string;
+		try {
+			key = cacheKey(multisig);
+		} catch {
+			return;
+		}
 		scanCache.delete(key);
 		deletePersistedScan(key);
 	}
@@ -293,11 +304,23 @@ export async function nextMultisigReceiveAddress(
 	multisig: MultisigRow,
 	afterIndex?: number
 ): Promise<{ address: string; index: number }> {
-	const nextUnused = nextUnusedIndex(await scanMultisig(multisig), 0);
-	const after = Number.isInteger(afterIndex) ? (afterIndex as number) : -1;
-	const idx = clampToGap(Math.max(nextUnused, multisig.receiveCursor, after + 1), nextUnused);
-	bumpReceiveCursor(multisig.userId, multisig.id, idx);
-	return { address: multisigAddressAt(multisig, 0, idx), index: idx };
+	// cairn-2qa4: serialize issuance per multisig — collaborators genuinely call
+	// this concurrently. `multisig` was loaded by the caller before this call, so
+	// merely serializing wouldn't be enough on its own: a caller queued behind
+	// another would still compute from the same stale receiveCursor it captured
+	// before either wrote. So once the lock is ours, re-read the row fresh
+	// (falling back to the caller's copy only if that read fails, e.g. the
+	// ephemeral id-0 rows the stateless flow never actually routes through here).
+	return withLock(`multisig:${multisig.id}`, async () => {
+		const current = getMultisig(multisig.userId, multisig.id) ?? multisig;
+		const nextUnused = nextUnusedIndex(await scanMultisig(current), 0);
+		const after = Number.isInteger(afterIndex) ? (afterIndex as number) : -1;
+		const idx = clampToGap(Math.max(nextUnused, current.receiveCursor, after + 1), nextUnused);
+		// bumpReceiveCursor (wallets/multisig.ts) already writes
+		// MAX(receive_cursor, toIndex) — monotonic, so this can't regress it either.
+		bumpReceiveCursor(current.userId, current.id, idx);
+		return { address: multisigAddressAt(current, 0, idx), index: idx };
+	});
 }
 
 // ------------------------------------------------------------------ summaries

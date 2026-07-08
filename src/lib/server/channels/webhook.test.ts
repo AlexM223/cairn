@@ -26,9 +26,9 @@ function wipe(): void {
 }
 
 const PASSWORD = 'correct horse battery staple';
-function makeUser(email: string): number {
+async function makeUser(email: string): Promise<number> {
 	setSetting('registration_mode', 'open');
-	return registerUser({ email, password: PASSWORD, displayName: email.split('@')[0] }).id;
+	return (await registerUser({ email, password: PASSWORD, displayName: email.split('@')[0] })).id;
 }
 
 function saveConfig(userId: number, config: Record<string, unknown>): void {
@@ -67,25 +67,25 @@ afterEach(() => {
 });
 
 describe('config + isConfigured', () => {
-	it('is not configured with no row', () => {
-		const u = makeUser('a@example.com');
+	it('is not configured with no row', async () => {
+		const u = await makeUser('a@example.com');
 		expect(webhookChannel.isConfigured(u)).toBe(false);
 	});
 
-	it('is configured with a valid http(s) url', () => {
-		const u = makeUser('b@example.com');
+	it('is configured with a valid http(s) url', async () => {
+		const u = await makeUser('b@example.com');
 		saveConfig(u, { url: 'https://example.com/hook' });
 		expect(webhookChannel.isConfigured(u)).toBe(true);
 	});
 
-	it('is not configured with a non-http scheme', () => {
-		const u = makeUser('c@example.com');
+	it('is not configured with a non-http scheme', async () => {
+		const u = await makeUser('c@example.com');
 		saveConfig(u, { url: 'ftp://example.com/hook' });
 		expect(webhookChannel.isConfigured(u)).toBe(false);
 	});
 
-	it('is not configured with malformed JSON / missing url', () => {
-		const u = makeUser('d@example.com');
+	it('is not configured with malformed JSON / missing url', async () => {
+		const u = await makeUser('d@example.com');
 		saveConfig(u, { secret: 'x' });
 		expect(webhookChannel.isConfigured(u)).toBe(false);
 	});
@@ -93,7 +93,7 @@ describe('config + isConfigured', () => {
 
 describe('send() — success + signing', () => {
 	it('POSTs the documented JSON body and reports ok on 2xx', async () => {
-		const u = makeUser('e@example.com');
+		const u = await makeUser('e@example.com');
 		saveConfig(u, { url: 'https://example.com/hook' });
 
 		const res = await webhookChannel.send(u, payload);
@@ -122,7 +122,7 @@ describe('send() — success + signing', () => {
 	});
 
 	it('signs the raw body bytes with X-Cairn-Signature when a secret is set', async () => {
-		const u = makeUser('f@example.com');
+		const u = await makeUser('f@example.com');
 		const secret = 'shhhh';
 		saveConfig(u, { url: 'https://example.com/hook', secret });
 
@@ -137,7 +137,7 @@ describe('send() — success + signing', () => {
 	});
 
 	it('signs with an encrypted-at-rest secret (secretEnc, cairn-e9mz.2)', async () => {
-		const u = makeUser('f2@example.com');
+		const u = await makeUser('f2@example.com');
 		const secret = 'a-much-longer-signing-secret';
 		saveConfig(u, { url: 'https://example.com/hook', secretEnc: encryptSecret(secret) });
 
@@ -148,7 +148,7 @@ describe('send() — success + signing', () => {
 	});
 
 	it('fails closed (no unsigned POST) when the stored secret cannot be decrypted', async () => {
-		const u = makeUser('f3@example.com');
+		const u = await makeUser('f3@example.com');
 		saveConfig(u, {
 			url: 'https://example.com/hook',
 			secretEnc: JSON.stringify({ v: 1, iv: 'AAAA', tag: 'AAAA', data: 'AAAA' })
@@ -163,7 +163,7 @@ describe('send() — success + signing', () => {
 
 describe('send() — failure classification', () => {
 	it('non-2xx → retryable', async () => {
-		const u = makeUser('g@example.com');
+		const u = await makeUser('g@example.com');
 		saveConfig(u, { url: 'https://example.com/hook' });
 		sendMock.mockResolvedValue(resp(500, 'boom'));
 
@@ -174,7 +174,7 @@ describe('send() — failure classification', () => {
 	});
 
 	it('network error / timeout → retryable', async () => {
-		const u = makeUser('h@example.com');
+		const u = await makeUser('h@example.com');
 		saveConfig(u, { url: 'https://example.com/hook' });
 		sendMock.mockRejectedValue(new Error('ETIMEDOUT'));
 
@@ -184,7 +184,7 @@ describe('send() — failure classification', () => {
 	});
 
 	it('not configured → non-retryable', async () => {
-		const u = makeUser('i@example.com');
+		const u = await makeUser('i@example.com');
 		const res = await webhookChannel.send(u, payload);
 		expect(res.ok).toBe(false);
 		expect(res.retryable).toBe(false);
@@ -193,7 +193,7 @@ describe('send() — failure classification', () => {
 
 describe('SSRF guard', () => {
 	it('rejects a loopback 127.0.0.1 URL as non-retryable and never fetches', async () => {
-		const u = makeUser('j@example.com');
+		const u = await makeUser('j@example.com');
 		saveConfig(u, { url: 'http://127.0.0.1:8080/hook' });
 
 		const res = await webhookChannel.send(u, payload);
@@ -204,7 +204,7 @@ describe('SSRF guard', () => {
 	});
 
 	it('rejects a non-http(s) scheme as non-retryable', async () => {
-		const u = makeUser('k@example.com');
+		const u = await makeUser('k@example.com');
 		saveConfig(u, { url: 'file:///etc/passwd' });
 		const res = await webhookChannel.send(u, payload);
 		expect(res.ok).toBe(false);
@@ -214,7 +214,7 @@ describe('SSRF guard', () => {
 	});
 
 	it('rejects a hostname that RESOLVES to a private range', async () => {
-		const u = makeUser('l@example.com');
+		const u = await makeUser('l@example.com');
 		saveConfig(u, { url: 'https://internal.example/hook' });
 		lookupMock.mockResolvedValue([{ address: '10.0.0.5', family: 4 }]);
 
@@ -225,7 +225,7 @@ describe('SSRF guard', () => {
 	});
 
 	it('rejects if ANY resolved address is private (mixed A records)', async () => {
-		const u = makeUser('m@example.com');
+		const u = await makeUser('m@example.com');
 		saveConfig(u, { url: 'https://rebind.example/hook' });
 		lookupMock.mockResolvedValue([
 			{ address: '93.184.216.34', family: 4 },
@@ -238,7 +238,7 @@ describe('SSRF guard', () => {
 	});
 
 	it('allows private targets when the admin escape hatch is on', async () => {
-		const u = makeUser('n@example.com');
+		const u = await makeUser('n@example.com');
 		saveConfig(u, { url: 'http://127.0.0.1:8080/hook' });
 		setSetting('webhook_allow_private_targets', 'true');
 
@@ -285,7 +285,7 @@ describe('isBlockedAddress ranges', () => {
 
 describe('test()', () => {
 	it('POSTs type:test and reports HTTP status verbatim on failure', async () => {
-		const u = makeUser('o@example.com');
+		const u = await makeUser('o@example.com');
 		saveConfig(u, { url: 'https://example.com/hook' });
 		sendMock.mockResolvedValue(resp(418, 'nope'));
 
@@ -298,7 +298,7 @@ describe('test()', () => {
 	});
 
 	it('reports ok on a 2xx', async () => {
-		const u = makeUser('p@example.com');
+		const u = await makeUser('p@example.com');
 		saveConfig(u, { url: 'https://example.com/hook' });
 		const res = await webhookChannel.test(u);
 		expect(res.ok).toBe(true);

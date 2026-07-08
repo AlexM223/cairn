@@ -56,18 +56,20 @@ function queueRows(): Array<{ status: string; channel: string; attempts: number;
 
 let userId: number;
 
-beforeEach(() => {
+beforeEach(async () => {
 	wipe();
 	vi.clearAllMocks();
 	// The rate-limit token buckets are a module-level singleton (by design —
 	// see notificationQueue.ts) and would otherwise leak state across tests.
 	_internals.buckets.clear();
 	setSetting('registration_mode', 'open');
-	userId = registerUser({
-		email: 'user@example.com',
-		password: 'correct horse battery',
-		displayName: 'user'
-	}).id;
+	userId = (
+		await registerUser({
+			email: 'user@example.com',
+			password: 'correct horse battery',
+			displayName: 'user'
+		})
+	).id;
 	sendMail.mockResolvedValue({ messageId: '<ok>' });
 });
 

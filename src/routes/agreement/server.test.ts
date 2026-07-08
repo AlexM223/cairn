@@ -33,7 +33,7 @@ function makeUser() {
 /** Minimal RequestEvent for invoking the accept action. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function acceptEvent(
-	user: ReturnType<typeof registerUser> | null,
+	user: Awaited<ReturnType<typeof registerUser>> | null,
 	fields: Record<string, string> = { accept: 'on' }
 ): any {
 	const body = new FormData();
@@ -56,7 +56,7 @@ describe('/agreement actions export', () => {
 
 describe('/agreement ?/accept', () => {
 	it('succeeds for a signed-in user: records acceptance (with IP) and redirects — no 500', async () => {
-		const user = makeUser();
+		const user = await makeUser();
 
 		// The action redirects on success — SvelteKit signals that by THROWING a
 		// redirect object (status + location), which is NOT an error/500.
@@ -79,7 +79,7 @@ describe('/agreement ?/accept', () => {
 	});
 
 	it('returns a 400 fail (not a throw) when the accept box is unchecked', async () => {
-		const user = makeUser();
+		const user = await makeUser();
 		const res = await actions.accept(acceptEvent(user, {}));
 		expect(res).toMatchObject({ status: 400 });
 		expect(hasAcceptedCurrentAgreement(user.id)).toBe(false);
@@ -101,7 +101,7 @@ describe('/agreement ?/accept', () => {
 
 describe('/agreement load', () => {
 	it('reports alreadyAccepted correctly before and after acceptance', async () => {
-		const user = makeUser();
+		const user = await makeUser();
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		const loadEvent = { locals: { user } } as any;
 

@@ -1,17 +1,19 @@
-// cairn-8u9j — the (app) layout load() is the server-side recovery-setup gate:
-// an ADMIN whose account recovery is incomplete (no phrase, or no unused codes)
-// must be redirected to /recovery-setup from any app route. Pre-fix the wizard
-// was only a client-side suggestion, so an operator could keep running an
-// instance with an unrecoverable admin account. Pins: the redirect fires for
-// admins, does NOT fire for members, exempts /recovery-setup itself (no loop),
-// and stops once recovery is actually complete.
+// The (app) layout load() used to own four access gates (forced
+// credential-reset, disclosure/agreement, recovery-setup) plus the data it
+// threads to the client (announcements, httpsPort, firstSyncComplete, etc).
+// cairn-v84z moved the gates to hooks.server.ts (via appGateRedirect() —
+// see src/lib/server/appGate.ts and its dedicated appGate.test.ts, plus the
+// hooks.server.ts integration tests) so this load can read ONLY `locals` and
+// stay cacheable across client-side navigations. The gate-specific describes
+// that used to live in this file (cairn-49xi.2 forced-reset, cairn-8u9j
+// recovery-setup) have moved with the logic they tested; what remains here
+// is coverage for the data this load still returns, plus the minimal
+// defense-in-depth `!locals.user` fallback (Part C of cairn-v84z).
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { db } from '$lib/server/db';
-import { registerUser, completeForcedCredentialReset } from '$lib/server/auth';
+import { registerUser } from '$lib/server/auth';
 import { setSetting } from '$lib/server/settings';
-import { recordAdminDisclosure, recordUserAgreement } from '$lib/server/disclosures';
-import { generateRecoveryPhrase, generateRecoveryCodes } from '$lib/server/recovery';
 import { createAnnouncement, dismissAnnouncement } from '$lib/server/announcements';
 import { resetFirstSyncStateForTests } from '$lib/server/syncStatus';
 import { load } from './+layout.server';
@@ -28,114 +30,51 @@ function wipe(): void {
 
 const PASSWORD = 'correct horse battery';
 type User = { id: number; email: string; displayName: string; isAdmin: boolean };
-let admin: User;
 let member: User;
 
-beforeEach(() => {
+beforeEach(async () => {
 	wipe();
 	setSetting('registration_mode', 'open');
 	// Get past the first-sync gate (cairn-koy4.11): mark the chain-history
-	// cache as already built so the gates under test are what decide. The
-	// completion memo is process-wide — reset it so the settings row is what
-	// this test controls.
+	// cache as already built so the tests below control it explicitly via
+	// clearHistoryCache(). The completion memo is process-wide — reset it so
+	// the settings row is what this test controls.
 	resetFirstSyncStateForTests();
 	setSetting('chainEpochs.v1', '{"seeded":"by-test"}');
-	admin = registerUser({ email: 'admin@example.com', password: PASSWORD, displayName: 'admin' });
-	member = registerUser({ email: 'member@example.com', password: PASSWORD, displayName: 'member' });
-	// Get both users past the disclosure gates so the recovery gate is what decides.
-	recordAdminDisclosure(admin.id);
-	recordUserAgreement(member.id, null);
+	// registerUser makes the FIRST registered account the admin, so register a
+	// throwaway admin first, then `member` (non-admin) as the account these
+	// data-loading tests exercise — none of them are gate tests anymore, so
+	// isAdmin only matters here in that it's held constant across runs.
+	await registerUser({ email: 'admin@example.com', password: PASSWORD, displayName: 'admin' });
+	member = await registerUser({ email: 'member@example.com', password: PASSWORD, displayName: 'member' });
 });
 
-/** Run the layout load; SvelteKit's redirect() THROWS — translate it to a value. */
-async function runLoad(
-	user: User,
-	pathname: string,
-	cookieJar: Record<string, string> = {}
-): Promise<{ redirected: string | null }> {
-	const event = {
-		locals: { user, flags: {} },
-		url: new URL(`http://localhost${pathname}`),
-		cookies: { get: (name: string) => cookieJar[name] }
-	} as unknown as Parameters<typeof load>[0];
-	try {
-		await load(event);
-		return { redirected: null };
-	} catch (e) {
-		const r = e as { status?: number; location?: string };
-		if (typeof r.status === 'number' && r.status >= 300 && r.status < 400 && r.location) {
-			return { redirected: r.location };
-		}
-		throw e;
-	}
+/** Minimal event for invoking load(); the new signature reads only `locals`. */
+function makeEvent(user: User | null): Parameters<typeof load>[0] {
+	return { locals: { user, flags: {} } } as unknown as Parameters<typeof load>[0];
 }
 
-function completeRecovery(userId: number): void {
-	generateRecoveryPhrase().store(userId);
-	generateRecoveryCodes().store(userId);
-}
-
-// Forced credential-reset gate (cairn-49xi.2): a bootstrap-created admin whose
-// password came from a deployment env var must land on /setup-admin before ANY
-// other route — including before the disclosure and recovery gates, since an
-// admin who hasn't chosen their own credentials shouldn't be onboarding yet.
-describe('(app) layout forced credential-reset gate (cairn-49xi.2)', () => {
-	function flagReset(userId: number): void {
-		db.prepare('UPDATE users SET must_reset_password = 1 WHERE id = ?').run(userId);
-	}
-
-	it('redirects a flagged user from any app path to /setup-admin', async () => {
-		flagReset(admin.id);
-		expect(await runLoad(admin, '/wallets')).toEqual({ redirected: '/setup-admin' });
-		expect(await runLoad(admin, '/')).toEqual({ redirected: '/setup-admin' });
+describe('(app) layout load — locals.user guard (cairn-v84z Part C, defense-in-depth)', () => {
+	// hooks.server.ts's (app)-scoped appGateRedirect() guarantees locals.user is
+	// set before this load ever runs in production, so this branch is normally
+	// unreachable. It's still worth pinning: redirects to a PLAIN '/login' (no
+	// ?next=), since reading `url` to build one would give this load a tracked
+	// dependency and defeat the whole point of the refactor.
+	it('redirects to plain /login when locals.user is null', async () => {
+		const thrown = await (async () => {
+			try {
+				await load(makeEvent(null));
+			} catch (e) {
+				return e as { status?: number; location?: string };
+			}
+			return undefined;
+		})();
+		expect(thrown).toMatchObject({ status: 302, location: '/login' });
 	});
 
-	it('fires BEFORE the disclosure and recovery gates', async () => {
-		// Strip the disclosure acceptance so both gates would otherwise apply —
-		// the reset gate must still win.
-		db.exec('DELETE FROM admin_disclosure_acceptances');
-		flagReset(admin.id);
-		expect(await runLoad(admin, '/wallets')).toEqual({ redirected: '/setup-admin' });
-	});
-
-	it('does not redirect users without the flag', async () => {
-		completeRecovery(admin.id);
-		expect(await runLoad(admin, '/wallets')).toEqual({ redirected: null });
-		expect(await runLoad(member, '/wallets')).toEqual({ redirected: null });
-	});
-
-	it('stops redirecting once the forced reset completes', async () => {
-		flagReset(admin.id);
-		completeForcedCredentialReset(admin.id, {
-			email: 'chosen@example.com',
-			password: 'chosen-by-human'
-		});
-		completeRecovery(admin.id);
-		expect(await runLoad(admin, '/wallets')).toEqual({ redirected: null });
-	});
-});
-
-describe('(app) layout recovery-setup gate (cairn-8u9j)', () => {
-	it('redirects an admin with NO recovery setup from a normal app path', async () => {
-		expect(await runLoad(admin, '/wallets')).toEqual({ redirected: '/recovery-setup' });
-	});
-
-	it('redirects an admin with a phrase but no unused codes (recovery half-done)', async () => {
-		generateRecoveryPhrase().store(admin.id); // phrase only — codes still missing
-		expect(await runLoad(admin, '/wallets')).toEqual({ redirected: '/recovery-setup' });
-	});
-
-	it('does NOT redirect on /recovery-setup itself — no redirect loop', async () => {
-		expect(await runLoad(admin, '/recovery-setup')).toEqual({ redirected: null });
-	});
-
-	it('does NOT redirect a non-admin with incomplete recovery (recovery is only mandatory for the operator)', async () => {
-		expect(await runLoad(member, '/wallets')).toEqual({ redirected: null });
-	});
-
-	it('stops redirecting once the admin completes recovery setup', async () => {
-		completeRecovery(admin.id);
-		expect(await runLoad(admin, '/wallets')).toEqual({ redirected: null });
+	it('does not redirect when locals.user is set', async () => {
+		const data = (await load(makeEvent(member))) as { user: User };
+		expect(data.user.id).toBe(member.id);
 	});
 });
 
@@ -144,18 +83,9 @@ describe('(app) layout recovery-setup gate (cairn-8u9j)', () => {
 // hooks.server.ts). Flag off must mean ZERO banners in the returned data —
 // the client renders whatever the load hands it.
 describe('(app) layout announcement banners (flag-gated)', () => {
-	/** Run the layout load for a member (no gates fire) and return its data.
-	 *  (The load's return type unions with void — for a member on /wallets it
-	 *  always returns data, so narrow it.) */
 	type LayoutData = Exclude<Awaited<ReturnType<typeof load>>, void>;
 	async function loadData(flags: Record<string, boolean>): Promise<LayoutData> {
-		const event = {
-			locals: { user: member, flags },
-			url: new URL('http://localhost/wallets'),
-			// beforeEach seeds chainEpochs.v1 so the first-sync gate (cairn-koy4.11)
-			// doesn't fire below, but the gate still reads cookies.get() first.
-			cookies: { get: () => undefined }
-		} as unknown as Parameters<typeof load>[0];
+		const event = { locals: { user: member, flags } } as unknown as Parameters<typeof load>[0];
 		return (await load(event)) as LayoutData;
 	}
 
@@ -185,12 +115,7 @@ describe('(app) layout announcement banners (flag-gated)', () => {
 // port wins over the listen port; junk values mean "not running".
 describe('(app) layout httpsPort (cairn-wgr8)', () => {
 	async function loadData(): Promise<{ httpsPort: number | null }> {
-		const event = {
-			locals: { user: member, flags: {} },
-			url: new URL('http://localhost/wallets'),
-			cookies: { get: () => undefined }
-		} as unknown as Parameters<typeof load>[0];
-		return (await load(event)) as { httpsPort: number | null };
+		return (await load(makeEvent(member))) as { httpsPort: number | null };
 	}
 
 	const saved: Record<string, string | undefined> = {};
@@ -224,50 +149,29 @@ describe('(app) layout httpsPort (cairn-wgr8)', () => {
 	});
 });
 
-// First sync is NON-BLOCKING (cairn-2zxt.1). The old gate redirected every app
-// route to the full-screen /sync page until the once-per-install chain-history
-// cache existed — that trapped users behind a blocking screen on first install
-// and its escape cookie was unreliable. The gate is gone: routes always render,
-// and the layout threads only a coarse firstSyncComplete flag (the client's
-// SyncBanner polls /api/sync for live detail). Pins: NO redirect while the cache
-// is missing, and the flag reflects whether the cache exists.
+// First sync is NON-BLOCKING (cairn-2zxt.1): the layout never redirects on an
+// incomplete chain-history cache, it just threads a coarse boolean the client
+// polls around. (There used to be a redirect-based gate here; it was removed
+// well before cairn-v84z, and the "no redirect" assertions that pinned its
+// absence were removed in this same pass since load() no longer redirects for
+// ANY gate — that coverage now lives in appGate.test.ts and
+// hooks.server.test.ts.)
 describe('(app) layout first-sync is non-blocking (cairn-2zxt.1)', () => {
 	function clearHistoryCache(): void {
 		db.prepare(`DELETE FROM settings WHERE key = 'chainEpochs.v1'`).run();
 		resetFirstSyncStateForTests();
 	}
 
-	async function loadData(user: User, pathname: string): Promise<Record<string, unknown>> {
-		const event = {
-			locals: { user, flags: {} },
-			url: new URL(`http://localhost${pathname}`),
-			cookies: { get: () => undefined }
-		} as unknown as Parameters<typeof load>[0];
-		return (await load(event)) as Record<string, unknown>;
-	}
-
-	it('does NOT redirect while the chain-history cache is missing', async () => {
-		completeRecovery(admin.id);
-		clearHistoryCache();
-		expect(await runLoad(member, '/wallets')).toEqual({ redirected: null });
-		expect(await runLoad(admin, '/')).toEqual({ redirected: null });
-	});
-
 	it('threads firstSyncComplete=false into the data while the cache is missing', async () => {
 		clearHistoryCache();
-		const data = await loadData(member, '/wallets');
+		const data = (await load(makeEvent(member))) as Record<string, unknown>;
 		expect(data.firstSyncComplete).toBe(false);
 	});
 
 	it('threads firstSyncComplete=true once the cache exists', async () => {
 		setSetting('chainEpochs.v1', '{"seeded":"by-test"}');
 		resetFirstSyncStateForTests();
-		const data = await loadData(member, '/wallets');
+		const data = (await load(makeEvent(member))) as Record<string, unknown>;
 		expect(data.firstSyncComplete).toBe(true);
-	});
-
-	it('does NOT weaken the recovery gate — an admin with no recovery still lands there', async () => {
-		clearHistoryCache();
-		expect(await runLoad(admin, '/wallets')).toEqual({ redirected: '/recovery-setup' });
 	});
 });

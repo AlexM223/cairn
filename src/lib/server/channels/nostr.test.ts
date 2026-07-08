@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
 import { db } from '../db';
 import { registerUser } from '../auth';
 import { getSetting, setSetting } from '../settings';
@@ -44,9 +44,10 @@ function storedSenderKey(): string | null {
 }
 
 const PASSWORD = 'correct horse battery staple';
-function makeUser(email: string): number {
+async function makeUser(email: string): Promise<number> {
 	setSetting('registration_mode', 'open');
-	return registerUser({ email, password: PASSWORD, displayName: email.split('@')[0] }).id;
+	const user = await registerUser({ email, password: PASSWORD, displayName: email.split('@')[0] });
+	return user.id;
 }
 
 /** A known recipient identity we can decrypt against to prove the DM is real. */
@@ -78,13 +79,13 @@ beforeEach(() => {
 });
 
 describe('config + isConfigured', () => {
-	it('is not configured with no row', () => {
-		const u = makeUser('a@example.com');
+	it('is not configured with no row', async () => {
+		const u = await makeUser('a@example.com');
 		expect(nostrChannel.isConfigured(u)).toBe(false);
 	});
 
-	it('is not configured when recipientPubkey is missing or empty', () => {
-		const u = makeUser('b@example.com');
+	it('is not configured when recipientPubkey is missing or empty', async () => {
+		const u = await makeUser('b@example.com');
 		saveConfig(u, { relays: ['wss://relay.example'] });
 		expect(nostrChannel.isConfigured(u)).toBe(false);
 		db.prepare('DELETE FROM notification_channel_config').run();
@@ -92,14 +93,14 @@ describe('config + isConfigured', () => {
 		expect(nostrChannel.isConfigured(u)).toBe(false);
 	});
 
-	it('is configured with a valid hex pubkey', () => {
-		const u = makeUser('c@example.com');
+	it('is configured with a valid hex pubkey', async () => {
+		const u = await makeUser('c@example.com');
 		saveConfig(u, { recipientPubkey: RECIPIENT_PUBKEY });
 		expect(nostrChannel.isConfigured(u)).toBe(true);
 	});
 
-	it('rejects an unparseable pubkey (not hex, not npub)', () => {
-		const u = makeUser('d@example.com');
+	it('rejects an unparseable pubkey (not hex, not npub)', async () => {
+		const u = await makeUser('d@example.com');
 		saveConfig(u, { recipientPubkey: 'definitely-not-a-key' });
 		expect(nostrChannel.isConfigured(u)).toBe(false);
 	});
@@ -174,7 +175,7 @@ describe('instance sender identity', () => {
 
 describe('send() — publish semantics', () => {
 	it('succeeds and the DM decrypts back to the payload text', async () => {
-		const u = makeUser('e@example.com');
+		const u = await makeUser('e@example.com');
 		saveConfig(u, { recipientPubkey: RECIPIENT_PUBKEY, relays: ['wss://r1', 'wss://r2'] });
 
 		let capturedEvent: { content: string; tags: string[][]; pubkey: string } | undefined;
@@ -199,7 +200,7 @@ describe('send() — publish semantics', () => {
 	});
 
 	it('is ok when at least one relay accepts (others reject)', async () => {
-		const u = makeUser('f@example.com');
+		const u = await makeUser('f@example.com');
 		saveConfig(u, { recipientPubkey: RECIPIENT_PUBKEY, relays: ['wss://good', 'wss://bad'] });
 		publishImpl = () => [Promise.resolve('ok'), Promise.reject(new Error('relay down'))];
 
@@ -208,7 +209,7 @@ describe('send() — publish semantics', () => {
 	});
 
 	it('fails retryably when EVERY relay rejects', async () => {
-		const u = makeUser('g@example.com');
+		const u = await makeUser('g@example.com');
 		saveConfig(u, { recipientPubkey: RECIPIENT_PUBKEY, relays: ['wss://a', 'wss://b'] });
 		publishImpl = () => [
 			Promise.reject(new Error('timeout')),
@@ -222,7 +223,7 @@ describe('send() — publish semantics', () => {
 	});
 
 	it('falls back to instance default relays when the user set none', async () => {
-		const u = makeUser('h@example.com');
+		const u = await makeUser('h@example.com');
 		saveConfig(u, { recipientPubkey: RECIPIENT_PUBKEY });
 		setSetting('nostr_default_relays', JSON.stringify(['wss://default-relay']));
 
@@ -237,14 +238,14 @@ describe('send() — publish semantics', () => {
 	});
 
 	it('returns a non-retryable config error when not configured', async () => {
-		const u = makeUser('i@example.com');
+		const u = await makeUser('i@example.com');
 		const res = await nostrChannel.send(u, payload);
 		expect(res.ok).toBe(false);
 		expect(res.retryable).toBe(false);
 	});
 
 	it('returns a non-retryable error on an invalid pubkey', async () => {
-		const u = makeUser('j@example.com');
+		const u = await makeUser('j@example.com');
 		saveConfig(u, { recipientPubkey: 'garbage' });
 		const res = await nostrChannel.send(u, payload);
 		expect(res.ok).toBe(false);
@@ -252,9 +253,45 @@ describe('send() — publish semantics', () => {
 	});
 });
 
+describe('relay publish timeout (cairn-49qw)', () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it('treats a relay that never ACKs as a per-relay failure without blocking a relay that does', async () => {
+		const u = await makeUser('timeout-a@example.com');
+		saveConfig(u, { recipientPubkey: RECIPIENT_PUBKEY, relays: ['wss://hangs', 'wss://good'] });
+		// One relay never settles (simulates a completed handshake that never ACKs);
+		// the other accepts immediately.
+		publishImpl = () => [new Promise(() => {}), Promise.resolve('ok')];
+
+		vi.useFakeTimers();
+		const resultPromise = nostrChannel.send(u, payload);
+		await vi.advanceTimersByTimeAsync(_internals.RELAY_PUBLISH_TIMEOUT_MS);
+		const res = await resultPromise;
+
+		expect(res.ok).toBe(true); // the responsive relay's accept still counts
+		expect(closeSpy).toHaveBeenCalled(); // pool torn down even though one relay hung
+	});
+
+	it('fails retryably instead of hanging forever when every relay stalls', async () => {
+		const u = await makeUser('timeout-b@example.com');
+		saveConfig(u, { recipientPubkey: RECIPIENT_PUBKEY, relays: ['wss://hangs1', 'wss://hangs2'] });
+		publishImpl = () => [new Promise(() => {}), new Promise(() => {})];
+
+		vi.useFakeTimers();
+		const resultPromise = nostrChannel.send(u, payload);
+		await vi.advanceTimersByTimeAsync(_internals.RELAY_PUBLISH_TIMEOUT_MS);
+		const res = await resultPromise;
+
+		expect(res.ok).toBe(false);
+		expect(res.retryable).toBe(true);
+	});
+});
+
 describe('test()', () => {
 	it('reports "published to at least one relay" on success', async () => {
-		const u = makeUser('k@example.com');
+		const u = await makeUser('k@example.com');
 		saveConfig(u, { recipientPubkey: RECIPIENT_PUBKEY, relays: ['wss://r'] });
 		const res = await nostrChannel.test(u);
 		expect(res.ok).toBe(true);
@@ -262,7 +299,7 @@ describe('test()', () => {
 	});
 
 	it('surfaces a retryable failure when no relay accepts', async () => {
-		const u = makeUser('l@example.com');
+		const u = await makeUser('l@example.com');
 		saveConfig(u, { recipientPubkey: RECIPIENT_PUBKEY, relays: ['wss://r'] });
 		publishImpl = () => [Promise.reject(new Error('down'))];
 		const res = await nostrChannel.test(u);
