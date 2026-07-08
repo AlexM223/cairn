@@ -86,6 +86,11 @@
 	let done = $state(false);
 	let error = $state<string | null>(null);
 	let wrongDevice = $state(false);
+	// Set when the driver's device call hit its DEVICE_TIMEOUT_MS budget
+	// (cairn-zv34) rather than a normal on-device rejection — a frozen,
+	// PIN-locked, or unattended Jade. The `finally` below already recovers
+	// `phase` to 'idle'; this only adds a more specific hint.
+	let timedOut = $state(false);
 
 	const busy = $derived(phase !== 'idle');
 
@@ -111,17 +116,22 @@
 	function fail(err: unknown) {
 		// signPsbtWithJade throws typed, plain-language JadeErrors; a base64
 		// decode failure (malformed PSBT) is unexpected but still surfaced.
+		// timeout means the device never responded within the driver's budget.
 		if (err instanceof JadeError) {
 			error = err.message;
 			wrongDevice = err.code === 'wrong_device';
+			timedOut = err.code === 'timeout';
 		} else {
 			error = 'The Jade request failed unexpectedly.';
+			wrongDevice = false;
+			timedOut = false;
 		}
 	}
 
 	async function connectAndSign() {
 		error = null;
 		wrongDevice = false;
+		timedOut = false;
 		try {
 			if (multisig) {
 				// One-time on-device registration first — idempotent, so it's safe to run
@@ -325,6 +335,10 @@
 					<p class="hint" style="margin-top: 6px">
 						Plug in the Jade that holds <strong>{multisig.keyName}</strong>'s key — or pick a
 						different key chip above to sign with the device you have connected.
+					</p>
+				{:else if timedOut}
+					<p class="hint" style="margin-top: 6px">
+						Check that the Jade is unlocked and awake, then try again.
 					</p>
 				{/if}
 			</div>

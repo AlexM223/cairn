@@ -119,6 +119,12 @@
 	let done = $state(false);
 	let error = $state<string | null>(null);
 	let wrongDevice = $state(false);
+	// Set when the driver's device call hit its DEVICE_TIMEOUT_MS budget
+	// (cairn-zv34) rather than a normal on-device rejection — a frozen,
+	// PIN-locked, or unattended Ledger. The timeout itself already recovered
+	// `phase` to 'idle' (see the `finally` blocks below), so this only adds a
+	// more specific hint than the driver's own message.
+	let timedOut = $state(false);
 	// Set when a sign attempt used a STORED registration and failed — the HMAC
 	// may be stale (device reset / re-seeded), so offer re-registration.
 	let offerReregister = $state(false);
@@ -170,17 +176,22 @@
 	function fail(err: unknown) {
 		if (err instanceof LedgerError) {
 			// Typed, plain-language messages; wrong_device already names both
-			// fingerprints (connected vs the multisig's expected set).
+			// fingerprints (connected vs the multisig's expected set); timeout
+			// means the device never responded within the driver's budget.
 			error = err.message;
 			wrongDevice = err.code === 'wrong_device';
+			timedOut = err.code === 'timeout';
 		} else {
 			error = 'The Ledger request failed unexpectedly.';
+			wrongDevice = false;
+			timedOut = false;
 		}
 	}
 
 	async function connectAndSign(forceRegister = false) {
 		error = null;
 		wrongDevice = false;
+		timedOut = false;
 		offerReregister = false;
 		saveWarning = false;
 
@@ -541,6 +552,10 @@
 					<p class="hint" style="margin-top: 6px">
 						Plug in the Ledger that holds <strong>{multisig.keyName}</strong>'s key — or pick a
 						different key chip above to sign with the device you have connected.
+					</p>
+				{:else if timedOut}
+					<p class="hint" style="margin-top: 6px">
+						Check that the Ledger is unlocked, awake, and on the Bitcoin app, then try again.
 					</p>
 				{:else if offerReregister}
 					<div class="reregister-actions">

@@ -50,6 +50,7 @@ export type LedgerErrorCode =
 	| 'bad_psbt' // the PSBT lacks the key-origin data Ledger needs
 	| 'wrong_device' // the connected Ledger holds none of the multisig's keys
 	| 'policy_unregistered' // multisig signing attempted before on-device policy registration
+	| 'timeout' // the device did not respond within DEVICE_TIMEOUT_MS (cairn-zv34)
 	| 'unexpected'; // anything else
 
 export class LedgerError extends HwError<LedgerErrorCode> {
@@ -60,6 +61,51 @@ export class LedgerError extends HwError<LedgerErrorCode> {
 
 /** Builds this driver's typed error for the shared common.ts helpers. */
 const ledgerFail = (message: string): LedgerError => new LedgerError(message, 'unexpected');
+
+/**
+ * Budget for one real device round-trip — a WebHID exchange that may block on
+ * PIN entry or an on-screen approval. Without this, a frozen, PIN-locked, or
+ * disconnected-mid-call Ledger leaves the awaited promise unresolved forever,
+ * trapping the signer UI in its busy state with no escape but a full page
+ * reload (cairn-zv34). 45s is generous for "unlock, open the app, review and
+ * approve on-screen" while still bounding a genuinely hung device. Mirrors the
+ * *_TIMEOUT_MS naming convention used elsewhere (e.g.
+ * server/electrum/client.ts's DEFAULT_TIMEOUT_MS).
+ */
+const DEVICE_TIMEOUT_MS = 45_000;
+
+/**
+ * Race a real device round-trip against DEVICE_TIMEOUT_MS. WebHID's transport
+ * and the app client expose no cancellation hook, so this cannot abort the
+ * underlying call — it only bounds how long the CALLER waits, which is enough
+ * to let the UI recover to an actionable error state instead of hanging
+ * forever. Rejects with a typed LedgerError coded 'timeout' (never
+ * 'unexpected') so the UI can show a specific "didn't respond" message rather
+ * than a generic failure.
+ */
+function withDeviceTimeout<T>(p: Promise<T>, label: string): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => {
+			reject(
+				new LedgerError(
+					`Your Ledger did not respond while ${label}. Make sure it's unlocked, the Bitcoin app is open, and try again.`,
+					'timeout'
+				)
+			);
+		}, DEVICE_TIMEOUT_MS);
+		timer.unref?.();
+		p.then(
+			(v) => {
+				clearTimeout(timer);
+				resolve(v);
+			},
+			(err: unknown) => {
+				clearTimeout(timer);
+				reject(err);
+			}
+		);
+	});
+}
 
 /** True only in a browser that exposes WebHID (Chromium desktop, secure context). */
 export function isWebHidAvailable(): boolean {
@@ -301,7 +347,7 @@ export async function signPsbtWithLedger(unsignedPsbtBase64: string): Promise<st
 	let transport: any;
 	try {
 		try {
-			transport = await TransportWebHID.create();
+			transport = await withDeviceTimeout(TransportWebHID.create(), 'connecting');
 		} catch (err) {
 			throw toLedgerError(err);
 		}
@@ -314,8 +360,14 @@ export async function signPsbtWithLedger(unsignedPsbtBase64: string): Promise<st
 		let masterFp: Buffer;
 		let accountXpub: string;
 		try {
-			masterFp = await client.getMasterFingerprint();
-			accountXpub = await client.getExtendedPubkey(false, origin.accountPath);
+			masterFp = await withDeviceTimeout(
+				client.getMasterFingerprint(),
+				'reading the device fingerprint'
+			);
+			accountXpub = await withDeviceTimeout(
+				client.getExtendedPubkey(false, origin.accountPath),
+				'reading the account key'
+			);
 		} catch (err) {
 			throw toLedgerError(err);
 		}
@@ -352,7 +404,10 @@ export async function signPsbtWithLedger(unsignedPsbtBase64: string): Promise<st
 		// registration. The device shows the outputs and blocks on physical approval.
 		let sigs: Map<number, Buffer>;
 		try {
-			sigs = await client.signPsbt(psbtV2, policy, null, () => {});
+			sigs = await withDeviceTimeout(
+				client.signPsbt(psbtV2, policy, null, () => {}),
+				'signing the transaction'
+			);
 		} catch (err) {
 			throw toLedgerError(err);
 		}
@@ -878,7 +933,7 @@ export async function registerMultisigPolicy(
 	let transport: any;
 	try {
 		try {
-			transport = await TransportWebHID.create();
+			transport = await withDeviceTimeout(TransportWebHID.create(), 'connecting');
 		} catch (err) {
 			throw toLedgerError(err);
 		}
@@ -886,7 +941,10 @@ export async function registerMultisigPolicy(
 
 		let masterFp: Buffer;
 		try {
-			masterFp = await client.getMasterFingerprint();
+			masterFp = await withDeviceTimeout(
+				client.getMasterFingerprint(),
+				'reading the device fingerprint'
+			);
 		} catch (err) {
 			throw toLedgerError(err);
 		}
@@ -902,11 +960,14 @@ export async function registerMultisigPolicy(
 		const serialized = device.serialize();
 		let result: Buffer;
 		try {
-			result = await exchangeInterruptible(
-				transport,
-				INS_REGISTER_WALLET,
-				Buffer.concat([deps.createVarint(serialized.length), serialized]),
-				interpreter
+			result = await withDeviceTimeout(
+				exchangeInterruptible(
+					transport,
+					INS_REGISTER_WALLET,
+					Buffer.concat([deps.createVarint(serialized.length), serialized]),
+					interpreter
+				),
+				'registering the multisig wallet'
 			);
 		} catch (err) {
 			throw toLedgerError(err);
@@ -1006,7 +1067,7 @@ export async function signMultisigPsbtWithLedger(
 	let transport: any;
 	try {
 		try {
-			transport = await TransportWebHID.create();
+			transport = await withDeviceTimeout(TransportWebHID.create(), 'connecting');
 		} catch (err) {
 			throw toLedgerError(err);
 		}
@@ -1014,7 +1075,10 @@ export async function signMultisigPsbtWithLedger(
 
 		let masterFp: Buffer;
 		try {
-			masterFp = await client.getMasterFingerprint();
+			masterFp = await withDeviceTimeout(
+				client.getMasterFingerprint(),
+				'reading the device fingerprint'
+			);
 		} catch (err) {
 			throw toLedgerError(err);
 		}
@@ -1053,7 +1117,10 @@ export async function signMultisigPsbtWithLedger(
 		// status error mapped by toLedgerError.
 		let sigs: Map<number, Buffer>;
 		try {
-			sigs = await client.signPsbt(psbtV2, device, hmac, () => {});
+			sigs = await withDeviceTimeout(
+				client.signPsbt(psbtV2, device, hmac, () => {}),
+				'signing the transaction'
+			);
 		} catch (err) {
 			throw toLedgerError(err);
 		}
@@ -1124,7 +1191,7 @@ export async function readMultisigKeyFromLedger(
 	let transport: any;
 	try {
 		try {
-			transport = await TransportWebHID.create();
+			transport = await withDeviceTimeout(TransportWebHID.create(), 'connecting');
 		} catch (err) {
 			throw toLedgerError(err);
 		}
@@ -1132,8 +1199,14 @@ export async function readMultisigKeyFromLedger(
 		let masterFp: Buffer;
 		let xpub: string;
 		try {
-			masterFp = await client.getMasterFingerprint();
-			xpub = await client.getExtendedPubkey(false, pathElements);
+			masterFp = await withDeviceTimeout(
+				client.getMasterFingerprint(),
+				'reading the device fingerprint'
+			);
+			xpub = await withDeviceTimeout(
+				client.getExtendedPubkey(false, pathElements),
+				'reading the account key'
+			);
 		} catch (err) {
 			throw toLedgerError(err);
 		}
@@ -1223,7 +1296,7 @@ export async function readSingleSigKeyFromLedger(
 	let transport: any;
 	try {
 		try {
-			transport = await TransportWebHID.create();
+			transport = await withDeviceTimeout(TransportWebHID.create(), 'connecting');
 		} catch (err) {
 			throw toLedgerError(err);
 		}
@@ -1231,8 +1304,14 @@ export async function readSingleSigKeyFromLedger(
 		let masterFp: Buffer;
 		let xpub: string;
 		try {
-			masterFp = await client.getMasterFingerprint();
-			xpub = await client.getExtendedPubkey(false, pathElements);
+			masterFp = await withDeviceTimeout(
+				client.getMasterFingerprint(),
+				'reading the device fingerprint'
+			);
+			xpub = await withDeviceTimeout(
+				client.getExtendedPubkey(false, pathElements),
+				'reading the account key'
+			);
 		} catch (err) {
 			throw toLedgerError(err);
 		}
@@ -1289,7 +1368,7 @@ export async function readBip45KeyFromLedger(): Promise<{
 	let transport: any;
 	try {
 		try {
-			transport = await TransportWebHID.create();
+			transport = await withDeviceTimeout(TransportWebHID.create(), 'connecting');
 		} catch (err) {
 			throw toLedgerError(err);
 		}
@@ -1297,8 +1376,14 @@ export async function readBip45KeyFromLedger(): Promise<{
 		let masterFp: Buffer;
 		let xpub: string;
 		try {
-			masterFp = await client.getMasterFingerprint();
-			xpub = await client.getExtendedPubkey(false, pathElements);
+			masterFp = await withDeviceTimeout(
+				client.getMasterFingerprint(),
+				'reading the device fingerprint'
+			);
+			xpub = await withDeviceTimeout(
+				client.getExtendedPubkey(false, pathElements),
+				'reading the account key'
+			);
 		} catch (err) {
 			throw toLedgerError(err);
 		}

@@ -78,6 +78,11 @@
 	let done = $state(false);
 	let error = $state<string | null>(null);
 	let wrongDevice = $state(false);
+	// Set when the driver's device call hit its DEVICE_TIMEOUT_MS budget
+	// (cairn-zv34) rather than a normal on-device rejection — a frozen,
+	// unattended popup, or a locked Trezor. The `finally` below already
+	// recovers `signing` to false; this only adds a more specific hint.
+	let timedOut = $state(false);
 
 	onMount(() => {
 		mounted = true;
@@ -87,6 +92,7 @@
 	async function connectAndSign() {
 		error = null;
 		wrongDevice = false;
+		timedOut = false;
 		signing = true;
 		try {
 			const signed = multisig
@@ -102,12 +108,16 @@
 		} catch (err) {
 			// The sign functions throw typed, plain-language TrezorErrors — the
 			// wrong_device message already names both fingerprints (connected vs
-			// expected); anything else is surfaced rather than swallowed.
+			// expected); timeout means the device/popup never responded within
+			// the driver's budget; anything else is surfaced rather than swallowed.
 			if (err instanceof TrezorError) {
 				error = err.message;
 				wrongDevice = err.code === 'wrong_device';
+				timedOut = err.code === 'timeout';
 			} else {
 				error = 'The Trezor request failed unexpectedly.';
+				wrongDevice = false;
+				timedOut = false;
 			}
 		} finally {
 			signing = false;
@@ -270,6 +280,10 @@
 					<p class="hint" style="margin-top: 6px">
 						Plug in the Trezor that holds <strong>{multisig.keyName}</strong>'s key — or pick a
 						different key chip above to sign with the device you have connected.
+					</p>
+				{:else if timedOut}
+					<p class="hint" style="margin-top: 6px">
+						Check that the Connect popup is open and the Trezor is unlocked, then try again.
 					</p>
 				{/if}
 			</div>

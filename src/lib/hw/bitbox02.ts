@@ -68,12 +68,58 @@ export type Bitbox02ErrorCode =
 	| 'unsupported_script_type' // e.g. p2pkh (device single-sig has no BIP44) or p2sh multisig
 	| 'bad_psbt' // PSBT the device could not sign
 	| 'wrong_device' // the connected BitBox02 holds none of the multisig's keys
+	| 'timeout' // the device did not respond within DEVICE_TIMEOUT_MS (cairn-zv34)
 	| 'unexpected'; // anything else
 
 export class Bitbox02Error extends HwError<Bitbox02ErrorCode> {
 	constructor(message: string, code: Bitbox02ErrorCode, options?: { cause?: unknown }) {
 		super('Bitbox02Error', message, code, options);
 	}
+}
+
+/**
+ * Budget for one real device round-trip — a bitbox-api call that may block on
+ * pairing confirmation, PIN entry, or an on-screen approval. Without this, a
+ * frozen, locked, or disconnected-mid-call BitBox02 leaves the awaited
+ * promise unresolved forever, trapping the signer UI in its busy state with
+ * no escape but a full page reload (cairn-zv34). 45s is generous for "unlock,
+ * confirm the pairing code, review and approve on-screen" while still
+ * bounding a genuinely hung device. Mirrors the *_TIMEOUT_MS naming
+ * convention used elsewhere (e.g. server/electrum/client.ts's DEFAULT_TIMEOUT_MS).
+ */
+const DEVICE_TIMEOUT_MS = 45_000;
+
+/**
+ * Race a real device round-trip against DEVICE_TIMEOUT_MS. bitbox-api exposes
+ * no cancellation hook for a call already sent, so this cannot abort the
+ * underlying operation — it only bounds how long the CALLER waits, which is
+ * enough to let the UI recover to an actionable error state instead of
+ * hanging forever. Rejects with a typed Bitbox02Error coded 'timeout' (never
+ * 'unexpected') so the UI can show a specific "didn't respond" message rather
+ * than a generic failure.
+ */
+function withDeviceTimeout<T>(p: Promise<T>, label: string): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => {
+			reject(
+				new Bitbox02Error(
+					`Your BitBox02 did not respond while ${label}. Make sure it's unlocked and try again.`,
+					'timeout'
+				)
+			);
+		}, DEVICE_TIMEOUT_MS);
+		timer.unref?.();
+		p.then(
+			(v) => {
+				clearTimeout(timer);
+				resolve(v);
+			},
+			(err: unknown) => {
+				clearTimeout(timer);
+				reject(err);
+			}
+		);
+	});
 }
 
 /** True only in a browser that exposes WebHID (Chromium desktop, secure context). */
@@ -449,7 +495,7 @@ async function connectAndPair(
 	let unpaired: BitBoxType;
 	try {
 		// WebHID where the browser has it, else the BitBoxBridge native service.
-		unpaired = await mod.bitbox02ConnectAuto(undefined);
+		unpaired = await withDeviceTimeout(mod.bitbox02ConnectAuto(undefined), 'connecting');
 	} catch (err) {
 		// On a bridge-only browser (no WebHID: Firefox/Safari, or any browser on
 		// a plain-HTTP origin like Umbrel) a connect failure usually means the
@@ -466,7 +512,7 @@ async function connectAndPair(
 
 	let pairing: PairingBitBoxType;
 	try {
-		pairing = await unpaired.unlockAndPair();
+		pairing = await withDeviceTimeout(unpaired.unlockAndPair(), 'unlocking');
 	} catch (err) {
 		throw toBitbox02Error(err, mod);
 	}
@@ -482,7 +528,7 @@ async function connectAndPair(
 
 	let paired: PairedBitBoxType;
 	try {
-		paired = await pairing.waitConfirm();
+		paired = await withDeviceTimeout(pairing.waitConfirm(), 'confirming the pairing code');
 	} catch (err) {
 		throw toBitbox02Error(err, mod);
 	}
@@ -527,10 +573,16 @@ export async function readSingleSigKeyFromBitbox02(
 		let fingerprint: string;
 		let xpub: string;
 		try {
-			fingerprint = await paired.rootFingerprint();
+			fingerprint = await withDeviceTimeout(
+				paired.rootFingerprint(),
+				'reading the device fingerprint'
+			);
 			// Request a STANDARD xpub prefix; the device would warn for a
 			// non-standard keypath, but these are the standard BIP-49/84/86 paths.
-			xpub = await paired.btcXpub(COIN, path, 'xpub', false);
+			xpub = await withDeviceTimeout(
+				paired.btcXpub(COIN, path, 'xpub', false),
+				'reading the account key'
+			);
 		} catch (err) {
 			throw toBitbox02Error(err, mod);
 		}
@@ -561,8 +613,14 @@ export async function readMultisigKeyFromBitbox02(
 		let fingerprint: string;
 		let xpub: string;
 		try {
-			fingerprint = await paired.rootFingerprint();
-			xpub = await paired.btcXpub(COIN, path, 'xpub', false);
+			fingerprint = await withDeviceTimeout(
+				paired.rootFingerprint(),
+				'reading the device fingerprint'
+			);
+			xpub = await withDeviceTimeout(
+				paired.btcXpub(COIN, path, 'xpub', false),
+				'reading the account key'
+			);
 		} catch (err) {
 			throw toBitbox02Error(err, mod);
 		}
@@ -640,10 +698,9 @@ async function maybeRegisterMultisig(
 
 	let alreadyRegistered: boolean;
 	try {
-		alreadyRegistered = await paired.btcIsScriptConfigRegistered(
-			COIN,
-			scriptConfig,
-			params.keypath
+		alreadyRegistered = await withDeviceTimeout(
+			paired.btcIsScriptConfigRegistered(COIN, scriptConfig, params.keypath),
+			'checking the wallet registration'
 		);
 	} catch (err) {
 		throw toBitbox02Error(err, mod);
@@ -654,7 +711,10 @@ async function maybeRegisterMultisig(
 	try {
 		// 'autoXpubTpub' picks the standard xpub/tpub encoding per network (mainnet
 		// xpub here). A falsy name lets the device prompt the user to enter one.
-		await paired.btcRegisterScriptConfig(COIN, scriptConfig, params.keypath, 'autoXpubTpub', name);
+		await withDeviceTimeout(
+			paired.btcRegisterScriptConfig(COIN, scriptConfig, params.keypath, 'autoXpubTpub', name),
+			'registering the multisig wallet'
+		);
 	} catch (err) {
 		throw toBitbox02Error(err, mod);
 	}
@@ -681,8 +741,13 @@ async function assertBitboxIsExpectedKey(
 	if (typeof params.keypath !== 'string') return;
 	let reading: { xpub: string; fingerprint: string };
 	try {
-		const fingerprint = (await paired.rootFingerprint()).toLowerCase();
-		const xpub = await paired.btcXpub(COIN, params.keypath, 'xpub', false);
+		const fingerprint = (
+			await withDeviceTimeout(paired.rootFingerprint(), 'reading the device fingerprint')
+		).toLowerCase();
+		const xpub = await withDeviceTimeout(
+			paired.btcXpub(COIN, params.keypath, 'xpub', false),
+			'reading the account key'
+		);
 		reading = { xpub: normalizeXpub(xpub), fingerprint };
 	} catch (err) {
 		throw toBitbox02Error(err, mod);
@@ -737,11 +802,14 @@ export async function signPsbtWithBitbox02(
 			// force_script_config carries the script config + account keypath; the
 			// device signs every input it recognizes under that config. format_unit
 			// 'default' shows amounts in BTC on the device screen.
-			signed = await paired.btcSignPSBT(
-				COIN,
-				psbtBase64.trim(),
-				{ scriptConfig: params.scriptConfig, keypath: params.keypath },
-				'default'
+			signed = await withDeviceTimeout(
+				paired.btcSignPSBT(
+					COIN,
+					psbtBase64.trim(),
+					{ scriptConfig: params.scriptConfig, keypath: params.keypath },
+					'default'
+				),
+				'signing the transaction'
 			);
 		} catch (err) {
 			throw toBitbox02Error(err, mod);
