@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
+	import { navigating } from '$app/stores';
 	import Icon from '$lib/components/Icon.svelte';
 	import AnnouncementBanner from '$lib/components/AnnouncementBanner.svelte';
 	import SyncBanner from '$lib/components/heartwood/SyncBanner.svelte';
@@ -9,6 +10,7 @@
 	import MobileTopBar from '$lib/components/heartwood/MobileTopBar.svelte';
 	import MobileTabRow from '$lib/components/heartwood/MobileTabRow.svelte';
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
+	import NavProgress from '$lib/components/heartwood/NavProgress.svelte';
 	import { maybeRedirectToSecure } from '$lib/secureRedirect';
 
 	let { data, children } = $props();
@@ -93,6 +95,7 @@
 	<HWRail navItems={nav} user={data.user} operatorName={data.operatorName ?? null} />
 
 	<div class="content">
+		<NavProgress />
 		{#if isTab}
 			<MobileTopBar
 				variant={isExplorer ? 'search' : 'dial'}
@@ -108,7 +111,7 @@
 			</div>
 		{/if}
 
-		<main class="main">
+		<main class="main" aria-busy={$navigating ? 'true' : 'false'}>
 			<!-- Instance-wide chain-transport health (cairn-hy8z). Always mounted;
 			     renders nothing until the Electrum pool / SOCKS5 proxy is unhealthy,
 			     then warns that balances may be stale and (for admins) links to the
