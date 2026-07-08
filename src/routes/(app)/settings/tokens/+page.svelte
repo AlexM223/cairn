@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import { goto } from '$app/navigation';
 	import { timeAgo, formatDateTime } from '$lib/format';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
@@ -37,8 +38,18 @@
 		<span class="flow-spacer"></span>
 	</header>
 
-	<!-- Desktop eyebrow breadcrumb, linking back to Settings. -->
-	<a class="crumb-link" href="/settings">
+	<!-- Desktop eyebrow breadcrumb, linking back to Settings. Navigates via
+	     goto(..., { replaceState: true }) rather than a plain <a> so it
+	     replaces the current history entry instead of pushing a new one —
+	     otherwise Back alternates between here and /settings (cairn-ojvs). -->
+	<a
+		class="crumb-link"
+		href="/settings"
+		onclick={(e) => {
+			e.preventDefault();
+			goto('/settings', { replaceState: true });
+		}}
+	>
 		<EyebrowBreadcrumb path={['Settings']} current="API tokens" />
 	</a>
 

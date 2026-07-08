@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { invalidateAll } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 	import { timeAgo } from '$lib/format';
 	import type { ContactList, ContactSummary } from '$lib/server/contacts';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
@@ -117,8 +117,18 @@
 		<span class="flow-spacer"></span>
 	</header>
 
-	<!-- Desktop eyebrow breadcrumb, linking back to Settings. -->
-	<a class="crumb-link" href="/settings">
+	<!-- Desktop eyebrow breadcrumb, linking back to Settings. Navigates via
+	     goto(..., { replaceState: true }) rather than a plain <a> so it
+	     replaces the current history entry instead of pushing a new one —
+	     otherwise Back alternates between here and /settings (cairn-ojvs). -->
+	<a
+		class="crumb-link"
+		href="/settings"
+		onclick={(e) => {
+			e.preventDefault();
+			goto('/settings', { replaceState: true });
+		}}
+	>
 		<EyebrowBreadcrumb path={['Settings']} current="Contacts" />
 	</a>
 
