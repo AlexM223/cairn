@@ -214,6 +214,27 @@ describe('handle — (app) route group gates (cairn-v84z)', () => {
 	});
 });
 
+describe('handle — fallback CSP only fills in when resolve() has not already set one (cairn-ed01)', () => {
+	it('leaves an already-nonced Content-Security-Policy from resolve() (e.g. SvelteKit kit.csp on a real page) untouched', async () => {
+		const { event } = makeEvent('/_app/immutable/chunks/abc123.js');
+		const res = await handle({
+			event,
+			resolve: async () =>
+				new Response('ok', {
+					status: 200,
+					headers: { 'Content-Security-Policy': "script-src 'self' 'nonce-abc123'" }
+				})
+		});
+		expect(res.headers.get('Content-Security-Policy')).toBe("script-src 'self' 'nonce-abc123'");
+	});
+
+	it('sets the fallback CSP when resolve() returns no Content-Security-Policy header', async () => {
+		const { event } = makeEvent('/_app/immutable/chunks/abc123.js');
+		const res = await handle({ event, resolve: async () => new Response('ok', { status: 200 }) });
+		expect(res.headers.get('Content-Security-Policy')).toContain("script-src 'self'");
+	});
+});
+
 describe('handle — admin-mutation backstop and /vaults redirect still fire unchanged', () => {
 	beforeEach(() => {
 		wipe();
