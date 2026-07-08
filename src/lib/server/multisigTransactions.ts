@@ -390,12 +390,24 @@ export function deleteMultisigTransaction(userId: number, multisigId: number, tx
 	// Draft management is owner-only — a cosigner can sign but not discard a
 	// pending session out from under the owner and other signers.
 	if (!getMultisig(userId, multisigId)) return false;
-	const tx = getMultisigTransaction(userId, multisigId, txId);
-	if (!tx) return false;
-	// Completed transactions are history — the record that a broadcast happened.
-	if (tx.status === 'completed') return false;
-	db.prepare('DELETE FROM multisig_transactions WHERE id = ?').run(txId);
-	return true;
+	if (!getMultisigTransaction(userId, multisigId, txId)) return false;
+	// cairn-up0q: same TOCTOU as single-sig deleteTransaction (transactions.ts)
+	// — check-then-delete could race broadcastMultisigTransaction's atomic
+	// claim, letting a concurrent delete erase a row after a broadcast had
+	// already started. This also closes a second gap: only 'completed' was
+	// excluded before, but a 'superseded' tx was broadcast too (see the
+	// supersede step in broadcastMultisigTransaction / bumpMultisigTransaction)
+	// and deleting it would erase that record, same as single-sig. Guard and
+	// delete are now one atomic conditional statement.
+	const result = db
+		.prepare(
+			`DELETE FROM multisig_transactions
+			 WHERE id = ? AND multisig_id = ?
+			   AND status NOT IN ('completed', 'superseded')
+			   AND broadcast_started_at IS NULL`
+		)
+		.run(txId, multisigId);
+	return Number(result.changes) > 0;
 }
 
 /**

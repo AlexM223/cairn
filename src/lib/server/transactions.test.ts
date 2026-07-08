@@ -167,6 +167,22 @@ describe('transaction lifecycle', () => {
 		expect(getTransaction(userId, walletId, done)).not.toBeNull();
 	});
 
+	// cairn-up0q: the old check-then-delete raced broadcastTransaction's
+	// atomic claim — a delete could land between the claim and the trailing
+	// status='completed' update, wiping a row for a tx already on the
+	// network. Simulate the claim directly (as broadcastTransaction's claim
+	// UPDATE would leave it mid-flight) and assert the delete is refused.
+	it('refuses to delete a transaction with an in-flight broadcast claim', () => {
+		const { userId, walletId } = seedWallet('a@example.com');
+		const txId = seedTx(walletId, 'awaiting_signature');
+		db.prepare(
+			"UPDATE transactions SET broadcast_started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?"
+		).run(txId);
+
+		expect(deleteTransaction(userId, walletId, txId)).toBe(false);
+		expect(getTransaction(userId, walletId, txId)).not.toBeNull();
+	});
+
 	it('refuses to broadcast an already-broadcast transaction before touching the network', async () => {
 		const { userId, walletId } = seedWallet('a@example.com');
 		const done = seedTx(walletId, 'completed', 'ab'.repeat(32));

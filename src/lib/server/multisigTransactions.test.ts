@@ -210,6 +210,37 @@ describe('multisig transaction lifecycle', () => {
 		expect(getMultisigTransaction(userId, multisigId, done.txId)).not.toBeNull();
 	});
 
+	// cairn-up0q: the old check-then-delete raced broadcastMultisigTransaction's
+	// atomic claim — a delete could land between the claim and the trailing
+	// status='completed' update, wiping a row for a tx already on the
+	// network. Simulate the claim directly and assert the delete is refused.
+	it('refuses to delete a multisig transaction with an in-flight broadcast claim', async () => {
+		const { userId, multisigId } = seedMultisig('claim@example.com');
+		const { txId } = await seedDraft(userId, multisigId);
+		db.prepare(
+			"UPDATE multisig_transactions SET broadcast_started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?"
+		).run(txId);
+
+		expect(deleteMultisigTransaction(userId, multisigId, txId)).toBe(false);
+		expect(getMultisigTransaction(userId, multisigId, txId)).not.toBeNull();
+	});
+
+	// cairn-up0q: deleteMultisigTransaction used to only exclude 'completed',
+	// unlike single-sig deleteTransaction which excludes 'completed' and
+	// 'superseded'. A superseded tx was broadcast too (its replacement is what
+	// actually confirms) — deleting it erases that history the same way
+	// deleting a completed tx would.
+	it('refuses to delete a superseded multisig transaction', async () => {
+		const { userId, multisigId } = seedMultisig('superseded@example.com');
+		const { txId } = await seedDraft(userId, multisigId);
+		db.prepare(
+			"UPDATE multisig_transactions SET status = 'superseded', txid = ? WHERE id = ?"
+		).run('ee'.repeat(32), txId);
+
+		expect(deleteMultisigTransaction(userId, multisigId, txId)).toBe(false);
+		expect(getMultisigTransaction(userId, multisigId, txId)).not.toBeNull();
+	});
+
 	it('cascades multisig deletion to its transactions', async () => {
 		const { userId, multisigId } = seedMultisig('cascade@example.com');
 		const { txId } = await seedDraft(userId, multisigId);
