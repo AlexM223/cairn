@@ -2,6 +2,7 @@ import { redirect } from '@sveltejs/kit';
 import { getUserAgreementOperator, DEFAULT_OPERATOR } from '$lib/server/disclosures';
 import { listUnbackedWallets, shouldShowBackupReminder } from '$lib/server/backups';
 import { listActiveAnnouncementsFor } from '$lib/server/announcements';
+import { cachedNavBundle } from '$lib/server/navBundleCache';
 import { getInstanceMode } from '$lib/server/settings';
 import { httpsExternalPort } from '$lib/server/httpsPort';
 import { isFirstSyncComplete } from '$lib/server/syncStatus';
@@ -42,12 +43,37 @@ export const load: LayoutServerLoad = async ({ locals }) => {
 	// the /sync page does. /sync stays reachable as an optional "view details"
 	// page, linked from the banner, but nobody is redirected there involuntarily.
 
-	// Two separate backup nudges:
+	// Two separate backup nudges, plus the announcements list below, are bundled
+	// behind a 15s in-process TTL cache (cairn-t72a): each is a real node:sqlite
+	// query (joins/subselects, not the cheap single-keyed reads cairn-xlrm
+	// already trimmed from this load), and node:sqlite is synchronous, so
+	// running all three on every navigation blocks the event loop — see
+	// $lib/server/navBundleCache.ts for the full rationale and why serving a
+	// stale bundle for up to 15s is safe (every consumer already hides itself
+	// optimistically on the client the instant it's dismissed).
 	//  • unbackedWallets — wallets whose config has NEVER been downloaded (a lost
 	//    config can mean permanently lost funds, so this stays until resolved).
 	//  • showBackupReminder — a gentle, dismissable 90-day periodic reminder for
 	//    users who HAVE backups but haven't refreshed them in a while.
-	// Both are cheap local SQLite reads.
+	// locals.user is narrowed non-null above, but TS can't carry that narrowing
+	// through the closure below (locals.user could theoretically be reassigned
+	// before the closure runs), so capture the id here rather than re-reading
+	// locals.user.id inside it.
+	const userId = locals.user.id;
+	const navBundle = cachedNavBundle(userId, () => ({
+		unbackedWallets: listUnbackedWallets(userId),
+		showBackupReminder: shouldShowBackupReminder(userId),
+		// Instance-wide admin announcements (active, unexpired, not dismissed by
+		// this user). Gated on the announcement_banners flag right here, inside
+		// the loader closure passed to cachedNavBundle — not outside it — so the
+		// defense-in-depth property is unchanged: whenever this loader actually
+		// runs with the flag off, the query never even runs, so nothing can
+		// render no matter what the client bundle thinks. (A flag flip is only
+		// reflected once the 15s TTL for this user's cache entry next expires.)
+		announcements:
+			locals.flags?.announcement_banners !== false ? listActiveAnnouncementsFor(userId) : []
+	}));
+
 	return {
 		user: locals.user,
 		// Coarse first-sync flag (cairn-2zxt.1): true once this install's
@@ -77,18 +103,12 @@ export const load: LayoutServerLoad = async ({ locals }) => {
 			const operator = getUserAgreementOperator();
 			return operator === DEFAULT_OPERATOR ? null : operator;
 		})(),
-		unbackedWallets: listUnbackedWallets(locals.user.id),
-		showBackupReminder: shouldShowBackupReminder(locals.user.id),
+		unbackedWallets: navBundle.unbackedWallets,
+		showBackupReminder: navBundle.showBackupReminder,
 		// Where Cairn's own HTTPS listener is reachable (null = not running).
 		// The client uses it to offer a secure-context address for USB signing
 		// when the page was loaded over plain HTTP (e.g. stock Umbrel).
 		httpsPort: httpsExternalPort(),
-		// Instance-wide admin announcements (active, unexpired, not dismissed by
-		// this user). Gated on the announcement_banners flag: off → none load, so
-		// nothing renders no matter what the client bundle thinks.
-		announcements:
-			locals.flags?.announcement_banners !== false
-				? listActiveAnnouncementsFor(locals.user.id)
-				: []
+		announcements: navBundle.announcements
 	};
 };
