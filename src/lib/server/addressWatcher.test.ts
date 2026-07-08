@@ -372,3 +372,119 @@ describe('cairn-uzgu / cairn-gakd Phase 1: stale multisig watch cleanup on delet
 		expect(row.n).toBe(0);
 	});
 });
+
+// ---- cairn-mo36: TOCTOU race between existence check and write --------------
+//
+// handleScripthashChange checks walletStillExists(w) ONCE near the top, then
+// crosses several awaits (getHistory/spvVerifyConfirmed/getTx, or
+// baselineScripthash's own getHistory on the on-demand path) before it writes
+// notified_txids / fires a notification. A synchronous delete
+// (deleteWallet/deleteMultisig's unwatch calls, or refreshWatches' periodic
+// prune) can land in that window for a handler that already passed the
+// earlier checks. These tests force the delete to happen mid-await — inside
+// the mocked chain.getTx / chain.electrum.getHistory call — and assert the
+// write/notify never happens. They fail if the cairn-mo36 re-checks
+// (state.byScripthash.has(scripthash), placed immediately before each write
+// with no further await in between) are removed.
+
+describe('cairn-mo36: TOCTOU race between existence check and write', () => {
+	it('per-txid history-diff path: wallet deleted during the getTx await records nothing and never notifies', async () => {
+		const raceUserId = registerUser({
+			email: 'race-history@example.com',
+			password: 'correct horse battery',
+			displayName: 'RaceHistory'
+		}).id;
+		const raceXpub = HDKey.fromMasterSeed(new Uint8Array(32).fill(101)).publicExtendedKey;
+		const raceWalletId = createWallet(raceUserId, { name: 'Racer A', xpub: raceXpub }).id;
+		const raceAddress = deriveAddress(parseXpub(raceXpub), 0, 0).address;
+		const raceScripthash = addressToScripthash(raceAddress);
+
+		// Wire the subscription up directly, already baselined, so this test only
+		// exercises the history-diff path (not the on-demand baseline path below).
+		_internals.state.byScripthash.set(raceScripthash, {
+			kind: 'wallet',
+			walletId: raceWalletId,
+			userId: raceUserId,
+			address: raceAddress
+		});
+		_internals.state.baselinedScripthashes.add(raceScripthash);
+
+		const raceTxid = '3'.repeat(64);
+		txById.set(raceTxid, { ...baseTx(raceTxid), vout: [] });
+		historyByScripthash.set(raceScripthash, [{ tx_hash: raceTxid, height: 150 }]);
+
+		// The delete lands DURING the chain.getTx await — after
+		// handleScripthashChange already passed its top-of-function
+		// walletStillExists check.
+		fakeChain.getTx.mockImplementationOnce(async (txid: string) => {
+			expect(deleteWallet(raceUserId, raceWalletId)).toBe(true);
+			const tx = txById.get(txid);
+			if (!tx) throw new Error('tx not found');
+			return tx;
+		});
+
+		notifyMock.mockClear();
+		pool.emit('scripthash', raceScripthash, 'status-race-history');
+
+		// vi.waitFor polls on a real timer (a macrotask boundary), so by the time
+		// this resolves the entire — purely synchronous — continuation after the
+		// getTx await, including the cairn-mo36 recheck and whatever it gates, has
+		// already run to completion.
+		await vi.waitFor(() => {
+			expect(fakeChain.getTx).toHaveBeenCalledWith(raceTxid);
+		});
+
+		expect(notifyMock).not.toHaveBeenCalled();
+		expect(_internals.state.byScripthash.has(raceScripthash)).toBe(false);
+		const row = db
+			.prepare('SELECT COUNT(*) AS n FROM notified_txids WHERE txid = ?')
+			.get(raceTxid) as { n: number };
+		expect(row.n).toBe(0);
+	});
+
+	it('on-demand baseline path: wallet deleted during the getHistory await inserts nothing', async () => {
+		const raceUserId = registerUser({
+			email: 'race-baseline@example.com',
+			password: 'correct horse battery',
+			displayName: 'RaceBaseline'
+		}).id;
+		const raceXpub = HDKey.fromMasterSeed(new Uint8Array(32).fill(102)).publicExtendedKey;
+		const raceWalletId = createWallet(raceUserId, { name: 'Racer B', xpub: raceXpub }).id;
+		const raceAddress = deriveAddress(parseXpub(raceXpub), 0, 0).address;
+		const raceScripthash = addressToScripthash(raceAddress);
+
+		// Watched but deliberately NOT yet baselined, so the change event takes
+		// the on-demand baselineScripthash branch.
+		_internals.state.byScripthash.set(raceScripthash, {
+			kind: 'wallet',
+			walletId: raceWalletId,
+			userId: raceUserId,
+			address: raceAddress
+		});
+
+		const raceTxid = '4'.repeat(64);
+		historyByScripthash.set(raceScripthash, [{ tx_hash: raceTxid, height: 150 }]);
+
+		// The delete lands DURING baselineScripthash's chain.electrum.getHistory
+		// await.
+		pool.getHistory.mockImplementationOnce(async (sh: string) => {
+			expect(deleteWallet(raceUserId, raceWalletId)).toBe(true);
+			return historyByScripthash.get(sh) ?? [];
+		});
+
+		notifyMock.mockClear();
+		pool.emit('scripthash', raceScripthash, 'status-race-baseline');
+
+		await vi.waitFor(() => {
+			expect(pool.getHistory).toHaveBeenCalledWith(raceScripthash);
+		});
+
+		expect(notifyMock).not.toHaveBeenCalled();
+		expect(_internals.state.byScripthash.has(raceScripthash)).toBe(false);
+		expect(_internals.state.baselinedScripthashes.has(raceScripthash)).toBe(false);
+		const row = db
+			.prepare('SELECT COUNT(*) AS n FROM notified_txids WHERE txid = ?')
+			.get(raceTxid) as { n: number };
+		expect(row.n).toBe(0);
+	});
+});

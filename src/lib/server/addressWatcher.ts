@@ -654,6 +654,19 @@ async function handleScripthashChange(scripthash: string): Promise<void> {
 				log.warn({ err: e, txid }, 'tx detail fetch failed; recording without amount');
 			}
 
+			// cairn-mo36: re-check liveness immediately before the write, after the
+			// last await on this path (getTx above) and with nothing async between
+			// this check and recordTxid/notify below. Closes the TOCTOU window where
+			// a synchronous delete (deleteWallet/deleteMultisig's unwatch calls, or
+			// refreshWatches' periodic prune) lands in one of this handler's earlier
+			// awaits (baselineScripthash/getHistory/spvVerifyConfirmed/getTx) after it
+			// already passed the top-of-function walletStillExists check. Every
+			// removal path clears state.byScripthash synchronously, so this one
+			// in-memory check catches all of them without a DB round-trip. The rest
+			// of `history` belongs to the same now-gone wallet, so bail out of the
+			// whole handler rather than just this txid.
+			if (!state.byScripthash.has(scripthash)) return;
+
 			// First sighting wins the insert (guards the reconnect re-emit race).
 			if (!recordTxid(w, txid)) continue;
 
@@ -964,6 +977,14 @@ async function baselineScripthash(scripthash: string, w: Watched): Promise<numbe
 		 VALUES (?, ?, ?, ?, 1)`
 	);
 	const history = await chain.electrum.getHistory(scripthash);
+	// cairn-mo36: the wallet/multisig this scripthash belongs to can be deleted
+	// (deleteWallet/deleteMultisig's unwatch calls, or refreshWatches' periodic
+	// prune) while the getHistory round-trip above was in flight. Every removal
+	// path clears state.byScripthash synchronously (forgetWatchesFor), so
+	// re-checking it here — with no further await before the inserts below —
+	// closes that window: a since-deleted wallet never gets confirmed=1 rows
+	// written for it.
+	if (!state.byScripthash.has(scripthash)) return 0;
 	for (const item of history) {
 		insert.run(w.kind, w.walletId, w.userId, item.tx_hash);
 	}
