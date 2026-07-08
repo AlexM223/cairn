@@ -314,18 +314,22 @@ export class ChainService {
 	}
 
 	async getTx(txid: string): Promise<TxDetail> {
-		const [tx, tipHeight] = await Promise.all([
+		// All three fetches ride the same round trip. Output spent-ness is a
+		// nice-to-have, so its promise carries its own catch — it resolves to
+		// `undefined` on failure rather than rejecting the whole Promise.all, which
+		// preserves the degrade-to-null behavior while keeping the fetch concurrent
+		// with tx/tipHeight instead of a second sequential trip (cairn-daej).
+		const [tx, tipHeight, outspends] = await Promise.all([
 			this.esplora.getTx(txid),
-			this.esplora.getTipHeight()
+			this.esplora.getTipHeight(),
+			this.esplora
+				.getTxOutspends(txid)
+				.then((os): (boolean | null)[] | undefined => os.map((o) => o.spent ?? null))
+				.catch((e) => {
+					log.debug({ err: e, txid }, 'outspends unavailable; output spent-ness degraded to null');
+					return undefined;
+				})
 		]);
-		// Output spent-ness is nice-to-have; degrade to nulls on failure.
-		let outspends: (boolean | null)[] | undefined;
-		try {
-			outspends = (await this.esplora.getTxOutspends(txid)).map((o) => o.spent ?? null);
-		} catch (e) {
-			log.debug({ err: e, txid }, 'outspends unavailable; output spent-ness degraded to null');
-			outspends = undefined;
-		}
 		return toTxDetail(tx, tipHeight, outspends);
 	}
 

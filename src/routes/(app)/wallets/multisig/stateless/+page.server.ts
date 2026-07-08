@@ -12,14 +12,13 @@ import type { PageServerLoad } from './$types';
 export const load: PageServerLoad = async (event) => {
 	// The airgapped/stateless signer is gated behind the `stateless_signer` flag.
 	requireFeature(event, 'stateless_signer');
-	let fees: FeeEstimates | null = null;
-	try {
-		fees = await getChain().getFeeEstimates();
-	} catch {
-		fees = null;
-	}
 	return {
-		fees,
+		// Streamed, not awaited: the page shell paints immediately and the fee
+		// selector seeds itself when this chain round-trip settles (cairn-daej) —
+		// same top-level-promise streaming pattern as every other load in the app.
+		fees: getChain()
+			.getFeeEstimates()
+			.catch((): FeeEstimates | null => null),
 		// Buy-a-device links for the signer cards' unavailable states; null when
 		// the referral_links flag is off (the cards then render no referral UI).
 		// Nothing multisig-shaped — this stays a config-file-only page.
