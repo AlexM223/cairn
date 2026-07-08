@@ -3,6 +3,7 @@ import type { Handle, HandleServerError } from '@sveltejs/kit';
 import { randomBytes } from 'node:crypto';
 import { getSessionUser, SESSION_COOKIE, bootstrapAdminFromEnv } from '$lib/server/auth';
 import { resolveAllFlags } from '$lib/server/featureFlags/resolve';
+import { appGateRedirect } from '$lib/server/appGate';
 import { childLogger } from '$lib/server/logger';
 import { startNotificationQueueWorker } from '$lib/server/notificationQueue';
 import { startAddressWatcher } from '$lib/server/addressWatcher';
@@ -229,14 +230,21 @@ export function isAdminMutationRequest(method: string, pathname: string): boolea
 }
 
 export const handle: Handle = async ({ event, resolve }) => {
+	const { pathname } = event.url;
+
+	// Static assets and build output (cairn-isda) never need the session/flags
+	// lookups below, so this check now runs BEFORE any of that — previously it
+	// ran after, meaning every asset request (and the SPA fetches a lot of
+	// them) paid for getSessionUser (1 query) + resolveAllFlags (2 queries) for
+	// nothing. locals.user/locals.flags are left unset here; nothing downstream
+	// of an asset response reads them.
+	if (isAsset(pathname)) return resolve(event);
+
 	event.locals.user = getSessionUser(event.cookies.get(SESSION_COOKIE));
 	// Resolve feature flags once per request, right after the user is known, so
 	// every route guard and load function reads the same object instead of
 	// re-querying. A logged-out/system context (null) gets the global values.
 	event.locals.flags = resolveAllFlags(event.locals.user?.id ?? null);
-
-	const { pathname } = event.url;
-	if (isAsset(pathname)) return resolve(event);
 
 	const method = event.request.method;
 
@@ -281,6 +289,44 @@ export const handle: Handle = async ({ event, resolve }) => {
 		const rest = pathname.slice('/vaults'.length);
 		const target = rest === '' || rest === '/' ? '/wallets' : `/wallets/multisig${rest}`;
 		redirect(301, `${target}${event.url.search}`);
+	}
+
+	// (app) route group access gates (cairn-v84z). These used to live inline in
+	// (app)/+layout.server.ts's load(), gated on a `url` read that made
+	// SvelteKit re-run that load (a full server round trip, ~13-15 sequential
+	// SQLite queries) on every client-side navigation. Running the same checks
+	// here once per request — scoped by event.route.id, NOT a pathname
+	// string-match — lets the layout load become a pure `locals` read that
+	// SvelteKit caches across navs, while gate behavior stays identical.
+	// event.route.id is populated by SvelteKit's router before handle() runs,
+	// and is null for anything that isn't a matched route (assets already
+	// returned above; a 404 stays ungated, same as before). The `/(app)` id
+	// prefix only matches routes under the (app) group, so the gate targets
+	// themselves — /login, /disclosure, /agreement, /setup-admin (all
+	// top-level, outside the group) — plus /api/*, SSE, etc. are automatically
+	// excluded, which is what prevents a redirect loop. (app)/recovery-setup
+	// IS in-group; appGateRedirect's own pathname check is what skips it,
+	// exactly as the old layout load did.
+	if (event.route.id?.startsWith('/(app)')) {
+		const target = appGateRedirect(event.locals.user, pathname);
+		if (target) {
+			if (method === 'GET' || method === 'HEAD') {
+				redirect(302, target);
+			}
+			// A thrown redirect() breaks use:enhance's applyAction for a form
+			// action (non-GET/HEAD) — mirror the isAdminMutationRequest backstop
+			// above and fail the action with a plain error() instead. This is an
+			// intentional bonus: actions never ran the parent layout's load() at
+			// all (SvelteKit doesn't run parent loads for actions), so they were
+			// previously ungated entirely. 401 mirrors "not authenticated" the
+			// same way the admin-mutation backstop above does; 403 covers every
+			// other gate (reset/disclosure/agreement/recovery) — the caller IS
+			// authenticated but blocked pending required setup.
+			if (!event.locals.user) {
+				error(401, 'Authentication required');
+			}
+			error(403, 'Action blocked pending required setup');
+		}
 	}
 
 	const path = redactPath(pathname);
