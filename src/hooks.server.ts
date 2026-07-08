@@ -79,102 +79,116 @@ if (!globalThis.__cairnProcessGuardInstalled) {
 	});
 }
 
-// Non-interactive admin bootstrap for deployment tooling (Umbrel/Docker set
-// CAIRN_ADMIN_PASSWORD / APP_PASSWORD). Runs once at server start; never throws.
-try {
-	bootstrapAdminFromEnv();
-} catch (e) {
-	errLog.error({ err: e }, 'admin bootstrap from env failed');
-}
+// Top-level init sequence (cairn-48hm). This is one async function — instead
+// of a bare sequence of top-level try/catch statements — so bootstrapAdminFromEnv
+// can be awaited: it's synchronous today, but an in-progress branch makes it
+// async (it awaits password hashing via async crypto.scrypt). A bare, unwaited
+// call would let migrateInstanceMode() race ahead of the admin-row insert
+// instead of running after it as intended, and errors thrown after that first
+// await would become unhandled promise rejections instead of being caught
+// below. Deliberately NOT a top-level `await` (that previously broke this
+// repo's production build — see the build.target='esnext' history) — init()
+// is invoked once into the module-scope `initReady` promise, and `handle`
+// awaits that promise as its first step instead.
+async function init(): Promise<void> {
+	// Non-interactive admin bootstrap for deployment tooling (Umbrel/Docker set
+	// CAIRN_ADMIN_PASSWORD / APP_PASSWORD). Runs once at server start; never throws.
+	try {
+		await bootstrapAdminFromEnv();
+	} catch (e) {
+		errLog.error({ err: e }, 'admin bootstrap from env failed');
+	}
 
-// Decide instanceMode ('solo' | 'team') for installs that predate the setting.
-// Runs after bootstrap so a freshly-created single admin is counted correctly.
-try {
-	migrateInstanceMode();
-} catch (e) {
-	errLog.error({ err: e }, 'instance mode migration failed');
-}
+	// Decide instanceMode ('solo' | 'team') for installs that predate the setting.
+	// Runs after bootstrap so a freshly-created single admin is counted correctly.
+	try {
+		migrateInstanceMode();
+	} catch (e) {
+		errLog.error({ err: e }, 'instance mode migration failed');
+	}
 
-// Re-encrypt any secrets still stored in plaintext by older releases
-// (cairn-e9mz). Idempotent; runs before the queue worker so channel sends only
-// ever see the encrypted shape.
-try {
-	migratePlaintextSecretsAtRest();
-} catch (e) {
-	errLog.error({ err: e }, 'plaintext-secret migration failed');
-}
+	// Re-encrypt any secrets still stored in plaintext by older releases
+	// (cairn-e9mz). Idempotent; runs before the queue worker so channel sends only
+	// ever see the encrypted shape.
+	try {
+		migratePlaintextSecretsAtRest();
+	} catch (e) {
+		errLog.error({ err: e }, 'plaintext-secret migration failed');
+	}
 
-// Instances on the STOCK user agreement pick up default-text revisions (e.g.
-// the cairn-5u2i.1 data-handling section) — bump the stored version once so
-// already-accepted users are re-prompted. Customized agreements are untouched.
-try {
-	ensureDefaultAgreementVersion();
-} catch (e) {
-	errLog.error({ err: e }, 'agreement version migration failed');
-}
+	// Instances on the STOCK user agreement pick up default-text revisions (e.g.
+	// the cairn-5u2i.1 data-handling section) — bump the stored version once so
+	// already-accepted users are re-prompted. Customized agreements are untouched.
+	try {
+		ensureDefaultAgreementVersion();
+	} catch (e) {
+		errLog.error({ err: e }, 'agreement version migration failed');
+	}
 
-// Start the outbound notification delivery worker (idempotent, unref'd — it
-// drains notification_queue for every non-inapp channel). See §1.4 of
-// docs/NOTIFICATION-PLAN.md.
-try {
-	startNotificationQueueWorker();
-} catch (e) {
-	errLog.error({ err: e }, 'notification queue worker start failed');
-}
+	// Start the outbound notification delivery worker (idempotent, unref'd — it
+	// drains notification_queue for every non-inapp channel). See §1.4 of
+	// docs/NOTIFICATION-PLAN.md.
+	try {
+		startNotificationQueueWorker();
+	} catch (e) {
+		errLog.error({ err: e }, 'notification queue worker start failed');
+	}
 
-// Event hooks (Unit 8, docs/NOTIFICATION-PLAN.md §3). The address watcher drives
-// per-address Electrum subscriptions for tx_received/tx_confirmed/tx_large; the
-// key-health watcher runs a daily scan for stale multisig keys (key_health_due).
-// Both are idempotent, unref'd, and self-contained (they never throw here).
-try {
-	startAddressWatcher();
-} catch (e) {
-	errLog.error({ err: e }, 'address watcher start failed');
+	// Event hooks (Unit 8, docs/NOTIFICATION-PLAN.md §3). The address watcher drives
+	// per-address Electrum subscriptions for tx_received/tx_confirmed/tx_large; the
+	// key-health watcher runs a daily scan for stale multisig keys (key_health_due).
+	// Both are idempotent, unref'd, and self-contained (they never throw here).
+	try {
+		startAddressWatcher();
+	} catch (e) {
+		errLog.error({ err: e }, 'address watcher start failed');
+	}
+	try {
+		startKeyHealthWatcher();
+	} catch (e) {
+		errLog.error({ err: e }, 'key health watcher start failed');
+	}
+	// First-sync chain-history build (cairn-koy4.11): start counting rings right
+	// after boot so the once-per-install walk races the user's signup flow
+	// instead of waiting for their first page view. No-op once the cache exists.
+	try {
+		startFirstSync();
+	} catch (e) {
+		errLog.error({ err: e }, 'first sync start failed');
+	}
+	// Daily retention sweep (cairn-zui7): purges aged/orphaned rows from the
+	// unbounded tables. Idempotent, unref'd, best-effort like the watchers above.
+	try {
+		startRetentionSweep();
+	} catch (e) {
+		errLog.error({ err: e }, 'retention sweep start failed');
+	}
+	// Backup-health scan (cairn-evp9): fires backup_missing for never-backed-up
+	// wallets and backup_stale when the instance backup ages past the reminder
+	// interval — the previously-missing trigger point for those two event types.
+	try {
+		startBackupHealthWatcher();
+	} catch (e) {
+		errLog.error({ err: e }, 'backup health watcher start failed');
+	}
+	// Pre-warm the per-wallet/per-multisig scan caches shortly after boot so the
+	// first portfolio load isn't a cold multi-second scan (cairn-fd56). Deferred and
+	// unref'd; never throws here.
+	try {
+		startPortfolioWarm();
+	} catch (e) {
+		errLog.error({ err: e }, 'portfolio warm start failed');
+	}
+	// Opt-in scheduled instance backups (cairn-ivae.3): fires whenever the
+	// configured daily/weekly interval is due. Idempotent, unref'd, no-op until an
+	// admin enables it from /admin/backup.
+	try {
+		startScheduledBackupWatcher();
+	} catch (e) {
+		errLog.error({ err: e }, 'scheduled backup watcher start failed');
+	}
 }
-try {
-	startKeyHealthWatcher();
-} catch (e) {
-	errLog.error({ err: e }, 'key health watcher start failed');
-}
-// First-sync chain-history build (cairn-koy4.11): start counting rings right
-// after boot so the once-per-install walk races the user's signup flow
-// instead of waiting for their first page view. No-op once the cache exists.
-try {
-	startFirstSync();
-} catch (e) {
-	errLog.error({ err: e }, 'first sync start failed');
-}
-// Daily retention sweep (cairn-zui7): purges aged/orphaned rows from the
-// unbounded tables. Idempotent, unref'd, best-effort like the watchers above.
-try {
-	startRetentionSweep();
-} catch (e) {
-	errLog.error({ err: e }, 'retention sweep start failed');
-}
-// Backup-health scan (cairn-evp9): fires backup_missing for never-backed-up
-// wallets and backup_stale when the instance backup ages past the reminder
-// interval — the previously-missing trigger point for those two event types.
-try {
-	startBackupHealthWatcher();
-} catch (e) {
-	errLog.error({ err: e }, 'backup health watcher start failed');
-}
-// Pre-warm the per-wallet/per-multisig scan caches shortly after boot so the
-// first portfolio load isn't a cold multi-second scan (cairn-fd56). Deferred and
-// unref'd; never throws here.
-try {
-	startPortfolioWarm();
-} catch (e) {
-	errLog.error({ err: e }, 'portfolio warm start failed');
-}
-// Opt-in scheduled instance backups (cairn-ivae.3): fires whenever the
-// configured daily/weekly interval is due. Idempotent, unref'd, no-op until an
-// admin enables it from /admin/backup.
-try {
-	startScheduledBackupWatcher();
-} catch (e) {
-	errLog.error({ err: e }, 'scheduled backup watcher start failed');
-}
+const initReady = init();
 
 // Static assets and build output aren't worth a log line each (and the SPA
 // fetches a lot of them). Everything else — pages, API, form actions — is.
@@ -230,6 +244,8 @@ export function isAdminMutationRequest(method: string, pathname: string): boolea
 }
 
 export const handle: Handle = async ({ event, resolve }) => {
+	await initReady;
+
 	const { pathname } = event.url;
 
 	// Static assets and build output (cairn-isda) never need the session/flags
