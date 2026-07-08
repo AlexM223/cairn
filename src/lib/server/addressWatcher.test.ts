@@ -317,11 +317,13 @@ describe('cairn-uzgu / cairn-gakd Phase 1: stale multisig watch cleanup on delet
 		| undefined;
 
 	beforeAll(async () => {
-		msUserId = registerUser({
-			email: 'watcher-ms@example.com',
-			password: 'correct horse battery',
-			displayName: 'WatcherMS'
-		}).id;
+		msUserId = (
+			await registerUser({
+				email: 'watcher-ms@example.com',
+				password: 'correct horse battery',
+				displayName: 'WatcherMS'
+			})
+		).id;
 		const ms = createMultisig(msUserId, {
 			name: 'Ghost multisig',
 			threshold: 2,
@@ -391,11 +393,13 @@ describe('cairn-uzgu / cairn-gakd Phase 1: stale multisig watch cleanup on delet
 
 describe('cairn-mo36: TOCTOU race between existence check and write', () => {
 	it('per-txid history-diff path: wallet deleted during the getTx await records nothing and never notifies', async () => {
-		const raceUserId = registerUser({
-			email: 'race-history@example.com',
-			password: 'correct horse battery',
-			displayName: 'RaceHistory'
-		}).id;
+		const raceUserId = (
+			await registerUser({
+				email: 'race-history@example.com',
+				password: 'correct horse battery',
+				displayName: 'RaceHistory'
+			})
+		).id;
 		const raceXpub = HDKey.fromMasterSeed(new Uint8Array(32).fill(101)).publicExtendedKey;
 		const raceWalletId = createWallet(raceUserId, { name: 'Racer A', xpub: raceXpub }).id;
 		const raceAddress = deriveAddress(parseXpub(raceXpub), 0, 0).address;
@@ -445,11 +449,13 @@ describe('cairn-mo36: TOCTOU race between existence check and write', () => {
 	});
 
 	it('on-demand baseline path: wallet deleted during the getHistory await inserts nothing', async () => {
-		const raceUserId = registerUser({
-			email: 'race-baseline@example.com',
-			password: 'correct horse battery',
-			displayName: 'RaceBaseline'
-		}).id;
+		const raceUserId = (
+			await registerUser({
+				email: 'race-baseline@example.com',
+				password: 'correct horse battery',
+				displayName: 'RaceBaseline'
+			})
+		).id;
 		const raceXpub = HDKey.fromMasterSeed(new Uint8Array(32).fill(102)).publicExtendedKey;
 		const raceWalletId = createWallet(raceUserId, { name: 'Racer B', xpub: raceXpub }).id;
 		const raceAddress = deriveAddress(parseXpub(raceXpub), 0, 0).address;

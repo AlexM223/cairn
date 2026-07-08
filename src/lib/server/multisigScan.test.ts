@@ -128,7 +128,7 @@ function wipeDb(): void {
 	);
 }
 
-function makeUser(email: string) {
+async function makeUser(email: string) {
 	return registerUser({
 		email,
 		password: 'correct horse battery',
@@ -170,7 +170,7 @@ describe('nextMultisigReceiveAddress concurrency and cursor safety (cairn-2qa4)'
 	});
 
 	it('two concurrent calls for the same multisig serialize and hand out different indexes', async () => {
-		const user = makeUser('ms-race@example.com');
+		const user = await makeUser('ms-race@example.com');
 		const multisig = makeStoredMultisig(user.id, 'Race vault');
 		// Prime the scan cache so the "next unused" lookup resolves instantly and
 		// deterministically (no Electrum, no timing flakiness). Determinism here
@@ -191,7 +191,7 @@ describe('nextMultisigReceiveAddress concurrency and cursor safety (cairn-2qa4)'
 	});
 
 	it("re-reads the cursor under the lock instead of trusting the caller's stale row", async () => {
-		const user = makeUser('ms-stale@example.com');
+		const user = await makeUser('ms-stale@example.com');
 		const multisig = makeStoredMultisig(user.id, 'Stale-row vault', [24, 25, 26]);
 		primeMultisigScanCache(cacheKeyFor(multisig), EMPTY_SCAN);
 
@@ -209,8 +209,8 @@ describe('nextMultisigReceiveAddress concurrency and cursor safety (cairn-2qa4)'
 		expect(second.address).not.toBe(first.address);
 	});
 
-	it('bumpReceiveCursor writes MAX(): a lower/late write can never regress the cursor', () => {
-		const user = makeUser('ms-monotonic@example.com');
+	it('bumpReceiveCursor writes MAX(): a lower/late write can never regress the cursor', async () => {
+		const user = await makeUser('ms-monotonic@example.com');
 		const multisig = makeStoredMultisig(user.id, 'Monotonic vault', [27, 28, 29]);
 
 		bumpReceiveCursor(user.id, multisig.id, 10);

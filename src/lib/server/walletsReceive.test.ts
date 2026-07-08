@@ -156,7 +156,7 @@ describe('receive-address rotation reuse (cairn-2ic5)', () => {
 // write is monotonic (MAX) as defense-in-depth.
 describe('nextReceiveAddress concurrency and cursor safety (cairn-2qa4)', () => {
 	it('two concurrent calls for the same wallet serialize and hand out different indexes', async () => {
-		const user = makeUser('race@example.com');
+		const user = await makeUser('race@example.com');
 		const id = makeWallet(user.id);
 		let scans = 0;
 		// A real (short) delay stands in for the slow Electrum gap scan: it opens
@@ -184,7 +184,7 @@ describe('nextReceiveAddress concurrency and cursor safety (cairn-2qa4)', () => 
 	});
 
 	it('never regresses the cursor: a late/lower write loses to MAX()', async () => {
-		const user = makeUser('monotonic@example.com');
+		const user = await makeUser('monotonic@example.com');
 		const id = makeWallet(user.id);
 		mocks.findNextUnusedIndex.mockResolvedValue(10);
 

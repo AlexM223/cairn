@@ -131,7 +131,12 @@ describe('handle — (app) route group gates (cairn-v84z)', () => {
 		setSetting('registration_mode', 'open');
 	});
 
-	function makeAdmin(): { id: number; email: string; displayName: string; isAdmin: boolean } {
+	async function makeAdmin(): Promise<{
+		id: number;
+		email: string;
+		displayName: string;
+		isAdmin: boolean;
+	}> {
 		return registerUser({
 			email: 'admin@example.com',
 			password: 'correct horse battery',
@@ -146,7 +151,7 @@ describe('handle — (app) route group gates (cairn-v84z)', () => {
 	});
 
 	it('redirects a gated authenticated GET (forced credential reset) to /setup-admin', async () => {
-		const admin = makeAdmin();
+		const admin = await makeAdmin();
 		db.prepare('UPDATE users SET must_reset_password = 1 WHERE id = ?').run(admin.id);
 		const { token } = createSession(admin.id);
 		const { event } = makeEvent('/wallets', { routeId: '/(app)/wallets', cookie: token });
@@ -155,10 +160,10 @@ describe('handle — (app) route group gates (cairn-v84z)', () => {
 	});
 
 	it('does not redirect once every gate is cleared', async () => {
-		const admin = makeAdmin();
+		const admin = await makeAdmin();
 		recordAdminDisclosure(admin.id);
-		generateRecoveryPhrase().store(admin.id);
-		generateRecoveryCodes().store(admin.id);
+		await generateRecoveryPhrase().store(admin.id);
+		await generateRecoveryCodes().store(admin.id);
 		const { token } = createSession(admin.id);
 		const { event } = makeEvent('/wallets', { routeId: '/(app)/wallets', cookie: token });
 		const res = await callHandle(event);
@@ -166,7 +171,7 @@ describe('handle — (app) route group gates (cairn-v84z)', () => {
 	});
 
 	it('does not redirect an admin with incomplete recovery on /recovery-setup itself (no loop)', async () => {
-		const admin = makeAdmin();
+		const admin = await makeAdmin();
 		recordAdminDisclosure(admin.id);
 		const { token } = createSession(admin.id);
 		const { event } = makeEvent('/recovery-setup', {
@@ -184,7 +189,7 @@ describe('handle — (app) route group gates (cairn-v84z)', () => {
 	});
 
 	it('fails a non-GET (app) action with 403 when authenticated but gated', async () => {
-		const admin = makeAdmin();
+		const admin = await makeAdmin();
 		db.prepare('UPDATE users SET must_reset_password = 1 WHERE id = ?').run(admin.id);
 		const { token } = createSession(admin.id);
 		const { event } = makeEvent('/wallets/send', {
