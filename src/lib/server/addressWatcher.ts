@@ -346,6 +346,33 @@ function recordTxid(w: Watched, txid: string): boolean {
 	}
 }
 
+/**
+ * True when the wallet/multisig `w` refers to still has a DB row backing it.
+ * Belt-and-braces guard (cairn-uzgu / cairn-gakd Phase 1) for handleScripthashChange:
+ * refreshWatches' desired-vs-current diff and deleteWallet/deleteMultisig's
+ * unwatch calls are the normal ways a stale entry gets dropped from
+ * state.byScripthash, but a delete path that bypasses both (e.g. account
+ * deletion's FK cascade, which never touches this module) can still leave one
+ * lingering until the next periodic refresh. This check stops that lingering
+ * entry from ever notifying in the meantime. Fails closed on a query error —
+ * treated the same as "gone" — since a missed notification is far cheaper
+ * than one that deep-links to a 404, and the entry simply re-baselines on the
+ * next refresh if the wallet is actually still there.
+ */
+function walletStillExists(w: Watched): boolean {
+	try {
+		const table = w.kind === 'multisig' ? 'multisigs' : 'wallets';
+		const row = db.prepare(`SELECT 1 FROM ${table} WHERE id = ?`).get(w.walletId);
+		return row !== undefined;
+	} catch (e) {
+		log.warn(
+			{ err: e, walletId: w.walletId, kind: w.kind },
+			'existence check failed; treating as deleted'
+		);
+		return false;
+	}
+}
+
 // --------------------------------------------------------------------- helpers
 
 /** A wallet-relative name for the notification body (best-effort, plain). */
@@ -557,6 +584,17 @@ async function handleScripthashChange(scripthash: string): Promise<void> {
 	if (!state.baselined) return;
 	const w = state.byScripthash.get(scripthash);
 	if (!w) return;
+	// cairn-uzgu / cairn-gakd Phase 1: never notify for a wallet/multisig that no
+	// longer exists, and drop the stale subscription from state right here — the
+	// belt-and-braces stop for the QA-visible symptom (a 404-deep-link
+	// notification) even when a lingering entry hasn't been pruned yet by
+	// refreshWatches' diff or an unwatch call. See walletStillExists.
+	if (!walletStillExists(w)) {
+		state.byScripthash.delete(scripthash);
+		state.baselinedScripthashes.delete(scripthash);
+		state.inFlight.delete(scripthash);
+		return;
+	}
 	if (state.inFlight.has(scripthash)) return;
 	state.inFlight.add(scripthash);
 	try {
@@ -765,6 +803,48 @@ async function handleNewBlock(): Promise<void> {
 // --------------------------------------------------------------------- lifecycle
 
 /**
+ * Drop every scripthash currently watched for one wallet/multisig from local
+ * state — byScripthash, baselinedScripthashes, and inFlight. Local-only, no
+ * Electrum I/O: unsubscribing the underlying socket-level subscription is
+ * Phase 2 (cairn-gakd), so the server may still push a status change for a
+ * scripthash we've forgotten — walletStillExists in handleScripthashChange is
+ * what makes that harmless once it arrives.
+ */
+function forgetWatchesFor(kind: WalletKind, walletId: number): number {
+	let removed = 0;
+	for (const [scripthash, w] of state.byScripthash) {
+		if (w.kind === kind && w.walletId === walletId) {
+			state.byScripthash.delete(scripthash);
+			state.baselinedScripthashes.delete(scripthash);
+			state.inFlight.delete(scripthash);
+			removed++;
+		}
+	}
+	return removed;
+}
+
+/**
+ * Forget a deleted single-sig wallet's watched addresses immediately
+ * (cairn-uzgu / cairn-gakd Phase 1). Called from wallets.ts's deleteWallet
+ * right after its DB delete succeeds. Synchronous and side-effect-free beyond
+ * the local Maps/Sets above, so it's safe to call from a non-async caller.
+ */
+export function unwatchWallet(walletId: number): void {
+	const removed = forgetWatchesFor('wallet', walletId);
+	if (removed > 0) log.info({ walletId, removed }, 'dropped watcher state for deleted wallet');
+}
+
+/**
+ * Forget a deleted multisig's watched addresses immediately (cairn-uzgu /
+ * cairn-gakd Phase 1). Called from wallets/multisig.ts's deleteMultisig right
+ * after its DB delete succeeds.
+ */
+export function unwatchMultisig(multisigId: number): void {
+	const removed = forgetWatchesFor('multisig', multisigId);
+	if (removed > 0) log.info({ multisigId, removed }, 'dropped watcher state for deleted multisig');
+}
+
+/**
  * (Re)build the watch set and (re)subscribe. Safe to call repeatedly — after a
  * new wallet is created, or after reconfigureChain swapped the Electrum client.
  * Subscribes only scripthashes we aren't already watching on the current client.
@@ -794,6 +874,27 @@ export async function refreshWatches(): Promise<void> {
 		} catch {
 			// Undecodable address — skip.
 		}
+	}
+
+	// Prune anything we're holding that's no longer desired (cairn-uzgu /
+	// cairn-gakd Phase 1): general sweep that catches every deletion path, not
+	// just deleteWallet/deleteMultisig's direct unwatch calls above — e.g.
+	// account deletion's FK cascade, which never reaches this module. Local
+	// state only; the Electrum-side subscription itself lives on until the
+	// socket cycles (unsubscribe RPC is Phase 2), but a pruned entry can never
+	// notify again (it's gone from byScripthash) and walletStillExists in
+	// handleScripthashChange covers the gap for anything not yet pruned.
+	let pruned = 0;
+	for (const scripthash of state.byScripthash.keys()) {
+		if (!desired.has(scripthash)) {
+			state.byScripthash.delete(scripthash);
+			state.baselinedScripthashes.delete(scripthash);
+			state.inFlight.delete(scripthash);
+			pruned++;
+		}
+	}
+	if (pruned > 0) {
+		log.info({ pruned, total: state.byScripthash.size }, 'stale address subscriptions pruned');
 	}
 
 	let subscribed = 0;

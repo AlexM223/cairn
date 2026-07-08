@@ -11,6 +11,7 @@ import {
 	findNextUnusedIndex,
 	type WalletScanResult
 } from './bitcoin/walletScan';
+import { unwatchWallet } from './addressWatcher';
 import { childLogger } from './logger';
 import { recordActivity } from './activity';
 import {
@@ -290,6 +291,11 @@ export function deleteWallet(userId: number, id: number): boolean {
 	db.prepare('DELETE FROM wallets WHERE id = ? AND user_id = ?').run(id, userId);
 	invalidateWalletCache(row.xpub);
 	forgetReceiveWindow(row.xpub);
+	// cairn-uzgu / cairn-gakd Phase 1: drop this wallet's scripthashes from the
+	// address watcher's local state so it stops manufacturing orphaned
+	// notified_txids rows and firing notifications that deep-link to a 404
+	// wallet page. Electrum-side unsubscribe is Phase 2 (cairn-gakd).
+	unwatchWallet(id);
 	return true;
 }
 

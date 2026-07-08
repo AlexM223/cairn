@@ -27,6 +27,10 @@ import { parseXpub } from '../bitcoin/xpub';
 // but safe: both sides only reach into the other from inside function bodies,
 // never at module top level, so ESM's live bindings resolve fine either way.
 import { invalidateMultisigCache } from '../multisigScan';
+// Also cyclic with ../addressWatcher (it imports toMultisigConfig/MultisigRow
+// from this module) — same safety argument: unwatchMultisig is only reached
+// from inside deleteMultisig's function body, never at module top level.
+import { unwatchMultisig } from '../addressWatcher';
 
 export type MultisigScriptType = 'p2wsh' | 'p2sh-p2wsh' | 'p2sh';
 export const MULTISIG_SCRIPT_TYPES: MultisigScriptType[] = ['p2wsh', 'p2sh-p2wsh', 'p2sh'];
@@ -435,6 +439,11 @@ export function deleteMultisig(userId: number, id: number): boolean {
 		// persisted wallet_scan_cache row survives and seedScanCachesFromDb
 		// resurrects the deleted multisig's stale scan into RAM on every restart.
 		invalidateMultisigCache(row);
+		// cairn-uzgu / cairn-gakd Phase 1: drop this multisig's scripthashes from
+		// the address watcher's local state so it stops manufacturing orphaned
+		// notified_txids rows and firing notifications that deep-link to a 404
+		// multisig page. Electrum-side unsubscribe is Phase 2 (cairn-gakd).
+		unwatchMultisig(id);
 	}
 	return info.changes > 0;
 }

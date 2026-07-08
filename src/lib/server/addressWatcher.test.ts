@@ -10,10 +10,12 @@
 
 import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { HDKey } from '@scure/bip32';
 import { db } from './db';
 import { registerUser } from './auth';
 import { setSetting } from './settings';
-import { createWallet } from './wallets';
+import { createWallet, deleteWallet } from './wallets';
+import { createMultisig, deleteMultisig, type NewMultisigKey } from './wallets/multisig';
 import { parseXpub, deriveAddress, addressToScripthash, scriptPubKeyHex } from './bitcoin/xpub';
 import type { TxDetail } from '$lib/types';
 
@@ -74,7 +76,7 @@ vi.mock('./notifications', () => ({
 	notify: (...args: unknown[]) => notifyMock(...args)
 }));
 
-import { startAddressWatcher } from './addressWatcher';
+import { startAddressWatcher, refreshWatches, _internals } from './addressWatcher';
 
 // ---- fixture ----------------------------------------------------------------
 
@@ -227,5 +229,146 @@ describe('addressWatcher tx-amount attribution (cairn-20al / cairn-v13r)', () =>
 		// Zero inbound value → the generic activity note, never 'Payment received'.
 		expect(call.title).toBe('New wallet activity');
 		expect(call.detail.amountSats).toBeUndefined();
+	});
+});
+
+// ---- cairn-uzgu / cairn-gakd Phase 1: stale-watch cleanup on delete ----------
+//
+// Pre-fix, refreshWatches() only ever ADDED to state.byScripthash — a deleted
+// wallet's ~60 scripthash subscriptions lived forever, kept manufacturing
+// orphaned notified_txids rows, and kept firing notifications that deep-link
+// to a 404. These tests pin both halves of the fix: the removal path (delete
+// drops the watcher's local bookkeeping) and the notify guard (even a
+// lingering subscription — e.g. left behind by a delete path that bypasses
+// deleteWallet/deleteMultisig, like account deletion's FK cascade — can never
+// notify, and self-prunes the moment Electrum reports a change for it).
+
+describe('cairn-uzgu / cairn-gakd Phase 1: stale single-sig watch cleanup on delete', () => {
+	it("deleteWallet drops the wallet's scripthashes from watcher state", () => {
+		// Sanity: the fixture wallet from the describe block above is still watched.
+		expect(_internals.state.byScripthash.has(watchedScripthash)).toBe(true);
+		expect(_internals.state.baselinedScripthashes.has(watchedScripthash)).toBe(true);
+
+		expect(deleteWallet(userId, walletId)).toBe(true);
+
+		expect(_internals.state.byScripthash.has(watchedScripthash)).toBe(false);
+		expect(_internals.state.baselinedScripthashes.has(watchedScripthash)).toBe(false);
+		// None of this wallet's watched addresses (WATCH_WINDOW × 2 chains) survive.
+		for (const w of _internals.state.byScripthash.values()) {
+			expect(w.kind === 'wallet' && w.walletId === walletId).toBe(false);
+		}
+	});
+
+	it('handleScripthashChange ignores a lingering subscription for a deleted wallet, and self-prunes it', async () => {
+		// Simulate a delete path that bypasses deleteWallet's unwatchWallet call
+		// (e.g. account deletion's FK cascade, which never reaches addressWatcher):
+		// re-insert the entry directly even though the wallet row is gone
+		// (deleted in the previous test).
+		_internals.state.byScripthash.set(watchedScripthash, {
+			kind: 'wallet',
+			walletId,
+			userId,
+			address: watchedAddress
+		});
+		_internals.state.baselinedScripthashes.add(watchedScripthash);
+
+		notifyMock.mockClear();
+		const ghostTxid = 'e'.repeat(64);
+		txById.set(ghostTxid, { ...baseTx(ghostTxid), vout: [] });
+		historyByScripthash.set(watchedScripthash, [{ tx_hash: ghostTxid, height: 150 }]);
+
+		pool.emit('scripthash', watchedScripthash, 'status-ghost');
+
+		await vi.waitFor(() =>
+			expect(_internals.state.byScripthash.has(watchedScripthash)).toBe(false)
+		);
+		expect(notifyMock).not.toHaveBeenCalled();
+
+		const row = db
+			.prepare('SELECT COUNT(*) AS n FROM notified_txids WHERE txid = ?')
+			.get(ghostTxid) as { n: number };
+		expect(row.n).toBe(0);
+	});
+});
+
+describe('cairn-uzgu / cairn-gakd Phase 1: stale multisig watch cleanup on delete', () => {
+	const BIP48_PATH = "m/48'/0'/0'/2'";
+
+	function fixtureKey(seedByte: number): { xpub: string; fingerprint: string; path: string } {
+		const master = HDKey.fromMasterSeed(new Uint8Array(32).fill(seedByte));
+		const account = master.derive(BIP48_PATH);
+		return {
+			xpub: account.publicExtendedKey,
+			fingerprint: (master.fingerprint >>> 0).toString(16).padStart(8, '0'),
+			path: BIP48_PATH
+		};
+	}
+	function newMultisigKey(seedByte: number, name: string): NewMultisigKey {
+		return { name, category: 'hardware', deviceType: 'trezor', ...fixtureKey(seedByte) };
+	}
+
+	let msUserId: number;
+	let msId: number;
+	let msScripthash = '';
+	let msWatched:
+		| { kind: 'wallet' | 'multisig'; walletId: number; userId: number; address: string }
+		| undefined;
+
+	beforeAll(async () => {
+		msUserId = registerUser({
+			email: 'watcher-ms@example.com',
+			password: 'correct horse battery',
+			displayName: 'WatcherMS'
+		}).id;
+		const ms = createMultisig(msUserId, {
+			name: 'Ghost multisig',
+			threshold: 2,
+			keys: [newMultisigKey(11, 'Key A'), newMultisigKey(12, 'Key B'), newMultisigKey(13, 'Key C')]
+		});
+		msId = ms.id;
+
+		// The startup pass already ran; pick up this newly created multisig the
+		// same way the periodic 5-minute refresh would in production.
+		await refreshWatches();
+
+		for (const [sh, w] of _internals.state.byScripthash) {
+			if (w.kind === 'multisig' && w.walletId === msId) {
+				msScripthash = sh;
+				msWatched = w;
+				break;
+			}
+		}
+		if (!msScripthash) throw new Error('test setup: multisig scripthash not found after refreshWatches');
+	});
+
+	it("refreshWatches subscribed the new multisig, and deleteMultisig drops its scripthashes from watcher state", () => {
+		expect(_internals.state.byScripthash.has(msScripthash)).toBe(true);
+
+		expect(deleteMultisig(msUserId, msId)).toBe(true);
+
+		expect(_internals.state.byScripthash.has(msScripthash)).toBe(false);
+		for (const w of _internals.state.byScripthash.values()) {
+			expect(w.kind === 'multisig' && w.walletId === msId).toBe(false);
+		}
+	});
+
+	it('handleScripthashChange ignores a lingering subscription for a deleted multisig, and self-prunes it', async () => {
+		_internals.state.byScripthash.set(msScripthash, msWatched!);
+		_internals.state.baselinedScripthashes.add(msScripthash);
+
+		notifyMock.mockClear();
+		const ghostTxid = 'f'.repeat(64);
+		txById.set(ghostTxid, { ...baseTx(ghostTxid), vout: [] });
+		historyByScripthash.set(msScripthash, [{ tx_hash: ghostTxid, height: 150 }]);
+
+		pool.emit('scripthash', msScripthash, 'status-ghost-ms');
+
+		await vi.waitFor(() => expect(_internals.state.byScripthash.has(msScripthash)).toBe(false));
+		expect(notifyMock).not.toHaveBeenCalled();
+
+		const row = db
+			.prepare("SELECT COUNT(*) AS n FROM notified_txids WHERE wallet_kind = 'multisig' AND txid = ?")
+			.get(ghostTxid) as { n: number };
+		expect(row.n).toBe(0);
 	});
 });
