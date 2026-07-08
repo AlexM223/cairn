@@ -7,7 +7,7 @@
 // startsWith('/admin') — the latter would also catch an unrelated future
 // route like /admin-help.
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { db } from '$lib/server/db';
 import { registerUser, createSession, SESSION_COOKIE } from '$lib/server/auth';
 import { setSetting } from '$lib/server/settings';
@@ -232,6 +232,74 @@ describe('handle — fallback CSP only fills in when resolve() has not already s
 		const { event } = makeEvent('/_app/immutable/chunks/abc123.js');
 		const res = await handle({ event, resolve: async () => new Response('ok', { status: 200 }) });
 		expect(res.headers.get('Content-Security-Policy')).toContain("script-src 'self'");
+	});
+});
+
+// connect-src widening for secureRedirect.ts's cross-port probe (cairn-lme4,
+// follow-up to cairn-ed01). connect-src 'self' never matched the HTTPS
+// listener's own (different) port, so maybeRedirectToSecure()'s fetch was
+// blocked at the CSP layer for every browser, not just first-time ones.
+describe('handle — CSP connect-src widened only when an HTTPS listener is configured (cairn-lme4)', () => {
+	const RENDERED_CSP =
+		"default-src 'self'; script-src 'self' 'nonce-abc123'; style-src 'self' 'unsafe-inline'; " +
+		"img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; " +
+		"base-uri 'self'; form-action 'self'";
+
+	const saved: Record<string, string | undefined> = {};
+	beforeEach(() => {
+		saved.CAIRN_HTTPS_PORT = process.env.CAIRN_HTTPS_PORT;
+		saved.CAIRN_HTTPS_EXTERNAL_PORT = process.env.CAIRN_HTTPS_EXTERNAL_PORT;
+		delete process.env.CAIRN_HTTPS_PORT;
+		delete process.env.CAIRN_HTTPS_EXTERNAL_PORT;
+	});
+	afterEach(() => {
+		for (const k of ['CAIRN_HTTPS_PORT', 'CAIRN_HTTPS_EXTERNAL_PORT']) {
+			if (saved[k] === undefined) delete process.env[k];
+			else process.env[k] = saved[k];
+		}
+	});
+
+	async function resolveWithCsp(csp: string): Promise<Response> {
+		const { event } = makeEvent('/_app/immutable/chunks/abc123.js');
+		return handle({
+			event,
+			resolve: async () =>
+				new Response('ok', { status: 200, headers: { 'Content-Security-Policy': csp } })
+		});
+	}
+
+	it("appends https://*:<port> to connect-src when an HTTPS listener is configured, leaving every other directive (and the nonce) untouched", async () => {
+		process.env.CAIRN_HTTPS_EXTERNAL_PORT = '3212';
+		const res = await resolveWithCsp(RENDERED_CSP);
+		const csp = res.headers.get('Content-Security-Policy');
+		expect(csp).toContain("connect-src 'self' https://*:3212");
+		expect(csp).toContain("script-src 'self' 'nonce-abc123'");
+		expect(csp).toBe(
+			RENDERED_CSP.replace("connect-src 'self'", "connect-src 'self' https://*:3212")
+		);
+	});
+
+	it('leaves connect-src exactly as SvelteKit set it when no HTTPS listener is configured', async () => {
+		const res = await resolveWithCsp(RENDERED_CSP);
+		expect(res.headers.get('Content-Security-Policy')).toBe(RENDERED_CSP);
+	});
+
+	it('does not double-append the port on a second pass over the same already-widened header', async () => {
+		process.env.CAIRN_HTTPS_EXTERNAL_PORT = '3212';
+		const widened = RENDERED_CSP.replace("connect-src 'self'", "connect-src 'self' https://*:3212");
+		const res = await resolveWithCsp(widened);
+		const csp = res.headers.get('Content-Security-Policy');
+		expect(csp).toBe(widened);
+		expect(csp?.match(/https:\/\/\*:3212/g)?.length).toBe(1);
+	});
+
+	it('never widens the static fallback CSP (asset path with no pre-existing header), even when an HTTPS listener is configured', async () => {
+		process.env.CAIRN_HTTPS_EXTERNAL_PORT = '3212';
+		const { event } = makeEvent('/_app/immutable/chunks/abc123.js');
+		const res = await handle({ event, resolve: async () => new Response('ok', { status: 200 }) });
+		const csp = res.headers.get('Content-Security-Policy');
+		expect(csp).toContain("connect-src 'self'");
+		expect(csp).not.toContain('https://*:');
 	});
 });
 

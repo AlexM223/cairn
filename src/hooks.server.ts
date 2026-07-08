@@ -16,6 +16,7 @@ import { startFirstSync } from '$lib/server/syncStatus';
 import { migratePlaintextSecretsAtRest } from '$lib/server/secretsMigration';
 import { migrateInstanceMode } from '$lib/server/instanceModeMigration';
 import { ensureDefaultAgreementVersion } from '$lib/server/disclosures';
+import { httpsExternalPort } from '$lib/server/httpsPort';
 
 const httpLog = childLogger('http');
 const errLog = childLogger('error');
@@ -256,6 +257,30 @@ const CSP =
 	"img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; " +
 	"base-uri 'self'; form-action 'self'";
 
+// Widen a rendered page's connect-src to allow secureRedirect.ts's probe
+// fetch (cairn-lme4, follow-up to cairn-ed01). connect-src 'self' only
+// matches the page's own exact scheme+host+port, but maybeRedirectToSecure()
+// deliberately fetches a DIFFERENT port — Cairn's own HTTPS listener, which
+// Umbrel maps to a different external port than plain HTTP (httpsPort.ts) —
+// to detect whether this browser has already trusted that listener's
+// self-signed cert. Unwidened, the fetch was blocked outright at the CSP
+// layer (it never even reached the network), so the auto-hop silently never
+// fired for anyone. A wildcard host + the specific port is as narrow as CSP3
+// host-source syntax allows: nothing changes when no HTTPS listener is
+// configured, and even when one is, only that exact port becomes reachable.
+// No-op if the port is already present, so repeat calls on one response are
+// harmless.
+function widenConnectSrcForHttpsListener(csp: string): string {
+	const port = httpsExternalPort();
+	if (port === null) return csp;
+
+	const source = `https://*:${port}`;
+	return csp.replace(/connect-src([^;]*)/, (match, rest: string) => {
+		const already = rest.trim().split(/\s+/).filter(Boolean).includes(source);
+		return already ? match : `connect-src${rest} ${source}`;
+	});
+}
+
 function applySecurityHeaders(response: Response, isHttps: boolean): Response {
 	response.headers.set('X-Frame-Options', 'DENY');
 	response.headers.set('X-Content-Type-Options', 'nosniff');
@@ -268,6 +293,11 @@ function applySecurityHeaders(response: Response, isHttps: boolean): Response {
 	// exact hydration-blocking bug (cairn-ed01) kit.csp exists to fix.
 	if (!response.headers.has('Content-Security-Policy')) {
 		response.headers.set('Content-Security-Policy', CSP);
+	} else {
+		const existing = response.headers.get('Content-Security-Policy');
+		if (existing) {
+			response.headers.set('Content-Security-Policy', widenConnectSrcForHttpsListener(existing));
+		}
 	}
 	// Only over HTTPS (mirrors auth.ts's cookieSecure() protocol check) — an
 	// Umbrel/LAN deployment that intentionally runs plain HTTP must not get an
