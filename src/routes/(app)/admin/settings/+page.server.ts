@@ -42,7 +42,8 @@ export const actions: Actions = {
 		return { agreementSaved: true, agreementVersion: saved.version };
 	},
 
-	save: async ({ request }) => {
+	save: async ({ request, locals }) => {
+		if (!locals.user?.isAdmin) return fail(403, { error: 'Admin access required.' });
 		const form = await request.formData();
 
 		const registrationMode = String(form.get('registrationMode') ?? 'invite');
@@ -130,7 +131,8 @@ export const actions: Actions = {
 		return { saved: true };
 	},
 
-	testElectrum: async ({ request }) => {
+	testElectrum: async ({ request, locals }) => {
+		if (!locals.user?.isAdmin) return fail(403, { error: 'Admin access required.' });
 		const form = await request.formData();
 		const host = String(form.get('electrumHost') ?? '').trim();
 		const port = Number(form.get('electrumPort'));
@@ -145,7 +147,8 @@ export const actions: Actions = {
 		return { electrumTest: result };
 	},
 
-	testEsplora: async ({ request }) => {
+	testEsplora: async ({ request, locals }) => {
+		if (!locals.user?.isAdmin) return fail(403, { error: 'Admin access required.' });
 		const form = await request.formData();
 		const url = String(form.get('esploraUrl') ?? '').trim();
 		if (!url)

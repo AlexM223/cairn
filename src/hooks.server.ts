@@ -1,4 +1,4 @@
-import { redirect } from '@sveltejs/kit';
+import { error, redirect } from '@sveltejs/kit';
 import type { Handle, HandleServerError } from '@sveltejs/kit';
 import { randomBytes } from 'node:crypto';
 import { getSessionUser, SESSION_COOKIE, bootstrapAdminFromEnv } from '$lib/server/auth';
@@ -18,6 +18,65 @@ import { ensureDefaultAgreementVersion } from '$lib/server/disclosures';
 
 const httpLog = childLogger('http');
 const errLog = childLogger('error');
+const adminGuardLog = childLogger('admin-guard');
+
+/**
+ * Process-level crash guard (cairn-ldvt-adjacent).
+ *
+ * There was previously no `process.on('uncaughtException' | 'unhandledRejection')`
+ * anywhere in the app, so a stray throw (e.g. inside the SSE heartbeat
+ * setInterval) or rejection (e.g. an Electrum data-listener error) killed the
+ * whole process for every user with no logged reason.
+ *
+ * hooks.server.ts is the one seam SvelteKit guarantees to load in every
+ * launch mode this app supports: server.mjs's production wrapper (via its
+ * `await import('./build/handler.js')`), adapter-node's own default
+ * `build/index.js` entry point (unused by our Dockerfile/package.json today,
+ * but a valid alternate launch mode), and `vite dev` / `vite preview`. That
+ * makes this the right place for the *real*, logger-backed version of the
+ * guard — server.mjs additionally installs a console.error-only fallback of
+ * its own for the brief boot window before this module has loaded (DB open,
+ * migrations, Electrum pool — see server.mjs's comment), since it can't
+ * import $lib/server/logger from a plain, alias-unaware Node script.
+ *
+ * `removeAllListeners` below intentionally replaces (not stacks on top of)
+ * any fallback listeners server.mjs already installed, so production logs
+ * end up in the real structured logger once it's available instead of being
+ * double-logged by both handlers. The `globalThis` flag guards against this
+ * module's top-level code re-running more than once in the same process
+ * (e.g. Vite SSR module invalidation in `vite dev`), which would otherwise
+ * stack duplicate listeners on itself.
+ */
+declare global {
+	// eslint-disable-next-line no-var
+	var __cairnProcessGuardInstalled: boolean | undefined;
+}
+if (!globalThis.__cairnProcessGuardInstalled) {
+	globalThis.__cairnProcessGuardInstalled = true;
+
+	const processLog = childLogger('process');
+
+	process.removeAllListeners('uncaughtException');
+	process.removeAllListeners('unhandledRejection');
+
+	process.on('uncaughtException', (err) => {
+		processLog.error({ err }, 'uncaughtException — exiting');
+		// A synchronous throw means the process state is unknown. This is a
+		// wallet app — never keep serving requests in an undefined state.
+		// Exit non-zero so the container/supervisor restart policy takes over.
+		process.exit(1);
+	});
+
+	process.on('unhandledRejection', (reason) => {
+		// Log-only, deliberately NOT process.exit() here: a single benign
+		// stray rejection (e.g. a fire-and-forget promise somewhere in a
+		// dependency) would otherwise turn a harmless event into a crash
+		// loop. uncaughtException above still exits, because a genuine
+		// synchronous throw leaves the process in a genuinely unknown state,
+		// which unhandledRejection does not.
+		processLog.error({ err: reason }, 'unhandledRejection (not exiting — see comment)');
+	});
+}
 
 // Non-interactive admin bootstrap for deployment tooling (Umbrel/Docker set
 // CAIRN_ADMIN_PASSWORD / APP_PASSWORD). Runs once at server start; never throws.
@@ -140,6 +199,35 @@ function redactPath(pathname: string): string {
 	return pathname.split('/').map(redactSegment).join('/');
 }
 
+/**
+ * True for any state-changing (non-GET/HEAD) request to /admin or an
+ * /admin/* route — the boundary the Layer-2 backstop below blocks. Exported
+ * as a pure predicate so it's unit-testable without driving the full
+ * handle() pipeline. Exact boundary match (`=== '/admin'` or
+ * `startsWith('/admin/')`), NOT a bare `startsWith('/admin')` — the latter
+ * would also catch an unrelated future route like `/admin-help`.
+ *
+ * Matches against the DECODED path, the same way SvelteKit's router resolves
+ * a request to a route/action. Without this, a percent-encoded spelling like
+ * `/%61dmin/users` (%61 = 'a') would slip past a raw string compare here while
+ * the router still decodes and dispatches it to the real /admin/users action —
+ * a silent hole in the backstop. `decodeURI` (not `decodeURIComponent`)
+ * mirrors SvelteKit's own decode_pathname: it leaves reserved chars like %2F
+ * encoded, so `/admin%2Fusers` stays non-matching here AND 404s in the router,
+ * i.e. the two agree. A malformed %-escape makes decodeURI throw; we fail safe
+ * to the raw path (which, for an /admin* target, still matches and blocks).
+ */
+export function isAdminMutationRequest(method: string, pathname: string): boolean {
+	if (method === 'GET' || method === 'HEAD') return false;
+	let decoded = pathname;
+	try {
+		decoded = decodeURI(pathname);
+	} catch {
+		/* malformed %-escape — keep the raw path; an /admin* target still blocks */
+	}
+	return decoded === '/admin' || decoded.startsWith('/admin/');
+}
+
 export const handle: Handle = async ({ event, resolve }) => {
 	event.locals.user = getSessionUser(event.cookies.get(SESSION_COOKIE));
 	// Resolve feature flags once per request, right after the user is known, so
@@ -149,6 +237,41 @@ export const handle: Handle = async ({ event, resolve }) => {
 
 	const { pathname } = event.url;
 	if (isAsset(pathname)) return resolve(event);
+
+	const method = event.request.method;
+
+	// Layer-2 defense-in-depth ONLY (cairn-fame, cairn-jnlx, cairn-bgv1). The
+	// real fix is Layer 1: SvelteKit form `actions` do NOT run a parent route's
+	// load(), so /admin/+layout.server.ts's isAdmin gate never fires for a POST
+	// (or other state-changing) request to an admin action — only a GET page
+	// load runs the layout. Three admin actions shipped without their own
+	// requireAdmin/isAdmin re-check and were exploitable by an unauthenticated
+	// caller. This hook blocks any non-GET/HEAD request under /admin as a
+	// backstop, but it must NEVER be treated as sufficient on its own. The
+	// predicate below now matches against the DECODED path (see its doc
+	// comment), so an encoded spelling like `/%61dmin/users` is caught and no
+	// longer slips past — but that hardening only closes one gap; it doesn't
+	// make this hook a substitute for real authorization. Layer 1 — the
+	// per-action requireUser/requireAdmin re-check present in every admin
+	// action — remains the actual enforcement boundary and must never be
+	// relaxed just because this hook exists.
+	if (isAdminMutationRequest(method, pathname)) {
+		const user = event.locals.user;
+		if (!user) {
+			adminGuardLog.warn(
+				{ method, path: redactPath(pathname) },
+				'admin guard: blocked unauthenticated non-GET request'
+			);
+			error(401, 'Authentication required');
+		}
+		if (!user.isAdmin) {
+			adminGuardLog.warn(
+				{ method, path: redactPath(pathname), userId: user.id },
+				'admin guard: blocked non-admin non-GET request'
+			);
+			error(403, 'Admin access required');
+		}
+	}
 
 	// The vault → multisig-wallet rename moved every /vaults route; old
 	// bookmarks and history entries should land on the equivalent page, not a
@@ -160,7 +283,6 @@ export const handle: Handle = async ({ event, resolve }) => {
 		redirect(301, `${target}${event.url.search}`);
 	}
 
-	const method = event.request.method;
 	const path = redactPath(pathname);
 	const start = performance.now();
 
