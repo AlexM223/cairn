@@ -45,9 +45,9 @@ const FP_B = '11223344';
 beforeEach(wipe);
 
 describe('detectCosignerContacts', () => {
-	it('matches a fingerprint held by an accepted contact', () => {
-		const me = mkUser();
-		const friend = mkUser();
+	it('matches a fingerprint held by an accepted contact', async () => {
+		const me = await mkUser();
+		const friend = await mkUser();
 		makeContacts(me.id, friend.id);
 		giveWallet(friend.id, FP_A);
 
@@ -57,24 +57,24 @@ describe('detectCosignerContacts', () => {
 		expect(matches[0].contactUserId).toBe(friend.id);
 	});
 
-	it('does NOT match a stranger (anti-enumeration)', () => {
-		const me = mkUser();
-		const stranger = mkUser(); // no contact relationship
+	it('does NOT match a stranger (anti-enumeration)', async () => {
+		const me = await mkUser();
+		const stranger = await mkUser(); // no contact relationship
 		giveWallet(stranger.id, FP_A);
 		expect(detectCosignerContacts(me.id, [FP_A])).toEqual([]);
 	});
 
-	it('ignores the unknown-fingerprint sentinel and malformed input', () => {
-		const me = mkUser();
-		const friend = mkUser();
+	it('ignores the unknown-fingerprint sentinel and malformed input', async () => {
+		const me = await mkUser();
+		const friend = await mkUser();
 		makeContacts(me.id, friend.id);
 		giveWallet(friend.id, '00000000');
 		expect(detectCosignerContacts(me.id, ['00000000', 'nothex', ''])).toEqual([]);
 	});
 
-	it('matches a contact who holds the key inside a multisig, not just single-sig', () => {
-		const me = mkUser();
-		const friend = mkUser();
+	it('matches a contact who holds the key inside a multisig, not just single-sig', async () => {
+		const me = await mkUser();
+		const friend = await mkUser();
 		makeContacts(me.id, friend.id);
 		const ms = db
 			.prepare(
@@ -90,16 +90,16 @@ describe('detectCosignerContacts', () => {
 		expect(matches[0].contactUserId).toBe(friend.id);
 	});
 
-	it('matches regardless of contact-row direction and is case-insensitive', () => {
-		const me = mkUser();
-		const friend = mkUser();
+	it('matches regardless of contact-row direction and is case-insensitive', async () => {
+		const me = await mkUser();
+		const friend = await mkUser();
 		makeContacts(friend.id, me.id); // friend initiated
 		giveWallet(friend.id, FP_A);
 		expect(detectCosignerContacts(me.id, [FP_A.toUpperCase()]).length).toBe(1);
 	});
 
-	it('returns empty when the user has no contacts', () => {
-		const me = mkUser();
+	it('returns empty when the user has no contacts', async () => {
+		const me = await mkUser();
 		giveWallet(me.id, FP_A); // my own key doesn't count as a contact
 		expect(detectCosignerContacts(me.id, [FP_A])).toEqual([]);
 	});
@@ -141,8 +141,8 @@ function giveMultisigKey(userId: number, name: string, xpub: string): number {
 }
 
 describe('detectXpubReuse (cairn-1kc3.4)', () => {
-	it('finds an xpub already stored as one of the user\'s single-sig wallets', () => {
-		const me = mkUser();
+	it('finds an xpub already stored as one of the user\'s single-sig wallets', async () => {
+		const me = await mkUser();
 		const id = giveSingleSigXpub(me.id, 'Daily wallet', xpubAt(1));
 		const matches = detectXpubReuse(me.id, [xpubAt(1), xpubAt(2)]);
 		expect(matches).toEqual([
@@ -150,8 +150,8 @@ describe('detectXpubReuse (cairn-1kc3.4)', () => {
 		]);
 	});
 
-	it("finds an xpub already stored as a cosigner key in another of the user's multisigs", () => {
-		const me = mkUser();
+	it("finds an xpub already stored as a cosigner key in another of the user's multisigs", async () => {
+		const me = await mkUser();
 		const msId = giveMultisigKey(me.id, 'Old vault', xpubAt(3));
 		const matches = detectXpubReuse(me.id, [xpubAt(3)]);
 		expect(matches).toEqual([
@@ -159,8 +159,8 @@ describe('detectXpubReuse (cairn-1kc3.4)', () => {
 		]);
 	});
 
-	it('matches through SLIP-132 aliases in either direction', () => {
-		const me = mkUser();
+	it('matches through SLIP-132 aliases in either direction', async () => {
+		const me = await mkUser();
 		giveSingleSigXpub(me.id, 'Zpub wallet', asZpub(xpubAt(4)));
 		// Stored as Zpub, offered as xpub…
 		expect(detectXpubReuse(me.id, [xpubAt(4)])).toHaveLength(1);
@@ -169,16 +169,16 @@ describe('detectXpubReuse (cairn-1kc3.4)', () => {
 		expect(detectXpubReuse(me.id, [asZpub(xpubAt(5))])).toHaveLength(1);
 	});
 
-	it("never matches another user's rows (no enumeration surface)", () => {
-		const me = mkUser();
-		const other = mkUser();
+	it("never matches another user's rows (no enumeration surface)", async () => {
+		const me = await mkUser();
+		const other = await mkUser();
 		giveSingleSigXpub(other.id, 'Their wallet', xpubAt(6));
 		giveMultisigKey(other.id, 'Their vault', xpubAt(7));
 		expect(detectXpubReuse(me.id, [xpubAt(6), xpubAt(7)])).toEqual([]);
 	});
 
-	it('ignores garbage input and returns empty on no overlap', () => {
-		const me = mkUser();
+	it('ignores garbage input and returns empty on no overlap', async () => {
+		const me = await mkUser();
 		giveSingleSigXpub(me.id, 'Wallet', xpubAt(8));
 		expect(detectXpubReuse(me.id, ['not-an-xpub', ''])).toEqual([]);
 		expect(detectXpubReuse(me.id, [xpubAt(9)])).toEqual([]);

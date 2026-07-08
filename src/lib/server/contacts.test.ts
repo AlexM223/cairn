@@ -91,9 +91,9 @@ function shareCount(): number {
 }
 
 describe('contact lifecycle (arrange sanity)', () => {
-	it('request → accept makes an accepted contact both sides can see', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('request → accept makes an accepted contact both sides can see', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		befriend(alice, bob);
 
 		expect(areContacts(alice.id, bob.id)).toBe(true);
@@ -104,9 +104,9 @@ describe('contact lifecycle (arrange sanity)', () => {
 });
 
 describe('removeContact revokes multisig access (cairn-cgip, fix cairn-2oex)', () => {
-	it('removing a contact deletes their share and clears their assigned key', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('removing a contact deletes their share and clears their assigned key', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		const contactId = befriend(alice, bob);
 
 		const ms = makeMultisig(alice.id);
@@ -126,9 +126,9 @@ describe('removeContact revokes multisig access (cairn-cgip, fix cairn-2oex)', (
 		expect(areContacts(alice.id, bob.id)).toBe(false);
 	});
 
-	it('revocation is bidirectional and applies when the TARGET side unfriends', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('revocation is bidirectional and applies when the TARGET side unfriends', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		const contactId = befriend(alice, bob); // alice requested; bob is contact_user_id
 
 		const aliceMs = makeMultisig(alice.id, 'Alice vault');
@@ -149,10 +149,10 @@ describe('removeContact revokes multisig access (cairn-cgip, fix cairn-2oex)', (
 		expect(assignedUserOf(bobKey)).toBeNull();
 	});
 
-	it('a third party’s shares survive an unrelated contact removal', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
-		const carol = makeUser('carol@example.com');
+	it('a third party’s shares survive an unrelated contact removal', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
+		const carol = await makeUser('carol@example.com');
 		const bobContactId = befriend(alice, bob);
 		befriend(alice, carol);
 
@@ -166,10 +166,10 @@ describe('removeContact revokes multisig access (cairn-cgip, fix cairn-2oex)', (
 		expect(multisigAccessRole(carol.id, ms)).toBe('viewer'); // untouched
 	});
 
-	it('an uninvolved user cannot remove the relationship (and nothing is revoked)', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
-		const mallory = makeUser('mallory@example.com');
+	it('an uninvolved user cannot remove the relationship (and nothing is revoked)', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
+		const mallory = await makeUser('mallory@example.com');
 		const contactId = befriend(alice, bob);
 		const ms = makeMultisig(alice.id);
 		shareMultisig(alice.id, ms, bob.id, 'viewer');
@@ -186,9 +186,9 @@ describe('removeContact failure atomicity (cairn-lweg)', () => {
 		shouldThrowOnRevoke = false;
 	});
 
-	it('rolls back the contact deletion when revoking shares throws — access is never silently retained', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('rolls back the contact deletion when revoking shares throws — access is never silently retained', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		const contactId = befriend(alice, bob);
 		const ms = makeMultisig(alice.id);
 		const key = makeKey(ms, 0);

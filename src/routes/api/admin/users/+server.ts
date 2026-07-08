@@ -62,7 +62,7 @@ export const POST: RequestHandler = async (event) => {
 				{ status: 400 }
 			);
 
-		const code = mintAdminRecoveryCode(body.id);
+		const code = await mintAdminRecoveryCode(body.id);
 		log.warn({ actorId: admin.id, targetId: body.id }, 'admin minted a recovery code');
 		recordActivity({
 			type: 'account_recovery',

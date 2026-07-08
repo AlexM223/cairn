@@ -56,8 +56,8 @@ describe('POST /api/auth/register/options — public reclaim path removed', () =
 		// First user becomes admin so the target account below isn't the admin
 		// slot; it is left credential-less and passwordless, exactly the shape a
 		// backup restore produces (and exactly what the old reclaim path targeted).
-		registerUser({ email: 'admin@example.com', displayName: 'Admin' });
-		const restored = registerUser({ email: 'restored@example.com', displayName: 'Restored' });
+		await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+		const restored = await registerUser({ email: 'restored@example.com', displayName: 'Restored' });
 
 		const { status, body } = await post({
 			email: 'restored@example.com',
@@ -79,7 +79,7 @@ describe('POST /api/auth/register/options — public reclaim path removed', () =
 	});
 
 	it('a normal new email still gets registration options (the route is not broken)', async () => {
-		registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+		await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
 		const { status, body } = await post({ email: 'fresh@example.com', displayName: 'Fresh' });
 		expect(status).toBe(200);
 		expect(body).toHaveProperty('challenge');

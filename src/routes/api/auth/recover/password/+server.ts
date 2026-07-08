@@ -63,7 +63,7 @@ export const POST: RequestHandler = async (event) => {
 	}
 
 	try {
-		setUserPassword(user.id, password);
+		await setUserPassword(user.id, password);
 	} catch (e) {
 		log.error({ err: e, userId: user.id }, 'recovery set password failed');
 		return json({ error: 'Could not finish recovery.' }, { status: 500 });

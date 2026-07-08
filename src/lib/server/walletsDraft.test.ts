@@ -107,15 +107,17 @@ function wipe(): void {
 
 let userId: number;
 
-beforeEach(() => {
+beforeEach(async () => {
 	wipe();
 	setSetting('registration_mode', 'open');
 	vi.clearAllMocks();
-	userId = registerUser({
-		email: 'user@example.com',
-		password: 'correct horse battery',
-		displayName: 'user'
-	}).id;
+	userId = (
+		await registerUser({
+			email: 'user@example.com',
+			password: 'correct horse battery',
+			displayName: 'user'
+		})
+	).id;
 
 	mocks.scanWallet.mockResolvedValue(SCAN);
 	mocks.findNextUnusedIndex.mockResolvedValue(0);
@@ -187,7 +189,7 @@ describe('getWalletDetail', () => {
 		expect(detail!.scan.confirmed).toBe(100_000);
 
 		expect(await getWalletDetail(userId, 999_999)).toBeNull();
-		const other = registerUser({
+		const other = await registerUser({
 			email: 'other@example.com',
 			password: 'correct horse battery',
 			displayName: 'other'
@@ -228,7 +230,7 @@ describe('nextReceiveAddress cursor', () => {
 
 	it('returns null for a wallet the caller does not own', async () => {
 		const w = createWallet(userId, { name: 'Spending', xpub: ZPUB });
-		const other = registerUser({
+		const other = await registerUser({
 			email: 'other@example.com',
 			password: 'correct horse battery',
 			displayName: 'other'
@@ -324,7 +326,7 @@ describe('buildDraft coin control + persistence', () => {
 
 	it('refuses to build for an unknown or foreign wallet', async () => {
 		const w = createWallet(userId, { name: 'Spending', xpub: ZPUB });
-		const other = registerUser({
+		const other = await registerUser({
 			email: 'other@example.com',
 			password: 'correct horse battery',
 			displayName: 'other'

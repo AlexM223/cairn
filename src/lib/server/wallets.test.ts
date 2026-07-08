@@ -33,15 +33,15 @@ function makeWallet(userId: number): number {
 }
 
 describe('tx labels', () => {
-	it('getLabels returns an empty record for an owned wallet with no labels', () => {
-		const user = makeUser('owner@example.com');
+	it('getLabels returns an empty record for an owned wallet with no labels', async () => {
+		const user = await makeUser('owner@example.com');
 		const walletId = makeWallet(user.id);
 		expect(getLabels(user.id, walletId)).toEqual({});
 	});
 
-	it('getLabels and setLabel return null for missing or non-owned wallets', () => {
-		const owner = makeUser('owner@example.com');
-		const other = makeUser('other@example.com');
+	it('getLabels and setLabel return null for missing or non-owned wallets', async () => {
+		const owner = await makeUser('owner@example.com');
+		const other = await makeUser('other@example.com');
 		const walletId = makeWallet(owner.id);
 
 		expect(getLabels(other.id, walletId)).toBeNull();
@@ -52,8 +52,8 @@ describe('tx labels', () => {
 		expect(getLabels(owner.id, walletId)).toEqual({});
 	});
 
-	it('setLabel inserts a trimmed label and getLabels returns it keyed by txid', () => {
-		const user = makeUser('owner@example.com');
+	it('setLabel inserts a trimmed label and getLabels returns it keyed by txid', async () => {
+		const user = await makeUser('owner@example.com');
 		const walletId = makeWallet(user.id);
 
 		expect(setLabel(user.id, walletId, TXID_A, '  rent  ')).toEqual({
@@ -67,8 +67,8 @@ describe('tx labels', () => {
 		});
 	});
 
-	it('setLabel upserts: relabeling the same txid replaces the old label', () => {
-		const user = makeUser('owner@example.com');
+	it('setLabel upserts: relabeling the same txid replaces the old label', async () => {
+		const user = await makeUser('owner@example.com');
 		const walletId = makeWallet(user.id);
 
 		setLabel(user.id, walletId, TXID_A, 'rent');
@@ -80,8 +80,8 @@ describe('tx labels', () => {
 		expect(n).toBe(1);
 	});
 
-	it(`setLabel caps labels at ${TX_LABEL_MAX} characters`, () => {
-		const user = makeUser('owner@example.com');
+	it(`setLabel caps labels at ${TX_LABEL_MAX} characters`, async () => {
+		const user = await makeUser('owner@example.com');
 		const walletId = makeWallet(user.id);
 
 		const long = 'x'.repeat(TX_LABEL_MAX + 40);
@@ -90,8 +90,8 @@ describe('tx labels', () => {
 		expect(getLabels(user.id, walletId)?.[TXID_A]).toHaveLength(TX_LABEL_MAX);
 	});
 
-	it('setLabel with an empty or whitespace label clears an existing one', () => {
-		const user = makeUser('owner@example.com');
+	it('setLabel with an empty or whitespace label clears an existing one', async () => {
+		const user = await makeUser('owner@example.com');
 		const walletId = makeWallet(user.id);
 
 		setLabel(user.id, walletId, TXID_A, 'rent');
@@ -101,8 +101,8 @@ describe('tx labels', () => {
 		expect(setLabel(user.id, walletId, TXID_B, '')).toEqual({ txid: TXID_B, label: '' });
 	});
 
-	it('labels are scoped per wallet: same txid can carry different labels', () => {
-		const user = makeUser('owner@example.com');
+	it('labels are scoped per wallet: same txid can carry different labels', async () => {
+		const user = await makeUser('owner@example.com');
 		const w1 = makeWallet(user.id);
 		const w2 = makeWallet(user.id);
 
@@ -112,8 +112,8 @@ describe('tx labels', () => {
 		expect(getLabels(user.id, w2)).toEqual({ [TXID_A]: 'savings top-up' });
 	});
 
-	it('deleting a wallet cascades away its labels', () => {
-		const user = makeUser('owner@example.com');
+	it('deleting a wallet cascades away its labels', async () => {
+		const user = await makeUser('owner@example.com');
 		const walletId = makeWallet(user.id);
 		setLabel(user.id, walletId, TXID_A, 'rent');
 
@@ -139,8 +139,8 @@ describe('createWallet activity event (cairn-cvcu)', () => {
 		db.exec('DELETE FROM events;');
 	});
 
-	it('emits wallet_added into the user feed and the admin log', () => {
-		const user = makeUser('feed@example.com');
+	it('emits wallet_added into the user feed and the admin log', async () => {
+		const user = await makeUser('feed@example.com');
 		const summary = createWallet(user.id, { name: 'Cold storage', xpub: ZPUB, deviceType: 'trezor' });
 
 		const feed = listUserFeed(user.id);
@@ -162,8 +162,8 @@ describe('createWallet activity event (cairn-cvcu)', () => {
 		expect(JSON.stringify(admin.events[0].detail)).not.toContain(ZPUB);
 	});
 
-	it('does not emit when creation fails (duplicate key)', () => {
-		const user = makeUser('dup@example.com');
+	it('does not emit when creation fails (duplicate key)', async () => {
+		const user = await makeUser('dup@example.com');
 		createWallet(user.id, { name: 'First', xpub: ZPUB });
 		db.exec('DELETE FROM events;');
 		expect(() => createWallet(user.id, { name: 'Second', xpub: ZPUB })).toThrow(/already/i);
@@ -186,8 +186,8 @@ describe('createWallet key origin (cairn-alw8)', () => {
 		return { fingerprint: row?.master_fingerprint ?? null, path: row?.derivation_path ?? null };
 	}
 
-	it('stores fingerprint and path passed explicitly (device-connect flow)', () => {
-		const user = makeUser('device@example.com');
+	it('stores fingerprint and path passed explicitly (device-connect flow)', async () => {
+		const user = await makeUser('device@example.com');
 		const w = createWallet(user.id, {
 			name: 'Trezor wallet',
 			xpub: ZPUB,
@@ -201,8 +201,8 @@ describe('createWallet key origin (cairn-alw8)', () => {
 		});
 	});
 
-	it('parses and stores an origin embedded in the key string (paste-descriptor flow)', () => {
-		const user = makeUser('descriptor@example.com');
+	it('parses and stores an origin embedded in the key string (paste-descriptor flow)', async () => {
+		const user = await makeUser('descriptor@example.com');
 		const w = createWallet(user.id, {
 			name: 'Pasted',
 			xpub: `[73c5da0a/84'/0'/0']${ZPUB}`
@@ -215,8 +215,8 @@ describe('createWallet key origin (cairn-alw8)', () => {
 		expect(getWallet(user.id, w.id)?.xpub).toBe(ZPUB);
 	});
 
-	it('embedded origin wins over the explicit fields', () => {
-		const user = makeUser('conflict@example.com');
+	it('embedded origin wins over the explicit fields', async () => {
+		const user = await makeUser('conflict@example.com');
 		const w = createWallet(user.id, {
 			xpub: `[73c5da0a/84'/0'/0']${ZPUB}`,
 			fingerprint: 'deadbeef',
@@ -228,16 +228,16 @@ describe('createWallet key origin (cairn-alw8)', () => {
 		});
 	});
 
-	it('regression guard: a bare-xpub import stores null origin (the pre-fix state)', () => {
-		const user = makeUser('bare@example.com');
+	it('regression guard: a bare-xpub import stores null origin (the pre-fix state)', async () => {
+		const user = await makeUser('bare@example.com');
 		const w = createWallet(user.id, { name: 'Bare', xpub: ZPUB });
 		// This is exactly why hardware signing was broken: no fingerprint means
 		// transactions.ts passes origin: null and the PSBT gets no bip32Derivation.
 		expect(originOf(user.id, w.id)).toEqual({ fingerprint: null, path: null });
 	});
 
-	it('treats the all-zero placeholder fingerprint as unknown, not an error', () => {
-		const user = makeUser('coldcard-placeholder@example.com');
+	it('treats the all-zero placeholder fingerprint as unknown, not an error', async () => {
+		const user = await makeUser('coldcard-placeholder@example.com');
 		const w = createWallet(user.id, {
 			xpub: ZPUB,
 			fingerprint: '00000000', // ColdCard-parser placeholder for "unknown"
@@ -246,8 +246,8 @@ describe('createWallet key origin (cairn-alw8)', () => {
 		expect(originOf(user.id, w.id)).toEqual({ fingerprint: null, path: "m/84'/0'/0'" });
 	});
 
-	it('rejects a malformed fingerprint or path loudly instead of dropping it', () => {
-		const user = makeUser('typo@example.com');
+	it('rejects a malformed fingerprint or path loudly instead of dropping it', async () => {
+		const user = await makeUser('typo@example.com');
 		expect(() => createWallet(user.id, { xpub: ZPUB, fingerprint: '73c5da0' })).toThrow(
 			/fingerprint/i
 		);
@@ -322,7 +322,7 @@ describe('created wallet signs on hardware (cairn-alw8 end-to-end)', () => {
 	}
 
 	it('a wallet imported with its origin yields a PSBT the Trezor driver accepts', async () => {
-		const user = makeUser('e2e-fixed@example.com');
+		const user = await makeUser('e2e-fixed@example.com');
 		const w = createWallet(user.id, { xpub: `[73c5da0a/84'/0'/0']${ZPUB}` });
 
 		const psbt = await psbtFromWalletRow(user.id, w.id);
@@ -336,7 +336,7 @@ describe('created wallet signs on hardware (cairn-alw8 end-to-end)', () => {
 	});
 
 	it('regression: a bare-xpub wallet still produces the origin-free PSBT the driver rejects', async () => {
-		const user = makeUser('e2e-broken@example.com');
+		const user = await makeUser('e2e-broken@example.com');
 		const w = createWallet(user.id, { xpub: ZPUB });
 
 		const psbt = await psbtFromWalletRow(user.id, w.id);

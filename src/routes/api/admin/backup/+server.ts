@@ -19,7 +19,7 @@ export const POST: RequestHandler = async (event) => {
 	}
 
 	const exportedAt = new Date().toISOString();
-	const encrypted = encryptBackup(buildBackup(exportedAt), passphrase);
+	const encrypted = await encryptBackup(buildBackup(exportedAt), passphrase);
 	// Record when the last successful instance backup was taken. Shared
 	// groundwork: the notification plan's backup_missing/backup_stale events read
 	// this same key — build it once here, consume it there.

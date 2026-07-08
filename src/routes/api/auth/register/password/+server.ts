@@ -35,7 +35,7 @@ export const POST: RequestHandler = async (event) => {
 	if (wait !== null) return json({ error: tooManyAttemptsMessage(wait) }, { status: 429 });
 
 	try {
-		const user = registerUser({ email, displayName, password, inviteCode });
+		const user = await registerUser({ email, displayName, password, inviteCode });
 		const { token, expiresAt } = createSession(user.id, sessionContextFrom(event));
 		setSessionCookie(event.cookies, token, expiresAt, event.url);
 		return json({ user }, { status: 201 });

@@ -118,11 +118,13 @@ beforeAll(async () => {
 		'DELETE FROM notified_txids; DELETE FROM notification_preferences; DELETE FROM wallets; DELETE FROM sessions; DELETE FROM users; DELETE FROM settings;'
 	);
 	setSetting('registration_mode', 'open');
-	userId = registerUser({
-		email: 'watcher@example.com',
-		password: 'correct horse battery',
-		displayName: 'Watcher'
-	}).id;
+	userId = (
+		await registerUser({
+			email: 'watcher@example.com',
+			password: 'correct horse battery',
+			displayName: 'Watcher'
+		})
+	).id;
 	walletId = createWallet(userId, { name: 'Watched', xpub: XPUB }).id;
 
 	const derived = deriveAddress(parseXpub(XPUB), 0, 0);

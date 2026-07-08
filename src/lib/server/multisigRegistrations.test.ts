@@ -50,8 +50,8 @@ function makeMultisig(userId: number, name = 'Family savings'): number {
 }
 
 describe('ledger multisig registrations', () => {
-	it('listLedgerRegistrations returns [] for an owned multisig with none, null for a missing multisig', () => {
-		const user = makeUser('owner@example.com');
+	it('listLedgerRegistrations returns [] for an owned multisig with none, null for a missing multisig', async () => {
+		const user = await makeUser('owner@example.com');
 		const multisigId = makeMultisig(user.id);
 
 		expect(listLedgerRegistrations(user.id, multisigId)).toEqual([]);
@@ -60,8 +60,8 @@ describe('ledger multisig registrations', () => {
 		expect(listLedgerRegistrations(user.id, -1)).toBeNull();
 	});
 
-	it('saveLedgerRegistration stores a registration and get/list read it back', () => {
-		const user = makeUser('owner@example.com');
+	it('saveLedgerRegistration stores a registration and get/list read it back', async () => {
+		const user = await makeUser('owner@example.com');
 		const multisigId = makeMultisig(user.id);
 
 		const saved = saveLedgerRegistration(user.id, multisigId, {
@@ -82,8 +82,8 @@ describe('ledger multisig registrations', () => {
 		expect(listLedgerRegistrations(user.id, multisigId)).toEqual([saved]);
 	});
 
-	it('normalizes fingerprint, HMAC, and policy id to lowercase; policyId is optional', () => {
-		const user = makeUser('owner@example.com');
+	it('normalizes fingerprint, HMAC, and policy id to lowercase; policyId is optional', async () => {
+		const user = await makeUser('owner@example.com');
 		const multisigId = makeMultisig(user.id);
 
 		const saved = saveLedgerRegistration(user.id, multisigId, {
@@ -101,8 +101,8 @@ describe('ledger multisig registrations', () => {
 		expect(getLedgerRegistration(user.id, multisigId, FP_B.toLowerCase())).toEqual(saved);
 	});
 
-	it('re-registering the same device upserts instead of duplicating', () => {
-		const user = makeUser('owner@example.com');
+	it('re-registering the same device upserts instead of duplicating', async () => {
+		const user = await makeUser('owner@example.com');
 		const multisigId = makeMultisig(user.id);
 
 		const first = saveLedgerRegistration(user.id, multisigId, {
@@ -131,8 +131,8 @@ describe('ledger multisig registrations', () => {
 		expect(n).toBe(1);
 	});
 
-	it('keeps one registration per device: two Ledgers on the same multisig coexist', () => {
-		const user = makeUser('owner@example.com');
+	it('keeps one registration per device: two Ledgers on the same multisig coexist', async () => {
+		const user = await makeUser('owner@example.com');
 		const multisigId = makeMultisig(user.id);
 
 		const a = saveLedgerRegistration(user.id, multisigId, {
@@ -151,8 +151,8 @@ describe('ledger multisig registrations', () => {
 		expect(getLedgerRegistration(user.id, multisigId, FP_B)?.policyHmac).toBe(HMAC_B);
 	});
 
-	it('rejects malformed input with invalid_registration', () => {
-		const user = makeUser('owner@example.com');
+	it('rejects malformed input with invalid_registration', async () => {
+		const user = await makeUser('owner@example.com');
 		const multisigId = makeMultisig(user.id);
 
 		const bad: { masterFp?: unknown; policyName?: unknown; policyHmac?: unknown; policyId?: unknown }[] = [
@@ -186,8 +186,8 @@ describe('ledger multisig registrations', () => {
 		expect(saved.policyName).toHaveLength(POLICY_NAME_MAX);
 	});
 
-	it('saving against a missing multisig throws multisig_not_found', () => {
-		const user = makeUser('owner@example.com');
+	it('saving against a missing multisig throws multisig_not_found', async () => {
+		const user = await makeUser('owner@example.com');
 		try {
 			saveLedgerRegistration(user.id, 12345, {
 				masterFp: FP_A,
@@ -201,9 +201,9 @@ describe('ledger multisig registrations', () => {
 		}
 	});
 
-	it('isolates registrations per user: no read or write across owners', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('isolates registrations per user: no read or write across owners', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		const aliceMultisig = makeMultisig(alice.id, 'Alice multisig');
 
 		const saved = saveLedgerRegistration(alice.id, aliceMultisig, {
@@ -231,10 +231,10 @@ describe('ledger multisig registrations', () => {
 		expect(listLedgerRegistrations(alice.id, aliceMultisig)).toEqual([saved]);
 	});
 
-	it('a cosigner-role share can fetch AND save registrations; a viewer cannot (cairn-o1dp.2)', () => {
-		const alice = makeUser('alice@example.com');
-		const carl = makeUser('carl@example.com'); // cosigner
-		const vera = makeUser('vera@example.com'); // viewer
+	it('a cosigner-role share can fetch AND save registrations; a viewer cannot (cairn-o1dp.2)', async () => {
+		const alice = await makeUser('alice@example.com');
+		const carl = await makeUser('carl@example.com'); // cosigner
+		const vera = await makeUser('vera@example.com'); // viewer
 		const multisigId = makeMultisig(alice.id, 'Shared vault');
 		shareWith(multisigId, alice.id, carl.id, 'cosigner');
 		shareWith(multisigId, alice.id, vera.id, 'viewer');
@@ -269,8 +269,8 @@ describe('ledger multisig registrations', () => {
 		).toThrow(MultisigRegistrationError);
 	});
 
-	it('the (multisig_id, master_fp) uniqueness constraint holds at the database level', () => {
-		const user = makeUser('owner@example.com');
+	it('the (multisig_id, master_fp) uniqueness constraint holds at the database level', async () => {
+		const user = await makeUser('owner@example.com');
 		const multisigId = makeMultisig(user.id);
 		saveLedgerRegistration(user.id, multisigId, {
 			masterFp: FP_A,

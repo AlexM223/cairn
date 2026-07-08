@@ -18,14 +18,16 @@ function wipe(): void {
 
 let userId: number;
 
-beforeEach(() => {
+beforeEach(async () => {
 	wipe();
 	setSetting('registration_mode', 'open');
-	userId = registerUser({
-		email: 'user@example.com',
-		password: 'correct horse battery',
-		displayName: 'user'
-	}).id;
+	userId = (
+		await registerUser({
+			email: 'user@example.com',
+			password: 'correct horse battery',
+			displayName: 'user'
+		})
+	).id;
 });
 
 function event(channel: string, body?: unknown, method = 'PUT'): Parameters<typeof PUT>[0] {

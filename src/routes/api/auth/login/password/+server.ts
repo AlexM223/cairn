@@ -25,7 +25,7 @@ export const POST: RequestHandler = async (event) => {
 	if (wait !== null) return json({ error: tooManyAttemptsMessage(wait) }, { status: 429 });
 
 	try {
-		const user = loginWithPassword(email, password);
+		const user = await loginWithPassword(email, password);
 		noteLoginSuccess(ip, email);
 		const { token, expiresAt } = createSession(user.id, sessionContextFrom(event));
 		setSessionCookie(event.cookies, token, expiresAt, event.url);

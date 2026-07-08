@@ -63,7 +63,7 @@ async function post(body: Record<string, unknown>, grantToken?: string) {
 
 describe('POST /api/auth/recover/password', () => {
 	it('a weak password 400s WITHOUT consuming the grant (order matters)', async () => {
-		const admin = registerAdmin();
+		const admin = await registerAdmin();
 		const { token } = createRecoveryGrant(admin.id);
 
 		const { status, body } = await post({ password: 'short' }, token);
@@ -75,7 +75,7 @@ describe('POST /api/auth/recover/password', () => {
 	});
 
 	it('sets the password, consumes the grant, and starts a real session', async () => {
-		const admin = registerAdmin();
+		const admin = await registerAdmin();
 		const { token } = createRecoveryGrant(admin.id);
 
 		const { status, body, cookies } = await post({ password: 'a whole new password' }, token);
@@ -110,7 +110,7 @@ describe('POST /api/auth/recover/password', () => {
 	});
 
 	it('a grant is single-use: a second completion attempt with the same token fails', async () => {
-		const admin = registerAdmin();
+		const admin = await registerAdmin();
 		const { token } = createRecoveryGrant(admin.id);
 
 		const first = await post({ password: 'first new password' }, token);
@@ -125,7 +125,7 @@ describe('POST /api/auth/recover/password', () => {
 		// Simulates the race the spec calls out: two completion paths sharing one
 		// grant. consumeRecoveryGrant's DELETE...WHERE guard means only the first
 		// caller can ever win, regardless of which path it is.
-		const admin = registerAdmin();
+		const admin = await registerAdmin();
 		const { token } = createRecoveryGrant(admin.id);
 
 		const winner = await post({ password: 'winner password' }, token);

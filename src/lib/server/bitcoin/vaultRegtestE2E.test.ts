@@ -151,7 +151,7 @@ describe.skipIf(!RUN)('vault 2-of-3 regtest E2E through Cairn multisig code (cai
 		const b = await coreCosigner('signer-b');
 
 		// --- Cairn creates the vault (real DB path) ---
-		const user = registerUser({ email: 'a4k@example.com', password: 'correct horse battery', displayName: 'A4K' });
+		const user = await registerUser({ email: 'a4k@example.com', password: 'correct horse battery', displayName: 'A4K' });
 		const keys: NewMultisigKey[] = [cc, a, b].map((c, i) => ({
 			name: `Key ${i + 1}`,
 			category: 'hardware',

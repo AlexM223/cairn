@@ -23,14 +23,16 @@ function wipe(): void {
 
 let userId: number;
 
-beforeEach(() => {
+beforeEach(async () => {
 	wipe();
 	setSetting('registration_mode', 'open');
-	userId = registerUser({
-		email: 'owner@example.com',
-		password: 'correct horse battery',
-		displayName: 'Owner'
-	}).id;
+	userId = (
+		await registerUser({
+			email: 'owner@example.com',
+			password: 'correct horse battery',
+			displayName: 'Owner'
+		})
+	).id;
 });
 
 describe('createApiToken', () => {
@@ -121,12 +123,14 @@ describe('listApiTokens / revokeApiToken', () => {
 		}
 	});
 
-	it('cannot revoke another user\'s token', () => {
-		const other = registerUser({
-			email: 'other@example.com',
-			password: 'correct horse battery',
-			displayName: 'Other'
-		}).id;
+	it('cannot revoke another user\'s token', async () => {
+		const other = (
+			await registerUser({
+				email: 'other@example.com',
+				password: 'correct horse battery',
+				displayName: 'Other'
+			})
+		).id;
 		const { id } = createApiToken(userId, 'mine');
 		expect(revokeApiToken(other, id)).toBe(false);
 		expect(listApiTokens(userId)).toHaveLength(1);

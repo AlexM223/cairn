@@ -96,10 +96,10 @@ function expectShareError(fn: () => unknown, code: ShareError['code']): void {
 }
 
 describe('shareMultisig + multisigAccessRole', () => {
-	it('viewer share: owner resolves owner, contact resolves viewer, stranger resolves null', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
-		const mallory = makeUser('mallory@example.com');
+	it('viewer share: owner resolves owner, contact resolves viewer, stranger resolves null', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
+		const mallory = await makeUser('mallory@example.com');
 		befriend(alice.id, bob.id);
 		const ms = makeMultisig(alice.id);
 
@@ -114,9 +114,9 @@ describe('shareMultisig + multisigAccessRole', () => {
 		]);
 	});
 
-	it('cosigner share with an assigned key claims exactly that key', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('cosigner share with an assigned key claims exactly that key', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		befriend(alice.id, bob.id);
 		const ms = makeMultisig(alice.id);
 		const k1 = makeKey(ms, 0);
@@ -132,9 +132,9 @@ describe('shareMultisig + multisigAccessRole', () => {
 		]);
 	});
 
-	it('cosigner without keys is a valid "decide later" state', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('cosigner without keys is a valid "decide later" state', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		befriend(alice.id, bob.id);
 		const ms = makeMultisig(alice.id);
 		makeKey(ms, 0);
@@ -145,9 +145,9 @@ describe('shareMultisig + multisigAccessRole', () => {
 		expect(listCollaborators(alice.id, ms)[0].assignedKeyIds).toEqual([]);
 	});
 
-	it('re-sharing as viewer downgrades the role AND clears key assignments (upsert path)', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('re-sharing as viewer downgrades the role AND clears key assignments (upsert path)', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		befriend(alice.id, bob.id);
 		const ms = makeMultisig(alice.id);
 		const k1 = makeKey(ms, 0);
@@ -165,9 +165,9 @@ describe('shareMultisig + multisigAccessRole', () => {
 		expect(rows.n).toBe(1);
 	});
 
-	it('listSharedMultisigs shows the wallet from the recipient side with owner identity', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('listSharedMultisigs shows the wallet from the recipient side with owner identity', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		befriend(alice.id, bob.id);
 		const ms = makeMultisig(alice.id, 'Family vault');
 		shareMultisig(alice.id, ms, bob.id, 'viewer');
@@ -186,23 +186,23 @@ describe('shareMultisig + multisigAccessRole', () => {
 	});
 
 	describe('rejections', () => {
-		it('refuses to share with someone who is not an accepted contact', () => {
-			const alice = makeUser('alice@example.com');
-			const mallory = makeUser('mallory@example.com');
+		it('refuses to share with someone who is not an accepted contact', async () => {
+			const alice = await makeUser('alice@example.com');
+			const mallory = await makeUser('mallory@example.com');
 			const ms = makeMultisig(alice.id);
 			expectShareError(() => shareMultisig(alice.id, ms, mallory.id, 'viewer'), 'not_contact');
 			expect(multisigAccessRole(mallory.id, ms)).toBeNull();
 		});
 
-		it('refuses to share with yourself', () => {
-			const alice = makeUser('alice@example.com');
+		it('refuses to share with yourself', async () => {
+			const alice = await makeUser('alice@example.com');
 			const ms = makeMultisig(alice.id);
 			expectShareError(() => shareMultisig(alice.id, ms, alice.id, 'viewer'), 'self');
 		});
 
-		it('refuses an unknown role', () => {
-			const alice = makeUser('alice@example.com');
-			const bob = makeUser('bob@example.com');
+		it('refuses an unknown role', async () => {
+			const alice = await makeUser('alice@example.com');
+			const bob = await makeUser('bob@example.com');
 			befriend(alice.id, bob.id);
 			const ms = makeMultisig(alice.id);
 			expectShareError(
@@ -211,18 +211,18 @@ describe('shareMultisig + multisigAccessRole', () => {
 			);
 		});
 
-		it('a non-owner cannot share someone else’s wallet', () => {
-			const alice = makeUser('alice@example.com');
-			const bob = makeUser('bob@example.com');
-			const carol = makeUser('carol@example.com');
+		it('a non-owner cannot share someone else’s wallet', async () => {
+			const alice = await makeUser('alice@example.com');
+			const bob = await makeUser('bob@example.com');
+			const carol = await makeUser('carol@example.com');
 			befriend(bob.id, carol.id);
 			const ms = makeMultisig(alice.id);
 			expectShareError(() => shareMultisig(bob.id, ms, carol.id, 'viewer'), 'not_owner');
 		});
 
-		it('rejects a key that belongs to a different multisig', () => {
-			const alice = makeUser('alice@example.com');
-			const bob = makeUser('bob@example.com');
+		it('rejects a key that belongs to a different multisig', async () => {
+			const alice = await makeUser('alice@example.com');
+			const bob = await makeUser('bob@example.com');
 			befriend(alice.id, bob.id);
 			const ms = makeMultisig(alice.id);
 			const otherMs = makeMultisig(alice.id, 'Other vault');
@@ -235,10 +235,10 @@ describe('shareMultisig + multisigAccessRole', () => {
 			expect(assignedUserOf(foreignKey)).toBeNull();
 		});
 
-		it('rejects a key already assigned to another collaborator', () => {
-			const alice = makeUser('alice@example.com');
-			const bob = makeUser('bob@example.com');
-			const carol = makeUser('carol@example.com');
+		it('rejects a key already assigned to another collaborator', async () => {
+			const alice = await makeUser('alice@example.com');
+			const bob = await makeUser('bob@example.com');
+			const carol = await makeUser('carol@example.com');
 			befriend(alice.id, bob.id);
 			befriend(alice.id, carol.id);
 			const ms = makeMultisig(alice.id);
@@ -255,9 +255,9 @@ describe('shareMultisig + multisigAccessRole', () => {
 });
 
 describe('updateMultisigShare', () => {
-	it('upgrades viewer to cosigner and assigns keys by shareId', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('upgrades viewer to cosigner and assigns keys by shareId', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		befriend(alice.id, bob.id);
 		const ms = makeMultisig(alice.id);
 		const k1 = makeKey(ms, 0);
@@ -269,9 +269,9 @@ describe('updateMultisigShare', () => {
 		expect(assignedUserOf(k1)).toBe(bob.id);
 	});
 
-	it('rejects an unknown shareId and a shareId owned by someone else', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('rejects an unknown shareId and a shareId owned by someone else', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		befriend(alice.id, bob.id);
 		const ms = makeMultisig(alice.id);
 		shareMultisig(alice.id, ms, bob.id, 'viewer');
@@ -285,9 +285,9 @@ describe('updateMultisigShare', () => {
 });
 
 describe('revokeMultisigShare', () => {
-	it('removes access and unassigns the collaborator’s keys', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('removes access and unassigns the collaborator’s keys', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		befriend(alice.id, bob.id);
 		const ms = makeMultisig(alice.id);
 		const k1 = makeKey(ms, 0);
@@ -303,9 +303,9 @@ describe('revokeMultisigShare', () => {
 		expect(revokeMultisigShare(alice.id, shareId)).toBe(false);
 	});
 
-	it('a non-owner cannot revoke: returns false and access is intact', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('a non-owner cannot revoke: returns false and access is intact', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		befriend(alice.id, bob.id);
 		const ms = makeMultisig(alice.id);
 		shareMultisig(alice.id, ms, bob.id, 'viewer');
@@ -317,10 +317,10 @@ describe('revokeMultisigShare', () => {
 });
 
 describe('revokeAllSharesBetween', () => {
-	it('drops shares in BOTH directions and leaves third parties untouched', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
-		const carol = makeUser('carol@example.com');
+	it('drops shares in BOTH directions and leaves third parties untouched', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
+		const carol = await makeUser('carol@example.com');
 		befriend(alice.id, bob.id);
 		befriend(alice.id, carol.id);
 		const aliceMs = makeMultisig(alice.id, 'Alice vault');
@@ -342,9 +342,9 @@ describe('revokeAllSharesBetween', () => {
 });
 
 describe('redactMultisigKeysForViewer', () => {
-	it('strips path on every key except the viewer’s own; xpub/fingerprint stay visible', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('strips path on every key except the viewer’s own; xpub/fingerprint stay visible', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		befriend(alice.id, bob.id);
 		const ms = makeMultisig(alice.id);
 		const k1 = makeKey(ms, 0);
@@ -366,9 +366,9 @@ describe('redactMultisigKeysForViewer', () => {
 		}
 	});
 
-	it('a pure viewer (no assigned keys) sees no paths at all; the owner sees everything', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('a pure viewer (no assigned keys) sees no paths at all; the owner sees everything', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		befriend(alice.id, bob.id);
 		const ms = makeMultisig(alice.id);
 		makeKey(ms, 0);

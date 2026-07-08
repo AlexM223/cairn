@@ -39,9 +39,9 @@ afterEach(() => {
 	}
 });
 
-function bootstrapAdmin(): SessionUser {
+async function bootstrapAdmin(): Promise<SessionUser> {
 	process.env.CAIRN_ADMIN_PASSWORD = 'generated-install-pw';
-	bootstrapAdminFromEnv();
+	await bootstrapAdminFromEnv();
 	return getUserByEmail(BOOTSTRAP_PLACEHOLDER_EMAIL)!;
 }
 
@@ -84,14 +84,14 @@ describe('/setup-admin load', () => {
 	});
 
 	it('redirects home when no reset is pending (normal accounts, or already done)', async () => {
-		const admin = bootstrapAdmin();
+		const admin = await bootstrapAdmin();
 		db.prepare('UPDATE users SET must_reset_password = 0 WHERE id = ?').run(admin.id);
 		const thrown = await expectThrown(() => load(makeEvent(admin)));
 		expect(thrown).toMatchObject({ status: 302, location: '/' });
 	});
 
 	it('serves the page while the reset is pending, without prefilling the placeholder email', async () => {
-		const admin = bootstrapAdmin();
+		const admin = await bootstrapAdmin();
 		const data = (await load(makeEvent(admin))) as { currentEmail: string };
 		expect(data.currentEmail).toBe('');
 	});
@@ -99,7 +99,7 @@ describe('/setup-admin load', () => {
 	it('prefills a real bootstrap email (CAIRN_ADMIN_EMAIL was set)', async () => {
 		process.env.CAIRN_ADMIN_PASSWORD = 'generated-install-pw';
 		process.env.CAIRN_ADMIN_EMAIL = 'operator@example.com';
-		bootstrapAdminFromEnv();
+		await bootstrapAdminFromEnv();
 		const admin = getUserByEmail('operator@example.com')!;
 		const data = (await load(makeEvent(admin))) as { currentEmail: string };
 		expect(data.currentEmail).toBe('operator@example.com');
@@ -108,7 +108,7 @@ describe('/setup-admin load', () => {
 
 describe('/setup-admin ?/complete', () => {
 	it('clears the flag, replaces email + password, rotates sessions, and redirects home', async () => {
-		const admin = bootstrapAdmin();
+		const admin = await bootstrapAdmin();
 		// A pre-existing session — e.g. someone else who read the install card.
 		const { token: oldToken } = createSession(admin.id);
 		expect(getSessionUser(oldToken)?.id).toBe(admin.id);
@@ -122,7 +122,7 @@ describe('/setup-admin ?/complete', () => {
 		expect(thrown).toMatchObject({ status: 303, location: '/' });
 
 		expect(mustResetPassword(admin.id)).toBe(false);
-		expect(loginWithPassword('real@example.com', 'chosen-by-human').id).toBe(admin.id);
+		expect((await loginWithPassword('real@example.com', 'chosen-by-human')).id).toBe(admin.id);
 		// Every session opened with the generated password is dead…
 		expect(getSessionUser(oldToken)).toBeNull();
 		// …and a fresh one was set for THIS browser so the user lands signed in.
@@ -130,7 +130,7 @@ describe('/setup-admin ?/complete', () => {
 	});
 
 	it('fails 400 when the passwords do not match, leaving the flag up', async () => {
-		const admin = bootstrapAdmin();
+		const admin = await bootstrapAdmin();
 		const res = await actions.complete(
 			makeEvent(admin, { email: 'real@example.com', password: 'chosen-by-human', confirm: 'different' })
 		);
@@ -139,7 +139,7 @@ describe('/setup-admin ?/complete', () => {
 	});
 
 	it('fails 400 on a validation error from completeForcedCredentialReset (placeholder email)', async () => {
-		const admin = bootstrapAdmin();
+		const admin = await bootstrapAdmin();
 		const res = await actions.complete(
 			makeEvent(admin, {
 				email: BOOTSTRAP_PLACEHOLDER_EMAIL,
@@ -152,7 +152,7 @@ describe('/setup-admin ?/complete', () => {
 	});
 
 	it('fails 400 when trying to keep the generated install password', async () => {
-		const admin = bootstrapAdmin();
+		const admin = await bootstrapAdmin();
 		const res = await actions.complete(
 			makeEvent(admin, {
 				email: 'real@example.com',

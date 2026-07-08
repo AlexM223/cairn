@@ -23,16 +23,16 @@ let admin: { id: number; email: string; displayName: string; isAdmin: boolean };
 let secondAdmin: { id: number };
 let member: { id: number };
 
-beforeEach(() => {
+beforeEach(async () => {
 	wipe();
 	setSetting('registration_mode', 'open');
-	const a = registerUser({ email: 'admin@example.com', password: PASSWORD, displayName: 'admin' });
+	const a = await registerUser({ email: 'admin@example.com', password: PASSWORD, displayName: 'admin' });
 	admin = { id: a.id, email: a.email, displayName: a.displayName, isAdmin: true };
 	// A second admin exists, so the last_admin guard is NOT what protects the
 	// caller below — only the route-level self-guard is.
-	secondAdmin = registerUser({ email: 'admin2@example.com', password: PASSWORD, displayName: 'admin2' });
+	secondAdmin = await registerUser({ email: 'admin2@example.com', password: PASSWORD, displayName: 'admin2' });
 	setUserAdmin(secondAdmin.id, true);
-	member = registerUser({ email: 'member@example.com', password: PASSWORD, displayName: 'member' });
+	member = await registerUser({ email: 'member@example.com', password: PASSWORD, displayName: 'member' });
 });
 
 function postEvent(body: unknown): Parameters<typeof POST>[0] {
@@ -100,12 +100,12 @@ describe('POST /api/admin/users self-mutation guard (cairn-rpif)', () => {
 // (the exact shape a backup restore produces) may be minted a code.
 describe('POST /api/admin/users mintRecoveryCode (cairn-j1q9)', () => {
 	it('mints a code for an eligible (restored-shape) account and it actually redeems', async () => {
-		const restored = registerUser({ email: 'restored@example.com', displayName: 'Restored' });
+		const restored = await registerUser({ email: 'restored@example.com', displayName: 'Restored' });
 
 		const { status, body } = await post({ id: restored.id, mintRecoveryCode: true });
 		expect(status).toBe(200);
 		expect(typeof body.code).toBe('string');
-		expect(consumeRecoveryCode(restored.id, body.code)).toBe(true);
+		expect(await consumeRecoveryCode(restored.id, body.code)).toBe(true);
 	});
 
 	it('refuses an unknown user id', async () => {
@@ -128,7 +128,7 @@ describe('POST /api/admin/users mintRecoveryCode (cairn-j1q9)', () => {
 	});
 
 	it('refuses a target that already has a passkey', async () => {
-		const restored = registerUser({ email: 'has-passkey@example.com', displayName: 'HasPasskey' });
+		const restored = await registerUser({ email: 'has-passkey@example.com', displayName: 'HasPasskey' });
 		addCredential(restored.id, {
 			credentialId: 'cred-x',
 			publicKey: new Uint8Array([1, 2, 3]),
@@ -141,15 +141,15 @@ describe('POST /api/admin/users mintRecoveryCode (cairn-j1q9)', () => {
 	});
 
 	it('refuses a target that already has a password', async () => {
-		const restored = registerUser({ email: 'has-password@example.com', displayName: 'HasPassword' });
-		setUserPassword(restored.id, 'some existing password');
+		const restored = await registerUser({ email: 'has-password@example.com', displayName: 'HasPassword' });
+		await setUserPassword(restored.id, 'some existing password');
 		const { status, body } = await post({ id: restored.id, mintRecoveryCode: true });
 		expect(status).toBe(400);
 		expect(body.error).toMatch(/passkey|password/i);
 	});
 
 	it('does not touch disabled/isAdmin flags when mintRecoveryCode is set', async () => {
-		const restored = registerUser({ email: 'both-fields@example.com', displayName: 'Both' });
+		const restored = await registerUser({ email: 'both-fields@example.com', displayName: 'Both' });
 		// Even if disabled/isAdmin are also present, the mint branch short-circuits
 		// and neither flag update runs.
 		await post({ id: restored.id, mintRecoveryCode: true, disabled: true, isAdmin: true });

@@ -38,12 +38,14 @@ beforeEach(() => {
 	setSetting('registration_mode', 'open');
 });
 
-function makeUser(email: string): number {
-	return registerUser({
-		email,
-		password: 'correct horse battery',
-		displayName: email.split('@')[0]
-	}).id;
+async function makeUser(email: string): Promise<number> {
+	return (
+		await registerUser({
+			email,
+			password: 'correct horse battery',
+			displayName: email.split('@')[0]
+		})
+	).id;
 }
 
 /** An accepted, bidirectional contact relationship (what shareMultisig requires). */
@@ -74,9 +76,9 @@ function makeMultisig(ownerId: number): { msId: number; keyIds: number[] } {
 }
 
 describe('collaborative custody access gates (cairn-xkpd)', () => {
-	it('a wallet is invisible/inaccessible until it is shared', () => {
-		const owner = makeUser('owner@example.com');
-		const outsider = makeUser('outsider@example.com');
+	it('a wallet is invisible/inaccessible until it is shared', async () => {
+		const owner = await makeUser('owner@example.com');
+		const outsider = await makeUser('outsider@example.com');
 		const { msId } = makeMultisig(owner);
 
 		// Owner sees it; a non-participant sees nothing and gets null (→ 404) by id.
@@ -87,9 +89,9 @@ describe('collaborative custody access gates (cairn-xkpd)', () => {
 		expect(multisigAccessRole(outsider, msId)).toBeNull();
 	});
 
-	it('a cosigner can see AND sign a wallet shared with them', () => {
-		const owner = makeUser('owner@example.com');
-		const bob = makeUser('bob@example.com');
+	it('a cosigner can see AND sign a wallet shared with them', async () => {
+		const owner = await makeUser('owner@example.com');
+		const bob = await makeUser('bob@example.com');
 		const { msId, keyIds } = makeMultisig(owner);
 		befriend(owner, bob);
 
@@ -106,9 +108,9 @@ describe('collaborative custody access gates (cairn-xkpd)', () => {
 		expect(multisigAccessRole(bob, msId)).toBe('cosigner');
 	});
 
-	it('a viewer can see but NOT sign a wallet shared with them', () => {
-		const owner = makeUser('owner@example.com');
-		const carol = makeUser('carol@example.com');
+	it('a viewer can see but NOT sign a wallet shared with them', async () => {
+		const owner = await makeUser('owner@example.com');
+		const carol = await makeUser('carol@example.com');
 		const { msId } = makeMultisig(owner);
 		befriend(owner, carol);
 
@@ -120,10 +122,10 @@ describe('collaborative custody access gates (cairn-xkpd)', () => {
 		expect(multisigAccessRole(carol, msId)).toBe('viewer');
 	});
 
-	it('a viewer cannot fetch a saved transaction (raw PSBT) — only the summary (cairn-o1dp.1)', () => {
-		const owner = makeUser('owner@example.com');
-		const bob = makeUser('bob@example.com');
-		const carol = makeUser('carol@example.com');
+	it('a viewer cannot fetch a saved transaction (raw PSBT) — only the summary (cairn-o1dp.1)', async () => {
+		const owner = await makeUser('owner@example.com');
+		const bob = await makeUser('bob@example.com');
+		const carol = await makeUser('carol@example.com');
 		const { msId, keyIds } = makeMultisig(owner);
 		befriend(owner, bob);
 		befriend(owner, carol);
@@ -159,14 +161,14 @@ describe('collaborative custody access gates (cairn-xkpd)', () => {
 		expect(JSON.stringify(summaries)).not.toContain('cHNidP8');
 
 		// A non-participant sees nothing at any tier.
-		const outsider = makeUser('outsider@example.com');
+		const outsider = await makeUser('outsider@example.com');
 		expect(getMultisigTransaction(outsider, msId, txId)).toBeNull();
 		expect(listMultisigTransactionSummaries(outsider, msId)).toBeNull();
 	});
 
-	it('redacts other keys’ paths for a cosigner but reveals their own', () => {
-		const owner = makeUser('owner@example.com');
-		const bob = makeUser('bob@example.com');
+	it('redacts other keys’ paths for a cosigner but reveals their own', async () => {
+		const owner = await makeUser('owner@example.com');
+		const bob = await makeUser('bob@example.com');
 		const { msId, keyIds } = makeMultisig(owner);
 		befriend(owner, bob);
 		shareMultisig(owner, msId, bob, 'cosigner', [keyIds[1]]);

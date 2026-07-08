@@ -96,15 +96,15 @@ function makeMultisig(userId: number): MultisigRow {
 }
 
 describe('key health checks (markKeyVerified / lastVerifiedAt)', () => {
-	it('new keys start never-verified and getMultisig surfaces the field', () => {
-		const user = makeUser('owner@example.com');
+	it('new keys start never-verified and getMultisig surfaces the field', async () => {
+		const user = await makeUser('owner@example.com');
 		const multisig = makeMultisig(user.id);
 		expect(multisig.keys).toHaveLength(3);
 		for (const k of multisig.keys) expect(k.lastVerifiedAt).toBeNull();
 	});
 
-	it('markKeyVerified stamps the key and the stamp reads back', () => {
-		const user = makeUser('owner@example.com');
+	it('markKeyVerified stamps the key and the stamp reads back', async () => {
+		const user = await makeUser('owner@example.com');
 		const multisig = makeMultisig(user.id);
 		const key = multisig.keys[1];
 
@@ -128,7 +128,7 @@ describe('key health checks (markKeyVerified / lastVerifiedAt)', () => {
 	});
 
 	it('re-verifying refreshes the timestamp (never goes backwards)', async () => {
-		const user = makeUser('owner@example.com');
+		const user = await makeUser('owner@example.com');
 		const multisig = makeMultisig(user.id);
 		const key = multisig.keys[0];
 
@@ -140,9 +140,9 @@ describe('key health checks (markKeyVerified / lastVerifiedAt)', () => {
 		);
 	});
 
-	it('enforces ownership end to end: wrong user, wrong multisig, wrong key all fail', () => {
-		const alice = makeUser('alice@example.com');
-		const bob = makeUser('bob@example.com');
+	it('enforces ownership end to end: wrong user, wrong multisig, wrong key all fail', async () => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await makeUser('bob@example.com');
 		const multisig = makeMultisig(alice.id);
 		const key = multisig.keys[0];
 
@@ -294,8 +294,8 @@ describe('multisigAddressDetailAt (address transparency)', () => {
 import { listUserFeed, listAllActivity } from './activity';
 
 describe('createMultisig activity event (cairn-cvcu)', () => {
-	it('emits wallet_created with the quorum in the message', () => {
-		const user = makeUser('msfeed@example.com');
+	it('emits wallet_created with the quorum in the message', async () => {
+		const user = await makeUser('msfeed@example.com');
 		db.exec('DELETE FROM events;');
 		const ms = makeMultisig(user.id);
 
@@ -317,8 +317,8 @@ describe('createMultisig activity event (cairn-cvcu)', () => {
 		});
 	});
 
-	it('says "imported" for a config import', () => {
-		const user = makeUser('msimport@example.com');
+	it('says "imported" for a config import', async () => {
+		const user = await makeUser('msimport@example.com');
 		db.exec('DELETE FROM events;');
 		createMultisig(user.id, {
 			name: 'Restored vault',
@@ -336,8 +336,8 @@ describe('createMultisig activity event (cairn-cvcu)', () => {
 import { MultisigError } from './bitcoin/multisig';
 
 describe('createMultisig cosigner path validation (cairn-1kc3.1/.3)', () => {
-	it('rejects a key declaring a single-sig path — the audit case (cairn-1kc3.3)', () => {
-		const user = makeUser('paths@example.com');
+	it('rejects a key declaring a single-sig path — the audit case (cairn-1kc3.3)', async () => {
+		const user = await makeUser('paths@example.com');
 		expect(() =>
 			createMultisig(user.id, {
 				name: 'Bad vault',
@@ -349,8 +349,8 @@ describe('createMultisig cosigner path validation (cairn-1kc3.1/.3)', () => {
 		expect(db.prepare('SELECT COUNT(*) AS n FROM multisigs').get()).toEqual({ n: 0 });
 	});
 
-	it("rejects a BIP-48 suffix contradicting the wallet's script type (cairn-1kc3.1)", () => {
-		const user = makeUser('suffix@example.com');
+	it("rejects a BIP-48 suffix contradicting the wallet's script type (cairn-1kc3.1)", async () => {
+		const user = await makeUser('suffix@example.com');
 		expect(() =>
 			createMultisig(user.id, {
 				name: 'Mismatch',
@@ -361,8 +361,8 @@ describe('createMultisig cosigner path validation (cairn-1kc3.1/.3)', () => {
 		).toThrow(/C: .*1'.*p2wsh/);
 	});
 
-	it('accepts BIP-45 keys and unknown-origin keys', () => {
-		const user = makeUser('bip45@example.com');
+	it('accepts BIP-45 keys and unknown-origin keys', async () => {
+		const user = await makeUser('bip45@example.com');
 		const ms = createMultisig(user.id, {
 			name: 'Shared vault',
 			threshold: 2,
@@ -375,8 +375,8 @@ describe('createMultisig cosigner path validation (cairn-1kc3.1/.3)', () => {
 		expect(ms.keys.map((k) => k.path)).toEqual(["m/45'", "m/45'", 'm']);
 	});
 
-	it("accepts a p2sh wallet whose keys carry Trezor's 0' suffix — proving the real scriptType flows into validation and the sanity derivation (cairn-1kc3.2)", () => {
-		const user = makeUser('p2sh@example.com');
+	it("accepts a p2sh wallet whose keys carry Trezor's 0' suffix — proving the real scriptType flows into validation and the sanity derivation (cairn-1kc3.2)", async () => {
+		const user = await makeUser('p2sh@example.com');
 		// Before cairn-1kc3.2 the acceptance config dropped scriptType, so
 		// everything validated as if p2wsh — under which these 0'-suffix keys
 		// would be wrongly rejected (and 2'-suffix keys wrongly accepted below).
@@ -405,8 +405,8 @@ describe('createMultisig cosigner path validation (cairn-1kc3.1/.3)', () => {
 		).toThrow(/2'.*P2SH/);
 	});
 
-	it('applies the universal checks to imports too — a single-sig path never enters (cairn-1kc3.3 rule 3)', () => {
-		const user = makeUser('importpaths@example.com');
+	it('applies the universal checks to imports too — a single-sig path never enters (cairn-1kc3.3 rule 3)', async () => {
+		const user = await makeUser('importpaths@example.com');
 		expect(() =>
 			createMultisig(user.id, {
 				name: 'Imported bad',
@@ -417,8 +417,8 @@ describe('createMultisig cosigner path validation (cairn-1kc3.1/.3)', () => {
 		).toThrow(/single-sig/);
 	});
 
-	it("tolerates a legacy-P2SH key's historical 1' suffix on import, but still rejects it on fresh creation (cairn-acft)", () => {
-		const user = makeUser('legacyimport@example.com');
+	it("tolerates a legacy-P2SH key's historical 1' suffix on import, but still rejects it on fresh creation (cairn-acft)", async () => {
+		const user = await makeUser('legacyimport@example.com');
 		const legacyKeys = [
 			newKeyAt(1, 'A', "m/48'/0'/0'/1'"),
 			newKeyAt(2, 'B', "m/48'/0'/0'/1'"),
@@ -460,7 +460,7 @@ import { Transaction, NETWORK } from '@scure/btc-signer';
 
 describe('a stored legacy-P2SH wallet keeps loading and spending (cairn-acft)', () => {
 	it("loads, derives its address, and builds a spend PSBT for keys carrying the now-rejected 1' suffix", async () => {
-		const user = makeUser('legacy-p2sh-survivor@example.com');
+		const user = await makeUser('legacy-p2sh-survivor@example.com');
 		const legacyPath = "m/48'/0'/0'/1'"; // nested-SegWit's BIP-48 slot — invalid on a p2sh wallet
 		const keys = [newKeyAt(1, 'A', legacyPath), newKeyAt(2, 'B', legacyPath), newKeyAt(3, 'C', legacyPath)];
 
@@ -516,8 +516,8 @@ describe('createMultisig vault mode (cairn-1kc3.6)', () => {
 	const bip45Keys = () => [newKeyAt(1, 'Mine', "m/45'"), newKeyAt(2, 'Theirs', "m/45'")];
 	const bip48Keys = () => [newKey(1, 'A'), newKey(2, 'B')];
 
-	it('collaborative vaults require BIP-45 on every key', () => {
-		const user = makeUser('collab@example.com');
+	it('collaborative vaults require BIP-45 on every key', async () => {
+		const user = await makeUser('collab@example.com');
 		expect(() =>
 			createMultisig(user.id, {
 				name: 'Family vault',
@@ -554,8 +554,8 @@ describe('createMultisig vault mode (cairn-1kc3.6)', () => {
 		expect(getMultisig(user.id, ms.id)!.collaborative).toBe(true);
 	});
 
-	it('personal vaults reject BIP-45 keys (they mark a key as shared)', () => {
-		const user = makeUser('personal@example.com');
+	it('personal vaults reject BIP-45 keys (they mark a key as shared)', async () => {
+		const user = await makeUser('personal@example.com');
 		expect(() =>
 			createMultisig(user.id, {
 				name: 'My vault',
@@ -574,8 +574,8 @@ describe('createMultisig vault mode (cairn-1kc3.6)', () => {
 		expect(ms.collaborative).toBe(false);
 	});
 
-	it('undeclared mode (the default) keeps today\'s behavior: both purposes accepted, stored as null', () => {
-		const user = makeUser('unset@example.com');
+	it('undeclared mode (the default) keeps today\'s behavior: both purposes accepted, stored as null', async () => {
+		const user = await makeUser('unset@example.com');
 		const ms = createMultisig(user.id, {
 			name: 'Legacy-flow vault',
 			threshold: 2,
@@ -585,8 +585,8 @@ describe('createMultisig vault mode (cairn-1kc3.6)', () => {
 		expect(getMultisig(user.id, ms.id)!.collaborative).toBeNull();
 	});
 
-	it('imports are exempt from the BIP-45 rule but still persist the declared mode', () => {
-		const user = makeUser('importmode@example.com');
+	it('imports are exempt from the BIP-45 rule but still persist the declared mode', async () => {
+		const user = await makeUser('importmode@example.com');
 		const ms = createMultisig(user.id, {
 			name: 'Imported collab vault',
 			threshold: 2,
@@ -602,8 +602,8 @@ describe('createMultisig vault mode (cairn-1kc3.6)', () => {
 // ---- cairn-1kc3.4: cross-wallet xpub reuse warning ------------------------------
 
 describe('createMultisig xpub reuse warning (cairn-1kc3.4)', () => {
-	it('creating a multisig with a key already stored as a single-sig wallet warns in the activity feed', () => {
-		const user = makeUser('reuse@example.com');
+	it('creating a multisig with a key already stored as a single-sig wallet warns in the activity feed', async () => {
+		const user = await makeUser('reuse@example.com');
 		db.exec('DELETE FROM events; DELETE FROM wallets;');
 		const shared = fixtureKey(1);
 		db.prepare(
@@ -625,8 +625,8 @@ describe('createMultisig xpub reuse warning (cairn-1kc3.4)', () => {
 		expect(warns[0].message).not.toContain(shared.xpub);
 	});
 
-	it('a key shared across two multisigs warns; disjoint keys stay silent; the new vault never matches itself', () => {
-		const user = makeUser('reuse2@example.com');
+	it('a key shared across two multisigs warns; disjoint keys stay silent; the new vault never matches itself', async () => {
+		const user = await makeUser('reuse2@example.com');
 		db.exec('DELETE FROM events; DELETE FROM wallets;');
 		createMultisig(user.id, {
 			name: 'First vault',
@@ -675,7 +675,7 @@ describe('deleteMultisig cache invalidation (cairn-ez9y)', () => {
 	}
 
 	it('deleting a multisig drops its in-memory scan cache entry', async () => {
-		const user = makeUser('cache-owner@example.com');
+		const user = await makeUser('cache-owner@example.com');
 		const ms = makeMultisig(user.id);
 		const key = cacheKeyFor(ms);
 
@@ -694,8 +694,8 @@ describe('deleteMultisig cache invalidation (cairn-ez9y)', () => {
 		expect((await scanMultisig(ms)).confirmed).toBe(222);
 	});
 
-	it('deleting a multisig removes the persisted wallet_scan_cache row', () => {
-		const user = makeUser('cache-owner2@example.com');
+	it('deleting a multisig removes the persisted wallet_scan_cache row', async () => {
+		const user = await makeUser('cache-owner2@example.com');
 		const ms = makeMultisig(user.id);
 		const key = cacheKeyFor(ms);
 
@@ -710,8 +710,8 @@ describe('deleteMultisig cache invalidation (cairn-ez9y)', () => {
 	});
 
 	it('a failed (non-owned) delete leaves both caches alone', async () => {
-		const owner = makeUser('cache-real-owner@example.com');
-		const other = makeUser('cache-attacker@example.com');
+		const owner = await makeUser('cache-real-owner@example.com');
+		const other = await makeUser('cache-attacker@example.com');
 		const ms = makeMultisig(owner.id);
 		const key = cacheKeyFor(ms);
 

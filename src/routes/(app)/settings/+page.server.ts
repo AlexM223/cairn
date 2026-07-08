@@ -82,12 +82,12 @@ export const actions: Actions = {
 			const row = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(uid) as
 				| { password_hash: string | null }
 				| undefined;
-			if (!row?.password_hash || !verifyPassword(current, row.password_hash))
+			if (!row?.password_hash || !(await verifyPassword(current, row.password_hash)))
 				return fail(400, { passwordError: 'Current password is incorrect.' });
 		}
 
 		const wasExisting = hasPassword(uid);
-		setUserPassword(uid, next);
+		await setUserPassword(uid, next);
 
 		// Security alert (cairn-5gpv.5): password is Cairn's default auth method, so a
 		// silent change is a bigger blind spot than the new-passkey case webauthn.ts

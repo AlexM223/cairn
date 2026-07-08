@@ -54,12 +54,14 @@ beforeEach(() => {
 	setSetting('registration_mode', 'open');
 });
 
-function makeUser(email: string): number {
-	return registerUser({
-		email,
-		password: 'correct horse battery',
-		displayName: email.split('@')[0]
-	}).id;
+async function makeUser(email: string): Promise<number> {
+	return (
+		await registerUser({
+			email,
+			password: 'correct horse battery',
+			displayName: email.split('@')[0]
+		})
+	).id;
 }
 
 let xpubSeq = 0;
@@ -206,8 +208,8 @@ describe('polymorphic (wallet_kind, wallet_id) delete cascade (cairn-97ui)', () 
 		}
 	});
 
-	it('deleteWallet/deleteMultisig (direct-delete path) leaves zero orphans in every non-exempt table', () => {
-		const owner = makeUser('owner-direct@example.com');
+	it('deleteWallet/deleteMultisig (direct-delete path) leaves zero orphans in every non-exempt table', async () => {
+		const owner = await makeUser('owner-direct@example.com');
 		const walletId = makeWallet(owner);
 		const multisigId = makeMultisig(owner);
 
@@ -225,13 +227,13 @@ describe('polymorphic (wallet_kind, wallet_id) delete cascade (cairn-97ui)', () 
 		}
 	});
 
-	it('user deletion (user-cascade path) leaves zero orphans in every non-exempt table', () => {
+	it('user deletion (user-cascade path) leaves zero orphans in every non-exempt table', async () => {
 		// The first user registered after wipe() auto-becomes the instance admin
 		// (auth.ts registerUser) — burn that slot on a throwaway account so the
 		// real test user isn't the sole admin (deleteOwnAccount refuses to delete
 		// the only active administrator).
-		makeUser('admin-cascade@example.com');
-		const owner = makeUser('owner-cascade@example.com');
+		await makeUser('admin-cascade@example.com');
+		const owner = await makeUser('owner-cascade@example.com');
 		const walletId = makeWallet(owner);
 		const multisigId = makeMultisig(owner);
 
@@ -253,8 +255,8 @@ describe('polymorphic (wallet_kind, wallet_id) delete cascade (cairn-97ui)', () 
 		}
 	});
 
-	it('does not touch a live sibling wallet/multisig’s rows', () => {
-		const owner = makeUser('owner-sibling@example.com');
+	it('does not touch a live sibling wallet/multisig’s rows', async () => {
+		const owner = await makeUser('owner-sibling@example.com');
 		const goneWallet = makeWallet(owner);
 		const keptWallet = makeWallet(owner);
 		const goneMultisig = makeMultisig(owner);

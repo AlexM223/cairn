@@ -50,18 +50,20 @@ function configureUser(cfg: Record<string, unknown>): void {
 	).run(userId, JSON.stringify(cfg));
 }
 
-beforeEach(() => {
+beforeEach(async () => {
 	wipe();
 	vi.clearAllMocks();
 	// Default DNS: a public address so hostname targets pass the SSRF gate.
 	lookupMock.mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
 	sendMock = vi.spyOn(_transport, 'pinnedRequest').mockResolvedValue(textResponse(200));
 	setSetting('registration_mode', 'open');
-	userId = registerUser({
-		email: 'user@example.com',
-		password: 'correct horse battery',
-		displayName: 'user'
-	}).id;
+	userId = (
+		await registerUser({
+			email: 'user@example.com',
+			password: 'correct horse battery',
+			displayName: 'user'
+		})
+	).id;
 });
 
 afterEach(() => {

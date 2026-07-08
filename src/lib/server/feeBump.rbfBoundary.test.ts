@@ -134,8 +134,10 @@ describe('feeBump RBF-signaling boundary (rule 1, ~feeBump.ts:210)', () => {
 });
 
 describe('feeBump RBF-signaling boundary via the public bumpTransaction API', () => {
-	function seedWalletWithOriginal(sequence: number): { userId: number; walletId: number; txId: number } {
-		const user = registerUser({
+	async function seedWalletWithOriginal(
+		sequence: number
+	): Promise<{ userId: number; walletId: number; txId: number }> {
+		const user = await registerUser({
 			email: `rbf-${sequence}@example.com`,
 			password: 'correct horse battery',
 			displayName: 'u'
@@ -159,14 +161,14 @@ describe('feeBump RBF-signaling boundary via the public bumpTransaction API', ()
 	}
 
 	it('rejects the boundary value 0xfffffffe through bumpTransaction (not RBF-signaling)', async () => {
-		const { userId, walletId, txId } = seedWalletWithOriginal(0xfffffffe);
+		const { userId, walletId, txId } = await seedWalletWithOriginal(0xfffffffe);
 		await expect(bumpTransaction(userId, walletId, txId, 25)).rejects.toMatchObject({
 			code: 'not_rbf'
 		});
 	});
 
 	it('rejects the final value 0xffffffff through bumpTransaction', async () => {
-		const { userId, walletId, txId } = seedWalletWithOriginal(0xffffffff);
+		const { userId, walletId, txId } = await seedWalletWithOriginal(0xffffffff);
 		await expect(bumpTransaction(userId, walletId, txId, 25)).rejects.toMatchObject({
 			code: 'not_rbf'
 		});
@@ -188,8 +190,8 @@ describe('a constructed replacement itself signals RBF (bumped tx stays bumpable
 	}
 	const FUND = fundingTx([{ address: RECEIVE_0, value: 100_000 }]);
 
-	function seedRealWallet(email: string): { userId: number; walletId: number } {
-		const user = registerUser({ email, password: 'correct horse battery', displayName: 'u' });
+	async function seedRealWallet(email: string): Promise<{ userId: number; walletId: number }> {
+		const user = await registerUser({ email, password: 'correct horse battery', displayName: 'u' });
 		const res = db
 			.prepare(
 				`INSERT INTO wallets (user_id, name, type, xpub, script_type, master_fingerprint, derivation_path)
@@ -227,7 +229,7 @@ describe('a constructed replacement itself signals RBF (bumped tx stays bumpable
 	});
 
 	it('gives every input of the bumped replacement a sequence that itself signals RBF', async () => {
-		const { userId, walletId } = seedRealWallet('rbf-construct@example.com');
+		const { userId, walletId } = await seedRealWallet('rbf-construct@example.com');
 		const orig = await seedBroadcastOriginal(walletId);
 
 		const { details } = await bumpTransaction(userId, walletId, orig.txId, 25);

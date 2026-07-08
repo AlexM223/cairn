@@ -40,19 +40,23 @@ function wipe(): void {
 let userId: number;
 let otherUserId: number;
 
-beforeEach(() => {
+beforeEach(async () => {
 	wipe();
 	setSetting('registration_mode', 'open');
-	userId = registerUser({
-		email: 'keys@example.com',
-		password: 'correct horse battery',
-		displayName: 'keys'
-	}).id;
-	otherUserId = registerUser({
-		email: 'other@example.com',
-		password: 'correct horse battery',
-		displayName: 'other'
-	}).id;
+	userId = (
+		await registerUser({
+			email: 'keys@example.com',
+			password: 'correct horse battery',
+			displayName: 'keys'
+		})
+	).id;
+	otherUserId = (
+		await registerUser({
+			email: 'other@example.com',
+			password: 'correct horse battery',
+			displayName: 'other'
+		})
+	).id;
 });
 
 // ---------------------------------------------------------------- purposes

@@ -74,7 +74,7 @@ function makeWallet(userId: number): number {
 
 describe('receive-address rotation reuse (cairn-2ic5)', () => {
 	it('reuses the scanned window: repeated rotates advance without re-scanning', async () => {
-		const user = makeUser('reuse@example.com');
+		const user = await makeUser('reuse@example.com');
 		const id = makeWallet(user.id);
 		const row = getWallet(user.id, id)!;
 		mocks.findNextUnusedIndex.mockResolvedValue(3);
@@ -94,7 +94,7 @@ describe('receive-address rotation reuse (cairn-2ic5)', () => {
 	});
 
 	it('re-scans when a rotate would probe at/past the gap-window ceiling', async () => {
-		const user = makeUser('ceiling@example.com');
+		const user = await makeUser('ceiling@example.com');
 		const id = makeWallet(user.id);
 		const row = getWallet(user.id, id)!;
 		mocks.findNextUnusedIndex.mockResolvedValue(3);
@@ -111,7 +111,7 @@ describe('receive-address rotation reuse (cairn-2ic5)', () => {
 	});
 
 	it('safety: never serves an index below the known used-boundary from cache', async () => {
-		const user = makeUser('safety@example.com');
+		const user = await makeUser('safety@example.com');
 		const id = makeWallet(user.id);
 		const row = getWallet(user.id, id)!;
 		// Known boundary is 10: indices below it may already be used.
@@ -130,7 +130,7 @@ describe('receive-address rotation reuse (cairn-2ic5)', () => {
 	});
 
 	it('re-scans once the reuse window is older than its TTL', async () => {
-		const user = makeUser('ttl@example.com');
+		const user = await makeUser('ttl@example.com');
 		const id = makeWallet(user.id);
 		const row = getWallet(user.id, id)!;
 		mocks.findNextUnusedIndex.mockResolvedValue(3);

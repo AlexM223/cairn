@@ -17,12 +17,12 @@ import type { RequestHandler } from './$types';
 
 const log = childLogger('recovery');
 
-export const POST: RequestHandler = (event) => {
+export const POST: RequestHandler = async (event) => {
 	const user = requireUser(event);
 
 	try {
 		const generated = generateRecoveryPhrase();
-		generated.store(user.id);
+		await generated.store(user.id);
 		// Record the event WITHOUT the secret — never log the phrase itself.
 		recordActivity({
 			type: 'account_recovery_phrase_set',

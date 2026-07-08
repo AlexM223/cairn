@@ -44,11 +44,11 @@ function configureSmtp(): void {
 	setSetting('smtp_tls', 'starttls');
 }
 
-beforeEach(() => {
+beforeEach(async () => {
 	wipe();
 	vi.clearAllMocks();
 	setSetting('registration_mode', 'open');
-	const user = registerUser({
+	const user = await registerUser({
 		email: 'user@example.com',
 		password: 'correct horse battery',
 		displayName: 'user'

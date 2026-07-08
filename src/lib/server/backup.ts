@@ -10,7 +10,7 @@
 // imported accounts arrive credential-less — their owner reclaims them by adding
 // a passkey through the normal signup screen.
 
-import { randomBytes, scryptSync, createCipheriv, createDecipheriv, timingSafeEqual } from 'node:crypto';
+import { randomBytes, scrypt, createCipheriv, createDecipheriv, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { db } from './db';
@@ -84,15 +84,34 @@ export function buildBackup(exportedAt: string): BackupData {
 
 // -------------------------------------------------------------- encryption
 
-function deriveKey(passphrase: string, salt: Buffer, params = KDF): Buffer {
-	return scryptSync(passphrase, salt, params.keyLen, { N: params.N, r: params.r, p: params.p });
+// cairn-48hm: scryptSync blocked the main thread here too (backup encrypt/restore
+// would otherwise freeze Electrum IO / SSE / every other request the same way
+// password auth did). This Promise wrapper around the callback form of scrypt
+// runs on the libuv threadpool instead. (Hand-rolled rather than
+// `promisify(scrypt)` — see auth.ts's scryptAsync for why.)
+function scryptAsync(
+	passphrase: string,
+	salt: Buffer,
+	keylen: number,
+	options: { N: number; r: number; p: number }
+): Promise<Buffer> {
+	return new Promise((resolve, reject) => {
+		scrypt(passphrase, salt, keylen, options, (err, derivedKey) => {
+			if (err) reject(err);
+			else resolve(derivedKey);
+		});
+	});
+}
+
+async function deriveKey(passphrase: string, salt: Buffer, params = KDF): Promise<Buffer> {
+	return scryptAsync(passphrase, salt, params.keyLen, { N: params.N, r: params.r, p: params.p });
 }
 
 /** Encrypt a backup into a self-describing JSON envelope (safe to download). */
-export function encryptBackup(data: BackupData, passphrase: string): string {
+export async function encryptBackup(data: BackupData, passphrase: string): Promise<string> {
 	const salt = randomBytes(16);
 	const iv = randomBytes(12);
-	const key = deriveKey(passphrase, salt);
+	const key = await deriveKey(passphrase, salt);
 	const cipher = createCipheriv('aes-256-gcm', key, iv);
 	const ciphertext = Buffer.concat([
 		cipher.update(Buffer.from(JSON.stringify(data), 'utf8')),
@@ -113,7 +132,7 @@ export function encryptBackup(data: BackupData, passphrase: string): string {
 export class BackupError extends Error {}
 
 /** Decrypt an envelope produced by {@link encryptBackup}. Throws on bad input. */
-export function decryptBackup(envelopeText: string, passphrase: string): BackupData {
+export async function decryptBackup(envelopeText: string, passphrase: string): Promise<BackupData> {
 	let env: Record<string, unknown>;
 	try {
 		env = JSON.parse(envelopeText);
@@ -124,7 +143,7 @@ export function decryptBackup(envelopeText: string, passphrase: string): BackupD
 		throw new BackupError('That is not a Heartwood backup file.');
 	}
 	const kdf = env.kdf as { N: number; r: number; p: number; keyLen: number; salt: string };
-	const key = deriveKey(passphrase, Buffer.from(kdf.salt, 'base64'), {
+	const key = await deriveKey(passphrase, Buffer.from(kdf.salt, 'base64'), {
 		N: kdf.N,
 		r: kdf.r,
 		p: kdf.p,
@@ -204,7 +223,7 @@ const orNull = (v: unknown): string | null => (v == null ? null : String(v));
  * screen. The count of demoted rows is surfaced so the restore is visible, not
  * silent.
  */
-export function restoreBackup(data: BackupData): RestoreSummary {
+export async function restoreBackup(data: BackupData): Promise<RestoreSummary> {
 	const summary: RestoreSummary = {
 		usersAdded: 0,
 		usersSkipped: 0,
@@ -410,7 +429,7 @@ export function restoreBackup(data: BackupData): RestoreSummary {
 	// than losing the whole restore over it.
 	for (const u of insertedUsers) {
 		try {
-			const code = mintAdminRecoveryCode(u.id);
+			const code = await mintAdminRecoveryCode(u.id);
 			summary.reclaimCodes.push({ email: u.email, code });
 		} catch (e) {
 			log.error({ err: e, userId: u.id, email: u.email }, 'restore: could not mint a recovery code');
@@ -580,7 +599,7 @@ function noteScheduledFailure(nowMs: number, message: string): void {
  * below calls it on a fixed tick. Never throws — failures are recorded on
  * scheduled_backup_last_error and (throttled) notified to admins.
  */
-export function runScheduledBackupIfDue(nowMs = Date.now()): boolean {
+export async function runScheduledBackupIfDue(nowMs = Date.now()): Promise<boolean> {
 	try {
 		const cfg = getScheduledBackupConfig();
 		if (!cfg.enabled) return false;
@@ -599,7 +618,7 @@ export function runScheduledBackupIfDue(nowMs = Date.now()): boolean {
 		}
 
 		const exportedAt = new Date(nowMs).toISOString();
-		const encrypted = encryptBackup(buildBackup(exportedAt), passphrase);
+		const encrypted = await encryptBackup(buildBackup(exportedAt), passphrase);
 		const file = path.join(cfg.path, `cairn-backup-${exportedAt.slice(0, 10)}.json`);
 		try {
 			fs.mkdirSync(cfg.path, { recursive: true });

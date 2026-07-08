@@ -42,10 +42,10 @@ function backupFiles(): string[] {
 		: [];
 }
 
-beforeEach(() => {
+beforeEach(async () => {
 	wipe();
 	setSetting('registration_mode', 'open');
-	registerUser({
+	await registerUser({
 		email: 'admin@example.com',
 		password: 'correct horse battery',
 		displayName: 'Admin'
@@ -99,18 +99,18 @@ describe('saveScheduledBackupConfig', () => {
 });
 
 describe('runScheduledBackupIfDue', () => {
-	it('does nothing when disabled', () => {
-		expect(runScheduledBackupIfDue()).toBe(false);
+	it('does nothing when disabled', async () => {
+		expect(await runScheduledBackupIfDue()).toBe(false);
 		expect(backupFiles()).toHaveLength(0);
 	});
 
-	it('writes a decryptable backup, stamps both timestamps, and clears errors', () => {
+	it('writes a decryptable backup, stamps both timestamps, and clears errors', async () => {
 		enableSchedule();
-		expect(runScheduledBackupIfDue()).toBe(true);
+		expect(await runScheduledBackupIfDue()).toBe(true);
 
 		const files = backupFiles();
 		expect(files).toHaveLength(1);
-		const data = decryptBackup(
+		const data = await decryptBackup(
 			fs.readFileSync(path.join(destDir, files[0]), 'utf8'),
 			'backup passphrase'
 		);
@@ -122,26 +122,26 @@ describe('runScheduledBackupIfDue', () => {
 		expect(getScheduledBackupConfig().lastError).toBeNull();
 	});
 
-	it('is not due again immediately after a successful run', () => {
+	it('is not due again immediately after a successful run', async () => {
 		enableSchedule();
-		expect(runScheduledBackupIfDue()).toBe(true);
-		expect(runScheduledBackupIfDue()).toBe(false);
+		expect(await runScheduledBackupIfDue()).toBe(true);
+		expect(await runScheduledBackupIfDue()).toBe(false);
 	});
 
-	it('is due again once the interval has elapsed', () => {
+	it('is due again once the interval has elapsed', async () => {
 		enableSchedule();
-		expect(runScheduledBackupIfDue()).toBe(true);
+		expect(await runScheduledBackupIfDue()).toBe(true);
 		const later = Date.now() + 25 * 3_600_000;
-		expect(runScheduledBackupIfDue(later)).toBe(true);
+		expect(await runScheduledBackupIfDue(later)).toBe(true);
 	});
 
-	it('weekly schedule does not re-run after only a day', () => {
+	it('weekly schedule does not re-run after only a day', async () => {
 		enableSchedule('weekly');
-		expect(runScheduledBackupIfDue()).toBe(true);
-		expect(runScheduledBackupIfDue(Date.now() + 25 * 3_600_000)).toBe(false);
+		expect(await runScheduledBackupIfDue()).toBe(true);
+		expect(await runScheduledBackupIfDue(Date.now() + 25 * 3_600_000)).toBe(false);
 	});
 
-	it('surfaces a write failure as an admin notification, throttled', () => {
+	it('surfaces a write failure as an admin notification, throttled', async () => {
 		enableSchedule();
 		// Break the destination AFTER save-time validation passed: point the
 		// stored path at a location that cannot be a directory (a file).
@@ -150,7 +150,7 @@ describe('runScheduledBackupIfDue', () => {
 		fs.writeFileSync(blocker, 'x');
 		setSetting('scheduled_backup_path', path.join(blocker, 'sub'));
 
-		expect(runScheduledBackupIfDue()).toBe(false);
+		expect(await runScheduledBackupIfDue()).toBe(false);
 		expect(getScheduledBackupConfig().lastError).not.toBeNull();
 
 		const events = db
@@ -162,21 +162,21 @@ describe('runScheduledBackupIfDue', () => {
 
 		// A second failing tick shortly after must NOT notify again (throttle),
 		// though it still retries and records the error.
-		expect(runScheduledBackupIfDue(Date.now() + 60_000)).toBe(false);
+		expect(await runScheduledBackupIfDue(Date.now() + 60_000)).toBe(false);
 		const after = db
 			.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'admin_server_health'")
 			.get() as { n: number };
 		expect(after.n).toBe(1);
 	});
 
-	it('fails (notified, not thrown) when the stored passphrase is missing', () => {
+	it('fails (notified, not thrown) when the stored passphrase is missing', async () => {
 		enableSchedule();
 		setSecretSetting('scheduled_backup_pass', '');
-		expect(runScheduledBackupIfDue()).toBe(false);
+		expect(await runScheduledBackupIfDue()).toBe(false);
 		expect(getScheduledBackupConfig().lastError).toContain('passphrase');
 	});
 
-	it('prunes old scheduled files beyond the retention count', () => {
+	it('prunes old scheduled files beyond the retention count', async () => {
 		enableSchedule();
 		fs.mkdirSync(destDir, { recursive: true });
 		// Seed 32 old files in the exact scheduled-name format, plus one
@@ -187,7 +187,7 @@ describe('runScheduledBackupIfDue', () => {
 		}
 		fs.writeFileSync(path.join(destDir, 'my-own-notes.json'), '{}');
 
-		expect(runScheduledBackupIfDue()).toBe(true);
+		expect(await runScheduledBackupIfDue()).toBe(true);
 		const files = backupFiles();
 		// 30 kept in total (today's + the 29 newest seeds), plus the foreign file.
 		expect(files.filter((f) => /^cairn-backup-\d{4}-\d{2}-\d{2}\.json$/.test(f))).toHaveLength(30);

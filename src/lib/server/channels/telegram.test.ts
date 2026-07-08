@@ -39,16 +39,18 @@ function configure(): void {
 	).run(userId, JSON.stringify({ chatId: '12345' }));
 }
 
-beforeEach(() => {
+beforeEach(async () => {
 	wipe();
 	vi.clearAllMocks();
 	vi.stubGlobal('fetch', fetchMock);
 	setSetting('registration_mode', 'open');
-	userId = registerUser({
-		email: 'user@example.com',
-		password: 'correct horse battery',
-		displayName: 'user'
-	}).id;
+	userId = (
+		await registerUser({
+			email: 'user@example.com',
+			password: 'correct horse battery',
+			displayName: 'user'
+		})
+	).id;
 });
 
 afterEach(() => {

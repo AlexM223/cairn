@@ -82,8 +82,8 @@ const SIGNERS = [1, 2, 3].map(makeSigner);
 
 const RECIPIENT = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4';
 
-function seedMultisig(email: string): { userId: number; multisigId: number } {
-	const user = registerUser({ email, password: 'correct horse battery', displayName: 'u' });
+async function seedMultisig(email: string): Promise<{ userId: number; multisigId: number }> {
+	const user = await registerUser({ email, password: 'correct horse battery', displayName: 'u' });
 	const res = db
 		.prepare("INSERT INTO multisigs (user_id, name, threshold, script_type) VALUES (?, 'V', 2, 'p2wsh')")
 		.run(user.id);
@@ -154,8 +154,8 @@ function signWith(psbtBase64: string, signerIdx: number): string {
 
 describe('multisig transaction lifecycle', () => {
 	it('scopes reads to the owning user', async () => {
-		const alice = seedMultisig('alice@example.com');
-		const bob = seedMultisig('bob@example.com');
+		const alice = await seedMultisig('alice@example.com');
+		const bob = await seedMultisig('bob@example.com');
 		const { txId } = await seedDraft(alice.userId, alice.multisigId);
 
 		expect(getMultisigTransaction(alice.userId, alice.multisigId, txId)).not.toBeNull();
@@ -165,7 +165,7 @@ describe('multisig transaction lifecycle', () => {
 	});
 
 	it('builds and persists a draft from scanned UTXOs (buildMultisigDraft)', async () => {
-		const { userId, multisigId } = seedMultisig('build@example.com');
+		const { userId, multisigId } = await seedMultisig('build@example.com');
 		// buildMultisigDraft attaches full previous transactions (fee-lying
 		// protection), so the mocked coin must reference a REAL funding tx whose
 		// id verifies against the returned hex.
@@ -197,7 +197,7 @@ describe('multisig transaction lifecycle', () => {
 	});
 
 	it('deletes drafts but keeps completed transactions', async () => {
-		const { userId, multisigId } = seedMultisig('del@example.com');
+		const { userId, multisigId } = await seedMultisig('del@example.com');
 		const { txId } = await seedDraft(userId, multisigId);
 		const done = await seedDraft(userId, multisigId);
 		db.prepare(
@@ -215,7 +215,7 @@ describe('multisig transaction lifecycle', () => {
 	// status='completed' update, wiping a row for a tx already on the
 	// network. Simulate the claim directly and assert the delete is refused.
 	it('refuses to delete a multisig transaction with an in-flight broadcast claim', async () => {
-		const { userId, multisigId } = seedMultisig('claim@example.com');
+		const { userId, multisigId } = await seedMultisig('claim@example.com');
 		const { txId } = await seedDraft(userId, multisigId);
 		db.prepare(
 			"UPDATE multisig_transactions SET broadcast_started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?"
@@ -231,7 +231,7 @@ describe('multisig transaction lifecycle', () => {
 	// actually confirms) — deleting it erases that history the same way
 	// deleting a completed tx would.
 	it('refuses to delete a superseded multisig transaction', async () => {
-		const { userId, multisigId } = seedMultisig('superseded@example.com');
+		const { userId, multisigId } = await seedMultisig('superseded@example.com');
 		const { txId } = await seedDraft(userId, multisigId);
 		db.prepare(
 			"UPDATE multisig_transactions SET status = 'superseded', txid = ? WHERE id = ?"
@@ -242,7 +242,7 @@ describe('multisig transaction lifecycle', () => {
 	});
 
 	it('cascades multisig deletion to its transactions', async () => {
-		const { userId, multisigId } = seedMultisig('cascade@example.com');
+		const { userId, multisigId } = await seedMultisig('cascade@example.com');
 		const { txId } = await seedDraft(userId, multisigId);
 		db.prepare('DELETE FROM multisigs WHERE id = ?').run(multisigId);
 		expect(
@@ -255,7 +255,7 @@ describe('multisig transaction lifecycle', () => {
 
 describe('attachMultisigSignature', () => {
 	it('merges one signature at a time and reports live quorum progress', async () => {
-		const { userId, multisigId } = seedMultisig('attach@example.com');
+		const { userId, multisigId } = await seedMultisig('attach@example.com');
 		const { txId, psbt } = await seedDraft(userId, multisigId);
 
 		const first = attachMultisigSignature(userId, multisigId, txId, signWith(psbt, 0))!;
@@ -277,7 +277,7 @@ describe('attachMultisigSignature', () => {
 	});
 
 	it('is idempotent when the same signed PSBT is submitted twice', async () => {
-		const { userId, multisigId } = seedMultisig('idem@example.com');
+		const { userId, multisigId } = await seedMultisig('idem@example.com');
 		const { txId, psbt } = await seedDraft(userId, multisigId);
 		const signed = signWith(psbt, 0);
 		const once = attachMultisigSignature(userId, multisigId, txId, signed)!;
@@ -287,7 +287,7 @@ describe('attachMultisigSignature', () => {
 	});
 
 	it('refuses a signed PSBT for a different transaction (substitution guard)', async () => {
-		const { userId, multisigId } = seedMultisig('subst@example.com');
+		const { userId, multisigId } = await seedMultisig('subst@example.com');
 		const { txId } = await seedDraft(userId, multisigId);
 		const multisig = getMultisig(userId, multisigId)!;
 		const other = await constructMultisigPsbt({
@@ -306,7 +306,7 @@ describe('attachMultisigSignature', () => {
 	});
 
 	it('refuses corrupt uploads with the corruption message', async () => {
-		const { userId, multisigId } = seedMultisig('corrupt@example.com');
+		const { userId, multisigId } = await seedMultisig('corrupt@example.com');
 		const { txId, psbt } = await seedDraft(userId, multisigId);
 		const corrupt = base64.encode(base64.decode(psbt).slice(0, 20));
 		expect(() => attachMultisigSignature(userId, multisigId, txId, corrupt)).toThrow(
@@ -315,7 +315,7 @@ describe('attachMultisigSignature', () => {
 	});
 
 	it('refuses attaching to an already-broadcast transaction', async () => {
-		const { userId, multisigId } = seedMultisig('late@example.com');
+		const { userId, multisigId } = await seedMultisig('late@example.com');
 		const { txId, psbt } = await seedDraft(userId, multisigId);
 		db.prepare(
 			"UPDATE multisig_transactions SET status = 'completed', txid = ? WHERE id = ?"
@@ -349,7 +349,7 @@ describe('broadcastMultisigTransaction', () => {
 	}
 
 	it('refuses to broadcast below quorum with "X of M signatures collected"', async () => {
-		const { userId, multisigId } = seedMultisig('quorum@example.com');
+		const { userId, multisigId } = await seedMultisig('quorum@example.com');
 		const { txId, psbt } = await seedDraft(userId, multisigId);
 		attachMultisigSignature(userId, multisigId, txId, signWith(psbt, 0)); // 1 of 2
 
@@ -362,7 +362,7 @@ describe('broadcastMultisigTransaction', () => {
 	});
 
 	it('broadcasts a quorum-complete transaction and records the LOCALLY-computed txid', async () => {
-		const { userId, multisigId } = seedMultisig('send@example.com');
+		const { userId, multisigId } = await seedMultisig('send@example.com');
 		const txId = await signedToQuorum(userId, multisigId);
 		honestBroadcastOnce();
 
@@ -374,7 +374,7 @@ describe('broadcastMultisigTransaction', () => {
 	});
 
 	it('rejects a broadcast whose server-reported txid differs from ours (cairn-ziwm)', async () => {
-		const { userId, multisigId } = seedMultisig('forge@example.com');
+		const { userId, multisigId } = await seedMultisig('forge@example.com');
 		const txId = await signedToQuorum(userId, multisigId);
 		// A server claiming success with an invented txid for a broadcast it never did.
 		broadcastMock.mockResolvedValueOnce('cc'.repeat(32));
@@ -388,7 +388,7 @@ describe('broadcastMultisigTransaction', () => {
 	});
 
 	it('accepts the final signature riding along with the broadcast call', async () => {
-		const { userId, multisigId } = seedMultisig('ride@example.com');
+		const { userId, multisigId } = await seedMultisig('ride@example.com');
 		const { txId, psbt } = await seedDraft(userId, multisigId);
 		const first = attachMultisigSignature(userId, multisigId, txId, signWith(psbt, 0))!;
 		honestBroadcastOnce();
@@ -403,7 +403,7 @@ describe('broadcastMultisigTransaction', () => {
 	});
 
 	it('lets exactly one of two concurrent broadcasts through (atomic claim)', async () => {
-		const { userId, multisigId } = seedMultisig('race@example.com');
+		const { userId, multisigId } = await seedMultisig('race@example.com');
 		const txId = await signedToQuorum(userId, multisigId);
 
 		// The honest txid the server will echo back (matches the code's local check).
@@ -424,7 +424,7 @@ describe('broadcastMultisigTransaction', () => {
 	});
 
 	it('releases the claim when the network rejects, so a retry works', async () => {
-		const { userId, multisigId } = seedMultisig('retry@example.com');
+		const { userId, multisigId } = await seedMultisig('retry@example.com');
 		const txId = await signedToQuorum(userId, multisigId);
 
 		broadcastMock.mockRejectedValueOnce(new Error('mempool full'));
@@ -441,7 +441,7 @@ describe('broadcastMultisigTransaction', () => {
 	});
 
 	it('refuses double-broadcast of a completed transaction before touching the network', async () => {
-		const { userId, multisigId } = seedMultisig('done@example.com');
+		const { userId, multisigId } = await seedMultisig('done@example.com');
 		const txId = await signedToQuorum(userId, multisigId);
 		honestBroadcastOnce();
 		await broadcastMultisigTransaction(userId, multisigId, txId);
@@ -486,7 +486,7 @@ describe('bumpMultisigTransaction (RBF)', () => {
 	}
 
 	it('builds a higher-fee replacement: same inputs/recipients, replaces_txid set', async () => {
-		const { userId, multisigId } = seedMultisig('bump@example.com');
+		const { userId, multisigId } = await seedMultisig('bump@example.com');
 		const orig = await seedBroadcast(userId, multisigId);
 		const { draft, details } = await bumpMultisigTransaction(userId, multisigId, orig.txId, 25);
 		expect(draft.status).toBe('draft');
@@ -500,7 +500,7 @@ describe('bumpMultisigTransaction (RBF)', () => {
 	});
 
 	it('rejects a fee rate not higher than the original', async () => {
-		const { userId, multisigId } = seedMultisig('low@example.com');
+		const { userId, multisigId } = await seedMultisig('low@example.com');
 		const orig = await seedBroadcast(userId, multisigId);
 		await expect(
 			bumpMultisigTransaction(userId, multisigId, orig.txId, orig.rate)
@@ -508,7 +508,7 @@ describe('bumpMultisigTransaction (RBF)', () => {
 	});
 
 	it('refuses to bump a draft that was never broadcast', async () => {
-		const { userId, multisigId } = seedMultisig('draft@example.com');
+		const { userId, multisigId } = await seedMultisig('draft@example.com');
 		const { txId } = await seedDraft(userId, multisigId);
 		await expect(bumpMultisigTransaction(userId, multisigId, txId, 25)).rejects.toMatchObject({
 			code: 'not_bumpable'
@@ -516,7 +516,7 @@ describe('bumpMultisigTransaction (RBF)', () => {
 	});
 
 	it('allows only one live replacement per original', async () => {
-		const { userId, multisigId } = seedMultisig('dup@example.com');
+		const { userId, multisigId } = await seedMultisig('dup@example.com');
 		const orig = await seedBroadcast(userId, multisigId);
 		await bumpMultisigTransaction(userId, multisigId, orig.txId, 25);
 		await expect(bumpMultisigTransaction(userId, multisigId, orig.txId, 40)).rejects.toMatchObject({
@@ -525,7 +525,7 @@ describe('bumpMultisigTransaction (RBF)', () => {
 	});
 
 	it('marks the original superseded once the replacement broadcasts', async () => {
-		const { userId, multisigId } = seedMultisig('sup@example.com');
+		const { userId, multisigId } = await seedMultisig('sup@example.com');
 		const orig = await seedBroadcast(userId, multisigId);
 		const { draft } = await bumpMultisigTransaction(userId, multisigId, orig.txId, 25);
 		// Sign the replacement to quorum and broadcast it honestly.
@@ -561,7 +561,7 @@ describe('buildMultisigCpfpDraft (CPFP parity, cairn-u9ob.6)', () => {
 	}
 
 	it('forces the stuck output as input and prices the package at the target rate', async () => {
-		const { userId, multisigId } = seedMultisig('cpfp@example.com');
+		const { userId, multisigId } = await seedMultisig('cpfp@example.com');
 		const { parentTxid, utxos } = stubUnconfirmedParent(userId, multisigId);
 		utxosMock.mockResolvedValue(utxos);
 		// Parent: 200 vB @ 200 sat (1 sat/vB), still unconfirmed.
@@ -580,7 +580,7 @@ describe('buildMultisigCpfpDraft (CPFP parity, cairn-u9ob.6)', () => {
 	});
 
 	it('refuses when the vault has no unconfirmed output on that transaction', async () => {
-		const { userId, multisigId } = seedMultisig('cpfp-none@example.com');
+		const { userId, multisigId } = await seedMultisig('cpfp-none@example.com');
 		const PARENT = 'ac'.repeat(32);
 		// The only coin is CONFIRMED — nothing to CPFP.
 		utxosMock.mockResolvedValue(multisigUtxos(userId, multisigId));
@@ -591,7 +591,7 @@ describe('buildMultisigCpfpDraft (CPFP parity, cairn-u9ob.6)', () => {
 	});
 
 	it('refuses to CPFP an already-confirmed parent', async () => {
-		const { userId, multisigId } = seedMultisig('cpfp-conf@example.com');
+		const { userId, multisigId } = await seedMultisig('cpfp-conf@example.com');
 		const { parentTxid, utxos } = stubUnconfirmedParent(userId, multisigId);
 		utxosMock.mockResolvedValue(utxos);
 		getTxMock.mockResolvedValue({ confirmed: true, rbf: true, vsize: 200, fee: 200 });
@@ -601,7 +601,7 @@ describe('buildMultisigCpfpDraft (CPFP parity, cairn-u9ob.6)', () => {
 	});
 
 	it('detects the unconfirmed inflow and routes our own tx to RBF', async () => {
-		const { userId, multisigId } = seedMultisig('cpfp-detect@example.com');
+		const { userId, multisigId } = await seedMultisig('cpfp-detect@example.com');
 		const { parentTxid, utxos } = stubUnconfirmedParent(userId, multisigId);
 		utxosMock.mockResolvedValue(utxos);
 		getTxMock.mockResolvedValue({ confirmed: false, rbf: true, vsize: 200, fee: 200 });

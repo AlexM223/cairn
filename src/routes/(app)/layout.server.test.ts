@@ -32,7 +32,7 @@ const PASSWORD = 'correct horse battery';
 type User = { id: number; email: string; displayName: string; isAdmin: boolean };
 let member: User;
 
-beforeEach(() => {
+beforeEach(async () => {
 	wipe();
 	setSetting('registration_mode', 'open');
 	// Get past the first-sync gate (cairn-koy4.11): mark the chain-history
@@ -45,8 +45,8 @@ beforeEach(() => {
 	// throwaway admin first, then `member` (non-admin) as the account these
 	// data-loading tests exercise — none of them are gate tests anymore, so
 	// isAdmin only matters here in that it's held constant across runs.
-	registerUser({ email: 'admin@example.com', password: PASSWORD, displayName: 'admin' });
-	member = registerUser({ email: 'member@example.com', password: PASSWORD, displayName: 'member' });
+	await registerUser({ email: 'admin@example.com', password: PASSWORD, displayName: 'admin' });
+	member = await registerUser({ email: 'member@example.com', password: PASSWORD, displayName: 'member' });
 });
 
 /** Minimal event for invoking load(); the new signature reads only `locals`. */

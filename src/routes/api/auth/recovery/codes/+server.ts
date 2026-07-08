@@ -17,12 +17,12 @@ import type { RequestHandler } from './$types';
 
 const log = childLogger('recovery');
 
-export const POST: RequestHandler = (event) => {
+export const POST: RequestHandler = async (event) => {
 	const user = requireUser(event);
 
 	try {
 		const generated = generateRecoveryCodes();
-		generated.store(user.id);
+		await generated.store(user.id);
 		// Record the event WITHOUT the codes — never log the codes themselves.
 		recordActivity({
 			type: 'account_recovery_codes_set',

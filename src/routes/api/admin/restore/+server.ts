@@ -20,8 +20,8 @@ export const POST: RequestHandler = async (event) => {
 	if (!passphrase) return json({ error: 'Enter the backup passphrase.' }, { status: 400 });
 
 	try {
-		const data = decryptBackup(backupText, passphrase);
-		const summary = restoreBackup(data);
+		const data = await decryptBackup(backupText, passphrase);
+		const summary = await restoreBackup(data);
 		log.warn({ userId: user.id, summary }, 'instance restore applied');
 
 		// Fan a restore out to every admin (cairn-cpb5): a restore is a high-impact,

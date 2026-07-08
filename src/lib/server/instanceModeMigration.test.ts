@@ -31,21 +31,21 @@ describe('migrateInstanceMode', () => {
 		expect(getInstanceSettings().instanceMode).toBe('solo');
 	});
 
-	it('decides solo for a lone existing user with no collaboration data', () => {
-		registerUser({ email: 'solo@example.com', password: PASSWORD, displayName: 'Solo' });
+	it('decides solo for a lone existing user with no collaboration data', async () => {
+		await registerUser({ email: 'solo@example.com', password: PASSWORD, displayName: 'Solo' });
 		migrateInstanceMode();
 		expect(getSetting('instance_mode')).toBe('solo');
 	});
 
-	it('decides team when more than one user already exists', () => {
-		registerUser({ email: 'a@example.com', password: PASSWORD, displayName: 'A' });
-		registerUser({ email: 'b@example.com', password: PASSWORD, displayName: 'B' });
+	it('decides team when more than one user already exists', async () => {
+		await registerUser({ email: 'a@example.com', password: PASSWORD, displayName: 'A' });
+		await registerUser({ email: 'b@example.com', password: PASSWORD, displayName: 'B' });
 		migrateInstanceMode();
 		expect(getSetting('instance_mode')).toBe('team');
 	});
 
-	it('decides team when an invite row exists, even with only one user', () => {
-		registerUser({ email: 'a@example.com', password: PASSWORD, displayName: 'A' });
+	it('decides team when an invite row exists, even with only one user', async () => {
+		await registerUser({ email: 'a@example.com', password: PASSWORD, displayName: 'A' });
 		const a = db.prepare('SELECT id FROM users LIMIT 1').get() as { id: number };
 		db.prepare(
 			`INSERT INTO invites (code, created_by, max_uses, used_count) VALUES ('ABC123', ?, 1, 0)`
@@ -54,9 +54,9 @@ describe('migrateInstanceMode', () => {
 		expect(getSetting('instance_mode')).toBe('team');
 	});
 
-	it('decides team when a contacts row exists', () => {
-		const a = registerUser({ email: 'a@example.com', password: PASSWORD, displayName: 'A' });
-		const b = registerUser({ email: 'b@example.com', password: PASSWORD, displayName: 'B' });
+	it('decides team when a contacts row exists', async () => {
+		const a = await registerUser({ email: 'a@example.com', password: PASSWORD, displayName: 'A' });
+		const b = await registerUser({ email: 'b@example.com', password: PASSWORD, displayName: 'B' });
 		db.prepare(
 			`INSERT INTO contacts (user_id, contact_user_id, status) VALUES (?, ?, 'pending')`
 		).run(a.id, b.id);
@@ -64,12 +64,12 @@ describe('migrateInstanceMode', () => {
 		expect(getSetting('instance_mode')).toBe('team');
 	});
 
-	it('is idempotent — running again never overwrites an already-decided value', () => {
+	it('is idempotent — running again never overwrites an already-decided value', async () => {
 		migrateInstanceMode();
 		expect(getSetting('instance_mode')).toBe('solo');
 
-		registerUser({ email: 'a@example.com', password: PASSWORD, displayName: 'A' });
-		registerUser({ email: 'b@example.com', password: PASSWORD, displayName: 'B' });
+		await registerUser({ email: 'a@example.com', password: PASSWORD, displayName: 'A' });
+		await registerUser({ email: 'b@example.com', password: PASSWORD, displayName: 'B' });
 		migrateInstanceMode(); // more users now exist, but the decision already landed
 		expect(getSetting('instance_mode')).toBe('solo');
 	});

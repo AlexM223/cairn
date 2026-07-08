@@ -39,14 +39,16 @@ function wipe(): void {
 let userId: number;
 let walletId: number;
 
-beforeEach(() => {
+beforeEach(async () => {
 	wipe();
 	setSetting('registration_mode', 'open');
-	userId = registerUser({
-		email: 'user@example.com',
-		password: 'correct horse battery',
-		displayName: 'user'
-	}).id;
+	userId = (
+		await registerUser({
+			email: 'user@example.com',
+			password: 'correct horse battery',
+			displayName: 'user'
+		})
+	).id;
 	walletId = createWallet(userId, { name: 'Savings', xpub: XPUB }).id;
 });
 

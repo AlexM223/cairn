@@ -25,8 +25,8 @@ beforeEach(() => {
 
 const PASSWORD = 'correct horse battery';
 let seq = 0;
-function makeAdmin() {
-	const u = registerUser({ email: `admin${seq++}@x.com`, password: PASSWORD, displayName: 'Admin' });
+async function makeAdmin() {
+	const u = await registerUser({ email: `admin${seq++}@x.com`, password: PASSWORD, displayName: 'Admin' });
 	setUserAdmin(u.id, true);
 	return { id: u.id, email: u.email, displayName: u.displayName, isAdmin: true };
 }
@@ -76,7 +76,7 @@ function featureFlagEventCount(): number {
 
 describe('admin feature-flag audit trail (events table)', () => {
 	it('a global toggle records an admin_feature_flag event with from/to and actor', async () => {
-		const admin = makeAdmin();
+		const admin = await makeAdmin();
 		const res = await flagActions.toggle(actionEvent(admin, { key: 'send', enabled: 'false' }));
 		expect(res).toEqual({ ok: true });
 
@@ -97,7 +97,7 @@ describe('admin feature-flag audit trail (events table)', () => {
 	});
 
 	it('enabling records level info and from reflects the prior row', async () => {
-		const admin = makeAdmin();
+		const admin = await makeAdmin();
 		setGlobalFlag('send', false, admin.id); // prior explicit off
 		await flagActions.toggle(actionEvent(admin, { key: 'send', enabled: 'true' }));
 		const ev = lastEvent();
@@ -106,15 +106,15 @@ describe('admin feature-flag audit trail (events table)', () => {
 	});
 
 	it('an unknown flag key is rejected and records nothing', async () => {
-		const admin = makeAdmin();
+		const admin = await makeAdmin();
 		const res = await flagActions.toggle(actionEvent(admin, { key: 'nope', enabled: 'false' }));
 		expect((res as { status?: number }).status).toBe(400);
 		expect(db.prepare('SELECT COUNT(*) AS n FROM events').get()).toEqual({ n: 0 });
 	});
 
 	it('a per-user override records an admin_feature_flag_override event with target + from/to', async () => {
-		const admin = makeAdmin();
-		const member = makeMember();
+		const admin = await makeAdmin();
+		const member = await makeMember();
 		const res = await userActions.setOverride(
 			actionEvent(admin, { key: 'multisig_create', state: 'off' }, { id: String(member.id) })
 		);
@@ -135,8 +135,8 @@ describe('admin feature-flag audit trail (events table)', () => {
 	});
 
 	it('clearing an override back to inherit records from the prior forced value', async () => {
-		const admin = makeAdmin();
-		const member = makeMember();
+		const admin = await makeAdmin();
+		const member = await makeMember();
 		// First force it on, then clear to inherit.
 		await userActions.setOverride(
 			actionEvent(admin, { key: 'send', state: 'on' }, { id: String(member.id) })
@@ -151,8 +151,8 @@ describe('admin feature-flag audit trail (events table)', () => {
 });
 
 describe('requireFeature blocked-attempt logging', () => {
-	it('403s through the DB-fallback path when a user is blocked (warn line asserted in guardLog.test.ts)', () => {
-		const member = makeMember();
+	it('403s through the DB-fallback path when a user is blocked (warn line asserted in guardLog.test.ts)', async () => {
+		const member = await makeMember();
 		setGlobalFlag('send', false, member.id);
 		// No flags on the event → the guard reads the DB and sees the off row.
 		const evt = {
@@ -172,7 +172,7 @@ describe('requireFeature blocked-attempt logging', () => {
 
 describe('admin API — global toggle + per-user override lifecycle', () => {
 	it('toggling a global flag off writes an explicit row and returns ok', async () => {
-		const admin = makeAdmin();
+		const admin = await makeAdmin();
 		const res = await flagActions.toggle(actionEvent(admin, { key: 'explorer', enabled: 'false' }));
 		expect(res).toEqual({ ok: true });
 		const row = db.prepare('SELECT enabled FROM feature_flags WHERE key = ?').get('explorer');
@@ -180,8 +180,8 @@ describe('admin API — global toggle + per-user override lifecycle', () => {
 	});
 
 	it('setting then removing a per-user override adds and deletes exactly its row, response ok each time', async () => {
-		const admin = makeAdmin();
-		const member = makeMember();
+		const admin = await makeAdmin();
+		const member = await makeMember();
 
 		// Force on.
 		const on = await userActions.setOverride(
@@ -204,8 +204,8 @@ describe('admin API — global toggle + per-user override lifecycle', () => {
 
 describe('admin API — edge cases', () => {
 	it('an invalid override state is rejected (400) and records nothing', async () => {
-		const admin = makeAdmin();
-		const member = makeMember();
+		const admin = await makeAdmin();
+		const member = await makeMember();
 		const res = await userActions.setOverride(
 			actionEvent(admin, { key: 'send', state: 'sideways' }, { id: String(member.id) })
 		);
@@ -216,7 +216,7 @@ describe('admin API — edge cases', () => {
 	});
 
 	it('an override for a non-existent user returns 404 and writes no row or event', async () => {
-		const admin = makeAdmin();
+		const admin = await makeAdmin();
 		const res = await userActions.setOverride(
 			actionEvent(admin, { key: 'send', state: 'off' }, { id: '999999' })
 		);
@@ -226,16 +226,16 @@ describe('admin API — edge cases', () => {
 	});
 
 	it('an unknown flag key on a per-user override is rejected (400)', async () => {
-		const admin = makeAdmin();
-		const member = makeMember();
+		const admin = await makeAdmin();
+		const member = await makeMember();
 		const res = await userActions.setOverride(
 			actionEvent(admin, { key: 'not_a_flag', state: 'off' }, { id: String(member.id) })
 		);
 		expect((res as { status?: number }).status).toBe(400);
 	});
 
-	it('admin-panel access is governed by isAdmin, not feature flags — an admin cannot flag themselves out of it', () => {
-		const admin = makeAdmin();
+	it('admin-panel access is governed by isAdmin, not feature flags — an admin cannot flag themselves out of it', async () => {
+		const admin = await makeAdmin();
 		// Force EVERY registered flag off for the admin, both globally and per-user.
 		for (const def of FEATURE_FLAGS) {
 			setGlobalFlag(def.key, false, admin.id);

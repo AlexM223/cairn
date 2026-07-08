@@ -59,7 +59,7 @@ export const POST: RequestHandler = async (event) => {
 	db.exec('BEGIN');
 	let user;
 	try {
-		user = registerUser({
+		user = await registerUser({
 			email: pending.email,
 			displayName: pending.displayName ?? '',
 			inviteCode: pending.inviteCode

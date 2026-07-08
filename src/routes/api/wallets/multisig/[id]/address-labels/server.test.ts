@@ -21,21 +21,22 @@ let viewer: number;
 let outsider: number;
 let multisigId: number;
 
-function makeUser(email: string): number {
-	return registerUser({
+async function makeUser(email: string): Promise<number> {
+	const user = await registerUser({
 		email,
 		password: 'correct horse battery',
 		displayName: email.split('@')[0]
-	}).id;
+	});
+	return user.id;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
 	wipe();
 	setSetting('registration_mode', 'open');
-	owner = makeUser('owner@example.com');
-	cosigner = makeUser('cosigner@example.com');
-	viewer = makeUser('viewer@example.com');
-	outsider = makeUser('outsider@example.com');
+	owner = await makeUser('owner@example.com');
+	cosigner = await makeUser('cosigner@example.com');
+	viewer = await makeUser('viewer@example.com');
+	outsider = await makeUser('outsider@example.com');
 	multisigId = Number(
 		db
 			.prepare("INSERT INTO multisigs (user_id, name, threshold) VALUES (?, 'Vault', 2)")

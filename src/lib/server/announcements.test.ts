@@ -48,8 +48,8 @@ function makeUser() {
 	return registerUser({ email: `user${seq++}@x.com`, password: PASSWORD, displayName: 'User' });
 }
 
-function makeAdmin() {
-	const u = registerUser({ email: `admin${seq++}@x.com`, password: PASSWORD, displayName: 'Admin' });
+async function makeAdmin() {
+	const u = await registerUser({ email: `admin${seq++}@x.com`, password: PASSWORD, displayName: 'Admin' });
 	setUserAdmin(u.id, true);
 	return { id: u.id, email: u.email, displayName: u.displayName, isAdmin: true };
 }
@@ -125,8 +125,8 @@ describe('announcements — admin CRUD + validation', () => {
 		expect(updateAnnouncement(999999, { type: 'info', title: 'x', body: 'y' })).toBeNull();
 	});
 
-	it('delete removes the row and cascades its dismissal rows', () => {
-		const user = makeUser();
+	it('delete removes the row and cascades its dismissal rows', async () => {
+		const user = await makeUser();
 		const a = make();
 		dismissAnnouncement(user.id, a.id);
 		expect(dismissalCount()).toBe(1);
@@ -139,15 +139,15 @@ describe('announcements — admin CRUD + validation', () => {
 });
 
 describe('listActiveAnnouncementsFor — what a user actually sees', () => {
-	it('an expired announcement is never listed; a future expiry still is', () => {
-		const user = makeUser();
+	it('an expired announcement is never listed; a future expiry still is', async () => {
+		const user = await makeUser();
 		make({ title: 'Old news', expiresAt: PAST });
 		const current = make({ title: 'Current', expiresAt: FUTURE });
 		expect(listActiveAnnouncementsFor(user.id).map((a) => a.id)).toEqual([current.id]);
 	});
 
-	it('an inactive announcement is never listed', () => {
-		const user = makeUser();
+	it('an inactive announcement is never listed', async () => {
+		const user = await makeUser();
 		const a = make();
 		setAnnouncementActive(a.id, false);
 		expect(listActiveAnnouncementsFor(user.id)).toHaveLength(0);
@@ -155,8 +155,8 @@ describe('listActiveAnnouncementsFor — what a user actually sees', () => {
 		expect(listActiveAnnouncementsFor(user.id)).toHaveLength(1);
 	});
 
-	it('sorts by display_order, then id for ties', () => {
-		const user = makeUser();
+	it('sorts by display_order, then id for ties', async () => {
+		const user = await makeUser();
 		const last = make({ title: 'Last', displayOrder: 5 });
 		const firstA = make({ title: 'First A', displayOrder: 1 });
 		const firstB = make({ title: 'First B (same order, later id)', displayOrder: 1 });
@@ -167,9 +167,9 @@ describe('listActiveAnnouncementsFor — what a user actually sees', () => {
 		]);
 	});
 
-	it("a dismissal is per-user — A's dismissal doesn't affect B", () => {
-		const alice = makeUser();
-		const bob = makeUser();
+	it("a dismissal is per-user — A's dismissal doesn't affect B", async () => {
+		const alice = await makeUser();
+		const bob = await makeUser();
 		const a = make();
 
 		expect(dismissAnnouncement(alice.id, a.id)).toBe('dismissed');
@@ -177,16 +177,16 @@ describe('listActiveAnnouncementsFor — what a user actually sees', () => {
 		expect(listActiveAnnouncementsFor(bob.id)).toHaveLength(1);
 	});
 
-	it('dismiss upsert is idempotent — repeat dismissals keep a single row', () => {
-		const user = makeUser();
+	it('dismiss upsert is idempotent — repeat dismissals keep a single row', async () => {
+		const user = await makeUser();
 		const a = make();
 		expect(dismissAnnouncement(user.id, a.id)).toBe('dismissed');
 		expect(dismissAnnouncement(user.id, a.id)).toBe('dismissed');
 		expect(dismissalCount()).toBe(1);
 	});
 
-	it('a NON-dismissible announcement ignores stale dismissal rows entirely', () => {
-		const user = makeUser();
+	it('a NON-dismissible announcement ignores stale dismissal rows entirely', async () => {
+		const user = await makeUser();
 		const a = make(); // dismissible at first
 		dismissAnnouncement(user.id, a.id);
 		expect(listActiveAnnouncementsFor(user.id)).toHaveLength(0);
@@ -202,8 +202,8 @@ describe('listActiveAnnouncementsFor — what a user actually sees', () => {
 		expect(listActiveAnnouncementsFor(user.id).map((x) => x.id)).toEqual([a.id]);
 	});
 
-	it('dismissAnnouncement refuses non-dismissible (no row) and reports unknown ids', () => {
-		const user = makeUser();
+	it('dismissAnnouncement refuses non-dismissible (no row) and reports unknown ids', async () => {
+		const user = await makeUser();
 		const a = make({ dismissible: false });
 		expect(dismissAnnouncement(user.id, a.id)).toBe('not_dismissible');
 		expect(dismissalCount()).toBe(0);
@@ -246,13 +246,13 @@ describe('POST /api/announcements/[id]/dismiss', () => {
 	});
 
 	it('404s an unknown or non-numeric id', async () => {
-		const user = makeUser();
+		const user = await makeUser();
 		expect(await callDismiss(user, '999999')).toBe(404);
 		expect(await callDismiss(user, 'abc')).toBe(404);
 	});
 
 	it("409s a non-dismissible announcement — the missing ✕ isn't the boundary", async () => {
-		const user = makeUser();
+		const user = await makeUser();
 		const a = make({ dismissible: false });
 		expect(await callDismiss(user, String(a.id))).toBe(409);
 		expect(dismissalCount()).toBe(0);
@@ -261,8 +261,8 @@ describe('POST /api/announcements/[id]/dismiss', () => {
 	});
 
 	it('200s and hides a dismissible announcement for that user only', async () => {
-		const alice = makeUser();
-		const bob = makeUser();
+		const alice = await makeUser();
+		const bob = await makeUser();
 		const a = make();
 		expect(await callDismiss(alice, String(a.id))).toBe(200);
 		expect(listActiveAnnouncementsFor(alice.id)).toHaveLength(0);
@@ -308,7 +308,7 @@ function lastEvent(): { type: string; level: string; message: string } {
 
 describe('/admin/announcements actions', () => {
 	it('create inserts the row and records an admin_announcement audit event', async () => {
-		const admin = makeAdmin();
+		const admin = await makeAdmin();
 		const res = await adminActions.create(actionEvent(admin, VALID_FORM));
 		expect(res).toEqual({ ok: true });
 
@@ -323,7 +323,7 @@ describe('/admin/announcements actions', () => {
 	});
 
 	it('create rejects bad input with a friendly 400 and writes nothing', async () => {
-		const admin = makeAdmin();
+		const admin = await makeAdmin();
 		const res = await adminActions.create(actionEvent(admin, { ...VALID_FORM, title: '  ' }));
 		expect((res as { status?: number }).status).toBe(400);
 		expect(listAnnouncements()).toHaveLength(0);
@@ -331,7 +331,7 @@ describe('/admin/announcements actions', () => {
 	});
 
 	it('update edits the row; unchecked checkboxes mean off', async () => {
-		const admin = makeAdmin();
+		const admin = await makeAdmin();
 		const a = make();
 		// dismissible/active omitted = the admin unchecked both.
 		const res = await adminActions.update(
@@ -357,7 +357,7 @@ describe('/admin/announcements actions', () => {
 	});
 
 	it('toggleActive flips active and audits the consequential direction at warn', async () => {
-		const admin = makeAdmin();
+		const admin = await makeAdmin();
 		const a = make();
 		const res = await adminActions.toggleActive(
 			actionEvent(admin, { id: String(a.id), active: 'false' })
@@ -368,7 +368,7 @@ describe('/admin/announcements actions', () => {
 	});
 
 	it('delete removes the row; a missing id 404s', async () => {
-		const admin = makeAdmin();
+		const admin = await makeAdmin();
 		const a = make();
 		expect(await adminActions.delete(actionEvent(admin, { id: String(a.id) }))).toEqual({
 			ok: true
@@ -379,7 +379,7 @@ describe('/admin/announcements actions', () => {
 	});
 
 	it('all mutations refuse when the announcement_banners flag is off', async () => {
-		const admin = makeAdmin();
+		const admin = await makeAdmin();
 		const off = { announcement_banners: false };
 		const res = await adminActions.create(actionEvent(admin, VALID_FORM, off));
 		expect((res as { status?: number }).status).toBe(400);
