@@ -1,7 +1,7 @@
 import { error, redirect } from '@sveltejs/kit';
 import type { Handle, HandleServerError } from '@sveltejs/kit';
 import { randomBytes } from 'node:crypto';
-import { getSessionUser, SESSION_COOKIE, bootstrapAdminFromEnv } from '$lib/server/auth';
+import { getSessionUser, SESSION_COOKIE, bootstrapAdminFromEnv, cookieSecure } from '$lib/server/auth';
 import { resolveAllFlags } from '$lib/server/featureFlags/resolve';
 import { appGateRedirect } from '$lib/server/appGate';
 import { childLogger } from '$lib/server/logger';
@@ -214,6 +214,48 @@ function redactPath(pathname: string): string {
 	return pathname.split('/').map(redactSegment).join('/');
 }
 
+// Security response headers (cairn-ia2y). This is a wallet app that authorizes
+// real Bitcoin transactions via Sign/Send buttons — with no framing defense an
+// attacker could iframe the app on a malicious page and clickjack a user into
+// approving a transaction. Applied to EVERY response `handle` returns
+// (assets included) rather than gated to specific routes, so there is one
+// place to audit and no route can accidentally ship without it.
+//
+// CSP is scoped to what the app actually loads: app.html has no inline
+// `<script>` (SvelteKit hydration ships as external `'self'` module chunks,
+// so script-src never needs 'unsafe-inline' or 'unsafe-eval'), but it does use
+// an inline `style="display: contents"` attribute, and canvas-rendered QR
+// codes (QrSigner.svelte / JadeQrSigner.svelte) render via `data:image` URIs —
+// hence `style-src 'self' 'unsafe-inline'` and `img-src 'self' data:'`. No
+// route calls out to a third-party origin at fetch/XHR/EventSource/WebSocket
+// time (referral/support links in referrals.ts are plain `<a>` navigations,
+// not fetched by the page, and the /api/events + /api/notifications/stream
+// SSE streams are same-origin `EventSource` calls) — so `connect-src 'self'`
+// is sufficient and hardware-wallet communication (WebUSB/WebHID) is
+// unaffected either way, since those are browser-mediated device transports,
+// not network requests subject to connect-src. `frame-ancestors 'none'` is
+// the modern, CSP-level replacement for X-Frame-Options and is what actually
+// stops framing in current browsers; X-Frame-Options: DENY is kept alongside
+// it for defense in depth on the (now vanishingly rare) UA that ignores CSP.
+const CSP =
+	"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+	"img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; " +
+	"base-uri 'self'; form-action 'self'";
+
+function applySecurityHeaders(response: Response, isHttps: boolean): Response {
+	response.headers.set('X-Frame-Options', 'DENY');
+	response.headers.set('X-Content-Type-Options', 'nosniff');
+	response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+	response.headers.set('Content-Security-Policy', CSP);
+	// Only over HTTPS (mirrors auth.ts's cookieSecure() protocol check) — an
+	// Umbrel/LAN deployment that intentionally runs plain HTTP must not get an
+	// HSTS header telling browsers to force HTTPS on it forever.
+	if (isHttps) {
+		response.headers.set('Strict-Transport-Security', 'max-age=63072000; includeSubDomains');
+	}
+	return response;
+}
+
 /**
  * True for any state-changing (non-GET/HEAD) request to /admin or an
  * /admin/* route — the boundary the Layer-2 backstop below blocks. Exported
@@ -254,7 +296,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 	// them) paid for getSessionUser (1 query) + resolveAllFlags (2 queries) for
 	// nothing. locals.user/locals.flags are left unset here; nothing downstream
 	// of an asset response reads them.
-	if (isAsset(pathname)) return resolve(event);
+	if (isAsset(pathname)) return applySecurityHeaders(await resolve(event), cookieSecure(event.url));
 
 	event.locals.user = getSessionUser(event.cookies.get(SESSION_COOKIE));
 	// Resolve feature flags once per request, right after the user is known, so
@@ -348,7 +390,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 	const path = redactPath(pathname);
 	const start = performance.now();
 
-	const response = await resolve(event);
+	const response = applySecurityHeaders(await resolve(event), cookieSecure(event.url));
 
 	const ms = Math.round(performance.now() - start);
 	const status = response.status;
