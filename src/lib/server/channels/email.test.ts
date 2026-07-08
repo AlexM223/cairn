@@ -139,6 +139,25 @@ describe('send', () => {
 		expect(res.ok).toBe(false);
 		expect(res.retryable).toBe(true);
 	});
+
+	it('sets bounded connection/greeting/socket timeouts on the transport (cairn-a2b6)', async () => {
+		configureSmtp();
+		await emailChannel.send(userId, PAYLOAD);
+		const opts = createTransport.mock.calls.at(-1)![0] as {
+			connectionTimeout?: number;
+			greetingTimeout?: number;
+			socketTimeout?: number;
+		};
+		// Nodemailer's own defaults (2min connection / 10min socket) are far too
+		// long to let a black-holing SMTP host stall the queue's single-flight
+		// worker — every phase must be explicitly bounded well under a minute.
+		expect(opts.connectionTimeout).toBeGreaterThan(0);
+		expect(opts.connectionTimeout).toBeLessThanOrEqual(15_000);
+		expect(opts.greetingTimeout).toBeGreaterThan(0);
+		expect(opts.greetingTimeout).toBeLessThanOrEqual(15_000);
+		expect(opts.socketTimeout).toBeGreaterThan(0);
+		expect(opts.socketTimeout).toBeLessThanOrEqual(60_000);
+	});
 });
 
 describe('per-user SMTP resolution (cairn-l512.2)', () => {

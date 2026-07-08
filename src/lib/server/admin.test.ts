@@ -230,6 +230,32 @@ describe('resetInstance', () => {
 		const { n } = db.prepare('SELECT COUNT(*) AS n FROM notified_txids').get() as { n: number };
 		expect(n).toBe(0);
 	});
+
+	// cairn-hl87: feature_flags/user_feature_flags.updated_by reference users(id)
+	// with no ON DELETE action. Before the fix, DELETE FROM users threw an FK
+	// violation with no ROLLBACK, leaving the shared connection with an open
+	// transaction that broke every later BEGIN until process restart.
+	it('succeeds and leaves no open transaction when a feature flag has been toggled', () => {
+		const admin = makeUser('admin@example.com');
+		db.prepare('INSERT INTO feature_flags (key, enabled, updated_by) VALUES (?, ?, ?)').run(
+			'some-flag',
+			1,
+			admin.id
+		);
+		db.prepare(
+			'INSERT INTO user_feature_flags (user_id, key, enabled, updated_by) VALUES (?, ?, ?, ?)'
+		).run(admin.id, 'some-flag', 0, admin.id);
+
+		expect(() => resetInstance()).not.toThrow();
+
+		const { n } = db.prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number };
+		expect(n).toBe(0);
+
+		// A subsequent BEGIN must succeed — proof the reset's own transaction was
+		// actually committed/rolled back rather than left open.
+		db.prepare('BEGIN').run();
+		db.prepare('COMMIT').run();
+	});
 });
 
 describe('instanceStats', () => {

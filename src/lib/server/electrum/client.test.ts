@@ -614,4 +614,101 @@ describe('ElectrumClient', () => {
 		await new Promise((resolve) => setTimeout(resolve, 1300));
 		expect(handshakes).toBe(1);
 	}, 8000);
+
+	// ------------------------------------------------------- malformed messages
+
+	it('ignores a bare `null` (or other non-object) JSON-RPC line instead of crashing', async () => {
+		const server = await withServer((req, socket) => {
+			if (req.method === 'echo') {
+				// Malformed lines a buggy/hostile server might send: JSON.parse accepts
+				// all of these, but none of them is a property-accessible message
+				// object (cairn-ek9s). They must be dropped, not crash the process.
+				socket.write('null\n');
+				socket.write('42\n');
+				socket.write('"just a string"\n');
+				socket.write('[1,2,3]\n');
+				reply(socket, req.id, req.params[0]);
+				return true;
+			}
+		});
+
+		const client = makeClient(server.port);
+		await expect(client.request('echo', ['still alive'])).resolves.toBe('still alive');
+	});
+
+	it('recovers when a message handler throws during dispatch()', async () => {
+		let subscriberSocket: net.Socket | null = null;
+		const server = await withServer((req, socket) => {
+			if (req.method === 'blockchain.headers.subscribe') {
+				subscriberSocket = socket;
+				reply(socket, req.id, { height: 1, hex: 'aa'.repeat(80) });
+				return true;
+			}
+			if (req.method === 'echo') {
+				reply(socket, req.id, req.params[0]);
+				return true;
+			}
+		});
+
+		const client = makeClient(server.port);
+		await client.headersSubscribe();
+		client.once('header', () => {
+			// Simulate a buggy consumer listener; dispatch() must not let this
+			// propagate up through the socket 'data' handler (cairn-ek9s).
+			throw new Error('listener boom');
+		});
+
+		notify(subscriberSocket!, 'blockchain.headers.subscribe', [{ height: 2, hex: 'bb'.repeat(80) }]);
+		// Give onData a turn to process the notification (and the throwing listener).
+		await new Promise((resolve) => setImmediate(resolve));
+
+		// Still usable afterward proves the throw was contained.
+		await expect(client.request('echo', ['still alive'])).resolves.toBe('still alive');
+	});
+
+	// --------------------------------------------------------------- keepalive
+
+	it('destroys a zombie connection when the keepalive ping fails, and reconnects', async () => {
+		let handshakes = 0;
+		const server = await withServer((req, socket) => {
+			if (req.method === 'server.version') {
+				handshakes++;
+				return;
+			}
+			if (req.method === 'blockchain.headers.subscribe') {
+				reply(socket, req.id, { height: handshakes, hex: 'aa'.repeat(80) });
+				return true;
+			}
+			if (req.method === 'server.ping') {
+				// The first connection's socket goes silent (TCP stays "established"
+				// but the peer never answers again) -- a classic zombie/NAT-timeout
+				// scenario (cairn-jhj6). Every later connection answers normally.
+				if (handshakes === 1) return true; // swallow it
+				reply(socket, req.id, null);
+				return true;
+			}
+		});
+
+		const client = new ElectrumClient({
+			host: '127.0.0.1',
+			port: server.port,
+			tls: false,
+			timeoutMs: 150,
+			keepaliveIntervalMs: 100
+		});
+		cleanups.push(() => client.close());
+
+		await client.headersSubscribe(); // first connect; handshakes === 1
+		expect(handshakes).toBe(1);
+
+		// The keepalive ping (100ms) goes unanswered and times out (150ms); that
+		// failure must destroy the socket and drive a reconnect via the existing
+		// backoff machinery, since headersSubscribed keeps reconnect eager.
+		const reconnected = new Promise<void>((resolve) => client.once('connect', () => resolve()));
+		await reconnected;
+		expect(handshakes).toBeGreaterThanOrEqual(2);
+
+		// And the client is fully usable again on the new connection.
+		await expect(client.request('server.ping')).resolves.toBeNull();
+	}, 8000);
 });

@@ -54,6 +54,42 @@ const log = childLogger('notify:nostr');
 /** kind:4 — encrypted direct message. Content here is a NIP-44 ciphertext. */
 const KIND_ENCRYPTED_DM = 4;
 
+/**
+ * Bound on how long a single relay gets to ACK a publish. nostr-tools'
+ * SimplePool.publish() has no built-in timeout — a relay that completes the
+ * WebSocket handshake but never sends an OK leaves its Promise pending
+ * forever. notificationQueue.ts processes rows sequentially under a
+ * single-flight guard, so one such relay would stall tick() — and therefore
+ * every outbound notification for every user on every channel — permanently
+ * (cairn-49qw). Matches webhook.ts's REQUEST_TIMEOUT_MS.
+ */
+const RELAY_PUBLISH_TIMEOUT_MS = 10_000;
+
+/**
+ * Race a relay publish Promise against a timer so a non-ACKing relay becomes a
+ * per-relay failure instead of hanging the caller forever. The underlying
+ * publish Promise is left to settle on its own (nostr-tools/ws has no cancel
+ * hook) — pool.close() in publishEncryptedDM's `finally` tears down the
+ * socket regardless of whether this timeout or the real response wins.
+ */
+function withRelayTimeout(promise: Promise<string>, relay: string): Promise<string> {
+	return new Promise<string>((resolve, reject) => {
+		const timer = setTimeout(() => {
+			reject(new Error(`${relay}: publish timed out after ${RELAY_PUBLISH_TIMEOUT_MS}ms`));
+		}, RELAY_PUBLISH_TIMEOUT_MS);
+		promise.then(
+			(value) => {
+				clearTimeout(timer);
+				resolve(value);
+			},
+			(err) => {
+				clearTimeout(timer);
+				reject(err);
+			}
+		);
+	});
+}
+
 /** Fallback relays when neither the user nor the instance configured any. */
 const BUILTIN_DEFAULT_RELAYS = [
 	'wss://relay.damus.io',
@@ -260,7 +296,12 @@ async function publishEncryptedDM(
 	try {
 		// publish() returns one Promise<string> per relay: resolve = accepted,
 		// reject = that relay refused/was unreachable. We succeed if ANY resolves.
-		const results = await Promise.allSettled(pool.publish(relays, signedEvent));
+		// Each is individually raced against RELAY_PUBLISH_TIMEOUT_MS so a relay
+		// that never ACKs becomes a per-relay failure (not a hang) — Promise.
+		// allSettled below is then guaranteed to resolve within the timeout bound.
+		const results = await Promise.allSettled(
+			pool.publish(relays, signedEvent).map((p, i) => withRelayTimeout(p, relays[i] ?? `relay[${i}]`))
+		);
 		const accepted = results.filter((r) => r.status === 'fulfilled').length;
 		const failures = results
 			.filter((r): r is PromiseRejectedResult => r.status === 'rejected')
@@ -370,7 +411,8 @@ export const _internals = {
 	getSenderPublicKey: (): string | null => {
 		const sk = getOrCreateSenderSecretKey();
 		return sk ? getPublicKey(sk) : null;
-	}
+	},
+	RELAY_PUBLISH_TIMEOUT_MS
 };
 
 export default nostrChannel;

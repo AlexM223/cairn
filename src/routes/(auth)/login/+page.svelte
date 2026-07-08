@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { signInWithPasskey, browserSupportsWebAuthn } from '$lib/passkey';
+	import { resolveNextUrl } from './nextUrl';
 
 	let email = $state('');
 	let password = $state('');
@@ -15,8 +16,7 @@
 	});
 
 	function nextUrl(): string {
-		const next = page.url.searchParams.get('next');
-		return next && next.startsWith('/') ? next : '/';
+		return resolveNextUrl(page.url.searchParams.get('next'));
 	}
 
 	// The v0.1.1 Umbrel bug's failure shape, kept from ever being silent again

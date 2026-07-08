@@ -105,27 +105,38 @@ export function deleteUser(id: number): void {
  * wiped along with everything else — that is intentional.
  */
 export function resetInstance(): void {
-	db.exec(`
-		BEGIN;
-		DELETE FROM wallets;
-		DELETE FROM invites;
-		DELETE FROM sessions;
-		DELETE FROM users;
-		DELETE FROM settings;
-		-- Instance-wide activity (events.user_id IS NULL) and the notified-txid
-		-- ledger have no FK target to cascade from, so they must be cleared
-		-- explicitly. Otherwise a new operator sees the prior instance's activity
-		-- history and dedup state, contradicting the "nothing else survives" copy
-		-- in the reset danger-zone (cairn-5s8y, cairn-zari).
-		DELETE FROM events;
-		DELETE FROM notified_txids;
-		-- Instance-level marketing content also has no user FK to cascade from
-		-- (dismissals do cascade with users; the announcements/referral rows
-		-- themselves belong to the instance being reset).
-		DELETE FROM announcements;
-		DELETE FROM multisig_service_referrals;
-		COMMIT;
-	`);
+	db.prepare('BEGIN').run();
+	try {
+		// feature_flags/user_feature_flags.updated_by have no ON DELETE action —
+		// a plain `DELETE FROM users` would violate the FK (cairn-hl87). Clear
+		// them before the user rows go, same idiom as deleteOwnAccount.
+		db.prepare('UPDATE feature_flags SET updated_by = NULL').run();
+		db.prepare('UPDATE user_feature_flags SET updated_by = NULL').run();
+
+		db.exec(`
+			DELETE FROM wallets;
+			DELETE FROM invites;
+			DELETE FROM sessions;
+			DELETE FROM users;
+			DELETE FROM settings;
+			-- Instance-wide activity (events.user_id IS NULL) and the notified-txid
+			-- ledger have no FK target to cascade from, so they must be cleared
+			-- explicitly. Otherwise a new operator sees the prior instance's activity
+			-- history and dedup state, contradicting the "nothing else survives" copy
+			-- in the reset danger-zone (cairn-5s8y, cairn-zari).
+			DELETE FROM events;
+			DELETE FROM notified_txids;
+			-- Instance-level marketing content also has no user FK to cascade from
+			-- (dismissals do cascade with users; the announcements/referral rows
+			-- themselves belong to the instance being reset).
+			DELETE FROM announcements;
+			DELETE FROM multisig_service_referrals;
+		`);
+		db.prepare('COMMIT').run();
+	} catch (e) {
+		db.prepare('ROLLBACK').run();
+		throw e;
+	}
 }
 
 // ---------- Invites ----------

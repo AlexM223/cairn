@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
 import { db } from '../db';
 import { registerUser } from '../auth';
 import { getSetting, setSetting } from '../settings';
@@ -249,6 +249,42 @@ describe('send() — publish semantics', () => {
 		const res = await nostrChannel.send(u, payload);
 		expect(res.ok).toBe(false);
 		expect(res.retryable).toBe(false);
+	});
+});
+
+describe('relay publish timeout (cairn-49qw)', () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it('treats a relay that never ACKs as a per-relay failure without blocking a relay that does', async () => {
+		const u = makeUser('timeout-a@example.com');
+		saveConfig(u, { recipientPubkey: RECIPIENT_PUBKEY, relays: ['wss://hangs', 'wss://good'] });
+		// One relay never settles (simulates a completed handshake that never ACKs);
+		// the other accepts immediately.
+		publishImpl = () => [new Promise(() => {}), Promise.resolve('ok')];
+
+		vi.useFakeTimers();
+		const resultPromise = nostrChannel.send(u, payload);
+		await vi.advanceTimersByTimeAsync(_internals.RELAY_PUBLISH_TIMEOUT_MS);
+		const res = await resultPromise;
+
+		expect(res.ok).toBe(true); // the responsive relay's accept still counts
+		expect(closeSpy).toHaveBeenCalled(); // pool torn down even though one relay hung
+	});
+
+	it('fails retryably instead of hanging forever when every relay stalls', async () => {
+		const u = makeUser('timeout-b@example.com');
+		saveConfig(u, { recipientPubkey: RECIPIENT_PUBKEY, relays: ['wss://hangs1', 'wss://hangs2'] });
+		publishImpl = () => [new Promise(() => {}), new Promise(() => {})];
+
+		vi.useFakeTimers();
+		const resultPromise = nostrChannel.send(u, payload);
+		await vi.advanceTimersByTimeAsync(_internals.RELAY_PUBLISH_TIMEOUT_MS);
+		const res = await resultPromise;
+
+		expect(res.ok).toBe(false);
+		expect(res.retryable).toBe(true);
 	});
 });
 
