@@ -255,6 +255,32 @@ describe('getTx (toTxDetail mapping)', () => {
 		expect(tx.confirmations).toBe(11);
 		expect(tx.vout[0].scriptPubKey).toBe(WATCHED_SCRIPT);
 	});
+
+	it('fetches tx, tip, and outspends concurrently — not outspends after the others (cairn-daej)', async () => {
+		const stub = makeEsploraStub();
+		// Gate tx/tipHeight behind a manual latch. If outspends were still a
+		// sequential await after their Promise.all, it would NOT be called until
+		// after this latch releases; a concurrent Promise.all invokes all three
+		// synchronously, so getTxOutspends is called while tx/tip are still pending.
+		let releaseTx!: () => void;
+		const txGate = new Promise<void>((r) => (releaseTx = r));
+		stub.getTx.mockImplementation(async () => {
+			await txGate;
+			return ESPLORA_TX;
+		});
+		const svc = makeService(stub);
+
+		const pending = svc.getTx(ESPLORA_TX.txid);
+		// Let microtasks drain so the Promise.all has kicked off every fetch.
+		await Promise.resolve();
+		expect(stub.getTxOutspends).toHaveBeenCalledTimes(1); // already in flight
+		expect(stub.getTipHeight).toHaveBeenCalledTimes(1);
+
+		releaseTx();
+		const tx = await pending;
+		expect(tx.vout[0].spent).toBe(true);
+		expect(tx.vout[1].spent).toBe(false);
+	});
 });
 
 // ---- getTxHex (raw hex via Electrum) ----------------------------------------------

@@ -16,6 +16,7 @@ import { startFirstSync } from '$lib/server/syncStatus';
 import { migratePlaintextSecretsAtRest } from '$lib/server/secretsMigration';
 import { migrateInstanceMode } from '$lib/server/instanceModeMigration';
 import { ensureDefaultAgreementVersion } from '$lib/server/disclosures';
+import { httpsExternalPort } from '$lib/server/httpsPort';
 
 const httpLog = childLogger('http');
 const errLog = childLogger('error');
@@ -221,32 +222,83 @@ function redactPath(pathname: string): string {
 // (assets included) rather than gated to specific routes, so there is one
 // place to audit and no route can accidentally ship without it.
 //
-// CSP is scoped to what the app actually loads: app.html has no inline
-// `<script>` (SvelteKit hydration ships as external `'self'` module chunks,
-// so script-src never needs 'unsafe-inline' or 'unsafe-eval'), but it does use
-// an inline `style="display: contents"` attribute, and canvas-rendered QR
-// codes (QrSigner.svelte / JadeQrSigner.svelte) render via `data:image` URIs —
-// hence `style-src 'self' 'unsafe-inline'` and `img-src 'self' data:'`. No
-// route calls out to a third-party origin at fetch/XHR/EventSource/WebSocket
-// time (referral/support links in referrals.ts are plain `<a>` navigations,
-// not fetched by the page, and the /api/events + /api/notifications/stream
-// SSE streams are same-origin `EventSource` calls) — so `connect-src 'self'`
-// is sufficient and hardware-wallet communication (WebUSB/WebHID) is
-// unaffected either way, since those are browser-mediated device transports,
-// not network requests subject to connect-src. `frame-ancestors 'none'` is
-// the modern, CSP-level replacement for X-Frame-Options and is what actually
-// stops framing in current browsers; X-Frame-Options: DENY is kept alongside
-// it for defense in depth on the (now vanishingly rare) UA that ignores CSP.
+// CSP: SvelteKit always injects its own inline hydration-bootstrap `<script>`
+// into every rendered page, and that script's contents are per-response-dynamic
+// (it embeds page data), so it can never be allow-listed by a fixed hash. A
+// `script-src 'self'` CSP with no nonce/hash therefore blocks it outright —
+// this constant used to claim otherwise ("app.html has no inline <script>...")
+// and shipped exactly that bug (cairn-ed01): hydration silently never ran, on
+// any page, in any deployment. The real fix is `kit.csp` (mode: 'auto') in
+// vite.config.ts's `sveltekit()` call — that's SvelteKit's own mechanism for
+// stamping a matching nonce onto both its generated script and the
+// `Content-Security-Policy` header of the actual page response, and it runs
+// (via `resolve()`) BEFORE this module's `applySecurityHeaders`. This `CSP`
+// constant is now only the fallback for responses that never go through
+// SvelteKit's page-render pipeline — the `isAsset` fast-path above and any
+// `+server.ts` JSON endpoint — so `applySecurityHeaders` below only sets it
+// when the response doesn't already carry one (see its own comment). Keep
+// this directive list in sync with the one in vite.config.ts; they're
+// deliberately near-identical. style-src still needs 'unsafe-inline' for the
+// inline `style="display: contents"` attribute in app.html, and img-src still
+// needs `data:` for canvas-rendered QR codes (QrSigner.svelte /
+// JadeQrSigner.svelte). No route calls out to a third-party origin at
+// fetch/XHR/EventSource/WebSocket time (referral/support links in
+// referrals.ts are plain `<a>` navigations, not fetched by the page, and the
+// /api/events + /api/notifications/stream SSE streams are same-origin
+// `EventSource` calls) — so `connect-src 'self'` is sufficient and
+// hardware-wallet communication (WebUSB/WebHID) is unaffected either way,
+// since those are browser-mediated device transports, not network requests
+// subject to connect-src. `frame-ancestors 'none'` is the modern, CSP-level
+// replacement for X-Frame-Options and is what actually stops framing in
+// current browsers; X-Frame-Options: DENY is kept alongside it for defense in
+// depth on the (now vanishingly rare) UA that ignores CSP.
 const CSP =
 	"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
 	"img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; " +
 	"base-uri 'self'; form-action 'self'";
 
+// Widen a rendered page's connect-src to allow secureRedirect.ts's probe
+// fetch (cairn-lme4, follow-up to cairn-ed01). connect-src 'self' only
+// matches the page's own exact scheme+host+port, but maybeRedirectToSecure()
+// deliberately fetches a DIFFERENT port — Cairn's own HTTPS listener, which
+// Umbrel maps to a different external port than plain HTTP (httpsPort.ts) —
+// to detect whether this browser has already trusted that listener's
+// self-signed cert. Unwidened, the fetch was blocked outright at the CSP
+// layer (it never even reached the network), so the auto-hop silently never
+// fired for anyone. A wildcard host + the specific port is as narrow as CSP3
+// host-source syntax allows: nothing changes when no HTTPS listener is
+// configured, and even when one is, only that exact port becomes reachable.
+// No-op if the port is already present, so repeat calls on one response are
+// harmless.
+function widenConnectSrcForHttpsListener(csp: string): string {
+	const port = httpsExternalPort();
+	if (port === null) return csp;
+
+	const source = `https://*:${port}`;
+	return csp.replace(/connect-src([^;]*)/, (match, rest: string) => {
+		const already = rest.trim().split(/\s+/).filter(Boolean).includes(source);
+		return already ? match : `connect-src${rest} ${source}`;
+	});
+}
+
 function applySecurityHeaders(response: Response, isHttps: boolean): Response {
 	response.headers.set('X-Frame-Options', 'DENY');
 	response.headers.set('X-Content-Type-Options', 'nosniff');
 	response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
-	response.headers.set('Content-Security-Policy', CSP);
+	// Only set the fallback CSP when the response doesn't already carry one.
+	// For a real rendered page, SvelteKit's own kit.csp (vite.config.ts,
+	// mode: 'auto') already set a correctly-nonced Content-Security-Policy
+	// header during resolve(event) — an unconditional .set() here would
+	// silently overwrite it with this nonce-less fallback and reintroduce the
+	// exact hydration-blocking bug (cairn-ed01) kit.csp exists to fix.
+	if (!response.headers.has('Content-Security-Policy')) {
+		response.headers.set('Content-Security-Policy', CSP);
+	} else {
+		const existing = response.headers.get('Content-Security-Policy');
+		if (existing) {
+			response.headers.set('Content-Security-Policy', widenConnectSrcForHttpsListener(existing));
+		}
+	}
 	// Only over HTTPS (mirrors auth.ts's cookieSecure() protocol check) — an
 	// Umbrel/LAN deployment that intentionally runs plain HTTP must not get an
 	// HSTS header telling browsers to force HTTPS on it forever.

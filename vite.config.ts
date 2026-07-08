@@ -60,7 +60,35 @@ export default defineConfig({
 					filename.split(/[/\\]/).includes('node_modules') ? undefined : true
 			},
 
-			adapter: adapter()
+			adapter: adapter(),
+
+			// CSP (cairn-ed01, fixing cairn-ia2y/25c9a8f). SvelteKit always injects its
+			// own inline hydration-bootstrap `<script>` into every rendered page — its
+			// contents are per-response-dynamic (embeds page data), so no fixed hash
+			// can allow-list it. A `script-src 'self'` CSP with no nonce/hash blocks
+			// that script outright, which is exactly what 25c9a8f shipped: hydration
+			// silently never ran, on every page, in every deployment. `mode: 'auto'`
+			// is SvelteKit's own fix for this — it stamps a per-response nonce onto
+			// that generated script and the matching `Content-Security-Policy` header
+			// itself (no app.html change needed; nothing here is prerendered today,
+			// but 'auto' also covers that case with a hash instead of a nonce). The
+			// directives below are the same set as the `CSP` constant in
+			// src/hooks.server.ts — that copy is now only the fallback for responses
+			// that never go through SvelteKit's page-render pipeline (assets,
+			// +server.ts endpoints), so keep the two lists in sync if either changes.
+			csp: {
+				mode: 'auto',
+				directives: {
+					'default-src': ['self'],
+					'script-src': ['self'],
+					'style-src': ['self', 'unsafe-inline'],
+					'img-src': ['self', 'data:'],
+					'connect-src': ['self'],
+					'frame-ancestors': ['none'],
+					'base-uri': ['self'],
+					'form-action': ['self']
+				}
+			}
 		})
 	]
 });

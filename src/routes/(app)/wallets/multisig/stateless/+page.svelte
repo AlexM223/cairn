@@ -13,6 +13,7 @@
 	import type { ConstructedMultisigPsbt, MultisigSigningProgress } from '$lib/server/bitcoin/multisigPsbt';
 	import type { SigningMass } from '$lib/server/bitcoin/signingMass';
 	import type { StatelessScanResult } from '$lib/server/stateless';
+	import type { FeeEstimates } from '$lib/types';
 	import { quorumLabel, MULTISIG_SCRIPT_LABELS } from '../labels';
 	// Reused signers: the QR signer is a props-driven pass-through (the DEVICE
 	// does the multisig math) and the Trezor signer needs no server state at
@@ -172,14 +173,31 @@
 
 	type FeeChoice = 'fast' | 'normal' | 'economy' | 'custom';
 	let feeChoice = $state<FeeChoice>('normal');
-	// svelte-ignore state_referenced_locally — per-navigation seed
-	let customFee = $state(String(data.fees?.halfHour ?? 5));
+	let customFee = $state('5');
+
+	// Live fee estimates stream in from the server (data.fees is a promise, not a
+	// value) so the page shell paints without waiting on a chain round-trip. Seed a
+	// safe null, fill it in once the promise settles, and reseed the custom-fee box
+	// from the half-hour rate unless the user has already typed one.
+	let fees = $state<FeeEstimates | null>(null);
+	let customFeeTouched = false;
+	$effect(() => {
+		let stale = false;
+		void data.fees.then((f) => {
+			if (stale) return;
+			fees = f;
+			if (!customFeeTouched && f?.halfHour != null) customFee = String(f.halfHour);
+		});
+		return () => {
+			stale = true;
+		};
+	});
 
 	const feeRate = $derived.by(() => {
 		const fallback = Number(customFee) || 1;
-		if (feeChoice === 'fast') return data.fees?.fastest ?? fallback;
-		if (feeChoice === 'normal') return data.fees?.halfHour ?? fallback;
-		if (feeChoice === 'economy') return data.fees?.economy ?? fallback;
+		if (feeChoice === 'fast') return fees?.fastest ?? fallback;
+		if (feeChoice === 'normal') return fees?.halfHour ?? fallback;
+		if (feeChoice === 'economy') return fees?.economy ?? fallback;
 		return Math.max(1, fallback);
 	});
 
@@ -659,7 +677,7 @@
 							<span class="fee-caption">{formatFeeRate(feeRate)}</span>
 						</div>
 						<div class="fee-toggles" role="group" aria-label="Fee rate">
-							{#each [{ k: 'economy', label: 'Low', rate: data.fees?.economy }, { k: 'normal', label: 'Medium', rate: data.fees?.halfHour }, { k: 'fast', label: 'High', rate: data.fees?.fastest }] as opt (opt.k)}
+							{#each [{ k: 'economy', label: 'Low', rate: fees?.economy }, { k: 'normal', label: 'Medium', rate: fees?.halfHour }, { k: 'fast', label: 'High', rate: fees?.fastest }] as opt (opt.k)}
 								<button
 									type="button"
 									class="txt-toggle"
@@ -686,12 +704,13 @@
 									class="custom-fee-input tabular"
 									inputmode="decimal"
 									bind:value={customFee}
+									oninput={() => (customFeeTouched = true)}
 									aria-label="Custom fee rate in sat/vB"
 								/>
 								<span class="unit-sm">sat/vB</span>
 							</div>
 						{/if}
-						{#if !data.fees}
+						{#if !fees}
 							<p class="fee-caption">Live fee estimates are unavailable — set a custom sat/vB rate.</p>
 						{/if}
 					</div>
