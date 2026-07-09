@@ -3,11 +3,20 @@
 // rest, blank-means-keep, clearSmtp, and redaction. Other channels are exercised
 // only enough to confirm this change didn't disturb them.
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { db } from '$lib/server/db';
 import { registerUser } from '$lib/server/auth';
 import { setSetting } from '$lib/server/settings';
 import { decryptSecret } from '$lib/server/secretKey';
+
+// Mock DNS: the save-time SSRF gate (checkTargetHost / checkRelayUrl in ssrf.ts)
+// resolves SMTP hosts + Nostr relays, and the reserved .example TLD used in these
+// fixtures never resolves for real. Default every hostname to a public address.
+const lookupMock = vi.fn();
+vi.mock('node:dns/promises', () => ({
+	lookup: (...args: unknown[]) => lookupMock(...args)
+}));
+
 import { GET, PUT, DELETE } from './+server';
 
 function wipe(): void {
@@ -20,6 +29,8 @@ let userId: number;
 
 beforeEach(async () => {
 	wipe();
+	vi.clearAllMocks();
+	lookupMock.mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
 	setSetting('registration_mode', 'open');
 	userId = (
 		await registerUser({
@@ -235,6 +246,47 @@ describe('webhook channel config — encrypted signing secret (cairn-e9mz.2)', (
 		const raw = rawStoredConfigFor('webhook');
 		expect(raw).not.toContain('legacy-secret');
 		expect(decryptSecret(JSON.parse(raw).secretEnc)).toBe('legacy-secret');
+	});
+});
+
+describe('save-time SSRF guard (cairn-zn7z, cairn-ruxo)', () => {
+	it('rejects a Nostr relay that resolves into a blocked range and stores nothing', async () => {
+		lookupMock.mockResolvedValue([{ address: '10.0.0.5', family: 4 }]);
+		const { status, body } = await put('nostr', {
+			recipientPubkey: 'a'.repeat(64),
+			relays: ['wss://internal.relay']
+		});
+		expect(status).toBe(400);
+		expect(body.error).toMatch(/rejected|blocked|private|loopback/i);
+		expect(rawStoredConfigFor('nostr')).toBe(''); // never persisted
+	});
+
+	it('rejects a Nostr relay literal in the CGNAT range (cairn-pihb)', async () => {
+		const { status } = await put('nostr', {
+			recipientPubkey: 'a'.repeat(64),
+			relays: ['wss://100.100.100.100']
+		});
+		expect(status).toBe(400);
+		expect(rawStoredConfigFor('nostr')).toBe('');
+	});
+
+	it('accepts a Nostr relay that resolves to a public address', async () => {
+		const { status } = await put('nostr', {
+			recipientPubkey: 'a'.repeat(64),
+			relays: ['wss://relay.example']
+		});
+		expect(status).toBe(200);
+	});
+
+	it('rejects a personal SMTP host that resolves into a blocked range', async () => {
+		lookupMock.mockResolvedValue([{ address: '192.168.1.20', family: 4 }]);
+		const { status, body } = await put('email', {
+			address: 'to@example.com',
+			smtp: { ...VALID_SMTP, host: 'nas.local' }
+		});
+		expect(status).toBe(400);
+		expect(body.error).toMatch(/rejected|blocked|private|loopback/i);
+		expect(rawStoredConfig()).toBe('');
 	});
 });
 
