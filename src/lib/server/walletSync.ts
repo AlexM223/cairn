@@ -25,6 +25,7 @@
 
 import QRCode from 'qrcode';
 import { db } from './db';
+import { DEFAULT_POOL_SIZE } from './electrum/pool';
 import { childLogger } from './logger';
 import type { WalletAddress, WalletTx, WalletSummary } from '$lib/types';
 import { scanWallet } from './bitcoin/walletScan';
@@ -32,7 +33,7 @@ import {
 	getWallet,
 	listWalletRows,
 	peekReceiveAddress,
-	toWalletSummary,
+	toWalletSummaryFromCache,
 	type WalletRow
 } from './wallets';
 import {
@@ -45,11 +46,10 @@ import { getViewableMultisig, listMultisigs, type MultisigRow } from './wallets/
 import {
 	getMultisigDetail,
 	peekMultisigReceiveAddress,
-	toMultisigSummary,
+	toMultisigSummaryFromCache,
 	type MultisigScanAddress,
 	type MultisigTx,
-	type MultisigSummary,
-	type MultisigScanResult
+	type MultisigSummary
 } from './multisigScan';
 import { detectMultisigUnconfirmedInflows } from './multisigTransactions';
 import { listSharedMultisigs } from './multisigShares';
@@ -138,22 +138,91 @@ export interface StoredSnapshot<T> {
 	lastSyncedAt: number;
 }
 
+// -------------------------------------------------------- list-view summary blob
+
+/**
+ * The tiny slice of a snapshot the wallets-LIST page actually needs: a balance
+ * and enough to compute "last activity" — NOT the full address/tx arrays. Stored
+ * denormalized in `wallet_snapshots.summary` so listCachedPortfolio can render N
+ * wallets without SELECTing + JSON.parsing N whole snapshots on every navigation
+ * (cairn-2zxt list-payload trim). `hasPending` + `latestConfirmedTime` (rather
+ * than a frozen lastActivity) so the read path can recompute the live "just now"
+ * for a wallet with an in-flight tx, exactly as toWalletSummary does.
+ */
+export interface CachedSummary {
+	confirmed: number;
+	unconfirmed: number;
+	hasPending: boolean;
+	latestConfirmedTime: number | null;
+}
+
+/** Derive the summary from a tx list. Mirrors wallets.ts `lastActivityOf` — keep
+ *  the two in sync (both: pending → live now; else newest confirmed time). */
+function summarizeTxs(
+	confirmed: number,
+	unconfirmed: number,
+	txs: { height: number; time: number | null }[]
+): CachedSummary {
+	let hasPending = false;
+	let latest: number | null = null;
+	for (const tx of txs) {
+		if (tx.height <= 0) hasPending = true;
+		else if (tx.time != null) latest = Math.max(latest ?? 0, tx.time);
+	}
+	return { confirmed, unconfirmed, hasPending, latestConfirmedTime: latest };
+}
+
+export function summarizeWalletSnapshot(snap: WalletSnapshot): CachedSummary | null {
+	if (!snap.scan) return null;
+	return summarizeTxs(snap.scan.confirmed, snap.scan.unconfirmed, snap.scan.txs);
+}
+
+export function summarizeMultisigSnapshot(snap: MultisigSnapshot): CachedSummary | null {
+	if (!snap.detail) return null;
+	return summarizeTxs(
+		snap.detail.balance.confirmed,
+		snap.detail.balance.unconfirmed,
+		snap.detail.history
+	);
+}
+
+/** Collapse a summary into the final list-row balance fields, computing the live
+ *  "just now" for a wallet with an unconfirmed tx (parity with toWalletSummary). */
+export function finalizeCachedBalance(
+	s: CachedSummary | null
+): { confirmed: number; unconfirmed: number; lastActivity: number | null } | null {
+	if (!s) return null;
+	return {
+		confirmed: s.confirmed,
+		unconfirmed: s.unconfirmed,
+		lastActivity: s.hasPending ? Math.floor(Date.now() / 1000) : s.latestConfirmedTime
+	};
+}
+
 // --------------------------------------------------------------- persistence
 
 const upsertStmt = db.prepare(
-	`INSERT INTO wallet_snapshots (wallet_kind, wallet_id, snapshot, last_synced_at)
-	 VALUES (?, ?, ?, ?)
+	`INSERT INTO wallet_snapshots (wallet_kind, wallet_id, snapshot, summary, last_synced_at)
+	 VALUES (?, ?, ?, ?, ?)
 	 ON CONFLICT(wallet_kind, wallet_id) DO UPDATE SET
-	   snapshot = excluded.snapshot, last_synced_at = excluded.last_synced_at`
+	   snapshot = excluded.snapshot, summary = excluded.summary,
+	   last_synced_at = excluded.last_synced_at`
 );
 
-/** Persist (or replace) a wallet's snapshot with a fresh last_synced_at. One row,
+/** Persist (or replace) a wallet's snapshot with a fresh last_synced_at. Writes
+ *  the small `summary` blob alongside the full snapshot in the SAME row/write so
+ *  the list path can read balances without parsing the whole snapshot. One row,
  *  one write. Best-effort — a persistence hiccup must never sink a scan. Returns
  *  the timestamp written so callers can report it without a re-read. */
-function writeSnapshot(kind: SnapshotKind, id: number, snapshot: unknown): number {
+function writeSnapshot(
+	kind: SnapshotKind,
+	id: number,
+	snapshot: unknown,
+	summary: CachedSummary | null
+): number {
 	const now = Date.now();
 	try {
-		upsertStmt.run(kind, id, JSON.stringify(snapshot), now);
+		upsertStmt.run(kind, id, JSON.stringify(snapshot), summary ? JSON.stringify(summary) : null, now);
 	} catch (e) {
 		log.debug({ err: e, kind, id }, 'persist wallet snapshot failed (ignored)');
 	}
@@ -186,6 +255,43 @@ export function readWalletSnapshot(walletId: number): StoredSnapshot<WalletSnaps
 /** The persisted multisig snapshot, or null when never synced. */
 export function readMultisigSnapshot(multisigId: number): StoredSnapshot<MultisigSnapshot> | null {
 	return readSnapshot<MultisigSnapshot>('multisig', multisigId);
+}
+
+const readSummaryStmt = db.prepare(
+	'SELECT summary, last_synced_at FROM wallet_snapshots WHERE wallet_kind = ? AND wallet_id = ?'
+);
+
+/**
+ * Read ONLY the small list-view summary for a wallet/multisig — no full snapshot
+ * SELECT or parse (the list path's optimization). Returns null when never synced.
+ * For a row written before the `summary` column existed (summary IS NULL) it
+ * lazily falls back to deriving the summary from the full snapshot, so the list
+ * stays correct until the next refresh backfills the column. Never throws.
+ */
+function readCachedSummary(
+	kind: SnapshotKind,
+	id: number
+): { summary: CachedSummary | null; lastSyncedAt: number } | null {
+	try {
+		const row = readSummaryStmt.get(kind, id) as
+			| { summary: string | null; last_synced_at: number }
+			| undefined;
+		if (!row) return null;
+		if (row.summary) {
+			return { summary: JSON.parse(row.summary) as CachedSummary, lastSyncedAt: row.last_synced_at };
+		}
+		// Lazy backfill: older row with no summary — derive from the full snapshot.
+		const full = readSnapshot<WalletSnapshot | MultisigSnapshot>(kind, id);
+		const summary = full
+			? kind === 'wallet'
+				? summarizeWalletSnapshot(full.snapshot as WalletSnapshot)
+				: summarizeMultisigSnapshot(full.snapshot as MultisigSnapshot)
+			: null;
+		return { summary, lastSyncedAt: row.last_synced_at };
+	} catch (e) {
+		log.debug({ err: e, kind, id }, 'read wallet summary failed (ignored)');
+		return null;
+	}
 }
 
 // ------------------------------------------------- single-flight + throttle core
@@ -240,6 +346,53 @@ export function singleFlightThrottled<T>(
 const inFlightWallet = new Map<string, Promise<WalletSnapshot>>();
 const inFlightMultisig = new Map<string, Promise<MultisigSnapshot>>();
 
+// ------------------------------------------------------ global scan concurrency
+
+/**
+ * A minimal FIFO concurrency limiter — no dependency. `run(fn)` queues `fn` and
+ * resolves/rejects with its result, guaranteeing no more than `concurrency`
+ * wrapped calls run at once. Exported for direct testing.
+ */
+export function createLimiter(concurrency: number): <T>(fn: () => Promise<T>) => Promise<T> {
+	const max = Math.max(1, Math.floor(concurrency) || 1);
+	let active = 0;
+	const queue: (() => void)[] = [];
+	const pump = () => {
+		while (active < max && queue.length > 0) {
+			const start = queue.shift()!;
+			active++;
+			start();
+		}
+	};
+	return function run<T>(fn: () => Promise<T>): Promise<T> {
+		return new Promise<T>((resolve, reject) => {
+			queue.push(() => {
+				// `Promise.resolve().then(fn)` so a synchronous throw in `fn` rejects
+				// the returned promise (instead of escaping) AND still releases the slot.
+				Promise.resolve()
+					.then(fn)
+					.then(resolve, reject)
+					.finally(() => {
+						active--;
+						pump();
+					});
+			});
+			pump();
+		});
+	};
+}
+
+/**
+ * Global cap on concurrent Electrum-hitting wallet/multisig scans, matched to the
+ * Electrum pool size (pool.ts). Without it, opening /wallets with N wallets fired
+ * N concurrent full gap-limit scans that monopolized the 2-connection pool and
+ * starved interactive requests (building a send, opening a tx) — the leading
+ * cause of "the app is unresponsive". Every real scan (list refresh, detail-page
+ * refresh, new-block nudge, startup warm) funnels through this one limiter.
+ */
+export const SCAN_CONCURRENCY = DEFAULT_POOL_SIZE;
+const scanLimit = createLimiter(SCAN_CONCURRENCY);
+
 // -------------------------------------------------------------- single-sig scan
 
 /** The real single-sig scan. Throws when the core wallet scan is unreachable —
@@ -289,7 +442,7 @@ async function doWalletScan(userId: number, row: WalletRow): Promise<WalletSnaps
 		speedUp,
 		scanError: null
 	};
-	writeSnapshot('wallet', row.id, snapshot);
+	writeSnapshot('wallet', row.id, snapshot, summarizeWalletSnapshot(snapshot));
 	return snapshot;
 }
 
@@ -310,7 +463,9 @@ export function refreshWalletSnapshot(
 		force: opts.force,
 		lastSyncedAt: cached?.lastSyncedAt ?? null,
 		readCached: () => cached!.snapshot,
-		doScan: () => doWalletScan(userId, row)
+		// Only the real Electrum work goes through the global semaphore — a throttle
+		// hit (readCached) and the single-flight bookkeeping stay outside it.
+		doScan: () => scanLimit(() => doWalletScan(userId, row))
 	});
 }
 
@@ -357,7 +512,7 @@ async function doMultisigScan(userId: number, multisig: MultisigRow): Promise<Mu
 		speedUp,
 		scanError: null
 	};
-	writeSnapshot('multisig', multisig.id, snapshot);
+	writeSnapshot('multisig', multisig.id, snapshot, summarizeMultisigSnapshot(snapshot));
 	return snapshot;
 }
 
@@ -379,32 +534,22 @@ export function refreshMultisigSnapshot(
 		force: opts.force,
 		lastSyncedAt: cached?.lastSyncedAt ?? null,
 		readCached: () => cached!.snapshot,
-		doScan: () => doMultisigScan(userId, multisig)
+		doScan: () => scanLimit(() => doMultisigScan(userId, multisig))
 	});
 }
 
 // ----------------------------------------------------------- cached list summaries
 
-/** A MultisigScanResult reconstructed from a stored snapshot's detail slice, so
- *  the existing toMultisigSummary can derive balance/lastActivity without a scan. */
-function scanResultFromMultisigSnapshot(snap: MultisigSnapshot): MultisigScanResult | undefined {
-	if (!snap.detail) return undefined;
-	return {
-		addresses: snap.detail.addresses,
-		txs: snap.detail.history,
-		confirmed: snap.detail.balance.confirmed,
-		unconfirmed: snap.detail.balance.unconfirmed
-	};
-}
-
 /**
  * The wallets-list payload, built SYNCHRONOUSLY from persisted snapshots — zero
- * Electrum, so the list page never blocks on navigation. A wallet with no
- * snapshot yet simply shows zeroed balances until the background refresh fills it
- * in (it is NOT flagged unreachable — that's reserved for an actual scan error,
- * which the cache-first path never produces). `lastSyncedAt` is the OLDEST sync
- * across all wallets (the freshness the aggregate indicator should honour), or
- * null when nothing has synced yet.
+ * Electrum, so the list page never blocks on navigation. Reads ONLY the small
+ * `summary` column per wallet (not the full snapshot), so a large tx/address
+ * history never gets SELECTed + JSON.parsed just to render one balance row. A
+ * wallet with no snapshot yet simply shows zeroed balances until the background
+ * refresh fills it in (it is NOT flagged unreachable — that's reserved for an
+ * actual scan error, which the cache-first path never produces). `lastSyncedAt`
+ * is the OLDEST sync across all wallets (the freshness the aggregate indicator
+ * should honour), or null when nothing has synced yet.
  */
 export function listCachedPortfolio(userId: number): {
 	wallets: WalletSummary[];
@@ -420,28 +565,26 @@ export function listCachedPortfolio(userId: number): {
 	};
 
 	const wallets = listWalletRows(userId).map((row) => {
-		const cached = readWalletSnapshot(row.id);
+		const cached = readCachedSummary('wallet', row.id);
 		note(cached?.lastSyncedAt ?? null);
-		return toWalletSummary(row, cached?.snapshot.scan ?? undefined);
+		return toWalletSummaryFromCache(row, finalizeCachedBalance(cached?.summary ?? null));
 	});
 
 	const multisigs: MultisigSummary[] = [];
 	for (const row of listMultisigs(userId)) {
-		const cached = readMultisigSnapshot(row.id);
+		const cached = readCachedSummary('multisig', row.id);
 		note(cached?.lastSyncedAt ?? null);
-		multisigs.push(
-			toMultisigSummary(row, cached ? scanResultFromMultisigSnapshot(cached.snapshot) : undefined)
-		);
+		multisigs.push(toMultisigSummaryFromCache(row, finalizeCachedBalance(cached?.summary ?? null)));
 	}
 	// Multisigs shared WITH this user render exactly like owned ones, tagged with
 	// the share role + owner name.
 	for (const s of listSharedMultisigs(userId)) {
 		const row = getViewableMultisig(userId, s.multisigId);
 		if (!row) continue;
-		const cached = readMultisigSnapshot(row.id);
+		const cached = readCachedSummary('multisig', row.id);
 		note(cached?.lastSyncedAt ?? null);
 		multisigs.push(
-			toMultisigSummary(row, cached ? scanResultFromMultisigSnapshot(cached.snapshot) : undefined, {
+			toMultisigSummaryFromCache(row, finalizeCachedBalance(cached?.summary ?? null), {
 				role: s.role,
 				sharedBy: s.ownerName
 			})
@@ -449,4 +592,173 @@ export function listCachedPortfolio(userId: number): {
 	}
 
 	return { wallets, errors: {}, multisigs, multisigErrors: {}, lastSyncedAt: oldest };
+}
+
+// ------------------------------------------------- coalesced portfolio refresh
+
+/**
+ * True for a connect/timeout-class Electrum failure — the signal that the chain
+ * backend is unreachable rather than a single wallet being odd. A coalesced pass
+ * aborts its remaining queue on one of these instead of retrying N more times
+ * against a dead server. Matched on ElectrumClient's own error strings
+ * (electrum/client.ts) plus the common OS-level socket errno codes.
+ */
+export function isConnectClassError(err: unknown): boolean {
+	const msg = err instanceof Error ? err.message : String(err);
+	return /timed out|not connected|connection (?:error|closed|lost)|client (?:is )?closed|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|EAI_AGAIN/i.test(
+		msg
+	);
+}
+
+export interface PortfolioRefreshItem {
+	kind: SnapshotKind;
+	id: number;
+	/** last_synced_at of the persisted snapshot, or null when never synced. */
+	lastSyncedAt: number | null;
+}
+
+export interface PortfolioRefreshSummary {
+	refreshed: number;
+	skipped: number;
+	failed: number;
+	/** True when a connect-class failure aborted the remaining queue. */
+	aborted: boolean;
+}
+
+/**
+ * Drive a coalesced refresh across a set of wallets + multisigs.
+ *
+ * Pure w.r.t. IO — the caller injects `scan` (in production
+ * refreshWalletSnapshot / refreshMultisigSnapshot), so ordering, throttle,
+ * concurrency and abort are all unit-testable without a DB or Electrum. Contract:
+ *   • most-stale-first — a never-synced item (null) sorts ahead of the oldest
+ *     timestamp, so the wallets a user is most likely staring at a blank for get
+ *     refreshed first;
+ *   • throttle — an item synced < `throttleMs` ago is skipped (counted, never
+ *     scanned), reusing the same window as the per-wallet single-flight guard;
+ *   • concurrency — at most `concurrency` scans run at once (default matches the
+ *     scan semaphore / Electrum pool) so the pass itself never floods the backend;
+ *   • abort — a connect-class failure (`isFatal`) stops pulling new work and
+ *     returns what already succeeded rather than hammering a dead server N times.
+ */
+export async function runPortfolioRefreshPass(
+	items: PortfolioRefreshItem[],
+	scan: (item: PortfolioRefreshItem) => Promise<unknown | null>,
+	opts: {
+		concurrency?: number;
+		throttleMs?: number;
+		now?: () => number;
+		isFatal?: (err: unknown) => boolean;
+	} = {}
+): Promise<PortfolioRefreshSummary> {
+	const now = opts.now ?? Date.now;
+	const throttleMs = opts.throttleMs ?? THROTTLE_MS;
+	const isFatal = opts.isFatal ?? isConnectClassError;
+	const concurrency = Math.max(1, Math.floor(opts.concurrency ?? SCAN_CONCURRENCY) || 1);
+
+	const summary: PortfolioRefreshSummary = { refreshed: 0, skipped: 0, failed: 0, aborted: false };
+
+	// Throttle-skip up front (counted, never scanned); the rest, most-stale-first.
+	const due: PortfolioRefreshItem[] = [];
+	for (const it of items) {
+		if (it.lastSyncedAt !== null && now() - it.lastSyncedAt < throttleMs) summary.skipped++;
+		else due.push(it);
+	}
+	due.sort((a, b) => (a.lastSyncedAt ?? -Infinity) - (b.lastSyncedAt ?? -Infinity));
+
+	let next = 0;
+	const worker = async (): Promise<void> => {
+		while (!summary.aborted) {
+			const item = due[next++];
+			if (!item) return;
+			try {
+				const result = await scan(item);
+				if (result) summary.refreshed++;
+				else summary.skipped++; // vanished / not owned — not an error
+			} catch (err) {
+				summary.failed++;
+				if (isFatal(err)) {
+					summary.aborted = true;
+					return;
+				}
+			}
+		}
+	};
+
+	const workers = Array.from({ length: Math.min(concurrency, due.length) }, () => worker());
+	await Promise.all(workers);
+	return summary;
+}
+
+/**
+ * ONE coalesced pass over everything the user can see — their wallets, their
+ * multisigs, and multisigs shared with them — most-stale-first and capped at
+ * SCAN_CONCURRENCY concurrent scans. This replaces the wallets-list page firing
+ * a separate POST /refresh per wallet/multisig (each a full gap-limit scan that
+ * could monopolize the pool). Each per-item scan is still single-flighted +
+ * throttled, so a detail page refreshing the same wallet coalesces with this
+ * pass instead of duplicating its work. Awaits the whole pass; returns counts.
+ */
+export async function refreshPortfolio(userId: number): Promise<PortfolioRefreshSummary> {
+	const items: PortfolioRefreshItem[] = [];
+
+	for (const row of listWalletRows(userId)) {
+		items.push({
+			kind: 'wallet',
+			id: row.id,
+			lastSyncedAt: readWalletSnapshot(row.id)?.lastSyncedAt ?? null
+		});
+	}
+
+	// Owned + shared multisigs, de-duplicated by id (a share row can point at a
+	// multisig the caller also owns).
+	const seenMultisig = new Set<number>();
+	const noteMultisig = (id: number) => {
+		if (seenMultisig.has(id)) return;
+		seenMultisig.add(id);
+		items.push({ kind: 'multisig', id, lastSyncedAt: readMultisigSnapshot(id)?.lastSyncedAt ?? null });
+	};
+	for (const row of listMultisigs(userId)) noteMultisig(row.id);
+	for (const s of listSharedMultisigs(userId)) {
+		if (seenMultisig.has(s.multisigId)) continue;
+		if (getViewableMultisig(userId, s.multisigId)) noteMultisig(s.multisigId);
+	}
+
+	return runPortfolioRefreshPass(items, (item) =>
+		item.kind === 'wallet'
+			? refreshWalletSnapshot(userId, item.id)
+			: refreshMultisigSnapshot(userId, item.id)
+	);
+}
+
+/**
+ * Startup warm of the persisted snapshot table for EVERY user's wallets +
+ * multisigs, so the wallets list / detail pages render a real balance on the
+ * first navigation after a cold start instead of a zeroed placeholder waiting on
+ * the client-triggered refresh. Runs through the same scan semaphore + coalesced
+ * pass as an interactive refresh (so it never floods Electrum), one user at a
+ * time. Best-effort: a per-user failure is logged and skipped; a connect-class
+ * abort stops the whole warm rather than churning every remaining user against a
+ * dead server.
+ */
+export async function warmAllSnapshots(): Promise<void> {
+	let userIds: number[] = [];
+	try {
+		userIds = (db.prepare('SELECT id FROM users').all() as { id: number }[]).map((r) => r.id);
+	} catch (e) {
+		log.debug({ err: e }, 'warm snapshots: listing users failed (skipped)');
+		return;
+	}
+
+	let refreshed = 0;
+	for (const userId of userIds) {
+		try {
+			const summary = await refreshPortfolio(userId);
+			refreshed += summary.refreshed;
+			if (summary.aborted) break; // Electrum is down — stop the warm pass.
+		} catch (e) {
+			log.debug({ err: e, userId }, 'warm snapshots: user pass failed (skipped)');
+		}
+	}
+	if (refreshed) log.info({ refreshed }, 'wallet snapshots warmed');
 }

@@ -105,6 +105,30 @@ export function toWalletSummary(row: WalletRow, scan?: WalletScanResult): Wallet
 	};
 }
 
+/**
+ * Build a list-view WalletSummary from the small cached balance blob
+ * (walletSync.listCachedPortfolio) instead of a full WalletScanResult, so the
+ * list never parses the whole snapshot. `bal` is already finalized (lastActivity
+ * computed). Field mapping mirrors toWalletSummary — keep the two in sync.
+ */
+export function toWalletSummaryFromCache(
+	row: WalletRow,
+	bal: { confirmed: number; unconfirmed: number; lastActivity: number | null } | null
+): WalletSummary {
+	return {
+		id: row.id,
+		name: row.name,
+		type: 'xpub',
+		scriptType: row.script_type,
+		xpub: row.xpub,
+		deviceType: row.device_type ?? null,
+		createdAt: row.created_at,
+		balance: bal?.confirmed ?? 0,
+		unconfirmed: bal?.unconfirmed ?? 0,
+		lastActivity: bal?.lastActivity ?? null
+	};
+}
+
 // ---------------------------------------------------------------- queries
 
 export function getWallet(userId: number, id: number): WalletRow | null {
