@@ -1,5 +1,5 @@
 import { db } from '$lib/server/db';
-import { getChain } from '$lib/server/chain';
+import { readChainSnapshot } from '$lib/server/chainSnapshot';
 import type { PageServerLoad } from './$types';
 import type { BlockSummary, FeeEstimates, MempoolSummary } from '$lib/types';
 
@@ -10,38 +10,6 @@ export interface ChainSnapshot {
 	blocks: BlockSummary[];
 	mempool: MempoolSummary | null;
 	fees: FeeEstimates | null;
-	error: string | null;
-}
-
-async function loadChainSnapshot(): Promise<ChainSnapshot> {
-	const chain = getChain();
-	try {
-		const [blocks, mempool, fees, hashrate] = await Promise.all([
-			chain.getRecentBlocks(10),
-			chain.getMempoolSummary().catch(() => null),
-			chain.getFeeEstimates().catch(() => null),
-			chain.getHashrate().catch(() => null)
-		]);
-		return {
-			tipHeight: blocks[0]?.height ?? null,
-			tipTime: blocks[0]?.time ?? null,
-			hashrate,
-			blocks,
-			mempool,
-			fees,
-			error: null
-		};
-	} catch (e) {
-		return {
-			tipHeight: null,
-			tipTime: null,
-			hashrate: null,
-			blocks: [],
-			mempool: null,
-			fees: null,
-			error: e instanceof Error ? e.message : 'Could not reach chain data sources'
-		};
-	}
 }
 
 export const load: PageServerLoad = async ({ locals, depends, parent }) => {
@@ -69,13 +37,27 @@ export const load: PageServerLoad = async ({ locals, depends, parent }) => {
 				.get(locals.user!.id, locals.user!.id) as { n: number }
 		).n) > 0;
 
+	// Stale-while-revalidate: render instantly from the persisted chain snapshot
+	// (a synchronous SQLite read — zero live chain-service calls here). The client
+	// fires POST /api/chain/refresh on mount + on every new block and calls
+	// invalidate('cairn:chain'), which re-runs this cheap load to pick up the
+	// fresh snapshot. `chain` is null until the very first refresh has persisted
+	// one — the page shows a loading state (or, if that refresh failed, an error).
+	const snap = readChainSnapshot();
+	const chain: ChainSnapshot | null = snap
+		? {
+				tipHeight: snap.data.tipHeight,
+				tipTime: snap.data.tipTime,
+				hashrate: snap.data.hashrate,
+				blocks: snap.data.blocks.slice(0, 10),
+				mempool: snap.data.mempoolSummary,
+				fees: snap.data.fees
+			}
+		: null;
+
 	return {
-		// Streamed, not awaited (SvelteKit 2 leaves top-level promises alone):
-		// navigating to the dashboard paints immediately with a skeleton while the
-		// Electrum round-trips (blocks + mempool + fees + hashrate) resolve in the
-		// background (cairn-ybsv). loadChainSnapshot never rejects — failures
-		// resolve to an error-shaped snapshot the page renders as a banner.
-		chain: loadChainSnapshot(),
+		chain,
+		lastSyncedAt: snap?.lastSyncedAt ?? null,
 		hasWallets
 	};
 };
