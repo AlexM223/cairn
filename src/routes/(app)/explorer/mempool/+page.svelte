@@ -1,50 +1,65 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { invalidate } from '$app/navigation';
 	import { onNewBlock } from '$lib/liveBlocks';
+	import { triggerChainRefresh } from '$lib/chainRefresh';
 	import Icon from '$lib/components/Icon.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
-	import CairnChart from '$lib/components/heartwood/CairnChart.svelte';
+	import CairnChart, { type ChartBar } from '$lib/components/heartwood/CairnChart.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import { formatNumber, formatBtc, formatBytes, formatFeeRate, timeAgo } from '$lib/format';
 
 	let { data } = $props();
 
-	// The mempool snapshot is STREAMED (cairn-2zxt.3): the page chrome paints
-	// instantly with a skeleton, then fills in when the backend answers. On
-	// invalidate, the previous snapshot stays visible until the fresh promise
-	// resolves — no skeleton flash on refresh.
-	type MempoolData = Awaited<(typeof data)['mempool']>;
-	let snap = $state<MempoolData | null>(null);
-	$effect(() => {
-		const promise = data.mempool;
-		let stale = false;
-		void promise.then((s) => {
-			if (!stale) snap = s;
-		});
-		return () => {
-			stale = true;
-		};
+	// Stale-while-revalidate: the mempool view renders instantly from the persisted
+	// SQLite snapshot load() read (data.mempool); the client refreshes it in the
+	// background (on mount + on every new block) and invalidate('cairn:chain')
+	// re-runs load() to pick up the fresh snapshot.
+	let snap = $derived(data.mempool);
+
+	// Background-refresh state driving the "last synced …" indicator.
+	let syncing = $state(false);
+	let syncFailed = $state(false);
+	async function refresh(force = false) {
+		if (syncing) return;
+		syncing = true;
+		const ok = await triggerChainRefresh(force);
+		syncing = false;
+		syncFailed = !ok;
+	}
+	onMount(() => {
+		void refresh();
 	});
-	const loading = $derived(snap === null);
+
+	const syncLabel = $derived(
+		syncing
+			? 'updating…'
+			: data.lastSyncedAt
+				? `synced ${timeAgo(Math.floor(data.lastSyncedAt / 1000))}`
+				: ''
+	);
+
+	const loading = $derived(snap === null && !syncFailed);
 	const summary = $derived(snap?.summary ?? null);
 	const fees = $derived(snap?.fees ?? null);
 	const histogram = $derived(snap?.histogram ?? null);
 	const projected = $derived(snap?.projected ?? null);
 	const trend = $derived(snap?.trend ?? null);
 	const chainError = $derived(snap?.error ?? null);
+	// Error banner: a stored error, or the first snapshot refresh failing before
+	// anything was ever persisted.
+	const showError = $derived(chainError !== null || (snap === null && syncFailed));
 
 	// Live new-block updates: refresh the mempool stats when the chain advances.
 	// This page exposes no tip height, so the initial SSE event triggers one
-	// harmless refresh shortly after mount.
+	// harmless forced refresh shortly after mount.
 	let lastSeenHeight: number | null = null;
 	onMount(() =>
 		onNewBlock((height) => {
 			if (lastSeenHeight !== null && height === lastSeenHeight) return;
 			lastSeenHeight = height;
-			invalidate('cairn:chain');
+			void refresh(true);
 		})
 	);
 
@@ -71,6 +86,19 @@
 		}
 		const max = Math.max(...bands.map((b) => b.vsize), 1);
 		return bands.map((b) => ({ ...b, share: b.vsize / max }));
+	});
+
+	// Fee distribution as horizontal proportional bars for CairnChart: one bar
+	// per sat/vB band, length = waiting virtual bytes in that band. Keeps the
+	// copper accent (default fill); the value axis now shows the byte scale a
+	// bare CSS-width bar couldn't.
+	const feeBandBars = $derived.by((): ChartBar[] | null => {
+		if (!feeBands) return null;
+		return feeBands.map((b) => ({
+			label: b.label,
+			value: b.vsize,
+			valueLabel: b.vsize > 0 ? formatBytes(b.vsize) : '—'
+		}));
 	});
 
 	// Trend chart series for the 2-hour backlog history (cairn-49wy: now
@@ -124,6 +152,9 @@
 
 		<header class="head fade-in">
 			<EyebrowBreadcrumb path={['Explorer']} current="Mempool" />
+			{#if syncLabel}
+				<span class="sync-status" class:updating={syncing}>{syncLabel}</span>
+			{/if}
 			{#if summary}
 				<div class="hero-row">
 					<span class="hero-number hero-count">{formatNumber(summary.txCount)}</span>
@@ -156,10 +187,10 @@
 			{/if}
 		</header>
 
-		{#if chainError}
+		{#if showError}
 			<div class="form-error" role="alert">
-				Can't reach chain data sources — {chainError}.
-				<a href="/explorer/mempool">Retry</a>
+				Can't reach chain data sources{#if chainError} — {chainError}{/if}.
+				<button type="button" class="retry-link" onclick={() => refresh(true)}>Retry</button>
 			</div>
 		{:else if loading}
 			<!-- Streamed placeholder: section scaffold while the snapshot lands. -->
@@ -244,21 +275,15 @@
 								<span class="hint">what am I seeing?</span>
 							</Term>
 						</div>
-						<div class="bands">
-							{#each feeBands as band (band.label)}
-								<div class="band">
-									<span class="band-label tabular">{band.label}</span>
-									<div class="band-track">
-										<div
-											class="band-fill"
-											style:width="{Math.max(band.share * 100, band.vsize > 0 ? 2 : 0)}%"
-										></div>
-									</div>
-									<span class="band-size tabular">{band.vsize > 0 ? formatBytes(band.vsize) : '—'}</span>
-								</div>
-							{/each}
-						</div>
-						<span class="hint">sat/vB bands · bar length = share of waiting virtual bytes</span>
+						<CairnChart
+							kind="bar"
+							orientation="horizontal"
+							bars={feeBandBars ?? []}
+							height={200}
+							ariaLabel="Fee distribution by virtual size"
+							valueFormat={(v) => formatBytes(Math.max(v, 0))}
+						/>
+						<span class="hint">sat/vB bands · bar length = waiting virtual bytes</span>
 					</section>
 				{/if}
 			</div>
@@ -332,6 +357,27 @@
 
 	.back:hover {
 		color: var(--accent);
+	}
+
+	/* SWR freshness indicator: muted when idle, copper while refreshing. */
+	.sync-status {
+		font-size: 11px;
+		color: var(--text-faint);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.sync-status.updating {
+		color: var(--accent);
+	}
+
+	.retry-link {
+		background: none;
+		border: none;
+		padding: 0;
+		font: inherit;
+		color: inherit;
+		text-decoration: underline;
+		cursor: pointer;
 	}
 
 	.head {
@@ -523,43 +569,6 @@
 		border-top: 1px solid var(--hairline);
 		padding-top: 10px;
 		margin: 0;
-	}
-
-	.bands {
-		display: flex;
-		flex-direction: column;
-		gap: 7px;
-	}
-
-	.band {
-		display: grid;
-		grid-template-columns: 52px 1fr 64px;
-		align-items: center;
-		gap: 10px;
-		font-size: 12px;
-	}
-
-	.band-label {
-		color: var(--text-secondary);
-		text-align: right;
-	}
-
-	.band-track {
-		height: 14px;
-		background: var(--bg-input);
-		border-radius: 3px;
-		overflow: hidden;
-	}
-
-	.band-fill {
-		height: 100%;
-		background: linear-gradient(90deg, var(--accent), var(--accent-hover));
-		border-radius: 3px;
-		transition: width 300ms var(--ease);
-	}
-
-	.band-size {
-		color: var(--text-muted);
 	}
 
 	.degrade-note {

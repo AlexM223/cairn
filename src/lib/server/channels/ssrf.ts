@@ -5,13 +5,27 @@
 // outbound channel goes through the identical gate (cairn-iiuh).
 //
 // POLICY
-//   • scheme MUST be http: or https:.
+//   • scheme MUST match the caller's scheme mode: http:/https: (the default, used
+//     by webhook + ntfy), or ws:/wss: (Nostr relays — see checkRelayUrl). A bare
+//     host with no URL (per-user SMTP relay) goes through checkTargetHost, which
+//     skips the scheme check entirely.
 //   • the hostname is resolved to IPs, and EVERY resolved address is checked
 //     against the blocked ranges below; a literal IP host is checked directly.
 //   • the admin escape hatch `webhook_allow_private_targets === 'true'` (instance
 //     setting, off by default) disables the range check for self-hosters who
 //     legitimately POST to another service on their own LAN. It NEVER disables
 //     the scheme check.
+//
+// WEBSOCKET (ws:/wss:) TARGETS — cairn-zn7z
+//   safeFetch's pinned-socket TOCTOU defense is HTTP-only. Nostr publishes over a
+//   WebSocket opened by nostr-tools' SimplePool, which uses the global WebSocket
+//   and re-resolves DNS itself at connect — there is no hook to pin the socket to
+//   a pre-validated IP. So for ws targets we validate the resolved IPs up front
+//   (checkRelayUrl) and reject blocked ones BEFORE connecting; this closes the
+//   fixed-private-IP and "resolves-to-a-private-range" cases. A determined
+//   DNS-rebinding attacker who flips their record between our check and the
+//   WebSocket's own re-resolution is NOT fully defeated for ws (documented
+//   limitation — pinning would require replacing nostr-tools' transport).
 //
 // DNS-REBINDING (TOCTOU) — cairn-335b (closed)
 //   checkTargetUrl resolves every A/AAAA record and rejects if ANY is blocked,
@@ -121,6 +135,7 @@ export function isBlockedIPv4(ip: string): boolean {
 	if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12 private
 	if (a === 192 && b === 168) return true; // 192.168.0.0/16 private
 	if (a === 169 && b === 254) return true; // 169.254.0.0/16 link-local (cloud metadata)
+	if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 CGNAT (Tailscale) (cairn-pihb)
 	if (a === 0) return true; // 0.0.0.0/8 "this host"
 	return false;
 }
@@ -136,31 +151,35 @@ export type UrlCheck =
 	| { ok: true; url: URL; addresses: { address: string; family: number }[] }
 	| { ok: false; error: string };
 
+/** Result of a bare-host SSRF check (no URL/scheme), e.g. a raw SMTP relay host. */
+export type HostCheck =
+	| { ok: true; addresses: { address: string; family: number }[] }
+	| { ok: false; error: string };
+
+/** Which URL schemes a checkTargetUrl call accepts. */
+export type SchemeMode = 'http' | 'ws';
+
+const ALLOWED_SCHEMES: Record<SchemeMode, ReadonlySet<string>> = {
+	http: new Set(['http:', 'https:']),
+	ws: new Set(['ws:', 'wss:'])
+};
+
 /**
- * Validate a target URL against the SSRF policy. Rejects non-http(s) schemes
- * always; rejects resolution to a blocked IP range unless the admin escape hatch
- * is on. Returns the resolved+validated addresses so callers can pin to them.
+ * Validate a bare HOST (no scheme) against the SSRF range policy: a literal IP is
+ * checked directly, a hostname is resolved to every address and rejected if ANY
+ * is blocked. This is the shared core of checkTargetUrl and the entry point for
+ * targets that have no URL wrapper (per-user SMTP relay host — cairn-ruxo). The
+ * admin escape hatch (allowPrivateTargets) applies here exactly as it does for
+ * URLs. Returns the resolved+validated addresses so a caller may pin to them.
  */
-export async function checkTargetUrl(rawUrl: string): Promise<UrlCheck> {
-	let url: URL;
-	try {
-		url = new URL(rawUrl);
-	} catch {
-		return { ok: false, error: 'Invalid URL' };
-	}
-
-	if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-		return { ok: false, error: `Unsupported URL scheme: ${url.protocol}` };
-	}
-
-	const host = url.hostname;
+export async function checkTargetHost(host: string): Promise<HostCheck> {
 	// A literal IP host is checked directly (no DNS). URL wraps IPv6 in brackets.
 	const literal = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
 	if (isIP(literal)) {
 		if (!allowPrivateTargets() && isBlockedAddress(literal)) {
 			return { ok: false, error: `Blocked private/loopback address: ${literal}` };
 		}
-		return { ok: true, url, addresses: [{ address: literal, family: isIP(literal) }] };
+		return { ok: true, addresses: [{ address: literal, family: isIP(literal) }] };
 	}
 
 	// Hostname — resolve to every address once and reject if ANY is blocked.
@@ -183,7 +202,44 @@ export async function checkTargetUrl(rawUrl: string): Promise<UrlCheck> {
 			}
 		}
 	}
-	return { ok: true, url, addresses };
+	return { ok: true, addresses };
+}
+
+/**
+ * Validate a target URL against the SSRF policy. Rejects any scheme outside the
+ * caller's `scheme` mode (default 'http' = http:/https:; 'ws' = ws:/wss:); rejects
+ * resolution to a blocked IP range unless the admin escape hatch is on. Returns
+ * the resolved+validated addresses so http callers can pin to them.
+ */
+export async function checkTargetUrl(
+	rawUrl: string,
+	opts: { scheme?: SchemeMode } = {}
+): Promise<UrlCheck> {
+	const scheme = opts.scheme ?? 'http';
+	let url: URL;
+	try {
+		url = new URL(rawUrl);
+	} catch {
+		return { ok: false, error: 'Invalid URL' };
+	}
+
+	if (!ALLOWED_SCHEMES[scheme].has(url.protocol)) {
+		return { ok: false, error: `Unsupported URL scheme: ${url.protocol}` };
+	}
+
+	const hostCheck = await checkTargetHost(url.hostname);
+	if (!hostCheck.ok) return hostCheck;
+	return { ok: true, url, addresses: hostCheck.addresses };
+}
+
+/**
+ * SSRF gate for a Nostr relay URL (ws:/wss:). Same range policy as checkTargetUrl,
+ * but with the WebSocket scheme set and WITHOUT the pinned-socket TOCTOU defense
+ * (see the WEBSOCKET note in the module header — nostr-tools opens its own socket
+ * and re-resolves DNS). Callers must reject a non-ok result before connecting.
+ */
+export function checkRelayUrl(rawUrl: string): Promise<UrlCheck> {
+	return checkTargetUrl(rawUrl, { scheme: 'ws' });
 }
 
 /** Minimal Response-like shape returned by safeFetch — the global fetch Response

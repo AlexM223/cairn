@@ -41,6 +41,7 @@ import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 
 import { db } from '../db';
 import { childLogger } from '../logger';
+import { checkRelayUrl } from './ssrf';
 import { getSetting, setSecretSetting, readSecretSetting, hasSecretSetting } from '../settings';
 import type {
 	ChannelSendResult,
@@ -88,6 +89,30 @@ function withRelayTimeout(promise: Promise<string>, relay: string): Promise<stri
 			}
 		);
 	});
+}
+
+/**
+ * Run every relay URL through the SSRF gate (scheme must be ws:/wss:, and no
+ * resolved address may fall in a blocked private/loopback range) and drop the
+ * ones that fail. A user-typed relay is untrusted input, so a relay pointed at
+ * localhost / the LAN / cloud-metadata must never be dialled (cairn-zn7z). This
+ * is defense-in-depth behind the save-time check in the channel config route —
+ * it also protects rows written before that check existed and instance defaults.
+ * NOTE: unlike the HTTP path we can't pin the socket (nostr-tools opens its own
+ * WebSocket and re-resolves DNS), so this validates-before-connect but does not
+ * close the ws DNS-rebinding TOCTOU (see ssrf.ts header).
+ */
+async function filterAllowedRelays(
+	relays: string[]
+): Promise<{ allowed: string[]; rejected: { relay: string; error: string }[] }> {
+	const allowed: string[] = [];
+	const rejected: { relay: string; error: string }[] = [];
+	for (const relay of relays) {
+		const check = await checkRelayUrl(relay);
+		if (check.ok) allowed.push(relay);
+		else rejected.push({ relay, error: check.error });
+	}
+	return { allowed, rejected };
 }
 
 /** Fallback relays when neither the user nor the instance configured any. */
@@ -266,6 +291,22 @@ async function publishEncryptedDM(
 	if (!senderSk) {
 		return { ok: false, error: 'Server Nostr identity unavailable', retryable: true };
 	}
+
+	// SSRF gate: never open a WebSocket to a relay that resolves into a blocked
+	// range (localhost / LAN / cloud metadata) or uses a non-ws scheme (cairn-zn7z).
+	const { allowed, rejected } = await filterAllowedRelays(relays);
+	if (rejected.length > 0) {
+		log.warn({ rejected }, 'dropped Nostr relays blocked by the SSRF guard');
+	}
+	if (allowed.length === 0) {
+		// A blocked target is a config problem, not a transient one — no retry.
+		return {
+			ok: false,
+			error: 'No usable relays: all were blocked (private/loopback address or non-ws scheme).',
+			retryable: false
+		};
+	}
+	relays = allowed;
 
 	let ciphertext: string;
 	try {

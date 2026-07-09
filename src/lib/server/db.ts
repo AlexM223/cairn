@@ -460,6 +460,32 @@ db.exec(`
 	CREATE INDEX IF NOT EXISTS idx_wallet_scan_cache_kind ON wallet_scan_cache(kind);
 `);
 
+// Stale-while-revalidate wallet snapshots (cairn-2zxt SWR). ONE row per wallet /
+// multisig holding the scan-DERIVED fields a detail/list page renders — balance,
+// address+tx summary, the receive-address peek (with its QR), coinbase UTXOs, the
+// unconfirmed-inflow (speed-up) verdicts, and the chain tip — as a single JSON
+// blob, plus `last_synced_at` (ms epoch) of the scan that produced it. The page
+// loaders read this SYNCHRONOUSLY (no Electrum in load()) so navigation never
+// blocks; a background refresh (src/lib/server/walletSync.ts) re-scans and rewrites
+// the row, then the client re-invalidates the loader to pick up the fresh snapshot.
+//
+// DISTINCT from wallet_scan_cache above: that is keyed by xpub/descriptor and only
+// seeds the in-memory 60s ScanCache on cold start; this is keyed by the wallet's
+// id (per its kind) and is the authoritative render source for the page. Keyed by
+// (wallet_kind, wallet_id) like the other polymorphic child tables, so it is swept
+// by the trg_*_delete_children triggers below (and the deleteCascade introspection
+// test enforces that wiring). Never authoritative for spending — the send flow
+// always re-scans live (it never reads this).
+db.exec(`
+	CREATE TABLE IF NOT EXISTS wallet_snapshots (
+		wallet_kind    TEXT NOT NULL,     -- 'wallet' | 'multisig'
+		wallet_id      INTEGER NOT NULL,  -- id within its kind's table
+		snapshot       TEXT NOT NULL,     -- JSON blob (WalletSnapshot / MultisigSnapshot)
+		last_synced_at INTEGER NOT NULL,  -- ms epoch of the scan that produced it
+		PRIMARY KEY (wallet_kind, wallet_id)
+	);
+`);
+
 // Address-level labels (see src/lib/server/addressLabels.ts and cairn-nbsx).
 // Complements tx_labels: lets a user annotate WHY an individual address exists
 // ("exchange deposit", "donation address") independent of any single tx. One row
@@ -795,6 +821,7 @@ db.exec(`
 		DELETE FROM address_labels WHERE wallet_kind = 'wallet' AND wallet_id = OLD.id;
 		DELETE FROM backup_missing_notified WHERE wallet_kind = 'wallet' AND wallet_id = OLD.id;
 		DELETE FROM notified_txids WHERE wallet_kind = 'wallet' AND wallet_id = OLD.id;
+		DELETE FROM wallet_snapshots WHERE wallet_kind = 'wallet' AND wallet_id = OLD.id;
 	END;
 
 	DROP TRIGGER IF EXISTS trg_multisigs_delete_children;
@@ -804,6 +831,7 @@ db.exec(`
 		DELETE FROM address_labels WHERE wallet_kind = 'multisig' AND wallet_id = OLD.id;
 		DELETE FROM backup_missing_notified WHERE wallet_kind = 'multisig' AND wallet_id = OLD.id;
 		DELETE FROM notified_txids WHERE wallet_kind = 'multisig' AND wallet_id = OLD.id;
+		DELETE FROM wallet_snapshots WHERE wallet_kind = 'multisig' AND wallet_id = OLD.id;
 	END;
 `);
 
@@ -821,7 +849,8 @@ for (const table of [
 	'wallet_backups',
 	'address_labels',
 	'backup_missing_notified',
-	'notified_txids'
+	'notified_txids',
+	'wallet_snapshots'
 ]) {
 	db.exec(`
 		DELETE FROM ${table}
@@ -979,6 +1008,27 @@ db.exec(`
 	}
 }
 
+// One live RBF replacement per original (cairn-yabj). executeRbfBump (feeBump.ts)
+// does a SELECT existence check on replaces_txid and, several awaits later
+// (getTx confirmation + the async buildReplacement), an INSERT — two concurrent
+// bumps of the SAME original can both pass the SELECT and both INSERT a
+// replacement fighting over the same inputs (a TOCTOU race the friendly SELECT
+// alone can't close). A partial UNIQUE index on (owner, replaces_txid) makes the
+// INSERT itself the atomic guard: the loser gets a UNIQUE-constraint violation
+// feeBump maps to the SAME 'already_replaced' error the sequential check raises,
+// so racing and sequential callers hit identical semantics. Partial
+// (WHERE replaces_txid IS NOT NULL) so ordinary drafts and CPFP children — which
+// carry a NULL replaces_txid — are entirely unconstrained (SQLite already treats
+// NULLs as distinct in a UNIQUE index; the predicate makes that intent explicit
+// and keeps the index to just the replacement rows). Additive/idempotent; both
+// replaces_txid columns exist by this point.
+db.exec(`
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_replaces
+		ON transactions(wallet_id, replaces_txid) WHERE replaces_txid IS NOT NULL;
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_multisig_transactions_replaces
+		ON multisig_transactions(multisig_id, replaces_txid) WHERE replaces_txid IS NOT NULL;
+`);
+
 db.exec(`
 	-- Instance-wide feature toggles. A row's ABSENCE means "use the registry
 	-- default" (FEATURE_FLAGS[].defaultEnabled, which is always true), so an
@@ -1100,4 +1150,23 @@ db.exec(`
 		UNIQUE (user_id, fingerprint, purpose)
 	);
 	CREATE INDEX IF NOT EXISTS idx_device_keys_user ON device_keys(user_id, fingerprint);
+`);
+
+// Persisted global chain-data snapshot for stale-while-revalidate page loads
+// (single-sig-full-wallet SWR work). ONE singleton row (id pinned to 1) holding
+// the whole tip-view chain dataset the dashboard + explorer pages render —
+// recent blocks, mempool summary, fee estimates, difficulty, mempool-block
+// projections, fee histogram, and backlog trend — as one JSON blob, plus the
+// epoch-ms `last_synced_at`. This is GLOBAL data (not per-user/per-wallet), so a
+// single row is correct; it is a pure performance cache (a missing/corrupt row
+// just falls back to a live refresh), and it is deliberately its OWN table
+// rather than a `settings` k/v row so the (frequently scanned) settings table
+// isn't bloated with a large blob. Written by src/lib/server/chainSync.ts,
+// read synchronously by the retrofitted page load()s (chainSnapshot.ts).
+db.exec(`
+	CREATE TABLE IF NOT EXISTS chain_snapshot (
+		id             INTEGER PRIMARY KEY CHECK (id = 1),
+		data           TEXT NOT NULL,   -- JSON PersistedChainData
+		last_synced_at INTEGER NOT NULL -- epoch milliseconds
+	);
 `);

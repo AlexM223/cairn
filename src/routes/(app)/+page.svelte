@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
-	import { invalidate } from '$app/navigation';
 	import { onNewBlock } from '$lib/liveBlocks';
+	import { triggerChainRefresh } from '$lib/chainRefresh';
 	import Icon from '$lib/components/Icon.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
@@ -15,36 +15,40 @@
 
 	let { data } = $props();
 
-	// The chain snapshot is STREAMED from the server (cairn-ybsv): the page
-	// paints instantly with a skeleton, then fills in when Electrum answers. On
-	// invalidate, the previous snapshot stays visible until the fresh one
-	// resolves — no skeleton flash on refresh.
-	type ChainSnapshot = Awaited<(typeof data)['chain']>;
-	let chain = $state<ChainSnapshot | null>(null);
-	// The height we last refetched for, so a server lagging behind the SSE tip
-	// can't put resolve→invalidate into an endless loop.
-	let refetchedForHeight: number | null = null;
+	// Stale-while-revalidate: the chain snapshot renders instantly from the
+	// persisted SQLite data that load() read (data.chain); the client refreshes it
+	// in the background (on mount + on every new block) and invalidate('cairn:chain')
+	// re-runs load() to pick up the fresh snapshot. `chain` mirrors data.chain but
+	// stays a mutable $state so a new-block SSE event can optimistically bump the
+	// tip before the refetch lands. Seeded from data.chain and re-synced whenever
+	// load() re-runs (the $effect below) — the initial-value capture is intended.
+	// svelte-ignore state_referenced_locally
+	let chain = $state(data.chain);
 	$effect(() => {
-		const promise = data.chain;
-		let stale = false;
-		void promise.then((snap) => {
-			if (stale) return;
-			chain = snap;
-			// A block arrived while this snapshot was in flight — refresh once more.
-			if (
-				lastSeenHeight !== null &&
-				snap.tipHeight !== null &&
-				lastSeenHeight > snap.tipHeight &&
-				refetchedForHeight !== lastSeenHeight
-			) {
-				refetchedForHeight = lastSeenHeight;
-				void invalidate('cairn:chain');
-			}
-		});
-		return () => {
-			stale = true;
-		};
+		chain = data.chain;
 	});
+
+	// Background-refresh state driving the "last synced …" indicator.
+	let syncing = $state(false);
+	let syncFailed = $state(false);
+	async function refresh(force = false) {
+		if (syncing) return;
+		syncing = true;
+		const ok = await triggerChainRefresh(force);
+		syncing = false;
+		syncFailed = !ok;
+	}
+	onMount(() => {
+		void refresh();
+	});
+
+	const syncLabel = $derived(
+		syncing
+			? 'updating…'
+			: data.lastSyncedAt
+				? `synced ${timeAgo(Math.floor(data.lastSyncedAt / 1000))}`
+				: ''
+	);
 
 	// Live new-block updates refresh only the chain snapshot — the portfolio is
 	// deliberately outside the invalidation path so wallets aren't rescanned on
@@ -55,18 +59,18 @@
 			if (lastSeenHeight !== null && height <= lastSeenHeight) return;
 			const first = lastSeenHeight === null;
 			lastSeenHeight = height;
-			if (chain !== null && !chain.error && chain.tipHeight !== null) {
+			if (chain !== null && chain.tipHeight !== null) {
 				// SSE replays the current tip on connect — ignore what we already show.
 				if (height <= chain.tipHeight) return;
 				// Optimistic tip (cairn-9vav): paint the new height immediately from
 				// the SSE payload; the full snapshot (blocks/mempool/fees) refreshes in
-				// the background via the invalidate below.
+				// the background via the forced refresh below.
 				chain = { ...chain, tipHeight: height, tipTime: Math.floor(Date.now() / 1000) };
-				void invalidate('cairn:chain');
+				void refresh(true);
 			} else if (!first) {
-				// Snapshot errored or still streaming — a new block is a good moment
-				// to retry, but the very first replay-on-connect isn't.
-				void invalidate('cairn:chain');
+				// No snapshot yet — a new block is a good moment to retry, but the very
+				// first replay-on-connect isn't (mount already kicked a refresh).
+				void refresh(true);
 			}
 		})
 	);
@@ -390,21 +394,21 @@
 						<div class="next-block">
 							<div class="nb-head">
 								<span class="nb-label">Next block</span>
-								{#if chain !== null && !chain.error && chain.tipHeight !== null}
+								{#if chain !== null && chain.tipHeight !== null}
 									<a href="/explorer/block/{chain.tipHeight}" class="nb-tip tabular">
 										{formatNumber(chain.tipHeight)} · {timeAgo(chain.tipTime)}
 									</a>
-								{:else if chain === null}
+								{:else if chain === null && !syncFailed}
 									<span class="nb-tip skeleton">000,000 · just now</span>
 								{/if}
 							</div>
-							{#if chain === null}
+							{#if chain === null && !syncFailed}
 								<div class="nb-fee skeleton">next ring ≈ 00 sat/vB</div>
-							{:else if chain.error}
+							{:else if chain === null && syncFailed}
 								<div class="nb-error">
 									Can't reach chain data sources — check the connection in Admin → Settings.
 								</div>
-							{:else}
+							{:else if chain !== null}
 								{#if chain.fees}
 									<div class="nb-fee">
 										next ring ≈ <span class="nb-fee-num tabular"
@@ -429,6 +433,9 @@
 								{:else if chain.mempool}
 									<div class="nb-caption">mempool is clear</div>
 								{/if}
+							{/if}
+							{#if syncLabel}
+								<div class="sync-status" class:updating={syncing}>{syncLabel}</div>
 							{/if}
 						</div>
 					</section>
@@ -844,6 +851,17 @@
 	.nb-caption {
 		font-size: 11.5px;
 		color: var(--eyebrow-path);
+	}
+
+	/* SWR freshness indicator: muted when idle, copper while a refresh is in flight. */
+	.sync-status {
+		font-size: 11px;
+		color: var(--text-faint);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.sync-status.updating {
+		color: var(--accent);
 	}
 
 	/* ================================================= mobile (8a, ≤900px) */

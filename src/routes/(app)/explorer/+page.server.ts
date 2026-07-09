@@ -1,6 +1,8 @@
 import { getChain } from '$lib/server/chain';
 import { classifySearch, chainErrorMessage } from '$lib/server/search';
 import { getEpochStrip } from '$lib/server/chainEpochs';
+import { readChainSnapshot } from '$lib/server/chainSnapshot';
+import type { PersistedChainData } from '$lib/server/chainSnapshot';
 import type { PageServerLoad } from './$types';
 import type {
 	BlockSummary,
@@ -26,45 +28,48 @@ export interface ExplorerChainData {
 	nextBlock: MempoolBlockProjection | null;
 }
 
-async function loadChainData(before: number | null): Promise<ExplorerChainData> {
-	const chain = getChain();
+/** Shape the tip-view explorer data from the persisted snapshot (no chain call). */
+function shapeFromSnapshot(d: PersistedChainData): ExplorerChainData {
+	return {
+		blocks: d.blocks.slice(0, PAGE_SIZE),
+		mempool: d.mempoolSummary,
+		tipHeight: d.tipHeight,
+		chainError: null,
+		fees: d.fees,
+		difficulty: d.difficultyInfo,
+		nextBlock: d.mempoolBlocks?.[0] ?? null
+	};
+}
+
+/**
+ * Paging into OLDER rings (`before` set) is a genuine on-demand history browse —
+ * those blocks aren't part of the current-tip snapshot and there is no stale
+ * data to serve for an arbitrary past height range — so this one path does a
+ * live block fetch. The hero context (mempool/tip/fees/difficulty) still comes
+ * from the snapshot, so it stays consistent with the SWR pages.
+ */
+async function loadOlderBlocks(before: number): Promise<ExplorerChainData> {
+	const snap = readChainSnapshot()?.data ?? null;
+	const context = {
+		mempool: snap?.mempoolSummary ?? null,
+		tipHeight: snap?.tipHeight ?? null,
+		fees: snap?.fees ?? null,
+		difficulty: snap?.difficultyInfo ?? null,
+		nextBlock: snap?.mempoolBlocks?.[0] ?? null
+	};
 	try {
-		const [blocks, mempool, tip, fees, difficulty, projected] = await Promise.all([
-			chain.getRecentBlocks(PAGE_SIZE, before !== null ? Math.max(0, before - 1) : undefined),
-			chain.getMempoolSummary().catch(() => null),
-			chain.getTip().catch(() => null),
-			// Hero sub-line extras (5e): all optional, the line degrades segment by
-			// segment when a backend lacks them.
-			chain.getFeeEstimates().catch(() => null),
-			chain.getDifficultyInfo().catch(() => null),
-			chain.getMempoolBlocks().catch(() => null)
-		]);
-		return {
-			blocks,
-			mempool,
-			tipHeight: tip?.height ?? (before === null ? (blocks[0]?.height ?? null) : null),
-			chainError: null,
-			fees,
-			difficulty,
-			nextBlock: projected?.[0] ?? null
-		};
+		const blocks = await getChain().getRecentBlocks(PAGE_SIZE, Math.max(0, before - 1));
+		return { blocks, chainError: null, ...context };
 	} catch (e) {
-		return {
-			blocks: [],
-			mempool: null,
-			tipHeight: null,
-			chainError: chainErrorMessage(e),
-			fees: null,
-			difficulty: null,
-			nextBlock: null
-		};
+		return { blocks: [], chainError: chainErrorMessage(e), ...context };
 	}
 }
 
 // The `explorer` feature gate lives in +layout.server.ts so it covers every
 // explorer sub-route, not just this index page.
 export const load: PageServerLoad = async ({ url, depends }) => {
-	// Re-run on new-block SSE events without re-running unrelated loads.
+	// Re-run on new-block SSE events / after a background refresh, without
+	// re-running unrelated loads.
 	depends('cairn:chain');
 
 	const rawQ = url.searchParams.get('q');
@@ -82,14 +87,23 @@ export const load: PageServerLoad = async ({ url, depends }) => {
 	const beforeParam = url.searchParams.get('before') ?? '';
 	const before = /^\d{1,9}$/.test(beforeParam) ? parseInt(beforeParam, 10) : null;
 
+	// Tip view = stale-while-revalidate from the persisted snapshot (synchronous,
+	// no live chain call); the client refreshes it in the background. Paged
+	// history is the one live-fetch exception (see loadOlderBlocks).
+	const snap = before === null ? readChainSnapshot() : null;
+	const chain: ExplorerChainData | null =
+		before === null
+			? snap
+				? shapeFromSnapshot(snap.data)
+				: null
+			: await loadOlderBlocks(before);
+
 	return {
 		q,
 		search,
 		before,
-		// Streamed, not awaited (cairn-ybsv): blocks + mempool + tip are Electrum
-		// round-trips — the page paints instantly with skeletons while they
-		// resolve. loadChainData never rejects (errors resolve to chainError).
-		chain: loadChainData(before),
+		chain,
+		lastSyncedAt: snap?.lastSyncedAt ?? null,
 		// The ChainStrip dataset (cairn-koy4.7): real difficulty-epoch boundaries,
 		// cached hard after the first computation. Streamed separately so a slow
 		// first-ever boundary fetch can't hold up the block list; resolves to null

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import HeartwoodMark from '$lib/components/heartwood/HeartwoodMark.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 
@@ -16,6 +17,7 @@
 </svelte:head>
 
 <div class="page">
+	<GroveField volume="grove" />
 	<header class="head">
 		<a href="/" class="brand" aria-label="Heartwood home">
 			<HeartwoodMark size={24} tone="copper" detail="simple" />

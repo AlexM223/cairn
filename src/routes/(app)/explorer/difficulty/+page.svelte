@@ -1,34 +1,55 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
+	import { onNewBlock } from '$lib/liveBlocks';
+	import { triggerChainRefresh } from '$lib/chainRefresh';
 	import Icon from '$lib/components/Icon.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
-	import { formatNumber, formatBtc, formatDuration, formatDateTime } from '$lib/format';
+	import CairnChart, { type ChartBar } from '$lib/components/heartwood/CairnChart.svelte';
+	import { formatNumber, formatBtc, formatDuration, formatDateTime, timeAgo } from '$lib/format';
 	import { blockSubsidy } from '$lib/bitcoin';
 
 	let { data } = $props();
 
-	// Difficulty info + adjustment history are STREAMED (cairn-2zxt.3): the page
-	// chrome (back link, heading, explainer) paints instantly with a skeleton,
-	// then the numbers fill in when the backend answers. loadDifficulty never
-	// rejects — a failure resolves to `error`.
-	type DiffData = Awaited<(typeof data)['difficulty']>;
-	let diff = $state<DiffData | null>(null);
-	$effect(() => {
-		const promise = data.difficulty;
-		let stale = false;
-		void promise.then((d) => {
-			if (!stale) diff = d;
-		});
-		return () => {
-			stale = true;
-		};
+	// Stale-while-revalidate: difficulty info + history render instantly from the
+	// persisted SQLite snapshot load() read (data.difficulty); the client refreshes
+	// it in the background (on mount + on every new block) and invalidate('cairn:chain')
+	// re-runs load() to pick up the fresh snapshot.
+	let diff = $derived(data.difficulty);
+
+	// Background-refresh state driving the "last synced …" indicator.
+	let syncing = $state(false);
+	let syncFailed = $state(false);
+	async function refresh(force = false) {
+		if (syncing) return;
+		syncing = true;
+		const ok = await triggerChainRefresh(force);
+		syncing = false;
+		syncFailed = !ok;
+	}
+	onMount(() => {
+		void refresh();
+		return onNewBlock(() => void refresh(true));
 	});
-	const loading = $derived(diff === null);
+
+	const syncLabel = $derived(
+		syncing
+			? 'updating…'
+			: data.lastSyncedAt
+				? `synced ${timeAgo(Math.floor(data.lastSyncedAt / 1000))}`
+				: ''
+	);
+
+	// Loading = no snapshot yet AND the first refresh hasn't failed.
+	const loading = $derived(diff === null && !syncFailed);
 	const info = $derived(diff?.info ?? null);
 	const history = $derived(diff?.history ?? null);
 	const chainError = $derived(diff?.error ?? null);
+	// Error banner: a stored error, or the first snapshot refresh failing before
+	// anything was ever persisted.
+	const showError = $derived(chainError !== null || (diff === null && syncFailed));
 
 	/** "+3.42%" / "-1.20%" with a fixed number of decimals. */
 	function signedPercent(n: number, dp = 2): string {
@@ -106,28 +127,30 @@
 		};
 	});
 
-	// Bars for the retarget history chart, scaled to the largest swing.
-	const BAR_CAP = 64; // px, tallest bar
-	const chart = $derived.by(() => {
+	// Bars for the retarget history chart (last 10 retargets). Rendered by the
+	// shared CairnChart in signed bar mode: copper for a rise, dim copper for a
+	// fall — neither direction is "bad" (mirrors the hero's quiet falling tone).
+	const chart = $derived.by((): ChartBar[] | null => {
 		if (!history || history.length < 2) return null;
 		const entries = history.filter((h) => h.changePercent !== null).slice(-10);
 		if (entries.length === 0) return null;
-		const maxAbs = Math.max(...entries.map((e) => Math.abs(e.changePercent as number)), 0.1);
-		return {
-			hasNegative: entries.some((e) => (e.changePercent as number) < 0),
-			bars: entries.map((e) => {
-				const change = e.changePercent as number;
-				return {
-					positive: change >= 0,
-					height: Math.max((Math.abs(change) / maxAbs) * BAR_CAP, 3),
-					label: signedPercent(change, 1),
-					date: shortDate(e.time),
-					time: e.time,
-					height_: e.height
-				};
-			})
-		};
+		return entries.map((e) => {
+			const change = e.changePercent as number;
+			return {
+				label: shortDate(e.time),
+				value: change,
+				color: change >= 0 ? 'var(--accent)' : 'var(--accent-dim)',
+				valueLabel: signedPercent(change, 2),
+				note: formatDateTime(e.time)
+			};
+		});
 	});
+
+	/** Difficulty value-axis tick: "0%", "+2%", "-2%" (no misleading "+0%"). */
+	function axisPercent(v: number): string {
+		if (Math.abs(v) < 0.5) return '0%';
+		return `${v > 0 ? '+' : ''}${v.toFixed(0)}%`;
+	}
 </script>
 
 <svelte:head>
@@ -146,6 +169,9 @@
 <div class="head fade-in">
 	<EyebrowBreadcrumb path={['Explorer']} current="Difficulty" />
 	<h1 class="page-title">Difficulty</h1>
+	{#if syncLabel}
+		<span class="sync-status" class:updating={syncing}>{syncLabel}</span>
+	{/if}
 </div>
 
 <HowItWorks id="difficulty">
@@ -163,10 +189,10 @@
 	</p>
 </HowItWorks>
 
-{#if chainError}
+{#if showError}
 	<div class="form-error" role="alert">
-		Can't reach chain data sources — {chainError}.
-		<a href="/explorer/difficulty">Retry</a>
+		Can't reach chain data sources{#if chainError} — {chainError}{/if}.
+		<button type="button" class="retry-link" onclick={() => refresh(true)}>Retry</button>
 	</div>
 {:else if loading}
 	<!-- Streamed placeholder: hero + stat scaffold while difficulty data lands. -->
@@ -328,30 +354,13 @@
 				<Icon name="activity" size={17} />
 				<span class="card-title">Recent adjustments</span>
 			</div>
-			<div class="chart-scroll">
-				<div class="chart">
-					{#each chart.bars as bar (bar.height_)}
-						<div class="bar-col" title={formatDateTime(bar.time)}>
-							<div class="bar-zone top">
-								{#if bar.positive}
-									<span class="bar-val tabular">{bar.label}</span>
-									<div class="bar pos" style:height="{bar.height}px"></div>
-								{/if}
-							</div>
-							<div class="baseline" class:solo={!chart.hasNegative}></div>
-							{#if chart.hasNegative}
-								<div class="bar-zone bottom">
-									{#if !bar.positive}
-										<div class="bar neg" style:height="{bar.height}px"></div>
-										<span class="bar-val tabular">{bar.label}</span>
-									{/if}
-								</div>
-							{/if}
-							<span class="bar-date">{bar.date}</span>
-						</div>
-					{/each}
-				</div>
-			</div>
+			<CairnChart
+				kind="bar"
+				bars={chart}
+				height={200}
+				ariaLabel="Recent difficulty adjustments"
+				valueFormat={axisPercent}
+			/>
 			<span class="hint">
 				Each bar is one retarget — the network correcting for hashrate that joined or left
 				during the epoch.
@@ -396,6 +405,27 @@
 
 	.back:hover {
 		color: var(--accent);
+	}
+
+	/* SWR freshness indicator: muted when idle, copper while refreshing. */
+	.sync-status {
+		font-size: 11px;
+		color: var(--text-faint);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.sync-status.updating {
+		color: var(--accent);
+	}
+
+	.retry-link {
+		background: none;
+		border: none;
+		padding: 0;
+		font: inherit;
+		color: inherit;
+		text-decoration: underline;
+		cursor: pointer;
 	}
 
 	.head {
@@ -529,81 +559,6 @@
 		align-items: center;
 		gap: 8px;
 		flex-wrap: wrap;
-	}
-
-	.chart-scroll {
-		overflow-x: auto;
-		padding-bottom: 2px;
-	}
-
-	.chart {
-		display: flex;
-		align-items: stretch;
-		gap: 10px;
-		min-width: min-content;
-	}
-
-	.bar-col {
-		flex: 1 0 52px;
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-	}
-
-	.bar-zone {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		width: 100%;
-		height: 82px; /* bar cap (64px) + value label */
-	}
-
-	.bar-zone.top {
-		justify-content: flex-end;
-		gap: 4px;
-	}
-
-	.bar-zone.bottom {
-		justify-content: flex-start;
-		gap: 4px;
-	}
-
-	.bar {
-		width: min(26px, 60%);
-		border-radius: 3px;
-	}
-
-	.bar.pos {
-		background: linear-gradient(180deg, var(--accent-hover), var(--accent));
-		border-radius: 3px 3px 1px 1px;
-	}
-
-	/* Dim copper mirrors the hero's quiet "falling" tone — neither direction is bad. */
-	.bar.neg {
-		background: linear-gradient(180deg, var(--accent-dim), var(--accent-dim-2));
-		border-radius: 1px 1px 3px 3px;
-	}
-
-	.bar-val {
-		font-size: 11px;
-		color: var(--text-secondary);
-		white-space: nowrap;
-	}
-
-	.baseline {
-		width: 100%;
-		border-top: 1px solid var(--hairline);
-	}
-
-	.baseline.solo {
-		border-top-color: transparent;
-	}
-
-	.bar-date {
-		font-size: 11px;
-		color: var(--text-muted);
-		margin-top: 8px;
-		white-space: nowrap;
 	}
 
 	.degrade-note {

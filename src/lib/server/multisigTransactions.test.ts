@@ -23,6 +23,7 @@ import {
 	multisigTransactionProgress
 } from './multisigTransactions';
 import { BroadcastError, BumpError, CpfpError } from './transactions';
+import { isRosterMember } from './multisigRoster';
 
 // Only the network edges are faked: the chain source and the multisig scanner
 // (whose UTXOs would otherwise come from Electrum). Everything else — multisig
@@ -613,5 +614,146 @@ describe('buildMultisigCpfpDraft (CPFP parity, cairn-u9ob.6)', () => {
 		expect(inflows).toHaveLength(1);
 		expect(inflows[0].txid).toBe(parentTxid);
 		expect(inflows[0].action).toBe('rbf'); // ours + signals RBF
+	});
+});
+
+// ── cross-actor authorization (cairn-idgc) ───────────────────────────────────
+//
+// broadcast / bump / delete are OWNER-ONLY (they gate on getMultisig directly,
+// which matches only the owner's user_id), even though building and signing are
+// cosigner-reachable. attachMultisigSignature adds a per-transaction ROSTER gate
+// on top of the wallet-level signable gate: a wallet cosigner may only sign a
+// transaction whose FROZEN roster they are actually on. Every existing test runs
+// as the owner, so these assert the non-owner / off-roster paths are refused.
+describe('cross-actor authorization (cairn-idgc)', () => {
+	/** Register a second user and share the multisig with them as a cosigner. */
+	async function addCosigner(
+		ownerId: number,
+		multisigId: number,
+		email: string
+	): Promise<number> {
+		const cosigner = await registerUser({
+			email,
+			password: 'correct horse battery',
+			displayName: 'cosigner'
+		});
+		db.prepare(
+			"INSERT INTO multisig_shares (multisig_id, owner_id, shared_with_id, role) VALUES (?, ?, ?, 'cosigner')"
+		).run(multisigId, ownerId, cosigner.id);
+		return cosigner.id;
+	}
+
+	/** A quorum-complete (2-of-3) draft, signed by keys 1 and 2 as the owner. */
+	async function seedQuorumDraft(ownerId: number, multisigId: number): Promise<number> {
+		const { txId, psbt } = await seedDraft(ownerId, multisigId);
+		const first = attachMultisigSignature(ownerId, multisigId, txId, signWith(psbt, 0))!;
+		attachMultisigSignature(ownerId, multisigId, txId, signWith(first.transaction.psbt, 1));
+		return txId;
+	}
+
+	/** A COMPLETED (broadcast) tx with a recoverable coin, so bump can rebuild it —
+	 *  mirrors seedBroadcast in the bump describe. */
+	async function seedBroadcastTx(
+		userId: number,
+		multisigId: number
+	): Promise<{ txId: number; txid: string }> {
+		const multisig = getMultisig(userId, multisigId)!;
+		const address = deriveMultisigAddress(toMultisigConfig(multisig), 0, 0).address;
+		const fundTx = new Transaction({ allowUnknownInputs: true, disableScriptCheck: true });
+		fundTx.addInput({ txid: '00'.repeat(32), index: 0 });
+		fundTx.addOutputAddress(address, 200_000n, NETWORK);
+		const details = await constructMultisigPsbt({
+			config: toMultisigConfig(multisig),
+			utxos: [
+				{ txid: fundTx.id, vout: 0, value: 200_000, height: 800_000, address, chain: 0, index: 0 }
+			],
+			recipients: [{ address: RECIPIENT, amount: 50_000 }],
+			feeRate: 5,
+			changeIndex: 0
+		});
+		const txid = 'ab'.repeat(32);
+		const res = db
+			.prepare(
+				`INSERT INTO multisig_transactions (multisig_id, status, psbt, recipient, amount, fee, fee_rate, change_index, txid)
+				 VALUES (?, 'completed', ?, ?, ?, ?, ?, ?, ?)`
+			)
+			.run(multisigId, details.psbtBase64, RECIPIENT, 50_000, details.fee, details.feeRate, 0, txid);
+		getTxHexMock.mockResolvedValue(fundTx.hex);
+		return { txId: Number(res.lastInsertRowid), txid };
+	}
+
+	it('refuses a cosigner (non-owner) from broadcasting; the owner still can', async () => {
+		const { userId, multisigId } = await seedMultisig('owner-bcast@example.com');
+		const cosignerId = await addCosigner(userId, multisigId, 'cos-bcast@example.com');
+		const txId = await seedQuorumDraft(userId, multisigId);
+
+		// The cosigner is refused at the owner-only gate before touching the network.
+		await expect(
+			broadcastMultisigTransaction(cosignerId, multisigId, txId)
+		).rejects.toMatchObject({ code: 'not_found' });
+		expect(broadcastMock).not.toHaveBeenCalled();
+
+		// Proof the transaction is otherwise broadcastable: the owner succeeds.
+		broadcastMock.mockImplementationOnce((rawHex: string) =>
+			Promise.resolve(
+				Transaction.fromRaw(hexToBytes(rawHex), { disableScriptCheck: true }).id
+			)
+		);
+		const { txid } = await broadcastMultisigTransaction(userId, multisigId, txId);
+		expect(txid).toMatch(/^[0-9a-f]{64}$/);
+	});
+
+	it('refuses a cosigner (non-owner) from fee-bumping; the owner reaches the tx', async () => {
+		const { userId, multisigId } = await seedMultisig('owner-bump@example.com');
+		const cosignerId = await addCosigner(userId, multisigId, 'cos-bump@example.com');
+		const { txId } = await seedBroadcastTx(userId, multisigId);
+
+		// Cosigner: refused at the owner-only gate → 'not_found'.
+		await expect(
+			bumpMultisigTransaction(cosignerId, multisigId, txId, 25)
+		).rejects.toMatchObject({ code: 'not_found' });
+
+		// Owner: passes the gate and actually builds the replacement (distinct
+		// outcome — proves the cosigner was stopped by authorization, not a missing
+		// or un-bumpable tx).
+		const { draft } = await bumpMultisigTransaction(userId, multisigId, txId, 25);
+		expect(draft.replacesTxid).not.toBeNull();
+	});
+
+	it('refuses a cosigner (non-owner) from deleting a draft; the owner can', async () => {
+		const { userId, multisigId } = await seedMultisig('owner-del@example.com');
+		const cosignerId = await addCosigner(userId, multisigId, 'cos-del@example.com');
+		const { txId } = await seedDraft(userId, multisigId);
+
+		// Cosigner: refused (returns false) and the row survives.
+		expect(deleteMultisigTransaction(cosignerId, multisigId, txId)).toBe(false);
+		expect(getMultisigTransaction(userId, multisigId, txId)).not.toBeNull();
+
+		// Owner: allowed.
+		expect(deleteMultisigTransaction(userId, multisigId, txId)).toBe(true);
+	});
+
+	it('denies an off-roster signer at attach, and allows them once on the roster', async () => {
+		const { userId, multisigId } = await seedMultisig('owner-roster@example.com');
+		const cosignerId = await addCosigner(userId, multisigId, 'cos-roster@example.com');
+		const { txId, psbt } = await seedDraft(userId, multisigId);
+
+		// This draft was inserted directly (no freezeRosterAndNotify), so the
+		// cosigner is a wallet-level cosigner but NOT on this transaction's roster:
+		// attach is denied even with an otherwise-valid signature.
+		expect(attachMultisigSignature(cosignerId, multisigId, txId, signWith(psbt, 0))).toBeNull();
+
+		// Add them to the frozen roster; now the same signature is accepted — proof
+		// the roster gate (not the signature or the wallet-level gate) was the block.
+		db.prepare(
+			"INSERT INTO multisig_transaction_signers (transaction_id, user_id, assigned_key_ids) VALUES (?, ?, '[]')"
+		).run(txId, cosignerId);
+		const attached = attachMultisigSignature(cosignerId, multisigId, txId, signWith(psbt, 0));
+		expect(attached).not.toBeNull();
+		expect(attached!.progress.collected).toBe(1);
+
+		// Sanity: the owner is always an implicit roster member regardless.
+		expect(isRosterMember(txId, userId)).toBe(false); // owner not inserted...
+		expect(attachMultisigSignature(userId, multisigId, txId, signWith(psbt, 1))).not.toBeNull(); // ...but still allowed
 	});
 });

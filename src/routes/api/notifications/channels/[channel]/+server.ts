@@ -15,6 +15,7 @@ import { db } from '$lib/server/db';
 import { childLogger } from '$lib/server/logger';
 import { getSetting } from '$lib/server/settings';
 import { encryptSecret } from '$lib/server/secretKey';
+import { checkRelayUrl, checkTargetHost } from '$lib/server/channels/ssrf';
 import { redactChannelConfig, type ConfigurableChannel } from '$lib/server/notifyConfig';
 import type { RequestHandler } from './$types';
 
@@ -110,6 +111,13 @@ export const PUT: RequestHandler = async (event) => {
 	} catch (e) {
 		return json({ error: e instanceof Error ? e.message : 'Invalid config.' }, { status: 400 });
 	}
+
+	// SSRF gate at SAVE time: reject a user-supplied outbound target (Nostr relay,
+	// personal SMTP host) that resolves into a blocked range BEFORE it's stored, so
+	// a bad target never even lands in the DB (cairn-zn7z, cairn-ruxo). The channel
+	// plugins re-check at send time; this is the earlier, friendlier rejection.
+	const targetError = await validateOutboundTargets(channel, config);
+	if (targetError) return json({ error: targetError }, { status: 400 });
 
 	try {
 		db.prepare(
@@ -257,6 +265,46 @@ function buildConfig(
 			// Unreachable — channel is validated by isConfigurable before we get here.
 			throw new Error('Unknown channel.');
 	}
+}
+
+/**
+ * SSRF-validate the outbound targets carried in a just-built channel config, so a
+ * relay/host aimed at localhost/LAN/cloud-metadata is rejected at save time rather
+ * than only at send time. Returns a user-facing error string, or null if clean.
+ * Only channels whose target is user-supplied are checked (Nostr relays over ws,
+ * personal SMTP host); the admin escape hatch (allowPrivateTargets) still applies
+ * inside the guard. Webhook/ntfy URLs are gated by their own send-time safeFetch.
+ */
+async function validateOutboundTargets(
+	channel: ConfigurableChannel,
+	config: Record<string, unknown>
+): Promise<string | null> {
+	if (channel === 'nostr') {
+		const relays = Array.isArray(config.relays) ? (config.relays as unknown[]) : [];
+		for (const relay of relays) {
+			if (typeof relay !== 'string') continue;
+			const check = await checkRelayUrl(relay);
+			if (!check.ok) {
+				return `Relay ${relay} was rejected: ${check.error}. Use a public wss:// relay.`;
+			}
+		}
+		return null;
+	}
+	if (channel === 'email') {
+		const smtp =
+			config.smtp && typeof config.smtp === 'object'
+				? (config.smtp as Record<string, unknown>)
+				: undefined;
+		const host = typeof smtp?.host === 'string' ? smtp.host : '';
+		if (host) {
+			const check = await checkTargetHost(host);
+			if (!check.ok) {
+				return `SMTP host ${host} was rejected: ${check.error}.`;
+			}
+		}
+		return null;
+	}
+	return null;
 }
 
 const SMTP_TLS_MODES = new Set(['starttls', 'tls', 'none']);

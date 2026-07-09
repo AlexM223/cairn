@@ -13,21 +13,12 @@ import {
 } from '$lib/server/multisigShares';
 import { listContacts } from '$lib/server/contacts';
 import { getInstanceSettings } from '$lib/server/settings';
-import {
-	getMultisigDetail,
-	getMultisigUtxos,
-	invalidateMultisigCache,
-	nextMultisigReceiveAddress,
-	peekMultisigReceiveAddress
-} from '$lib/server/multisigScan';
+import { invalidateMultisigCache, nextMultisigReceiveAddress } from '$lib/server/multisigScan';
 import { multisigToDescriptor } from '$lib/server/bitcoin/multisig';
-import {
-	listMultisigTransactionSummaries,
-	detectMultisigUnconfirmedInflows
-} from '$lib/server/multisigTransactions';
+import { listMultisigTransactionSummaries } from '$lib/server/multisigTransactions';
 import { isBackedUp } from '$lib/server/backups';
-import { getChain } from '$lib/server/chain';
 import { getAddressLabels } from '$lib/server/addressLabels';
+import { readMultisigSnapshot, EMPTY_MULTISIG_SNAPSHOT } from '$lib/server/walletSync';
 import type { Actions, PageServerLoad } from './$types';
 
 const QR_OPTS = {
@@ -42,112 +33,13 @@ function multisigId(param: string): number {
 	return id;
 }
 
-type SavedTxSummary = NonNullable<ReturnType<typeof listMultisigTransactionSummaries>>[number];
-type SpeedUpInflow = NonNullable<Awaited<ReturnType<typeof detectMultisigUnconfirmedInflows>>>[number];
-
-export interface MultisigScan {
-	detail: {
-		balance: Awaited<ReturnType<typeof getMultisigDetail>>['balance'];
-		addresses: Awaited<ReturnType<typeof getMultisigDetail>>['addresses'];
-		history: Awaited<ReturnType<typeof getMultisigDetail>>['history'];
-		utxoCount: number;
-	} | null;
-	receive:
-		| (Awaited<ReturnType<typeof peekMultisigReceiveAddress>> & { qr: string })
-		| null;
-	coinbaseUtxos: { txid: string; vout: number; value: number; height: number }[];
-	tipHeight: number;
-	speedUp: SpeedUpInflow[];
-	savedTxs: SavedTxSummary[];
-	scanError: string | null;
-}
-
-/**
- * The Electrum-dependent slice of the page. Streamed (returned as an unawaited
- * promise) so the multisig shell paints instantly while the full gap-limit scan
- * + tip + unconfirmed-inflow detection resolve in the background (cairn-vknb.2),
- * mirroring the dashboard's `loadChainSnapshot`. Never rejects — a scan failure
- * resolves to an empty-but-shaped snapshot the page renders as a banner, so the
- * "scan unreachable → degrade to zero/empty, never 500" contract is preserved.
- */
-async function loadMultisigScan(
-	multisig: Parameters<typeof getMultisigDetail>[0],
-	userId: number,
-	id: number
-): Promise<MultisigScan> {
-	try {
-		const detail = await getMultisigDetail(multisig);
-		const receive = await peekMultisigReceiveAddress(multisig);
-		const qr = await QRCode.toDataURL(receive.address, QR_OPTS);
-
-		// Mining rewards (coinbase UTXOs) get their own "cooling off" section —
-		// empty for almost every multisig. The scan above already ran, so
-		// getMultisigUtxos hits the cache; guard the chain tip separately so a tip
-		// hiccup just hides the section rather than failing the page.
-		let coinbaseUtxos: { txid: string; vout: number; value: number; height: number }[] = [];
-		let tipHeight = 0;
-		try {
-			const [utxos, tip] = await Promise.all([getMultisigUtxos(multisig), getChain().getTip()]);
-			tipHeight = tip.height;
-			coinbaseUtxos = utxos
-				.filter((u) => u.coinbase)
-				.map((u) => ({ txid: u.txid, vout: u.vout, value: u.value, height: u.height }));
-		} catch {
-			coinbaseUtxos = [];
-			tipHeight = 0;
-		}
-
-		// Which unconfirmed txs can be sped up, and how (RBF vs CPFP) — feeds the
-		// "Speed up" button (cairn-u9ob.4). Tolerate a chain hiccup. The saved-tx
-		// list lets the RBF path find the row to bump.
-		let speedUp: SpeedUpInflow[] = [];
-		try {
-			speedUp = (await detectMultisigUnconfirmedInflows(userId, id)) ?? [];
-		} catch {
-			speedUp = [];
-		}
-		// Already the viewer-safe projection (no PSBT/recipients) — the summary
-		// list stays viewer-reachable while the full-shape functions are
-		// cosigner-gated (cairn-o1dp.1).
-		const savedTxs = listMultisigTransactionSummaries(userId, id) ?? [];
-
-		return {
-			detail: {
-				balance: detail.balance,
-				addresses: detail.addresses,
-				history: detail.history,
-				utxoCount: detail.utxos.length
-			},
-			receive: { ...receive, qr },
-			coinbaseUtxos,
-			tipHeight,
-			speedUp,
-			savedTxs,
-			scanError: null
-		};
-	} catch (e) {
-		// Only swallow scan failures — the multisig shell still renders. Keep the
-		// same fields the success branch returns (empty) so `scan.speedUp`/
-		// `scan.savedTxs` aren't typed as possibly-undefined at the call sites.
-		return {
-			detail: null,
-			receive: null,
-			coinbaseUtxos: [],
-			tipHeight: 0,
-			speedUp: [],
-			savedTxs: [],
-			scanError: e instanceof Error ? e.message : 'Multisig scan failed'
-		};
-	}
-}
-
-export const load: PageServerLoad = async ({ params, locals, url, depends }) => {
+export const load: PageServerLoad = ({ params, locals, url, depends }) => {
 	const id = multisigId(params.id);
-	// A new block invalidates only this tag (wired to onNewBlock on the client),
-	// so the chain-derived fields (tip, coinbase maturity, speed-up eligibility)
-	// refresh live without a manual reload — mirroring `depends('cairn:chain')`
-	// on the dashboard. The scan itself is 60s-cached server-side, so this stays
-	// cheap on repeat.
+	// Cache-first (cairn-2zxt SWR): the scan-derived fields come from a persisted
+	// snapshot read synchronously below — no Electrum in load(), so navigation
+	// never blocks. The +page.svelte fires the /refresh endpoint on mount + on each
+	// new block and re-invalidates this tag to pick up the fresh snapshot. Retires
+	// the streamed full-scan-per-navigation (cairn-vknb.2).
 	depends(`cairn:multisig:${id}`);
 	// Owner OR any accepted share (viewer/cosigner) — read-only surface. A non-
 	// participant gets the same 404 as a missing wallet.
@@ -211,15 +103,23 @@ export const load: PageServerLoad = async ({ params, locals, url, depends }) => 
 			: []
 	};
 
+	// The scan-derived fields come from the persisted snapshot (read synchronously,
+	// no Electrum). `savedTxs` is NOT part of the snapshot — it's a cheap, viewer-
+	// scoped local read (the viewer-safe projection, no PSBT/recipients) folded in
+	// fresh here (cairn-o1dp.1). Empty-but-shaped until the first refresh lands.
+	const cached = readMultisigSnapshot(id);
+	const snapshot = cached?.snapshot ?? EMPTY_MULTISIG_SNAPSHOT;
+	const scan = {
+		...snapshot,
+		savedTxs: listMultisigTransactionSummaries(locals.user!.id, id) ?? []
+	};
+
 	return {
 		...base,
-		// Streamed, not awaited (SvelteKit 2 leaves top-level promises alone): the
-		// multisig shell (name, keys, collaborators, descriptor, backup status)
-		// paints immediately from the cheap `base` fields above while the full
-		// gap-limit scan + tip + speed-up detection resolve in the background
-		// (cairn-vknb.2). loadMultisigScan never rejects — a scan failure resolves
-		// to an empty-but-shaped snapshot the page renders as a banner.
-		scan: loadMultisigScan(multisig, locals.user!.id, id)
+		// Already resolved (not a promise) — the shell and the scan-derived cards
+		// both paint instantly. `lastSyncedAt` feeds the SyncIndicator.
+		scan,
+		lastSyncedAt: cached?.lastSyncedAt ?? null
 	};
 };
 
