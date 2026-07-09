@@ -1,32 +1,24 @@
-import { listWallets } from '$lib/server/wallets';
-import { listMultisigSummaries } from '$lib/server/multisigScan';
+import { listCachedPortfolio } from '$lib/server/walletSync';
 import type { PageServerLoad } from './$types';
 
-export const load: PageServerLoad = ({ locals }) => {
+export const load: PageServerLoad = ({ locals, depends }) => {
 	const userId = locals.user!.id;
+	// Cache-first (cairn-2zxt SWR): the list is built SYNCHRONOUSLY from persisted
+	// snapshots — no per-wallet gap-limit scan over Electrum, so navigation never
+	// blocks (retires the streamed `scans` IIFE of cairn-ybsv/cairn-2zxt.2). The
+	// +page.svelte fires each wallet's /refresh endpoint on mount and, once they
+	// settle, re-invalidates this tag to pick up the fresh snapshots.
+	depends('cairn:wallets');
+	const { wallets, errors, multisigs, multisigErrors, lastSyncedAt } =
+		listCachedPortfolio(userId);
 	return {
-		// Streamed, not awaited (cairn-ybsv): a cold/stale scan cache means a full
-		// gap-limit pass over Electrum for every wallet — navigation must not hang
-		// on that. The page paints skeleton cards immediately and fills in when
-		// the scans resolve. Both scanners tolerate per-item failures (errors
-		// maps); the defensive catch below keeps a streamed rejection from ever
-		// surfacing as an unhandled error.
-		scans: (async () => {
-			try {
-				const [{ wallets, errors }, { multisigs, errors: multisigErrors }] = await Promise.all([
-					listWallets(userId),
-					listMultisigSummaries(userId)
-				]);
-				return { wallets, errors, multisigs, multisigErrors, loadError: null as string | null };
-			} catch (e) {
-				return {
-					wallets: [] as Awaited<ReturnType<typeof listWallets>>['wallets'],
-					errors: {} as Record<number, string>,
-					multisigs: [] as Awaited<ReturnType<typeof listMultisigSummaries>>['multisigs'],
-					multisigErrors: {} as Record<number, string>,
-					loadError: e instanceof Error ? e.message : 'Could not load your wallets.'
-				};
-			}
-		})()
+		wallets,
+		errors,
+		multisigs,
+		multisigErrors,
+		loadError: null as string | null,
+		// Oldest sync across all wallets — the freshness the aggregate indicator
+		// should honour; null when nothing has synced yet.
+		lastSyncedAt
 	};
 };

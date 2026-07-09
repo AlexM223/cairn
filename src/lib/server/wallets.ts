@@ -114,6 +114,15 @@ export function getWallet(userId: number, id: number): WalletRow | null {
 	return row ?? null;
 }
 
+/** All of a user's wallet rows, no scan — the synchronous, Electrum-free source
+ *  for the SWR list path (see walletSync.listCachedPortfolio). Same ordering as
+ *  listWallets. */
+export function listWalletRows(userId: number): WalletRow[] {
+	return db
+		.prepare('SELECT * FROM wallets WHERE user_id = ? ORDER BY created_at ASC, id ASC')
+		.all(userId) as unknown as WalletRow[];
+}
+
 /**
  * All wallets for a user, with live balances from (cached) scans.
  * A scan failure never throws: that wallet comes back with zeroed balances

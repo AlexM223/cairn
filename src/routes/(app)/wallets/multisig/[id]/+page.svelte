@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { enhance } from '$app/forms';
-	import { afterNavigate, goto, invalidate, invalidateAll, replaceState } from '$app/navigation';
+	import { afterNavigate, goto, invalidate, replaceState } from '$app/navigation';
 	import { onNewBlock } from '$lib/liveBlocks';
 	import Icon from '$lib/components/Icon.svelte';
+	import SyncIndicator from '$lib/components/heartwood/SyncIndicator.svelte';
 	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import Term from '$lib/components/Term.svelte';
@@ -26,69 +27,65 @@
 
 	let { data, form } = $props();
 
-	// The Electrum-dependent slice (balance scan, receive address, tip, coinbase
-	// UTXOs, speed-up eligibility, saved txs) is STREAMED from the server
-	// (cairn-vknb.2): the multisig shell — name, keys, collaborators, backup —
-	// paints instantly from the cheap base fields while this resolves. On
-	// invalidate, the previous scan stays visible until the fresh one resolves,
-	// so there's no skeleton flash on a live refresh.
-	type MultisigScan = Awaited<(typeof data)['scan']>;
-	let scan = $state<MultisigScan | null>(null);
-	// The height we last refetched for, so a server lagging behind the SSE tip
-	// can't put resolve→invalidate into an endless loop.
-	let refetchedForHeight: number | null = null;
-	$effect(() => {
-		const promise = data.scan;
-		let stale = false;
-		void promise.then((snap) => {
-			if (stale) return;
-			scan = snap;
-			// A block arrived while this scan was in flight — refresh once more.
-			if (
-				lastSeenHeight !== null &&
-				snap.tipHeight > 0 &&
-				lastSeenHeight > snap.tipHeight &&
-				refetchedForHeight !== lastSeenHeight
-			) {
-				refetchedForHeight = lastSeenHeight;
-				void invalidate(`cairn:multisig:${data.multisig.id}`);
-			}
-		});
-		return () => {
-			stale = true;
-		};
-	});
+	// Stale-while-revalidate (cairn-2zxt): the Electrum-dependent slice (balance
+	// scan, receive address, tip, coinbase UTXOs, speed-up eligibility, saved txs)
+	// now comes from a persisted snapshot read synchronously in load() — instant,
+	// no Electrum on navigation. `refresh()` re-scans in the background and, on
+	// success, re-invalidates the loader to pick up the fresh snapshot. `data.scan`
+	// is already resolved (not a promise).
+	type MultisigScan = (typeof data)['scan'];
+	const scan = $derived(data.scan);
+	const detail = $derived(scan.detail);
+	const coinbaseUtxos = $derived(scan.coinbaseUtxos);
+	const tipHeight = $derived(scan.tipHeight);
+	const speedUp = $derived(scan.speedUp);
+	const savedTxs = $derived(scan.savedTxs);
 
-	// Live new-block updates refresh this wallet's chain-derived fields (tip,
-	// coinbase maturity, speed-up eligibility) via the existing SSE channel —
-	// never poll. Same shape as the dashboard's onNewBlock wiring.
+	let syncing = $state(false);
+	// A refresh failure with nothing cached surfaces as the scan-error state; with
+	// cached data showing it's swallowed (keep the stale snapshot up, SWR contract).
+	let refreshError = $state<string | null>(null);
+	const hasData = $derived(detail !== null);
+	const scanLoading = $derived(!hasData && data.lastSyncedAt === null && refreshError === null);
+	const scanError = $derived(!hasData ? refreshError : null);
+
+	/** Kick a background re-scan, then re-read the fresh snapshot on success. */
+	async function refresh() {
+		if (syncing) return;
+		syncing = true;
+		try {
+			const res = await fetch(`/api/wallets/multisig/${data.multisig.id}/refresh`, {
+				method: 'POST'
+			});
+			if (!res.ok) {
+				refreshError = 'Could not reach the wallet scanner';
+				return;
+			}
+			refreshError = null;
+			await invalidate(`cairn:multisig:${data.multisig.id}`);
+		} catch {
+			refreshError = 'Could not reach the wallet scanner';
+		} finally {
+			syncing = false;
+		}
+	}
+
+	// Refresh once on mount, then on every new block via the existing SSE channel.
+	// The first SSE delivery is a replay of the current tip on connect (covered by
+	// the mount refresh), so it's skipped.
 	let lastSeenHeight: number | null = null;
+	onMount(() => {
+		void refresh();
+	});
 	onMount(() =>
 		onNewBlock((height) => {
 			if (lastSeenHeight !== null && height <= lastSeenHeight) return;
 			const first = lastSeenHeight === null;
 			lastSeenHeight = height;
-			if (scan !== null && !scan.scanError && scan.tipHeight > 0) {
-				// SSE replays the current tip on connect — ignore what we already show.
-				if (height <= scan.tipHeight) return;
-				void invalidate(`cairn:multisig:${data.multisig.id}`);
-			} else if (!first) {
-				// Scan errored or still streaming — a new block is a good moment to
-				// retry, but the very first replay-on-connect isn't.
-				void invalidate(`cairn:multisig:${data.multisig.id}`);
-			}
+			if (first) return;
+			void refresh();
 		})
 	);
-
-	// Convenience projections of the streamed scan. Null/empty while it streams
-	// in (the template shows a skeleton for that window) and after a scan error.
-	const scanLoading = $derived(scan === null);
-	const detail = $derived(scan?.detail ?? null);
-	const coinbaseUtxos = $derived(scan?.coinbaseUtxos ?? []);
-	const tipHeight = $derived(scan?.tipHeight ?? 0);
-	const speedUp = $derived(scan?.speedUp ?? []);
-	const savedTxs = $derived(scan?.savedTxs ?? []);
-	const scanError = $derived(scan?.scanError ?? null);
 
 	let createdDismissed = $state(false);
 
@@ -110,7 +107,6 @@
 	let confirmDelete = $state(false);
 	let deleting = $state(false);
 	let generating = $state(false);
-	let retrying = $state(false);
 	let tab = $state<'transactions' | 'addresses'>('transactions');
 	let addrFilter = $state<'used' | 'unused' | 'change'>('used');
 
@@ -389,14 +385,6 @@
 		verifiedOverrides = { ...verifiedOverrides, [keyId]: ts };
 	}
 
-	async function retry() {
-		retrying = true;
-		try {
-			await invalidateAll();
-		} finally {
-			retrying = false;
-		}
-	}
 </script>
 
 <svelte:head>
@@ -503,6 +491,10 @@
 					>{data.multisig.threshold} of {data.multisig.keys.length} keys required to spend</Term
 				>
 			</p>
+
+			<div class="hw-sync-row">
+				<SyncIndicator lastSyncedAt={data.lastSyncedAt} {syncing} />
+			</div>
 		</header>
 
 		{#if staleKeys.length > 0 && !nudgeDismissed}
@@ -537,8 +529,8 @@
 					<div style="font-weight: 500">Can't reach the wallet scanner</div>
 					<div class="hint">{scanError}</div>
 				</div>
-				<button type="button" class="btn btn-secondary btn-sm" onclick={retry} disabled={retrying}>
-					{#if retrying}<span class="spinner"></span>{:else}<Icon name="refresh" size={14} />{/if}
+				<button type="button" class="btn btn-secondary btn-sm" onclick={refresh} disabled={syncing}>
+					{#if syncing}<span class="spinner"></span>{:else}<Icon name="refresh" size={14} />{/if}
 					Retry
 				</button>
 			</div>
@@ -1231,6 +1223,10 @@
 		margin: 18px 0 0;
 		font-size: 12px;
 		color: var(--text-muted);
+	}
+
+	.hw-sync-row {
+		margin-top: 10px;
 	}
 
 	/* --- stale-key nudge: calm amber, hairline-bounded, no box --- */
