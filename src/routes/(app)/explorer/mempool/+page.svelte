@@ -6,7 +6,7 @@
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
-	import CairnChart from '$lib/components/heartwood/CairnChart.svelte';
+	import CairnChart, { type ChartBar } from '$lib/components/heartwood/CairnChart.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import { formatNumber, formatBtc, formatBytes, formatFeeRate, timeAgo } from '$lib/format';
 
@@ -86,6 +86,19 @@
 		}
 		const max = Math.max(...bands.map((b) => b.vsize), 1);
 		return bands.map((b) => ({ ...b, share: b.vsize / max }));
+	});
+
+	// Fee distribution as horizontal proportional bars for CairnChart: one bar
+	// per sat/vB band, length = waiting virtual bytes in that band. Keeps the
+	// copper accent (default fill); the value axis now shows the byte scale a
+	// bare CSS-width bar couldn't.
+	const feeBandBars = $derived.by((): ChartBar[] | null => {
+		if (!feeBands) return null;
+		return feeBands.map((b) => ({
+			label: b.label,
+			value: b.vsize,
+			valueLabel: b.vsize > 0 ? formatBytes(b.vsize) : '—'
+		}));
 	});
 
 	// Trend chart series for the 2-hour backlog history (cairn-49wy: now
@@ -262,21 +275,15 @@
 								<span class="hint">what am I seeing?</span>
 							</Term>
 						</div>
-						<div class="bands">
-							{#each feeBands as band (band.label)}
-								<div class="band">
-									<span class="band-label tabular">{band.label}</span>
-									<div class="band-track">
-										<div
-											class="band-fill"
-											style:width="{Math.max(band.share * 100, band.vsize > 0 ? 2 : 0)}%"
-										></div>
-									</div>
-									<span class="band-size tabular">{band.vsize > 0 ? formatBytes(band.vsize) : '—'}</span>
-								</div>
-							{/each}
-						</div>
-						<span class="hint">sat/vB bands · bar length = share of waiting virtual bytes</span>
+						<CairnChart
+							kind="bar"
+							orientation="horizontal"
+							bars={feeBandBars ?? []}
+							height={200}
+							ariaLabel="Fee distribution by virtual size"
+							valueFormat={(v) => formatBytes(Math.max(v, 0))}
+						/>
+						<span class="hint">sat/vB bands · bar length = waiting virtual bytes</span>
 					</section>
 				{/if}
 			</div>
@@ -562,43 +569,6 @@
 		border-top: 1px solid var(--hairline);
 		padding-top: 10px;
 		margin: 0;
-	}
-
-	.bands {
-		display: flex;
-		flex-direction: column;
-		gap: 7px;
-	}
-
-	.band {
-		display: grid;
-		grid-template-columns: 52px 1fr 64px;
-		align-items: center;
-		gap: 10px;
-		font-size: 12px;
-	}
-
-	.band-label {
-		color: var(--text-secondary);
-		text-align: right;
-	}
-
-	.band-track {
-		height: 14px;
-		background: var(--bg-input);
-		border-radius: 3px;
-		overflow: hidden;
-	}
-
-	.band-fill {
-		height: 100%;
-		background: linear-gradient(90deg, var(--accent), var(--accent-hover));
-		border-radius: 3px;
-		transition: width 300ms var(--ease);
-	}
-
-	.band-size {
-		color: var(--text-muted);
 	}
 
 	.degrade-note {

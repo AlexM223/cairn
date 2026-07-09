@@ -1,36 +1,72 @@
 <script module lang="ts">
 	export type ChartPoint = { x: number; y: number; label?: string };
 	export type ChartSeries = { points: ChartPoint[]; color?: string; label?: string };
+	/**
+	 * A single categorical bar. `value` is signed (vertical bars support
+	 * positive/negative around a zero baseline); `label` is the category-axis
+	 * caption. `valueLabel` overrides the tooltip/axis value text when the raw
+	 * number needs domain formatting the generic valueFormat can't give; `note`
+	 * is an optional extra tooltip line (e.g. a full date-time).
+	 */
+	export type ChartBar = {
+		label: string;
+		value: number;
+		color?: string;
+		valueLabel?: string;
+		note?: string;
+	};
 </script>
 
 <script lang="ts">
 	/**
-	 * CairnChart — shared line-chart infrastructure (axes, gridlines, hover
-	 * tooltip, legend) for the plain SVG-path charts scattered across the
-	 * explorer/dashboard pages (cairn-49wy). Modeled on the bespoke
-	 * BalanceChart used for wallet balances, but generic over any x/y series
-	 * — it has no domain knowledge of sats, ranges, or delta chips.
+	 * CairnChart — shared chart infrastructure (axes, gridlines, hover tooltip,
+	 * legend) for the plain SVG charts scattered across the explorer/dashboard
+	 * pages (cairn-49wy). Modeled on the bespoke BalanceChart used for wallet
+	 * balances, but generic over any x/y series — it has no domain knowledge of
+	 * sats, ranges, or delta chips.
+	 *
+	 * Two render modes share the same axis/gridline/tooltip primitives:
+	 *   - `kind="line"` (default): smooth line/area over continuous `series`.
+	 *   - `kind="bar"`: categorical `bars`, either `orientation="vertical"`
+	 *     (signed columns around a zero baseline — used by the difficulty
+	 *     retarget history) or `orientation="horizontal"` (proportional bars
+	 *     from a zero origin — used by the mempool fee distribution).
 	 *
 	 * SSR-safe: layout math only touches props/state, never `window` or
 	 * `document` outside `onMount`/event handlers.
 	 */
 	let {
-		series,
+		series = [],
+		bars = [],
+		kind = 'line',
+		orientation = 'vertical',
 		height = 200,
 		xFormat = (v: number) => String(v),
 		yFormat = (v: number) => String(v),
+		valueFormat,
+		ariaLabel,
 		showGrid = true,
 		showAxes = true,
 		showTooltip = true
 	}: {
-		series: ChartSeries[];
+		series?: ChartSeries[];
+		bars?: ChartBar[];
+		kind?: 'line' | 'bar';
+		orientation?: 'vertical' | 'horizontal';
 		height?: number;
 		xFormat?: (v: number) => string;
 		yFormat?: (v: number) => string;
+		/** Bar-mode value-axis + tooltip formatter; falls back to `yFormat`. */
+		valueFormat?: (v: number) => string;
+		ariaLabel?: string;
 		showGrid?: boolean;
 		showAxes?: boolean;
 		showTooltip?: boolean;
 	} = $props();
+
+	const isBar = $derived(kind === 'bar');
+	const isHorizontal = $derived(kind === 'bar' && orientation === 'horizontal');
+	const fmtValue = $derived(valueFormat ?? yFormat);
 
 	// Layout: the SVG viewBox tracks the rendered width so scaling stays
 	// uniform, same seam as BalanceChart's bind:clientWidth.
@@ -45,7 +81,9 @@
 	const PLOT_H = $derived(VB_H - PAD_T - PAD_B);
 
 	const allPoints = $derived(series.flatMap((s) => s.points));
-	const hasData = $derived(series.some((s) => s.points.length >= 2));
+	const hasData = $derived(
+		isBar ? bars.length > 0 : series.some((s) => s.points.length >= 2)
+	);
 
 	const bounds = $derived.by(() => {
 		if (allPoints.length === 0) {
@@ -211,6 +249,143 @@
 		if (x + TOOLTIP_W > VB_W - PAD_R) x = VB_W - PAD_R - TOOLTIP_W;
 		return x;
 	});
+
+	// ---------------------------------------------------------------------------
+	// Bar mode — categorical columns/rows that reuse the same viewBox, padding,
+	// gridline, axis-label and tooltip machinery as the line mode above. The
+	// value axis is anchored at zero so signed bars (difficulty swings) render
+	// above/below a shared baseline; horizontal bars always start at a zero
+	// origin so length reads as a proportion.
+	// ---------------------------------------------------------------------------
+
+	// Value domain. Always includes zero so the baseline is meaningful; the
+	// non-zero side is padded so the tallest/longest bar never hugs the edge.
+	const barDomain = $derived.by(() => {
+		if (!isBar || bars.length === 0) return { min: 0, max: 1 };
+		const vals = bars.map((b) => b.value);
+		if (isHorizontal) {
+			const max = Math.max(0, ...vals);
+			return { min: 0, max: max === 0 ? 1 : max * 1.08 };
+		}
+		let min = Math.min(0, ...vals);
+		let max = Math.max(0, ...vals);
+		if (min === max) max = min + 1;
+		const pad = (max - min) * 0.12 || 1;
+		if (min < 0) min -= pad;
+		if (max > 0) max += pad;
+		return { min, max };
+	});
+
+	/** Pixel position along the value axis (x for horizontal, y for vertical). */
+	function valuePos(v: number): number {
+		const { min, max } = barDomain;
+		const frac = max === min ? 0 : (v - min) / (max - min);
+		return isHorizontal ? PAD_L + frac * PLOT_W : PAD_T + (1 - frac) * PLOT_H;
+	}
+
+	// One evenly divided slot per bar along the category axis.
+	const barSlot = $derived(
+		bars.length === 0 ? 0 : (isHorizontal ? PLOT_H : PLOT_W) / bars.length
+	);
+
+	/** Pixel center of bar `i` along the category axis. */
+	function barCenter(i: number): number {
+		return (isHorizontal ? PAD_T : PAD_L) + (i + 0.5) * barSlot;
+	}
+
+	const barThick = $derived(
+		Math.min(barSlot * (isHorizontal ? 0.62 : 0.55), isHorizontal ? 18 : 28)
+	);
+
+	const barZeroPos = $derived(valuePos(0));
+
+	const barRects = $derived.by(() => {
+		if (!isBar) return [];
+		return bars.map((b, i) => {
+			const center = barCenter(i);
+			const vp = valuePos(b.value);
+			if (isHorizontal) {
+				return {
+					x: Math.min(barZeroPos, vp),
+					y: center - barThick / 2,
+					w: Math.abs(vp - barZeroPos),
+					h: barThick,
+					bar: b,
+					i
+				};
+			}
+			return {
+				x: center - barThick / 2,
+				y: Math.min(barZeroPos, vp),
+				w: barThick,
+				h: Math.abs(vp - barZeroPos),
+				bar: b,
+				i
+			};
+		});
+	});
+
+	// Value-axis ticks — same even-division scheme as the line-mode Y ticks, so
+	// the tick math lives in exactly one place conceptually.
+	const barValueTicks = $derived.by(() => {
+		if (!isBar || !hasData) return [];
+		const { min, max } = barDomain;
+		const ticks: { pos: number; label: string }[] = [];
+		for (let i = 0; i <= Y_TICKS; i++) {
+			const value = min + (i / Y_TICKS) * (max - min);
+			ticks.push({ pos: valuePos(value), label: fmtValue(value) });
+		}
+		return ticks;
+	});
+
+	// Category-axis captions — one per bar, at each bar's center.
+	const barCats = $derived.by(() => {
+		if (!isBar) return [];
+		return bars.map((b, i) => ({ pos: barCenter(i), label: b.label }));
+	});
+
+	// Hover — which bar the pointer is over (by category-axis slot).
+	let hoverBar = $state<number | null>(null);
+
+	function handleBarMove(event: PointerEvent) {
+		if (!showTooltip || !svgEl || bars.length === 0) return;
+		const rect = svgEl.getBoundingClientRect();
+		if (rect.width === 0 || rect.height === 0) return;
+		let idx: number;
+		if (isHorizontal) {
+			const relY = ((event.clientY - rect.top) / rect.height) * VB_H;
+			idx = Math.floor((relY - PAD_T) / barSlot);
+		} else {
+			const relX = ((event.clientX - rect.left) / rect.width) * VB_W;
+			idx = Math.floor((relX - PAD_L) / barSlot);
+		}
+		hoverBar = idx >= 0 && idx < bars.length ? idx : null;
+	}
+
+	function handleBarLeave() {
+		hoverBar = null;
+	}
+
+	const barTooltip = $derived.by(() => {
+		if (!isBar || hoverBar === null) return null;
+		const bar = bars[hoverBar];
+		if (!bar) return null;
+		const center = barCenter(hoverBar);
+		const vp = valuePos(bar.value);
+		return {
+			bar,
+			anchorX: isHorizontal ? vp : center,
+			anchorY: isHorizontal ? center : vp
+		};
+	});
+
+	const barTooltipX = $derived.by(() => {
+		if (!barTooltip) return 0;
+		let x = barTooltip.anchorX - TOOLTIP_W / 2;
+		if (x < PAD_L) x = PAD_L;
+		if (x + TOOLTIP_W > VB_W - PAD_R) x = VB_W - PAD_R - TOOLTIP_W;
+		return x;
+	});
 </script>
 
 <div class="cairn-chart">
@@ -223,43 +398,105 @@
 				viewBox="0 0 {VB_W} {VB_H}"
 				style="height: {VB_H}px"
 				role="img"
-				aria-label={series[0]?.label ?? 'Chart'}
-				onpointermove={handlePointerMove}
-				onpointerleave={handlePointerLeave}
+				aria-label={ariaLabel ?? series[0]?.label ?? 'Chart'}
+				onpointermove={isBar ? handleBarMove : handlePointerMove}
+				onpointerleave={isBar ? handleBarLeave : handlePointerLeave}
 			>
-				{#if showGrid}
-					{#each yTicks as tick (tick.y)}
-						<line class="grid-line" x1={PAD_L} y1={tick.y} x2={VB_W - PAD_R} y2={tick.y} />
-					{/each}
-				{/if}
+				{#if isBar}
+					{#if showGrid}
+						{#each barValueTicks as tick (tick.pos)}
+							{#if isHorizontal}
+								<line class="grid-line" x1={tick.pos} y1={PAD_T} x2={tick.pos} y2={PAD_T + PLOT_H} />
+							{:else}
+								<line class="grid-line" x1={PAD_L} y1={tick.pos} x2={VB_W - PAD_R} y2={tick.pos} />
+							{/if}
+						{/each}
+					{/if}
 
-				{#each paths as p (p.label)}
-					<path class="line" d={p.d} fill="none" stroke={p.color} stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
-				{/each}
+					<!-- Zero baseline (only distinct from an axis edge when bars are signed) -->
+					{#if isHorizontal}
+						<line class="baseline-axis" x1={barZeroPos} y1={PAD_T} x2={barZeroPos} y2={PAD_T + PLOT_H} />
+					{:else}
+						<line class="baseline-axis" x1={PAD_L} y1={barZeroPos} x2={VB_W - PAD_R} y2={barZeroPos} />
+					{/if}
 
-				{#if showAxes}
-					{#each yTicks as tick (tick.y)}
-						<text class="axis-label y-axis-label" x={PAD_L - 8} y={tick.y + 3} text-anchor="end">
-							{tick.label}
-						</text>
+					{#each barRects as r (r.i)}
+						<rect
+							class="bar-rect"
+							x={r.x}
+							y={r.y}
+							width={Math.max(r.w, 0)}
+							height={Math.max(r.h, 0)}
+							rx="2"
+							style="fill: {r.bar.color ?? 'var(--accent)'}"
+							opacity={hoverBar === null || hoverBar === r.i ? 1 : 0.72}
+						/>
 					{/each}
-					{#each xTicks as tick (tick.x)}
-						<text class="axis-label" x={tick.x} y={VB_H - 6} text-anchor="middle">
-							{tick.label}
-						</text>
-					{/each}
-				{/if}
 
-				{#if showTooltip && hoverPlotX !== null}
-					<line class="guide" x1={hoverPlotX} y1={PAD_T} x2={hoverPlotX} y2={PAD_T + PLOT_H} />
-					{#each hoverRows as row (row.label ?? row.point.x)}
-						<circle class="dot-halo" cx={hoverPlotX} cy={yFor(row.point.y)} r="6" style="fill: {row.color}" />
-						<circle class="dot" cx={hoverPlotX} cy={yFor(row.point.y)} r="3.5" style="fill: {row.color}" />
+					{#if showAxes}
+						{#each barValueTicks as tick (tick.pos)}
+							{#if isHorizontal}
+								<text class="axis-label" x={tick.pos} y={VB_H - 6} text-anchor="middle">{tick.label}</text>
+							{:else}
+								<text class="axis-label y-axis-label" x={PAD_L - 8} y={tick.pos + 3} text-anchor="end">{tick.label}</text>
+							{/if}
+						{/each}
+						{#each barCats as cat (cat.pos)}
+							{#if isHorizontal}
+								<text class="axis-label y-axis-label" x={PAD_L - 8} y={cat.pos + 3} text-anchor="end">{cat.label}</text>
+							{:else}
+								<text class="axis-label" x={cat.pos} y={VB_H - 6} text-anchor="middle">{cat.label}</text>
+							{/if}
+						{/each}
+					{/if}
+				{:else}
+					{#if showGrid}
+						{#each yTicks as tick (tick.y)}
+							<line class="grid-line" x1={PAD_L} y1={tick.y} x2={VB_W - PAD_R} y2={tick.y} />
+						{/each}
+					{/if}
+
+					{#each paths as p (p.label)}
+						<path class="line" d={p.d} fill="none" stroke={p.color} stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
 					{/each}
+
+					{#if showAxes}
+						{#each yTicks as tick (tick.y)}
+							<text class="axis-label y-axis-label" x={PAD_L - 8} y={tick.y + 3} text-anchor="end">
+								{tick.label}
+							</text>
+						{/each}
+						{#each xTicks as tick (tick.x)}
+							<text class="axis-label" x={tick.x} y={VB_H - 6} text-anchor="middle">
+								{tick.label}
+							</text>
+						{/each}
+					{/if}
+
+					{#if showTooltip && hoverPlotX !== null}
+						<line class="guide" x1={hoverPlotX} y1={PAD_T} x2={hoverPlotX} y2={PAD_T + PLOT_H} />
+						{#each hoverRows as row (row.label ?? row.point.x)}
+							<circle class="dot-halo" cx={hoverPlotX} cy={yFor(row.point.y)} r="6" style="fill: {row.color}" />
+							<circle class="dot" cx={hoverPlotX} cy={yFor(row.point.y)} r="3.5" style="fill: {row.color}" />
+						{/each}
+					{/if}
 				{/if}
 			</svg>
 
-			{#if showTooltip && hoverRows.length > 0 && hoverPlotX !== null}
+			{#if isBar && showTooltip && barTooltip}
+				<div
+					class="tooltip"
+					style="left: {(barTooltipX / VB_W) * 100}%; top: {(barTooltip.anchorY / VB_H) * 100}%;"
+				>
+					<div class="tooltip-x">{barTooltip.bar.label}</div>
+					<div class="tooltip-row">
+						<span class="tooltip-y">{barTooltip.bar.valueLabel ?? fmtValue(barTooltip.bar.value)}</span>
+					</div>
+					{#if barTooltip.bar.note}
+						<div class="tooltip-note">{barTooltip.bar.note}</div>
+					{/if}
+				</div>
+			{:else if !isBar && showTooltip && hoverRows.length > 0 && hoverPlotX !== null}
 				<div
 					class="tooltip"
 					style="left: {(tooltipX / VB_W) * 100}%; top: {(yFor(hoverRows[0].point.y) / VB_H) * 100}%;"
@@ -329,6 +566,26 @@
 
 	.line {
 		vector-effect: non-scaling-stroke;
+	}
+
+	.bar-rect {
+		transition: opacity 120ms var(--ease, ease);
+	}
+
+	/* Zero baseline for bar mode — a touch stronger than a gridline so signed
+	   bars read against a clear origin, but still quiet. */
+	.baseline-axis {
+		stroke: var(--border-subtle);
+		stroke-width: 1;
+		opacity: 0.9;
+	}
+
+	.tooltip-note {
+		font-family: var(--font-ui);
+		font-size: 0.68rem;
+		color: var(--text-muted);
+		margin-top: 0.15rem;
+		white-space: nowrap;
 	}
 
 	.axis-label {
