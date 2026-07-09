@@ -247,6 +247,111 @@ describe('a constructed replacement itself signals RBF (bumped tx stays bumpable
 	});
 });
 
+// ---- cairn-yabj: concurrent-bump TOCTOU race ------------------------------
+//
+// executeRbfBump SELECTs "is there already a replacement for this txid?" near
+// the top, then crosses awaits (the getTx confirmation check + the async
+// buildReplacement) before it INSERTs the replacement draft. Two truly
+// concurrent bumps of the SAME original can both pass that SELECT — neither has
+// inserted yet — and then both try to INSERT, producing two live replacements
+// fighting over the same inputs. The fix is a partial UNIQUE index on
+// (wallet_id, replaces_txid) (db.ts): the INSERT becomes the atomic guard, and
+// the loser's UNIQUE-constraint violation is mapped back to the SAME
+// 'already_replaced' error a sequential second caller gets. This test drives
+// both calls through the exact race window (a barrier inside buildReplacement
+// holds both past their SELECT until both have arrived) and asserts exactly one
+// replacement is ever recorded. It fails without the index (both INSERTs
+// succeed → two rows, both promises fulfil).
+describe('feeBump concurrent-bump atomicity (cairn-yabj)', () => {
+	async function seedRealWallet(email: string): Promise<{ walletId: number }> {
+		const user = await registerUser({ email, password: 'correct horse battery', displayName: 'u' });
+		const res = db
+			.prepare(
+				"INSERT INTO wallets (user_id, name, type, xpub, script_type) VALUES (?, 'W', 'xpub', ?, 'p2wpkh')"
+			)
+			.run(user.id, `xpub-${email}`);
+		return { walletId: Number(res.lastInsertRowid) };
+	}
+
+	const ORIGINAL_TXID = '44'.repeat(32);
+
+	/** A fabricated replacement detail whose fee clears the rule-4 minimum
+	 *  (fee >= tx.fee + vsize) so executeRbfBump reaches the INSERT. */
+	const details = {
+		psbtBase64: 'cHNidP8=', // shape only; reloadDraft is stubbed so it's never re-read
+		fee: 5_000,
+		feeRate: 25,
+		vsize: 150,
+		amount: 30_000,
+		recipient: RECIPIENT,
+		recipients: [{ address: RECIPIENT, amount: 30_000 }],
+		change: { address: RECIPIENT, value: 10_000, index: 0 }
+	};
+
+	function raceBump(walletId: number, buildReplacement: () => Promise<typeof details>) {
+		return executeRbfBump({
+			spec: { table: 'transactions', ownerColumn: 'wallet_id' },
+			ownerId: walletId,
+			tx: {
+				status: 'completed',
+				txid: ORIGINAL_TXID,
+				fee: 200,
+				feeRate: 5,
+				changeIndex: 0,
+				psbt: makeStoredPsbt(0xfffffffd) // signals RBF, so rule-1 passes
+			},
+			newFeeRate: 25,
+			buildReplacement,
+			// Stubbed: the INSERT's own row is never read back in this test.
+			reloadDraft: (rowId) => ({ id: rowId }),
+			draftSaveError: () => new Error('unexpected: reload returned null')
+		});
+	}
+
+	it('records only one replacement when two bumps race the same original', async () => {
+		const { walletId } = await seedRealWallet('race-bump@example.com');
+
+		// Barrier: hold the first bump inside buildReplacement (past its SELECT and
+		// confirmation check) until the second has also arrived — guaranteeing both
+		// clear the existence SELECT before either reaches the INSERT.
+		let entered = 0;
+		let releaseBoth!: () => void;
+		const bothArrived = new Promise<void>((res) => (releaseBoth = res));
+		const buildReplacement = vi.fn(async () => {
+			entered += 1;
+			if (entered === 2) releaseBoth();
+			await bothArrived;
+			return details;
+		});
+
+		const [first, second] = await Promise.allSettled([
+			raceBump(walletId, buildReplacement),
+			raceBump(walletId, buildReplacement)
+		]);
+
+		// Both entered the race window (both passed the SELECT before inserting).
+		expect(buildReplacement).toHaveBeenCalledTimes(2);
+
+		// Exactly one succeeds; the other gets the same 'already_replaced' path a
+		// sequential second bump would.
+		const fulfilled = [first, second].filter((r) => r.status === 'fulfilled');
+		const rejected = [first, second].filter((r) => r.status === 'rejected');
+		expect(fulfilled).toHaveLength(1);
+		expect(rejected).toHaveLength(1);
+		expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+			code: 'already_replaced'
+		});
+
+		// And the database holds a single replacement row for this original.
+		const { n } = db
+			.prepare(
+				'SELECT COUNT(*) AS n FROM transactions WHERE wallet_id = ? AND replaces_txid = ?'
+			)
+			.get(walletId, ORIGINAL_TXID) as { n: number };
+		expect(n).toBe(1);
+	});
+});
+
 // Sanity: BumpError stays a real export used by the matchers above (guards
 // against the class import silently resolving to `undefined` in this file).
 describe('module wiring', () => {

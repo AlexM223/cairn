@@ -1008,6 +1008,27 @@ db.exec(`
 	}
 }
 
+// One live RBF replacement per original (cairn-yabj). executeRbfBump (feeBump.ts)
+// does a SELECT existence check on replaces_txid and, several awaits later
+// (getTx confirmation + the async buildReplacement), an INSERT — two concurrent
+// bumps of the SAME original can both pass the SELECT and both INSERT a
+// replacement fighting over the same inputs (a TOCTOU race the friendly SELECT
+// alone can't close). A partial UNIQUE index on (owner, replaces_txid) makes the
+// INSERT itself the atomic guard: the loser gets a UNIQUE-constraint violation
+// feeBump maps to the SAME 'already_replaced' error the sequential check raises,
+// so racing and sequential callers hit identical semantics. Partial
+// (WHERE replaces_txid IS NOT NULL) so ordinary drafts and CPFP children — which
+// carry a NULL replaces_txid — are entirely unconstrained (SQLite already treats
+// NULLs as distinct in a UNIQUE index; the predicate makes that intent explicit
+// and keeps the index to just the replacement rows). Additive/idempotent; both
+// replaces_txid columns exist by this point.
+db.exec(`
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_replaces
+		ON transactions(wallet_id, replaces_txid) WHERE replaces_txid IS NOT NULL;
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_multisig_transactions_replaces
+		ON multisig_transactions(multisig_id, replaces_txid) WHERE replaces_txid IS NOT NULL;
+`);
+
 db.exec(`
 	-- Instance-wide feature toggles. A row's ABSENCE means "use the registry
 	-- default" (FEATURE_FLAGS[].defaultEnabled, which is always true), so an
