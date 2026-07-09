@@ -6,6 +6,13 @@ import { getPublicKey } from 'nostr-tools/pure';
 import { nip44 } from 'nostr-tools';
 import { hexToBytes } from 'nostr-tools/utils';
 
+// Mock DNS so the relay SSRF gate (checkRelayUrl → checkTargetHost in ./ssrf) is
+// deterministic and never resolves the wss://r1-style test hostnames for real.
+const lookupMock = vi.fn();
+vi.mock('node:dns/promises', () => ({
+	lookup: (...args: unknown[]) => lookupMock(...args)
+}));
+
 // --- Mock the relay pool so no real WebSockets are opened. -------------------
 // publish() returns one Promise<string> per relay; we control resolve/reject
 // per test via the `publishImpl` hook below.
@@ -74,6 +81,9 @@ beforeEach(() => {
 	wipe();
 	setSetting('registration_mode', 'open');
 	vi.clearAllMocks();
+	// Default DNS: every relay hostname resolves to a public address so it clears
+	// the SSRF gate. Individual tests override this to exercise blocked ranges.
+	lookupMock.mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
 	// Default: every relay accepts.
 	publishImpl = (relays) => relays.map(() => Promise.resolve('ok'));
 });
@@ -250,6 +260,71 @@ describe('send() — publish semantics', () => {
 		const res = await nostrChannel.send(u, payload);
 		expect(res.ok).toBe(false);
 		expect(res.retryable).toBe(false);
+	});
+});
+
+describe('relay SSRF guard (cairn-zn7z)', () => {
+	it('drops a relay that RESOLVES to a private range and never publishes to it', async () => {
+		const u = await makeUser('ssrf-a@example.com');
+		saveConfig(u, { recipientPubkey: RECIPIENT_PUBKEY, relays: ['wss://good', 'wss://internal'] });
+		// good → public, internal → LAN. Only the public one should be dialled.
+		lookupMock.mockImplementation((host: string) =>
+			host === 'internal'
+				? Promise.resolve([{ address: '10.0.0.5', family: 4 }])
+				: Promise.resolve([{ address: '93.184.216.34', family: 4 }])
+		);
+
+		let seen: string[] = [];
+		publishImpl = (relays) => {
+			seen = relays;
+			return relays.map(() => Promise.resolve('ok'));
+		};
+
+		const res = await nostrChannel.send(u, payload);
+		expect(res.ok).toBe(true);
+		expect(seen).toEqual(['wss://good']); // the blocked relay was filtered out
+	});
+
+	it('fails NON-retryably when every relay is blocked, and never opens a socket', async () => {
+		const u = await makeUser('ssrf-b@example.com');
+		saveConfig(u, { recipientPubkey: RECIPIENT_PUBKEY, relays: ['wss://loopback'] });
+		lookupMock.mockResolvedValue([{ address: '127.0.0.1', family: 4 }]);
+
+		const publishSpy = vi.fn(() => [] as Promise<string>[]);
+		publishImpl = publishSpy;
+
+		const res = await nostrChannel.send(u, payload);
+		expect(res.ok).toBe(false);
+		expect(res.retryable).toBe(false);
+		expect(res.error).toMatch(/blocked|private|loopback/i);
+		expect(publishSpy).not.toHaveBeenCalled();
+	});
+
+	it('rejects a relay literal in the CGNAT range 100.64.0.0/10 (cairn-pihb)', async () => {
+		const u = await makeUser('ssrf-c@example.com');
+		// A literal Tailscale CGNAT IP — checked directly, no DNS.
+		saveConfig(u, { recipientPubkey: RECIPIENT_PUBKEY, relays: ['wss://100.100.100.100:4848'] });
+
+		const publishSpy = vi.fn(() => [] as Promise<string>[]);
+		publishImpl = publishSpy;
+
+		const res = await nostrChannel.send(u, payload);
+		expect(res.ok).toBe(false);
+		expect(res.retryable).toBe(false);
+		expect(publishSpy).not.toHaveBeenCalled();
+	});
+
+	it('rejects a non-ws scheme relay', async () => {
+		const u = await makeUser('ssrf-d@example.com');
+		saveConfig(u, { recipientPubkey: RECIPIENT_PUBKEY, relays: ['https://not-a-relay.example'] });
+
+		const publishSpy = vi.fn(() => [] as Promise<string>[]);
+		publishImpl = publishSpy;
+
+		const res = await nostrChannel.send(u, payload);
+		expect(res.ok).toBe(false);
+		expect(res.retryable).toBe(false);
+		expect(publishSpy).not.toHaveBeenCalled();
 	});
 });
 

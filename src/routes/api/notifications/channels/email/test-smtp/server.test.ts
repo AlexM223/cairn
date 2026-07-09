@@ -73,6 +73,11 @@ let smtp: Awaited<ReturnType<typeof startFakeSmtp>>;
 beforeEach(async () => {
 	wipe();
 	setSetting('registration_mode', 'open');
+	// The fake SMTP sink listens on 127.0.0.1, which the SSRF guard (cairn-ruxo)
+	// blocks by default. Enable the admin escape hatch so these end-to-end send
+	// tests can reach it — the guard itself is exercised with the hatch OFF in the
+	// dedicated "SSRF guard" block below.
+	setSetting('webhook_allow_private_targets', 'true');
 	userId = (
 		await registerUser({
 			email: 'user@example.com',
@@ -182,5 +187,26 @@ describe('POST test-smtp', () => {
 		expect((await post(candidate({ from: 'bad' }))).status).toBe(400);
 		expect((await post(candidate({ tls: 'nope' }))).status).toBe(400);
 		expect((await post(candidate({ port: 0 }))).status).toBe(400);
+	});
+});
+
+describe('POST test-smtp — SSRF guard (cairn-ruxo)', () => {
+	it('rejects a loopback host with 400 and never opens a connection', async () => {
+		// Hatch OFF for this block — a blind LAN/loopback port scan must be refused.
+		setSetting('webhook_allow_private_targets', 'false');
+		const { status, body } = await post(candidate({ host: '127.0.0.1', port: smtp.port }));
+		expect(status).toBe(400);
+		expect(body.ok).toBe(false);
+		expect(body.error).toMatch(/rejected|blocked|private|loopback/i);
+		// The fake SMTP sink saw nothing — we bailed before dialling.
+		expect(smtp.count()).toBe(0);
+		expect(hasConfigRow()).toBe(false);
+	});
+
+	it('rejects a CGNAT (100.64.0.0/10) host literal with 400 (cairn-pihb)', async () => {
+		setSetting('webhook_allow_private_targets', 'false');
+		const { status, body } = await post(candidate({ host: '100.100.100.100' }));
+		expect(status).toBe(400);
+		expect(body.ok).toBe(false);
 	});
 });

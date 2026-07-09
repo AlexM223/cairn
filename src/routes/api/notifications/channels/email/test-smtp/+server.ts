@@ -17,6 +17,7 @@ import { json, readJson, requireUser } from '$lib/server/api';
 import { db } from '$lib/server/db';
 import { childLogger } from '$lib/server/logger';
 import { decryptSecret } from '$lib/server/secretKey';
+import { checkTargetHost } from '$lib/server/channels/ssrf';
 import { sendTestWithConfig, type SmtpConfig } from '$lib/server/channels/email';
 import type { ChannelSendResult } from '$lib/server/notifyTypes';
 import type { RequestHandler } from './$types';
@@ -47,6 +48,19 @@ export const POST: RequestHandler = async (event) => {
 	// --- Validate the candidate fields (mirrors buildConfig('email') / admin) ---
 	const host = str(body.host);
 	if (!host) return json({ ok: false, error: 'Enter your SMTP server host.' }, { status: 400 });
+
+	// SSRF gate: this endpoint opens a live SMTP connection to a user-typed host,
+	// so without a check it's a blind LAN/loopback port scanner (cairn-ruxo). Reject
+	// a host that resolves into a blocked range before any socket is opened. The
+	// admin escape hatch (allowPrivateTargets) still lets a self-hoster reach their
+	// own LAN relay. A blocked target is generic on purpose — no recon oracle.
+	const hostCheck = await checkTargetHost(host);
+	if (!hostCheck.ok) {
+		return json(
+			{ ok: false, error: `That SMTP host was rejected: ${hostCheck.error}.` },
+			{ status: 400 }
+		);
+	}
 
 	const from = str(body.from);
 	if (!from) return json({ ok: false, error: 'Enter the From address.' }, { status: 400 });
