@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { enhance } from '$app/forms';
-	import { afterNavigate, goto, invalidate, invalidateAll, replaceState } from '$app/navigation';
+	import { afterNavigate, goto, invalidate, replaceState } from '$app/navigation';
 	import { onNewBlock } from '$lib/liveBlocks';
 	import Icon from '$lib/components/Icon.svelte';
+	import SyncIndicator from '$lib/components/heartwood/SyncIndicator.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
 	import Term from '$lib/components/Term.svelte';
@@ -28,48 +29,62 @@
 
 	let { data, form } = $props();
 
-	// The scan/receive/tip/speed-up bundle is STREAMED from the server
-	// (cairn-vknb.1): the page shell paints instantly from the cheap local fields
-	// while the Electrum round-trips resolve. On invalidate, the previous bundle
-	// stays visible until the fresh one resolves — no skeleton flash on refresh.
-	type WalletChainData = Awaited<(typeof data)['chainData']>;
-	let chainData = $state<WalletChainData | null>(null);
-	$effect(() => {
-		const promise = data.chainData;
-		let stale = false;
-		void promise.then((d) => {
-			if (stale) return;
-			chainData = d;
-		});
-		return () => {
-			stale = true;
-		};
-	});
-	// null until the first stream resolves — drives the loading skeleton, kept
-	// distinct from "scan resolved to null" (an actual scan error/miss).
-	const loading = $derived(chainData === null);
-	const scan = $derived(chainData?.scan ?? null);
-	const scanError = $derived(chainData?.scanError ?? null);
-	const coinbaseUtxos = $derived(chainData?.coinbaseUtxos ?? []);
-	const tipHeight = $derived(chainData?.tipHeight ?? 0);
-	const speedUp = $derived(chainData?.speedUp ?? []);
+	// Stale-while-revalidate (cairn-2zxt): the scan/receive/tip/speed-up bundle now
+	// comes from a persisted snapshot read synchronously in load() — instant, no
+	// Electrum on navigation. `refresh()` (below) POSTs to the /refresh endpoint to
+	// re-scan in the background and, on success, re-invalidates the loader to pick
+	// up the fresh snapshot. `data.chainData` is already resolved (not a promise).
+	const chainData = $derived(data.chainData);
+	const scan = $derived(chainData.scan);
+	const coinbaseUtxos = $derived(chainData.coinbaseUtxos);
+	const tipHeight = $derived(chainData.tipHeight);
+	const speedUp = $derived(chainData.speedUp);
 
-	// Live new-block updates refresh this wallet's chain-derived fields (tip,
-	// coinbase maturity, speed-up eligibility) by re-running the streamed load —
-	// never a manual reload, never a poll. Mirrors the dashboard's onNewBlock
-	// wiring; refetchedForHeight guards against a resolve→invalidate loop.
+	let syncing = $state(false);
+	// A refresh failure while we have NOTHING cached surfaces as the scan-error
+	// state; a failure with cached data showing is swallowed (we keep the stale
+	// snapshot visible, per the SWR contract).
+	let refreshError = $state<string | null>(null);
+	const hasData = $derived(scan !== null);
+	// Skeleton only on a true cold first load (never synced, refresh in flight).
+	const loading = $derived(!hasData && data.lastSyncedAt === null && refreshError === null);
+	const scanError = $derived(!hasData ? refreshError : null);
+
+	/** Kick a background re-scan, then re-read the fresh snapshot on success. Never
+	 *  throws; a failure just leaves the cached data (and its stale timestamp) up. */
+	async function refresh() {
+		if (syncing) return;
+		syncing = true;
+		try {
+			const res = await fetch(`/api/wallets/${data.wallet.id}/refresh`, { method: 'POST' });
+			if (!res.ok) {
+				refreshError = 'Could not reach the wallet scanner';
+				return;
+			}
+			refreshError = null;
+			await invalidate(`cairn:wallet:${data.wallet.id}`);
+		} catch {
+			refreshError = 'Could not reach the wallet scanner';
+		} finally {
+			syncing = false;
+		}
+	}
+
+	// Refresh once on mount, then on every new block (tip/coinbase-maturity/speed-up
+	// change) via the existing SSE channel — never a poll. The first SSE delivery
+	// is a replay of the current tip on connect, already covered by the mount
+	// refresh, so it's skipped.
 	let lastSeenHeight: number | null = null;
-	let refetchedForHeight: number | null = null;
+	onMount(() => {
+		void refresh();
+	});
 	onMount(() =>
 		onNewBlock((height) => {
 			if (lastSeenHeight !== null && height <= lastSeenHeight) return;
 			const first = lastSeenHeight === null;
 			lastSeenHeight = height;
-			// The first SSE delivery is a replay of the current tip on connect —
-			// nothing new to refresh.
-			if (first || refetchedForHeight === height) return;
-			refetchedForHeight = height;
-			void invalidate(`cairn:wallet:${data.wallet.id}`);
+			if (first) return;
+			void refresh();
 		})
 	);
 
@@ -110,7 +125,6 @@
 	let rotateSlow = $state(false);
 	let rotateSlowTimer: ReturnType<typeof setTimeout> | null = null;
 	const ROTATE_SLOW_MS = 6000;
-	let retrying = $state(false);
 	let tab = $state<'transactions' | 'addresses' | 'saved'>('transactions');
 	let addrFilter = $state<'used' | 'unused' | 'change'>('used');
 
@@ -293,7 +307,7 @@
 		}
 	}
 
-	const receive = $derived(form?.receive ?? chainData?.receive ?? null);
+	const receive = $derived(form?.receive ?? chainData.receive ?? null);
 
 	// Copy button on the receive panel (spec 5c: Copy + Rotate pills).
 	let addrCopied = $state(false);
@@ -456,14 +470,6 @@
 		addrFilter === 'used' ? usedAddrs : addrFilter === 'unused' ? unusedAddrs : changeAddrs
 	);
 
-	async function retry() {
-		retrying = true;
-		try {
-			await invalidateAll();
-		} finally {
-			retrying = false;
-		}
-	}
 </script>
 
 <svelte:head>
@@ -569,6 +575,10 @@
 				</Term>
 				· {walletKind} · <span class="mono">{truncateMiddle(data.wallet.xpub, 10, 8)}</span>
 			</p>
+
+			<div class="hw-sync-row">
+				<SyncIndicator lastSyncedAt={data.lastSyncedAt} {syncing} />
+			</div>
 		</header>
 
 		{#if helpDevice}
@@ -596,8 +606,8 @@
 					<div style="font-weight: 500">Can't reach the wallet scanner</div>
 					<div class="hint">{scanError}</div>
 				</div>
-				<button type="button" class="btn btn-secondary btn-sm" onclick={retry} disabled={retrying}>
-					{#if retrying}<span class="spinner"></span>{:else}<Icon name="refresh" size={14} />{/if}
+				<button type="button" class="btn btn-secondary btn-sm" onclick={refresh} disabled={syncing}>
+					{#if syncing}<span class="spinner"></span>{:else}<Icon name="refresh" size={14} />{/if}
 					Retry
 				</button>
 			</div>
@@ -1426,6 +1436,10 @@
 		margin: 18px 0 0;
 		font-size: 12px;
 		color: var(--text-muted);
+	}
+
+	.hw-sync-row {
+		margin-top: 10px;
 	}
 
 	/* Official device-help expandable near the hero (quiet <details> idiom). */

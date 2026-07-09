@@ -1,70 +1,92 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
+	import { invalidate } from '$app/navigation';
 	import Icon from '$lib/components/Icon.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
+	import SyncIndicator from '$lib/components/heartwood/SyncIndicator.svelte';
 	import { formatBtc, formatSats, timeAgo } from '$lib/format';
 	import { SCRIPT_TYPE_LABELS, walletTypeLabel } from './labels';
 
 	let { data } = $props();
 
-	// The wallet scans are STREAMED from the server (cairn-ybsv): a cold cache
-	// means full gap-limit scans over Electrum, so the page paints skeleton rows
-	// immediately and fills in when the scans resolve.
-	type Scans = Awaited<(typeof data)['scans']>;
-	let scans = $state<Scans | null>(null);
-	$effect(() => {
-		const promise = data.scans;
-		let stale = false;
-		void promise.then((s) => {
-			if (!stale) scans = s;
-		});
-		return () => {
-			stale = true;
-		};
-	});
-	const loading = $derived(scans === null);
+	// Stale-while-revalidate (cairn-2zxt): the list renders instantly from
+	// persisted snapshots read synchronously in load() — no Electrum on
+	// navigation. `refresh()` fires each wallet's /refresh endpoint in parallel and,
+	// once they settle, re-invalidates the loader to pick up the fresh snapshots.
+	let syncing = $state(false);
+	const hasSynced = $derived(data.lastSyncedAt !== null);
 
 	// One list, two flavors. Single-sig wallets and multisig wallets are merged
 	// into a single hairline-row list (7a's wallet-rows grammar) — the row meta
-	// tells them apart (script type + device kind vs. an m-of-n quorum).
-	const items = $derived.by(() => {
-		const s = scans;
-		if (s === null) return [];
-		return [
-			...s.wallets.map((w) => ({
-				kind: 'single' as const,
-				id: w.id,
-				href: `/wallets/${w.id}`,
-				name: w.name,
-				scriptType: w.scriptType,
-				deviceType: w.deviceType,
-				balance: w.balance,
-				unconfirmed: w.unconfirmed,
-				lastActivity: w.lastActivity,
-				unreachable: s.errors[w.id] !== undefined,
-				error: s.errors[w.id]
-			})),
-			...s.multisigs.map((m) => ({
-				kind: 'multisig' as const,
-				id: m.id,
-				href: `/wallets/multisig/${m.id}`,
-				name: m.name,
-				threshold: m.threshold,
-				totalKeys: m.totalKeys,
-				balance: m.balance,
-				unconfirmed: m.unconfirmed,
-				lastActivity: m.lastActivity,
-				// Collaborative custody: wallets shared WITH this user carry the owner's
-				// name so the row can distinguish them from wallets they own outright.
-				sharedBy: m.sharedBy,
-				unreachable: s.multisigErrors[m.id] !== undefined,
-				error: s.multisigErrors[m.id]
-			}))
-		];
-	});
+	// tells them apart (script type + device kind vs. an m-of-n quorum). A wallet
+	// with no snapshot yet is NOT "unreachable" — it just shows zeroed until its
+	// first background refresh lands (errors stays empty in the cache-first path).
+	const items = $derived.by(() => [
+		...data.wallets.map((w) => ({
+			kind: 'single' as const,
+			id: w.id,
+			href: `/wallets/${w.id}`,
+			name: w.name,
+			scriptType: w.scriptType,
+			deviceType: w.deviceType,
+			balance: w.balance,
+			unconfirmed: w.unconfirmed,
+			lastActivity: w.lastActivity,
+			unreachable: data.errors[w.id] !== undefined,
+			error: data.errors[w.id]
+		})),
+		...data.multisigs.map((m) => ({
+			kind: 'multisig' as const,
+			id: m.id,
+			href: `/wallets/multisig/${m.id}`,
+			name: m.name,
+			threshold: m.threshold,
+			totalKeys: m.totalKeys,
+			balance: m.balance,
+			unconfirmed: m.unconfirmed,
+			lastActivity: m.lastActivity,
+			// Collaborative custody: wallets shared WITH this user carry the owner's
+			// name so the row can distinguish them from wallets they own outright.
+			sharedBy: m.sharedBy,
+			unreachable: data.multisigErrors[m.id] !== undefined,
+			error: data.multisigErrors[m.id]
+		}))
+	]);
+
+	// Skeleton only on a true cold first load: we have wallets but none has ever
+	// synced and a refresh is in flight. A returning user (snapshots present) sees
+	// cached rows instantly; a user with no wallets falls straight to the onboard.
+	const loading = $derived(!hasSynced && syncing && items.length > 0);
 
 	const totalSats = $derived(
 		items.filter((i) => !i.unreachable).reduce((sum, i) => sum + i.balance, 0)
 	);
+
+	/** Refresh every wallet's snapshot in parallel (each single-flighted +
+	 *  throttled server-side), then re-read the fresh list. Never throws. */
+	async function refresh() {
+		if (syncing) return;
+		syncing = true;
+		try {
+			await Promise.allSettled([
+				...data.wallets.map((w) =>
+					fetch(`/api/wallets/${w.id}/refresh`, { method: 'POST' })
+				),
+				...data.multisigs.map((m) =>
+					fetch(`/api/wallets/multisig/${m.id}/refresh`, { method: 'POST' })
+				)
+			]);
+			await invalidate('cairn:wallets');
+		} catch {
+			// Best-effort — keep the cached list up on any failure.
+		} finally {
+			syncing = false;
+		}
+	}
+
+	onMount(() => {
+		void refresh();
+	});
 </script>
 
 <svelte:head>
@@ -74,10 +96,10 @@
 <div class="wallets-page fade-in">
 	<GroveField volume="present" />
 	<div class="page-content">
-		{#if scans?.loadError}
+		{#if data.loadError}
 			<div class="load-error" role="alert">
 				<Icon name="alert-triangle" size={15} />
-				<span>Couldn't load your wallets: {scans.loadError}</span>
+				<span>Couldn't load your wallets: {data.loadError}</span>
 			</div>
 		{/if}
 
@@ -127,6 +149,11 @@
 						Add wallet
 					</a>
 				</div>
+				{#if !loading}
+					<div class="head-sync">
+						<SyncIndicator lastSyncedAt={data.lastSyncedAt} {syncing} />
+					</div>
+				{/if}
 			</header>
 
 			<!-- ------------------------------------------- hairline wallet rows -->
@@ -280,6 +307,10 @@
 		gap: 12px;
 		margin-top: 28px;
 		align-self: stretch;
+	}
+
+	.head-sync {
+		margin-top: 14px;
 	}
 
 	.head-pill {
