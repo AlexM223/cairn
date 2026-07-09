@@ -1130,3 +1130,22 @@ db.exec(`
 	);
 	CREATE INDEX IF NOT EXISTS idx_device_keys_user ON device_keys(user_id, fingerprint);
 `);
+
+// Persisted global chain-data snapshot for stale-while-revalidate page loads
+// (single-sig-full-wallet SWR work). ONE singleton row (id pinned to 1) holding
+// the whole tip-view chain dataset the dashboard + explorer pages render —
+// recent blocks, mempool summary, fee estimates, difficulty, mempool-block
+// projections, fee histogram, and backlog trend — as one JSON blob, plus the
+// epoch-ms `last_synced_at`. This is GLOBAL data (not per-user/per-wallet), so a
+// single row is correct; it is a pure performance cache (a missing/corrupt row
+// just falls back to a live refresh), and it is deliberately its OWN table
+// rather than a `settings` k/v row so the (frequently scanned) settings table
+// isn't bloated with a large blob. Written by src/lib/server/chainSync.ts,
+// read synchronously by the retrofitted page load()s (chainSnapshot.ts).
+db.exec(`
+	CREATE TABLE IF NOT EXISTS chain_snapshot (
+		id             INTEGER PRIMARY KEY CHECK (id = 1),
+		data           TEXT NOT NULL,   -- JSON PersistedChainData
+		last_synced_at INTEGER NOT NULL -- epoch milliseconds
+	);
+`);

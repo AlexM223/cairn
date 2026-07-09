@@ -1,34 +1,54 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
+	import { onNewBlock } from '$lib/liveBlocks';
+	import { triggerChainRefresh } from '$lib/chainRefresh';
 	import Icon from '$lib/components/Icon.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
-	import { formatNumber, formatBtc, formatDuration, formatDateTime } from '$lib/format';
+	import { formatNumber, formatBtc, formatDuration, formatDateTime, timeAgo } from '$lib/format';
 	import { blockSubsidy } from '$lib/bitcoin';
 
 	let { data } = $props();
 
-	// Difficulty info + adjustment history are STREAMED (cairn-2zxt.3): the page
-	// chrome (back link, heading, explainer) paints instantly with a skeleton,
-	// then the numbers fill in when the backend answers. loadDifficulty never
-	// rejects — a failure resolves to `error`.
-	type DiffData = Awaited<(typeof data)['difficulty']>;
-	let diff = $state<DiffData | null>(null);
-	$effect(() => {
-		const promise = data.difficulty;
-		let stale = false;
-		void promise.then((d) => {
-			if (!stale) diff = d;
-		});
-		return () => {
-			stale = true;
-		};
+	// Stale-while-revalidate: difficulty info + history render instantly from the
+	// persisted SQLite snapshot load() read (data.difficulty); the client refreshes
+	// it in the background (on mount + on every new block) and invalidate('cairn:chain')
+	// re-runs load() to pick up the fresh snapshot.
+	let diff = $derived(data.difficulty);
+
+	// Background-refresh state driving the "last synced …" indicator.
+	let syncing = $state(false);
+	let syncFailed = $state(false);
+	async function refresh(force = false) {
+		if (syncing) return;
+		syncing = true;
+		const ok = await triggerChainRefresh(force);
+		syncing = false;
+		syncFailed = !ok;
+	}
+	onMount(() => {
+		void refresh();
+		return onNewBlock(() => void refresh(true));
 	});
-	const loading = $derived(diff === null);
+
+	const syncLabel = $derived(
+		syncing
+			? 'updating…'
+			: data.lastSyncedAt
+				? `synced ${timeAgo(Math.floor(data.lastSyncedAt / 1000))}`
+				: ''
+	);
+
+	// Loading = no snapshot yet AND the first refresh hasn't failed.
+	const loading = $derived(diff === null && !syncFailed);
 	const info = $derived(diff?.info ?? null);
 	const history = $derived(diff?.history ?? null);
 	const chainError = $derived(diff?.error ?? null);
+	// Error banner: a stored error, or the first snapshot refresh failing before
+	// anything was ever persisted.
+	const showError = $derived(chainError !== null || (diff === null && syncFailed));
 
 	/** "+3.42%" / "-1.20%" with a fixed number of decimals. */
 	function signedPercent(n: number, dp = 2): string {
@@ -146,6 +166,9 @@
 <div class="head fade-in">
 	<EyebrowBreadcrumb path={['Explorer']} current="Difficulty" />
 	<h1 class="page-title">Difficulty</h1>
+	{#if syncLabel}
+		<span class="sync-status" class:updating={syncing}>{syncLabel}</span>
+	{/if}
 </div>
 
 <HowItWorks id="difficulty">
@@ -163,10 +186,10 @@
 	</p>
 </HowItWorks>
 
-{#if chainError}
+{#if showError}
 	<div class="form-error" role="alert">
-		Can't reach chain data sources — {chainError}.
-		<a href="/explorer/difficulty">Retry</a>
+		Can't reach chain data sources{#if chainError} — {chainError}{/if}.
+		<button type="button" class="retry-link" onclick={() => refresh(true)}>Retry</button>
 	</div>
 {:else if loading}
 	<!-- Streamed placeholder: hero + stat scaffold while difficulty data lands. -->
@@ -396,6 +419,27 @@
 
 	.back:hover {
 		color: var(--accent);
+	}
+
+	/* SWR freshness indicator: muted when idle, copper while refreshing. */
+	.sync-status {
+		font-size: 11px;
+		color: var(--text-faint);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.sync-status.updating {
+		color: var(--accent);
+	}
+
+	.retry-link {
+		background: none;
+		border: none;
+		padding: 0;
+		font: inherit;
+		color: inherit;
+		text-decoration: underline;
+		cursor: pointer;
 	}
 
 	.head {

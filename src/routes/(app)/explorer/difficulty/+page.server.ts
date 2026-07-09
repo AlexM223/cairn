@@ -1,30 +1,23 @@
-import { getChain } from '$lib/server/chain';
-import { chainErrorMessage } from '$lib/server/search';
+import { readChainSnapshot } from '$lib/server/chainSnapshot';
 import type { PageServerLoad } from './$types';
 import type { DifficultyInfo, DifficultyAdjustment } from '$lib/types';
 
-interface DifficultyData {
+export interface DifficultyData {
 	info: DifficultyInfo | null;
 	history: DifficultyAdjustment[] | null;
 	error: string | null;
 }
 
-/** getDifficultyInfo/getDifficultyHistory are Electrum/esplora round-trips
- *  (cairn-2zxt.3) — streamed so the page chrome paints instantly instead of
- *  blocking SSR until the backend answers. Never rejects. */
-async function loadDifficulty(): Promise<DifficultyData> {
-	const chain = getChain();
-	try {
-		const [info, history] = await Promise.all([
-			chain.getDifficultyInfo(),
-			chain.getDifficultyHistory(10).catch(() => null)
-		]);
-		return { info, history, error: null };
-	} catch (e) {
-		return { info: null, history: null, error: chainErrorMessage(e) };
-	}
-}
+export const load: PageServerLoad = async ({ depends }) => {
+	// Re-run after a background chain refresh (invalidate('cairn:chain')).
+	depends('cairn:chain');
 
-export const load: PageServerLoad = async () => {
-	return { difficulty: loadDifficulty() };
+	// Stale-while-revalidate: difficulty info + history come straight from the
+	// persisted chain snapshot (synchronous SQLite read, no live chain call). The
+	// client refreshes it in the background on mount.
+	const snap = readChainSnapshot();
+	const difficulty: DifficultyData | null = snap
+		? { info: snap.data.difficultyInfo, history: snap.data.difficultyHistory, error: null }
+		: null;
+	return { difficulty, lastSyncedAt: snap?.lastSyncedAt ?? null };
 };
