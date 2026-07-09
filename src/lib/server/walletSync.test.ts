@@ -8,6 +8,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
 	singleFlightThrottled,
 	THROTTLE_MS,
+	SCAN_CONCURRENCY,
 	createLimiter,
 	runPortfolioRefreshPass,
 	isConnectClassError,
@@ -20,6 +21,26 @@ import {
 	type WalletSnapshot,
 	type MultisigSnapshot
 } from './walletSync';
+import {
+	DEFAULT_POOL_SIZE,
+	DEFAULT_BACKGROUND_LANE_SIZE,
+	backgroundLaneWidth
+} from './electrum/pool';
+
+describe('SCAN_CONCURRENCY (task 3: decoupled from raw pool size)', () => {
+	it('is pegged to the BACKGROUND-lane width, not DEFAULT_POOL_SIZE', () => {
+		// The whole point of task 3: a future pool-size bump must NOT silently raise
+		// scan pressure. Scans run on the background lane (pool - 1 sockets), so the
+		// concurrency cap tracks that width — not the raw pool size.
+		expect(SCAN_CONCURRENCY).toBe(DEFAULT_BACKGROUND_LANE_SIZE);
+		expect(SCAN_CONCURRENCY).toBe(backgroundLaneWidth(DEFAULT_POOL_SIZE));
+		expect(SCAN_CONCURRENCY).toBe(DEFAULT_POOL_SIZE - 1);
+		// Regression guard: with the pool now at 3, this must be 2 — and explicitly
+		// NOT the pool size (the old coupling that let a pool bump raise scan load).
+		expect(SCAN_CONCURRENCY).toBe(2);
+		expect(SCAN_CONCURRENCY).not.toBe(DEFAULT_POOL_SIZE);
+	});
+});
 
 /** A doScan that resolves only when you call its returned `resolve`, and counts
  *  how many times it was invoked. */

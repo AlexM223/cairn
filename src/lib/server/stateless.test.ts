@@ -115,6 +115,12 @@ function fundMultisigAtZero(): { address: string; fund: { hex: string; txid: str
 				if (r.method === 'blockchain.scripthash.get_history') {
 					return r.params[0] === sh ? [{ tx_hash: fund.txid, height: 800_000 }] : [];
 				}
+				// getMultisigUtxos now batches listunspent via batchRequest (task 4).
+				if (r.method === 'blockchain.scripthash.listunspent') {
+					return r.params[0] === sh
+						? [{ tx_hash: fund.txid, tx_pos: 0, value: 150_000, height: 800_000 }]
+						: [];
+				}
 				return r.params[0] === sh
 					? { confirmed: 150_000, unconfirmed: 0 }
 					: { confirmed: 0, unconfirmed: 0 };

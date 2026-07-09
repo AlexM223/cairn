@@ -9,6 +9,7 @@
 import { getChain } from '../chain/index';
 import { addressToScripthash, scriptPubKeyHex } from './xpub';
 import type { ElectrumBalance, ElectrumHistoryItem } from '../electrum/client';
+import type { ElectrumLane } from '../electrum/pool';
 
 export const GAP_LIMIT = 20;
 const BATCH_SIZE = 20;
@@ -49,7 +50,8 @@ export interface GapScanTx {
  * multisig) — it is the ONLY wallet-type-specific step.
  */
 export async function scanChainAddresses<TExtra extends { address: string }>(
-	deriveAt: (index: number) => TExtra
+	deriveAt: (index: number) => TExtra,
+	lane: ElectrumLane = 'interactive'
 ): Promise<(TExtra & GapScannedFields)[]> {
 	const chain = getChain();
 	const out: (TExtra & GapScannedFields)[] = [];
@@ -65,10 +67,12 @@ export async function scanChainAddresses<TExtra extends { address: string }>(
 
 		const [histories, balances] = await Promise.all([
 			chain.electrum.batchRequest(
-				scripthashes.map((sh) => ({ method: 'blockchain.scripthash.get_history', params: [sh] }))
+				scripthashes.map((sh) => ({ method: 'blockchain.scripthash.get_history', params: [sh] })),
+				lane
 			) as Promise<ElectrumHistoryItem[][]>,
 			chain.electrum.batchRequest(
-				scripthashes.map((sh) => ({ method: 'blockchain.scripthash.get_balance', params: [sh] }))
+				scripthashes.map((sh) => ({ method: 'blockchain.scripthash.get_balance', params: [sh] })),
+				lane
 			) as Promise<ElectrumBalance[]>
 		]);
 
@@ -182,7 +186,8 @@ export async function collectScanTxs(
  * stripped.
  */
 export async function runGapScan<TExtra extends { address: string }>(
-	deriveAt: (chain: 0 | 1, index: number) => TExtra
+	deriveAt: (chain: 0 | 1, index: number) => TExtra,
+	lane: ElectrumLane = 'interactive'
 ): Promise<{
 	scanned: (TExtra & GapScannedFields)[];
 	addresses: (TExtra & Omit<GapScannedFields, 'history' | 'confirmedSats' | 'unconfirmedSats'>)[];
@@ -191,8 +196,8 @@ export async function runGapScan<TExtra extends { address: string }>(
 	unconfirmed: number;
 }> {
 	const [receive, change] = await Promise.all([
-		scanChainAddresses((i) => deriveAt(0, i)),
-		scanChainAddresses((i) => deriveAt(1, i))
+		scanChainAddresses((i) => deriveAt(0, i), lane),
+		scanChainAddresses((i) => deriveAt(1, i), lane)
 	]);
 	const scanned = [...receive, ...change];
 
