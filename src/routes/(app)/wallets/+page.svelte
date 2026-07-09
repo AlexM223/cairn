@@ -5,16 +5,23 @@
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import SyncIndicator from '$lib/components/heartwood/SyncIndicator.svelte';
 	import { formatBtc, formatSats, timeAgo } from '$lib/format';
+	import { portfolioViewState } from '$lib/portfolioViewState';
 	import { SCRIPT_TYPE_LABELS, walletTypeLabel } from './labels';
 
 	let { data } = $props();
 
 	// Stale-while-revalidate (cairn-2zxt): the list renders instantly from
 	// persisted snapshots read synchronously in load() — no Electrum on
-	// navigation. `refresh()` fires each wallet's /refresh endpoint in parallel and,
-	// once they settle, re-invalidates the loader to pick up the fresh snapshots.
+	// navigation. `refresh()` now fires ONE coalesced /api/portfolio/refresh call
+	// (server-side, most-stale-first, capped at the Electrum pool size) instead of
+	// a POST per wallet/multisig — N parallel full scans used to monopolize the
+	// pool and make the whole app unresponsive. Once it settles we re-invalidate
+	// the loader to pick up the fresh snapshots.
 	let syncing = $state(false);
-	const hasSynced = $derived(data.lastSyncedAt !== null);
+	// Set only when the refresh FAILS with nothing cached to fall back on — drives
+	// the explicit "couldn't reach the server" state (never a silently-zeroed
+	// balance). Cleared on any successful refresh; ignored once we have a snapshot.
+	let refreshError = $state(false);
 
 	// One list, two flavors. Single-sig wallets and multisig wallets are merged
 	// into a single hairline-row list (7a's wallet-rows grammar) — the row meta
@@ -53,32 +60,50 @@
 		}))
 	]);
 
+	// Three explicit states, never a silently-zeroed balance (cairn-2zxt): 'ready'
+	// (a snapshot exists), 'first-sync' (never synced, refresh in flight / not yet
+	// failed → skeleton), 'unreachable' (never synced AND refresh failed → retry).
+	const viewState = $derived(
+		portfolioViewState({ lastSyncedAt: data.lastSyncedAt, refreshFailed: refreshError })
+	);
 	// Skeleton only on a true cold first load: we have wallets but none has ever
 	// synced and a refresh is in flight. A returning user (snapshots present) sees
 	// cached rows instantly; a user with no wallets falls straight to the onboard.
-	const loading = $derived(!hasSynced && syncing && items.length > 0);
+	const loading = $derived(viewState === 'first-sync' && items.length > 0);
+	// Cold start where the refresh failed with nothing to show: a retry banner in
+	// place of a fake-zero portfolio.
+	const unreachable = $derived(viewState === 'unreachable' && items.length > 0);
 
 	const totalSats = $derived(
 		items.filter((i) => !i.unreachable).reduce((sum, i) => sum + i.balance, 0)
 	);
 
-	/** Refresh every wallet's snapshot in parallel (each single-flighted +
-	 *  throttled server-side), then re-read the fresh list. Never throws. */
+	/** Fire ONE coalesced portfolio refresh (server-side: most-stale-first, capped
+	 *  at the pool size), then re-read the fresh list. Never throws. Surfaces the
+	 *  'unreachable' state only when the pass failed AND we still have nothing
+	 *  cached — a partial success sets lastSyncedAt and flips us to 'ready'. */
 	async function refresh() {
 		if (syncing) return;
 		syncing = true;
 		try {
-			await Promise.allSettled([
-				...data.wallets.map((w) =>
-					fetch(`/api/wallets/${w.id}/refresh`, { method: 'POST' })
-				),
-				...data.multisigs.map((m) =>
-					fetch(`/api/wallets/multisig/${m.id}/refresh`, { method: 'POST' })
-				)
-			]);
+			const res = await fetch('/api/portfolio/refresh', { method: 'POST' });
+			if (!res.ok) {
+				refreshError = data.lastSyncedAt === null;
+				return;
+			}
+			const summary = (await res.json()) as {
+				refreshed: number;
+				skipped: number;
+				failed: number;
+				aborted: boolean;
+			};
 			await invalidate('cairn:wallets');
+			refreshError =
+				data.lastSyncedAt === null && (summary.aborted || summary.failed > 0);
 		} catch {
-			// Best-effort — keep the cached list up on any failure.
+			// Network error reaching our own endpoint — only an error state if we have
+			// nothing cached to keep showing.
+			refreshError = data.lastSyncedAt === null;
 		} finally {
 			syncing = false;
 		}
@@ -103,8 +128,10 @@
 			</div>
 		{/if}
 
-		{#if !loading && items.length === 0}
+		{#if items.length === 0}
 			<!-- ------------------------------------------- first-run onboard -->
+			<!-- items are the wallet ROWS (present even before any sync), so an empty
+			     list means genuinely no wallets — never a cold-sync placeholder. -->
 			<section class="onboard fade-in">
 				<div class="onboard-icon"><Icon name="wallet" size={26} /></div>
 				<h2 class="onboard-title">Bring your first wallet</h2>
@@ -124,6 +151,36 @@
 					</a>
 				</div>
 			</section>
+		{:else if unreachable}
+			<!-- ------------------------------------------- cold start, refresh failed -->
+			<!-- Never synced AND the refresh failed: show an explicit retry instead of
+			     a silently-zeroed portfolio (cairn-2zxt three-state contract). -->
+			<header class="head">
+				<span class="head-eyebrow">Wallets</span>
+				<div class="head-actions">
+					<a href="/wallets/new" class="btn btn-primary head-pill">
+						<Icon name="plus" size={15} />
+						Add wallet
+					</a>
+				</div>
+			</header>
+			<section class="unreachable-state" role="alert">
+				<div class="unreachable-icon"><Icon name="alert-triangle" size={24} /></div>
+				<h2 class="unreachable-title">Couldn't reach the server</h2>
+				<p class="unreachable-copy">
+					Heartwood couldn't sync your balances with the Bitcoin network just now. Your wallets and
+					their history are safe — this is only about fetching the latest balances.
+				</p>
+				<button type="button" class="btn btn-primary pill-lg" onclick={refresh} disabled={syncing}>
+					{#if syncing}
+						<span class="retry-spinner" aria-hidden="true"></span>
+						Retrying…
+					{:else}
+						<Icon name="refresh" size={15} />
+						Retry
+					{/if}
+				</button>
+			</section>
 		{:else}
 			<!-- ------------------------------------------- eyebrow + hero -->
 			<header class="head">
@@ -132,6 +189,7 @@
 					<div class="head-hero">
 						<span class="hero-number head-btc skeleton">0.0000</span>
 					</div>
+					<p class="head-sub head-first-sync">Syncing with the network for the first time…</p>
 				{:else}
 					<div class="head-hero">
 						<span class="hero-number head-btc" title="{formatSats(totalSats)} sats">
@@ -252,6 +310,70 @@
 	.load-error :global(svg) {
 		flex-shrink: 0;
 		margin-top: 2px;
+	}
+
+	/* --- first-sync + unreachable states (cairn-2zxt three-state contract) --- */
+
+	.head-first-sync {
+		color: var(--accent);
+	}
+
+	.unreachable-state {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 14px;
+		padding: 64px 32px;
+		text-align: center;
+		max-width: 480px;
+		margin: 40px auto 0;
+	}
+
+	.unreachable-icon {
+		width: 52px;
+		height: 52px;
+		border-radius: 50%;
+		background: var(--attention-muted, rgba(214, 138, 92, 0.12));
+		color: var(--attention);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.unreachable-title {
+		font-family: var(--font-serif);
+		font-size: 22px;
+		font-weight: 600;
+		letter-spacing: -0.01em;
+		color: var(--text-hero);
+	}
+
+	.unreachable-copy {
+		color: var(--text-secondary);
+		font-size: 13.5px;
+		line-height: 1.65;
+		max-width: 420px;
+	}
+
+	.retry-spinner {
+		width: 14px;
+		height: 14px;
+		border-radius: 50%;
+		border: 2px solid currentColor;
+		border-top-color: transparent;
+		animation: retry-spin 0.7s linear infinite;
+	}
+
+	@keyframes retry-spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.retry-spinner {
+			animation: none;
+		}
 	}
 
 	/* --- eyebrow + hero --- */

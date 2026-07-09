@@ -486,6 +486,23 @@ db.exec(`
 	);
 `);
 
+// A tiny denormalized `summary` blob written alongside the full snapshot
+// (walletSync.writeSnapshot). The wallets-LIST page only needs balance + last
+// activity per wallet, so listCachedPortfolio reads THIS column instead of
+// SELECTing and JSON.parsing the whole (potentially large — every address +
+// every tx) snapshot for every wallet on each navigation. Nullable + backfilled
+// lazily: rows written by an older release have summary IS NULL, and the read
+// path falls back to deriving from the full snapshot until the next refresh
+// rewrites the row with a summary. Detail pages still read the full snapshot.
+{
+	const snapCols = (
+		db.prepare('PRAGMA table_info(wallet_snapshots)').all() as { name: string }[]
+	).map((c) => c.name);
+	if (!snapCols.includes('summary')) {
+		db.exec('ALTER TABLE wallet_snapshots ADD COLUMN summary TEXT');
+	}
+}
+
 // Address-level labels (see src/lib/server/addressLabels.ts and cairn-nbsx).
 // Complements tx_labels: lets a user annotate WHY an individual address exists
 // ("exchange deposit", "donation address") independent of any single tx. One row

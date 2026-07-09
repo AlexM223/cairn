@@ -379,6 +379,32 @@ export function toMultisigSummary(
 }
 
 /**
+ * Build a list-view MultisigSummary from the small cached balance blob
+ * (walletSync.listCachedPortfolio) instead of a full MultisigScanResult, so the
+ * list never parses the whole snapshot. `bal` is already finalized (lastActivity
+ * computed). Field mapping mirrors toMultisigSummary — keep the two in sync.
+ */
+export function toMultisigSummaryFromCache(
+	multisig: MultisigRow,
+	bal: { confirmed: number; unconfirmed: number; lastActivity: number | null } | null,
+	share?: { role: ShareRole; sharedBy: string }
+): MultisigSummary {
+	return {
+		id: multisig.id,
+		name: multisig.name,
+		threshold: multisig.threshold,
+		totalKeys: multisig.keys.length,
+		scriptType: multisig.scriptType,
+		createdAt: multisig.createdAt,
+		balance: bal?.confirmed ?? 0,
+		unconfirmed: bal?.unconfirmed ?? 0,
+		lastActivity: bal?.lastActivity ?? null,
+		role: share?.role ?? 'owner',
+		sharedBy: share?.sharedBy ?? null
+	};
+}
+
+/**
  * All multisigs the user can see — the ones they own PLUS the ones shared with
  * them as a viewer/cosigner (collaborative custody) — with live balances from
  * (cached) scans. A scan failure never throws: that multisig comes back with
