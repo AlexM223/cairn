@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import HeartwoodMark from '$lib/components/heartwood/HeartwoodMark.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 
@@ -25,6 +26,7 @@
 </svelte:head>
 
 <div class="screen">
+	<GroveField volume="grove" />
 	<div class="card sheet">
 		<div class="sheet-head">
 			<span class="mark-wordmark">
