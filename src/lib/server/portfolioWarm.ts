@@ -18,6 +18,7 @@ import type { MultisigScanResult } from './multisigScan';
 import { scanMultisig, primeMultisigScanCache } from './multisigScan';
 import { listMultisigs } from './wallets/multisig';
 import { loadPersistedScans } from './scanCachePersist';
+import { warmAllSnapshots } from './walletSync';
 
 const log = childLogger('portfolio-warm');
 
@@ -144,7 +145,24 @@ export function startPortfolioWarm(): void {
 	}
 
 	const timer = setTimeout(() => {
-		void warmPortfolioCache().catch((e) => log.error({ err: e }, 'portfolio warm pass failed'));
+		void (async () => {
+			// First warm the in-memory scanWallet/scanMultisig caches (cheap re-scans
+			// for the SWR snapshot pass that follows can then hit them)...
+			try {
+				await warmPortfolioCache();
+			} catch (e) {
+				log.error({ err: e }, 'portfolio warm pass failed');
+			}
+			// ...then persist a real SWR snapshot per wallet/multisig, so the wallets
+			// list / detail pages render an actual balance on the first navigation
+			// after a cold start instead of a zeroed placeholder (cairn-2zxt). Goes
+			// through the same scan semaphore as an interactive refresh.
+			try {
+				await warmAllSnapshots();
+			} catch (e) {
+				log.error({ err: e }, 'snapshot warm pass failed');
+			}
+		})();
 	}, WARM_DELAY_MS);
 	timer.unref?.();
 }

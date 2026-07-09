@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { invalidate } from '$app/navigation';
 	import { copyToClipboard } from '$lib/clipboard';
 	import Icon from '$lib/components/Icon.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
@@ -105,6 +106,33 @@
 		if (scriptType === 'op_return') return 'OP_RETURN';
 		return `Non-standard (${scriptType})`;
 	}
+
+	// "Looking this up" shell: the first-ever fetch of this txid timed out
+	// server-side (slow/unreachable backend) rather than hanging the request. The
+	// slow fetch keeps running and self-persists; poll a bounded number of times —
+	// each invalidate re-runs load(), which finds the now-warm cache and swaps in
+	// the real tx. Bounded so a genuinely dead backend doesn't poll forever.
+	const POLL_INTERVAL_MS = 2000;
+	const MAX_POLLS = 6;
+	let pollAttempts = $state(0);
+	let polledTxid = $state<string | null>(null);
+
+	// Reset the attempt budget whenever we navigate to a different transaction.
+	$effect(() => {
+		if (data.txid !== polledTxid) {
+			polledTxid = data.txid;
+			pollAttempts = 0;
+		}
+	});
+
+	$effect(() => {
+		if (!data.loading || pollAttempts >= MAX_POLLS) return;
+		const timer = setTimeout(() => {
+			pollAttempts += 1;
+			void invalidate('cairn:tx');
+		}, POLL_INTERVAL_MS);
+		return () => clearTimeout(timer);
+	});
 </script>
 
 <svelte:head>
@@ -120,7 +148,13 @@
 			</a>
 		</div>
 
-		{#if tx}
+		{#if data.loading}
+			<div class="empty-state fade-in" role="status" aria-live="polite">
+				<span class="spinner" aria-hidden="true"></span>
+				<span class="empty-title">Looking this up…</span>
+				<span>Fetching this transaction from your node — this can take a moment.</span>
+			</div>
+		{:else if tx}
 		<header class="head fade-in">
 			<EyebrowBreadcrumb path={['Explorer']} current="Transaction" />
 			<h1 class="txid mono"><CopyText value={tx.txid} truncate={18} /></h1>

@@ -486,6 +486,23 @@ db.exec(`
 	);
 `);
 
+// A tiny denormalized `summary` blob written alongside the full snapshot
+// (walletSync.writeSnapshot). The wallets-LIST page only needs balance + last
+// activity per wallet, so listCachedPortfolio reads THIS column instead of
+// SELECTing and JSON.parsing the whole (potentially large — every address +
+// every tx) snapshot for every wallet on each navigation. Nullable + backfilled
+// lazily: rows written by an older release have summary IS NULL, and the read
+// path falls back to deriving from the full snapshot until the next refresh
+// rewrites the row with a summary. Detail pages still read the full snapshot.
+{
+	const snapCols = (
+		db.prepare('PRAGMA table_info(wallet_snapshots)').all() as { name: string }[]
+	).map((c) => c.name);
+	if (!snapCols.includes('summary')) {
+		db.exec('ALTER TABLE wallet_snapshots ADD COLUMN summary TEXT');
+	}
+}
+
 // Address-level labels (see src/lib/server/addressLabels.ts and cairn-nbsx).
 // Complements tx_labels: lets a user annotate WHY an individual address exists
 // ("exchange deposit", "donation address") independent of any single tx. One row
@@ -1168,5 +1185,29 @@ db.exec(`
 		id             INTEGER PRIMARY KEY CHECK (id = 1),
 		data           TEXT NOT NULL,   -- JSON PersistedChainData
 		last_synced_at INTEGER NOT NULL -- epoch milliseconds
+	);
+`);
+
+// Per-transaction hybrid cache for the explorer tx detail page
+// (single-sig-full-wallet SWR). ONE row per txid holding the last-seen decoded
+// transaction (whatever chain.getTx returned) as JSON, plus the epoch-ms
+// `cached_at`. The tx page reads this SYNCHRONOUSLY so it can render AND make its
+// RBF-redirect decision from cached data instantly, instead of blocking first
+// paint on a live Electrum/esplora getTx — the one route the chain_snapshot SWR
+// work above didn't cover (that page's getTx stayed awaited because it drives a
+// 302-to-replacement vs 404 decision). Keyed by txid because a decoded tx is
+// GLOBAL (identical for every user), and its own table rather than a `settings`
+// k/v row because it holds many rows. Safe to cache: a tx's replacement /
+// confirmation status only moves FORWARD, so a stale "found" row is at worst
+// out of date (the background refresh / next visit reconciles it, and the page's
+// live streamed RBF lookup still points at any replacement) — it can never cause
+// a WRONG redirect. Pure performance cache: a missing/corrupt row falls back to a
+// live fetch, so it is never authoritative and is safe to prune. Written +
+// refreshed by src/lib/server/txSnapshot.ts.
+db.exec(`
+	CREATE TABLE IF NOT EXISTS tx_snapshots (
+		txid      TEXT PRIMARY KEY,
+		data      TEXT NOT NULL,    -- JSON TxDetail (last chain.getTx result)
+		cached_at INTEGER NOT NULL  -- epoch milliseconds
 	);
 `);
