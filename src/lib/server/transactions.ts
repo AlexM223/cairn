@@ -21,6 +21,8 @@ import {
 	type UnconfirmedTrust
 } from './bitcoin/psbt';
 import { annotateCoinbase } from './bitcoin/coinbaseScan';
+import type { ElectrumUnspent } from './electrum/client';
+import type { ElectrumLane } from './electrum/pool';
 import { parseXpub, deriveAddress, addressToScripthash } from './bitcoin/xpub';
 import { checkSelectedInputsChainDepth, type ChainDepthWarning } from './chainDepth';
 import { broadcastPackage } from './packageRelay';
@@ -86,25 +88,44 @@ function ownedWallet(userId: number, walletId: number): WalletRow | null {
 	);
 }
 
-/** Live spendable UTXOs for a wallet, attributed to derivation indices. */
-export async function getWalletUtxos(xpub: string): Promise<SpendableUtxo[]> {
+/**
+ * Live spendable UTXOs for a wallet, attributed to derivation indices. `lane`
+ * (default 'interactive') routes the Electrum traffic — the background snapshot
+ * refresh passes 'background'; the send flow uses the interactive default.
+ */
+export async function getWalletUtxos(
+	xpub: string,
+	lane: ElectrumLane = 'interactive'
+): Promise<SpendableUtxo[]> {
 	const chain = getChain();
-	const scan = await scanWallet(xpub);
+	const scan = await scanWallet(xpub, { lane });
 	const candidates = scan.addresses.filter((a) => a.used || a.balance > 0);
+	if (candidates.length === 0) return annotateCoinbase([]);
 
-	const results = await Promise.all(
-		candidates.map(async (addr) => {
-			const unspent = await chain.electrum.listUnspent(addressToScripthash(addr.address));
-			return unspent.map((u) => ({
-				txid: u.tx_hash,
-				vout: u.tx_pos,
-				value: u.value,
-				height: u.height,
-				address: addr.address,
-				chain: (addr.change ? 1 : 0) as 0 | 1,
-				index: addr.index
-			}));
-		})
+	// One batched listunspent for all candidate addresses (real JSON-RPC batching
+	// via the client's batchRequest), NOT N separate .listUnspent() facade calls —
+	// each of those would independently pick() a socket, spraying N requests across
+	// the whole pool; batching pipelines them onto ONE (lane-appropriate) socket in
+	// a single call, so a background scan's UTXO fetch stays inside the background
+	// lane instead of leaking onto the reserved interactive socket.
+	const unspents = (await chain.electrum.batchRequest(
+		candidates.map((addr) => ({
+			method: 'blockchain.scripthash.listunspent',
+			params: [addressToScripthash(addr.address)]
+		})),
+		lane
+	)) as ElectrumUnspent[][];
+
+	const results = candidates.map((addr, i) =>
+		(unspents[i] ?? []).map((u) => ({
+			txid: u.tx_hash,
+			vout: u.tx_pos,
+			value: u.value,
+			height: u.height,
+			address: addr.address,
+			chain: (addr.change ? 1 : 0) as 0 | 1,
+			index: addr.index
+		}))
 	);
 	// Tag mining-reward (coinbase) outputs so the send flow can enforce maturity
 	// and the UI can badge them. Cached, so this is near-free on repeat scans.

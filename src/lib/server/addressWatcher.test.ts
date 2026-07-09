@@ -484,7 +484,7 @@ describe('cairn-mo36: TOCTOU race between existence check and write', () => {
 		pool.emit('scripthash', raceScripthash, 'status-race-baseline');
 
 		await vi.waitFor(() => {
-			expect(pool.getHistory).toHaveBeenCalledWith(raceScripthash);
+			expect(pool.getHistory).toHaveBeenCalledWith(raceScripthash, 'background');
 		});
 
 		expect(notifyMock).not.toHaveBeenCalled();

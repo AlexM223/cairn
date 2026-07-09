@@ -32,7 +32,13 @@ vi.mock('./bitcoin/walletScan', () => ({
 }));
 vi.mock('./chain', () => ({
 	getChain: () => ({
-		electrum: { listUnspent: mocks.listUnspent },
+		electrum: {
+			listUnspent: mocks.listUnspent,
+			// getWalletUtxos now batches listunspent through batchRequest (task 4);
+			// dispatch each sub-request to the same per-scripthash listUnspent mock.
+			batchRequest: (items: { method: string; params: unknown[] }[]) =>
+				Promise.all(items.map((it) => mocks.listUnspent(it.params[0])))
+		},
 		getTx: mocks.getTx,
 		getTxHex: mocks.getTxHex,
 		getTip: mocks.getTip,

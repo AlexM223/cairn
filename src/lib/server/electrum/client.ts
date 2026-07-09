@@ -147,6 +147,16 @@ export class ElectrumClient extends EventEmitter {
 		return `${this.host}:${this.port}`;
 	}
 
+	/**
+	 * Requests currently in flight on this socket (sent, awaiting a reply). The
+	 * pool's lane-aware picker reads it to send an interactive request to the
+	 * least-loaded connection, so a socket a background scan is saturating gets
+	 * steered around (ElectrumPool.pick).
+	 */
+	get pendingCount(): number {
+		return this.pending.size;
+	}
+
 	// ---------------------------------------------------------------- transport
 
 	private ensureConnected(): Promise<void> {
