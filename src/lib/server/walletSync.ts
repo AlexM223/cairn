@@ -25,7 +25,7 @@
 
 import QRCode from 'qrcode';
 import { db } from './db';
-import { DEFAULT_POOL_SIZE } from './electrum/pool';
+import { DEFAULT_BACKGROUND_LANE_SIZE } from './electrum/pool';
 import { childLogger } from './logger';
 import type { WalletAddress, WalletTx, WalletSummary } from '$lib/types';
 import { scanWallet } from './bitcoin/walletScan';
@@ -383,14 +383,21 @@ export function createLimiter(concurrency: number): <T>(fn: () => Promise<T>) =>
 }
 
 /**
- * Global cap on concurrent Electrum-hitting wallet/multisig scans, matched to the
- * Electrum pool size (pool.ts). Without it, opening /wallets with N wallets fired
- * N concurrent full gap-limit scans that monopolized the 2-connection pool and
- * starved interactive requests (building a send, opening a tx) — the leading
- * cause of "the app is unresponsive". Every real scan (list refresh, detail-page
- * refresh, new-block nudge, startup warm) funnels through this one limiter.
+ * Global cap on concurrent Electrum-hitting wallet/multisig scans. Pegged to the
+ * BACKGROUND-LANE width (pool.ts) — the number of sockets a scan may actually
+ * use — NOT the raw pool size. Scans now run on the background lane (see
+ * doWalletScan/doMultisigScan), which is barred from the one socket reserved for
+ * interactive traffic; capping scan concurrency at that same width keeps the
+ * background lane busy without ever having more scans in flight than there are
+ * sockets to serve them. Deliberately decoupled from DEFAULT_POOL_SIZE so a
+ * future pool-size bump doesn't silently raise scan pressure without a deliberate
+ * decision (task 3). Every real scan (list refresh, detail-page refresh,
+ * new-block nudge, startup warm) funnels through this one limiter — the original
+ * reason it exists: without it, opening /wallets with N wallets fired N
+ * concurrent full gap-limit scans that monopolized the pool and starved
+ * interactive requests, the leading cause of "the app is unresponsive".
  */
-export const SCAN_CONCURRENCY = DEFAULT_POOL_SIZE;
+export const SCAN_CONCURRENCY = DEFAULT_BACKGROUND_LANE_SIZE;
 const scanLimit = createLimiter(SCAN_CONCURRENCY);
 
 // -------------------------------------------------------------- single-sig scan
@@ -400,8 +407,10 @@ const scanLimit = createLimiter(SCAN_CONCURRENCY);
  *  rather than persisting an error snapshot over the last good one. */
 async function doWalletScan(userId: number, row: WalletRow): Promise<WalletSnapshot> {
 	// Core scan first — this is the one that must succeed to have anything worth
-	// persisting. A failure here throws (see above).
-	const scan = await scanWallet(row.xpub);
+	// persisting. A failure here throws (see above). Runs on the BACKGROUND lane
+	// so its ~200 pipelined history/balance calls never fill the socket an
+	// interactive request (a send, a tx page) needs (cairn — HOL blocking).
+	const scan = await scanWallet(row.xpub, { lane: 'background' });
 	const receive = await peekReceiveAddress(row);
 	const qr = await QRCode.toDataURL(receive.address, QR_OPTS);
 
@@ -410,7 +419,10 @@ async function doWalletScan(userId: number, row: WalletRow): Promise<WalletSnaps
 	let coinbaseUtxos: CoinbaseUtxo[] = [];
 	let tipHeight = 0;
 	try {
-		const [utxos, tip] = await Promise.all([getWalletUtxos(row.xpub), getChain().getTip()]);
+		const [utxos, tip] = await Promise.all([
+			getWalletUtxos(row.xpub, 'background'),
+			getChain().getTip()
+		]);
 		tipHeight = tip.height;
 		coinbaseUtxos = utxos
 			.filter((u) => u.coinbase)
@@ -473,7 +485,9 @@ export function refreshWalletSnapshot(
 
 /** The real multisig scan. Throws when the core detail scan is unreachable. */
 async function doMultisigScan(userId: number, multisig: MultisigRow): Promise<MultisigSnapshot> {
-	const detail = await getMultisigDetail(multisig);
+	// Background lane: the multisig gap-limit scan + UTXO fetch are bulk work that
+	// must not queue an interactive request behind them (cairn — HOL blocking).
+	const detail = await getMultisigDetail(multisig, 'background');
 	const receive = await peekMultisigReceiveAddress(multisig);
 	const qr = await QRCode.toDataURL(receive.address, QR_OPTS);
 

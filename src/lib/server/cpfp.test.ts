@@ -20,7 +20,13 @@ vi.mock('./chain', () => ({
 	getChain: () => ({
 		getTx: getTxMock,
 		getTxHex: getTxHexMock,
-		electrum: { listUnspent: listUnspentMock }
+		electrum: {
+			listUnspent: listUnspentMock,
+			// getWalletUtxos now batches listunspent through batchRequest (task 4);
+			// dispatch each sub-request to the same per-scripthash listUnspent mock.
+			batchRequest: (items: { method: string; params: unknown[] }[]) =>
+				Promise.all(items.map((it) => listUnspentMock(it.params[0])))
+		}
 	})
 }));
 

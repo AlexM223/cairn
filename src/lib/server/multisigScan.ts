@@ -17,7 +17,8 @@ import { annotateCoinbase } from './bitcoin/coinbaseScan';
 import { addressToScripthash } from './bitcoin/xpub';
 import { getChain } from './chain/index';
 import { GAP_LIMIT, runGapScan, ScanCache, type GapScannedFields } from './bitcoin/gapLimitScanner';
-import type { ElectrumHistoryItem } from './electrum/client';
+import type { ElectrumHistoryItem, ElectrumUnspent } from './electrum/client';
+import type { ElectrumLane } from './electrum/pool';
 import type { SpendableUtxo } from './bitcoin/psbt';
 import { withLock } from './keyedLock';
 import {
@@ -142,12 +143,13 @@ export function multisigAddressDetailAt(
 // ------------------------------------------------------------------- scanning
 
 async function doScan(
-	multisig: MultisigRow
+	multisig: MultisigRow,
+	lane: ElectrumLane
 ): Promise<MultisigScanResult & { scanned: ScannedAddress[] }> {
 	const scan = await runGapScan((chain, index) => ({
 		address: multisigAddressAt(multisig, chain, index),
 		chain
-	}));
+	}), lane);
 
 	// Persist ONLY the public result (never the heavy per-address `scanned`
 	// histories) so a cold restart can serve it instantly. One write, best-effort.
@@ -180,12 +182,15 @@ function cacheKey(multisig: MultisigRow): string {
 
 /** Scan a multisig over Electrum. Results are cached in-process for 60s.
  *  `forceRefresh` skips the cache-hit read (the warm pass uses it to replace a
- *  persisted seed with a live scan). */
+ *  persisted seed with a live scan). `lane` (default 'interactive') routes the
+ *  Electrum traffic — the background snapshot refresh passes 'background'; a
+ *  cache hit ignores it (no Electrum touched). */
 export function scanMultisig(
 	multisig: MultisigRow,
-	opts: { forceRefresh?: boolean } = {}
+	opts: { forceRefresh?: boolean; lane?: ElectrumLane } = {}
 ): Promise<MultisigScanResult> {
-	return scanCache.fetch(cacheKey(multisig), () => doScan(multisig), opts);
+	const lane = opts.lane ?? 'interactive';
+	return scanCache.fetch(cacheKey(multisig), () => doScan(multisig, lane), opts);
 }
 
 /**
@@ -223,34 +228,53 @@ export function invalidateMultisigCache(multisig?: MultisigRow): void {
 
 // ----------------------------------------------------------- send-flow contract
 
-/** Live spendable UTXOs for a multisig, attributed to <chain>/<index>. */
-export async function getMultisigUtxos(multisig: MultisigRow): Promise<SpendableUtxo[]> {
+/** Live spendable UTXOs for a multisig, attributed to <chain>/<index>. `lane`
+ *  (default 'interactive') routes the Electrum traffic. */
+export async function getMultisigUtxos(
+	multisig: MultisigRow,
+	lane: ElectrumLane = 'interactive'
+): Promise<SpendableUtxo[]> {
 	const chainSvc = getChain();
-	const scan = await scanMultisig(multisig);
+	const scan = await scanMultisig(multisig, { lane });
 	const candidates = scan.addresses.filter((a) => a.used || a.balance > 0);
+	if (candidates.length === 0) return annotateCoinbase([]);
 
-	const results = await Promise.all(
-		candidates.map(async (addr) => {
-			const unspent = await chainSvc.electrum.listUnspent(addressToScripthash(addr.address));
-			return unspent.map((u) => ({
-				txid: u.tx_hash,
-				vout: u.tx_pos,
-				value: u.value,
-				height: u.height,
-				address: addr.address,
-				chain: addr.chain,
-				index: addr.index
-			}));
-		})
+	// One batched listunspent for every candidate address (real JSON-RPC batching
+	// via batchRequest), NOT N separate .listUnspent() facade calls — the latter
+	// picks a socket per address, spraying the request across the whole pool;
+	// batching pipelines them onto one lane-appropriate socket in a single call.
+	const unspents = (await chainSvc.electrum.batchRequest(
+		candidates.map((addr) => ({
+			method: 'blockchain.scripthash.listunspent',
+			params: [addressToScripthash(addr.address)]
+		})),
+		lane
+	)) as ElectrumUnspent[][];
+
+	const results = candidates.map((addr, i) =>
+		(unspents[i] ?? []).map((u) => ({
+			txid: u.tx_hash,
+			vout: u.tx_pos,
+			value: u.value,
+			height: u.height,
+			address: addr.address,
+			chain: addr.chain,
+			index: addr.index
+		}))
 	);
 	// Tag mining-reward (coinbase) outputs — maturity enforcement + UI badging.
 	return annotateCoinbase(results.flat());
 }
 
-/** Everything the multisig detail page (and the send flow) needs in one scan. */
-export async function getMultisigDetail(multisig: MultisigRow): Promise<MultisigDetail> {
-	const scan = await scanMultisig(multisig);
-	const utxos = await getMultisigUtxos(multisig);
+/** Everything the multisig detail page (and the send flow) needs in one scan.
+ *  `lane` (default 'interactive') routes the Electrum traffic — the background
+ *  snapshot refresh passes 'background'. */
+export async function getMultisigDetail(
+	multisig: MultisigRow,
+	lane: ElectrumLane = 'interactive'
+): Promise<MultisigDetail> {
+	const scan = await scanMultisig(multisig, { lane });
+	const utxos = await getMultisigUtxos(multisig, lane);
 	return {
 		balance: { confirmed: scan.confirmed, unconfirmed: scan.unconfirmed },
 		utxos,

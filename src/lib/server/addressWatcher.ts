@@ -519,8 +519,8 @@ async function spvVerifyConfirmed(txid: string, height: number): Promise<boolean
 	try {
 		const chain = getChain();
 		const [proof, headerHex, tipHeight] = await Promise.all([
-			chain.electrum.getMerkleProof(txid, height),
-			chain.electrum.getBlockHeader(height),
+			chain.electrum.getMerkleProof(txid, height, 'background'),
+			chain.electrum.getBlockHeader(height, 'background'),
 			tipHeightNow(chain)
 		]);
 
@@ -616,7 +616,7 @@ async function handleScripthashChange(scripthash: string): Promise<void> {
 		const chain = getChain();
 		let history: ElectrumHistoryItem[];
 		try {
-			history = await chain.electrum.getHistory(scripthash);
+			history = await chain.electrum.getHistory(scripthash, 'background');
 		} catch (e) {
 			log.warn({ err: e, walletId: w.walletId }, 'history fetch failed');
 			return;
@@ -976,7 +976,7 @@ async function baselineScripthash(scripthash: string, w: Watched): Promise<numbe
 		`INSERT OR IGNORE INTO notified_txids (wallet_kind, wallet_id, user_id, txid, confirmed)
 		 VALUES (?, ?, ?, ?, 1)`
 	);
-	const history = await chain.electrum.getHistory(scripthash);
+	const history = await chain.electrum.getHistory(scripthash, 'background');
 	// cairn-mo36: the wallet/multisig this scripthash belongs to can be deleted
 	// (deleteWallet/deleteMultisig's unwatch calls, or refreshWatches' periodic
 	// prune) while the getHistory round-trip above was in flight. Every removal

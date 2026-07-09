@@ -16,7 +16,7 @@ const DEFAULTS: InstanceSettings = {
 	electrumPort: 50002,
 	electrumTls: true,
 	electrumTlsInsecure: false,
-	electrumPoolSize: 2,
+	electrumPoolSize: 3,
 	esploraUrl: 'https://mempool.space/api',
 	socks5Host: null,
 	socks5Port: null,

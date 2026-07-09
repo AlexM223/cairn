@@ -5,6 +5,7 @@
 // persisted-scan plumbing.
 
 import type { WalletAddress, WalletTx } from '$lib/types';
+import type { ElectrumLane } from '../electrum/pool';
 import { parseXpub, deriveAddress } from './xpub';
 import { runGapScan, ScanCache } from './gapLimitScanner';
 import {
@@ -24,12 +25,12 @@ export interface WalletScanResult {
 
 // --------------------------------------------------------------------- scanning
 
-async function doScan(xpub: string): Promise<WalletScanResult> {
+async function doScan(xpub: string, lane: ElectrumLane): Promise<WalletScanResult> {
 	const parsed = parseXpub(xpub);
 	const scan = await runGapScan((chain, index) => {
 		const { address, path } = deriveAddress(parsed, chain, index);
 		return { address, derivationPath: path, change: chain === 1 };
-	});
+	}, lane);
 
 	const result: WalletScanResult = {
 		addresses: scan.addresses,
@@ -54,12 +55,19 @@ const scanCache = new ScanCache<WalletScanResult>();
  * `forceRefresh` skips the cache-hit read (but still writes the cache) — the
  * startup warm pass uses it so the persisted seed it just loaded gets replaced
  * with a live scan rather than being served back to itself.
+ *
+ * `lane` (default 'interactive') routes the underlying Electrum traffic: the
+ * background snapshot refresh (walletSync.doWalletScan) passes 'background' so a
+ * scan's pipelined calls never wedge an interactive request; a cache HIT ignores
+ * it (no Electrum touched), which is correct — the scan result is identical
+ * regardless of which lane fetched it.
  */
 export function scanWallet(
 	xpub: string,
-	opts: { forceRefresh?: boolean } = {}
+	opts: { forceRefresh?: boolean; lane?: ElectrumLane } = {}
 ): Promise<WalletScanResult> {
-	return scanCache.fetch(xpub.trim(), () => doScan(xpub.trim()), opts);
+	const lane = opts.lane ?? 'interactive';
+	return scanCache.fetch(xpub.trim(), () => doScan(xpub.trim(), lane), opts);
 }
 
 /**
