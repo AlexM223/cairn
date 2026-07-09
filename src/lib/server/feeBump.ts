@@ -123,6 +123,13 @@ function recipientsJson(recipients: { address: string; amount: number }[]): stri
 	return recipients.length > 1 ? JSON.stringify(recipients) : null;
 }
 
+/** A SQLite UNIQUE-constraint violation (node:sqlite reports it in the message).
+ *  Used to turn the atomic one-replacement-per-original index (db.ts, cairn-yabj)
+ *  into the same 'already_replaced' outcome the sequential existence check gives. */
+function isUniqueViolation(e: unknown): boolean {
+	return e instanceof Error && /unique constraint/i.test(e.message);
+}
+
 /**
  * Build and persist a replace-by-fee (BIP-125) replacement for a
  * broadcast-but-unconfirmed transaction: identical inputs, same recipients and
@@ -162,18 +169,28 @@ export async function executeRbfBump<TDraft, TDetails extends ConstructedSpendDe
 	}
 
 	// One live replacement per original: a second concurrent bump would produce
-	// two drafts fighting over the same inputs.
-	const existing = db
-		.prepare(`SELECT id, status FROM ${spec.table} WHERE ${spec.ownerColumn} = ? AND replaces_txid = ?`)
-		.get(args.ownerId, tx.txid) as { id: number; status: string } | undefined;
-	if (existing) {
-		throw new BumpError(
+	// two drafts fighting over the same inputs. This SELECT is only a friendly
+	// fast-path — it is NOT the real guarantee, because there are awaits (the
+	// confirmation check + buildReplacement) between here and the INSERT below, so
+	// a concurrent bump can pass this check and then race us to insert. The
+	// authoritative guard is the partial UNIQUE index on (owner, replaces_txid)
+	// (db.ts, cairn-yabj); the INSERT's catch maps its violation back through this
+	// same helper, so the racing loser and a sequential second caller both see an
+	// identical 'already_replaced' error.
+	const alreadyReplacedError = (): BumpError | null => {
+		const existing = db
+			.prepare(`SELECT status FROM ${spec.table} WHERE ${spec.ownerColumn} = ? AND replaces_txid = ?`)
+			.get(args.ownerId, tx.txid) as { status: string } | undefined;
+		if (!existing) return null;
+		return new BumpError(
 			existing.status === 'completed'
 				? 'This transaction was already replaced by a fee bump.'
 				: 'A replacement for this transaction is already in progress — finish or discard it first.',
 			'already_replaced'
 		);
-	}
+	};
+	const preExisting = alreadyReplacedError();
+	if (preExisting) throw preExisting;
 
 	// A confirmed transaction is final; there is no fee left to bump. A failed
 	// lookup (mempool eviction, backend outage) does NOT block the bump — a
@@ -247,22 +264,37 @@ export async function executeRbfBump<TDraft, TDetails extends ConstructedSpendDe
 		);
 	}
 
-	const res = db
-		.prepare(
-			`INSERT INTO ${spec.table} (${spec.ownerColumn}, status, psbt, recipient, amount, fee, fee_rate, change_index, replaces_txid, recipients)
-			 VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?)`
-		)
-		.run(
-			args.ownerId,
-			details.psbtBase64,
-			details.recipient,
-			details.amount,
-			details.fee,
-			details.feeRate,
-			details.change?.index ?? null,
-			tx.txid,
-			recipientsJson(details.recipients)
-		);
+	let res;
+	try {
+		res = db
+			.prepare(
+				`INSERT INTO ${spec.table} (${spec.ownerColumn}, status, psbt, recipient, amount, fee, fee_rate, change_index, replaces_txid, recipients)
+				 VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?)`
+			)
+			.run(
+				args.ownerId,
+				details.psbtBase64,
+				details.recipient,
+				details.amount,
+				details.fee,
+				details.feeRate,
+				details.change?.index ?? null,
+				tx.txid,
+				recipientsJson(details.recipients)
+			);
+	} catch (e) {
+		// A concurrent bump won the race and inserted its replacement between our
+		// SELECT above and this INSERT — the partial UNIQUE index (db.ts) refuses
+		// the duplicate. Surface the exact 'already_replaced' error the sequential
+		// path raises; only a genuine constraint violation is treated this way.
+		if (isUniqueViolation(e)) {
+			throw (
+				alreadyReplacedError() ??
+				new BumpError('This transaction was already replaced by a fee bump.', 'already_replaced')
+			);
+		}
+		throw e;
+	}
 
 	const draft = args.reloadDraft(Number(res.lastInsertRowid));
 	if (!draft) throw args.draftSaveError();
