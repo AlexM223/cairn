@@ -65,38 +65,52 @@ export function refreshChainSnapshot(opts: { force?: boolean } = {}): Promise<Ch
 async function doRefresh(current: ChainSnapshotRow | null): Promise<ChainSnapshotRow> {
 	const chain = getChain();
 	try {
-		// `getRecentBlocks` is the required core fetch (its failure means the
-		// backend is unreachable and sends us to the catch); every other sub-fetch
-		// carries its own catch so a backend that lacks one (plain esplora) or a
-		// single flaky lookup degrades that field to null instead of failing the
-		// whole refresh — mirroring the old per-page loaders.
-		const [
-			blocks,
-			mempoolSummary,
-			fees,
-			hashrate,
-			tip,
-			difficultyInfo,
-			difficultyHistory,
-			mempoolBlocks,
-			feeHistogram,
-			mempoolTrend
-		] = await Promise.all([
-			chain.getRecentBlocks(SNAPSHOT_BLOCKS),
-			chain.getMempoolSummary().catch(() => null),
-			chain.getFeeEstimates().catch(() => null),
-			chain.getHashrate().catch(() => null),
-			chain.getTip().catch(() => null),
-			chain.getDifficultyInfo().catch(() => null),
-			chain.getDifficultyHistory(DIFFICULTY_HISTORY).catch(() => null),
-			chain.getMempoolBlocks().catch(() => null),
-			chain.getFeeHistogram().catch(() => null),
-			chain.getMempoolTrend().catch(() => null)
-		]);
+		// Volatile-every-pass fetches + the core tip-bearing ones. `getRecentBlocks`
+		// is the required core fetch (its failure means the backend is unreachable and
+		// sends us to the catch); every other sub-fetch carries its own catch so a
+		// backend that lacks one (plain esplora) or a single flaky lookup degrades
+		// that field to null instead of failing the whole refresh. Mempool summary,
+		// fee estimates, projected blocks, the fee histogram and the backlog trend are
+		// genuinely volatile — they can change within a single block — so they refetch
+		// on every pass.
+		const [blocks, mempoolSummary, fees, tip, mempoolBlocks, feeHistogram, mempoolTrend] =
+			await Promise.all([
+				chain.getRecentBlocks(SNAPSHOT_BLOCKS),
+				chain.getMempoolSummary().catch(() => null),
+				chain.getFeeEstimates().catch(() => null),
+				chain.getTip().catch(() => null),
+				chain.getMempoolBlocks().catch(() => null),
+				chain.getFeeHistogram().catch(() => null),
+				chain.getMempoolTrend().catch(() => null)
+			]);
+
+		const tipHeight = tip?.height ?? blocks[0]?.height ?? null;
+
+		// Epoch-scale data — network hashrate, current difficulty, and the retarget
+		// history chart — only meaningfully changes on a NEW BLOCK / retarget (the
+		// difficulty itself only every ~2 weeks). Refetching it every 20s refresh
+		// cycle wastes 3 Electrum round-trips + CPU for values that are identical
+		// within the same block. So fetch it only when the tip actually advanced since
+		// the last successful refresh; otherwise carry the persisted values forward.
+		// (cairn — Explorer over-fetch.) The first refresh has no `current`, so it
+		// always fetches; a plain-esplora backend that returns null stays null until
+		// the tip moves, exactly as before.
+		let hashrate = current?.data.hashrate ?? null;
+		let difficultyInfo = current?.data.difficultyInfo ?? null;
+		let difficultyHistory = current?.data.difficultyHistory ?? null;
+		const tipUnchanged =
+			current !== null && tipHeight !== null && current.data.tipHeight === tipHeight;
+		if (!tipUnchanged) {
+			[hashrate, difficultyInfo, difficultyHistory] = await Promise.all([
+				chain.getHashrate().catch(() => null),
+				chain.getDifficultyInfo().catch(() => null),
+				chain.getDifficultyHistory(DIFFICULTY_HISTORY).catch(() => null)
+			]);
+		}
 
 		const data: PersistedChainData = {
 			blocks,
-			tipHeight: tip?.height ?? blocks[0]?.height ?? null,
+			tipHeight,
 			tipTime: blocks[0]?.time ?? null,
 			hashrate,
 			mempoolSummary,

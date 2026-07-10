@@ -53,6 +53,8 @@ import {
 } from './multisigScan';
 import { detectMultisigUnconfirmedInflows } from './multisigTransactions';
 import { listSharedMultisigs } from './multisigShares';
+import { assemblePortfolio, type AggregateInput } from './portfolio';
+import { writePortfolioSnapshot } from './portfolioSnapshot';
 
 const log = childLogger('wallet-sync');
 
@@ -705,6 +707,64 @@ export async function runPortfolioRefreshPass(
 }
 
 /**
+ * Recompute and persist the user's dashboard portfolio aggregate
+ * (portfolioSnapshot.ts) FROM the per-wallet snapshots the refresh pass just
+ * rewrote — no extra Electrum work (it reads confirmed/unconfirmed/txs and the
+ * tip height straight out of the persisted snapshots). This is what makes GET
+ * /api/portfolio a synchronous cache read: one coordinated refresh produces both
+ * the per-wallet snapshots AND the dashboard aggregate, rather than the old
+ * second, live-scanning path (getPortfolioDetail) firing on every GET.
+ *
+ * Scope mirrors the historical dashboard exactly: the user's OWN single-sig
+ * wallets + OWN multisigs (not multisigs merely shared WITH them — those show on
+ * the wallets LIST but were never part of the home total). Best-effort; the
+ * caller wraps it so a build hiccup never sinks the refresh response. Exported
+ * for direct testing.
+ */
+export function buildPortfolioAggregate(userId: number): void {
+	const inputs: AggregateInput[] = [];
+	let tipHeight = 0;
+	let walletCount = 0;
+
+	for (const row of listWalletRows(userId)) {
+		walletCount++;
+		const stored = readWalletSnapshot(row.id);
+		const scan = stored?.snapshot.scan;
+		if (!scan) continue; // never synced yet — excluded, understating like a live miss
+		tipHeight = Math.max(tipHeight, stored.snapshot.tipHeight ?? 0);
+		inputs.push({
+			kind: 'wallet',
+			id: row.id,
+			name: row.name,
+			href: `/wallets/${row.id}`,
+			confirmed: scan.confirmed,
+			unconfirmed: scan.unconfirmed,
+			txs: scan.txs
+		});
+	}
+
+	for (const row of listMultisigs(userId)) {
+		walletCount++;
+		const stored = readMultisigSnapshot(row.id);
+		const detail = stored?.snapshot.detail;
+		if (!detail) continue;
+		tipHeight = Math.max(tipHeight, stored.snapshot.tipHeight ?? 0);
+		inputs.push({
+			kind: 'multisig',
+			id: row.id,
+			name: row.name,
+			href: `/wallets/multisig/${row.id}`,
+			confirmed: detail.balance.confirmed,
+			unconfirmed: detail.balance.unconfirmed,
+			txs: detail.history
+		});
+	}
+
+	const aggregate = assemblePortfolio(userId, walletCount, tipHeight, inputs);
+	writePortfolioSnapshot(userId, aggregate, Date.now());
+}
+
+/**
  * ONE coalesced pass over everything the user can see — their wallets, their
  * multisigs, and multisigs shared with them — most-stale-first and capped at
  * SCAN_CONCURRENCY concurrent scans. This replaces the wallets-list page firing
@@ -712,6 +772,11 @@ export async function runPortfolioRefreshPass(
  * could monopolize the pool). Each per-item scan is still single-flighted +
  * throttled, so a detail page refreshing the same wallet coalesces with this
  * pass instead of duplicating its work. Awaits the whole pass; returns counts.
+ *
+ * After the per-wallet snapshots are refreshed, it recomputes the dashboard
+ * portfolio aggregate from those snapshots (buildPortfolioAggregate) so the home
+ * page's GET /api/portfolio is a synchronous cache read — the same single pass
+ * feeds the wallets list AND the dashboard, never two competing scan paths.
  */
 export async function refreshPortfolio(userId: number): Promise<PortfolioRefreshSummary> {
 	const items: PortfolioRefreshItem[] = [];
@@ -738,11 +803,21 @@ export async function refreshPortfolio(userId: number): Promise<PortfolioRefresh
 		if (getViewableMultisig(userId, s.multisigId)) noteMultisig(s.multisigId);
 	}
 
-	return runPortfolioRefreshPass(items, (item) =>
+	const summary = await runPortfolioRefreshPass(items, (item) =>
 		item.kind === 'wallet'
 			? refreshWalletSnapshot(userId, item.id)
 			: refreshMultisigSnapshot(userId, item.id)
 	);
+
+	// Rebuild the dashboard aggregate from the freshly-persisted snapshots. Pure
+	// SQLite work, no chain calls; best-effort so it never sinks the refresh.
+	try {
+		buildPortfolioAggregate(userId);
+	} catch (e) {
+		log.debug({ err: e, userId }, 'portfolio aggregate build failed (ignored)');
+	}
+
+	return summary;
 }
 
 /**
