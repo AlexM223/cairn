@@ -114,6 +114,43 @@ describe('refreshChainSnapshot — throttle', () => {
 	});
 });
 
+describe('refreshChainSnapshot — tiered epoch-data refetch (Explorer over-fetch)', () => {
+	it('does NOT refetch hashrate / difficulty when the tip is unchanged', async () => {
+		await refreshChainSnapshot();
+		expect(h.chain.getHashrate).toHaveBeenCalledTimes(1);
+		expect(h.chain.getDifficultyInfo).toHaveBeenCalledTimes(1);
+		expect(h.chain.getDifficultyHistory).toHaveBeenCalledTimes(1);
+
+		// Force a second pass past the in-flight lock but with the SAME tip (800_000):
+		// the epoch-scale fetches must be skipped and carried forward from the snapshot.
+		await refreshChainSnapshot({ force: true });
+		expect(h.chain.getRecentBlocks).toHaveBeenCalledTimes(2); // core + volatile still refetch
+		expect(h.chain.getMempoolSummary).toHaveBeenCalledTimes(2);
+		expect(h.chain.getHashrate).toHaveBeenCalledTimes(1); // NOT refetched
+		expect(h.chain.getDifficultyInfo).toHaveBeenCalledTimes(1);
+		expect(h.chain.getDifficultyHistory).toHaveBeenCalledTimes(1);
+
+		// The carried-forward values are still present in the persisted snapshot.
+		const row = readChainSnapshot()!;
+		expect(row.data.hashrate).toBe(5e20);
+		expect(row.data.difficultyInfo?.currentDifficulty).toBe(1);
+	});
+
+	it('refetches hashrate / difficulty once the tip advances', async () => {
+		await refreshChainSnapshot();
+		expect(h.chain.getHashrate).toHaveBeenCalledTimes(1);
+
+		// New block: bump both the tip lookup and the recent-blocks height.
+		h.chain.getTip.mockResolvedValueOnce({ height: 800_001, hash: 'a'.repeat(64) });
+		h.state.recent = async () => [{ ...BLOCKS[0], height: 800_001 }];
+
+		await refreshChainSnapshot({ force: true });
+		expect(h.chain.getHashrate).toHaveBeenCalledTimes(2);
+		expect(h.chain.getDifficultyInfo).toHaveBeenCalledTimes(2);
+		expect(h.chain.getDifficultyHistory).toHaveBeenCalledTimes(2);
+	});
+});
+
 describe('refreshChainSnapshot — persistence & failure', () => {
 	it('persists the fetched snapshot and reads it back', async () => {
 		await refreshChainSnapshot();

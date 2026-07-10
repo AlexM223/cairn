@@ -1188,6 +1188,25 @@ db.exec(`
 	);
 `);
 
+// Per-user dashboard portfolio aggregate for stale-while-revalidate home loads.
+// The dashboard's hero balance / allocation / activity used to block on a LIVE
+// Electrum scan of every wallet on every GET /api/portfolio (a 60s in-memory
+// cache was the only guard). Instead, the coalesced background refresh pass
+// (walletSync.refreshPortfolio) now computes this aggregate FROM the per-wallet
+// snapshots it already produced and persists it here; GET /api/portfolio reads
+// this row synchronously and NEVER scans. One row per user (single-row shape,
+// like chain_snapshot but keyed by user_id); a pure cache — a missing/corrupt
+// row just renders the first-sync state until the next refresh writes one.
+// ON DELETE CASCADE cleans it up with the user; wallet deletion needs no touch
+// (the next refresh rebuilds the aggregate from the surviving snapshots).
+db.exec(`
+	CREATE TABLE IF NOT EXISTS portfolio_snapshot (
+		user_id        INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+		detail         TEXT NOT NULL,   -- JSON PortfolioDetail aggregate
+		last_synced_at INTEGER NOT NULL -- epoch milliseconds
+	);
+`);
+
 // Per-transaction hybrid cache for the explorer tx detail page
 // (single-sig-full-wallet SWR). ONE row per txid holding the last-seen decoded
 // transaction (whatever chain.getTx returned) as JSON, plus the epoch-ms

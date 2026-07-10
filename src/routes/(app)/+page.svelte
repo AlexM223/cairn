@@ -10,6 +10,7 @@
 	import AllocationBar from '$lib/components/portfolio/AllocationBar.svelte';
 	import RecentActivity from '$lib/components/portfolio/RecentActivity.svelte';
 	import Sparkline from '$lib/components/portfolio/Sparkline.svelte';
+	import SyncIndicator from '$lib/components/heartwood/SyncIndicator.svelte';
 	import { formatNumber, formatBtc, formatBytes, formatSats, timeAgo } from '$lib/format';
 	import type { PortfolioDetail } from '$lib/types';
 
@@ -75,18 +76,48 @@
 		})
 	);
 
-	// Portfolio loads client-side, once per visit (its own endpoint so block
-	// refreshes don't rescan wallets).
+	// Portfolio is stale-while-revalidate, mirroring the wallets list (cairn —
+	// dashboard SWR): GET /api/portfolio is now a synchronous read of the persisted
+	// aggregate (never a live scan), so it paints instantly. On mount we read that
+	// cached aggregate, then fire ONE coalesced POST /api/portfolio/refresh (the
+	// same server-side pass the wallets list uses — most-stale-first, capped at the
+	// pool size) and, on success, refetch the now-fresh aggregate. A SyncIndicator
+	// shows the freshness, consistent with the rest of the app.
 	let portfolio = $state<PortfolioDetail | null>(null);
+	let portfolioSyncedAt = $state<number | null>(null);
 	let portfolioLoading = $state(false);
+	let portfolioSyncing = $state(false);
+
+	async function loadPortfolio() {
+		const res = await fetch('/api/portfolio');
+		if (!res.ok) return;
+		const body = await res.json();
+		portfolio = body?.portfolio ?? null;
+		portfolioSyncedAt = body?.lastSyncedAt ?? null;
+	}
+
+	async function refreshPortfolio() {
+		if (portfolioSyncing) return;
+		portfolioSyncing = true;
+		try {
+			const res = await fetch('/api/portfolio/refresh', { method: 'POST' });
+			if (res.ok) await loadPortfolio();
+		} catch {
+			/* keep whatever is cached — the indicator just stays stale */
+		} finally {
+			portfolioSyncing = false;
+		}
+	}
+
 	onMount(() => {
 		if (!data.hasWallets) return;
 		portfolioLoading = true;
-		fetch('/api/portfolio')
-			.then((res) => (res.ok ? res.json() : null))
-			.then((body) => (portfolio = body?.portfolio ?? null))
-			.catch(() => (portfolio = null))
-			.finally(() => (portfolioLoading = false));
+		void loadPortfolio()
+			.catch(() => {})
+			.finally(() => {
+				portfolioLoading = false;
+				void refreshPortfolio();
+			});
 	});
 
 	// --- hide-balance eye toggle (7a) — persisted, hero-scoped ---
@@ -288,7 +319,7 @@
 					</button>
 				</div>
 
-				{#if portfolioLoading && !portfolio}
+				{#if (portfolioLoading || portfolioSyncing) && !portfolio}
 					<div class="hero-amount-row">
 						<span class="hero-number hero-amount skeleton">0.0000</span>
 					</div>
@@ -350,6 +381,12 @@
 						<Icon name="arrow-down-left" size={16} /> Receive
 					</a>
 				</div>
+
+				{#if portfolio || portfolioSyncing}
+					<div class="hero-sync">
+						<SyncIndicator lastSyncedAt={portfolioSyncedAt} syncing={portfolioSyncing} />
+					</div>
+				{/if}
 			</header>
 
 			{#if portfolio}
@@ -705,6 +742,12 @@
 		padding: 0 30px;
 		font-size: 15px;
 		font-weight: 600;
+	}
+
+	/* SWR freshness for the portfolio aggregate — same quiet indicator the wallets
+	   list uses, so the dashboard reads as consistent. */
+	.hero-sync {
+		margin-top: 16px;
 	}
 
 	/* --- chart --- */
