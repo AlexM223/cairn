@@ -86,10 +86,10 @@ function confirmationsOf(height: number, tipHeight: number): number {
 }
 
 /** Newest activity: latest confirmed tx time, or "now" if anything is pending. */
-function lastActivityOf(scan: WalletScanResult | MultisigScanResult): number | null {
+function lastActivityOf(txs: { height: number; time: number | null }[]): number | null {
 	let latest: number | null = null;
 	let pending = false;
-	for (const tx of scan.txs) {
+	for (const tx of txs) {
 		if (tx.height <= 0) pending = true;
 		else if (tx.time != null) latest = Math.max(latest ?? 0, tx.time);
 	}
@@ -164,23 +164,63 @@ export function recordSnapshot(
 }
 
 /**
+ * How far back the balance-over-time series reads. Bounds the rows a single
+ * computation reads (and carries forward in JS) so the series can never grow
+ * unbounded and block the event loop on a busy account (cairn — dashboard
+ * event-loop blocking). Aligned with the retention horizon (dataRetention
+ * purgeBalanceSnapshots hard-deletes past ~13 months), so in practice this
+ * window already covers every retained row — it just makes the bound explicit
+ * and keeps the read cheap if retention is ever relaxed. The 30d/1yr lookback
+ * changes (changesFromSeries) sit comfortably inside it.
+ */
+const BALANCE_SERIES_WINDOW_MS = 400 * 24 * 60 * 60 * 1000;
+
+/** Hard cap on the number of points the chart series carries. A busy account
+ *  accumulates up to ~1,000 hourly/daily snapshot rows PER wallet; emitting one
+ *  point per distinct timestamp would send (and JSON-serialize into the persisted
+ *  aggregate) thousands of points for a chart that only renders a few hundred
+ *  pixels wide. Downsample to this many, always preserving the newest point so
+ *  the chart's latest value matches the live balance. */
+const MAX_BALANCE_SERIES_POINTS = 400;
+
+/**
+ * Stride-downsample an oldest-first series to at most `max` points, always
+ * keeping the first and last. A no-op when already within the cap. Exported for
+ * direct testing.
+ */
+export function downsampleSeries(series: BalancePoint[], max: number): BalancePoint[] {
+	if (max < 2 || series.length <= max) return series;
+	const out: BalancePoint[] = [];
+	const stride = (series.length - 1) / (max - 1);
+	for (let i = 0; i < max - 1; i++) out.push(series[Math.round(i * stride)]);
+	out.push(series[series.length - 1]); // always keep the newest point exactly
+	return out;
+}
+
+/**
  * Total confirmed sats over time (oldest first). Snapshot rows are per wallet
  * and — since historical backfill — NOT taken at shared timestamps, so the
  * total at each instant is the sum of every wallet's latest-known balance
  * (carry-forward), not a naive GROUP BY taken_at. Rows for since-deleted
  * wallets are excluded, matching what the retention sweep does permanently.
+ *
+ * Reads are bounded two ways so a large history never blocks the event loop:
+ * only rows within BALANCE_SERIES_WINDOW_MS are read, and the emitted series is
+ * downsampled to MAX_BALANCE_SERIES_POINTS.
  */
-export function getBalanceSeries(userId: number): BalancePoint[] {
+export function getBalanceSeries(userId: number, nowMs: number = Date.now()): BalancePoint[] {
+	const cutoffIso = new Date(nowMs - BALANCE_SERIES_WINDOW_MS).toISOString();
 	const rows = db
 		.prepare(
 			`SELECT wallet_kind, wallet_id, taken_at, balance_sats
 			 FROM balance_snapshots
 			 WHERE user_id = ?
+			   AND taken_at >= ?
 			   AND ((wallet_kind = 'wallet' AND wallet_id IN (SELECT id FROM wallets))
 			     OR (wallet_kind = 'multisig' AND wallet_id IN (SELECT id FROM multisigs)))
 			 ORDER BY taken_at ASC, id ASC`
 		)
-		.all(userId) as {
+		.all(userId, cutoffIso) as {
 		wallet_kind: string;
 		wallet_id: number;
 		taken_at: string;
@@ -201,7 +241,7 @@ export function getBalanceSeries(userId: number): BalancePoint[] {
 		latest.set(`${r.wallet_kind}-${r.wallet_id}`, r.balance_sats);
 	}
 	if (current !== null) emit(current);
-	return out;
+	return downsampleSeries(out, MAX_BALANCE_SERIES_POINTS);
 }
 
 // ------------------------------------------------------------------- backfill
@@ -278,18 +318,24 @@ export function buildBackfillPoints(
  * One-time per wallet: if it has no snapshot rows at all, write its derived
  * history. Guarded by row existence, so subsequent scans cost one SELECT.
  */
-function backfillSnapshots(userId: number, w: ScannedWallet): void {
+function backfillSnapshots(
+	userId: number,
+	kind: WalletKind,
+	id: number,
+	txs: { height: number; time: number | null; delta: number }[],
+	confirmedBalance: number
+): void {
 	const existing = db
 		.prepare(
 			'SELECT 1 FROM balance_snapshots WHERE user_id = ? AND wallet_kind = ? AND wallet_id = ? LIMIT 1'
 		)
-		.get(userId, w.kind, w.id);
+		.get(userId, kind, id);
 	if (existing) return;
 
-	const points = buildBackfillPoints(w.scan.txs, w.scan.confirmed, Date.now());
+	const points = buildBackfillPoints(txs, confirmedBalance, Date.now());
 	if (points === null) {
 		log.warn(
-			{ kind: w.kind, walletId: w.id },
+			{ kind, walletId: id },
 			'balance backfill skipped: tx history cannot reconstruct the confirmed balance'
 		);
 		return;
@@ -302,10 +348,10 @@ function backfillSnapshots(userId: number, w: ScannedWallet): void {
 	db.prepare('BEGIN').run();
 	try {
 		for (const p of points) {
-			insert.run(userId, w.kind, w.id, new Date(p.t * 1000).toISOString(), p.sats);
+			insert.run(userId, kind, id, new Date(p.t * 1000).toISOString(), p.sats);
 		}
 		db.prepare('COMMIT').run();
-		log.info({ kind: w.kind, walletId: w.id, points: points.length }, 'balance history backfilled');
+		log.info({ kind, walletId: id, points: points.length }, 'balance history backfilled');
 	} catch (err) {
 		db.prepare('ROLLBACK').run();
 		throw err;
@@ -353,10 +399,125 @@ function changesFromSeries(
 // ------------------------------------------------------------------ aggregate
 
 /**
- * The full dashboard portfolio. Scans every wallet concurrently (cached
- * per-xpub / per-descriptor), records a snapshot when everything is reachable,
- * and assembles allocation, recent activity, the balance series, sparklines,
- * and lookback changes.
+ * One fully-scanned wallet, reduced to exactly what the aggregate needs. The
+ * dashboard is "all your bitcoin at a glance", so both flavors collapse to the
+ * same shape: a confirmed/unconfirmed balance plus the tx list (for allocation,
+ * recent activity, and first-scan backfill). Produced two ways — live in
+ * getPortfolioDetail, and (the SWR path) from persisted per-wallet snapshots in
+ * walletSync.buildPortfolioAggregate.
+ */
+export interface AggregateInput {
+	kind: WalletKind;
+	id: number;
+	name: string;
+	href: string;
+	confirmed: number;
+	unconfirmed: number;
+	txs: { txid: string; height: number; time: number | null; delta: number }[];
+}
+
+/**
+ * Assemble the dashboard portfolio from already-scanned wallets — the pure
+ * aggregation half, with NO Electrum work of its own. Records a snapshot when
+ * every wallet was reachable, back-fills first-scan history, and builds
+ * allocation, recent activity, the (bounded, downsampled) balance series,
+ * sparklines, and lookback changes.
+ *
+ * `walletCount` is the number of wallets the user HAS (so scannedCount <
+ * walletCount signals a partial outage); `scanned` carries only the ones that
+ * produced data. This runs OFF the request-serving path — in the background
+ * refresh pass — so its synchronous SQLite work (backfill, recordSnapshot,
+ * getBalanceSeries) never blocks a GET (cairn — dashboard event-loop blocking).
+ */
+export function assemblePortfolio(
+	userId: number,
+	walletCount: number,
+	tipHeight: number,
+	scanned: AggregateInput[]
+): PortfolioDetail {
+	let confirmed = 0;
+	let unconfirmed = 0;
+	const allocation: AllocationSlice[] = [];
+	const activity: PortfolioActivity[] = [];
+	const snapshotEntries: { kind: WalletKind; id: number; balance: number }[] = [];
+
+	for (const w of scanned) {
+		// First-ever scan of this wallet: derive its balance history from the
+		// tx list so an imported wallet charts from day one (cairn-ittq).
+		try {
+			backfillSnapshots(userId, w.kind, w.id, w.txs, w.confirmed);
+		} catch (err) {
+			log.warn({ err, kind: w.kind, walletId: w.id }, 'balance history backfill failed');
+		}
+		confirmed += w.confirmed;
+		unconfirmed += w.unconfirmed;
+		const key = `${w.kind}-${w.id}`;
+		allocation.push({
+			key,
+			kind: w.kind,
+			id: w.id,
+			name: w.name,
+			href: w.href,
+			balance: w.confirmed,
+			lastActivity: lastActivityOf(w.txs)
+		});
+		snapshotEntries.push({ kind: w.kind, id: w.id, balance: w.confirmed });
+		for (const tx of w.txs) {
+			activity.push({
+				key: `${key}-${tx.txid}`,
+				walletName: w.name,
+				walletHref: w.href,
+				txid: tx.txid,
+				direction: tx.delta >= 0 ? 'in' : 'out',
+				sats: Math.abs(tx.delta),
+				time: tx.time,
+				confirmations: confirmationsOf(tx.height, tipHeight)
+			});
+		}
+	}
+
+	// Newest first: unconfirmed (no time) ahead of confirmed, then by time desc.
+	activity.sort((a, b) => {
+		if (a.time === null && b.time === null) return 0;
+		if (a.time === null) return -1;
+		if (b.time === null) return 1;
+		return b.time - a.time;
+	});
+	// Largest allocation first so the bar/donut reads big-to-small.
+	allocation.sort((a, b) => b.balance - a.balance);
+
+	// Only snapshot a complete picture, so the summed total series never dips
+	// just because one wallet was briefly unreachable.
+	if (walletCount > 0 && scanned.length === walletCount) {
+		try {
+			recordSnapshot(userId, snapshotEntries);
+		} catch {
+			/* snapshots are best-effort; never fail the dashboard over one */
+		}
+	}
+
+	const balanceSeries = getBalanceSeries(userId);
+	return {
+		walletCount,
+		scannedCount: scanned.length,
+		confirmed,
+		unconfirmed,
+		allocation,
+		recentActivity: activity.slice(0, 10),
+		balanceSeries,
+		sparklines: getSparklines(userId),
+		change: changesFromSeries(balanceSeries, confirmed)
+	};
+}
+
+/**
+ * The full dashboard portfolio, computed by LIVE-scanning every wallet
+ * concurrently (cached per-xpub / per-descriptor). Retained for the warm/test
+ * paths; the request-serving GET /api/portfolio no longer calls this — it reads
+ * the persisted aggregate (portfolioSnapshot.ts) produced by the coalesced
+ * background refresh pass (walletSync), which builds the same PortfolioDetail
+ * from the per-wallet snapshots it already scanned, so there is one coordinated
+ * refresh rather than a second competing scan path.
  */
 export async function getPortfolioDetail(userId: number): Promise<PortfolioDetail> {
 	const wallets = db
@@ -422,80 +583,19 @@ export async function getPortfolioDetail(userId: number): Promise<PortfolioDetai
 		)
 	]);
 
-	let confirmed = 0;
-	let unconfirmed = 0;
-	let scannedCount = 0;
-	const allocation: AllocationSlice[] = [];
-	const activity: PortfolioActivity[] = [];
-	const snapshotEntries: { kind: WalletKind; id: number; balance: number }[] = [];
-
+	const inputs: AggregateInput[] = [];
 	for (const w of scanned) {
 		if (!w) continue;
-		scannedCount++;
-		// First-ever scan of this wallet: derive its balance history from the
-		// tx list so an imported wallet charts from day one (cairn-ittq).
-		try {
-			backfillSnapshots(userId, w);
-		} catch (err) {
-			log.warn({ err, kind: w.kind, walletId: w.id }, 'balance history backfill failed');
-		}
-		confirmed += w.scan.confirmed;
-		unconfirmed += w.scan.unconfirmed;
-		const key = `${w.kind}-${w.id}`;
-		allocation.push({
-			key,
+		inputs.push({
 			kind: w.kind,
 			id: w.id,
 			name: w.name,
 			href: w.href,
-			balance: w.scan.confirmed,
-			lastActivity: lastActivityOf(w.scan)
+			confirmed: w.scan.confirmed,
+			unconfirmed: w.scan.unconfirmed,
+			txs: w.scan.txs
 		});
-		snapshotEntries.push({ kind: w.kind, id: w.id, balance: w.scan.confirmed });
-		for (const tx of w.scan.txs) {
-			activity.push({
-				key: `${key}-${tx.txid}`,
-				walletName: w.name,
-				walletHref: w.href,
-				txid: tx.txid,
-				direction: tx.delta >= 0 ? 'in' : 'out',
-				sats: Math.abs(tx.delta),
-				time: tx.time,
-				confirmations: confirmationsOf(tx.height, tipHeight)
-			});
-		}
 	}
 
-	// Newest first: unconfirmed (no time) ahead of confirmed, then by time desc.
-	activity.sort((a, b) => {
-		if (a.time === null && b.time === null) return 0;
-		if (a.time === null) return -1;
-		if (b.time === null) return 1;
-		return b.time - a.time;
-	});
-	// Largest allocation first so the bar/donut reads big-to-small.
-	allocation.sort((a, b) => b.balance - a.balance);
-
-	// Only snapshot a complete picture, so the summed total series never dips
-	// just because one wallet was briefly unreachable.
-	if (walletCount > 0 && scannedCount === walletCount) {
-		try {
-			recordSnapshot(userId, snapshotEntries);
-		} catch {
-			/* snapshots are best-effort; never fail the dashboard over one */
-		}
-	}
-
-	const balanceSeries = getBalanceSeries(userId);
-	return {
-		walletCount,
-		scannedCount,
-		confirmed,
-		unconfirmed,
-		allocation,
-		recentActivity: activity.slice(0, 10),
-		balanceSeries,
-		sparklines: getSparklines(userId),
-		change: changesFromSeries(balanceSeries, confirmed)
-	};
+	return assemblePortfolio(userId, walletCount, tipHeight, inputs);
 }
