@@ -1,12 +1,17 @@
 // Regression tests for cairn-a0nb: the ChainService facade (chain/index.ts) had
-// zero test coverage. Pins down the facade's mapping/normalization logic against
-// a stubbed Esplora backend: getTx (toTxDetail — confirmations from the tip,
-// vout scriptPubKey passthrough, fee-rate/segwit/RBF derivation), getTip,
-// fee-estimate normalization (both mempool.space /v1 and plain-esplora shapes),
-// address lookup, block lookup, and the outspends degrade-to-null error path.
+// zero test coverage. Pins down the facade's mapping/normalization logic. getTx
+// and getBlock still run against a stubbed Esplora backend (toTxDetail —
+// confirmations from the tip, vout scriptPubKey passthrough, fee-rate/segwit/RBF
+// derivation — and the outspends degrade-to-null path). The chain views migrated
+// off esplora onto the operator's own Electrum server (cairn-zoz8.1/.3/.5/.6) —
+// getTip, getRecentBlocks, getFeeEstimates, getDifficultyInfo/History, getHashrate,
+// getAddressInfo/getAddressTxs — run against a stubbed Electrum pool instead.
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import type { EsploraAddress, EsploraBlock, EsploraTx } from './esplora';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
+import type { EsploraBlock, EsploraTx } from './esplora';
+import { scriptPubKeyHex, addressToScripthash } from '../bitcoin/xpub';
 
 // Keep the ChainService constructor side-effect free: no Electrum sockets, no
 // activity-feed wiring, no package-relay probing. The esplora client itself is
@@ -27,7 +32,6 @@ vi.mock('../packageRelay', () => ({ resetPackageRelaySupport: vi.fn() }));
 vi.mock('../activity', () => ({ recordActivity: vi.fn() }));
 
 import { ChainService } from './index';
-import { EsploraApi } from './esplora';
 import { resetChainCaches, invalidateTipCache } from './cache';
 
 // ---- fixtures -----------------------------------------------------------------
@@ -109,6 +113,67 @@ const BLOCK: EsploraBlock = {
 	difficulty: 9.5e13
 };
 
+/** Compact target for difficulty exactly 1 (the genesis block's nBits). */
+const GENESIS_BITS = 0x1d00ffff;
+
+/** Build an 80-byte Bitcoin block header, hex-encoded, matching the field layout
+ *  chain/index.ts's decodeBlockHeader expects (version/prevhash/merkleroot/time/
+ *  bits/nonce, hashes stored little-endian internally). */
+function buildHeader(opts: {
+	time: number;
+	bits: number;
+	version?: number;
+	prevHash?: string;
+	merkleRoot?: string;
+	nonce?: number;
+}): string {
+	const buf = Buffer.alloc(80);
+	buf.writeInt32LE(opts.version ?? 0x20000000, 0);
+	Buffer.from(opts.prevHash ?? '00'.repeat(32), 'hex')
+		.reverse()
+		.copy(buf, 4);
+	Buffer.from(opts.merkleRoot ?? '11'.repeat(32), 'hex')
+		.reverse()
+		.copy(buf, 36);
+	buf.writeUInt32LE(opts.time, 68);
+	buf.writeUInt32LE(opts.bits, 72);
+	buf.writeUInt32LE(opts.nonce ?? 0, 76);
+	return buf.toString('hex');
+}
+
+/** Double-sha256 of the header, byte-reversed — an independent re-derivation of
+ *  chain/index.ts's blockHashFromHeader, so the expected value isn't just an echo
+ *  of the code under test. */
+function headerHash(hex: string): string {
+	const hash = sha256(sha256(hexToBytes(hex)));
+	return bytesToHex(Uint8Array.from(hash).reverse());
+}
+
+/** Independent re-derivation of chain/index.ts's bitsToDifficulty (Bitcoin Core's
+ *  GetDifficulty), used to compute expected values for the difficulty tests below
+ *  without just re-running the implementation under test. */
+function diffFromBits(bits: number): number {
+	const exponent = bits >>> 24;
+	const mantissa = bits & 0x007fffff;
+	return (0xffff / mantissa) * Math.pow(2, 8 * (0x1d - exponent));
+}
+
+interface ElectrumStub {
+	headersSubscribe: ReturnType<typeof vi.fn>;
+	getBlockHeader: ReturnType<typeof vi.fn>;
+	estimateFee: ReturnType<typeof vi.fn>;
+	getBalance: ReturnType<typeof vi.fn>;
+	getHistory: ReturnType<typeof vi.fn>;
+	getTransaction: ReturnType<typeof vi.fn>;
+}
+
+/** Install stubbed Electrum methods onto a ChainService's pooled facade
+ *  (readonly is TS-only) — mirrors the existing withElectrum pattern already used
+ *  for getTxHex/getFeeHistogram below. */
+function withElectrum(svc: ChainService, patch: Partial<ElectrumStub>): void {
+	Object.assign(svc.electrum, patch);
+}
+
 interface EsploraStub {
 	getTipHeight: ReturnType<typeof vi.fn>;
 	getTipHash: ReturnType<typeof vi.fn>;
@@ -155,35 +220,102 @@ afterEach(() => {
 	resetChainCaches();
 });
 
-// ---- tip ------------------------------------------------------------------------
+// ---- tip (electrum-backed, cairn-zoz8.5) -----------------------------------------
 
+// getTip now derives height+hash from headersSubscribe (the same source
+// getNodeInfo already used) instead of a third-party esplora HTTP API.
 describe('getTip', () => {
-	it('combines tip height and hash from the backend', async () => {
+	function withHeader(height: number, hex: string): { svc: ChainService; headersSubscribe: ReturnType<typeof vi.fn> } {
 		const svc = makeService(makeEsploraStub());
-		await expect(svc.getTip()).resolves.toEqual({ height: TIP_HEIGHT, hash: TIP_HASH });
+		const headersSubscribe = vi.fn(async () => ({ height, hex }));
+		withElectrum(svc, { headersSubscribe });
+		return { svc, headersSubscribe };
+	}
+
+	it('derives height+hash from electrum headersSubscribe', async () => {
+		const hex = buildHeader({ time: 1_700_000_000, bits: GENESIS_BITS });
+		const { svc, headersSubscribe } = withHeader(TIP_HEIGHT, hex);
+
+		await expect(svc.getTip()).resolves.toEqual({ height: TIP_HEIGHT, hash: headerHash(hex) });
+		expect(headersSubscribe).toHaveBeenCalledTimes(1);
 	});
 
-	it('serves a second lookup from the TTL cache without re-hitting the backend', async () => {
-		const stub = makeEsploraStub();
-		const svc = makeService(stub);
+	it('serves a second lookup from the TTL cache without re-hitting electrum', async () => {
+		const hex = buildHeader({ time: 1_700_000_000, bits: GENESIS_BITS });
+		const { svc, headersSubscribe } = withHeader(TIP_HEIGHT, hex);
 
 		await svc.getTip();
 		await svc.getTip();
 
-		// One navigation (or several tabs) shares a single slow esplora round-trip.
-		expect(stub.getTipHeight).toHaveBeenCalledTimes(1);
-		expect(stub.getTipHash).toHaveBeenCalledTimes(1);
+		// One navigation (or several tabs) shares a single Electrum round-trip.
+		expect(headersSubscribe).toHaveBeenCalledTimes(1);
 	});
 
 	it('re-fetches after invalidateTipCache (the new-block signal)', async () => {
-		const stub = makeEsploraStub();
-		const svc = makeService(stub);
+		const hex = buildHeader({ time: 1_700_000_000, bits: GENESIS_BITS });
+		const { svc, headersSubscribe } = withHeader(TIP_HEIGHT, hex);
 
 		await svc.getTip();
 		invalidateTipCache(); // fired from the chainEvents 'header' handler on a new block
 		await svc.getTip();
 
-		expect(stub.getTipHeight).toHaveBeenCalledTimes(2);
+		expect(headersSubscribe).toHaveBeenCalledTimes(2);
+	});
+});
+
+// ---- recent blocks (electrum-backed, cairn-zoz8.5) -------------------------------
+
+describe('getRecentBlocks', () => {
+	it('fetches `limit` headers ending at fromHeight, newest first, decoding only what a bare header carries', async () => {
+		const svc = makeService(makeEsploraStub());
+		const headersByHeight = new Map<number, string>();
+		for (let h = 800; h <= 805; h++) {
+			headersByHeight.set(h, buildHeader({ time: 1_700_000_000 + h, bits: GENESIS_BITS }));
+		}
+		const getBlockHeader = vi.fn(async (h: number) => {
+			const hex = headersByHeight.get(h);
+			if (!hex) throw new Error(`no header stubbed for height ${h}`);
+			return hex;
+		});
+		withElectrum(svc, { getBlockHeader });
+
+		const blocks = await svc.getRecentBlocks(3, 805);
+
+		expect(blocks.map((b) => b.height)).toEqual([805, 804, 803]);
+		expect(getBlockHeader).toHaveBeenCalledTimes(3);
+		expect(blocks[0].hash).toBe(headerHash(headersByHeight.get(805)!));
+		expect(blocks[0].time).toBe(1_700_000_000 + 805);
+		// tx_count/size/weight/fee stats aren't derivable from a bare header alone
+		// (cairn-zoz8.10 enriches these via Bitcoin Core RPC when configured).
+		expect(blocks[0]).toMatchObject({
+			txCount: 0,
+			size: 0,
+			weight: 0,
+			medianFee: null,
+			feeRange: null
+		});
+	});
+
+	it('derives fromHeight from the current tip when omitted', async () => {
+		const svc = makeService(makeEsploraStub());
+		const hex = buildHeader({ time: 1_700_000_000, bits: GENESIS_BITS });
+		const headersSubscribe = vi.fn(async () => ({ height: 5, hex }));
+		const getBlockHeader = vi.fn(async () => hex);
+		withElectrum(svc, { headersSubscribe, getBlockHeader });
+
+		const blocks = await svc.getRecentBlocks(2);
+		expect(blocks.map((b) => b.height)).toEqual([5, 4]);
+	});
+
+	it('clamps the count near genesis instead of requesting a negative height', async () => {
+		const svc = makeService(makeEsploraStub());
+		const hex = buildHeader({ time: 1_700_000_000, bits: GENESIS_BITS });
+		const getBlockHeader = vi.fn(async () => hex);
+		withElectrum(svc, { getBlockHeader });
+
+		const blocks = await svc.getRecentBlocks(10, 1);
+		expect(blocks.map((b) => b.height)).toEqual([1, 0]);
+		expect(getBlockHeader).toHaveBeenCalledTimes(2);
 	});
 });
 
@@ -336,119 +468,324 @@ describe('getTxHex (Electrum raw-hex path)', () => {
 	});
 });
 
-// ---- fee estimates -----------------------------------------------------------------
+// ---- fee estimates (electrum-backed, cairn-zoz8.1) --------------------------------
 
-// The normalization itself lives in EsploraApi.getFeeEstimates (the facade
-// delegates), so these run the REAL EsploraApi against a stubbed global fetch —
-// one test per backend shape.
-describe('fee estimate normalization', () => {
-	function stubFetchRoutes(routes: Record<string, { status: number; body: unknown }>): void {
-		vi.stubGlobal(
-			'fetch',
-			vi.fn(async (url: unknown) => {
-				const u = String(url);
-				const key = Object.keys(routes).find((k) => u.includes(k));
-				if (!key) throw new Error(`unexpected fetch: ${u}`);
-				const r = routes[key];
-				return {
-					status: r.status,
-					ok: r.status >= 200 && r.status < 300,
-					text: async () => (typeof r.body === 'string' ? r.body : JSON.stringify(r.body))
-				};
-			})
-		);
+// getFeeEstimates now reads blockchain.estimatefee at 4 targets from the
+// operator's own Electrum server instead of a third-party esplora HTTP API.
+describe('getFeeEstimates', () => {
+	function withFees(byTarget: Record<number, number>): {
+		svc: ChainService;
+		estimateFee: ReturnType<typeof vi.fn>;
+	} {
+		const svc = makeService(makeEsploraStub());
+		const estimateFee = vi.fn(async (n: number) => byTarget[n]);
+		withElectrum(svc, { estimateFee });
+		return { svc, estimateFee };
 	}
 
-	it('maps a mempool.space /v1/fees/recommended payload to the normalized shape', async () => {
-		stubFetchRoutes({
-			'/v1/fees/recommended': {
-				status: 200,
-				body: { fastestFee: 30, halfHourFee: 20, hourFee: 10, economyFee: 5 }
-			}
-		});
-		const api = new EsploraApi('http://esplora.test');
-		await expect(api.getFeeEstimates()).resolves.toEqual({
-			fastest: 30,
+	it('converts BTC/kvB to sat/vB for each of the 4 targets (1/3/6/144 blocks)', async () => {
+		const { svc, estimateFee } = withFees({ 1: 0.0003, 3: 0.0002, 6: 0.0001, 144: 0.00005 });
+
+		await expect(svc.getFeeEstimates()).resolves.toEqual({
+			fastest: 30, // 0.0003 BTC/kvB * 1e5 = 30 sat/vB
 			halfHour: 20,
 			hour: 10,
 			economy: 5
 		});
+		expect(estimateFee).toHaveBeenCalledWith(1);
+		expect(estimateFee).toHaveBeenCalledWith(3);
+		expect(estimateFee).toHaveBeenCalledWith(6);
+		expect(estimateFee).toHaveBeenCalledWith(144);
 	});
 
-	it('normalizes a plain-esplora /fee-estimates map: targets, rounding, and missing-target fallback', async () => {
-		stubFetchRoutes({
-			// 404 on /v1 → the backend is plain esplora; probeV1 latches false.
-			'/v1/fees/recommended': { status: 404, body: 'not found' },
-			// Target "1" is deliberately absent → fastest falls back to the hour rate.
-			'/fee-estimates': { status: 200, body: { '3': 10.126, '6': 5, '144': 1.2 } }
+	it('carries a -1 ("no estimate") target forward from the next-longer target', async () => {
+		// target 3 has no estimate → inherits target 6's rate; target 144 has no
+		// estimate and nothing longer exists → floors at 1 sat/vB.
+		const { svc } = withFees({ 1: 0.0003, 3: -1, 6: 0.0001, 144: -1 });
+
+		await expect(svc.getFeeEstimates()).resolves.toEqual({
+			fastest: 30,
+			halfHour: 10, // inherited from hour
+			hour: 10,
+			economy: 1
 		});
-		const api = new EsploraApi('http://esplora.test');
-		await expect(api.getFeeEstimates()).resolves.toEqual({
-			fastest: 5, // missing 1-block target → hour fallback
-			halfHour: 10.13, // rounded to 2dp
-			hour: 5,
-			economy: 1.2
-		});
+	});
+
+	it('floors a real but sub-1-sat/vB estimate at 1 sat/vB', async () => {
+		const { svc } = withFees({ 1: 0.0003, 3: 0.0002, 6: 0.0001, 144: 0.000001 }); // 0.1 sat/vB
+
+		await expect(svc.getFeeEstimates()).resolves.toMatchObject({ economy: 1 });
+	});
+
+	it('TTL-caches so a second call does not re-hit the server', async () => {
+		const { svc, estimateFee } = withFees({ 1: 0.0003, 3: 0.0002, 6: 0.0001, 144: 0.00005 });
+
+		await svc.getFeeEstimates();
+		await svc.getFeeEstimates();
+
+		expect(estimateFee).toHaveBeenCalledTimes(4); // 4 targets, one round of calls
 	});
 });
 
-// ---- address lookup -----------------------------------------------------------------
+// ---- difficulty (electrum-backed, cairn-zoz8.3) -----------------------------------
 
-describe('address lookup', () => {
-	it('getAddressInfo derives balances, counts, and the script type', async () => {
-		const address = 'bc1q' + 'a'.repeat(38); // 42 chars → p2wpkh
-		const stub = makeEsploraStub();
-		stub.getAddress.mockResolvedValue({
-			address,
-			chain_stats: {
-				funded_txo_count: 3,
-				funded_txo_sum: 500_000,
-				spent_txo_count: 1,
-				spent_txo_sum: 100_000,
-				tx_count: 5
-			},
-			mempool_stats: {
-				funded_txo_count: 1,
-				funded_txo_sum: 25_000,
-				spent_txo_count: 0,
-				spent_txo_sum: 0,
-				tx_count: 1
-			}
-		} satisfies EsploraAddress);
-		const svc = makeService(stub);
+describe('getDifficultyInfo', () => {
+	// tip 868,000 falls in the epoch starting at 866,880 (Math.floor(868000/2016)*2016).
+	const EPOCH_START_HEIGHT = 866_880;
+	const T1 = 1_700_000_000; // epoch-start block time
+	const T2 = 1_700_672_000; // tip block time — exactly 600s/block over 1,120 intervals
 
-		await expect(svc.getAddressInfo(address)).resolves.toEqual({
-			address,
+	it('derives epoch state, avg pace, and the retarget projection from two header fetches', async () => {
+		const svc = makeService(makeEsploraStub());
+		const tipHex = buildHeader({ time: T2, bits: GENESIS_BITS }); // difficulty 1
+		const startHex = buildHeader({ time: T1, bits: 0x1b0404cb });
+		const headersSubscribe = vi.fn(async () => ({ height: TIP_HEIGHT, hex: tipHex }));
+		const getBlockHeader = vi.fn(async (h: number) => {
+			expect(h).toBe(EPOCH_START_HEIGHT);
+			return startHex;
+		});
+		withElectrum(svc, { headersSubscribe, getBlockHeader });
+
+		const info = await svc.getDifficultyInfo();
+
+		expect(info.currentDifficulty).toBeCloseTo(1, 6);
+		expect(info.tipHeight).toBe(TIP_HEIGHT);
+		expect(info.epochStartHeight).toBe(EPOCH_START_HEIGHT);
+		expect(info.nextRetargetHeight).toBe(868_896);
+		expect(info.blocksIntoEpoch).toBe(1121);
+		expect(info.blocksRemaining).toBe(896);
+		expect(info.progressPercent).toBeCloseTo((1121 / 2016) * 100, 6);
+		expect(info.avgBlockTimeSeconds).toBe(600);
+		expect(info.projectedChangePercent).toBeCloseTo(0, 6);
+		expect(info.estimatedRetargetDate).toBe(1_701_209_600);
+	});
+
+	it('falls back to base epoch state (no projection) when the epoch-start header fetch fails', async () => {
+		const svc = makeService(makeEsploraStub());
+		const tipHex = buildHeader({ time: T2, bits: GENESIS_BITS });
+		const headersSubscribe = vi.fn(async () => ({ height: TIP_HEIGHT, hex: tipHex }));
+		const getBlockHeader = vi.fn(async () => {
+			throw new Error('electrum: header not found');
+		});
+		withElectrum(svc, { headersSubscribe, getBlockHeader });
+
+		const info = await svc.getDifficultyInfo();
+
+		expect(info.currentDifficulty).toBeCloseTo(1, 6);
+		expect(info.tipHeight).toBe(TIP_HEIGHT);
+		expect(info.avgBlockTimeSeconds).toBeNull();
+		expect(info.projectedChangePercent).toBeNull();
+		expect(info.estimatedRetargetDate).toBeNull();
+	});
+});
+
+describe('getDifficultyHistory', () => {
+	it('fetches epoch-boundary headers oldest-first and computes changePercent between consecutive epochs', async () => {
+		const svc = makeService(makeEsploraStub());
+		const tipHex = buildHeader({ time: 1_700_672_000, bits: GENESIS_BITS });
+		const BITS_A = 0x1d00ffff;
+		const BITS_B = 0x1c00ffff;
+		const BITS_C = 0x1b00ffff;
+		const headersByHeight = new Map<number, string>([
+			[862_848, buildHeader({ time: 1_699_000_000, bits: BITS_A })],
+			[864_864, buildHeader({ time: 1_699_500_000, bits: BITS_B })],
+			[866_880, buildHeader({ time: 1_700_000_000, bits: BITS_C })]
+		]);
+		const headersSubscribe = vi.fn(async () => ({ height: TIP_HEIGHT, hex: tipHex }));
+		const getBlockHeader = vi.fn(async (h: number) => {
+			const hex = headersByHeight.get(h);
+			if (!hex) throw new Error(`unstubbed height ${h}`);
+			return hex;
+		});
+		withElectrum(svc, { headersSubscribe, getBlockHeader });
+
+		const history = await svc.getDifficultyHistory(3);
+
+		expect(history).not.toBeNull();
+		expect(history!.map((h) => h.height)).toEqual([862_848, 864_864, 866_880]);
+		expect(history![0].changePercent).toBeNull(); // oldest sample has no predecessor
+
+		const dA = diffFromBits(BITS_A);
+		const dB = diffFromBits(BITS_B);
+		const dC = diffFromBits(BITS_C);
+		expect(history![0].difficulty).toBeCloseTo(dA, 6);
+		expect(history![1].changePercent).toBeCloseTo(((dB - dA) / dA) * 100, 6);
+		expect(history![2].changePercent).toBeCloseTo(((dC - dB) / dB) * 100, 6);
+	});
+
+	it('returns null when the tip header fetch fails', async () => {
+		const svc = makeService(makeEsploraStub());
+		const headersSubscribe = vi.fn(async () => {
+			throw new Error('electrum down');
+		});
+		withElectrum(svc, { headersSubscribe });
+
+		await expect(svc.getDifficultyHistory(3)).resolves.toBeNull();
+	});
+});
+
+describe('getHashrate', () => {
+	it('derives hashrate from the tip header difficulty (difficulty * 2^32 / 600)', async () => {
+		const svc = makeService(makeEsploraStub());
+		const hex = buildHeader({ time: 1_700_000_000, bits: GENESIS_BITS }); // difficulty 1
+		const headersSubscribe = vi.fn(async () => ({ height: TIP_HEIGHT, hex }));
+		withElectrum(svc, { headersSubscribe });
+
+		await expect(svc.getHashrate()).resolves.toBeCloseTo((1 * 2 ** 32) / 600, 6);
+	});
+
+	it('returns null when the tip header is unavailable', async () => {
+		const svc = makeService(makeEsploraStub());
+		const headersSubscribe = vi.fn(async () => {
+			throw new Error('electrum down');
+		});
+		withElectrum(svc, { headersSubscribe });
+
+		await expect(svc.getHashrate()).resolves.toBeNull();
+	});
+});
+
+// ---- address lookup (electrum scripthash protocol, cairn-zoz8.6) -----------------
+
+const ADDRESS = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4'; // BIP-173 p2wpkh test vector
+const SCRIPTHASH = addressToScripthash(ADDRESS);
+const OUR_SCRIPT = scriptPubKeyHex(ADDRESS);
+const OTHER_SCRIPT = '0014' + 'aa'.repeat(20);
+
+describe('getAddressInfo', () => {
+	it('derives balance/tx-count/used from get_balance + get_history; lifetime totals are null (no Electrum equivalent)', async () => {
+		const svc = makeService(makeEsploraStub());
+		const getBalance = vi.fn(async (sh: string) => {
+			expect(sh).toBe(SCRIPTHASH);
+			return { confirmed: 400_000, unconfirmed: 25_000 };
+		});
+		const getHistory = vi.fn(async (sh: string) => {
+			expect(sh).toBe(SCRIPTHASH);
+			return [
+				{ tx_hash: 'a'.repeat(64), height: 800_000 },
+				{ tx_hash: 'b'.repeat(64), height: 0 }
+			];
+		});
+		withElectrum(svc, { getBalance, getHistory });
+
+		await expect(svc.getAddressInfo(ADDRESS)).resolves.toEqual({
+			address: ADDRESS,
 			scriptType: 'p2wpkh',
 			confirmedBalance: 400_000,
 			unconfirmedBalance: 25_000,
-			txCount: 6,
-			totalReceived: 500_000,
-			totalSent: 100_000,
+			txCount: 2,
+			// Esplora's lifetime funded/spent sums have no Electrum equivalent
+			// without walking every historical tx — null signals "unknown" rather
+			// than a misleading 0 (the Explorer address page hides these when null).
+			totalReceived: null,
+			totalSent: null,
 			used: true
 		});
 	});
 
-	it('getAddressTxs computes the per-address net delta from vouts and prevouts', async () => {
-		const stub = makeEsploraStub();
-		stub.getAddressTxs.mockResolvedValue([ESPLORA_TX]);
-		const svc = makeService(stub);
+	it('reports an unused address (empty history) with used:false', async () => {
+		const svc = makeService(makeEsploraStub());
+		withElectrum(svc, {
+			getBalance: vi.fn(async () => ({ confirmed: 0, unconfirmed: 0 })),
+			getHistory: vi.fn(async () => [])
+		});
 
-		// bc1qreceiver only receives vout[0] → +150000.
-		const received = await svc.getAddressTxs('bc1qreceiver');
-		expect(received).toEqual([
-			{
-				txid: ESPLORA_TX.txid,
-				height: TIP_HEIGHT - 10,
-				time: 1_750_000_000,
-				fee: 1_410,
-				delta: 150_000
+		await expect(svc.getAddressInfo(ADDRESS)).resolves.toMatchObject({ txCount: 0, used: false });
+	});
+
+	it('surfaces a friendly error when the server rejects an over-large history', async () => {
+		const svc = makeService(makeEsploraStub());
+		withElectrum(svc, {
+			getBalance: vi.fn(async () => ({ confirmed: 0, unconfirmed: 0 })),
+			getHistory: vi.fn(async () => {
+				throw new Error('history too large');
+			})
+		});
+
+		await expect(svc.getAddressInfo(ADDRESS)).rejects.toThrow(/too much history/i);
+	});
+});
+
+describe('getAddressTxs', () => {
+	// TX1: confirmed, address receives 150k funded by an external 200k prevout
+	// (change 48,590 elsewhere) → fee 1,410, delta +150,000 (mirrors the old
+	// esplora-backed fixture's numbers). TX2: mempool, spends TX1's output onward
+	// → fee 1,000, delta -150,000.
+	const TX1 = 'a'.repeat(64);
+	const TX2 = 'b'.repeat(64);
+	const PREV = 'c'.repeat(64);
+
+	function withHistoryAndTxs(): {
+		svc: ChainService;
+		getHistory: ReturnType<typeof vi.fn>;
+		getTransaction: ReturnType<typeof vi.fn>;
+	} {
+		const svc = makeService(makeEsploraStub());
+		const history = [
+			{ tx_hash: TX2, height: 0 },
+			{ tx_hash: TX1, height: 800_000 }
+		];
+		const txs: Record<string, unknown> = {
+			[PREV]: {
+				vin: [],
+				vout: [
+					{ value: 0.0001, scriptPubKey: { hex: OTHER_SCRIPT } },
+					{ value: 0.002, scriptPubKey: { hex: OTHER_SCRIPT } } // funds TX1's input
+				]
+			},
+			[TX1]: {
+				vin: [{ txid: PREV, vout: 1 }],
+				vout: [
+					{ value: 0.0015, scriptPubKey: { hex: OUR_SCRIPT } },
+					{ value: 0.0004859, scriptPubKey: { hex: OTHER_SCRIPT } }
+				],
+				blocktime: 1_750_000_000
+			},
+			[TX2]: {
+				vin: [{ txid: TX1, vout: 0 }],
+				vout: [{ value: 0.00149, scriptPubKey: { hex: OTHER_SCRIPT } }]
 			}
-		]);
+		};
+		const getHistory = vi.fn(async () => history);
+		const getTransaction = vi.fn(async (txid: string) => txs[txid]);
+		withElectrum(svc, { getHistory, getTransaction });
+		return { svc, getHistory, getTransaction };
+	}
 
-		// bc1qsender funds the 200000 input and receives nothing → -200000.
-		const sent = await svc.getAddressTxs('bc1qsender');
-		expect(sent[0].delta).toBe(-200_000);
+	it('lists newest-first (mempool on top), hydrating delta/fee/time from verbose txs and their prevouts', async () => {
+		const { svc, getHistory, getTransaction } = withHistoryAndTxs();
+
+		const result = await svc.getAddressTxs(ADDRESS);
+
+		expect(getHistory).toHaveBeenCalledTimes(1);
+		expect(result).toHaveLength(2);
+		expect(result[0]).toMatchObject({ txid: TX2, height: 0, time: null, delta: -150_000, fee: 1_000 });
+		expect(result[1]).toMatchObject({
+			txid: TX1,
+			height: 800_000,
+			time: 1_750_000_000,
+			delta: 150_000,
+			fee: 1_410
+		});
+		expect(getTransaction).toHaveBeenCalledWith(TX2, true);
+	});
+
+	it('pages via afterTxid by slicing the (already-fetched) history list client-side', async () => {
+		const { svc } = withHistoryAndTxs();
+
+		const rest = await svc.getAddressTxs(ADDRESS, TX2); // everything after the newest (mempool) entry
+		expect(rest.map((t) => t.txid)).toEqual([TX1]);
+	});
+
+	it('surfaces a friendly error when the server rejects an over-large history', async () => {
+		const svc = makeService(makeEsploraStub());
+		withElectrum(svc, {
+			getHistory: vi.fn(async () => {
+				throw new Error('server.Error: history too large');
+			})
+		});
+
+		await expect(svc.getAddressTxs(ADDRESS)).rejects.toThrow(/too much history/i);
 	});
 });
 

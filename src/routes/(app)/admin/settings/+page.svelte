@@ -7,15 +7,17 @@
 	// svelte-ignore state_referenced_locally — intentionally seeds local UI state
 	let connectionMode = $state(data.settings.connectionMode);
 	let saving = $state(false);
-	let testing = $state<'electrum' | 'esplora' | null>(null);
+	let testing = $state<'electrum' | 'esplora' | 'coreRpc' | null>(null);
 
 	type TestResult = { ok: boolean; tipHeight?: number; error?: string } | null;
+	type CoreRpcTestResult = { ok: boolean; blockHeight?: number; chain?: string; error?: string } | null;
 
-	// Test results are copied into local state as they arrive: the two test
-	// actions share one ActionData slot, so rendering `form` directly would
-	// let each result wipe the other's badge.
+	// Test results are copied into local state as they arrive: the test actions
+	// share one ActionData slot, so rendering `form` directly would let each
+	// result wipe the others' badges.
 	let electrumResult = $state<TestResult>(null);
 	let esploraResult = $state<TestResult>(null);
+	let coreRpcResult = $state<CoreRpcTestResult>(null);
 
 	// User agreement editor (its own form/action, independent of chain settings).
 	// svelte-ignore state_referenced_locally — seeds the editable fields
@@ -36,6 +38,9 @@
 	});
 	$effect(() => {
 		if (form?.esploraTest) esploraResult = form.esploraTest as TestResult;
+	});
+	$effect(() => {
+		if (form?.coreRpcTest) coreRpcResult = form.coreRpcTest as CoreRpcTestResult;
 	});
 
 	// Live-ish chain-transport health next to the proxy config (cairn-hy8z): a
@@ -69,7 +74,9 @@
 			? ('electrum' as const)
 			: action.search.includes('testEsplora')
 				? ('esplora' as const)
-				: null;
+				: action.search.includes('testCoreRpc')
+					? ('coreRpc' as const)
+					: null;
 		if (which) testing = which;
 		else saving = true;
 
@@ -80,7 +87,8 @@
 			if (which && testing === which) {
 				const timedOut = { ok: false, error: 'Timed out — no response from the server.' };
 				if (which === 'electrum') electrumResult = timedOut;
-				else esploraResult = timedOut;
+				else if (which === 'esplora') esploraResult = timedOut;
+					else coreRpcResult = timedOut;
 			}
 			testing = null;
 			saving = false;
@@ -267,10 +275,85 @@
 					</div>
 				</div>
 
-				<!-- Bitcoin Core RPC fields (coreRpcUrl/User/Pass) are intentionally hidden here --
-				     they are stored but not yet consumed by anything (cairn-zoz8: the Esplora-removal
-				     epic reintroduces this subgroup, functional, once ChainService actually talks to
-				     Core RPC). Do not show a not-used-yet field to users in the meantime. -->
+				<!-- Bitcoin Core RPC (cairn-zoz8.8). This coexists with the Esplora
+				     subgroup above ON PURPOSE for now: Core RPC is the eventual
+				     replacement for the third-party Esplora HTTP API, but the Esplora
+				     section stays until nothing depends on it any more — its removal is
+				     tracked separately as cairn-zoz8.16. -->
+				<div class="subgroup">
+					<span class="subgroup-title">
+						Bitcoin Core RPC <span class="badge badge-neutral">self-hosted</span>
+					</span>
+					<p class="hint">
+						Point Heartwood at your own Bitcoin Core node's RPC interface for rich block and
+						mempool data without relying on any third-party explorer API. Fully self-hosted —
+						works on an Umbrel or other node with no public internet access.
+					</p>
+					<div class="field">
+						<label class="label" for="coreRpcUrl">RPC URL</label>
+						<input
+							class="input mono"
+							id="coreRpcUrl"
+							name="coreRpcUrl"
+							placeholder="http://127.0.0.1:8332"
+							value={data.settings.coreRpcUrl ?? ''}
+						/>
+					</div>
+					<div class="row-fields">
+						<div class="field grow">
+							<label class="label" for="coreRpcUser">RPC username</label>
+							<input
+								class="input mono"
+								id="coreRpcUser"
+								name="coreRpcUser"
+								autocomplete="off"
+								placeholder="rpcuser"
+								value={data.settings.coreRpcUser ?? ''}
+							/>
+						</div>
+						<div class="field grow">
+							<label class="label" for="coreRpcPass">RPC password</label>
+							<input
+								class="input mono"
+								id="coreRpcPass"
+								name="coreRpcPass"
+								type="password"
+								autocomplete="off"
+								placeholder={data.settings.hasCoreRpcPass
+									? '•••••••• saved — leave blank to keep'
+									: 'RPC password'}
+							/>
+						</div>
+					</div>
+					{#if data.settings.hasCoreRpcPass}
+						<label class="tls-check">
+							<input type="checkbox" name="clearCoreRpcPass" />
+							<span>Clear the saved RPC password</span>
+						</label>
+					{/if}
+					<div class="test-row">
+						<button
+							type="submit"
+							class="btn btn-secondary btn-sm"
+							formaction="?/testCoreRpc"
+							disabled={testing !== null || saving}
+						>
+							{#if testing === 'coreRpc'}<span class="spinner"></span>{/if}
+							Test connection
+						</button>
+						{#if coreRpcResult}
+							{#if coreRpcResult.ok}
+								<span class="badge badge-success">
+									OK{coreRpcResult.chain ? ` — chain ${coreRpcResult.chain}` : ''}{coreRpcResult.blockHeight
+										? `, tip ${formatNumber(coreRpcResult.blockHeight)}`
+										: ''}
+								</span>
+							{:else}
+								<span class="badge badge-error">{coreRpcResult.error ?? 'Failed'}</span>
+							{/if}
+						{/if}
+					</div>
+				</div>
 			</div>
 		{/if}
 

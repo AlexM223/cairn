@@ -1,6 +1,9 @@
 // ChainService: the facade routes and features import for all chain data.
-// Explorer-rich data comes from an esplora-compatible HTTP API; wallet/address
-// balances+history and node liveness come from the Electrum protocol server.
+// Tip, recent blocks, fee estimates, difficulty/hashrate, arbitrary address
+// lookups, node liveness and wallet balances+history all come from the operator's
+// own Electrum protocol server; the remaining explorer-rich views (full block/tx
+// detail, mempool projections, RBF/CPFP, prices) still use an esplora-compatible
+// HTTP API until their own migrations land.
 
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
@@ -8,6 +11,7 @@ import { getChainConfig } from '../settings';
 import { ElectrumClient } from '../electrum/client';
 import { ElectrumPool } from '../electrum/pool';
 import type { ElectrumBalance, ElectrumHistoryItem } from '../electrum/client';
+import { addressToScripthash, scriptPubKeyHex } from '../bitcoin/xpub';
 import { wireChainEvents, resetConnectionState } from '../chainEvents';
 import { noteProxyConfigured, resetChainHealth } from '../chainHealth';
 import { resetPackageRelaySupport } from '../packageRelay';
@@ -85,6 +89,82 @@ function blockHashFromHeader(headerHex: string): string {
 	const hash = sha256(sha256(hexToBytes(headerHex)));
 	hash.reverse();
 	return bytesToHex(hash);
+}
+
+/**
+ * Difficulty implied by a header's compact `nBits` target, relative to the
+ * genesis difficulty-1 target (0x1d00ffff). Standard Bitcoin Core GetDifficulty:
+ * `difficulty = (0xffff / mantissa) * 2^(8 * (0x1d - exponent))`, where the bits
+ * word splits into an 8-bit exponent (high byte) and a 23-bit mantissa.
+ */
+function bitsToDifficulty(bits: number): number {
+	const exponent = bits >>> 24;
+	const mantissa = bits & 0x007fffff;
+	if (mantissa === 0) return 0;
+	return (0xffff / mantissa) * Math.pow(2, 8 * (0x1d - exponent));
+}
+
+/**
+ * Decode the fields carried by Electrum's raw 80-byte block header
+ * (`blockchain.block.header`). A bare header does NOT include tx_count/size/weight
+ * or fee stats — those need a full block or an index the Electrum protocol doesn't
+ * expose — so any BlockSummary built from this alone leaves those 0/null until a
+ * later Bitcoin Core RPC bead (cairn-zoz8.10) enriches it.
+ */
+function decodeBlockHeader(headerHex: string): {
+	version: number;
+	prevHash: string;
+	merkleRoot: string;
+	time: number;
+	bits: number;
+	nonce: number;
+	difficulty: number;
+	hash: string;
+} {
+	const bytes = hexToBytes(headerHex);
+	const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	const bits = dv.getUint32(72, true);
+	return {
+		version: dv.getInt32(0, true),
+		// The two 32-byte hashes sit little-endian inside the header; display them
+		// byte-reversed (slice copies, so reverse() doesn't mutate the source bytes).
+		prevHash: bytesToHex(bytes.slice(4, 36).reverse()),
+		merkleRoot: bytesToHex(bytes.slice(36, 68).reverse()),
+		time: dv.getUint32(68, true),
+		bits,
+		nonce: dv.getUint32(76, true),
+		difficulty: bitsToDifficulty(bits),
+		hash: blockHashFromHeader(headerHex)
+	};
+}
+
+/** Whole-BTC float (as Electrum's verbose tx reports values) → integer sats. */
+function btcToSats(btc: number): number {
+	return Math.round(btc * 1e8);
+}
+
+/**
+ * Loose shape of a decoded transaction from Electrum's
+ * `blockchain.transaction.get(txid, verbose=true)` (the backend daemon's
+ * getrawtransaction verbose format). Output values are BTC (not sats); inputs
+ * carry only a prevout reference (txid + vout), so attributing the spent side to
+ * an address means resolving each referenced prev-tx.
+ */
+interface VerboseTxVout {
+	value: number; // BTC
+	scriptPubKey?: { hex?: string; address?: string; addresses?: string[] };
+}
+interface VerboseTxVin {
+	txid?: string;
+	vout?: number;
+	coinbase?: string;
+}
+interface VerboseTx {
+	txid?: string;
+	vin: VerboseTxVin[];
+	vout: VerboseTxVout[];
+	blocktime?: number;
+	time?: number;
 }
 
 function detectAddressType(address: string): string | null {
@@ -180,20 +260,6 @@ function toTxDetail(tx: EsploraTx, tipHeight: number, outspends?: (boolean | nul
 	};
 }
 
-/** Net effect of a tx on one address, in sats. */
-function addressDelta(tx: EsploraTx, address: string): number {
-	let delta = 0;
-	for (const out of tx.vout) {
-		if (out.scriptpubkey_address === address) delta += out.value;
-	}
-	for (const inp of tx.vin) {
-		if (!inp.is_coinbase && inp.prevout?.scriptpubkey_address === address) {
-			delta -= inp.prevout.value;
-		}
-	}
-	return delta;
-}
-
 // ------------------------------------------------------------------ ChainService
 
 export class ChainService {
@@ -239,32 +305,45 @@ export class ChainService {
 	async getTip(): Promise<{ height: number; hash: string }> {
 		// TTL-cached (10min ceiling, invalidated on every 'header' event) so the
 		// several call sites that fire on one navigation — and concurrent tabs —
-		// share one slow esplora round-trip instead of each paying for it.
+		// share one Electrum round-trip instead of each paying for it.
 		return cachedTip(async () => {
-			const [height, hash] = await Promise.all([
-				this.esplora.getTipHeight(),
-				this.esplora.getTipHash()
-			]);
-			return { height, hash };
+			// headersSubscribe returns the current tip {height, hex}; the hash is the
+			// double-sha256 of the header (blockHashFromHeader). Same source
+			// getNodeInfo already uses — no third-party esplora HTTP call (cairn-zoz8.5).
+			const header = await this.electrum.headersSubscribe();
+			return { height: header.height, hash: blockHashFromHeader(header.hex) };
 		});
 	}
 
-	/** Recent blocks, newest first. Pages the esplora /blocks endpoint as needed. */
+	/**
+	 * Recent blocks, newest first, from the operator's own Electrum server
+	 * (`blockchain.block.header` per height, fetched concurrently) instead of a
+	 * third-party esplora HTTP API (cairn-zoz8.5). A raw 80-byte header carries only
+	 * version/prevhash/merkleroot/time/bits/nonce — NOT tx_count/size/weight or fee
+	 * stats — so those fields are 0/null in this Electrum-only baseline; a later bead
+	 * (cairn-zoz8.10) enriches them via Bitcoin Core RPC when configured.
+	 */
 	async getRecentBlocks(limit = 10, fromHeight?: number): Promise<BlockSummary[]> {
-		const out: BlockSummary[] = [];
-		let start = fromHeight;
-		// Each esplora page returns ~10 summaries; cap the loop defensively.
-		for (let i = 0; i < 10 && out.length < limit; i++) {
-			const page = await this.esplora.getBlocks(start);
-			if (page.length === 0) break;
-			for (const b of page) {
-				if (out.length < limit) out.push(toBlockSummary(b));
-			}
-			const last = page[page.length - 1];
-			if (last.height === 0) break;
-			start = last.height - 1;
-		}
-		return out;
+		const top = fromHeight ?? (await this.getTip()).height;
+		if (!Number.isFinite(top) || top < 0) return [];
+		const count = Math.min(limit, top + 1);
+		const heights = Array.from({ length: count }, (_, i) => top - i);
+		const headers = await Promise.all(heights.map((h) => this.electrum.getBlockHeader(h)));
+		return headers.map((hex, i) => {
+			const d = decodeBlockHeader(hex);
+			return {
+				height: heights[i],
+				hash: d.hash,
+				time: d.time,
+				// Not derivable from an Electrum block header alone (see JSDoc) — a
+				// Core-RPC enrichment bead (cairn-zoz8.10) fills these when configured.
+				txCount: 0,
+				size: 0,
+				weight: 0,
+				medianFee: null,
+				feeRange: null
+			};
+		});
 	}
 
 	async getBlock(hashOrHeight: string | number): Promise<BlockDetail> {
@@ -407,31 +486,141 @@ export class ChainService {
 		};
 	}
 
+	/**
+	 * Scripthash history with a friendlier error for the one real-world failure
+	 * mode: `get_history` on a very active address (an exchange hot wallet) can
+	 * exceed an Electrum server's response limit. Surface that as a clear message
+	 * the address route already renders, rather than a raw protocol error.
+	 */
+	private async getScripthashHistory(scripthash: string): Promise<ElectrumHistoryItem[]> {
+		try {
+			return await this.electrum.getHistory(scripthash);
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			if (/history (too large|exceeds|too long)|too many|excessive|response too large/i.test(msg)) {
+				throw new Error(
+					'This address has too much history for the Electrum server to return in one response.'
+				);
+			}
+			throw e;
+		}
+	}
+
+	/**
+	 * Balance, tx-count and used-state for any address, via the Electrum scripthash
+	 * protocol on the operator's own server (cairn-zoz8.6) instead of a third-party
+	 * esplora HTTP API. `get_balance` gives confirmed/unconfirmed; `get_history`'s
+	 * length gives the tx count. Lifetime funded/spent sums have NO Electrum
+	 * equivalent without walking every historical tx, so totalReceived/totalSent are
+	 * null ("unknown") — the Explorer address page hides those stats when null
+	 * rather than render a misleading "0 received".
+	 */
 	async getAddressInfo(address: string): Promise<AddressInfo> {
-		const a = await this.esplora.getAddress(address);
-		const chain = a.chain_stats;
-		const mem = a.mempool_stats;
+		const scripthash = addressToScripthash(address);
+		const [balance, history] = await Promise.all([
+			this.electrum.getBalance(scripthash),
+			this.getScripthashHistory(scripthash)
+		]);
+		const txCount = history.length;
 		return {
-			address: a.address,
-			scriptType: detectAddressType(a.address),
-			confirmedBalance: chain.funded_txo_sum - chain.spent_txo_sum,
-			unconfirmedBalance: mem.funded_txo_sum - mem.spent_txo_sum,
-			txCount: chain.tx_count + mem.tx_count,
-			totalReceived: chain.funded_txo_sum,
-			totalSent: chain.spent_txo_sum,
-			used: chain.tx_count + mem.tx_count > 0
+			address,
+			scriptType: detectAddressType(address),
+			confirmedBalance: balance.confirmed,
+			unconfirmedBalance: balance.unconfirmed,
+			txCount,
+			totalReceived: null,
+			totalSent: null,
+			used: txCount > 0
 		};
 	}
 
+	/**
+	 * Transaction history for any address, newest first, ~50 per page, via the
+	 * Electrum scripthash protocol (cairn-zoz8.6). `get_history` lists every tx
+	 * touching the address (mempool at height ≤ 0); each tx on the requested page is
+	 * hydrated with a verbose `blockchain.transaction.get` (plus its prev-txs) to
+	 * compute the per-address net delta and the real fee — the same numbers the old
+	 * esplora path returned. Electrum doesn't paginate, so pages are sliced
+	 * client-side by `afterTxid` (matching the old ~50-per-page contract).
+	 */
 	async getAddressTxs(address: string, afterTxid?: string): Promise<AddressTx[]> {
-		const txs = await this.esplora.getAddressTxs(address, afterTxid);
-		return txs.map((tx) => ({
-			txid: tx.txid,
-			height: tx.status.confirmed ? (tx.status.block_height ?? 0) : 0,
-			time: tx.status.confirmed ? (tx.status.block_time ?? null) : null,
-			fee: tx.vin.some((v) => v.is_coinbase) ? null : (tx.fee ?? null),
-			delta: addressDelta(tx, address)
-		}));
+		const PAGE = 50;
+		const scripthash = addressToScripthash(address);
+		const ourScript = scriptPubKeyHex(address);
+		const history = await this.getScripthashHistory(scripthash);
+
+		// Newest first: mempool (height ≤ 0) on top, then confirmed by height desc.
+		const ordered = [...history].sort((a, b) => {
+			const ha = a.height <= 0 ? Number.MAX_SAFE_INTEGER : a.height;
+			const hb = b.height <= 0 ? Number.MAX_SAFE_INTEGER : b.height;
+			return hb - ha;
+		});
+
+		let startIdx = 0;
+		if (afterTxid) {
+			const i = ordered.findIndex((h) => h.tx_hash === afterTxid);
+			startIdx = i >= 0 ? i + 1 : 0;
+		}
+		const pageItems = ordered.slice(startIdx, startIdx + PAGE);
+
+		// Fetch each verbose tx once, sharing a cache so a prevout referenced by
+		// several inputs (or by both the page and an input) is only fetched a single
+		// time. The lookups across the page then run concurrently via Promise.all.
+		const txCache = new Map<string, Promise<VerboseTx>>();
+		const getVerbose = (txid: string): Promise<VerboseTx> => {
+			let p = txCache.get(txid);
+			if (!p) {
+				p = this.electrum.getTransaction(txid, true) as Promise<VerboseTx>;
+				txCache.set(txid, p);
+			}
+			return p;
+		};
+
+		return Promise.all(
+			pageItems.map(async (item) => {
+				const tx = await getVerbose(item.tx_hash);
+				const coinbase = tx.vin.some((v) => typeof v.coinbase === 'string');
+				let delta = 0;
+				for (const out of tx.vout) {
+					if (out.scriptPubKey?.hex === ourScript) delta += btcToSats(out.value);
+				}
+				// Resolve prevouts to attribute the spent side to this address and to
+				// compute the real fee (sum in − sum out). A coinbase has no prevouts
+				// and no fee.
+				let fee: number | null = item.fee ?? null;
+				if (coinbase) {
+					fee = null;
+				} else {
+					const prevs = await Promise.all(
+						tx.vin.map((v) => (v.txid ? getVerbose(v.txid) : Promise.resolve(null)))
+					);
+					let totalIn = 0;
+					let feeKnown = true;
+					tx.vin.forEach((v, idx) => {
+						const prev = prevs[idx];
+						const po = prev && v.vout != null ? prev.vout[v.vout] : undefined;
+						if (!po) {
+							feeKnown = false;
+							return;
+						}
+						totalIn += btcToSats(po.value);
+						if (po.scriptPubKey?.hex === ourScript) delta -= btcToSats(po.value);
+					});
+					if (feeKnown) {
+						const totalOut = tx.vout.reduce((s, o) => s + btcToSats(o.value), 0);
+						fee = totalIn - totalOut;
+					}
+				}
+				const confirmed = item.height > 0;
+				return {
+					txid: item.tx_hash,
+					height: confirmed ? item.height : 0,
+					time: confirmed ? (tx.blocktime ?? tx.time ?? null) : null,
+					fee,
+					delta
+				};
+			})
+		);
 	}
 
 	async getMempoolSummary(): Promise<MempoolSummary> {
@@ -484,32 +673,67 @@ export class ChainService {
 
 	async getFeeEstimates(): Promise<FeeEstimates> {
 		// TTL-cached (30s flat — fee estimates drift continuously) so the send
-		// pages and /api/mempool/fees don't each re-fetch the same slow lookup.
-		return cachedFeeEstimates(() => this.esplora.getFeeEstimates());
+		// pages and /api/mempool/fees don't each re-fetch the same lookup.
+		return cachedFeeEstimates(async () => {
+			// Four confirmation targets mapped to the normalized fastest/halfHour/
+			// hour/economy shape, sourced from the operator's own Electrum server
+			// (`blockchain.estimatefee`) rather than a third-party esplora HTTP API
+			// (cairn-zoz8.1). The targets run concurrently.
+			const [b1, b3, b6, b144] = await Promise.all([
+				this.electrum.estimateFee(1),
+				this.electrum.estimateFee(3),
+				this.electrum.estimateFee(6),
+				this.electrum.estimateFee(144)
+			]);
+			// estimatefee returns BTC/kvB (or -1 when the server can't estimate that
+			// target). Convert to sat/vB: BTC/kvB × 1e8 sat/BTC ÷ 1000 vB/kvB = × 1e5.
+			const toSatVb = (btcPerKvb: number): number | null =>
+				typeof btcPerKvb === 'number' && btcPerKvb > 0 ? btcPerKvb * 1e5 : null;
+			const slots: { key: keyof FeeEstimates; v: number | null }[] = [
+				{ key: 'fastest', v: toSatVb(b1) },
+				{ key: 'halfHour', v: toSatVb(b3) },
+				{ key: 'hour', v: toSatVb(b6) },
+				{ key: 'economy', v: toSatVb(b144) }
+			];
+			// Repair a target the server couldn't estimate (-1) by inheriting the
+			// next-LONGER target's rate — walk longest→shortest carrying it forward —
+			// then floor everything at 1 sat/vB (the network minimum relay rate).
+			let carry = 1;
+			for (let i = slots.length - 1; i >= 0; i--) {
+				if (slots[i].v === null) slots[i].v = carry;
+				else carry = slots[i].v as number;
+			}
+			const out = {} as FeeEstimates;
+			for (const s of slots) out[s.key] = Math.max(1, round2(s.v as number));
+			return out;
+		});
 	}
 
 	/**
-	 * Current difficulty-epoch state. Prefers the mempool.space endpoint;
-	 * on plain esplora it derives everything from the tip block and the
-	 * first block of the epoch (two cheap, cached lookups).
+	 * Current difficulty-epoch state, derived entirely from block headers on the
+	 * operator's own Electrum server (cairn-zoz8.3) — no third-party esplora HTTP
+	 * API. The tip header (via headersSubscribe) gives the live difficulty and the
+	 * epoch-start header (`blockchain.block.header` at epochStartHeight) gives this
+	 * epoch's pace and the retarget projection.
 	 */
 	async getDifficultyInfo(): Promise<DifficultyInfo> {
 		const EPOCH = 2016;
 		const TARGET_SECONDS = 600;
 
-		const tipHash = await this.esplora.getTipHash();
-		const tip = await this.esplora.getBlockByHash(tipHash);
-		const epochStartHeight = Math.floor(tip.height / EPOCH) * EPOCH;
-		const blocksIntoEpoch = tip.height - epochStartHeight + 1;
+		const tipHeader = await this.electrum.headersSubscribe();
+		const tip = decodeBlockHeader(tipHeader.hex);
+		const tipHeight = tipHeader.height;
+		const epochStartHeight = Math.floor(tipHeight / EPOCH) * EPOCH;
+		const blocksIntoEpoch = tipHeight - epochStartHeight + 1;
 		const nextRetargetHeight = epochStartHeight + EPOCH;
 
 		const base: DifficultyInfo = {
 			currentDifficulty: tip.difficulty,
-			tipHeight: tip.height,
+			tipHeight,
 			epochStartHeight,
 			nextRetargetHeight,
 			blocksIntoEpoch,
-			blocksRemaining: nextRetargetHeight - tip.height,
+			blocksRemaining: nextRetargetHeight - tipHeight,
 			progressPercent: (blocksIntoEpoch / EPOCH) * 100,
 			projectedChangePercent: null,
 			previousChangePercent: null,
@@ -517,26 +741,12 @@ export class ChainService {
 			estimatedRetargetDate: null
 		};
 
-		const v1 = await this.esplora.getDifficultyAdjustment();
-		if (v1) {
-			return {
-				...base,
-				progressPercent: v1.progressPercent,
-				blocksRemaining: v1.remainingBlocks,
-				nextRetargetHeight: v1.nextRetargetHeight,
-				projectedChangePercent: v1.difficultyChange,
-				previousChangePercent: v1.previousRetarget,
-				avgBlockTimeSeconds: v1.timeAvg / 1000,
-				estimatedRetargetDate: Math.round(v1.estimatedRetargetDate / 1000)
-			};
-		}
-
-		// Plain esplora: measure this epoch's pace directly.
+		// Measure this epoch's pace directly from its first block's timestamp.
 		try {
-			const startHash = await this.esplora.getBlockHashAtHeight(epochStartHeight);
-			const start = await this.esplora.getBlockByHash(startHash);
-			const elapsed = tip.timestamp - start.timestamp;
-			const intervals = Math.max(1, tip.height - epochStartHeight);
+			const startHex = await this.electrum.getBlockHeader(epochStartHeight);
+			const start = decodeBlockHeader(startHex);
+			const elapsed = tip.time - start.time;
+			const intervals = Math.max(1, tipHeight - epochStartHeight);
 			const avg = elapsed / intervals;
 			// Retarget multiplier = target/actual pace, clamped to 4x either way
 			// (the consensus rule) — expressed here as a percent change.
@@ -551,7 +761,7 @@ export class ChainService {
 				...base,
 				avgBlockTimeSeconds: avg,
 				projectedChangePercent: projected,
-				estimatedRetargetDate: tip.timestamp + base.blocksRemaining * projectionAvg
+				estimatedRetargetDate: tip.time + base.blocksRemaining * projectionAvg
 			};
 		} catch (e) {
 			log.debug({ err: e }, 'epoch-pace difficulty projection failed; returning base info');
@@ -559,34 +769,60 @@ export class ChainService {
 		}
 	}
 
-	/** Recent difficulty retargets, oldest first; null when history is unavailable. */
+	/**
+	 * Recent difficulty retargets, oldest first; null when unavailable. Reads the
+	 * header at each epoch-boundary height (`blockchain.block.header`, run
+	 * concurrently) from the operator's own Electrum server and decodes each one's
+	 * difficulty — no third-party esplora HTTP API (cairn-zoz8.3). changePercent is
+	 * computed between consecutive epochs here. The header at an epoch-start height
+	 * carries that epoch's `nBits`, so its decoded difficulty IS that retarget.
+	 */
 	async getDifficultyHistory(limit = 10): Promise<DifficultyAdjustment[] | null> {
-		const raw = await this.esplora.getDifficultyHistory('1y');
-		if (!raw || raw.length === 0) return null;
-		// Tuples arrive newest first: [timestamp, height, difficulty, change].
-		const oldestFirst = [...raw].sort((a, b) => a[1] - b[1]);
-		const out: DifficultyAdjustment[] = oldestFirst.map(([time, height, difficulty], i) => {
-			const prev = i > 0 ? oldestFirst[i - 1][2] : null;
-			return {
-				time,
-				height,
-				difficulty,
-				changePercent: prev ? ((difficulty - prev) / prev) * 100 : null
-			};
-		});
-		return out.slice(-limit);
+		const EPOCH = 2016;
+		try {
+			const tipHeader = await this.electrum.headersSubscribe();
+			const latestEpochStart = Math.floor(tipHeader.height / EPOCH) * EPOCH;
+			// Epoch-boundary heights that exist on-chain, oldest first (so each
+			// changePercent compares against the prior epoch).
+			const heights: number[] = [];
+			for (let i = 0; i < limit; i++) {
+				const h = latestEpochStart - i * EPOCH;
+				if (h < 0) break;
+				heights.push(h);
+			}
+			heights.reverse();
+			if (heights.length === 0) return null;
+			const headers = await Promise.all(heights.map((h) => this.electrum.getBlockHeader(h)));
+			const decoded = headers.map((hex) => decodeBlockHeader(hex));
+			return decoded.map((d, i) => {
+				const prev = i > 0 ? decoded[i - 1].difficulty : null;
+				return {
+					time: d.time,
+					height: heights[i],
+					difficulty: d.difficulty,
+					changePercent: prev ? ((d.difficulty - prev) / prev) * 100 : null
+				};
+			});
+		} catch (e) {
+			log.debug({ err: e }, 'difficulty history via electrum failed');
+			return null;
+		}
 	}
 
-	/** Network hashrate in H/s. Falls back to difficulty * 2^32 / 600. */
+	/**
+	 * Network hashrate in H/s, always derived from the tip block's difficulty
+	 * (`difficulty × 2^32 / 600`). The Electrum protocol has no direct hashrate
+	 * call, so — unlike the old esplora path — this difficulty-derived estimate is
+	 * the only one (cairn-zoz8.3). Null only when the tip header can't be
+	 * fetched/decoded.
+	 */
 	async getHashrate(): Promise<number | null> {
-		const direct = await this.esplora.getHashrate();
-		if (direct !== null) return direct;
 		try {
-			const tipHash = await this.esplora.getTipHash();
-			const block = await this.esplora.getBlockByHash(tipHash);
-			return (block.difficulty * 2 ** 32) / 600;
+			const tipHeader = await this.electrum.headersSubscribe();
+			const { difficulty } = decodeBlockHeader(tipHeader.hex);
+			return (difficulty * 2 ** 32) / 600;
 		} catch (e) {
-			log.debug({ err: e }, 'hashrate fallback (difficulty-derived) failed');
+			log.debug({ err: e }, 'hashrate (difficulty-derived) failed');
 			return null;
 		}
 	}
@@ -741,6 +977,60 @@ export async function testEsplora(
 		}
 		return { ok: true, tipHeight };
 	} catch (e) {
+		return { ok: false, error: e instanceof Error ? e.message : String(e) };
+	}
+}
+
+/**
+ * Probe a Bitcoin Core RPC endpoint for the admin settings "Test connection"
+ * button: ping() first (a never-throwing liveness+auth check), then
+ * getBlockchainInfo() for the chain name and authoritative tip height. Any
+ * failure is translated to `{ ok: false, error }` so the settings UI can render
+ * a badge without try/catch of its own — same contract as testElectrum/testEsplora.
+ */
+export async function testCoreRpc(cfg: {
+	url: string;
+	user?: string | null;
+	pass?: string | null;
+}): Promise<{ ok: boolean; blockHeight?: number; chain?: string; error?: string }> {
+	// TODO(depends on cairn-zoz8.7 merge): the CoreRpcClient lives at
+	// ../bitcoinCore/client (built by the sibling bead). It is imported
+	// DYNAMICALLY rather than at the top of this module on purpose: a static
+	// import of a not-yet-merged file would break loading of ChainService for
+	// every unrelated caller. The dynamic import resolves only when an admin
+	// actually runs the test, and can become a plain top-level `import` (matching
+	// testElectrum above) once the client module has merged. It stays INSIDE this
+	// try/catch (not hoisted above it) so a resolution failure — the expected
+	// state of any worktree that hasn't merged cairn-zoz8.7 yet — degrades to the
+	// same `{ ok: false, error }` shape as a real connection failure, instead of
+	// throwing past this action into an unhandled 500 (caught live: this exact
+	// gap 500'd before the import moved inside the try).
+	try {
+		const { CoreRpcClient } = await import('../bitcoinCore/client');
+		const client = new CoreRpcClient({
+			url: cfg.url,
+			user: cfg.user,
+			pass: cfg.pass,
+			timeoutMs: 8_000
+		});
+		try {
+			const pong = await client.ping();
+			if (!pong.ok) {
+				return { ok: false, error: pong.error ?? 'Bitcoin Core did not respond to a ping.' };
+			}
+			const info = await client.getBlockchainInfo();
+			return { ok: true, blockHeight: info.blocks, chain: info.chain };
+		} finally {
+			client.close();
+		}
+	} catch (e) {
+		// Catches BOTH a real connection/auth failure from the client above AND —
+		// in any worktree that hasn't merged cairn-zoz8.7 yet — the dynamic
+		// import itself failing to resolve. Keeping the import inside this
+		// try/catch (not hoisted above it) means that gap degrades to the same
+		// `{ ok: false, error }` shape as a real failure instead of throwing past
+		// this action into an unhandled 500 (reproduced live during manual
+		// verification before this fix).
 		return { ok: false, error: e instanceof Error ? e.message : String(e) };
 	}
 }

@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
+	import CoreRpcRequiredNotice from '$lib/components/CoreRpcRequiredNotice.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
 	import { synthesizeBlocks, synthKey, feeColor, type VizRect } from '$lib/mempoolViz';
@@ -199,7 +200,17 @@
 	</p>
 </HowItWorks>
 
-{#if error}
+<!--
+	DEMONSTRATION wiring for the shared CoreRpcRequiredNotice (cairn-zoz8.9).
+	Mempool-blocks projection is one of the RICH features that will move to
+	Bitcoin Core RPC (cairn-zoz8.14). Right now the projection still comes from
+	Esplora, so this is gated only on config-presence to prove the component
+	renders end to end; the real migration bead replaces the projection panel
+	below with this notice when the feature is genuinely RPC-sourced and absent.
+-->
+{#if !data.coreRpcConfigured}
+	<CoreRpcRequiredNotice feature="Mempool projections" isAdmin={data.isAdmin} />
+{:else if error}
 	<div class="form-error" role="alert">
 		Can't reach chain data sources — {error}.
 		<a href="/explorer/mempool/blocks">Retry</a>

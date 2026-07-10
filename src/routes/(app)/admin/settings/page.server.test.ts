@@ -12,7 +12,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('$lib/server/settings', async (importOriginal) => {
 	const mod = await importOriginal<typeof import('$lib/server/settings')>();
-	return { ...mod, setSetting: vi.fn(), setSecretSetting: vi.fn() };
+	// readSecretSetting is stubbed so the testCoreRpc action's "blank password =
+	// use the stored one" fallback doesn't reach the real DB in these unit tests.
+	return {
+		...mod,
+		setSetting: vi.fn(),
+		setSecretSetting: vi.fn(),
+		readSecretSetting: vi.fn(() => null)
+	};
 });
 
 vi.mock('$lib/server/chain', async (importOriginal) => {
@@ -21,7 +28,8 @@ vi.mock('$lib/server/chain', async (importOriginal) => {
 		...mod,
 		reconfigureChain: vi.fn(),
 		testElectrum: vi.fn(async () => ({ ok: true })),
-		testEsplora: vi.fn(async () => ({ ok: true }))
+		testEsplora: vi.fn(async () => ({ ok: true })),
+		testCoreRpc: vi.fn(async () => ({ ok: true, blockHeight: 800_000, chain: 'main' }))
 	};
 });
 
@@ -41,7 +49,7 @@ vi.mock('$lib/server/bitcoin/walletScan', async (importOriginal) => {
 });
 
 import { setSetting, setSecretSetting } from '$lib/server/settings';
-import { reconfigureChain, testElectrum, testEsplora } from '$lib/server/chain';
+import { reconfigureChain, testElectrum, testEsplora, testCoreRpc } from '$lib/server/chain';
 import { setUserAgreement } from '$lib/server/disclosures';
 import { resetInstance } from '$lib/server/admin';
 import { invalidateWalletCache } from '$lib/server/bitcoin/walletScan';
@@ -106,6 +114,16 @@ describe('admin/settings actions — anon and non-admin are denied a 403 fail(),
 		}
 	});
 
+	it('testCoreRpc', async () => {
+		for (const user of [undefined, NON_ADMIN]) {
+			const res = await actions.testCoreRpc(
+				makeEvent(user, { coreRpcUrl: 'http://127.0.0.1:8332' })
+			);
+			expect(res).toMatchObject({ status: 403 });
+			expect(testCoreRpc).not.toHaveBeenCalled();
+		}
+	});
+
 	it('unlockTeamMode', async () => {
 		for (const user of [undefined, NON_ADMIN]) {
 			const res = await actions.unlockTeamMode(makeEvent(user));
@@ -158,6 +176,31 @@ describe('admin/settings actions — a real admin still reaches the mutation', (
 		const res = await actions.testEsplora(makeEvent(ADMIN, { esploraUrl: 'http://esplora.example' }));
 		expect(res).toEqual({ esploraTest: { ok: true } });
 		expect(testEsplora).toHaveBeenCalledTimes(1);
+	});
+
+	it('testCoreRpc calls the chain test helper and echoes its result', async () => {
+		const res = await actions.testCoreRpc(
+			makeEvent(ADMIN, { coreRpcUrl: 'http://127.0.0.1:8332', coreRpcUser: 'rpcuser' })
+		);
+		expect(res).toEqual({ coreRpcTest: { ok: true, blockHeight: 800_000, chain: 'main' } });
+		expect(testCoreRpc).toHaveBeenCalledTimes(1);
+		expect(testCoreRpc).toHaveBeenCalledWith({
+			url: 'http://127.0.0.1:8332',
+			user: 'rpcuser',
+			pass: null
+		});
+	});
+
+	it('testCoreRpc surfaces a failure result from the helper', async () => {
+		vi.mocked(testCoreRpc).mockResolvedValueOnce({ ok: false, error: 'ECONNREFUSED' });
+		const res = await actions.testCoreRpc(makeEvent(ADMIN, { coreRpcUrl: 'http://127.0.0.1:8332' }));
+		expect(res).toEqual({ coreRpcTest: { ok: false, error: 'ECONNREFUSED' } });
+	});
+
+	it('testCoreRpc rejects a missing URL with a 400 before hitting the helper', async () => {
+		const res = await actions.testCoreRpc(makeEvent(ADMIN, {}));
+		expect(res).toMatchObject({ status: 400 });
+		expect(testCoreRpc).not.toHaveBeenCalled();
 	});
 
 	it('unlockTeamMode / lockTeamMode persist the mode', async () => {

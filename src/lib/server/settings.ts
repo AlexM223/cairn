@@ -162,6 +162,24 @@ export function getPublicInstanceSettings(): Omit<InstanceSettings, 'coreRpcPass
 }
 
 /**
+ * Whether a Bitcoin Core RPC endpoint is *configured* — i.e. an admin has set a
+ * non-empty `coreRpcUrl`. This is a CONFIG-PRESENCE check only: it does NOT
+ * confirm the node is reachable or that the credentials work (a live probe is a
+ * separate, later concern owned by the settings-wiring bead cairn-zoz8.8). It's
+ * deliberately independent of {@link getChainConfig} so the two compose without
+ * collision.
+ *
+ * Route `+page.server.ts` loads pass the result down as a `coreRpcConfigured`
+ * prop so the RPC-gated Explorer sections can render an honest
+ * `CoreRpcRequiredNotice` empty-state (never a silent 0/blank) when Core RPC
+ * isn't set up. Cheap enough to call per-load — a single keyed lookup.
+ */
+export function coreRpcConfigured(): boolean {
+	const url = getSetting('core_rpc_url');
+	return url !== null && url.trim() !== '';
+}
+
+/**
  * The chain connection config the app should actually use right now.
  * In public mode this ignores any custom values and returns the public defaults.
  */
@@ -174,6 +192,9 @@ export function getChainConfig(): {
 	esploraUrl: string;
 	socks5Host: string | null;
 	socks5Port: number | null;
+	coreRpcUrl: string | null;
+	coreRpcUser: string | null;
+	coreRpcPass: string | null;
 	mode: 'public' | 'custom';
 } {
 	const s = getInstanceSettings();
@@ -186,10 +207,25 @@ export function getChainConfig(): {
 		socks5Port: s.socks5Port,
 		electrumPoolSize: s.electrumPoolSize
 	};
+	// Bitcoin Core RPC is inherently a custom/self-hosted-only backend: there is
+	// no "public default" Core node to fall back to, so unlike electrum/esplora
+	// these values are NOT swapped out in public mode — whatever is actually
+	// stored is always returned, in both modes (cairn-zoz8.8).
+	const coreRpc = {
+		coreRpcUrl: s.coreRpcUrl,
+		coreRpcUser: s.coreRpcUser,
+		coreRpcPass: s.coreRpcPass
+	};
 	if (s.connectionMode === 'public') {
 		// The public default server presents a valid, trusted certificate — always
 		// verify it. The insecure opt-out is a custom-server-only escape hatch.
-		return { ...PUBLIC_DEFAULTS, electrumTlsInsecure: false, ...tuning, mode: 'public' };
+		return {
+			...PUBLIC_DEFAULTS,
+			electrumTlsInsecure: false,
+			...tuning,
+			...coreRpc,
+			mode: 'public'
+		};
 	}
 	return {
 		electrumHost: s.electrumHost,
@@ -198,6 +234,7 @@ export function getChainConfig(): {
 		electrumTlsInsecure: s.electrumTlsInsecure,
 		esploraUrl: s.esploraUrl || DEFAULTS.esploraUrl,
 		...tuning,
+		...coreRpc,
 		mode: 'custom'
 	};
 }

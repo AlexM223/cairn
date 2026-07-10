@@ -13,7 +13,8 @@ import {
 	setSecretSetting,
 	readSecretSetting,
 	getInstanceSettings,
-	getPublicInstanceSettings
+	getPublicInstanceSettings,
+	getChainConfig
 } from './settings';
 import { isSecretEnvelope } from './secretKey';
 
@@ -101,5 +102,50 @@ describe('setSecretSetting / readSecretSetting — encrypted at rest', () => {
 	it('fails closed (null) on an undecryptable envelope', () => {
 		setSetting('core_rpc_pass', JSON.stringify({ v: 1, iv: 'AAAA', tag: 'AAAA', data: 'AAAA' }));
 		expect(readSecretSetting('core_rpc_pass')).toBeNull();
+	});
+});
+
+// cairn-zoz8.8 — getChainConfig() now also surfaces the Bitcoin Core RPC
+// url/user/pass so a future ChainService can talk to a self-hosted Core node.
+// Unlike electrum/esplora, Core RPC has no "public default" to fall back to, so
+// the stored values must pass through in BOTH public and custom connection mode.
+describe('getChainConfig — Bitcoin Core RPC passthrough', () => {
+	const RPC_URL = 'http://127.0.0.1:8332';
+	const RPC_USER = 'rpcuser';
+
+	it('returns null Core RPC fields when nothing is configured', () => {
+		const cfg = getChainConfig();
+		expect(cfg.coreRpcUrl).toBeNull();
+		expect(cfg.coreRpcUser).toBeNull();
+		expect(cfg.coreRpcPass).toBeNull();
+	});
+
+	it('surfaces the stored Core RPC url/user/pass in custom mode', () => {
+		setSetting('connection_mode', 'custom');
+		setSetting('core_rpc_url', RPC_URL);
+		setSetting('core_rpc_user', RPC_USER);
+		setSecretSetting('core_rpc_pass', SECRET);
+
+		const cfg = getChainConfig();
+		expect(cfg.mode).toBe('custom');
+		expect(cfg.coreRpcUrl).toBe(RPC_URL);
+		expect(cfg.coreRpcUser).toBe(RPC_USER);
+		expect(cfg.coreRpcPass).toBe(SECRET);
+	});
+
+	it('still surfaces the stored Core RPC values in public mode (no public default hides them)', () => {
+		setSetting('connection_mode', 'public');
+		setSetting('core_rpc_url', RPC_URL);
+		setSetting('core_rpc_user', RPC_USER);
+		setSecretSetting('core_rpc_pass', SECRET);
+
+		const cfg = getChainConfig();
+		expect(cfg.mode).toBe('public');
+		// The electrum/esplora fields ARE swapped for the public defaults here…
+		expect(cfg.esploraUrl).toBe('https://mempool.space/api');
+		// …but Core RPC is self-hosted-only, so its values are returned as stored.
+		expect(cfg.coreRpcUrl).toBe(RPC_URL);
+		expect(cfg.coreRpcUser).toBe(RPC_USER);
+		expect(cfg.coreRpcPass).toBe(SECRET);
 	});
 });

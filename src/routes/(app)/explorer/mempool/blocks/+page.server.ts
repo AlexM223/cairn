@@ -1,4 +1,5 @@
 import { getChain } from '$lib/server/chain';
+import { coreRpcConfigured } from '$lib/server/settings';
 import { chainErrorMessage } from '$lib/server/search';
 import type { PageServerLoad } from './$types';
 
@@ -27,7 +28,15 @@ async function loadMempoolBlocks() {
 	}
 }
 
-export const load: PageServerLoad = async () => {
-	// Streamed, not awaited (cairn-2zxt.3).
-	return { mempool: loadMempoolBlocks() };
+export const load: PageServerLoad = async ({ locals }) => {
+	return {
+		// Streamed, not awaited (cairn-2zxt.3).
+		mempool: loadMempoolBlocks(),
+		// DEMONSTRATION wiring for the shared CoreRpcRequiredNotice (cairn-zoz8.9).
+		// The real mempool-projection migration (cairn-zoz8.14) will build this
+		// panel on Bitcoin Core RPC and gate the notice on the projection actually
+		// being RPC-sourced; today it's a config-presence flag only.
+		coreRpcConfigured: coreRpcConfigured(),
+		isAdmin: locals.user?.isAdmin ?? false
+	};
 };

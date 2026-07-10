@@ -1,6 +1,11 @@
 import { fail, redirect } from '@sveltejs/kit';
-import { getPublicInstanceSettings, setSetting, setSecretSetting } from '$lib/server/settings';
-import { reconfigureChain, testElectrum, testEsplora } from '$lib/server/chain';
+import {
+	getPublicInstanceSettings,
+	setSetting,
+	setSecretSetting,
+	readSecretSetting
+} from '$lib/server/settings';
+import { reconfigureChain, testElectrum, testEsplora, testCoreRpc } from '$lib/server/chain';
 import { getChainHealth } from '$lib/server/chainHealth';
 import { resetInstance } from '$lib/server/admin';
 import { invalidateWalletCache } from '$lib/server/bitcoin/walletScan';
@@ -157,6 +162,26 @@ export const actions: Actions = {
 		const proxy = readProxyFromForm(form);
 		const result = await testEsplora(url.replace(/\/+$/, ''), proxy);
 		return { esploraTest: result };
+	},
+
+	testCoreRpc: async ({ request, locals }) => {
+		if (!locals.user?.isAdmin) return fail(403, { error: 'Admin access required.' });
+		const form = await request.formData();
+		const url = String(form.get('coreRpcUrl') ?? '').trim();
+		if (!url)
+			return fail(400, { coreRpcTest: { ok: false, error: 'Enter a Bitcoin Core RPC URL first.' } });
+
+		const user = String(form.get('coreRpcUser') ?? '').trim() || null;
+		// The password field is left blank when the admin is keeping the stored
+		// secret (it is never echoed back to the form), so fall back to the
+		// persisted one — otherwise "Test connection" would fail for an already-
+		// saved node unless the admin re-typed the password (mirrors ?/save's
+		// blank-means-keep convention).
+		const typed = String(form.get('coreRpcPass') ?? '');
+		const pass = typed !== '' ? typed : readSecretSetting('core_rpc_pass');
+
+		const result = await testCoreRpc({ url, user, pass });
+		return { coreRpcTest: result };
 	},
 
 	unlockTeamMode: async ({ locals }) => {
