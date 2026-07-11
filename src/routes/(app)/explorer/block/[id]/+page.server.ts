@@ -1,5 +1,6 @@
 import { error } from '@sveltejs/kit';
 import { getChain } from '$lib/server/chain';
+import { coreRpcConfigured } from '$lib/server/settings';
 import { isNotFoundError, chainErrorMessage } from '$lib/server/search';
 import { getEpochStrip } from '$lib/server/chainEpochs';
 import type { PageServerLoad } from './$types';
@@ -70,7 +71,7 @@ async function loadBlockData(
 	};
 }
 
-export const load: PageServerLoad = async ({ params, url }) => {
+export const load: PageServerLoad = async ({ params, url, locals }) => {
 	const id = params.id.trim();
 	const isHeight = /^\d{1,9}$/.test(id);
 	const isHash = /^[0-9a-fA-F]{64}$/.test(id);
@@ -82,6 +83,11 @@ export const load: PageServerLoad = async ({ params, url }) => {
 	const txPage = /^\d{1,5}$/.test(pageParam) ? parseInt(pageParam, 10) : 0;
 
 	return {
+		// Whether a Bitcoin Core RPC backend is configured: full block detail
+		// (tx list, fee/reward stats) needs it. When it's absent the page renders the
+		// honest CoreRpcRequiredNotice instead of a bare error (cairn-zoz8.10).
+		coreRpcConfigured: coreRpcConfigured(),
+		isAdmin: locals?.user?.isAdmin ?? false,
 		// Streamed, not awaited (cairn-2zxt.3).
 		chain: loadBlockData(id, isHeight, txPage),
 		// Locator-strip dataset (cairn-koy4.7): streamed, cached hard after the

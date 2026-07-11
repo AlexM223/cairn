@@ -7,6 +7,7 @@
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import ChainStrip from '$lib/components/heartwood/ChainStrip.svelte';
 	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
+	import CoreRpcRequiredNotice from '$lib/components/CoreRpcRequiredNotice.svelte';
 	import { blockSubsidy } from '$lib/bitcoin';
 	import {
 		formatNumber,
@@ -152,6 +153,10 @@
 				<span>No block matches this height or hash.</span>
 				<a href="/explorer" class="btn btn-secondary btn-sm">Back to explorer</a>
 			</div>
+		{:else if chainError && !data.coreRpcConfigured}
+			<!-- Full block detail needs the operator's own Bitcoin Core node; when it
+			     isn't configured, be honest about what unlocks it (cairn-zoz8.10). -->
+			<CoreRpcRequiredNotice feature="Block detail" isAdmin={data.isAdmin} />
 		{:else if chainError}
 			<div class="form-error block-error fade-in" role="alert">
 				<Icon name="alert-triangle" size={16} />

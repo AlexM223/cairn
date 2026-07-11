@@ -1,5 +1,6 @@
 import { error, redirect } from '@sveltejs/kit';
 import { getChain } from '$lib/server/chain';
+import { coreRpcConfigured } from '$lib/server/settings';
 import { isNotFoundError, chainErrorMessage } from '$lib/server/search';
 import { readTxSnapshot, writeTxSnapshot, refreshTxSnapshot } from '$lib/server/txSnapshot';
 import type { PageServerLoad } from './$types';
@@ -78,13 +79,18 @@ async function loadTxDetails(tx: TxDetail, isCoinbase: boolean): Promise<TxDetai
 	return { fees, rbf, cpfp, rawHex, rawTooLarge };
 }
 
-export const load: PageServerLoad = async ({ params, url, depends }) => {
+export const load: PageServerLoad = async ({ params, url, depends, locals }) => {
 	const txid = params.txid.trim().toLowerCase();
 	if (!/^[0-9a-f]{64}$/.test(txid)) error(404, 'Transaction not found');
 
 	// The "looking this up" shell polls by re-invalidating this dependency (see
 	// +page.svelte) until the first fetch lands and this load can serve real data.
 	depends('cairn:tx');
+
+	// Full tx detail comes from the operator's own Bitcoin Core node; when it isn't
+	// configured the page renders the honest CoreRpcRequiredNotice instead of a bare
+	// 502/not-found (cairn-zoz8.11). Threaded onto every return via `base`.
+	const base = { coreRpcConfigured: coreRpcConfigured(), isAdmin: locals?.user?.isAdmin ?? false };
 
 	// Explains the hop when the visitor arrived via a replaced-tx redirect.
 	const replacedFromRaw = url.searchParams.get('replaced');
@@ -110,6 +116,7 @@ export const load: PageServerLoad = async ({ params, url, depends }) => {
 		const tx = cached.tx;
 		const isCoinbase = tx.vin.some((v) => v.coinbase);
 		return {
+			...base,
 			notFound: false as const,
 			loading: false as const,
 			txid,
@@ -143,7 +150,13 @@ export const load: PageServerLoad = async ({ params, url, depends }) => {
 			// detail pages) rather than throwing a route-level error(404) — that
 			// would bubble to the generic app-wide error page with a hardcoded
 			// message instead of a contextual "Transaction not found" (cairn-t9b6).
-			return { notFound: true as const, loading: false as const, txid, tx: null, replacedFrom, details: null };
+			return { ...base, notFound: true as const, loading: false as const, txid, tx: null, replacedFrom, details: null };
+		}
+		// No backend that can serve tx detail (Core RPC unconfigured): render the
+		// honest CoreRpcRequiredNotice via the in-page not-found state (the svelte
+		// swaps the message on !coreRpcConfigured) instead of a route-level 502.
+		if (!base.coreRpcConfigured) {
+			return { ...base, notFound: true as const, loading: false as const, txid, tx: null, replacedFrom, details: null };
 		}
 		error(502, chainErrorMessage(e));
 	}
@@ -153,7 +166,7 @@ export const load: PageServerLoad = async ({ params, url, depends }) => {
 		// eventual result so the client's poll (re-invalidating 'cairn:tx') finds a
 		// warm cache and swaps in the real tx — without a second backend round-trip.
 		txPromise.then((tx) => writeTxSnapshot(txid, tx)).catch(() => {});
-		return { notFound: false as const, loading: true as const, txid, tx: null, replacedFrom, details: null };
+		return { ...base, notFound: false as const, loading: true as const, txid, tx: null, replacedFrom, details: null };
 	}
 
 	// Fetched in time: persist for future visits and render as before.
@@ -162,6 +175,7 @@ export const load: PageServerLoad = async ({ params, url, depends }) => {
 	const isCoinbase = tx.vin.some((v) => v.coinbase);
 
 	return {
+		...base,
 		notFound: false as const,
 		loading: false as const,
 		txid,
