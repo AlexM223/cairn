@@ -255,7 +255,8 @@ async function cachedTip(): Promise<number | null> {
 	const now = Date.now();
 	if (state.tip !== null && now - state.tipAt < TIP_TTL_MS) return state.tip;
 	try {
-		const tip = await getChain().esplora.getTipHeight();
+		// Electrum-backed, TTL-cached tip (cairn-zoz8) — no third-party esplora call.
+		const tip = (await getChain().getTip()).height;
 		if (Number.isFinite(tip) && tip >= 0) {
 			state.tip = tip;
 			state.tipAt = now;

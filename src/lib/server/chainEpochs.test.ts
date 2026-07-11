@@ -2,16 +2,22 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { getEpochStrip, epochIndexForHeight, resetEpochStripCache } from './chainEpochs';
 
 // chainEpochs resolves the chain via getChain() and persists through the
-// settings module; stub both so no db/network code loads.
+// settings module; stub both so no db/network code loads. After Esplora-removal
+// Wave 2 the module reaches the chain through the backend-agnostic ChainService
+// seams — getTip() and getBlockTimeAtHeight() (Electrum-backed) — with the
+// all-time retarget-history endpoint still an optional esplora-only source.
 const esplora = {
-	getTipHeight: vi.fn<() => Promise<number>>(),
-	getDifficultyHistory: vi.fn<(interval: string) => Promise<unknown[]>>(),
-	getBlockHashAtHeight: vi.fn<(h: number) => Promise<string>>(),
-	getBlockByHash: vi.fn<(hash: string) => Promise<{ timestamp: number }>>()
+	getDifficultyHistory: vi.fn<(interval: string) => Promise<unknown[]>>()
 };
+const chainGetTip = vi.fn<() => Promise<{ height: number; hash: string }>>();
+const chainGetBlockTimeAtHeight = vi.fn<(h: number) => Promise<number>>();
 
 vi.mock('$lib/server/chain', () => ({
-	getChain: () => ({ esplora })
+	getChain: () => ({
+		esplora,
+		getTip: chainGetTip,
+		getBlockTimeAtHeight: chainGetBlockTimeAtHeight
+	})
 }));
 
 const settingsStore = new Map<string, string>();
@@ -67,7 +73,7 @@ describe('getEpochStrip — retarget-history source', () => {
 	const TIP = TIP_EPOCH * EPOCH + 100;
 
 	beforeEach(() => {
-		esplora.getTipHeight.mockResolvedValue(TIP);
+		chainGetTip.mockResolvedValue({ height: TIP, hash: 'tip' });
 		esplora.getDifficultyHistory.mockResolvedValue(makeHistory(TIP_EPOCH));
 	});
 
@@ -138,32 +144,31 @@ describe('getEpochStrip — boundary-blocks fallback', () => {
 	const TIP = TIP_EPOCH * EPOCH + 653;
 
 	beforeEach(() => {
-		esplora.getTipHeight.mockResolvedValue(TIP);
-		// Plain esplora: no retarget-history endpoint.
+		chainGetTip.mockResolvedValue({ height: TIP, hash: 'tip' });
+		// No retarget-history endpoint → fall through to the Electrum boundary-block
+		// timestamps (getBlockTimeAtHeight), the source that works on any backend.
 		esplora.getDifficultyHistory.mockRejectedValue(new Error('404'));
-		esplora.getBlockHashAtHeight.mockImplementation(async (h) => `hash-${h}`);
-		esplora.getBlockByHash.mockImplementation(async (hash) => {
-			const height = Number(hash.slice(5));
-			return { timestamp: GENESIS_TIME + (height / EPOCH) * TWO_WEEKS };
-		});
+		chainGetBlockTimeAtHeight.mockImplementation(async (h) =>
+			GENESIS_TIME + (h / EPOCH) * TWO_WEEKS
+		);
 	});
 
-	it('reads the block at each boundary height instead', async () => {
+	it('reads the block-header timestamp at each boundary height instead', async () => {
 		const strip = await getEpochStrip();
 		expect(strip).not.toBeNull();
 		expect(strip!.source).toBe('boundary-blocks');
 		expect(strip!.epochs).toHaveLength(TIP_EPOCH + 1);
 		expect(strip!.epochs.at(-1)!.xEnd).toBeCloseTo(1, 10);
 		// One fetch per boundary (0..tipEpoch), then cached.
-		expect(esplora.getBlockHashAtHeight).toHaveBeenCalledTimes(TIP_EPOCH + 1);
+		expect(chainGetBlockTimeAtHeight).toHaveBeenCalledTimes(TIP_EPOCH + 1);
 		await getEpochStrip();
-		expect(esplora.getBlockHashAtHeight).toHaveBeenCalledTimes(TIP_EPOCH + 1);
+		expect(chainGetBlockTimeAtHeight).toHaveBeenCalledTimes(TIP_EPOCH + 1);
 	});
 });
 
 describe('getEpochStrip — unreachable chain', () => {
 	it('returns null (callers hide the strip) when the tip is unavailable', async () => {
-		esplora.getTipHeight.mockRejectedValue(new Error('electrum down'));
+		chainGetTip.mockRejectedValue(new Error('electrum down'));
 		expect(await getEpochStrip()).toBeNull();
 	});
 });
