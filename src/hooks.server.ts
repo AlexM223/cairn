@@ -2,6 +2,7 @@ import { error, redirect } from '@sveltejs/kit';
 import type { Handle, HandleServerError } from '@sveltejs/kit';
 import { randomBytes } from 'node:crypto';
 import { getSessionUser, SESSION_COOKIE, bootstrapAdminFromEnv, cookieSecure } from '$lib/server/auth';
+import { seedChainConfigFromEnv } from '$lib/server/chainEnvSeed';
 import { resolveAllFlags } from '$lib/server/featureFlags/resolve';
 import { appGateRedirect } from '$lib/server/appGate';
 import { childLogger } from '$lib/server/logger';
@@ -98,6 +99,19 @@ async function init(): Promise<void> {
 		await bootstrapAdminFromEnv();
 	} catch (e) {
 		errLog.error({ err: e }, 'admin bootstrap from env failed');
+	}
+
+	// Non-destructive chain-backend (Electrum/Core RPC) settings seed from env
+	// (cairn-loq7) — Umbrel's bitcoin/electrs app deps arrive here as
+	// CAIRN_ELECTRUM_*/CAIRN_CORE_RPC_* container env vars. Must run before
+	// anything below that can construct the ChainService singleton
+	// (startAddressWatcher/startFirstSync/startPortfolioWarm all call
+	// getChain()), so it's synchronous and placed right after the admin
+	// bootstrap, before any watcher starts. Never throws.
+	try {
+		seedChainConfigFromEnv();
+	} catch (e) {
+		errLog.error({ err: e }, 'chain config env seed failed');
 	}
 
 	// Decide instanceMode ('solo' | 'team') for installs that predate the setting.
