@@ -831,6 +831,23 @@ export class ChainService {
 				return await this.getTxViaCore(this.core, txid);
 			} catch (e) {
 				if (e instanceof CoreRpcError && (e.code === -5 || e.code === -8)) {
+					// -5/-8 here is ambiguous: it's Core's code for BOTH "genuinely no such
+					// tx" and "this tx isn't in the mempool/wallet and Core has no -txindex
+					// to look up an arbitrary confirmed one" (the exact scenario an
+					// explicitly-configured Esplora fallback exists to cover — an indexed
+					// Esplora/electrs backend can serve it even when Core can't). Try that
+					// fallback before declaring not-found; only give up as not-found if
+					// Esplora also misses (or there is none configured).
+					if (this.esplora) {
+						try {
+							return await this.getTxViaEsplora(this.esplora, txid);
+						} catch (e2) {
+							log.debug(
+								{ err: e2, txid },
+								'esplora fallback also failed after Core -5/-8; reporting not-found'
+							);
+						}
+					}
 					throw new Error(`Transaction not found: ${txid}`);
 				}
 				if (!this.esplora) throw e;

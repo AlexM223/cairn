@@ -1064,6 +1064,35 @@ describe('getTx via Bitcoin Core', () => {
 
 		await expect(svc.getTx(CORE_TX.txid)).rejects.toThrow(/not found/i);
 	});
+
+	// A Core node without -txindex reports the SAME code -5 for "genuinely no such
+	// tx" and "confirmed tx exists but isn't in the mempool/wallet and Core has no
+	// index to find it". An explicitly-configured Esplora backend can still serve
+	// the second case (electrs/mempool index everything) — that's the whole reason
+	// the fallback exists — so a -5/-8 must try it before declaring not-found.
+	it('falls back to esplora on a Core -5/-8 (e.g. no -txindex) before declaring not-found', async () => {
+		const core = makeCoreStub();
+		core.call.mockRejectedValue(new CoreRpcError(-5, 'getrawtransaction', 'No such tx. Use -txindex.'));
+		const esplora = makeEsploraStub();
+		const svc = makeCoreService(core);
+		Object.assign(svc, { esplora });
+
+		const tx = await svc.getTx(ESPLORA_TX.txid);
+
+		expect(esplora.getTx).toHaveBeenCalledWith(ESPLORA_TX.txid);
+		expect(tx.txid).toBe(ESPLORA_TX.txid);
+	});
+
+	it('still reports not-found when esplora ALSO misses after a Core -5/-8', async () => {
+		const core = makeCoreStub();
+		core.call.mockRejectedValue(new CoreRpcError(-5, 'getrawtransaction', 'No such tx'));
+		const esplora = makeEsploraStub();
+		esplora.getTx.mockRejectedValue(new Error('esplora: also not found'));
+		const svc = makeCoreService(core);
+		Object.assign(svc, { esplora });
+
+		await expect(svc.getTx(CORE_TX.txid)).rejects.toThrow(/not found/i);
+	});
 });
 
 describe('getBlock via Bitcoin Core', () => {
