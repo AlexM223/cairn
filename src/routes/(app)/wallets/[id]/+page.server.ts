@@ -1,4 +1,4 @@
-import { error, fail, redirect } from '@sveltejs/kit';
+import { error, fail, isHttpError, redirect } from '@sveltejs/kit';
 import QRCode from 'qrcode';
 import { getWallet, deleteWallet, getLabels, nextReceiveAddress } from '$lib/server/wallets';
 import { listTransactions } from '$lib/server/transactions';
@@ -71,23 +71,26 @@ export const actions: Actions = {
 		const currentRaw = form.get('current');
 		const current = currentRaw == null ? NaN : Number(currentRaw);
 
-		let next: { address: string; path: string; index: number } | null;
 		try {
-			next = await nextReceiveAddress(
+			const next = await nextReceiveAddress(
 				locals.user!.id,
 				id,
 				Number.isInteger(current) ? current : undefined
 			);
+			if (!next) error(404, 'Wallet not found');
+
+			const qr = await QRCode.toDataURL(next.address, QR_OPTS);
+			return { receive: { ...next, qr } };
 		} catch (e) {
+			// The 404 above is a SvelteKit HttpError, not a connectivity failure --
+			// let it propagate to the error boundary instead of being reported as a
+			// degraded 502 form response.
+			if (isHttpError(e)) throw e;
 			return fail(502, {
 				receiveError:
 					e instanceof Error ? e.message : 'Could not reach the Electrum server.'
 			});
 		}
-		if (!next) error(404, 'Wallet not found');
-
-		const qr = await QRCode.toDataURL(next.address, QR_OPTS);
-		return { receive: { ...next, qr } };
 	},
 
 	delete: async ({ params, locals }) => {

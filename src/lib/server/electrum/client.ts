@@ -176,8 +176,10 @@ export class ElectrumClient extends EventEmitter {
 			// every caller up the chain (scanWallet, getWalletDetail/listWallets, the
 			// streamed page load) hangs with it (cairn-vn48). This timer is separate
 			// from that idle timeout and only covers the connect/handshake phase. The
-			// SOCKS5 path is untouched — it already gets its own connect timeout via
-			// SocksClient's `timeout` option.
+			// SOCKS5 CONNECT phase already gets its own bound via SocksClient's
+			// `timeout` option; the TLS handshake negotiated over an established SOCKS5
+			// tunnel is armed with this same timer below, since SocksClient's timeout
+			// doesn't cover it (cairn-ocs9).
 			let connectTimer: NodeJS.Timeout | null = null;
 			const armConnectTimeout = (): void => {
 				connectTimer = setTimeout(() => {
@@ -300,6 +302,15 @@ export class ElectrumClient extends EventEmitter {
 							return;
 						}
 						if (this.useTls) {
+							// The SOCKS CONNECT above is already bounded by SocksClient's
+							// `timeout` option, but that only covers reaching the proxy and
+							// tunneling to the destination -- the TLS handshake negotiated
+							// over the tunnel afterward had no deadline of its own. A backend
+							// that completes the tunnel then stalls the handshake left this
+							// promise pending forever, wedging the whole pool (cairn-ocs9,
+							// follow-up to cairn-vn48). Same timer, same arm/disarm/fail
+							// machinery as the direct branches below.
+							armConnectTimeout();
 							socket = wrapTls(tunnel);
 							attach(socket);
 						} else {

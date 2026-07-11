@@ -812,4 +812,50 @@ describe('ElectrumClient', () => {
 			clearSpy.mockRestore();
 		}
 	});
+
+	it('rejects instead of hanging forever when the TLS handshake over an established SOCKS5 tunnel never completes (cairn-ocs9)', async () => {
+		const timeoutMs = 500;
+		// A real proxy and a real upstream so SocksClient.createConnection actually
+		// completes the SOCKS CONNECT and hands back a live tunnel -- only the TLS
+		// handshake negotiated over that tunnel is faked, since that's the phase
+		// with no deadline before this fix.
+		const upstream = await withServer(() => {});
+		const proxy = await startSocks5Proxy();
+		cleanups.push(() => proxy.close());
+
+		const fakeSocket = makeFakeConnectingSocket();
+		// tls.connect(options, onReady) -- simulate a stalled handshake by never
+		// invoking onReady and never emitting 'error'/'close'.
+		const tlsConnectSpy = vi
+			.spyOn(tls, 'connect')
+			.mockImplementation((() => fakeSocket as unknown as tls.TLSSocket) as unknown as typeof tls.connect);
+
+		vi.useFakeTimers();
+		try {
+			const client = new ElectrumClient({
+				host: '127.0.0.1',
+				port: upstream.port,
+				tls: true,
+				timeoutMs,
+				socks5Host: '127.0.0.1',
+				socks5Port: proxy.port
+			});
+			cleanups.push(() => client.close());
+
+			const assertion = expect(client.request('server.ping')).rejects.toThrow(
+				new RegExp(`Electrum connect to 127\\.0\\.0\\.1:${upstream.port} timed out after ${timeoutMs}ms`)
+			);
+			// Let the real SOCKS CONNECT (async IO, real timers underneath) settle
+			// before advancing the faked connect-timeout clock past it.
+			await vi.waitFor(() => expect(tlsConnectSpy).toHaveBeenCalled(), { timeout: 2000 });
+			await vi.advanceTimersByTimeAsync(timeoutMs);
+			await assertion;
+
+			// The stalled TLS socket must be torn down, not left dangling.
+			expect(fakeSocket.destroy).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+			tlsConnectSpy.mockRestore();
+		}
+	}, 8000);
 });
