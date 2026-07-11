@@ -2,15 +2,19 @@
 
 import { getChain } from './chain';
 import { EsploraHttpError } from './chain/esplora';
+import { CoreRpcError } from './bitcoinCore/client';
 import { isExplorerAddress } from './bitcoin/xpub';
 import type { SearchResult } from '$lib/types';
 
 /**
  * True when an upstream chain error means "no such object" (or a malformed id)
- * rather than "chain data sources unreachable".
+ * rather than "chain data sources unreachable". Backend-agnostic: covers Esplora
+ * HTTP 404/400, Bitcoin Core's not-found/invalid-param codes (-5 / -8), and the
+ * generic "not found" message ChainService throws for a Core miss.
  */
 export function isNotFoundError(e: unknown): boolean {
 	if (e instanceof EsploraHttpError) return e.status === 404 || e.status === 400;
+	if (e instanceof CoreRpcError) return e.code === -5 || e.code === -8;
 	return e instanceof Error && /not found/i.test(e.message);
 }
 
@@ -23,22 +27,47 @@ export function chainErrorMessage(e: unknown): string {
 const HEIGHT_RE = /^\d{1,9}$/;
 const HEX64_RE = /^[0-9a-fA-F]{64}$/;
 
+/**
+ * Total wall-clock budget for a whole classify pass. A 64-hex query can chain a
+ * tip/tx/block lookup; with a healthy local Core/Electrum these are fast, but a
+ * MISCONFIGURED backend must never let first paint hang on a stack of full request
+ * timeouts (cairn-zoz8) — on budget exhaustion we return the 'unknown' result the
+ * Explorer already renders as "couldn't classify / chain unreachable".
+ */
+const CLASSIFY_BUDGET_MS = 4_000;
+
+/** Resolve to `fallback` if `p` doesn't settle within the remaining budget. */
+function withBudget<T>(p: Promise<T>, deadline: number, fallback: T): Promise<T> {
+	const remaining = Math.max(0, deadline - Date.now());
+	return Promise.race([
+		p,
+		new Promise<T>((resolve) => {
+			const t = setTimeout(() => resolve(fallback), remaining);
+			t.unref?.();
+		})
+	]);
+}
+
 /** Classify a search query into block / tx / address / unknown. Never throws. */
 export async function classifySearch(q: string): Promise<SearchResult> {
 	const query = q.trim();
 	const unknown: SearchResult = { type: 'unknown', redirect: null, query };
 	if (query === '') return unknown;
+	const deadline = Date.now() + CLASSIFY_BUDGET_MS;
 
 	// Plain number: block height, if it isn't beyond the chain tip.
 	if (HEIGHT_RE.test(query)) {
 		const height = parseInt(query, 10);
-		try {
-			const tip = await getChain().getTip();
-			if (height > tip.height + 1) return unknown;
-		} catch {
-			// Chain unreachable — classify optimistically; the block page will
-			// surface the connectivity error itself.
-		}
+		// Optimistic sentinel: on unreachable OR budget-exhausted tip, classify as a
+		// block height anyway (the block page surfaces any connectivity error itself).
+		const tip = await withBudget(
+			getChain()
+				.getTip()
+				.catch(() => null),
+			deadline,
+			null
+		);
+		if (tip && height > tip.height + 1) return unknown;
 		return { type: 'block-height', redirect: `/explorer/block/${height}`, query };
 	}
 
@@ -50,18 +79,23 @@ export async function classifySearch(q: string): Promise<SearchResult> {
 			return { type: 'block-hash', redirect: `/explorer/block/${hex}`, query };
 		}
 		const chain = getChain();
-		try {
-			await chain.getTx(hex);
-			return { type: 'tx', redirect: `/explorer/tx/${hex}`, query };
-		} catch {
-			// Not a known tx (or unreachable) — fall through to block lookup.
-		}
-		try {
-			await chain.getBlock(hex);
-			return { type: 'block-hash', redirect: `/explorer/block/${hex}`, query };
-		} catch {
-			return unknown;
-		}
+		const TX = Symbol('tx-miss');
+		const tx = await withBudget(
+			chain.getTx(hex).catch(() => TX),
+			deadline,
+			TX
+		);
+		if (tx !== TX) return { type: 'tx', redirect: `/explorer/tx/${hex}`, query };
+		// Not a known tx (or unreachable/timed out) — fall through to block lookup
+		// with whatever budget remains.
+		const BLK = Symbol('block-miss');
+		const block = await withBudget(
+			chain.getBlock(hex).catch(() => BLK),
+			deadline,
+			BLK
+		);
+		if (block !== BLK) return { type: 'block-hash', redirect: `/explorer/block/${hex}`, query };
+		return unknown;
 	}
 
 	// Use isExplorerAddress (not the mainnet-only isValidAddress) so the search

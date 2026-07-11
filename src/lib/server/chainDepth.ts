@@ -14,10 +14,11 @@
 // We default to the LEGACY, more conservative count — warning early on a
 // cluster-mempool node is a harmless false positive (its real ceiling is
 // looser), whereas warning late on a legacy node means an unexplained broadcast
-// rejection, the worse outcome. The only signal we have is esplora's v1
-// /cpfp/:txid ancestor/descendant lists (via ChainService.getCpfpInfo); on a
-// backend without that endpoint we degrade silently (no warning), exactly like
-// every other v1-only method.
+// rejection, the worse outcome. The signal comes from ChainService.getCpfpInfo —
+// now backed by the operator's own Bitcoin Core mempool (getmempoolentry +
+// getmempoolancestors/descendants, cairn-zoz8.12), with an optional Esplora
+// fallback. When neither backend can serve it (no Core RPC configured) getCpfpInfo
+// returns null and we degrade silently (no warning), as before.
 
 import { getChain } from './chain';
 import { childLogger } from './logger';

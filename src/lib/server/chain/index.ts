@@ -1,9 +1,14 @@
 // ChainService: the facade routes and features import for all chain data.
 // Tip, recent blocks, fee estimates, difficulty/hashrate, arbitrary address
 // lookups, node liveness and wallet balances+history all come from the operator's
-// own Electrum protocol server; the remaining explorer-rich views (full block/tx
-// detail, mempool projections, RBF/CPFP, prices) still use an esplora-compatible
-// HTTP API until their own migrations land.
+// own Electrum protocol server. The explorer-rich views (full block/tx detail,
+// mempool summary/projections, CPFP) come from the operator's own Bitcoin Core
+// node over JSON-RPC (Esplora-removal Wave 2, cairn-zoz8.10/.11/.12/.14). An
+// Esplora-compatible HTTP API is kept ONLY as an optional last-resort fallback
+// for operators who explicitly configured an esploraUrl — when none is set it is
+// never constructed and never dialed, so an Umbrel-style deploy (local Core RPC +
+// electrs, no route to the public internet) is fully functional and pays no
+// third-party timeout penalty.
 
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
@@ -18,6 +23,8 @@ import { resetPackageRelaySupport } from '../packageRelay';
 import { recordActivity } from '../activity';
 import { childLogger } from '../logger';
 import { EsploraApi } from './esplora';
+import { CoreRpcClient, CoreRpcError } from '../bitcoinCore/client';
+import { readMempoolTrend } from '../mempoolSamples';
 import { cachedTip, cachedFeeEstimates, resetChainCaches } from './cache';
 import type { EsploraBlock, EsploraTx } from './esplora';
 import type {
@@ -260,6 +267,266 @@ function toTxDetail(tx: EsploraTx, tipHeight: number, outspends?: (boolean | nul
 	};
 }
 
+// --------------------------------------------------------- Bitcoin Core mapping
+
+/**
+ * Loose shape of a decoded transaction from Bitcoin Core's
+ * `getrawtransaction(txid, verbosity)`. At verbosity 2/3 each non-coinbase input
+ * carries a `prevout` (with the spent output's value in BTC + scriptPubKey), so
+ * the fee and the input addresses/values can be computed without a second lookup.
+ * Values are BTC floats (not sats) — always convert with btcToSats.
+ */
+interface CoreScriptPubKey {
+	hex?: string;
+	address?: string;
+	addresses?: string[];
+	type?: string;
+}
+interface CoreTxVout {
+	value: number; // BTC
+	n?: number;
+	scriptPubKey?: CoreScriptPubKey;
+}
+interface CoreTxPrevout {
+	generated?: boolean;
+	height?: number;
+	value?: number; // BTC
+	scriptPubKey?: CoreScriptPubKey;
+}
+interface CoreTxVin {
+	txid?: string;
+	vout?: number;
+	coinbase?: string;
+	scriptSig?: { hex?: string };
+	sequence?: number;
+	txinwitness?: string[];
+	prevout?: CoreTxPrevout;
+}
+interface CoreRawTx {
+	txid: string;
+	hash?: string;
+	version: number;
+	size: number;
+	vsize: number;
+	weight: number;
+	locktime: number;
+	vin: CoreTxVin[];
+	vout: CoreTxVout[];
+	blockhash?: string;
+	confirmations?: number;
+	time?: number;
+	blocktime?: number;
+}
+
+/** Bitcoin Core `getblock(hash, 1)` — decoded header + txid list + size/weight. */
+interface CoreBlock {
+	hash: string;
+	confirmations?: number;
+	height: number;
+	version: number;
+	merkleroot: string;
+	time: number;
+	nonce: number;
+	bits: string; // hex string already
+	difficulty: number;
+	nTx: number;
+	previousblockhash?: string;
+	size: number;
+	weight: number;
+	tx: string[];
+}
+
+/** Subset of `getblockstats` fields we consume (fee amounts already in sats). */
+interface CoreBlockStats {
+	feerate_percentiles?: number[]; // [10,25,50,75,90] sat/vB
+	totalfee?: number; // sats
+	subsidy?: number; // sats
+}
+
+/**
+ * Map a Bitcoin Core decoded transaction to the app's TxDetail shape. Values are
+ * converted BTC→sats. When `block` is supplied (block-tx listing) the tx is known
+ * to be confirmed in that block, so height/hash/time come from it; otherwise they
+ * are derived from the tx's own `confirmations`/`blockhash`. `outspends` (from
+ * per-output gettxout) sets each vout's spent flag; absent → null (unknown).
+ */
+function toTxDetailFromCore(
+	tx: CoreRawTx,
+	opts: {
+		tipHeight?: number | null;
+		outspends?: (boolean | null)[];
+		block?: { height: number; hash: string; time: number };
+	} = {}
+): TxDetail {
+	const coinbase = tx.vin.some((v) => typeof v.coinbase === 'string');
+	const confirmations = typeof tx.confirmations === 'number' ? tx.confirmations : 0;
+	const confirmed = opts.block !== undefined || confirmations > 0 || !!tx.blockhash;
+
+	let blockHeight: number | null;
+	let blockHash: string | null;
+	let blockTime: number | null;
+	let confs: number;
+	if (opts.block) {
+		blockHeight = opts.block.height;
+		blockHash = opts.block.hash;
+		blockTime = opts.block.time;
+		confs =
+			opts.tipHeight != null ? Math.max(1, opts.tipHeight - opts.block.height + 1) : confirmations;
+	} else {
+		// Core doesn't return height directly; derive it from tip − confirmations + 1.
+		blockHeight =
+			confirmed && opts.tipHeight != null && confirmations > 0
+				? opts.tipHeight - confirmations + 1
+				: null;
+		blockHash = tx.blockhash ?? null;
+		blockTime = tx.blocktime ?? null;
+		confs = confirmed ? confirmations : 0;
+	}
+
+	// Fee = Σ prevout − Σ vout, computable only when every prevout is present
+	// (verbosity 2/3). Coinbase has no fee.
+	let fee: number | null = null;
+	if (!coinbase && tx.vin.length > 0) {
+		let totalIn = 0;
+		let known = true;
+		for (const v of tx.vin) {
+			if (v.prevout && typeof v.prevout.value === 'number') totalIn += btcToSats(v.prevout.value);
+			else {
+				known = false;
+				break;
+			}
+		}
+		if (known) {
+			const totalOut = tx.vout.reduce((s, o) => s + btcToSats(o.value), 0);
+			fee = totalIn - totalOut;
+		}
+	}
+
+	const vin: TxVin[] = tx.vin.map((v) => {
+		if (typeof v.coinbase === 'string') {
+			return {
+				txid: null,
+				vout: null,
+				address: null,
+				value: null,
+				prevScriptPubKey: null,
+				coinbase: true,
+				scriptSig: v.coinbase || null,
+				witness: v.txinwitness?.length ? v.txinwitness : null
+			};
+		}
+		const po = v.prevout;
+		const spk = po?.scriptPubKey;
+		return {
+			txid: v.txid ?? null,
+			vout: v.vout ?? null,
+			address: spk?.address ?? spk?.addresses?.[0] ?? null,
+			value: po && typeof po.value === 'number' ? btcToSats(po.value) : null,
+			prevScriptPubKey: spk?.hex ?? null,
+			coinbase: false,
+			scriptSig: v.scriptSig?.hex || null,
+			witness: v.txinwitness?.length ? v.txinwitness : null
+		};
+	});
+
+	const vout: TxVout[] = tx.vout.map((v, i) => {
+		const spk = v.scriptPubKey;
+		return {
+			address: spk?.address ?? spk?.addresses?.[0] ?? null,
+			value: btcToSats(v.value),
+			scriptType: spk?.type ?? 'unknown',
+			scriptPubKey: spk?.hex ?? '',
+			spent: opts.outspends?.[i] ?? null
+		};
+	});
+
+	const segwit = tx.vin.some((v) => (v.txinwitness?.length ?? 0) > 0) || tx.weight < tx.size * 4;
+	const rbf = !coinbase && tx.vin.some((v) => (v.sequence ?? 0xffffffff) < 0xfffffffe);
+	const vsize = tx.vsize;
+
+	return {
+		txid: tx.txid,
+		confirmed,
+		blockHeight,
+		blockHash,
+		blockTime,
+		confirmations: confs,
+		size: tx.size,
+		vsize,
+		weight: tx.weight,
+		fee,
+		feeRate: fee !== null && vsize > 0 ? round2(fee / vsize) : null,
+		locktime: tx.locktime,
+		version: tx.version,
+		segwit,
+		rbf,
+		vin,
+		vout
+	};
+}
+
+/**
+ * Approximate mempool.space-style projected blocks from an Electrum fee histogram
+ * (`mempool.get_fee_histogram`: [feeRate sat/vB, vsize] pairs, highest rate
+ * first). Greedily fills 1,000,000-vB (one block's worth of virtual weight) blocks
+ * from the highest-fee backlog down; the final block absorbs the remaining tail.
+ * Approximate by design (cairn-zoz8.14) — nTx is estimated from vsize, medianFee
+ * is the vsize-weighted mean of the block's fee rates.
+ */
+function projectBlocksFromHistogram(hist: FeeHistogram): MempoolBlockProjection[] {
+	const BLOCK_VSIZE = 1_000_000;
+	const MAX_BLOCKS = 8;
+	const AVG_TX_VSIZE = 250; // rough — histogram carries no tx count
+	interface Bucket {
+		vsize: number;
+		fees: number;
+		min: number;
+		max: number;
+	}
+	const blocks: Bucket[] = [];
+	let cur: Bucket = { vsize: 0, fees: 0, min: Infinity, max: 0 };
+	const flush = () => {
+		if (cur.vsize > 0) blocks.push(cur);
+		cur = { vsize: 0, fees: 0, min: Infinity, max: 0 };
+	};
+	for (const entry of hist) {
+		if (!Array.isArray(entry) || entry.length < 2) continue;
+		const rate = entry[0];
+		let vs = entry[1];
+		if (!(rate > 0) || !(vs > 0)) continue;
+		while (vs > 0) {
+			// Once we're on the final allowed block, pour everything remaining into it.
+			if (blocks.length >= MAX_BLOCKS - 1) {
+				cur.vsize += vs;
+				cur.fees += rate * vs;
+				cur.min = Math.min(cur.min, rate);
+				cur.max = Math.max(cur.max, rate);
+				vs = 0;
+				break;
+			}
+			const space = BLOCK_VSIZE - cur.vsize;
+			const take = Math.min(vs, space);
+			cur.vsize += take;
+			cur.fees += rate * take;
+			cur.min = Math.min(cur.min, rate);
+			cur.max = Math.max(cur.max, rate);
+			vs -= take;
+			if (cur.vsize >= BLOCK_VSIZE) flush();
+		}
+	}
+	flush();
+	return blocks.map((b) => {
+		const lo = b.min === Infinity ? b.max : b.min;
+		return {
+			nTx: Math.max(1, Math.round(b.vsize / AVG_TX_VSIZE)),
+			vsize: b.vsize,
+			totalFees: Math.round(b.fees),
+			medianFee: round2(b.vsize > 0 ? b.fees / b.vsize : 0),
+			feeRange: [round2(lo), round2(b.max)]
+		};
+	});
+}
+
 // ------------------------------------------------------------------ ChainService
 
 export class ChainService {
@@ -268,7 +535,21 @@ export class ChainService {
 	// (cairn-ynfp). Subscriptions stay on the pool's primary connection; every
 	// call site is unaware it's pooled.
 	readonly electrum: ElectrumPool;
-	readonly esplora: EsploraApi;
+	/**
+	 * Optional last-resort Esplora backend — constructed ONLY when the operator
+	 * explicitly configured an esploraUrl (public mode, or a custom esplora_url).
+	 * Null on an Umbrel-style local-only deploy, so no chain method ever dials
+	 * (and pays a 12s timeout against) a third-party HTTP API that isn't there.
+	 */
+	readonly esplora: EsploraApi | null;
+	/**
+	 * The operator's own Bitcoin Core node over JSON-RPC — the primary source for
+	 * full block/tx detail, per-output spent-ness, mempool summary and CPFP. Null
+	 * when no coreRpcUrl is configured; the Electrum-backed methods keep working
+	 * and the Core-backed ones degrade (return null / throw a clear "needs Core
+	 * RPC" error the routes surface as the CoreRpcRequiredNotice empty-state).
+	 */
+	readonly core: CoreRpcClient | null;
 	private readonly config: ReturnType<typeof getChainConfig>;
 
 	constructor(config = getChainConfig()) {
@@ -290,14 +571,31 @@ export class ChainService {
 		);
 		// Surface connect/disconnect/new-block on the user activity feed + server log.
 		wireChainEvents(this.electrum);
-		this.esplora = new EsploraApi(config.esploraUrl, {
-			socks5Host: config.socks5Host,
-			socks5Port: config.socks5Port
-		});
+		this.esplora = config.esploraUrl
+			? new EsploraApi(config.esploraUrl, {
+					socks5Host: config.socks5Host,
+					socks5Port: config.socks5Port
+				})
+			: null;
+		this.core = config.coreRpcUrl
+			? new CoreRpcClient({
+					url: config.coreRpcUrl,
+					user: config.coreRpcUser,
+					pass: config.coreRpcPass,
+					socks5Host: config.socks5Host,
+					socks5Port: config.socks5Port
+				})
+			: null;
+	}
+
+	/** Whether a Bitcoin Core RPC backend is configured on this service. */
+	get coreConfigured(): boolean {
+		return this.core !== null;
 	}
 
 	close(): void {
 		this.electrum.close();
+		this.core?.close();
 	}
 
 	// ------------------------------------------------------------- explorer data
@@ -346,19 +644,101 @@ export class ChainService {
 		});
 	}
 
+	/**
+	 * Full block detail. Sourced from the operator's own Bitcoin Core node
+	 * (`getblockhash` + `getblock` verbosity 1, plus `getblockstats` for fee/reward
+	 * stats), falling back to an explicitly-configured Esplora backend, and finally
+	 * throwing a clear "needs Core RPC" error the block route renders as the
+	 * CoreRpcRequiredNotice empty-state (cairn-zoz8.10). Throws a not-found error
+	 * for an unknown hash/height so the search classifier can fall through.
+	 */
 	async getBlock(hashOrHeight: string | number): Promise<BlockDetail> {
+		if (this.core) {
+			try {
+				return await this.getBlockViaCore(this.core, hashOrHeight);
+			} catch (e) {
+				if (e instanceof CoreRpcError && (e.code === -5 || e.code === -8)) {
+					throw new Error(`Block not found: ${hashOrHeight}`);
+				}
+				if (!this.esplora) throw e;
+				log.debug({ err: e }, 'Core getBlock failed; falling back to esplora');
+			}
+		}
+		if (this.esplora) return this.getBlockViaEsplora(this.esplora, hashOrHeight);
+		throw new Error(
+			'Block detail requires a Bitcoin Core RPC connection (configure it in admin settings).'
+		);
+	}
+
+	private async getBlockViaCore(
+		core: CoreRpcClient,
+		hashOrHeight: string | number
+	): Promise<BlockDetail> {
+		const hash =
+			typeof hashOrHeight === 'number' || /^\d{1,7}$/.test(String(hashOrHeight))
+				? await core.getBlockHash(Number(hashOrHeight))
+				: String(hashOrHeight);
+		const b = (await core.getBlock(hash, 1)) as CoreBlock;
+
+		// Fee/reward stats are best-effort: getblockstats can be slow on very old
+		// blocks and is absent on pruned nodes below the block. Degrade to null.
+		let stats: CoreBlockStats | null = null;
+		try {
+			stats = (await core.getBlockStats(hash, [
+				'feerate_percentiles',
+				'totalfee',
+				'subsidy'
+			])) as CoreBlockStats;
+		} catch (e) {
+			log.debug({ err: e, height: b.height }, 'getblockstats unavailable (fees/reward null)');
+		}
+		const pct = stats?.feerate_percentiles;
+		const medianFee = Array.isArray(pct) && pct.length >= 3 ? round2(pct[2]) : null;
+		const feeRange: [number, number] | null =
+			Array.isArray(pct) && pct.length >= 5 ? [round2(pct[0]), round2(pct[4])] : null;
+		const totalFees = typeof stats?.totalfee === 'number' ? stats.totalfee : null;
+		const subsidy = typeof stats?.subsidy === 'number' ? stats.subsidy : null;
+		const reward = totalFees !== null && subsidy !== null ? subsidy + totalFees : null;
+
+		return {
+			height: b.height,
+			hash: b.hash,
+			time: b.time,
+			txCount: b.nTx,
+			size: b.size,
+			weight: b.weight,
+			medianFee,
+			feeRange,
+			// Miner attribution needs a maintained coinbase-tag database Cairn doesn't
+			// ship (cairn-zoz8.10) — omit rather than guess.
+			miner: undefined,
+			prevHash: b.previousblockhash ?? null,
+			merkleRoot: b.merkleroot,
+			nonce: b.nonce,
+			bits: b.bits, // Core returns nBits as a hex string already
+			difficulty: b.difficulty,
+			version: b.version,
+			totalFees,
+			reward
+		};
+	}
+
+	private async getBlockViaEsplora(
+		esplora: EsploraApi,
+		hashOrHeight: string | number
+	): Promise<BlockDetail> {
 		let hash: string;
 		if (typeof hashOrHeight === 'number' || /^\d{1,7}$/.test(String(hashOrHeight))) {
-			hash = await this.esplora.getBlockHashAtHeight(Number(hashOrHeight));
+			hash = await esplora.getBlockHashAtHeight(Number(hashOrHeight));
 		} else {
 			hash = String(hashOrHeight);
 		}
-		const block = await this.esplora.getBlockByHash(hash);
+		const block = await esplora.getBlockByHash(hash);
 
 		// mempool.space extras (fees, miner) live on the /v1/blocks summaries.
 		let extras: EsploraBlock['extras'];
 		try {
-			const summaries = await this.esplora.getBlocks(block.height);
+			const summaries = await esplora.getBlocks(block.height);
 			extras = summaries.find((b) => b.id === block.id)?.extras;
 		} catch (e) {
 			log.debug({ err: e, height: block.height }, 'block extras (fees/miner) unavailable');
@@ -381,27 +761,165 @@ export class ChainService {
 
 	/** Transactions of a block, 25 per page (page is 0-based). */
 	async getBlockTxs(hash: string, page = 0): Promise<{ txs: TxDetail[]; total: number }> {
-		const [block, rawTxs, tipHeight] = await Promise.all([
-			this.esplora.getBlockByHash(hash),
-			this.esplora.getBlockTxs(hash, page * BLOCK_TXS_PAGE_SIZE),
-			this.esplora.getTipHeight()
-		]);
-		return {
-			txs: rawTxs.map((tx) => toTxDetail(tx, tipHeight)),
-			total: block.tx_count
-		};
+		if (this.core) {
+			try {
+				return await this.getBlockTxsViaCore(this.core, hash, page);
+			} catch (e) {
+				if (!this.esplora) throw e;
+				log.debug({ err: e, hash }, 'Core getBlockTxs failed; falling back to esplora');
+			}
+		}
+		if (this.esplora) {
+			const esplora = this.esplora;
+			const [block, rawTxs, tipHeight] = await Promise.all([
+				esplora.getBlockByHash(hash),
+				esplora.getBlockTxs(hash, page * BLOCK_TXS_PAGE_SIZE),
+				esplora.getTipHeight()
+			]);
+			return {
+				txs: rawTxs.map((tx) => toTxDetail(tx, tipHeight)),
+				total: block.tx_count
+			};
+		}
+		throw new Error(
+			'Block transactions require a Bitcoin Core RPC connection (configure it in admin settings).'
+		);
 	}
 
+	private async getBlockTxsViaCore(
+		core: CoreRpcClient,
+		hash: string,
+		page: number
+	): Promise<{ txs: TxDetail[]; total: number }> {
+		const b = (await core.getBlock(hash, 1)) as CoreBlock;
+		const txids = Array.isArray(b.tx) ? b.tx : [];
+		const total = typeof b.nTx === 'number' ? b.nTx : txids.length;
+		// Every tx here is confirmed in THIS block, so pass the block context (no
+		// per-tx height guess) and derive tipHeight from the block's confirmations.
+		const tipHeight =
+			typeof b.confirmations === 'number' ? b.height + b.confirmations - 1 : null;
+		const blockCtx = { height: b.height, hash: b.hash, time: b.time };
+		const slice = txids.slice(page * BLOCK_TXS_PAGE_SIZE, page * BLOCK_TXS_PAGE_SIZE + BLOCK_TXS_PAGE_SIZE);
+		const txs = await Promise.all(
+			slice.map(async (txid) => {
+				// Passing the blockhash resolves any tx in the block WITHOUT needing
+				// txindex; verbosity 2 includes prevout so per-tx fees are exact. Older
+				// Core (pre-verbosity-int) rejects `2` — retry with verbose=true.
+				let raw: CoreRawTx;
+				try {
+					raw = await core.call<CoreRawTx>('getrawtransaction', [txid, 2, hash]);
+				} catch (e) {
+					if (!(e instanceof CoreRpcError)) throw e;
+					raw = await core.call<CoreRawTx>('getrawtransaction', [txid, true, hash]);
+				}
+				return toTxDetailFromCore(raw, { tipHeight, block: blockCtx });
+			})
+		);
+		return { txs, total };
+	}
+
+	/**
+	 * Full transaction detail. Sourced from the operator's own Bitcoin Core node
+	 * (`getrawtransaction` verbosity 2 — decoded, with prevout so fee + input
+	 * addresses are exact — plus per-output `gettxout` for spent-ness), falling back
+	 * to an explicitly-configured Esplora backend. Throws a not-found error for an
+	 * unknown txid so the search classifier and tx route can handle it.
+	 */
 	async getTx(txid: string): Promise<TxDetail> {
+		if (this.core) {
+			try {
+				return await this.getTxViaCore(this.core, txid);
+			} catch (e) {
+				if (e instanceof CoreRpcError && (e.code === -5 || e.code === -8)) {
+					// -5/-8 here is ambiguous: it's Core's code for BOTH "genuinely no such
+					// tx" and "this tx isn't in the mempool/wallet and Core has no -txindex
+					// to look up an arbitrary confirmed one" (the exact scenario an
+					// explicitly-configured Esplora fallback exists to cover — an indexed
+					// Esplora/electrs backend can serve it even when Core can't). Try that
+					// fallback before declaring not-found; only give up as not-found if
+					// Esplora also misses (or there is none configured).
+					if (this.esplora) {
+						try {
+							return await this.getTxViaEsplora(this.esplora, txid);
+						} catch (e2) {
+							log.debug(
+								{ err: e2, txid },
+								'esplora fallback also failed after Core -5/-8; reporting not-found'
+							);
+						}
+					}
+					throw new Error(`Transaction not found: ${txid}`);
+				}
+				if (!this.esplora) throw e;
+				log.debug({ err: e, txid }, 'Core getTx failed; falling back to esplora');
+			}
+		}
+		if (this.esplora) return this.getTxViaEsplora(this.esplora, txid);
+		throw new Error(
+			'Transaction detail requires a Bitcoin Core RPC connection (configure it in admin settings).'
+		);
+	}
+
+	private async getTxViaCore(core: CoreRpcClient, txid: string): Promise<TxDetail> {
+		// verbosity 2 gives decoded tx + prevout on each input (Core 25+). Older
+		// nodes reject `2` (expect a bool) — retry decoded (verbose=true), which
+		// loses prevout so fee/input-values degrade to null but the tx still renders.
+		let tx: CoreRawTx;
+		try {
+			tx = await core.call<CoreRawTx>('getrawtransaction', [txid, 2]);
+		} catch (e) {
+			if (e instanceof CoreRpcError && (e.code === -5 || e.code === -8)) throw e;
+			tx = (await core.getRawTransaction(txid, true)) as CoreRawTx;
+		}
+		const [tipHeight, outspends] = await Promise.all([
+			this.getTip()
+				.then((t) => t.height)
+				.catch(() => null),
+			this.coreOutspends(core, txid, tx.vout.length)
+		]);
+		return toTxDetailFromCore(tx, { tipHeight, outspends });
+	}
+
+	/**
+	 * Per-output spent-ness via Bitcoin Core `gettxout` (cairn-zoz8.11): null means
+	 * the output is spent or nonexistent — and since we already fetched this tx, it
+	 * exists, so null ⇒ spent. include_mempool=true so a mempool spend counts.
+	 * Concurrent, capped (a monster tx must not fan out into hundreds of RPCs), and
+	 * degrades any per-output failure to null (unknown). Core cannot report WHO
+	 * spent it — the UI contract is spent-boolean-only, no spender link.
+	 */
+	private async coreOutspends(
+		core: CoreRpcClient,
+		txid: string,
+		voutCount: number
+	): Promise<(boolean | null)[] | undefined> {
+		const MAX_OUTPUTS = 100;
+		if (voutCount === 0 || voutCount > MAX_OUTPUTS) return undefined;
+		try {
+			return await Promise.all(
+				Array.from({ length: voutCount }, (_, n) =>
+					core
+						.getTxOut(txid, n, true)
+						.then((o): boolean | null => o === null)
+						.catch((): boolean | null => null)
+				)
+			);
+		} catch (e) {
+			log.debug({ err: e, txid }, 'core outspends unavailable; spent-ness degraded to null');
+			return undefined;
+		}
+	}
+
+	private async getTxViaEsplora(esplora: EsploraApi, txid: string): Promise<TxDetail> {
 		// All three fetches ride the same round trip. Output spent-ness is a
 		// nice-to-have, so its promise carries its own catch — it resolves to
 		// `undefined` on failure rather than rejecting the whole Promise.all, which
 		// preserves the degrade-to-null behavior while keeping the fetch concurrent
 		// with tx/tipHeight instead of a second sequential trip (cairn-daej).
 		const [tx, tipHeight, outspends] = await Promise.all([
-			this.esplora.getTx(txid),
-			this.esplora.getTipHeight(),
-			this.esplora
+			esplora.getTx(txid),
+			esplora.getTipHeight(),
+			esplora
 				.getTxOutspends(txid)
 				.then((os): (boolean | null)[] | undefined => os.map((o) => o.spent ?? null))
 				.catch((e) => {
@@ -430,8 +948,17 @@ export class ChainService {
 	/**
 	 * Replace-by-fee timeline for a transaction, oldest version first.
 	 * Null when the backend has no RBF index or the tx was never replaced.
+	 *
+	 * Bitcoin Core exposes no HISTORICAL replacement lineage (only whether a live
+	 * mempool tx is bip125-replaceable, which TxDetail.rbf already carries from the
+	 * input sequences). A real replacement chain needs a forward-looking watcher
+	 * that records old→new txids as they happen (cairn-zoz8.13, deferred) — until
+	 * then this is available only from an explicitly-configured Esplora backend and
+	 * degrades to null otherwise. The tx page's RBF section is already gated on a
+	 * null result, so this degrades cleanly.
 	 */
 	async getTxRbfInfo(txid: string): Promise<RbfInfo | null> {
+		if (!this.esplora) return null;
 		const raw = (await this.esplora.getTxRbf(txid)) as {
 			replacements?: RbfTreeNode | null;
 			replaces?: unknown[];
@@ -461,9 +988,64 @@ export class ChainService {
 		return { chain, fullRbf };
 	}
 
-	/** CPFP package context for an unconfirmed tx; null when not applicable. */
+	/**
+	 * CPFP package context for an unconfirmed tx; null when not applicable.
+	 * Sourced from the operator's own Bitcoin Core mempool
+	 * (`getmempoolentry` + `getmempoolancestors`/`getmempooldescendants`,
+	 * cairn-zoz8.12), falling back to an explicitly-configured Esplora backend.
+	 * A confirmed/unknown tx (not in the mempool) yields null.
+	 */
 	async getCpfpInfo(txid: string): Promise<CpfpInfo | null> {
-		const raw = (await this.esplora.getCpfp(txid)) as {
+		if (this.core) {
+			try {
+				return await this.getCpfpViaCore(this.core, txid);
+			} catch (e) {
+				// -5 (not in mempool) is the normal confirmed/unknown case → no CPFP.
+				if (e instanceof CoreRpcError && (e.code === -5 || e.code === -8)) return null;
+				if (!this.esplora) {
+					log.debug({ err: e, txid }, 'core CPFP lookup failed; no CPFP context');
+					return null;
+				}
+				log.debug({ err: e, txid }, 'core CPFP lookup failed; trying esplora');
+			}
+		}
+		if (this.esplora) return this.getCpfpViaEsplora(this.esplora, txid);
+		return null;
+	}
+
+	private async getCpfpViaCore(core: CoreRpcClient, txid: string): Promise<CpfpInfo | null> {
+		// getmempoolentry throws -5 when the tx isn't in the mempool (confirmed or
+		// unknown) — the caller maps that to null.
+		const entry = await core.getMempoolEntry(txid);
+		const [anc, desc] = await Promise.all([
+			core.call<string[]>('getmempoolancestors', [txid]).catch(() => [] as string[]),
+			core.call<string[]>('getmempooldescendants', [txid]).catch(() => [] as string[])
+		]);
+		const ancestors = (Array.isArray(anc) ? anc : []).filter(
+			(t): t is string => typeof t === 'string' && t !== txid
+		);
+		const descendants = (Array.isArray(desc) ? desc : []).filter(
+			(t): t is string => typeof t === 'string' && t !== txid
+		);
+		if (ancestors.length === 0 && descendants.length === 0) return null;
+
+		// The mining-relevant rate of this tx's cluster: the higher of its
+		// ancestor-package rate (this tx + unconfirmed parents it depends on) and its
+		// descendant-package rate (this tx boosted by a fee-paying child). Core fee
+		// fields are BTC; sizes are vbytes.
+		const ancRate =
+			entry.ancestorsize > 0 ? btcToSats(entry.fees.ancestor) / entry.ancestorsize : 0;
+		const descRate =
+			entry.descendantsize > 0 ? btcToSats(entry.fees.descendant) / entry.descendantsize : 0;
+		return {
+			effectiveFeeRate: round2(Math.max(ancRate, descRate)),
+			ancestors,
+			descendants
+		};
+	}
+
+	private async getCpfpViaEsplora(esplora: EsploraApi, txid: string): Promise<CpfpInfo | null> {
+		const raw = (await esplora.getCpfp(txid)) as {
 			ancestors?: { txid?: string }[];
 			descendants?: { txid?: string }[];
 			bestDescendant?: { txid?: string } | null;
@@ -623,9 +1205,28 @@ export class ChainService {
 		);
 	}
 
+	/**
+	 * Current mempool size/backlog. Sourced from the operator's own Bitcoin Core
+	 * node (`getmempoolinfo`, cairn-zoz8), falling back to an explicitly-configured
+	 * Esplora backend. Core reports the total fee in BTC — convert to sats.
+	 */
 	async getMempoolSummary(): Promise<MempoolSummary> {
-		const m = await this.esplora.getMempool();
-		return { txCount: m.count, vsize: m.vsize, totalFees: m.total_fee };
+		if (this.core) {
+			try {
+				const m = await this.core.getMempoolInfo();
+				return { txCount: m.size, vsize: m.bytes, totalFees: btcToSats(m.total_fee) };
+			} catch (e) {
+				if (!this.esplora) throw e;
+				log.debug({ err: e }, 'Core getmempoolinfo failed; falling back to esplora');
+			}
+		}
+		if (this.esplora) {
+			const m = await this.esplora.getMempool();
+			return { txCount: m.count, vsize: m.vsize, totalFees: m.total_fee };
+		}
+		throw new Error(
+			'Mempool summary requires a Bitcoin Core RPC connection (configure it in admin settings).'
+		);
 	}
 
 	/**
@@ -641,34 +1242,51 @@ export class ChainService {
 		return Array.isArray(histogram) && histogram.length > 0 ? histogram : null;
 	}
 
-	/** Projected next blocks by fee rate; null on plain esplora backends. */
+	/**
+	 * Projected next blocks by fee rate; null when no mempool backlog data is
+	 * available. Derived from the operator's own Electrum fee histogram
+	 * (`mempool.get_fee_histogram`) by greedily packing 1 MvB blocks
+	 * (projectBlocksFromHistogram, cairn-zoz8.14) — approximate but fully local, so
+	 * it works on an Umbrel-style deploy with no third-party API. Falls back to an
+	 * explicitly-configured Esplora backend's own projection when the histogram is
+	 * empty/unavailable.
+	 */
 	async getMempoolBlocks(): Promise<MempoolBlockProjection[] | null> {
-		const blocks = await this.esplora.getMempoolBlocks();
-		if (!blocks) return null;
-		return blocks.map((b) => ({
-			nTx: b.nTx,
-			vsize: b.blockVSize,
-			totalFees: b.totalFees,
-			medianFee: round2(b.medianFee),
-			feeRange:
-				b.feeRange.length >= 2
-					? [round2(b.feeRange[0]), round2(b.feeRange[b.feeRange.length - 1])]
-					: [round2(b.medianFee), round2(b.medianFee)]
-		}));
+		let hist: FeeHistogram | null = null;
+		try {
+			hist = await this.getFeeHistogram();
+		} catch (e) {
+			log.debug({ err: e }, 'fee histogram unavailable for mempool-block projection');
+		}
+		if (hist && hist.length > 0) return projectBlocksFromHistogram(hist);
+
+		if (this.esplora) {
+			const blocks = await this.esplora.getMempoolBlocks();
+			if (!blocks) return null;
+			return blocks.map((b) => ({
+				nTx: b.nTx,
+				vsize: b.blockVSize,
+				totalFees: b.totalFees,
+				medianFee: round2(b.medianFee),
+				feeRange:
+					b.feeRange.length >= 2
+						? [round2(b.feeRange[0]), round2(b.feeRange[b.feeRange.length - 1])]
+						: [round2(b.medianFee), round2(b.medianFee)]
+			}));
+		}
+		return null;
 	}
 
-	/** Mempool size over the recent past, oldest first; null when unavailable. */
+	/**
+	 * Mempool size over the recent past, oldest first; null when no samples exist
+	 * yet. Read from a locally-persisted rolling window of samples taken by the
+	 * chainSync refresh cycle (mempoolSamples.ts, cairn-zoz8.15) — no third-party
+	 * time-series API. The window starts empty after deploy and fills over time, so
+	 * the trend chart renders gracefully with sparse (or zero) data.
+	 */
 	async getMempoolTrend(): Promise<MempoolTrendPoint[] | null> {
-		const stats = await this.esplora.getMempoolStatistics();
-		if (!stats || stats.length === 0) return null;
-		return stats
-			.map((s) => ({
-				time: s.added,
-				// Statistics report weight units; virtual bytes = weight / 4.
-				vsize: Math.round(s.mempool_byte_weight / 4),
-				txCount: s.count
-			}))
-			.sort((a, b) => a.time - b.time);
+		const points = readMempoolTrend(2 * 60 * 60);
+		return points.length > 0 ? points : null;
 	}
 
 	async getFeeEstimates(): Promise<FeeEstimates> {
@@ -837,10 +1455,27 @@ export class ChainService {
 	 * unavailable rather than silently bypassed.
 	 */
 	async getBtcUsdPrice(): Promise<number | null> {
-		if (await this.esplora.supportsV1()) {
+		// An explicitly-configured Esplora backend that serves its own /v1/prices
+		// (a self-hosted mempool instance) is preferred so a sovereignty-minded
+		// operator never quietly leaks to the public internet. Otherwise — including
+		// an Umbrel-style deploy with no Esplora at all — fall back to the single
+		// permitted public source, which is TTL-cached and short-timeout so it can
+		// never gate a page render (cairn-zoz8.18).
+		if (this.esplora && (await this.esplora.supportsV1())) {
 			return this.esplora.getBtcUsdPrice();
 		}
 		return fetchPublicBtcUsdPrice();
+	}
+
+	/**
+	 * Block timestamp (unix seconds) at a given height, from the operator's own
+	 * Electrum server (`blockchain.block.header` → decode). Backend-agnostic seam
+	 * for callers that used to reach into `chain.esplora` directly for boundary
+	 * timestamps (chainEpochs.ts, cairn-zoz8) — works with zero third-party API.
+	 */
+	async getBlockTimeAtHeight(height: number): Promise<number> {
+		const hex = await this.electrum.getBlockHeader(height);
+		return decodeBlockHeader(hex).time;
 	}
 
 	async getNodeInfo(): Promise<NodeInfo> {
@@ -993,20 +1628,11 @@ export async function testCoreRpc(cfg: {
 	user?: string | null;
 	pass?: string | null;
 }): Promise<{ ok: boolean; blockHeight?: number; chain?: string; error?: string }> {
-	// TODO(depends on cairn-zoz8.7 merge): the CoreRpcClient lives at
-	// ../bitcoinCore/client (built by the sibling bead). It is imported
-	// DYNAMICALLY rather than at the top of this module on purpose: a static
-	// import of a not-yet-merged file would break loading of ChainService for
-	// every unrelated caller. The dynamic import resolves only when an admin
-	// actually runs the test, and can become a plain top-level `import` (matching
-	// testElectrum above) once the client module has merged. It stays INSIDE this
-	// try/catch (not hoisted above it) so a resolution failure — the expected
-	// state of any worktree that hasn't merged cairn-zoz8.7 yet — degrades to the
-	// same `{ ok: false, error }` shape as a real connection failure, instead of
-	// throwing past this action into an unhandled 500 (caught live: this exact
-	// gap 500'd before the import moved inside the try).
+	// The CoreRpcClient is now a normal static import (top of file), matching
+	// testElectrum/testEsplora — Wave 1's dynamic-import workaround for a
+	// not-yet-merged module is no longer needed. Any real connection/auth failure
+	// still degrades to the `{ ok: false, error }` shape the settings UI renders.
 	try {
-		const { CoreRpcClient } = await import('../bitcoinCore/client');
 		const client = new CoreRpcClient({
 			url: cfg.url,
 			user: cfg.user,
@@ -1024,13 +1650,6 @@ export async function testCoreRpc(cfg: {
 			client.close();
 		}
 	} catch (e) {
-		// Catches BOTH a real connection/auth failure from the client above AND —
-		// in any worktree that hasn't merged cairn-zoz8.7 yet — the dynamic
-		// import itself failing to resolve. Keeping the import inside this
-		// try/catch (not hoisted above it) means that gap degrades to the same
-		// `{ ok: false, error }` shape as a real failure instead of throwing past
-		// this action into an unhandled 500 (reproduced live during manual
-		// verification before this fix).
 		return { ok: false, error: e instanceof Error ? e.message : String(e) };
 	}
 }

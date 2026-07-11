@@ -1188,6 +1188,21 @@ db.exec(`
 	);
 `);
 
+// Rolling local time-series of mempool size for the explorer's 2h backlog-trend
+// chart (cairn-zoz8.15, mempoolSamples.ts). Replaces the mempool.space
+// /v1/statistics/2h dependency with samples the background refresh drops here each
+// pass — one row per unix-second (INSERT OR REPLACE dedupes a same-second write),
+// pruned to a few hours. GLOBAL data, so a single small table (not per-user). Pure
+// cache: it starts empty after deploy and fills over time; a missing/corrupt row
+// just yields a thinner chart, never an error.
+db.exec(`
+	CREATE TABLE IF NOT EXISTS mempool_samples (
+		at       INTEGER PRIMARY KEY, -- unix seconds
+		vsize    INTEGER NOT NULL,    -- total mempool virtual bytes at sample time
+		tx_count INTEGER NOT NULL
+	);
+`);
+
 // Per-user dashboard portfolio aggregate for stale-while-revalidate home loads.
 // The dashboard's hero balance / allocation / activity used to block on a LIVE
 // Electrum scan of every wallet on every GET /api/portfolio (a 60s in-memory

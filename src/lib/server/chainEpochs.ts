@@ -180,8 +180,12 @@ function persist(state: EpochCacheState): void {
  */
 async function fromRetargetHistory(tipEpoch: number): Promise<EpochCacheState | null> {
 	const chain = getChain();
-	// Empty interval = the all-time series (the client normalizes the path).
-	const raw = await chain.esplora.getDifficultyHistory('').catch(() => null);
+	// Empty interval = the all-time series. Available only from an explicitly
+	// configured Esplora backend (mempool.space-compatible); null otherwise, which
+	// sends us to the Electrum-backed boundary-block source below (works anywhere).
+	const raw = chain.esplora
+		? await chain.esplora.getDifficultyHistory('').catch(() => null)
+		: null;
 	if (!raw || raw.length === 0) return null;
 
 	const times: (number | null)[] = new Array(tipEpoch + 1).fill(null);
@@ -248,16 +252,15 @@ async function fromBoundaryBlocks(
 		while (cursor < missing.length) {
 			const idx = missing[cursor++];
 			try {
-				const hash = await chain.esplora.getBlockHashAtHeight(idx * EPOCH);
-				const block = await chain.esplora.getBlockByHash(hash);
-				times[idx] = block.timestamp;
+				// Boundary-block timestamp from the operator's own Electrum server
+				// (block.header → decode), not a third-party esplora HTTP API — works on
+				// an Umbrel-style local-only deploy (cairn-zoz8).
+				const timestamp = await chain.getBlockTimeAtHeight(idx * EPOCH);
+				times[idx] = timestamp;
 				// missing[] ascends, so max() keeps the frontier moving 2009 → now
 				// even with a few concurrent workers racing.
 				fetchProgress.knownEpochs++;
-				fetchProgress.lastKnownTime = Math.max(
-					fetchProgress.lastKnownTime ?? 0,
-					block.timestamp
-				);
+				fetchProgress.lastKnownTime = Math.max(fetchProgress.lastKnownTime ?? 0, timestamp);
 			} catch (e) {
 				failures++;
 				if (failures <= 3) log.debug({ err: e, epoch: idx }, 'boundary block fetch failed');
@@ -332,7 +335,8 @@ function quantile(values: number[], p: number): number {
 export async function getEpochStrip(): Promise<EpochStripData | null> {
 	let tipHeight: number;
 	try {
-		tipHeight = await getChain().esplora.getTipHeight();
+		// Tip via the Electrum-backed, TTL-cached getTip (cairn-zoz8) — no esplora.
+		tipHeight = (await getChain().getTip()).height;
 	} catch (e) {
 		log.debug({ err: e }, 'tip height unavailable; no strip data');
 		return null;

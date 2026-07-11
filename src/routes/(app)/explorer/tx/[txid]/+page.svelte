@@ -8,6 +8,7 @@
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
 	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
+	import CoreRpcRequiredNotice from '$lib/components/CoreRpcRequiredNotice.svelte';
 	import { feeOutlook } from '$lib/bitcoin';
 	import {
 		formatNumber,
@@ -579,6 +580,11 @@
 				</p>
 			</HowItWorks>
 		</div>
+		{:else if !data.coreRpcConfigured}
+			<!-- No Bitcoin Core node configured: we can't look up arbitrary txs at all,
+			     so be honest about what unlocks it rather than claim "not found"
+			     (cairn-zoz8.11). -->
+			<CoreRpcRequiredNotice feature="Transaction detail" isAdmin={data.isAdmin} />
 		{:else}
 			<div class="empty-state fade-in">
 				<span class="empty-title">Transaction not found</span>

@@ -25,6 +25,7 @@
 import { getChain } from './chain';
 import { readChainSnapshot, writeChainSnapshot } from './chainSnapshot';
 import type { ChainSnapshotRow, PersistedChainData } from './chainSnapshot';
+import { recordMempoolSample } from './mempoolSamples';
 import { childLogger } from './logger';
 
 const log = childLogger('chain-sync');
@@ -85,6 +86,11 @@ async function doRefresh(current: ChainSnapshotRow | null): Promise<ChainSnapsho
 			]);
 
 		const tipHeight = tip?.height ?? blocks[0]?.height ?? null;
+
+		// Drop a mempool sample into the local rolling time-series (cairn-zoz8.15) so
+		// the 2h backlog-trend chart builds up organically — this refresh cycle IS the
+		// sampler. Skipped when the summary is unavailable (backend can't serve it).
+		if (mempoolSummary) recordMempoolSample(mempoolSummary);
 
 		// Epoch-scale data — network hashrate, current difficulty, and the retarget
 		// history chart — only meaningfully changes on a NEW BLOCK / retarget (the
