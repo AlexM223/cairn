@@ -227,12 +227,21 @@ export function getChainConfig(): {
 			mode: 'public'
 		};
 	}
+	// Esplora is an OPTIONAL last-resort backend after the Wave 2 chain migration
+	// (Core RPC + Electrum serve the explorer). In custom mode it is dialed ONLY
+	// when the operator EXPLICITLY stored an esplora_url — do NOT fall back to the
+	// mempool.space default here, or an Umbrel-style local-only deploy (no route to
+	// the public internet) would burn 12s timeouts against an API it can't reach.
+	// `getInstanceSettings` defaults s.esploraUrl to mempool.space, so read the raw
+	// stored value directly to tell "explicitly set" from "defaulted". Public mode
+	// (above) still gets the public default — those users do have internet.
+	const rawEsplora = getSetting('esplora_url');
 	return {
 		electrumHost: s.electrumHost,
 		electrumPort: s.electrumPort,
 		electrumTls: s.electrumTls,
 		electrumTlsInsecure: s.electrumTlsInsecure,
-		esploraUrl: s.esploraUrl || DEFAULTS.esploraUrl,
+		esploraUrl: rawEsplora && rawEsplora.trim() !== '' ? rawEsplora.trim() : '',
 		...tuning,
 		...coreRpc,
 		mode: 'custom'

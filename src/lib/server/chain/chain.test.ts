@@ -32,6 +32,7 @@ vi.mock('../packageRelay', () => ({ resetPackageRelaySupport: vi.fn() }));
 vi.mock('../activity', () => ({ recordActivity: vi.fn() }));
 
 import { ChainService } from './index';
+import { CoreRpcError } from '../bitcoinCore/client';
 import { resetChainCaches, invalidateTipCache } from './cache';
 
 // ---- fixtures -----------------------------------------------------------------
@@ -882,5 +883,351 @@ describe('getFeeHistogram (electrum-backed)', () => {
 	it('collapses an empty mempool histogram to null', async () => {
 		const { svc } = withElectrumHistogram([]);
 		await expect(svc.getFeeHistogram()).resolves.toBeNull();
+	});
+});
+
+// ---- Bitcoin Core RPC path (Esplora removal Wave 2) --------------------------------
+//
+// When a Core RPC backend is configured, getTx/getBlock/getBlockTxs/getMempoolSummary/
+// getCpfpInfo source from the operator's own node instead of Esplora. These tests pin
+// the Core→app mapping — especially the BTC→sats unit conversions (Core reports values
+// as BTC floats), confirmations→height, and per-output gettxout spent-ness.
+
+interface CoreStub {
+	call: ReturnType<typeof vi.fn>;
+	getBlockHash: ReturnType<typeof vi.fn>;
+	getBlock: ReturnType<typeof vi.fn>;
+	getBlockStats: ReturnType<typeof vi.fn>;
+	getRawTransaction: ReturnType<typeof vi.fn>;
+	getTxOut: ReturnType<typeof vi.fn>;
+	getMempoolInfo: ReturnType<typeof vi.fn>;
+	getMempoolEntry: ReturnType<typeof vi.fn>;
+	close: ReturnType<typeof vi.fn>;
+}
+
+/** A confirmed 1-in/2-out segwit tx as Bitcoin Core `getrawtransaction verbosity=2`
+ *  returns it — values in BTC, prevout present on the input. Mirrors ESPLORA_TX's
+ *  numbers so the mapped result is directly comparable. */
+const CORE_TX = {
+	txid: 'f'.repeat(64),
+	version: 2,
+	size: 222,
+	vsize: 141,
+	weight: 561,
+	locktime: 0,
+	vin: [
+		{
+			txid: 'e'.repeat(64),
+			vout: 1,
+			scriptSig: { hex: '' },
+			sequence: 0xfffffffd, // BIP125 opt-in
+			txinwitness: ['02abcd'],
+			prevout: {
+				generated: false,
+				height: TIP_HEIGHT - 100,
+				value: 0.002, // 200,000 sats
+				scriptPubKey: {
+					hex: '0014' + 'aa'.repeat(20),
+					address: 'bc1qsender',
+					type: 'witness_v0_keyhash'
+				}
+			}
+		}
+	],
+	vout: [
+		{
+			value: 0.0015, // 150,000 sats
+			n: 0,
+			scriptPubKey: { hex: WATCHED_SCRIPT, address: 'bc1qreceiver', type: 'witness_v0_keyhash' }
+		},
+		{
+			value: 0.0004859, // 48,590 sats
+			n: 1,
+			scriptPubKey: { hex: '0014' + 'cc'.repeat(20), address: 'bc1qchange', type: 'witness_v0_keyhash' }
+		}
+	],
+	confirmations: 11,
+	blockhash: 'd'.repeat(64),
+	blocktime: 1_750_000_000,
+	time: 1_750_000_000
+};
+
+function makeCoreStub(): CoreStub {
+	return {
+		call: vi.fn(async (method: string) => {
+			if (method === 'getrawtransaction') return CORE_TX;
+			if (method === 'getmempoolancestors') return [];
+			if (method === 'getmempooldescendants') return [];
+			throw new Error(`unstubbed core.call ${method}`);
+		}),
+		getBlockHash: vi.fn(async () => BLOCK.id),
+		getBlock: vi.fn(),
+		getBlockStats: vi.fn(),
+		getRawTransaction: vi.fn(async () => CORE_TX),
+		// n=0 spent (null), n=1 unspent (object). include_mempool passed through.
+		getTxOut: vi.fn(async (_txid: string, n: number) => (n === 0 ? null : { value: 0.0004859 })),
+		getMempoolInfo: vi.fn(),
+		getMempoolEntry: vi.fn(),
+		close: vi.fn()
+	};
+}
+
+/** A ChainService wired to a stubbed Core client, no Esplora, with a tip header
+ *  stub so getTip() (used for confirmations→height) resolves. */
+function makeCoreService(core: CoreStub): ChainService {
+	const svc = new ChainService(CFG as unknown as ConstructorParameters<typeof ChainService>[0]);
+	const tipHex = buildHeader({ time: 1_750_000_000, bits: GENESIS_BITS });
+	Object.assign(svc, { core, esplora: null });
+	Object.assign(svc.electrum, {
+		headersSubscribe: vi.fn(async () => ({ height: TIP_HEIGHT, hex: tipHex }))
+	});
+	return svc;
+}
+
+describe('getTx via Bitcoin Core', () => {
+	it('maps getrawtransaction verbosity=2: BTC→sats values, fee from prevout−vout, confirmations→height', async () => {
+		const core = makeCoreStub();
+		const svc = makeCoreService(core);
+
+		const tx = await svc.getTx(CORE_TX.txid);
+
+		expect(core.call).toHaveBeenCalledWith('getrawtransaction', [CORE_TX.txid, 2]);
+		expect(tx.confirmed).toBe(true);
+		// height derived from tip − confirmations + 1 = 868000 − 11 + 1 = 867990.
+		expect(tx.blockHeight).toBe(TIP_HEIGHT - 10);
+		expect(tx.confirmations).toBe(11);
+		expect(tx.blockHash).toBe('d'.repeat(64));
+		expect(tx.blockTime).toBe(1_750_000_000);
+
+		// vout values converted BTC→sats.
+		expect(tx.vout[0].value).toBe(150_000);
+		expect(tx.vout[0].address).toBe('bc1qreceiver');
+		expect(tx.vout[0].scriptPubKey).toBe(WATCHED_SCRIPT);
+		expect(tx.vout[1].value).toBe(48_590);
+
+		// vin prevout: value BTC→sats, address + prev scriptPubKey.
+		expect(tx.vin[0]).toMatchObject({
+			txid: 'e'.repeat(64),
+			vout: 1,
+			address: 'bc1qsender',
+			value: 200_000,
+			prevScriptPubKey: '0014' + 'aa'.repeat(20),
+			coinbase: false
+		});
+
+		// fee = Σprevout(200000) − Σvout(150000+48590) = 1410; feeRate = 1410/141 = 10.
+		expect(tx.fee).toBe(1_410);
+		expect(tx.feeRate).toBe(10);
+		expect(tx.vsize).toBe(141);
+		expect(tx.segwit).toBe(true);
+		expect(tx.rbf).toBe(true);
+
+		// per-output spent-ness from gettxout: n=0 null→spent, n=1 object→unspent.
+		expect(tx.vout[0].spent).toBe(true);
+		expect(tx.vout[1].spent).toBe(false);
+		expect(core.getTxOut).toHaveBeenCalledWith(CORE_TX.txid, 0, true);
+		expect(core.getTxOut).toHaveBeenCalledWith(CORE_TX.txid, 1, true);
+	});
+
+	it('reports a mempool tx (no confirmations) with null block fields', async () => {
+		const core = makeCoreStub();
+		core.call.mockImplementation(async (method: string) => {
+			if (method === 'getrawtransaction') {
+				const { confirmations: _c, blockhash: _b, blocktime: _t, ...rest } = CORE_TX;
+				return rest;
+			}
+			throw new Error(`unstubbed ${method}`);
+		});
+		const svc = makeCoreService(core);
+
+		const tx = await svc.getTx(CORE_TX.txid);
+		expect(tx.confirmed).toBe(false);
+		expect(tx.confirmations).toBe(0);
+		expect(tx.blockHeight).toBeNull();
+		expect(tx.blockHash).toBeNull();
+		expect(tx.blockTime).toBeNull();
+	});
+
+	it('degrades spent-ness to null when a gettxout call fails', async () => {
+		const core = makeCoreStub();
+		core.getTxOut.mockRejectedValue(new Error('gettxout failed'));
+		const svc = makeCoreService(core);
+
+		const tx = await svc.getTx(CORE_TX.txid); // must not throw
+		expect(tx.vout.map((v) => v.spent)).toEqual([null, null]);
+	});
+
+	it('throws a not-found error for an unknown txid (code -5) so search can fall through', async () => {
+		const core = makeCoreStub();
+		core.call.mockRejectedValue(new CoreRpcError(-5, 'getrawtransaction', 'No such tx'));
+		const svc = makeCoreService(core);
+
+		await expect(svc.getTx(CORE_TX.txid)).rejects.toThrow(/not found/i);
+	});
+});
+
+describe('getBlock via Bitcoin Core', () => {
+	const CORE_BLOCK = {
+		hash: BLOCK.id,
+		height: BLOCK.height,
+		version: 0x20000000,
+		merkleroot: 'e'.repeat(64),
+		time: 1_750_000_000,
+		nonce: 12_345,
+		bits: '1b0404cb', // Core returns nBits as a hex string already
+		difficulty: 9.5e13,
+		nTx: 3_000,
+		previousblockhash: 'a'.repeat(64),
+		size: 1_500_000,
+		weight: 3_990_000,
+		confirmations: 11,
+		tx: []
+	};
+
+	it('maps getblock + getblockstats: fee percentiles → medianFee/feeRange, totalfee/subsidy already sats', async () => {
+		const core = makeCoreStub();
+		core.getBlock.mockResolvedValue(CORE_BLOCK);
+		core.getBlockStats.mockResolvedValue({
+			feerate_percentiles: [1, 5, 12.345, 40, 100.129], // [10,25,50,75,90] sat/vB
+			totalfee: 12_345_678, // sats (Core getblockstats fee amounts are in sats)
+			subsidy: 312_500_000 // sats
+		});
+		const svc = makeCoreService(core);
+
+		const block = await svc.getBlock(BLOCK.height);
+
+		expect(core.getBlockHash).toHaveBeenCalledWith(BLOCK.height);
+		expect(block.hash).toBe(BLOCK.id);
+		expect(block.txCount).toBe(3_000);
+		expect(block.bits).toBe('1b0404cb'); // passthrough, no toString(16)
+		expect(block.prevHash).toBe('a'.repeat(64));
+		expect(block.merkleRoot).toBe('e'.repeat(64));
+		// median = 50th pct; feeRange = [10th, 90th]; rounded 2dp.
+		expect(block.medianFee).toBe(12.35);
+		expect(block.feeRange).toEqual([1, 100.13]);
+		expect(block.totalFees).toBe(12_345_678);
+		expect(block.reward).toBe(312_500_000 + 12_345_678); // subsidy + fees
+		expect(block.miner).toBeUndefined();
+	});
+
+	it('degrades fee/reward to null when getblockstats is unavailable', async () => {
+		const core = makeCoreStub();
+		core.getBlock.mockResolvedValue(CORE_BLOCK);
+		core.getBlockStats.mockRejectedValue(new Error('getblockstats disabled'));
+		const svc = makeCoreService(core);
+
+		const block = await svc.getBlock(BLOCK.id);
+		expect(block.medianFee).toBeNull();
+		expect(block.feeRange).toBeNull();
+		expect(block.totalFees).toBeNull();
+		expect(block.reward).toBeNull();
+	});
+
+	it('getBlockTxs slices the page, sets total=nTx, and marks txs confirmed in the block', async () => {
+		const core = makeCoreStub();
+		const txids = Array.from({ length: 60 }, (_, i) => String(i).padStart(64, '0'));
+		core.getBlock.mockResolvedValue({ ...CORE_BLOCK, tx: txids, nTx: 60 });
+		// getrawtransaction with blockhash for each txid in the page.
+		core.call.mockImplementation(async (method: string) => {
+			if (method === 'getrawtransaction') return CORE_TX;
+			throw new Error(`unstubbed ${method}`);
+		});
+		const svc = makeCoreService(core);
+
+		const res = await svc.getBlockTxs(BLOCK.id, 1); // page 1 → txids[25..49]
+		expect(res.total).toBe(60);
+		expect(res.txs).toHaveLength(25);
+		// tx confirmed in the block; height from the block context, not per-tx guess.
+		expect(res.txs[0].confirmed).toBe(true);
+		expect(res.txs[0].blockHeight).toBe(BLOCK.height);
+		expect(res.txs[0].blockHash).toBe(BLOCK.id);
+		// verbosity 2 + blockhash resolves txs without txindex.
+		expect(core.call).toHaveBeenCalledWith('getrawtransaction', [txids[25], 2, BLOCK.id]);
+	});
+});
+
+describe('getMempoolSummary via Bitcoin Core', () => {
+	it('maps getmempoolinfo: size→txCount, bytes→vsize, total_fee BTC→sats', async () => {
+		const core = makeCoreStub();
+		core.getMempoolInfo.mockResolvedValue({
+			size: 4_200,
+			bytes: 8_500_000,
+			usage: 20_000_000,
+			total_fee: 0.0512, // BTC → 5,120,000 sats
+			mempoolminfee: 0.00001
+		});
+		const svc = makeCoreService(core);
+
+		await expect(svc.getMempoolSummary()).resolves.toEqual({
+			txCount: 4_200,
+			vsize: 8_500_000,
+			totalFees: 5_120_000
+		});
+	});
+});
+
+describe('getCpfpInfo via Bitcoin Core', () => {
+	it('derives effective fee rate (BTC→sats) and ancestor/descendant txids from the mempool graph', async () => {
+		const core = makeCoreStub();
+		core.getMempoolEntry.mockResolvedValue({
+			fees: { base: 0.00001, ancestor: 0.00003, descendant: 0.00001 },
+			ancestorsize: 600, // 0.00003 BTC = 3000 sats over 600 vB → 5 sat/vB
+			descendantsize: 300,
+			ancestorcount: 2,
+			descendantcount: 1
+		});
+		core.call.mockImplementation(async (method: string) => {
+			if (method === 'getmempoolancestors') return ['a'.repeat(64)];
+			if (method === 'getmempooldescendants') return [];
+			throw new Error(`unstubbed ${method}`);
+		});
+		const svc = makeCoreService(core);
+
+		const cpfp = await svc.getCpfpInfo(CORE_TX.txid);
+		expect(cpfp).not.toBeNull();
+		// max(ancestorRate 5, descendantRate 1000sats/300=3.33) = 5 sat/vB.
+		expect(cpfp!.effectiveFeeRate).toBe(5);
+		expect(cpfp!.ancestors).toEqual(['a'.repeat(64)]);
+		expect(cpfp!.descendants).toEqual([]);
+	});
+
+	it('returns null for a tx not in the mempool (getmempoolentry code -5)', async () => {
+		const core = makeCoreStub();
+		core.getMempoolEntry.mockRejectedValue(
+			new CoreRpcError(-5, 'getmempoolentry', 'Transaction not in mempool')
+		);
+		const svc = makeCoreService(core);
+
+		await expect(svc.getCpfpInfo(CORE_TX.txid)).resolves.toBeNull();
+	});
+});
+
+describe('getMempoolBlocks projection from the Electrum fee histogram', () => {
+	it('packs 1 MvB blocks highest-fee-first with per-block fee range and rounded totals', async () => {
+		const svc = makeCoreService(makeCoreStub());
+		// 1.2 MvB at 100 sat/vB, 0.5 MvB at 10 sat/vB → block 1 fills 1 MvB from the
+		// 100-rate bucket; block 2 gets the 0.2 MvB tail at 100 plus 0.5 MvB at 10.
+		Object.assign(svc.electrum, {
+			getFeeHistogram: vi.fn(async () => [
+				[100, 1_200_000],
+				[10, 500_000]
+			])
+		});
+
+		const blocks = await svc.getMempoolBlocks();
+		expect(blocks).not.toBeNull();
+		expect(blocks!.length).toBe(2);
+		expect(blocks![0].vsize).toBe(1_000_000);
+		expect(blocks![0].feeRange).toEqual([100, 100]);
+		expect(blocks![0].totalFees).toBe(100 * 1_000_000); // 100 sat/vB × 1e6 vB
+		// block 2: 0.2M @100 + 0.5M @10 → range [10,100], vsize 700000.
+		expect(blocks![1].vsize).toBe(700_000);
+		expect(blocks![1].feeRange).toEqual([10, 100]);
+	});
+
+	it('returns null when the mempool histogram is empty and no Esplora fallback exists', async () => {
+		const svc = makeCoreService(makeCoreStub());
+		Object.assign(svc.electrum, { getFeeHistogram: vi.fn(async () => []) });
+		await expect(svc.getMempoolBlocks()).resolves.toBeNull();
 	});
 });
