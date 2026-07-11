@@ -149,6 +149,31 @@ export interface NormalizedFees {
 	economy: number;
 }
 
+/**
+ * Global `fetch` (undici) collapses every network failure — DNS, refused,
+ * TLS, timeout — into a generic `TypeError: fetch failed`, with the actual
+ * cause (e.g. `Error: getaddrinfo ENOTFOUND ...`, `ECONNREFUSED`, a
+ * certificate error) attached only as `.cause`, which `.message` alone never
+ * surfaces. Without unwrapping it, every "can't reach chain data" error looks
+ * identical regardless of whether it's bad DNS, blocked egress, or a
+ * misconfigured host — impossible to diagnose from the UI alone.
+ */
+function fetchErrorDetail(e: unknown): string {
+	if (!(e instanceof Error)) return String(e);
+	const parts: string[] = [e.message];
+	let cause: unknown = e.cause;
+	for (let i = 0; i < 3 && cause; i++) {
+		if (cause instanceof Error) {
+			parts.push(cause.message);
+			cause = cause.cause;
+		} else {
+			parts.push(String(cause));
+			break;
+		}
+	}
+	return parts.join(': ');
+}
+
 export class EsploraHttpError extends Error {
 	constructor(
 		public readonly status: number,
@@ -198,8 +223,7 @@ export class EsploraApi {
 			ok = res.ok;
 			text = res.text;
 		} catch (e) {
-			const msg = e instanceof Error ? e.message : String(e);
-			throw new Error(`Esplora GET ${path} failed: ${msg}`);
+			throw new Error(`Esplora GET ${path} failed: ${fetchErrorDetail(e)}`);
 		}
 		if (!ok) {
 			throw new EsploraHttpError(status, path, text.slice(0, 200));
