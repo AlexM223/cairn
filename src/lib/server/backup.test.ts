@@ -112,6 +112,20 @@ describe('encrypt / decrypt', () => {
 		expect(JSON.stringify(data)).not.toContain('bogus-envelope-material');
 		expect(JSON.stringify(data)).not.toContain('instance_secrets');
 	});
+
+	it('rejects a backup envelope from a newer format version (cairn-lka5)', async () => {
+		const blob = await encryptBackup(buildBackup('t'), PP);
+		const envelope = JSON.parse(blob);
+		envelope.version = 999;
+		await expect(decryptBackup(JSON.stringify(envelope), PP)).rejects.toThrowError(BackupError);
+	});
+
+	it('rejects inner backup data flagged with a newer version number (cairn-lka5)', async () => {
+		const data = buildBackup('t');
+		(data as unknown as { version: number }).version = 999;
+		const blob = await encryptBackup(data, PP);
+		await expect(decryptBackup(blob, PP)).rejects.toThrowError(BackupError);
+	});
 });
 
 describe('restore', () => {
@@ -349,5 +363,95 @@ describe('restore', () => {
 			value: string;
 		};
 		expect(row.value).toBe('my.node');
+	});
+
+	it('still restores ordinary connectivity settings the allowlist covers', async () => {
+		await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+		db.prepare("INSERT INTO settings (key, value) VALUES ('esplora_url', 'https://esplora.example')").run();
+		db.prepare("INSERT INTO settings (key, value) VALUES ('smtp_host', 'smtp.example.org')").run();
+		const data = buildBackup('t');
+
+		db.prepare("DELETE FROM settings WHERE key IN ('esplora_url', 'smtp_host')").run();
+		const summary = await restoreBackup(data);
+
+		const value = (key: string) =>
+			(
+				db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
+					| { value: string }
+					| undefined
+			)?.value;
+		expect(value('esplora_url')).toBe('https://esplora.example');
+		expect(value('smtp_host')).toBe('smtp.example.org');
+		expect(summary.settingsSkipped).not.toContain('esplora_url');
+		expect(summary.settingsSkipped).not.toContain('smtp_host');
+	});
+
+	it('withholds security-posture settings from a hostile backup instead of silently adopting them (cairn-0dg4)', async () => {
+		await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+		// The instance is deliberately locked down: invite-only registration, SSRF
+		// guard on, solo instance mode, password auth, cert validation required.
+		db.prepare("UPDATE settings SET value = 'invite' WHERE key = 'registration_mode'").run();
+		db.prepare(
+			"INSERT INTO settings (key, value) VALUES ('webhook_allow_private_targets', 'false')"
+		).run();
+		db.prepare("INSERT INTO settings (key, value) VALUES ('instance_mode', 'solo')").run();
+		db.prepare("INSERT INTO settings (key, value) VALUES ('auth_mode', 'password')").run();
+		db.prepare(
+			"INSERT INTO settings (key, value) VALUES ('electrum_tls_insecure', 'false')"
+		).run();
+
+		const data = buildBackup('t');
+		// Craft a hostile backup: flip every posture key to its unlocked/insecure
+		// value — the exact shape an attacker would social-engineer an admin into
+		// restoring (open registration + SSRF guard off + team mode + passkey-only
+		// + no cert validation).
+		data.settings = data.settings.map((s) => {
+			if (s.key === 'registration_mode') return { key: s.key, value: 'open' };
+			if (s.key === 'webhook_allow_private_targets') return { key: s.key, value: 'true' };
+			if (s.key === 'instance_mode') return { key: s.key, value: 'team' };
+			if (s.key === 'auth_mode') return { key: s.key, value: 'passkey' };
+			if (s.key === 'electrum_tls_insecure') return { key: s.key, value: 'true' };
+			return s;
+		});
+
+		const summary = await restoreBackup(data);
+
+		const value = (key: string) =>
+			(
+				db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
+					| { value: string }
+					| undefined
+			)?.value;
+		// Posture is UNCHANGED — none of the hostile values were adopted.
+		expect(value('registration_mode')).toBe('invite');
+		expect(value('webhook_allow_private_targets')).toBe('false');
+		expect(value('instance_mode')).toBe('solo');
+		expect(value('auth_mode')).toBe('password');
+		expect(value('electrum_tls_insecure')).toBe('false');
+
+		// The restore result names exactly what was withheld.
+		expect(summary.settingsSkipped).toEqual(
+			expect.arrayContaining([
+				'registration_mode',
+				'webhook_allow_private_targets',
+				'instance_mode',
+				'auth_mode',
+				'electrum_tls_insecure'
+			])
+		);
+	});
+
+	it('skips an unrecognized settings key by default — allowlist, not a denylist', async () => {
+		await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+		const data = buildBackup('t');
+		data.settings.push({ key: 'some_future_setting_nobody_has_reviewed_yet', value: 'x' });
+
+		const summary = await restoreBackup(data);
+		expect(
+			db
+				.prepare('SELECT 1 FROM settings WHERE key = ?')
+				.get('some_future_setting_nobody_has_reviewed_yet')
+		).toBeUndefined();
+		expect(summary.settingsSkipped).toContain('some_future_setting_nobody_has_reviewed_yet');
 	});
 });

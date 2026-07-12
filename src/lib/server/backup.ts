@@ -169,6 +169,21 @@ export async function decryptBackup(envelopeText: string, passphrase: string): P
 	if (data.format !== FORMAT || !Array.isArray(data.users)) {
 		throw new BackupError('The backup contents are not in the expected shape.');
 	}
+	// cairn-lka5: the version is written on both the envelope (above) and here on
+	// the inner data, but neither was ever actually checked. A backup produced by
+	// a newer, incompatible schema must be rejected up front rather than partially
+	// restored — restoreBackup blindly upserting rows shaped for a future schema
+	// could corrupt the database instead of failing loudly.
+	if (typeof env.version !== 'number' || env.version > VERSION) {
+		throw new BackupError(
+			'This backup was made by a newer version of Heartwood and cannot be restored here.'
+		);
+	}
+	if (typeof data.version !== 'number' || data.version > VERSION) {
+		throw new BackupError(
+			'This backup was made by a newer version of Heartwood and cannot be restored here.'
+		);
+	}
 	return data;
 }
 
@@ -186,6 +201,15 @@ export interface RestoreSummary {
 	labels: number;
 	settings: number;
 	/**
+	 * Setting keys present in the backup that were withheld from restore because
+	 * they are not on the {@link RESTORABLE_SETTING_KEYS} allowlist (cairn-0dg4) —
+	 * most notably security-posture keys such as `registration_mode` or
+	 * `webhook_allow_private_targets`. Surfaced so the admin can see exactly what
+	 * did NOT come back and set it deliberately if that was actually intended.
+	 * Empty when every setting in the backup was restorable.
+	 */
+	settingsSkipped: string[];
+	/**
 	 * One single-use recovery code per newly-inserted account (cairn-j1q9), shown
 	 * ONCE in the restore result so the admin can hand each owner a way back in
 	 * out-of-band. A backup never contains credentials (no password_hash, no
@@ -202,6 +226,80 @@ const str = (v: unknown): string => (v == null ? '' : String(v));
 const numOr = (v: unknown, d: number): number => (typeof v === 'number' ? v : d);
 // For nullable TEXT columns: keep null, otherwise coerce to a string.
 const orNull = (v: unknown): string | null => (v == null ? null : String(v));
+
+// ------------------------------------------------- settings restore allowlist
+//
+// cairn-0dg4: a backup file is untrusted input, same as the imported is_admin
+// flag above (cairn-cpb5) — an admin can be social-engineered into restoring an
+// attacker-crafted file. Before this fix, restoreBackup blindly upserted EVERY
+// row in data.settings, including security-posture keys that control the
+// instance's auth/security surface. A hostile backup could carry:
+//   - registration_mode: 'open'        — reopens self-registration on an
+//     instance the admin deliberately locked to invite-only/closed.
+//   - webhook_allow_private_targets: 'true' — silently disables the SSRF/LAN
+//     guard (channels/ssrf.ts) for outbound webhook/ntfy targets.
+//   - instance_mode: 'team'            — silently unlocks the collaborative-
+//     custody nav surface (invites, shared wallet access) the admin never
+//     opted into (see unlockTeamMode in admin/settings, which is normally an
+//     explicit admin action).
+//   - auth_mode: 'passkey'             — silently changes the primary sign-up
+//     method away from what the operator configured.
+//   - electrum_tls_insecure: 'true'    — silently disables certificate
+//     validation for a custom Electrum server (normally an explicit,
+//     documented admin opt-in — cairn-azei).
+//
+// Fix: restore now goes through an ALLOWLIST instead of a blind upsert. Only
+// keys known to be plain connectivity/preference config — never an auth or
+// security-guard toggle — are restorable. Everything else, including any
+// future setting this list hasn't caught up with yet, is skipped by DEFAULT
+// and reported on RestoreSummary.settingsSkipped so the admin can see what was
+// withheld and set it deliberately through the settings UI if intended. This
+// is deliberately a default-deny allowlist rather than a denylist of
+// known-posture keys, so a NEW security-relevant setting added later is safe
+// by construction instead of depending on someone remembering to blocklist it.
+const RESTORABLE_SETTING_KEYS = new Set<string>([
+	'connection_mode',
+	'electrum_host',
+	'electrum_port',
+	'electrum_tls',
+	'electrum_pool_size',
+	'esplora_url',
+	'core_rpc_url',
+	'core_rpc_user',
+	'socks5_host',
+	'socks5_port',
+	'chain_provisioned_by',
+	'ntfy_default_server',
+	'nostr_default_relays',
+	'user_agreement_text',
+	'user_agreement_operator',
+	'user_agreement_version',
+	'smtp_host',
+	'smtp_port',
+	'smtp_user',
+	'smtp_from',
+	'smtp_tls',
+	'scheduled_backup_enabled',
+	'scheduled_backup_interval',
+	'scheduled_backup_path',
+	'scheduled_backup_last_run_at',
+	'scheduled_backup_last_error',
+	'scheduled_backup_error_notified_at',
+	'chainEpochs.v1',
+	'backup_stale_notified_at',
+	'last_instance_backup_at'
+]);
+
+// Per-device referral BUY-link override (referrals.ts deviceBuyUrlSettingKey) —
+// a dynamic key per hardware device (`referral_device_<device>_url`), not a
+// fixed literal, so it needs a pattern rather than a set entry. Still just a
+// marketing link override, not a security posture toggle.
+const REFERRAL_DEVICE_URL_RE = /^referral_device_[a-z0-9_]+_url$/;
+
+/** Whether a settings-table key is safe to silently adopt from an imported backup. */
+function isRestorableSettingKey(key: string): boolean {
+	return RESTORABLE_SETTING_KEYS.has(key) || REFERRAL_DEVICE_URL_RE.test(key);
+}
 
 /**
  * Restore a decrypted backup ADDITIVELY. Accounts whose email already exists are
@@ -233,6 +331,7 @@ export async function restoreBackup(data: BackupData): Promise<RestoreSummary> {
 		addresses: 0,
 		labels: 0,
 		settings: 0,
+		settingsSkipped: [],
 		reclaimCodes: []
 	};
 	// (id, email) of every account actually inserted this run — recovery codes
@@ -408,11 +507,20 @@ export async function restoreBackup(data: BackupData): Promise<RestoreSummary> {
 		const upsertSetting = db.prepare(
 			'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
 		);
+		const skippedSettings = new Set<string>();
 		for (const s of data.settings ?? []) {
 			if (!s.key) continue;
-			upsertSetting.run(str(s.key), str(s.value));
+			const key = str(s.key);
+			// cairn-0dg4: only allowlisted, non-posture keys are silently adopted from
+			// an imported backup — see isRestorableSettingKey's doc comment above.
+			if (!isRestorableSettingKey(key)) {
+				skippedSettings.add(key);
+				continue;
+			}
+			upsertSetting.run(key, str(s.value));
 			summary.settings++;
 		}
+		summary.settingsSkipped = [...skippedSettings].sort();
 
 		db.exec('COMMIT');
 	} catch (e) {
