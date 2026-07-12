@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import { goto } from '$app/navigation';
 
 	let { data, form } = $props();
 
@@ -29,7 +30,16 @@
 	<title>{data.subject.displayName} — Users — Admin — Heartwood</title>
 </svelte:head>
 
-<a class="back" href="/admin/users">← All users</a>
+<a
+	class="back"
+	href="/admin/users"
+	onclick={(e) => {
+		e.preventDefault();
+		goto('/admin/users', { replaceState: true });
+	}}
+>
+	← All users
+</a>
 
 <div class="user-head">
 	<div class="avatar">{data.subject.displayName.slice(0, 1).toUpperCase()}</div>
