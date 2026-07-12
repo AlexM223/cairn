@@ -50,6 +50,7 @@ export const CHANNELS: Record<Exclude<NotificationChannelId, 'inapp'>, Notificat
 export const DEFAULT_PREFERENCES: Record<string, NotificationChannelId[]> = {
 	tx_received: ['inapp'],
 	tx_confirmed: ['inapp'],
+	tx_replaced: ['inapp'],
 	tx_large: ['inapp'],
 	key_health_due: ['inapp'],
 	backup_missing: ['inapp'],

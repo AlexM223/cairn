@@ -315,7 +315,15 @@ function mapKeyRow(r: Record<string, unknown>): MultisigKeyRow {
 
 // ------------------------------------------------------------- notified-txid store
 
-/** Has this (kind, wallet, user, txid) already been notified about? */
+/**
+ * Has a user-facing notification (tx_received / tx_confirmed) already been raised
+ * for this (kind, wallet, user, txid)? A row whose status is 'pending' does NOT
+ * count: that is an unconfirmed inbound the watcher is only TRACKING (so it can
+ * later detect a double-spend / RBF-away, cairn-a2p1) and has intentionally not
+ * surfaced yet, so the SPV-gated tx_received must still be allowed to fire once
+ * the tx confirms. A NULL status (legacy / baselined row) or any non-pending
+ * status suppresses, exactly as the pre-cairn-a2p1 row-existence check did.
+ */
 function alreadyNotified(
 	kind: WalletKind,
 	walletId: number,
@@ -324,25 +332,84 @@ function alreadyNotified(
 ): boolean {
 	const row = db
 		.prepare(
-			'SELECT confirmed FROM notified_txids WHERE wallet_kind = ? AND wallet_id = ? AND user_id = ? AND txid = ?'
+			'SELECT status FROM notified_txids WHERE wallet_kind = ? AND wallet_id = ? AND user_id = ? AND txid = ?'
 		)
-		.get(kind, walletId, userId, txid) as { confirmed: number } | undefined;
-	return row !== undefined;
+		.get(kind, walletId, userId, txid) as { status: string | null } | undefined;
+	return row !== undefined && row.status !== 'pending';
 }
 
-/** Record a first sighting. Ignores the race where another handler inserted first. */
-function recordTxid(w: Watched, txid: string): boolean {
+/**
+ * Claim the tx_received notification for a confirmed, SPV-verified inbound.
+ * Inserts a fresh 'notified' row, OR transitions an existing 'pending' tracking
+ * row (cairn-a2p1) to 'notified' — returning true in BOTH those cases (this call
+ * is the one that should fire the notification). Returns false when a non-pending
+ * row already exists (another handler won the race, or it was already notified),
+ * so the caller suppresses a duplicate. amount_sats is only written when known
+ * (> 0), never overwriting a prior tracked value with null.
+ */
+function claimReceived(w: Watched, txid: string, amountSats: number | null): boolean {
 	try {
 		const res = db
 			.prepare(
-				`INSERT OR IGNORE INTO notified_txids (wallet_kind, wallet_id, user_id, txid)
-				 VALUES (?, ?, ?, ?)`
+				`INSERT INTO notified_txids (wallet_kind, wallet_id, user_id, txid, confirmed, status, amount_sats)
+				 VALUES (?, ?, ?, ?, 0, 'notified', ?)
+				 ON CONFLICT(wallet_kind, wallet_id, user_id, txid) DO UPDATE SET
+				   status = 'notified',
+				   amount_sats = COALESCE(excluded.amount_sats, notified_txids.amount_sats)
+				 WHERE notified_txids.status = 'pending'`
 			)
-			.run(w.kind, w.walletId, w.userId, txid);
+			.run(w.kind, w.walletId, w.userId, txid, amountSats);
 		return res.changes > 0;
 	} catch (e) {
 		log.error({ err: e, walletId: w.walletId, txid }, 'failed to record notified txid');
 		return false;
+	}
+}
+
+/**
+ * Track an UNCONFIRMED inbound sighting so a later disappearance (double-spend /
+ * RBF'd away) can be detected (cairn-a2p1) WITHOUT surfacing a user-facing
+ * "payment received" — the SPV gate still defers that until the tx confirms.
+ * Idempotent (skips a txid already tracked or notified) and value-gated (only a
+ * genuine credit to this wallet is worth tracking). The getTx round-trip to value
+ * the output is only paid on the FIRST sighting of a given txid.
+ */
+async function trackPendingInbound(scripthash: string, w: Watched, txid: string): Promise<void> {
+	// Already tracked or already handled? Any existing row → nothing to do here.
+	const existing = db
+		.prepare(
+			'SELECT 1 FROM notified_txids WHERE wallet_kind = ? AND wallet_id = ? AND user_id = ? AND txid = ?'
+		)
+		.get(w.kind, w.walletId, w.userId, txid);
+	if (existing) return;
+
+	let receivedSats = 0;
+	try {
+		const tx = await getChain().getTx(txid);
+		const walletScripts = walletScriptSet(w);
+		for (const out of tx.vout) {
+			if (out.scriptPubKey && walletScripts.has(out.scriptPubKey.toLowerCase()))
+				receivedSats += out.value;
+		}
+	} catch {
+		// Can't value it (mempool tx unfetchable / detail hiccup) — don't track a
+		// zero-value guess; a later change event retries.
+		return;
+	}
+	if (receivedSats <= 0) return; // not a credit to us (change / own-spend / foreign)
+
+	// cairn-mo36 liveness recheck: the wallet may have been deleted during the
+	// getTx await. Every removal path clears state.byScripthash synchronously.
+	if (!state.byScripthash.has(scripthash)) return;
+
+	try {
+		db.prepare(
+			`INSERT OR IGNORE INTO notified_txids
+			   (wallet_kind, wallet_id, user_id, txid, confirmed, status, amount_sats)
+			 VALUES (?, ?, ?, ?, 0, 'pending', ?)`
+		).run(w.kind, w.walletId, w.userId, txid, receivedSats);
+	} catch (e) {
+		log.error({ err: e, walletId: w.walletId, txid }, 'failed to record pending inbound');
 	}
 }
 
@@ -624,6 +691,17 @@ async function handleScripthashChange(scripthash: string): Promise<void> {
 
 		for (const item of history) {
 			const txid = item.tx_hash;
+
+			// Unconfirmed (mempool) inbound: the SPV gate can't prove it yet, so we do
+			// NOT surface a "payment received" here — that still waits for the
+			// confirmed, SPV-verified sighting handled below. But we DO record it as a
+			// 'pending' tracking row so a later disappearance from the mempool
+			// (double-spent / RBF'd away) can be detected and corrected (cairn-a2p1).
+			if (item.height <= 0) {
+				await trackPendingInbound(scripthash, w, txid);
+				continue;
+			}
+
 			if (alreadyNotified(w.kind, w.walletId, w.userId, txid)) continue;
 
 			// SPV gate (cairn-7zj6): only ever notify for a transaction we can
@@ -667,8 +745,10 @@ async function handleScripthashChange(scripthash: string): Promise<void> {
 			// whole handler rather than just this txid.
 			if (!state.byScripthash.has(scripthash)) return;
 
-			// First sighting wins the insert (guards the reconnect re-emit race).
-			if (!recordTxid(w, txid)) continue;
+			// First sighting (or a pending→notified transition, cairn-a2p1) wins; an
+			// already-notified/duplicate row suppresses (guards the reconnect re-emit
+			// race). receivedSats===0 keeps any prior tracked amount (COALESCE).
+			if (!claimReceived(w, txid, receivedSats > 0 ? receivedSats : null)) continue;
 
 			const label = walletLabel(w);
 			const link = walletLink(w);
@@ -750,12 +830,161 @@ interface PendingTxidRow {
 	wallet_id: number;
 	user_id: number;
 	txid: string;
+	status: string | null;
+	amount_sats: number | null;
+}
+
+/** A tx-not-found style error from ChainService.getTx — the tx is neither in a
+ *  block nor in the mempool. Distinct from a connect/transient failure, which
+ *  must NEVER be read as a disappearance. Matches ChainService's "Transaction
+ *  not found" message and common backend phrasings. */
+function isNotFoundError(e: unknown): boolean {
+	const msg = e instanceof Error ? e.message : String(e);
+	return /not found|no such|unknown transaction|missing transaction|txn-mempool-conflict/i.test(msg);
+}
+
+/** True when this txid is one of OUR OWN outgoing transactions (single-sig or
+ *  multisig). Such a txid disappearing is a self-RBF / fee-bump the send flow
+ *  already tracks via its superseded lineage — never an inbound "cancelled by the
+ *  sender". Fails open (returns false) so a lookup error can't gate a real cancel. */
+function isOwnSend(txid: string): boolean {
+	try {
+		const row = db
+			.prepare(
+				`SELECT 1 FROM transactions WHERE txid = ?
+				 UNION ALL
+				 SELECT 1 FROM multisig_transactions WHERE txid = ?
+				 LIMIT 1`
+			)
+			.get(txid, txid);
+		return row !== undefined;
+	} catch {
+		return false;
+	}
+}
+
+/** Force a fresh wallet/multisig snapshot so a corrected (phantom-inflow-dropped)
+ *  balance lands promptly instead of waiting for the next navigation refresh.
+ *  Dynamic import avoids a static import cycle (walletSync → wallets →
+ *  addressWatcher). Best-effort. */
+async function forceSnapshotRefresh(row: PendingTxidRow): Promise<void> {
+	try {
+		const walletSync = await import('./walletSync');
+		if (row.wallet_kind === 'multisig') {
+			await walletSync.refreshMultisigSnapshot(row.user_id, row.wallet_id, { force: true });
+		} else {
+			await walletSync.refreshWalletSnapshot(row.user_id, row.wallet_id, { force: true });
+		}
+	} catch (e) {
+		log.debug({ err: e, walletId: row.wallet_id }, 'balance refresh after replacement failed');
+	}
 }
 
 /**
- * On each new block, re-check every not-yet-confirmed notified txid. When a tx
- * reaches CONFIRM_THRESHOLD confirmations, fire one tx_confirmed and flip its
- * `confirmed` flag so it never fires again.
+ * A tracked inbound txid came back not-found from getTx. Before acting, CONFIRM it
+ * is genuinely gone — a single getTx miss can be a transient blip or a no-txindex
+ * Core lookup gap for a still-confirmed tx — by re-reading the wallet's watched
+ * scripthash histories: only conclude "gone" when at least one history fetch
+ * SUCCEEDS and the txid appears in NONE of them. On confirmation:
+ *   • mark the row 'replaced' (stops the endless getTx retries), and
+ *   • force a balance refresh so the phantom inflow drops out, and
+ *   • notify the user ("payment cancelled") — but ONLY for a genuine EXTERNAL
+ *     inbound with a known value, and NOT when a replacement unconfirmed tx is
+ *     already sitting on the same addresses (an inbound fee-bump that still pays
+ *     us surfaces via its own tx_received; a "cancelled" alert then would mislead).
+ */
+async function reconcileDisappeared(row: PendingTxidRow): Promise<void> {
+	// Watched scripthashes for this wallet — the authoritative "does the server
+	// still know this tx" cross-check against a false positive.
+	const scripthashes: string[] = [];
+	for (const [sh, w] of state.byScripthash) {
+		if (w.kind === row.wallet_kind && w.walletId === row.wallet_id) scripthashes.push(sh);
+	}
+	if (scripthashes.length === 0) return; // not tracking this wallet's addresses — can't confirm
+
+	let anyFetched = false;
+	let found = false;
+	let replacementUnconfirmed = false;
+	for (const sh of scripthashes) {
+		try {
+			const history = await getChain().electrum.getHistory(sh, 'background');
+			anyFetched = true;
+			for (const it of history) {
+				if (it.tx_hash === row.txid) found = true;
+				else if (it.height <= 0) replacementUnconfirmed = true;
+			}
+		} catch {
+			// One address's history failed — try the others; only a TOTAL failure
+			// (anyFetched stays false) defers the whole decision to a later block.
+		}
+	}
+	if (!anyFetched) return; // Electrum unreachable — retry on a later block
+	if (found) return; // still present (confirmed elsewhere / no-txindex miss) — not gone
+
+	// Confirmed gone. It is a USER-FACING cancellation only when it was a genuine
+	// external inbound with a known value AND nothing already replaced it on our
+	// addresses AND it isn't one of our own sends being bumped. Otherwise it is a
+	// SILENT drop ('dropped'): still stop re-checking it and still correct the
+	// balance, but never notify and never surface it as a "cancelled" row (an
+	// inbound fee-bump that still pays us, or our own self-RBF, must not read as a
+	// lost payment). Either terminal status is excluded from the block re-scan.
+	const amount = row.amount_sats ?? 0;
+	const silent = amount <= 0 || replacementUnconfirmed || isOwnSend(row.txid);
+	db.prepare('UPDATE notified_txids SET status = ? WHERE id = ?').run(
+		silent ? 'dropped' : 'replaced',
+		row.id
+	);
+	void forceSnapshotRefresh(row);
+	if (silent) return;
+
+	const w: Watched = {
+		kind: row.wallet_kind,
+		walletId: row.wallet_id,
+		userId: row.user_id,
+		address: ''
+	};
+	notify({
+		type: 'tx_replaced',
+		userId: row.user_id,
+		level: 'warn',
+		title: 'Incoming payment cancelled',
+		body: `A payment of ${formatBtc(amount)} to ${walletLabel(w)} was cancelled before it confirmed. Your balance has been updated.`,
+		// No txid (the tx no longer exists on-chain — a deep link would 404) and no
+		// amountSats key (the amount is stated in the body; a bare +amount in the
+		// feed's amount column would misread as a receipt). link goes to the wallet.
+		detail: { walletId: row.wallet_id, walletKind: row.wallet_kind, replaced: true },
+		link: walletLink(w)
+	});
+}
+
+/** The recent double-spent/RBF'd-away INBOUND transactions for one wallet, so the
+ *  detail page can render a "cancelled" row that reconciles the vanished balance.
+ *  Value-gated + capped; never throws. */
+export function listReplacedInbound(
+	kind: WalletKind,
+	walletId: number
+): { txid: string; amountSats: number }[] {
+	try {
+		const rows = db
+			.prepare(
+				`SELECT txid, amount_sats FROM notified_txids
+				  WHERE wallet_kind = ? AND wallet_id = ? AND status = 'replaced' AND amount_sats > 0
+				  ORDER BY id DESC LIMIT 20`
+			)
+			.all(kind, walletId) as { txid: string; amount_sats: number }[];
+		return rows.map((r) => ({ txid: r.txid, amountSats: r.amount_sats }));
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * On each new block, re-check every not-yet-confirmed tracked txid. A tx that
+ * reaches CONFIRM_THRESHOLD confirmations fires one tx_confirmed (and flips its
+ * `confirmed` flag so it never fires again); a tracked inbound that has VANISHED
+ * from the mempool without confirming (double-spent / RBF'd away) is reconciled
+ * as 'replaced' with a correcting notification (cairn-a2p1). 'replaced' rows are
+ * excluded so a settled cancellation isn't re-checked forever.
  */
 async function handleNewBlock(): Promise<void> {
 	// Same startup gate as handleScripthashChange (cairn-3bt1): reconnects re-emit
@@ -767,8 +996,9 @@ async function handleNewBlock(): Promise<void> {
 	try {
 		pending = db
 			.prepare(
-				`SELECT id, wallet_kind, wallet_id, user_id, txid
-				   FROM notified_txids WHERE confirmed = 0`
+				`SELECT id, wallet_kind, wallet_id, user_id, txid, status, amount_sats
+				   FROM notified_txids
+				  WHERE confirmed = 0 AND (status IS NULL OR status IN ('pending', 'notified'))`
 			)
 			.all() as unknown as PendingTxidRow[];
 	} catch (e) {
@@ -784,6 +1014,11 @@ async function handleNewBlock(): Promise<void> {
 		try {
 			const tx = await chain.getTx(row.txid);
 			if (!tx.confirmed || tx.confirmations < CONFIRM_THRESHOLD) continue;
+
+			// A 'pending' row hasn't surfaced as "received" yet — leave tx_confirmed to
+			// a later block, AFTER the scripthash-change handler flips it to 'notified'
+			// (firing tx_received), so the user never sees "confirmed" before "received".
+			if (row.status === 'pending') continue;
 
 			markConfirmed.run(row.id);
 			const w: Watched = {
@@ -807,8 +1042,14 @@ async function handleNewBlock(): Promise<void> {
 				link: walletLink(w)
 			});
 		} catch (e) {
-			// A mempool-dropped or unreachable tx: leave it pending for a later block.
-			log.debug({ err: e, txid: row.txid }, 'confirmation check skipped');
+			// Not-found ⇒ the tx may have vanished (double-spend / RBF'd away): confirm
+			// it and reconcile. Any other error (connect/transient) is left for a later
+			// block, exactly as before.
+			if (isNotFoundError(e)) {
+				await reconcileDisappeared(row);
+			} else {
+				log.debug({ err: e, txid: row.txid }, 'confirmation check skipped');
+			}
 		}
 	}
 }

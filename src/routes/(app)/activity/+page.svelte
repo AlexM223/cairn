@@ -39,6 +39,7 @@
 	const WALLET_TYPES = new Set([
 		'tx_received',
 		'tx_confirmed',
+		'tx_replaced',
 		'tx_large',
 		'broadcast',
 		'wallet_added',
@@ -159,6 +160,10 @@
 				return { kind: 'rings', confirmations: 0, direction: 'in' };
 			case 'tx_confirmed':
 				return { kind: 'rings', confirmations: confirmations(e) ?? 6, direction: 'in' };
+			case 'tx_replaced':
+				// Cancelled inbound (cairn-a2p1): a plain glyph, never the burial rings —
+				// no payment landed. The row's warn level already tints it amber.
+				return { kind: 'icon', name: 'x' };
 			case 'broadcast':
 				return { kind: 'rings', confirmations: 0, direction: 'out' };
 			case 'new_block':
