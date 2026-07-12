@@ -1,7 +1,8 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
 	import Term from '$lib/components/Term.svelte';
-	import { formatBtc, formatSats } from '$lib/format';
+	import Amount from '$lib/components/Amount.svelte';
+	import { formatSats } from '$lib/format';
 	import { coinbaseMaturity } from '$lib/shared/coinbase';
 
 	// Coinbase-only UTXOs (mining rewards). The caller filters upstream, so an
@@ -42,9 +43,7 @@
 						<Icon name="blocks" size={13} />
 						Block {formatSats(row.height)}
 					</span>
-					<span class="reward-amount tabular" title="{formatSats(row.value)} sats">
-						{formatBtc(row.value)} BTC
-					</span>
+					<span class="reward-amount"><Amount sats={row.value} size="inline" /></span>
 				</div>
 
 				{#if row.maturity.mature}
@@ -133,8 +132,6 @@
 
 	.reward-amount {
 		margin-left: auto;
-		font-weight: 500;
-		font-size: 13.5px;
 	}
 
 	.maturity {

@@ -11,6 +11,7 @@
 	import RecentActivity from '$lib/components/portfolio/RecentActivity.svelte';
 	import Sparkline from '$lib/components/portfolio/Sparkline.svelte';
 	import SyncIndicator from '$lib/components/heartwood/SyncIndicator.svelte';
+	import Amount from '$lib/components/Amount.svelte';
 	import { formatNumber, formatBtc, formatBytes, formatSats, timeAgo } from '$lib/format';
 	import type { PortfolioDetail } from '$lib/types';
 
@@ -131,7 +132,11 @@
 	}
 
 	// --- optional fiat estimate (privacy-first: OFF by default, no price call
-	//     until the user turns it on) ---
+	//     until the user turns it on). Reuses the Amount component + format.ts
+	//     fiat helpers (bead cairn-vnfs seam), but keeps its own gated fetch
+	//     rather than the shared auto-refreshing $lib/price store — that store
+	//     starts fetching as soon as any component references it, which would
+	//     defeat the "no price call until opt-in" privacy contract here. ---
 	let showFiat = $state(false);
 	let usdPrice = $state<number | null>(null);
 	let priceTried = $state(false);
@@ -156,16 +161,7 @@
 	$effect(() => {
 		if (showFiat && !priceTried) void fetchPrice();
 	});
-	const fiatValue = $derived(
-		showFiat && usdPrice != null && portfolio ? (portfolio.confirmed / 1e8) * usdPrice : null
-	);
-	function usd(n: number): string {
-		return new Intl.NumberFormat('en-US', {
-			style: 'currency',
-			currency: 'USD',
-			maximumFractionDigits: 0
-		}).format(n);
-	}
+	const heroPrice = $derived(showFiat ? usdPrice : null);
 
 	// Today's change (sage ▲ chip in the hero sub-line, 7a). Down is calm
 	// amber, never red.
@@ -337,19 +333,10 @@
 						<div class="hero-sub"><span class="hidden-note">balance hidden</span></div>
 					{:else}
 						<div class="hero-amount-row">
-							<span
-								class="hero-number hero-amount"
-								title="{formatSats(portfolio.confirmed)} sats"
-							>
-								{formatBtc(portfolio.confirmed)}
-							</span>
-							<span class="hero-unit">BTC</span>
+							<Amount sats={portfolio.confirmed} size="hero" price={heroPrice} />
 						</div>
 						<div class="hero-sub">
 							<span class="tabular">{formatSats(portfolio.confirmed)} sats</span>
-							{#if fiatValue != null}
-								<span class="tabular">≈ {usd(fiatValue)}</span>
-							{/if}
 							<button
 								type="button"
 								class="fiat-toggle"
@@ -685,13 +672,6 @@
 		color: var(--text-faint);
 	}
 
-	.hero-unit {
-		font-family: var(--font-serif);
-		font-size: 34px;
-		font-weight: 600;
-		color: var(--text-muted);
-	}
-
 	.hero-sub {
 		display: flex;
 		align-items: center;
@@ -941,10 +921,6 @@
 		.hero-amount {
 			font-size: 48px;
 			line-height: 1;
-		}
-
-		.hero-unit {
-			font-size: 19px;
 		}
 
 		.hero-sub {

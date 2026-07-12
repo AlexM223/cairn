@@ -6,7 +6,8 @@
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import SyncIndicator from '$lib/components/heartwood/SyncIndicator.svelte';
 	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
-	import { formatBtc, formatSats, timeAgo } from '$lib/format';
+	import Amount from '$lib/components/Amount.svelte';
+	import { formatSats, timeAgo } from '$lib/format';
 	import { portfolioViewState } from '$lib/portfolioViewState';
 	import { SCRIPT_TYPE_LABELS, walletTypeLabel, featureEnabled } from './labels';
 
@@ -235,10 +236,7 @@
 					<p class="head-sub head-first-sync">Syncing with the network for the first time…</p>
 				{:else}
 					<div class="head-hero">
-						<span class="hero-number head-btc" title="{formatSats(totalSats)} sats">
-							{formatBtc(totalSats)}
-						</span>
-						<span class="head-unit">BTC</span>
+						<Amount sats={totalSats} size="hero" />
 					</div>
 					<p class="head-sub">
 						across {items.length} wallet{items.length === 1 ? '' : 's'}
@@ -337,9 +335,7 @@
 									<span class="row-btc muted">—</span>
 									<span class="row-when">check connection</span>
 								{:else}
-									<span class="row-btc tabular" title="{formatSats(item.balance)} sats">
-										{formatBtc(item.balance)}
-									</span>
+									<Amount sats={item.balance} size="row" />
 									<span class="row-when">
 										{#if item.lastActivity}
 											{timeAgo(item.lastActivity)}
@@ -482,13 +478,6 @@
 
 	.head-btc.skeleton {
 		color: transparent;
-	}
-
-	.head-unit {
-		font-family: var(--font-serif);
-		font-weight: 600;
-		font-size: clamp(20px, 3vw, 30px);
-		color: var(--text-secondary);
 	}
 
 	.head-sub {
@@ -828,10 +817,6 @@
 		.head-btc {
 			font-size: clamp(38px, 11vw, 48px);
 			line-height: 1;
-		}
-
-		.head-unit {
-			font-size: 19px;
 		}
 
 		.head-sub {
