@@ -50,7 +50,7 @@
 		<ul class="rows">
 			{#each slices as slice, i (slice.key)}
 				<li>
-					<a class="wallet-row" href={slice.href}>
+					<a class="wallet-row" href={slice.href} aria-label="Open {slice.name}">
 						<span class="swatch" style="background: {colorFor(i)};"></span>
 						<span class="name">
 							{#if slice.kind === 'multisig'}
@@ -62,6 +62,7 @@
 						<span class="pct tabular">
 							{total > 0 ? `${pct(slice.balance).toFixed(0)}%` : '—'}
 						</span>
+						<span class="row-chevron"><Icon name="chevron-right" size={14} /></span>
 					</a>
 				</li>
 			{/each}
@@ -121,7 +122,7 @@
 
 	.wallet-row {
 		display: grid;
-		grid-template-columns: auto 1fr auto auto;
+		grid-template-columns: auto 1fr auto auto auto;
 		align-items: center;
 		gap: 10px;
 		padding: 13px 2px;
@@ -136,6 +137,22 @@
 
 	.wallet-row:hover .name-text {
 		color: var(--accent-bright);
+	}
+
+	/* Quiet chevron — signals "this row opens something" without adding a
+	   button; brightens and nudges right on hover like the "see all" links. */
+	.row-chevron {
+		display: flex;
+		align-items: center;
+		color: var(--text-faint);
+		transition:
+			color 0.15s var(--ease),
+			transform 0.15s var(--ease);
+	}
+
+	.wallet-row:hover .row-chevron {
+		color: var(--accent);
+		transform: translateX(2px);
 	}
 
 	.swatch {
