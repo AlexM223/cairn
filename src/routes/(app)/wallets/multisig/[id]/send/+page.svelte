@@ -17,6 +17,12 @@
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import { formatBtc, formatSats, formatFeeRate, truncateMiddle } from '$lib/format';
+	import AmountEntry from '$lib/components/send/AmountEntry.svelte';
+	import FeeSpeedPicker from '$lib/components/send/FeeSpeedPicker.svelte';
+	import SendReviewCard from '$lib/components/send/SendReviewCard.svelte';
+	import { sendCtaLabel } from '$lib/components/send/sendMoney';
+	import { arrivalWords, type FeeChoiceKey } from '$lib/components/send/sendCopy';
+	import { btcUsd } from '$lib/price';
 	import { scrollToTop } from '$lib/scrollToTop';
 	import type { ConstructedMultisigPsbt, MultisigSigningProgress } from '$lib/server/bitcoin/multisigPsbt';
 	// Signing-mass estimator: the pure constants + math live in the shared
@@ -153,24 +159,26 @@
 	}
 
 	// ------------------------------------------------------------- CREATE step
-	type RecipientRow = { key: number; address: string; amountBtc: string };
+	// Amount stored as canonical `sats` (0 = empty/invalid); AmountEntry owns all
+	// unit display/entry so the page never handles BTC/sats/fiat conversion.
+	type RecipientRow = { key: number; address: string; sats: number };
 	let rowKey = 0;
 	function seedRows(): RecipientRow[] {
 		if (resumeTx && resumeTx.recipients.length > 0) {
 			return resumeTx.recipients.map((r) => ({
 				key: rowKey++,
 				address: r.address,
-				amountBtc: r.amount > 0 ? formatBtc(r.amount, { trim: true }) : ''
+				sats: r.amount > 0 ? r.amount : 0
 			}));
 		}
-		return [{ key: rowKey++, address: '', amountBtc: '' }];
+		return [{ key: rowKey++, address: '', sats: 0 }];
 	}
 	// svelte-ignore state_referenced_locally — intentional per-load seed
 	let rows = $state<RecipientRow[]>(seedRows());
 	let amountMode = $state<'btc' | 'max'>('btc');
 
 	function addRow() {
-		rows = [...rows, { key: rowKey++, address: '', amountBtc: '' }];
+		rows = [...rows, { key: rowKey++, address: '', sats: 0 }];
 		amountMode = 'btc';
 	}
 
@@ -179,36 +187,11 @@
 		rows = rows.filter((r) => r.key !== key);
 	}
 
-	type FeeChoice = 'fast' | 'normal' | 'economy' | 'custom';
-	let feeChoice = $state<FeeChoice>('normal');
-	// Fees stream in, so the custom-rate starting value is seeded reactively (see
-	// the effect below) rather than at load; '5' is the pre-estimate fallback.
-	let customFee = $state('5');
-	// Seed the custom-fee input from the streamed half-hour estimate until the
-	// user actually switches to the custom rate — after that it's theirs to edit.
-	$effect(() => {
-		if (feeChoice === 'custom') return;
-		const h = chain?.fees?.halfHour;
-		if (h != null) customFee = String(h);
-	});
-
-	const feeRate = $derived.by(() => {
-		const fallback = Number(customFee) || 1;
-		if (feeChoice === 'fast') return chain?.fees?.fastest ?? fallback;
-		if (feeChoice === 'normal') return chain?.fees?.halfHour ?? fallback;
-		if (feeChoice === 'economy') return chain?.fees?.economy ?? fallback;
-		return Math.max(1, fallback);
-	});
-
-	// Plain-language confirmation ETA per fee tier (send-affordances-progress.md
-	// Part 2 — was "next ring ≈ N min", brand/ring jargon a first-time sender
-	// wouldn't recognize as a time estimate).
-	const feeEta = $derived.by(() => {
-		if (feeChoice === 'fast') return '~10 min to confirm';
-		if (feeChoice === 'normal') return '~30 min to confirm';
-		if (feeChoice === 'economy') return '~1 hr or more to confirm';
-		return 'custom rate — timing depends on the mempool';
-	});
+	// Fee tier + effective rate are owned by FeeSpeedPicker; the page keeps only
+	// the bound values it needs — `feeRate` for build()/canBuild, `feeChoice` for
+	// the Review card's arrival words.
+	let feeChoice = $state<FeeChoiceKey>('standard');
+	let feeRate = $state(1);
 
 	const looksLikeAddress = (a: string) => /^(bc1|[13])[a-zA-HJ-NP-Z0-9]{6,90}$/.test(a.trim());
 	const isMax = $derived(amountMode === 'max' && rows.length === 1);
@@ -216,7 +199,7 @@
 		rows.every((r) => {
 			if (r.address.trim().length === 0 || !looksLikeAddress(r.address)) return false;
 			if (isMax) return true;
-			return Number(r.amountBtc) > 0 && Number.isFinite(Number(r.amountBtc));
+			return r.sats > 0;
 		})
 	);
 	const canBuild = $derived(rowsValid && feeRate >= 1);
@@ -242,7 +225,7 @@
 		reservationWarning = null;
 		const recipients = rows.map((r) => ({
 			address: r.address.trim(),
-			amount: (isMax ? 'max' : Math.round(Number(r.amountBtc) * SATS_PER_BTC)) as number | 'max'
+			amount: (isMax ? 'max' : r.sats) as number | 'max'
 		}));
 		// Restrict selection to the chosen coins only when some are actually picked.
 		const onlyUtxos = selectedCoins.map((k) => {
@@ -279,13 +262,6 @@
 			building = false;
 		}
 	}
-
-	// ------------------------------------------------------------- REVIEW step
-	let inputsOpen = $state(false);
-	const feePctOfAmount = $derived.by(() => {
-		if (!review || review.amount <= 0) return null;
-		return (review.fee / review.amount) * 100;
-	});
 
 	// --------------------------------------------- signing-mass ceremony copy
 	//
@@ -360,11 +336,6 @@
 		} catch {
 			massFetch = 'failed';
 		}
-	}
-
-	function toggleInputs() {
-		inputsOpen = !inputsOpen;
-		if (inputsOpen) void ensureUtxoMasses();
 	}
 
 	function coinMass(txid: string, vout: number): UtxoMassRow | undefined {
@@ -854,10 +825,10 @@
 								invalid={row.address.length > 0 && !looksLikeAddress(row.address)}
 								ondelete={() => {}}
 								ariaLabel={rows.length > 1 ? `Recipient ${i + 1} address` : undefined}
-								currentAmountText={row.amountBtc}
+								currentAmountText={row.sats > 0 ? String(row.sats) : ''}
 								onamount={(sats) => {
 									if (isMax) return;
-									row.amountBtc = formatBtc(sats, { trim: true });
+									row.sats = sats;
 								}}
 							/>
 							{#if row.address.length > 0 && !looksLikeAddress(row.address)}
@@ -891,21 +862,12 @@
 								{/if}
 							</div>
 							{#if !isMax}
-								<div class="amount-input">
-									<input
-										class="amount-field tabular"
-										inputmode="decimal"
-										placeholder="0.00000000"
-										bind:value={row.amountBtc}
-										aria-labelledby={`amount-label-${row.key}`}
-									/>
-									<span class="unit-inline">BTC</span>
-								</div>
-								{#if Number(row.amountBtc) > 0}
-									<p class="field-line tabular muted">
-										{formatSats(Math.round(Number(row.amountBtc) * SATS_PER_BTC))} sats
-									</p>
-								{/if}
+								<AmountEntry
+									bind:sats={row.sats}
+									compact={rows.length > 1}
+									spendableSats={null}
+									ariaLabel={rows.length > 1 ? `Amount for recipient ${i + 1}` : 'Amount to send'}
+								/>
 							{:else}
 								<div class="max-note">
 									<Icon name="zap" size={15} />
@@ -923,58 +885,13 @@
 				</button>
 			</div>
 
-			<!-- FEE: text toggles, not a dropdown. Label left, live rate + "next
-			     ring" ETA right (5a). -->
-			<div class="fee-section">
-				<div class="fee-head">
-					<span class="sec-label">Fee</span>
-					<span class="fee-caption">{formatFeeRate(feeRate)} · {feeEta}</span>
-				</div>
-				<div class="fee-toggles" role="group" aria-label="Fee rate">
-					{#each [{ k: 'economy', label: 'Low', rate: chain?.fees?.economy }, { k: 'normal', label: 'Medium', rate: chain?.fees?.halfHour }, { k: 'fast', label: 'High', rate: chain?.fees?.fastest }] as opt (opt.k)}
-						<button
-							type="button"
-							class="txt-toggle"
-							class:active={feeChoice === opt.k}
-							onclick={() => (feeChoice = opt.k as FeeChoice)}
-						>
-							{opt.label}{#if opt.rate != null}<span class="toggle-rate tabular"
-									>&nbsp;· {opt.rate < 10 ? Number(opt.rate.toFixed(1)) : Math.round(opt.rate)}</span
-								>{:else if chainLoading}<span class="toggle-rate skeleton skeleton-rate" aria-hidden="true"
-									>&nbsp;· 00</span
-								>{/if}
-						</button>
-					{/each}
-					<button
-						type="button"
-						class="txt-toggle"
-						class:active={feeChoice === 'custom'}
-						onclick={() => (feeChoice = 'custom')}
-					>
-						Custom
-					</button>
-				</div>
-				{#if feeChoice === 'custom'}
-					<div class="custom-fee">
-						<input
-							class="custom-fee-input tabular"
-							inputmode="decimal"
-							bind:value={customFee}
-							aria-label="Custom fee rate in sat/vB"
-						/>
-						<span class="unit-sm">sat/vB</span>
-					</div>
-				{/if}
-				{#if chainLoading}
-					<p class="fee-caption">Fetching live fee estimates…</p>
-				{:else if !chain?.fees}
-					<p class="fee-caption">Live fee estimates are unavailable — set a custom sat/vB rate.</p>
-				{/if}
-				<p class="fee-caption">
-					Multisig inputs are larger than single-signature ones ({quorum} needs {required}
-					signatures per coin), so the same fee rate costs a little more in total fees.
-				</p>
-			</div>
+			<FeeSpeedPicker
+				fees={chain?.fees ?? null}
+				bind:feeRate
+				bind:choice={feeChoice}
+				loading={chainLoading}
+				note={`Multisig inputs are larger than single-signature ones (${quorum} needs ${required} signatures per coin), so the same fee rate costs a little more in total fees.`}
+			/>
 
 			{#if chain && chain.utxos.length > 0}
 				{#if data.flags?.coin_control === false}
@@ -1037,30 +954,89 @@
 	<!-- ============================================================ REVIEW -->
 	{:else if step === 'review' && review}
 		<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
-			<div class="review-hero">
-				<span class="hero-amount">{formatBtc(review.amount)} <em>BTC</em></span>
-				{#if review.recipients.length === 1}
-					<span class="hero-sub tabular">{formatSats(review.amount)} sats</span>
-					<span class="recipient mono">{review.recipient}</span>
-				{:else}
-					<span class="hero-sub tabular"
-						>{formatSats(review.amount)} sats · {review.recipients.length} recipients</span
-					>
-					<div class="review-recipients">
-						{#each review.recipients as r, i (i)}
-							<div class="review-recipient-row">
-								<span class="tabular batch-amt">{formatBtc(r.amount)} BTC</span>
-								<span class="recipient mono">{r.address}</span>
+			<SendReviewCard
+				mode="review"
+				amountSats={review.amount}
+				recipients={review.recipients}
+				feeSats={review.fee}
+				feeRate={review.feeRate}
+				changeSats={review.change?.value ?? null}
+				inputs={[]}
+				vsize={review.vsize}
+				recipientLabel={null}
+				arrivalWords={arrivalWords(feeChoice)}
+				multisig={{ threshold: required, keysTotal: keys.length, quorumLabel: quorum }}
+				onDetailsOpen={ensureUtxoMasses}
+			>
+				{#snippet detailExtra()}
+					{#if review}
+						{#if signingMass}
+							<!-- The IMPACT line's ceremony estimate: per-signer time × the M
+							     devices that must each verify the full transaction. -->
+							<div class="detail-row">
+								<span class="text-secondary">
+									<Term
+										tip="Each signing device reads every coin's full parent transaction to verify amounts, and all {required} devices do that work independently. This is device verification time only — it never changes the network fee."
+										>Total signing time</Term
+									> across {required} devices
+								</span>
+								<span class="detail-val tabular"
+									>~{signingRange(signingMass.totalSeconds.lo, signingMass.totalSeconds.hi)}</span
+								>
 							</div>
-						{/each}
-					</div>
-				{/if}
-			</div>
-
-			<p class="step-lead">
-				Check every detail now — after this, {required} devices will each confirm this exact
-				transaction, and once broadcast it <strong>cannot be reversed.</strong>
-			</p>
+						{/if}
+						{#if review.inputs.length > 0}
+							<div class="detail-row coins-head">
+								<span class="text-secondary"
+									>Coins being spent ({review.inputs.length}
+									{review.inputs.length === 1 ? 'input' : 'inputs'})</span
+								>
+							</div>
+							<div class="utxo-list">
+								{#if coinMassLine}
+									<p class="mass-line">
+										Spending {review.inputs.length}
+										{review.inputs.length === 1 ? 'coin' : 'coins'} · signing mass:
+										<span class={`mass-tier ${coinMassLine.tier}`}>{coinMassLine.tier}</span>
+										· ~{signingRange(coinMassLine.perSigner.lo, coinMassLine.perSigner.hi)} per signer
+										× {required}
+										{required === 1 ? 'signer' : 'signers'} = ~{signingRange(
+											coinMassLine.total.lo,
+											coinMassLine.total.hi
+										)}
+									</p>
+								{/if}
+								{#each review.inputs as inp (inp.txid + inp.vout)}
+									{@const mass = coinMass(inp.txid, inp.vout)}
+									<div class="utxo-row">
+										<span class="mono text-muted">{truncateMiddle(inp.txid, 10, 8)}:{inp.vout}</span>
+										<span class="utxo-row-right">
+											{#if mass}
+												<span
+													class={`mass-tier ${mass.tier}`}
+													title="How long signing devices spend verifying this coin's parent transaction — the network fee is not affected."
+													>{MASS_TIER_LABELS[mass.tier]}</span
+												>
+											{/if}
+											{#if inp.value != null}
+												<span class="tabular">{formatSats(inp.value)} sats</span>
+											{/if}
+										</span>
+									</div>
+								{/each}
+								{#if coinMassLine?.tier === 'high'}
+									<p class="hint">
+										The slowest coins here came from very large batch payouts. They're exactly as
+										safe to spend as any other coin — but every signing device verifies their full
+										parent transactions, so the ceremony runs long. Sending them in a separate,
+										smaller transaction keeps each signing session shorter.
+									</p>
+								{/if}
+							</div>
+						{/if}
+					{/if}
+				{/snippet}
+			</SendReviewCard>
 
 			{#if chainDepthWarning}
 				<div class="attention-panel" role="status">
@@ -1076,101 +1052,6 @@
 				</div>
 			{/if}
 
-			<div class="detail-list">
-				<div class="detail-row">
-					<span class="text-secondary">Network fee</span>
-					<span class="detail-val tabular">
-						{formatSats(review.fee)} sats
-						<span class="text-muted"
-							>· {formatFeeRate(review.feeRate)}{#if feePctOfAmount != null}
-								· {feePctOfAmount < 0.01 ? '<0.01' : feePctOfAmount.toFixed(2)}% of amount{/if}</span
-						>
-					</span>
-				</div>
-				{#if review.change}
-					<div class="detail-row">
-						<span class="text-secondary">Change back to the wallet</span>
-						<span class="detail-val tabular">{formatSats(review.change.value)} sats</span>
-					</div>
-				{/if}
-				<div class="detail-row">
-					<span class="text-secondary">Signatures required</span>
-					<span class="detail-val">{quorum}</span>
-				</div>
-				{#if signingMass}
-					<!-- The IMPACT line's ceremony estimate: per-signer time × the M
-					     devices that must each verify the full transaction. -->
-					<div class="detail-row">
-						<span class="text-secondary">
-							<Term
-								tip="Each signing device reads every coin's full parent transaction to verify amounts, and all {required} devices do that work independently. This is device verification time only — it never changes the network fee."
-								>Total signing time</Term
-							> across {required} devices
-						</span>
-						<span class="detail-val tabular"
-							>~{signingRange(signingMass.totalSeconds.lo, signingMass.totalSeconds.hi)}</span
-						>
-					</div>
-				{/if}
-				{#if review.inputs.length > 0}
-					<button
-						class="utxo-toggle"
-						aria-expanded={inputsOpen}
-						aria-controls="review-utxo-list"
-						onclick={toggleInputs}
-					>
-						<Icon name={inputsOpen ? 'chevron-down' : 'chevron-right'} size={14} />
-						<span
-							>Coins being spent ({review.inputs.length}
-							{review.inputs.length === 1 ? 'input' : 'inputs'})</span
-						>
-					</button>
-					{#if inputsOpen}
-						<div class="utxo-list fade-in" id="review-utxo-list">
-							{#if coinMassLine}
-								<p class="mass-line">
-									Spending {review.inputs.length}
-									{review.inputs.length === 1 ? 'coin' : 'coins'} · signing mass:
-									<span class={`mass-tier ${coinMassLine.tier}`}>{coinMassLine.tier}</span>
-									· ~{signingRange(coinMassLine.perSigner.lo, coinMassLine.perSigner.hi)} per signer
-									× {required}
-									{required === 1 ? 'signer' : 'signers'} = ~{signingRange(
-										coinMassLine.total.lo,
-										coinMassLine.total.hi
-									)}
-								</p>
-							{/if}
-							{#each review.inputs as inp (inp.txid + inp.vout)}
-								{@const mass = coinMass(inp.txid, inp.vout)}
-								<div class="utxo-row">
-									<span class="mono text-muted">{truncateMiddle(inp.txid, 10, 8)}:{inp.vout}</span>
-									<span class="utxo-row-right">
-										{#if mass}
-											<span
-												class={`mass-tier ${mass.tier}`}
-												title="How long signing devices spend verifying this coin's parent transaction — the network fee is not affected."
-												>{MASS_TIER_LABELS[mass.tier]}</span
-											>
-										{/if}
-										{#if inp.value != null}
-											<span class="tabular">{formatSats(inp.value)} sats</span>
-										{/if}
-									</span>
-								</div>
-							{/each}
-							{#if coinMassLine?.tier === 'high'}
-								<p class="hint">
-									The slowest coins here came from very large batch payouts. They're exactly as
-									safe to spend as any other coin — but every signing device verifies their full
-									parent transactions, so the ceremony runs long. Sending them in a separate,
-									smaller transaction keeps each signing session shorter.
-								</p>
-							{/if}
-						</div>
-					{/if}
-				{/if}
-			</div>
-
 			{#if signingMass}
 				{@render massPanel(signingMass)}
 			{/if}
@@ -1180,7 +1061,8 @@
 					<Icon name="chevron-left" size={15} /> Back &amp; edit
 				</button>
 				<button class="btn btn-primary pill-lg" onclick={() => (step = 'sign')}>
-					Looks good — collect signatures <Icon name="arrow-right" size={15} />
+					{sendCtaLabel(review.amount + review.fee, $btcUsd, 'review')}
+					<Icon name="arrow-right" size={15} />
 				</button>
 			</div>
 		</section>
@@ -1554,47 +1436,24 @@
 	<!-- =========================================================== CONFIRM -->
 	{:else if step === 'confirm' && review}
 		<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
-			<div class="review-hero">
-				<span class="hero-amount sm">{formatBtc(review.amount)} <em>BTC</em></span>
-				<span class="hero-sub">
-					{collected >= required ? `${required} of ${required}` : quorum} signatures collected — fully
-					authorized and ready to broadcast
-				</span>
-			</div>
-
-			<div class="detail-list">
-				{#if review.recipients.length === 1}
-					<div class="detail-row">
-						<span class="text-secondary">To</span>
-						<span class="mono confirm-recipient">{review.recipient}</span>
-					</div>
-				{:else}
-					<div class="detail-row confirm-batch">
-						<span class="text-secondary">To {review.recipients.length} recipients</span>
-						<div class="confirm-batch-list">
-							{#each review.recipients as r, i (i)}
-								<span class="mono confirm-recipient tabular"
-									>{formatBtc(r.amount)} BTC → {truncateMiddle(r.address, 12, 10)}</span
-								>
-							{/each}
-						</div>
-					</div>
-				{/if}
-				<div class="detail-row">
-					<span class="text-secondary">Fee</span>
-					<span class="detail-val tabular"
-						>{formatSats(review.fee)} sats · {formatFeeRate(review.feeRate)}</span
-					>
-				</div>
-				<div class="detail-row">
-					<span class="text-secondary">Authorized by</span>
-					<span class="detail-val">{quorum} keys</span>
-				</div>
-			</div>
-
-			<p class="step-lead">
-				Broadcasting hands this transaction to the network. Once it's broadcast, there is no undo.
+			<p class="confirm-authorized">
+				{collected >= required ? `${required} of ${required}` : quorum} signatures collected — fully
+				authorized and ready to broadcast.
 			</p>
+
+			<SendReviewCard
+				mode="confirm"
+				amountSats={review.amount}
+				recipients={review.recipients}
+				feeSats={review.fee}
+				feeRate={review.feeRate}
+				changeSats={review.change?.value ?? null}
+				inputs={[]}
+				vsize={review.vsize}
+				recipientLabel={null}
+				arrivalWords={arrivalWords(feeChoice)}
+				multisig={{ threshold: required, keysTotal: keys.length, quorumLabel: quorum }}
+			/>
 
 			{#if broadcastError}
 				<Banner variant="error">
@@ -1617,8 +1476,11 @@
 					onclick={() => (confirmOpen = true)}
 					disabled={broadcasting}
 				>
-					{#if broadcasting}<span class="spinner"></span> Broadcasting…{:else}Broadcast
-						transaction{/if}
+					{#if broadcasting}<span class="spinner"></span> Broadcasting…{:else}{sendCtaLabel(
+							review.amount + review.fee,
+							$btcUsd,
+							'confirm'
+						)}{/if}
 				</button>
 			</div>
 		</section>
@@ -1790,8 +1652,10 @@
 		line-height: 1.6;
 	}
 
-	.step-lead strong {
-		color: var(--text);
+	.confirm-authorized {
+		font-size: 14px;
+		color: var(--text-secondary);
+		line-height: 1.6;
 	}
 
 	.step-actions {
@@ -2635,9 +2499,6 @@
 		gap: 4px;
 	}
 
-	.confirm-batch-list .confirm-recipient {
-		max-width: 100%;
-	}
 
 	/* ---- Sent: the grove moment ---- */
 	.sent-body {
