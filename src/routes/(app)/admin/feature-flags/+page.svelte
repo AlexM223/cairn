@@ -10,6 +10,7 @@
 		{ category: 'wallet', title: 'Wallet' },
 		{ category: 'hardware', title: 'Hardware devices' },
 		{ category: 'notifications', title: 'Notification channels' },
+		{ category: 'marketing', title: 'Marketing' },
 		{
 			category: 'upcoming',
 			title: 'Upcoming features',
