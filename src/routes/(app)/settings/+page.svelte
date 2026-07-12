@@ -569,11 +569,25 @@
 		<span class="danger-title">Danger zone</span>
 		<p class="hint">
 			Delete your account and everything it stores on this server: your wallets and their
-			configuration, labels, address book, notification settings, and activity. Multisig wallets
-			someone shared with you stay intact for their owner — you're just removed from them. Your
-			bitcoin is not touched (this server never holds keys), but if you haven't downloaded your
-			wallet backups, recovering your wallet setup later will be much harder.
+			configuration, labels, address book, notification settings, and activity.
 		</p>
+		<ul class="hint danger-list">
+			<li>Wallets someone else shared with you are safe — you're just removed, the owner keeps everything.</li>
+			<li>
+				Shared vaults you own are not: if you've shared a multisig wallet with cosigners or
+				viewers, deleting your account deletes it for all of them too, immediately and without
+				warning them, and discards any sends they had in progress.
+			</li>
+			<li>
+				Your bitcoin itself is never touched — this server never holds your keys, so coins backed
+				by hardware or other wallets stay exactly where they are. What's lost is this app's wallet
+				setup and history, which can be hard to rebuild without a backup.
+			</li>
+			<li>
+				If you own a shared wallet, use its <strong>Export config</strong> option or hand off ownership
+				to a cosigner before you delete your account.
+			</li>
+		</ul>
 
 		{#if !confirmingDelete}
 			<div>
@@ -1174,6 +1188,18 @@
 		letter-spacing: 0.08em;
 		text-transform: uppercase;
 		color: var(--error);
+	}
+
+	.danger-list {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		margin: 0;
+		padding-left: 18px;
+	}
+
+	.danger-list li {
+		list-style: disc;
 	}
 
 	.danger-btn {
