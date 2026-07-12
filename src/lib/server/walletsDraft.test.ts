@@ -372,6 +372,29 @@ describe('buildDraft coin reservation (cairn QA R7 B4)', () => {
 		expect(listTransactions(userId, w.id)).toHaveLength(2);
 	});
 
+	// Live re-run against the real QA stack (cairn QA R7 B4 follow-up) exposed a
+	// gap the sequential test above can't see: the reservation check only reads
+	// what's ALREADY persisted, so two calls truly overlapping in time (fired
+	// via Promise.all, not awaited one after another) could both read "nothing
+	// reserved yet" before either had inserted — reproducing the original
+	// collision for a rarer, timing-dependent window. Fixed by serializing
+	// buildDraft per wallet with the existing keyedLock (withLock, the same
+	// tool nextReceiveAddress already uses for an identical race, cairn-2qa4).
+	it('true Promise.all concurrency (not just sequential calls) still selects disjoint coins', async () => {
+		const w = createWallet(userId, { name: 'Spending', xpub: ZPUB });
+
+		const [{ details: d1 }, { details: d2 }] = await Promise.all([
+			buildDraft(userId, w.id, draftInput()),
+			buildDraft(userId, w.id, draftInput())
+		]);
+
+		const keys1 = new Set(d1.inputs.map((i) => `${i.txid}:${i.vout}`));
+		const keys2 = new Set(d2.inputs.map((i) => `${i.txid}:${i.vout}`));
+		expect(keys1.size).toBeGreaterThan(0);
+		for (const k of keys2) expect(keys1.has(k)).toBe(false);
+		expect(listTransactions(userId, w.id)).toHaveLength(2);
+	});
+
 	it('an insufficient-funds shortfall caused entirely by reservation names the blocking draft(s)', async () => {
 		const w = createWallet(userId, { name: 'Spending', xpub: ZPUB });
 

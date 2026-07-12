@@ -14,6 +14,7 @@ import { base64 } from '@scure/base';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { db } from './db';
 import { getChain } from './chain';
+import { withLock } from './keyedLock';
 import {
 	getMultisig,
 	getViewableMultisig,
@@ -245,113 +246,124 @@ export async function buildMultisigDraft(
 	chainDepthWarning: ChainDepthWarning | null;
 	reservationWarning: ReservationWarning | null;
 }> {
-	// A wallet-level cosigner (or the owner) may initiate a spend; the roster
-	// frozen just below records who is then expected to sign it.
-	const multisig = signableMultisig(userId, multisigId);
-	if (!multisig) throw new PsbtError('Multisig not found.', 'construction_failed');
+	// cairn QA R7 B4 (follow-up): serialize builds per multisig, same rationale
+	// as buildDraft (transactions.ts) — the reservation exclusion only sees
+	// what's ALREADY persisted, so truly-concurrent calls can both read "not
+	// reserved" before either inserts. A DIFFERENT lock key from
+	// nextMultisigChangeIndex's own `multisig:${id}` withLock (multisigScan.ts)
+	// on purpose: that lock is HELD by an outer withLock on the same key would
+	// deadlock (nextMultisigChangeIndex is called from inside this critical
+	// section below) — this section's `multisig-draft:` namespace only needs
+	// to serialize against ITSELF, not against change-index issuance.
+	return withLock(`multisig-draft:${multisigId}`, async () => {
+		// A wallet-level cosigner (or the owner) may initiate a spend; the roster
+		// frozen just below records who is then expected to sign it.
+		const multisig = signableMultisig(userId, multisigId);
+		if (!multisig) throw new PsbtError('Multisig not found.', 'construction_failed');
 
-	// Classify unconfirmed coins so selection can spend our own change but never
-	// auto-select a stranger's unconfirmed coin (cairn-u9ob.1).
-	const ownTxids = new Set(
-		(
-			db
-				.prepare(
-					"SELECT txid FROM multisig_transactions WHERE multisig_id = ? AND txid IS NOT NULL"
-				)
-				.all(multisigId) as { txid: string }[]
-		).map((r) => r.txid.toLowerCase())
-	);
-	const utxos = classifyUnconfirmedTrust(await getMultisigUtxos(multisig), ownTxids);
-	const changeIndex = await nextMultisigChangeIndex(multisig);
-	// Only fetch the tip (for the coinbase-maturity guard) when a coinbase coin is
-	// present, and never let a transient tip failure block an ordinary send.
-	let tipHeight: number | undefined;
-	if (utxos.some((u) => u.coinbase)) {
-		try {
-			tipHeight = (await getChain().getTip()).height;
-		} catch {
-			tipHeight = undefined;
-		}
-	}
-
-	// cairn QA R7 B4: exclude coins another in-flight draft of THIS multisig
-	// already references from automatic selection (see buildDraft in
-	// transactions.ts for the full rationale — identical here).
-	const hasCoinControl = (input.onlyUtxos?.length ?? 0) > 0;
-	const reserved = reservedMultisigCoins(multisigId);
-	let candidateUtxos = utxos;
-	let reservedSats = 0;
-	const reservedDraftIds = new Set<number>();
-	if (!hasCoinControl && reserved.size > 0) {
-		candidateUtxos = utxos.filter((u) => {
-			const ids = reserved.get(`${u.txid}:${u.vout}`);
-			if (!ids) return true;
-			reservedSats += u.value;
-			for (const id of ids) reservedDraftIds.add(id);
-			return false;
-		});
-	}
-
-	let details: ConstructedMultisigPsbt;
-	try {
-		details = await constructMultisigPsbt({
-			config: toMultisigConfig(multisig),
-			utxos: candidateUtxos,
-			recipients: input.recipients,
-			feeRate: input.feeRate,
-			changeIndex,
-			fetchRawTx: (txid) => getChain().getTxHex(txid),
-			onlyUtxos: input.onlyUtxos,
-			tipHeight
-		});
-	} catch (e) {
-		if (
-			!hasCoinControl &&
-			reservedDraftIds.size > 0 &&
-			e instanceof PsbtError &&
-			(e.code === 'insufficient_funds' || e.code === 'no_utxos')
-		) {
-			throw new PsbtError(
-				reservationErrorMessage(reservedSats, [...reservedDraftIds].sort((a, b) => a - b)),
-				e.code
-			);
-		}
-		throw e;
-	}
-
-	const res = db
-		.prepare(
-			`INSERT INTO multisig_transactions (multisig_id, status, psbt, recipient, amount, fee, fee_rate, change_index, recipients)
-			 VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?)`
-		)
-		.run(
-			multisigId,
-			details.psbtBase64,
-			details.recipient,
-			details.amount,
-			details.fee,
-			details.feeRate,
-			details.change?.index ?? null,
-			recipientsJson(details.recipients)
+		// Classify unconfirmed coins so selection can spend our own change but never
+		// auto-select a stranger's unconfirmed coin (cairn-u9ob.1).
+		const ownTxids = new Set(
+			(
+				db
+					.prepare(
+						"SELECT txid FROM multisig_transactions WHERE multisig_id = ? AND txid IS NOT NULL"
+					)
+					.all(multisigId) as { txid: string }[]
+			).map((r) => r.txid.toLowerCase())
 		);
+		const utxos = classifyUnconfirmedTrust(await getMultisigUtxos(multisig), ownTxids);
+		const changeIndex = await nextMultisigChangeIndex(multisig);
+		// Only fetch the tip (for the coinbase-maturity guard) when a coinbase coin is
+		// present, and never let a transient tip failure block an ordinary send.
+		let tipHeight: number | undefined;
+		if (utxos.some((u) => u.coinbase)) {
+			try {
+				tipHeight = (await getChain().getTip()).height;
+			} catch {
+				tipHeight = undefined;
+			}
+		}
 
-	const draft = getMultisigTransaction(userId, multisigId, Number(res.lastInsertRowid));
-	if (!draft) throw new PsbtError('Draft could not be saved.', 'construction_failed');
+		// cairn QA R7 B4: exclude coins another in-flight draft of THIS multisig
+		// already references from automatic selection (see buildDraft in
+		// transactions.ts for the full rationale — identical here).
+		const hasCoinControl = (input.onlyUtxos?.length ?? 0) > 0;
+		const reserved = reservedMultisigCoins(multisigId);
+		let candidateUtxos = utxos;
+		let reservedSats = 0;
+		const reservedDraftIds = new Set<number>();
+		if (!hasCoinControl && reserved.size > 0) {
+			candidateUtxos = utxos.filter((u) => {
+				const ids = reserved.get(`${u.txid}:${u.vout}`);
+				if (!ids) return true;
+				reservedSats += u.value;
+				for (const id of ids) reservedDraftIds.add(id);
+				return false;
+			});
+		}
 
-	// Freeze the signer roster and notify every member except the creator that
-	// their signature is wanted — immediately, at creation (not deferred until
-	// someone else signs). For a solo multisig the roster is just the owner, so
-	// this notifies no one and costs a single cheap insert.
-	freezeRosterAndNotify(multisig, draft, userId);
+		let details: ConstructedMultisigPsbt;
+		try {
+			details = await constructMultisigPsbt({
+				config: toMultisigConfig(multisig),
+				utxos: candidateUtxos,
+				recipients: input.recipients,
+				feeRate: input.feeRate,
+				changeIndex,
+				fetchRawTx: (txid) => getChain().getTxHex(txid),
+				onlyUtxos: input.onlyUtxos,
+				tipHeight
+			});
+		} catch (e) {
+			if (
+				!hasCoinControl &&
+				reservedDraftIds.size > 0 &&
+				e instanceof PsbtError &&
+				(e.code === 'insufficient_funds' || e.code === 'no_utxos')
+			) {
+				throw new PsbtError(
+					reservationErrorMessage(reservedSats, [...reservedDraftIds].sort((a, b) => a - b)),
+					e.code
+				);
+			}
+			throw e;
+		}
 
-	// Warn (never block) if this draft spends an unconfirmed coin whose mempool
-	// chain is near the limit (cairn-u9ob.5). Network cost only when an
-	// unconfirmed coin was actually selected; silent without the v1 CPFP endpoint.
-	const chainDepthWarning = await checkSelectedInputsChainDepth(details.inputs, utxos);
-	const reservationWarning = hasCoinControl
-		? reservationWarningFor(details.inputs, reserved)
-		: null;
-	return { draft, details, chainDepthWarning, reservationWarning };
+		const res = db
+			.prepare(
+				`INSERT INTO multisig_transactions (multisig_id, status, psbt, recipient, amount, fee, fee_rate, change_index, recipients)
+				 VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?)`
+			)
+			.run(
+				multisigId,
+				details.psbtBase64,
+				details.recipient,
+				details.amount,
+				details.fee,
+				details.feeRate,
+				details.change?.index ?? null,
+				recipientsJson(details.recipients)
+			);
+
+		const draft = getMultisigTransaction(userId, multisigId, Number(res.lastInsertRowid));
+		if (!draft) throw new PsbtError('Draft could not be saved.', 'construction_failed');
+
+		// Freeze the signer roster and notify every member except the creator that
+		// their signature is wanted — immediately, at creation (not deferred until
+		// someone else signs). For a solo multisig the roster is just the owner, so
+		// this notifies no one and costs a single cheap insert.
+		freezeRosterAndNotify(multisig, draft, userId);
+
+		// Warn (never block) if this draft spends an unconfirmed coin whose mempool
+		// chain is near the limit (cairn-u9ob.5). Network cost only when an
+		// unconfirmed coin was actually selected; silent without the v1 CPFP endpoint.
+		const chainDepthWarning = await checkSelectedInputsChainDepth(details.inputs, utxos);
+		const reservationWarning = hasCoinControl
+			? reservationWarningFor(details.inputs, reserved)
+			: null;
+		return { draft, details, chainDepthWarning, reservationWarning };
+	});
 }
 
 /** Raw lifecycle setter — the attach/broadcast paths below use it. */

@@ -6,6 +6,7 @@ import { Transaction } from '@scure/btc-signer';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { db } from './db';
 import { getChain } from './chain';
+import { withLock } from './keyedLock';
 import { scanWallet, findNextUnusedIndex } from './bitcoin/walletScan';
 import {
 	constructPsbt,
@@ -391,124 +392,137 @@ export async function buildDraft(
 	chainDepthWarning: ChainDepthWarning | null;
 	reservationWarning: ReservationWarning | null;
 }> {
-	const wallet = ownedWallet(userId, walletId);
-	if (!wallet) throw new PsbtError('Wallet not found.', 'construction_failed');
+	// cairn QA R7 B4 (follow-up): the reservation exclusion above only reads
+	// what's ALREADY persisted — under true concurrency (not just sequential
+	// calls), two overlapping buildDraft calls for the SAME wallet can each
+	// read "nothing reserved yet" before either has inserted its own row (both
+	// have several awaits — getWalletUtxos, findNextUnusedIndex, constructPsbt's
+	// fetchRawTx — between reading the reservation and writing it), so they can
+	// still land on the identical coin. withLock (keyedLock.ts, the same tool
+	// nextReceiveAddress already uses for an identical read-scan-derive-write
+	// race, cairn-2qa4) serializes builds per wallet so each one's INSERT is
+	// visible to the next before it starts — closing that window entirely.
+	// Builds against DIFFERENT wallets are unaffected (keyed by walletId).
+	return withLock(`wallet:${walletId}`, async () => {
+		const wallet = ownedWallet(userId, walletId);
+		if (!wallet) throw new PsbtError('Wallet not found.', 'construction_failed');
 
-	const scriptType = wallet.script_type as ScriptType;
-	// Classify unconfirmed coins so selection can spend our own change but never
-	// auto-select a stranger's unconfirmed coin (cairn-u9ob.1).
-	const utxos = classifyUnconfirmedTrust(
-		await getWalletUtxos(wallet.xpub),
-		ownBroadcastTxids(walletId)
-	);
-	// Tip height enables the coinbase-maturity guard — but only fetch it when a
-	// coinbase coin is actually present (the vast majority of wallets have none),
-	// and never let a transient tip failure block an ordinary send.
-	let tipHeight: number | undefined;
-	if (utxos.some((u) => u.coinbase)) {
-		try {
-			tipHeight = (await getChain().getTip()).height;
-		} catch {
-			tipHeight = undefined; // tip unavailable — skip the guard, don't block
-		}
-	}
-
-	// Change goes to the wallet's own change chain, next unused index.
-	const parsed = parseXpub(wallet.xpub);
-	const changeIndex = await findNextUnusedIndex(wallet.xpub, 1);
-	const changeAddress = deriveAddress(parsed, 1, changeIndex).address;
-
-	// Derivation info goes in only when the key's origin is actually known —
-	// a guessed fingerprint would send hardware signers hunting for the
-	// wrong key. The path may still default sensibly by script type.
-	const origin = wallet.master_fingerprint
-		? {
-				fingerprint: wallet.master_fingerprint,
-				path: wallet.derivation_path ?? DEFAULT_ORIGIN_PATH[scriptType]
-			}
-		: null;
-
-	// cairn QA R7 B4: exclude coins another in-flight draft of THIS wallet
-	// already references from automatic selection, so concurrent builds stop
-	// colliding on the same coin. Coin control is exempt — a user explicitly
-	// naming a reserved coin (RBF/respend) still gets it, flagged below.
-	const hasCoinControl = (input.onlyUtxos?.length ?? 0) > 0;
-	const reserved = reservedWalletCoins(walletId);
-	let candidateUtxos = utxos;
-	let reservedSats = 0;
-	const reservedDraftIds = new Set<number>();
-	if (!hasCoinControl && reserved.size > 0) {
-		candidateUtxos = utxos.filter((u) => {
-			const ids = reserved.get(`${u.txid}:${u.vout}`);
-			if (!ids) return true;
-			reservedSats += u.value;
-			for (const id of ids) reservedDraftIds.add(id);
-			return false;
-		});
-	}
-
-	let details: ConstructedPsbt;
-	try {
-		details = await constructPsbt({
-			xpub: wallet.xpub,
-			utxos: candidateUtxos,
-			recipients: input.recipients,
-			feeRate: input.feeRate,
-			changeAddress,
-			changeIndex,
-			origin,
-			fetchRawTx: (txid) => getChain().getTxHex(txid),
-			onlyUtxos: input.onlyUtxos,
-			tipHeight
-		});
-	} catch (e) {
-		// Only reframe a shortfall genuinely caused by the exclusion above — a
-		// wallet that has no coins (or no ELIGIBLE coins) regardless of any
-		// reservation keeps its ordinary message.
-		if (
-			!hasCoinControl &&
-			reservedDraftIds.size > 0 &&
-			e instanceof PsbtError &&
-			(e.code === 'insufficient_funds' || e.code === 'no_utxos')
-		) {
-			throw new PsbtError(
-				reservationErrorMessage(reservedSats, [...reservedDraftIds].sort((a, b) => a - b)),
-				e.code
-			);
-		}
-		throw e;
-	}
-
-	const res = db
-		.prepare(
-			`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate, change_index, recipients)
-			 VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?)`
-		)
-		.run(
-			walletId,
-			details.psbtBase64,
-			details.recipient,
-			details.amount,
-			details.fee,
-			details.feeRate,
-			details.change?.index ?? null,
-			recipientsJson(details.recipients)
+		const scriptType = wallet.script_type as ScriptType;
+		// Classify unconfirmed coins so selection can spend our own change but never
+		// auto-select a stranger's unconfirmed coin (cairn-u9ob.1).
+		const utxos = classifyUnconfirmedTrust(
+			await getWalletUtxos(wallet.xpub),
+			ownBroadcastTxids(walletId)
 		);
+		// Tip height enables the coinbase-maturity guard — but only fetch it when a
+		// coinbase coin is actually present (the vast majority of wallets have none),
+		// and never let a transient tip failure block an ordinary send.
+		let tipHeight: number | undefined;
+		if (utxos.some((u) => u.coinbase)) {
+			try {
+				tipHeight = (await getChain().getTip()).height;
+			} catch {
+				tipHeight = undefined; // tip unavailable — skip the guard, don't block
+			}
+		}
 
-	const draft = getTransaction(userId, walletId, Number(res.lastInsertRowid));
-	if (!draft) throw new PsbtError('Draft could not be saved.', 'construction_failed');
+		// Change goes to the wallet's own change chain, next unused index.
+		const parsed = parseXpub(wallet.xpub);
+		const changeIndex = await findNextUnusedIndex(wallet.xpub, 1);
+		const changeAddress = deriveAddress(parsed, 1, changeIndex).address;
 
-	// If this draft actually spends an unconfirmed coin, warn (never block) when
-	// its mempool chain is near the ancestor/descendant limit (cairn-u9ob.5).
-	// Only touches the network when an unconfirmed coin was selected; degrades
-	// silently on backends without the v1 CPFP endpoint.
-	const chainDepthWarning = await checkSelectedInputsChainDepth(details.inputs, utxos);
-	// Coin control deliberately CAN still land on a reserved coin (RBF/respend) —
-	// surface it as a warning, never a block, keyed off what was actually chosen.
-	const reservationWarning = hasCoinControl
-		? reservationWarningFor(details.inputs, reserved)
-		: null;
-	return { draft, details, chainDepthWarning, reservationWarning };
+		// Derivation info goes in only when the key's origin is actually known —
+		// a guessed fingerprint would send hardware signers hunting for the
+		// wrong key. The path may still default sensibly by script type.
+		const origin = wallet.master_fingerprint
+			? {
+					fingerprint: wallet.master_fingerprint,
+					path: wallet.derivation_path ?? DEFAULT_ORIGIN_PATH[scriptType]
+				}
+			: null;
+
+		// cairn QA R7 B4: exclude coins another in-flight draft of THIS wallet
+		// already references from automatic selection, so concurrent builds stop
+		// colliding on the same coin. Coin control is exempt — a user explicitly
+		// naming a reserved coin (RBF/respend) still gets it, flagged below.
+		const hasCoinControl = (input.onlyUtxos?.length ?? 0) > 0;
+		const reserved = reservedWalletCoins(walletId);
+		let candidateUtxos = utxos;
+		let reservedSats = 0;
+		const reservedDraftIds = new Set<number>();
+		if (!hasCoinControl && reserved.size > 0) {
+			candidateUtxos = utxos.filter((u) => {
+				const ids = reserved.get(`${u.txid}:${u.vout}`);
+				if (!ids) return true;
+				reservedSats += u.value;
+				for (const id of ids) reservedDraftIds.add(id);
+				return false;
+			});
+		}
+
+		let details: ConstructedPsbt;
+		try {
+			details = await constructPsbt({
+				xpub: wallet.xpub,
+				utxos: candidateUtxos,
+				recipients: input.recipients,
+				feeRate: input.feeRate,
+				changeAddress,
+				changeIndex,
+				origin,
+				fetchRawTx: (txid) => getChain().getTxHex(txid),
+				onlyUtxos: input.onlyUtxos,
+				tipHeight
+			});
+		} catch (e) {
+			// Only reframe a shortfall genuinely caused by the exclusion above — a
+			// wallet that has no coins (or no ELIGIBLE coins) regardless of any
+			// reservation keeps its ordinary message.
+			if (
+				!hasCoinControl &&
+				reservedDraftIds.size > 0 &&
+				e instanceof PsbtError &&
+				(e.code === 'insufficient_funds' || e.code === 'no_utxos')
+			) {
+				throw new PsbtError(
+					reservationErrorMessage(reservedSats, [...reservedDraftIds].sort((a, b) => a - b)),
+					e.code
+				);
+			}
+			throw e;
+		}
+
+		const res = db
+			.prepare(
+				`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate, change_index, recipients)
+				 VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?)`
+			)
+			.run(
+				walletId,
+				details.psbtBase64,
+				details.recipient,
+				details.amount,
+				details.fee,
+				details.feeRate,
+				details.change?.index ?? null,
+				recipientsJson(details.recipients)
+			);
+
+		const draft = getTransaction(userId, walletId, Number(res.lastInsertRowid));
+		if (!draft) throw new PsbtError('Draft could not be saved.', 'construction_failed');
+
+		// If this draft actually spends an unconfirmed coin, warn (never block) when
+		// its mempool chain is near the ancestor/descendant limit (cairn-u9ob.5).
+		// Only touches the network when an unconfirmed coin was selected; degrades
+		// silently on backends without the v1 CPFP endpoint.
+		const chainDepthWarning = await checkSelectedInputsChainDepth(details.inputs, utxos);
+		// Coin control deliberately CAN still land on a reserved coin (RBF/respend) —
+		// surface it as a warning, never a block, keyed off what was actually chosen.
+		const reservationWarning = hasCoinControl
+			? reservationWarningFor(details.inputs, reserved)
+			: null;
+		return { draft, details, chainDepthWarning, reservationWarning };
+	});
 }
 
 /** Parse the batch `recipients` JSON column; null/garbage falls back to single-recipient. */
