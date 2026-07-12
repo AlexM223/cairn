@@ -11,6 +11,7 @@ import {
 import { InvalidPsbtError, BroadcastError } from '$lib/server/transactions';
 import { MultisigPsbtError } from '$lib/server/bitcoin/multisigPsbt';
 import { summarizePsbt, type PsbtSummary } from '$lib/server/bitcoin/psbt';
+import type { MultisigRow } from '$lib/server/wallets/multisig';
 import { childLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
 
@@ -20,9 +21,13 @@ function ids(event: { params: { id: string; txId: string } }) {
 	return { multisigId: Number(event.params.id), txId: Number(event.params.txId) };
 }
 
-function safeSummary(psbt: string): PsbtSummary | null {
+// Threshold-aware (qa-findings-R3.md ~line 228): summary.complete must agree
+// with the quorum-aware `progress` object returned alongside it in every
+// response below — both come from the same PSBT, so they must never disagree
+// on whether the transaction is fully signed.
+function safeSummary(psbt: string, multisig: MultisigRow): PsbtSummary | null {
 	try {
-		return summarizePsbt(psbt);
+		return summarizePsbt(psbt, multisig.threshold);
 	} catch {
 		return null;
 	}
@@ -44,7 +49,7 @@ export const GET: RequestHandler = async (event) => {
 	if (!multisig || !tx) return json({ error: 'Transaction not found' }, { status: 404 });
 	return json({
 		transaction: tx,
-		summary: safeSummary(tx.psbt),
+		summary: safeSummary(tx.psbt, multisig),
 		progress: multisigTransactionProgress(multisig, tx)
 	});
 };
@@ -75,7 +80,7 @@ export const PATCH: RequestHandler = async (event) => {
 			if (!result) return json({ error: 'Transaction not found' }, { status: 404 });
 			return json({
 				transaction: result.transaction,
-				summary: safeSummary(result.transaction.psbt),
+				summary: safeSummary(result.transaction.psbt, multisig),
 				progress: result.progress
 			});
 		} catch (e) {
@@ -102,7 +107,7 @@ export const PATCH: RequestHandler = async (event) => {
 		if (!updated) return json({ error: 'Transaction not found' }, { status: 404 });
 		return json({
 			transaction: updated,
-			summary: safeSummary(updated.psbt),
+			summary: safeSummary(updated.psbt, multisig),
 			progress: multisigTransactionProgress(multisig, updated)
 		});
 	}

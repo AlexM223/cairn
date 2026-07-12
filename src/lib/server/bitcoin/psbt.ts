@@ -803,6 +803,12 @@ export interface PsbtSummary {
 	change: { vout: number; value: number } | null;
 	/** Signature completeness: how many inputs carry at least one signature. */
 	signedInputs: number;
+	/**
+	 * Whether every input has enough signature material to finalize/broadcast.
+	 * Threshold-aware (qa-findings-R3.md ~line 228): see `summarizePsbt`'s
+	 * `threshold` parameter. For a plain single-sig PSBT (the default,
+	 * threshold 1) this is exactly "every input has at least one signature."
+	 */
 	complete: boolean;
 }
 
@@ -817,8 +823,27 @@ export function addressFromScript(script: Uint8Array): string | null {
 	}
 }
 
-/** Parse any base64 PSBT into a review-friendly summary. Throws on garbage. */
-export function summarizePsbt(psbtBase64: string): PsbtSummary {
+/**
+ * Parse any base64 PSBT into a review-friendly summary. Throws on garbage.
+ *
+ * `threshold` (default 1) makes `complete` multisig-quorum-aware
+ * (qa-findings-R3.md ~line 228): the original computation counted an input as
+ * signed the moment it carried ANY signature material — correct for
+ * single-sig (1 signature IS complete) but wrong for a multisig PSBT with a
+ * threshold above 1, where `summary.complete` could report `true` at, say, a
+ * 1-of-2 moment while the separate quorum-aware progress object
+ * (`multisigPsbtProgress`, the authority the multisig endpoints and UI
+ * actually gate on) correctly reported `false` in the very same API response.
+ * Callers that hold a multisig's threshold (the multisig transaction API,
+ * the multisig send-review page) pass it through; every single-sig call site
+ * omits it and keeps the exact original semantics.
+ *
+ * This does NOT duplicate multisigPsbtProgress's per-key fingerprint
+ * attribution (irrelevant here — this summary never reports per-signer
+ * detail) — just a raw per-input signature count against the threshold,
+ * finalized inputs always counting as met.
+ */
+export function summarizePsbt(psbtBase64: string, threshold = 1): PsbtSummary {
 	const tx = Transaction.fromPSBT(base64.decode(psbtBase64.trim()));
 	const outputs: PsbtSummary['outputs'] = [];
 	let change: PsbtSummary['change'] = null;
@@ -836,6 +861,7 @@ export function summarizePsbt(psbtBase64: string): PsbtSummary {
 		}
 	}
 	let signedInputs = 0;
+	let quorumMetInputs = 0;
 	const inputs: PsbtSummary['inputs'] = [];
 	for (let i = 0; i < tx.inputsLength; i++) {
 		const inp = tx.getInput(i);
@@ -854,14 +880,19 @@ export function summarizePsbt(psbtBase64: string): PsbtSummary {
 			vout: inp.index ?? 0,
 			value
 		});
+		// A finalized input (script-path or key-path) is complete by
+		// construction regardless of threshold — finalizing can strip the
+		// per-input partialSig data that would otherwise let us count it.
+		const finalized =
+			(inp.finalScriptWitness?.length ?? 0) > 0 || (inp.finalScriptSig?.length ?? 0) > 0;
+		// Raw per-input signature count: one per cosigner's partialSig entry
+		// (script-path multisig), or the single taproot key-path signature.
 		// Fields can be present-but-empty on unsigned inputs (btc-signer
 		// materializes an empty finalScriptSig) — require actual content.
-		const hasSig =
-			(inp.partialSig?.length ?? 0) > 0 ||
-			(inp.finalScriptWitness?.length ?? 0) > 0 ||
-			(inp.finalScriptSig?.length ?? 0) > 0 ||
-			(inp.tapKeySig?.length ?? 0) > 0;
+		const sigCount = (inp.partialSig?.length ?? 0) + ((inp.tapKeySig?.length ?? 0) > 0 ? 1 : 0);
+		const hasSig = finalized || sigCount > 0;
 		if (hasSig) signedInputs++;
+		if (finalized || sigCount >= Math.max(threshold, 1)) quorumMetInputs++;
 	}
 	return {
 		inputCount: tx.inputsLength,
@@ -870,7 +901,7 @@ export function summarizePsbt(psbtBase64: string): PsbtSummary {
 		inputs,
 		change,
 		signedInputs,
-		complete: signedInputs === tx.inputsLength && tx.inputsLength > 0
+		complete: quorumMetInputs === tx.inputsLength && tx.inputsLength > 0
 	};
 }
 

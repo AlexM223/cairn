@@ -907,6 +907,98 @@ describe('quorum boundary: N-of-N (unanimous)', () => {
 	});
 });
 
+// ── summarizePsbt threshold-awareness (qa-findings-R3.md ~line 228) ────────
+// Regression coverage for the finding: summarizePsbt's `complete` flag used to
+// count ANY signature material per input as "signed" — correct for single-sig
+// but wrong for multisig, so a 2-of-2 wallet with only ONE signature attached
+// reported `summary.complete: true` (1 input, 1 signature present === all
+// inputs signed) in the SAME API response where the quorum-aware `progress`
+// object correctly said `complete: false`. Pins `summarizePsbt`'s `threshold`
+// parameter keeps the two objects in agreement at every step.
+describe('summarizePsbt — threshold-aware complete flag', () => {
+	const CFG_2OF2 = config(2, 2);
+
+	it('2-of-2: ONE signature is reported incomplete (the exact regression scenario)', async () => {
+		const draft = await constructMultisigPsbt({
+			config: CFG_2OF2,
+			utxos: [multisigUtxo(CFG_2OF2, 200_000)],
+			recipients: [{ address: RECIPIENT, amount: 50_000 }],
+			feeRate: FEE_RATE,
+			changeIndex: 0
+		});
+		const oneSigned = combineMultisigPsbts(draft.psbtBase64, signWith(draft.psbtBase64, SIGNERS[0]));
+
+		// Without a threshold, summarizePsbt still (wrongly, for multisig) treats
+		// "any signature at all" as complete — this is the pre-fix bug reproduced,
+		// confirming the default really is single-sig semantics, not a no-op.
+		expect(summarizePsbt(oneSigned).complete).toBe(true);
+
+		// Threshold-aware: agrees with the quorum-aware progress object.
+		const summary = summarizePsbt(oneSigned, CFG_2OF2.threshold);
+		const progress = multisigPsbtProgress(oneSigned, CFG_2OF2.threshold);
+		expect(summary.complete).toBe(false);
+		expect(summary.complete).toBe(progress.complete);
+		expect(summary.signedInputs).toBe(1); // "at least one signature" semantics preserved
+	});
+
+	it('2-of-2: BOTH signatures are reported complete, agreeing with progress', async () => {
+		const draft = await constructMultisigPsbt({
+			config: CFG_2OF2,
+			utxos: [multisigUtxo(CFG_2OF2, 200_000)],
+			recipients: [{ address: RECIPIENT, amount: 50_000 }],
+			feeRate: FEE_RATE,
+			changeIndex: 0
+		});
+		let psbt = combineMultisigPsbts(draft.psbtBase64, signWith(draft.psbtBase64, SIGNERS[0]));
+		psbt = combineMultisigPsbts(psbt, signWith(psbt, SIGNERS[1]));
+
+		const summary = summarizePsbt(psbt, CFG_2OF2.threshold);
+		const progress = multisigPsbtProgress(psbt, CFG_2OF2.threshold);
+		expect(summary.complete).toBe(true);
+		expect(progress.complete).toBe(true);
+		expect(() => finalizeMultisigPsbt(psbt)).not.toThrow();
+	});
+
+	it('2-of-3: every partial state (0, 1, 2 of 3 cosigners) agrees with the quorum-aware progress object', async () => {
+		const draft = await build2of3();
+
+		// 0 signed.
+		expect(summarizePsbt(draft.psbtBase64, MULTISIG_2OF3.threshold).complete).toBe(false);
+		expect(summarizePsbt(draft.psbtBase64, MULTISIG_2OF3.threshold).signedInputs).toBe(0);
+
+		// 1 of 3 signed — still short of the 2-of-3 threshold.
+		let psbt = combineMultisigPsbts(draft.psbtBase64, signWith(draft.psbtBase64, SIGNERS[0]));
+		let summary = summarizePsbt(psbt, MULTISIG_2OF3.threshold);
+		let progress = multisigPsbtProgress(psbt, MULTISIG_2OF3.threshold);
+		expect(summary.complete).toBe(false);
+		expect(summary.complete).toBe(progress.complete);
+		expect(summary.signedInputs).toBe(1);
+
+		// 2 of 3 signed — quorum met, complete.
+		psbt = combineMultisigPsbts(psbt, signWith(psbt, SIGNERS[1]));
+		summary = summarizePsbt(psbt, MULTISIG_2OF3.threshold);
+		progress = multisigPsbtProgress(psbt, MULTISIG_2OF3.threshold);
+		expect(summary.complete).toBe(true);
+		expect(progress.complete).toBe(true);
+		expect(() => finalizeMultisigPsbt(psbt)).not.toThrow();
+	});
+
+	it('single-sig call sites (threshold omitted) keep the original "any signature" semantics', async () => {
+		const draft = await constructMultisigPsbt({
+			config: CFG_2OF2,
+			utxos: [multisigUtxo(CFG_2OF2, 200_000)],
+			recipients: [{ address: RECIPIENT, amount: 50_000 }],
+			feeRate: FEE_RATE,
+			changeIndex: 0
+		});
+		expect(summarizePsbt(draft.psbtBase64).complete).toBe(false);
+		const oneSigned = combineMultisigPsbts(draft.psbtBase64, signWith(draft.psbtBase64, SIGNERS[0]));
+		// threshold defaults to 1 — matches pre-fix behavior exactly for callers
+		// that never pass one (every single-sig summarizePsbt call site).
+		expect(summarizePsbt(oneSigned).complete).toBe(true);
+	});
+});
+
 // ── wrapped-segwit and legacy script types ──────────────────────────────────
 // cairn-3urk: these used to be gated behind describe.runIf(scriptTypeReady(...)),
 // a probe for multisig.ts's then-concurrent script-type extension. That support

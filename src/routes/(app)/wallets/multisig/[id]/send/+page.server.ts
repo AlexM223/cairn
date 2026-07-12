@@ -122,7 +122,10 @@ export const load: PageServerLoad = async (event) => {
 		if (!transaction) error(404, 'Saved transaction not found');
 		let summary: PsbtSummary | null = null;
 		try {
-			summary = summarizePsbt(transaction.psbt);
+			// Threshold-aware (qa-findings-R3.md ~line 228): keep summary.complete
+			// in agreement with the quorum-aware `progress` object computed right
+			// below from the same PSBT.
+			summary = summarizePsbt(transaction.psbt, multisig.threshold);
 		} catch {
 			summary = null;
 		}
