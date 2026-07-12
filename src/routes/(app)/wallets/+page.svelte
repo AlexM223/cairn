@@ -1,14 +1,21 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { invalidate } from '$app/navigation';
+	import { page } from '$app/state';
 	import Icon from '$lib/components/Icon.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import SyncIndicator from '$lib/components/heartwood/SyncIndicator.svelte';
+	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
 	import { formatBtc, formatSats, timeAgo } from '$lib/format';
 	import { portfolioViewState } from '$lib/portfolioViewState';
-	import { SCRIPT_TYPE_LABELS, walletTypeLabel } from './labels';
+	import { SCRIPT_TYPE_LABELS, walletTypeLabel, featureEnabled } from './labels';
 
 	let { data } = $props();
+
+	// Multisig is the app's differentiator (MULTISIG-UX-DESIGN M1) — visible
+	// from both the populated wallets list and the empty-state chooser, mirroring
+	// the flag handling already used by the single-sig wizard's hand-off card.
+	const multisigCreateEnabled = $derived(featureEnabled(page.data.flags?.multisig_create));
 
 	// Stale-while-revalidate (cairn-2zxt): the list renders instantly from
 	// persisted snapshots read synchronously in load() — no Electrum on
@@ -136,20 +143,56 @@
 				<div class="onboard-icon"><Icon name="wallet" size={26} /></div>
 				<h2 class="onboard-title">Bring your first wallet</h2>
 				<p class="onboard-copy">
-					Add a wallet with a single key, or a multisig wallet that needs several keys to spend.
-					Heartwood only ever sees <em>public</em> keys — it tracks your balance and history, and
-					you sign every spend on your own device. Nothing here can move your bitcoin on its own.
+					Heartwood only ever sees <em>public</em> keys — it tracks balances and history; you
+					sign every spend on your own device.
 				</p>
-				<div class="onboard-actions">
-					<a href="/wallets/new" class="btn btn-primary pill-lg">
-						<Icon name="plus" size={15} />
-						Add your first wallet
+				<!-- Two co-equal choices (MULTISIG-UX-DESIGN 1b): a newcomer sees multisig as
+				     a first-class option here, not a hidden upgrade discovered later. -->
+				<div class="onboard-choices">
+					<a href="/wallets/new" class="onboard-choice">
+						<span class="onboard-choice-title">Add a wallet</span>
+						<p class="onboard-choice-copy">
+							Track one wallet from a single key or device. The quick way to start.
+						</p>
+						<span class="btn btn-primary onboard-choice-cta">
+							<Icon name="plus" size={14} />
+							Add wallet
+						</span>
 					</a>
-					<a href="/wallets/new?restore=1" class="restore-link">
-						<Icon name="arrow-down-left" size={14} />
-						Restore from a backup
-					</a>
+					{#if multisigCreateEnabled}
+						<a href="/wallets/multisig/new" class="onboard-choice onboard-choice-multisig">
+							<span class="onboard-choice-title">
+								<Icon name="shield" size={14} />
+								Create a multisig wallet
+							</span>
+							<p class="onboard-choice-copy">
+								Guard savings with several keys — the safest way to self-custody. New to it?
+								We'll walk you through.
+							</p>
+							<span class="btn btn-primary onboard-choice-cta">
+								Create multisig wallet
+								<Icon name="arrow-right" size={14} />
+							</span>
+						</a>
+					{:else}
+						<div
+							class="onboard-choice onboard-choice-multisig disabled"
+							aria-disabled="true"
+						>
+							<span class="onboard-choice-title">
+								<Icon name="shield" size={14} />
+								Create a multisig wallet
+							</span>
+							<FeatureDisabled
+								message="Creating multisig wallets has been disabled by your administrator."
+							/>
+						</div>
+					{/if}
 				</div>
+				<a href="/wallets/new?restore=1" class="restore-link">
+					<Icon name="arrow-down-left" size={14} />
+					Restore from a backup
+				</a>
 			</section>
 		{:else if unreachable}
 			<!-- ------------------------------------------- cold start, refresh failed -->
@@ -213,6 +256,36 @@
 					</div>
 				{/if}
 			</header>
+
+			<!-- ------------------------------------------- multisig discoverability card -->
+			<!-- Persistent invitation (MULTISIG-UX-DESIGN 1a): multisig stays visible even
+			     for users who already have a single-sig wallet, since it's the app's
+			     differentiator. Sits between the hero header and the wallet rows. -->
+			<section class="multisig-card" class:disabled={!multisigCreateEnabled}>
+				<div class="multisig-card-head">
+					<span class="multisig-card-icon"><Icon name="shield" size={16} /></span>
+					<span class="multisig-card-title">Create a multisig wallet</span>
+				</div>
+				<p class="multisig-card-copy">
+					Guard your savings with several keys, so no single lost or stolen key can lose — or
+					move — your bitcoin.
+				</p>
+				{#if multisigCreateEnabled}
+					<div class="multisig-card-actions">
+						<a href="/wallets/multisig/new" class="btn btn-primary multisig-card-cta">
+							<Icon name="shield" size={14} />
+							Create multisig wallet
+						</a>
+						<a href="/wallets/multisig/new" class="multisig-card-learn">
+							New to multisig? <span class="underline">What is it?</span> ›
+						</a>
+					</div>
+				{:else}
+					<FeatureDisabled
+						message="Creating multisig wallets has been disabled by your administrator."
+					/>
+				{/if}
+			</section>
 
 			<!-- ------------------------------------------- hairline wallet rows -->
 			{#if loading}
@@ -442,6 +515,77 @@
 		font-weight: 600;
 	}
 
+	/* --- multisig discoverability card (MULTISIG-UX-DESIGN 1a) --- */
+
+	.multisig-card {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		margin-top: 32px;
+		padding: 18px 20px;
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-control);
+		background: var(--surface);
+	}
+
+	.multisig-card.disabled {
+		opacity: 0.8;
+	}
+
+	.multisig-card-head {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.multisig-card-icon {
+		display: inline-flex;
+		color: var(--accent);
+	}
+
+	.multisig-card-title {
+		font-family: var(--font-serif);
+		font-size: 16px;
+		font-weight: 600;
+		color: var(--text-hero);
+	}
+
+	.multisig-card-copy {
+		font-size: 13px;
+		line-height: 1.6;
+		color: var(--text-secondary);
+		max-width: 560px;
+	}
+
+	.multisig-card-actions {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 16px;
+		margin-top: 6px;
+	}
+
+	.multisig-card-cta {
+		height: 40px;
+		padding: 0 20px;
+		font-size: 13.5px;
+		font-weight: 600;
+	}
+
+	.multisig-card-learn {
+		font-size: 12.5px;
+		color: var(--text-secondary);
+	}
+
+	.multisig-card-learn .underline {
+		color: var(--accent);
+		text-decoration: underline;
+	}
+
+	.multisig-card-learn:hover {
+		color: var(--accent);
+	}
+
 	/* --- hairline wallet rows (7a grammar) --- */
 
 	.rows {
@@ -546,7 +690,7 @@
 		gap: 14px;
 		padding: 72px 32px;
 		text-align: center;
-		max-width: 520px;
+		max-width: 600px;
 		margin: 40px auto 0;
 	}
 
@@ -582,11 +726,66 @@
 		font-weight: 500;
 	}
 
-	.onboard-actions {
+	/* Two co-equal choices (MULTISIG-UX-DESIGN 1b). */
+	.onboard-choices {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(210px, 1fr));
+		gap: 14px;
+		width: 100%;
+		max-width: 520px;
+		margin-top: 6px;
+	}
+
+	.onboard-choice {
 		display: flex;
 		flex-direction: column;
+		align-items: flex-start;
+		gap: 8px;
+		padding: 18px 16px;
+		text-align: left;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-control);
+		color: inherit;
+		transition: border-color 120ms var(--ease);
+	}
+
+	.onboard-choice:hover {
+		border-color: var(--accent);
+	}
+
+	.onboard-choice.disabled {
+		cursor: not-allowed;
+	}
+
+	.onboard-choice-title {
+		display: inline-flex;
 		align-items: center;
-		gap: 12px;
+		gap: 6px;
+		font-size: 14px;
+		font-weight: 600;
+		color: var(--text-hero);
+	}
+
+	.onboard-choice-title :global(svg) {
+		color: var(--accent);
+		flex-shrink: 0;
+	}
+
+	.onboard-choice-copy {
+		flex: 1;
+		font-size: 12px;
+		line-height: 1.55;
+		color: var(--text-secondary);
+	}
+
+	.onboard-choice-cta {
+		align-self: stretch;
+		justify-content: center;
+		height: 40px;
+		padding: 0 16px;
+		font-size: 13px;
+		font-weight: 600;
 	}
 
 	.pill-lg {
@@ -661,6 +860,19 @@
 
 		.row-btc {
 			font-size: 14px;
+		}
+
+		.multisig-card {
+			margin-top: 24px;
+			padding: 16px;
+		}
+	}
+
+	/* Narrow screens: stack the onboard choice cards instead of squeezing two
+	   columns (the method-grid uses the same 480px breakpoint). */
+	@media (max-width: 480px) {
+		.onboard-choices {
+			grid-template-columns: 1fr;
 		}
 	}
 </style>

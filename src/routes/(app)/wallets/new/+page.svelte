@@ -736,6 +736,41 @@
 					{/if}
 				</div>
 
+				<!-- Multisig hand-off — elevated to a first-class card at the TOP of the
+				     method area (MULTISIG-UX-DESIGN 1c), same visual weight as a method
+				     card but full-width and shield-marked. The wallets-page card/chooser
+				     now carries primary discoverability, so this is the safety net for
+				     anyone who lands on single-sig-new first — it needs to be SEEN (top,
+				     not bottom), but doesn't need to dominate the single-sig flow.
+				     Still visible-but-disabled when the flag is off, so the feature reads
+				     as turned off, not absent (cairn-8dup). -->
+				{#if page.data.flags?.multisig_create !== false}
+					<a href="/wallets/multisig/new" class="multisig-handoff-card">
+						<Icon name="shield" size={18} />
+						<span class="multisig-handoff-body">
+							<span class="multisig-handoff-title">Several keys guarding one wallet?</span>
+							<span class="multisig-handoff-copy">
+								Any 2 of 3, for example — set up a multisig wallet instead. We'll explain it
+								step by step.
+							</span>
+						</span>
+						<span class="multisig-handoff-cta">
+							Set up multisig
+							<Icon name="arrow-right" size={13} />
+						</span>
+					</a>
+				{:else}
+					<div class="multisig-handoff-card" aria-disabled="true">
+						<Icon name="shield" size={18} />
+						<span class="multisig-handoff-body">
+							<span class="multisig-handoff-title">Several keys guarding one wallet?</span>
+							<FeatureDisabled
+								message="Creating multisig wallets has been disabled by your administrator."
+							/>
+						</span>
+					</div>
+				{/if}
+
 				<div class="method-grid">
 					{#each METHOD_CARDS as m (m.key)}
 						{@const buyDevice = referralDeviceId(m.key)}
@@ -776,28 +811,6 @@
 						wallet app today — and when you're ready for a dedicated signing device, the
 						<em>Buy one</em> links above go straight to each maker's store.
 					</p>
-				{/if}
-
-				<!-- Multisig hand-off — the old standalone "what kind of wallet?" step,
-				     collapsed to a pointer (cairn-l2pn). Still visible-but-disabled when
-				     the flag is off, so the feature reads as turned off, not absent
-				     (cairn-8dup). -->
-				{#if page.data.flags?.multisig_create !== false}
-					<div class="multisig-handoff">
-						<Icon name="shield" size={15} />
-						<span>
-							Several keys guarding one wallet (any 2 of 3, for example)?
-							<a href="/wallets/multisig/new">Set up a multisig wallet</a> instead.
-						</span>
-					</div>
-				{:else}
-					<div class="multisig-handoff" aria-disabled="true">
-						<Icon name="shield" size={15} />
-						<span>
-							Multisig wallets —
-							<FeatureDisabled message="Creating multisig wallets has been disabled by your administrator." />
-						</span>
-					</div>
 				{/if}
 			{:else}
 				<div class="key-form fade-in">
@@ -1585,33 +1598,65 @@
 		margin-top: 4px;
 	}
 
-	/* --- multisig hand-off (the old type step, collapsed to a pointer) --- */
+	/* --- multisig hand-off card (elevated top-of-methods, MULTISIG-UX-DESIGN 1c) --- */
 
-	.multisig-handoff {
+	.multisig-handoff-card {
 		display: flex;
-		align-items: flex-start;
-		gap: 9px;
-		margin-top: 4px;
-		padding: 10px 12px;
-		font-size: 12.5px;
-		color: var(--text-secondary);
-		line-height: 1.55;
-		border: 1px dashed var(--border-subtle);
+		align-items: center;
+		gap: 12px;
+		padding: 14px 16px;
+		margin-bottom: 4px;
+		color: inherit;
+		background: var(--surface);
+		border: 1px solid var(--border);
 		border-radius: var(--radius-control);
+		transition: border-color 120ms var(--ease);
 	}
 
-	.multisig-handoff > :global(svg) {
+	a.multisig-handoff-card:hover {
+		border-color: var(--accent);
+	}
+
+	.multisig-handoff-card > :global(svg:first-child) {
 		color: var(--accent);
 		flex-shrink: 0;
-		margin-top: 2px;
 	}
 
-	.multisig-handoff a {
+	.multisig-handoff-body {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		flex: 1;
+		min-width: 0;
+		text-align: left;
+	}
+
+	.multisig-handoff-title {
+		font-size: 13.5px;
+		font-weight: 600;
+		color: var(--text-hero);
+	}
+
+	.multisig-handoff-copy {
+		font-size: 12.5px;
+		line-height: 1.5;
+		color: var(--text-secondary);
+	}
+
+	.multisig-handoff-cta {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		flex-shrink: 0;
+		font-size: 12.5px;
+		font-weight: 600;
 		color: var(--accent);
+		white-space: nowrap;
 	}
 
-	.multisig-handoff[aria-disabled='true'] {
+	.multisig-handoff-card[aria-disabled='true'] {
 		opacity: 0.7;
+		cursor: not-allowed;
 	}
 
 	/* --- step 1: key --- */
@@ -1815,6 +1860,15 @@
 	@media (max-width: 480px) {
 		.method-grid {
 			grid-template-columns: 1fr;
+		}
+
+		.multisig-handoff-card {
+			flex-wrap: wrap;
+		}
+
+		.multisig-handoff-cta {
+			width: 100%;
+			justify-content: flex-start;
 		}
 	}
 
