@@ -34,6 +34,7 @@
 	import WizardKeyCheck from './_components/WizardKeyCheck.svelte';
 	import QrKeyImport from './_components/QrKeyImport.svelte';
 	import { PROACTIVE_PASSPHRASE_NOTE } from '../_components/keyCheckCopy';
+	import { classifyQuorum, type QuorumRisk, type QuorumTier } from './_components/quorumRisk';
 
 	let { data } = $props();
 
@@ -104,6 +105,51 @@
 			threshold >= 1 &&
 			totalKeys >= threshold &&
 			totalKeys <= 15
+	);
+
+	// --------------------------------- dynamic quorum risk panel (cairn-a1y8)
+	//
+	// Replaces the old "you can afford to lose N keys" line with tier-based
+	// theft-vs-loss risk messaging (Unchained security model). Recomputed live
+	// off threshold/totalKeys — covers both presets and the custom stepper.
+	const quorumRisk = $derived<QuorumRisk | null>(
+		quorumValid ? classifyQuorum(threshold, totalKeys) : null
+	);
+
+	// The live region announces risk-tier changes to screen readers, debounced
+	// so holding a custom-stepper +/- button doesn't spam re-announcements.
+	let announcedRisk = $state('');
+	let riskAnnounceTimer: ReturnType<typeof setTimeout> | undefined;
+	$effect(() => {
+		const risk = quorumRisk;
+		clearTimeout(riskAnnounceTimer);
+		if (!risk) return;
+		riskAnnounceTimer = setTimeout(() => {
+			announcedRisk = `${risk.label}.${risk.combos ? ` ${risk.combos}` : ''}`;
+		}, 400);
+		return () => clearTimeout(riskAnnounceTimer);
+	});
+
+	// Preset-card tier dots (cairn-a1y8): the two curated presets always show a
+	// calm "sage = good" dot; the Custom card's dot reflects the live tier of
+	// customM/customN — independent of which preset is currently selected, so
+	// typing custom numbers previews their risk before switching to Custom.
+	const TIER_DOT_LABEL: Record<QuorumTier, string> = {
+		red: 'Risky protection level',
+		salmon: 'Loose protection level',
+		yellow: 'Fragile protection level',
+		lightgreen: 'Solid protection level',
+		green: 'Recommended protection level'
+	};
+	const customQuorumValid = $derived(
+		Number.isInteger(Number(customM)) &&
+			Number.isInteger(Number(customN)) &&
+			Number(customM) >= 1 &&
+			Number(customN) >= Number(customM) &&
+			Number(customN) <= 15
+	);
+	const customTier = $derived<QuorumTier | null>(
+		customQuorumValid ? classifyQuorum(Number(customM), Number(customN)).tier : null
 	);
 
 	// --------------------------------------- quorum signing-time estimates
@@ -1016,6 +1062,44 @@
 		{/if}
 	{/snippet}
 
+	<!-- Quorum risk panel icons (cairn-a1y8) — small inline feather-style SVGs,
+	     kept local to this file rather than the shared Icon.svelte set (which
+	     has 'shield'/'alert-triangle' but not the other three). The shield
+	     outline and alert-triangle path match Icon.svelte's own glyphs so the
+	     panel reads as part of the same icon family. -->
+	{#snippet riskIcon(icon: 'alert-triangle' | 'lock' | 'shield-alert' | 'shield-check' | 'shield')}
+		<svg
+			width="18"
+			height="18"
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			stroke-width="1.75"
+			stroke-linecap="round"
+			stroke-linejoin="round"
+			aria-hidden="true"
+			class="risk-icon"
+		>
+			{#if icon === 'alert-triangle'}
+				<path
+					d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4m0 4h.01"
+				/>
+			{:else if icon === 'lock'}
+				<rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+				<path d="M7 11V7a5 5 0 0 1 10 0v4" />
+			{:else if icon === 'shield-alert'}
+				<path d="M12 22s8-3.5 8-10V5l-8-3-8 3v7c0 6.5 8 10 8 10z" />
+				<path d="M12 8v4" />
+				<path d="M12 16h.01" />
+			{:else if icon === 'shield-check'}
+				<path d="M12 22s8-3.5 8-10V5l-8-3-8 3v7c0 6.5 8 10 8 10z" />
+				<path d="m9 12 2 2 4-4" />
+			{:else}
+				<path d="M12 22s8-3.5 8-10V5l-8-3-8 3v7c0 6.5 8 10 8 10z" />
+			{/if}
+		</svg>
+	{/snippet}
+
 	{#if step === 'learn'}
 		<!-- ================================================== Step 1: learn -->
 		<!-- Explain-first (MULTISIG-UX-DESIGN M2): pure education, zero technical
@@ -1260,7 +1344,13 @@
 					class:selected={preset === '2of3'}
 					onclick={() => (preset = '2of3')}
 				>
-					<span class="preset-quorum">2 of 3</span>
+					<span class="preset-quorum">
+						<span
+							class="preset-dot preset-dot-sage"
+							aria-label="Recommended protection level"
+						></span>
+						2 of 3
+					</span>
 					<span class="preset-name">
 						Standard protection
 						<span class="badge badge-accent">Recommended</span>
@@ -1279,11 +1369,17 @@
 					class:selected={preset === '3of5'}
 					onclick={() => (preset = '3of5')}
 				>
-					<span class="preset-quorum">3 of 5</span>
+					<span class="preset-quorum">
+						<span
+							class="preset-dot preset-dot-sage"
+							aria-label="High-security protection level"
+						></span>
+						3 of 5
+					</span>
 					<span class="preset-name">High security</span>
 					<span class="preset-desc">
-						Any 3 of 5 keys spend. Two keys can fail or fall into the wrong hands before
-						anything is at risk. More keys to set up and store.
+						Any 3 of 5 keys spend — a clear majority, so no small group can move funds alone.
+						You can lose up to 2 keys and still recover. More keys to set up and store.
 					</span>
 					{#if estimateLine(3, 5)}
 						<span class="preset-time tabular">{estimateLine(3, 5)}</span>
@@ -1295,7 +1391,13 @@
 					class:selected={preset === 'custom'}
 					onclick={() => (preset = 'custom')}
 				>
-					<span class="preset-quorum">M of N</span>
+					<span class="preset-quorum">
+						<span
+							class="preset-dot {customTier ? `preset-dot-${customTier}` : 'preset-dot-neutral'}"
+							aria-label={customTier ? TIER_DOT_LABEL[customTier] : 'Protection level not set'}
+						></span>
+						M of N
+					</span>
 					<span class="preset-name">Custom</span>
 					<span class="preset-desc">Choose your own numbers, up to 15 keys.</span>
 					{#if preset === 'custom' && quorumValid && estimateLine(threshold, totalKeys)}
@@ -1303,18 +1405,6 @@
 					{/if}
 				</button>
 			</div>
-
-			{#if previewBasis}
-				<p class="preview-caption">
-					<Term
-						tip="Larger quorums are more secure but take longer to sign transactions. Each signing device must independently verify every input."
-						>Signing time</Term
-					>
-					estimates are {previewBasis === 'your-utxos'
-						? 'based on your current coins'
-						: 'based on typical coins'} — they never affect the network fee.
-				</p>
-			{/if}
 
 			{#if preset === 'custom'}
 				<div class="custom-quorum fade-in">
@@ -1333,26 +1423,39 @@
 						<div class="form-error" role="alert">
 							The required number must be between 1 and the total, and the total at most 15.
 						</div>
-					{:else if threshold === 1}
-						<p class="quorum-note">
-							Heads up: with 1-of-{totalKeys}, <strong>any single key</strong> can spend on its
-							own. That's convenience — several places to spend from — not protection. Fine
-							for pocket money; for savings, require at least 2.
-						</p>
-					{:else if threshold === totalKeys && totalKeys > 1}
-						<p class="quorum-note">
-							Every key is required: lose <strong>any one</strong> of the {totalKeys} and the
-							money is stuck forever. Most people keep a spare — like {totalKeys - 1}-of-{totalKeys}
-							— so one lost key isn't a disaster.
-						</p>
-					{:else}
-						<p class="quorum-note">
-							More required keys make theft harder but spending slower; more total keys give
-							you spares. You can afford to lose {totalKeys - threshold}
-							{totalKeys - threshold === 1 ? 'key' : 'keys'} and still spend.
-						</p>
 					{/if}
 				</div>
+			{/if}
+
+			{#if quorumRisk}
+				<!-- Dynamic quorum risk panel (cairn-a1y8) — replaces the old "you can
+				     afford to lose N keys" line with tier-based theft-vs-loss risk
+				     messaging (Unchained security model). Shows for both presets and
+				     custom, right after the selection controls. -->
+				<div class="risk-panel risk-{quorumRisk.tier}">
+					<div class="risk-header">
+						{@render riskIcon(quorumRisk.icon)}
+						<span class="risk-label">{quorumRisk.label}</span>
+						{#if quorumRisk.badge}<span class="badge badge-accent">{quorumRisk.badge}</span>{/if}
+					</div>
+					<p class="risk-body">{quorumRisk.body}</p>
+					{#if quorumRisk.combos}<p class="risk-combos">{quorumRisk.combos}</p>{/if}
+				</div>
+				<div class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+					{announcedRisk}
+				</div>
+			{/if}
+
+			{#if previewBasis}
+				<p class="preview-caption">
+					<Term
+						tip="Larger quorums are more secure but take longer to sign transactions. Each signing device must independently verify every input."
+						>Signing time</Term
+					>
+					estimates are {previewBasis === 'your-utxos'
+						? 'based on your current coins'
+						: 'based on typical coins'} — they never affect the network fee.
+				</p>
 			{/if}
 
 			<div class="disclosure">
@@ -2915,10 +3018,50 @@
 	}
 
 	.preset-quorum {
+		display: flex;
+		align-items: center;
+		gap: 6px;
 		font-family: var(--font-serif);
 		font-size: 24px;
 		font-weight: 600;
 		color: var(--accent);
+	}
+
+	/* Tier dot (cairn-a1y8): a quiet 8px indicator before each preset's quorum
+	   number. Dot only — cards are never recolored. */
+	.preset-dot {
+		display: inline-block;
+		width: 8px;
+		height: 8px;
+		flex-shrink: 0;
+		border-radius: 50%;
+	}
+
+	.preset-dot-sage,
+	.preset-dot-green {
+		background: var(--success);
+	}
+
+	.preset-dot-lightgreen {
+		background: var(--success);
+		opacity: 0.65;
+	}
+
+	.preset-dot-yellow {
+		background: var(--warning);
+	}
+
+	.preset-dot-red {
+		background: var(--error);
+	}
+
+	.preset-dot-salmon {
+		background: var(--error);
+		opacity: 0.6;
+	}
+
+	.preset-dot-neutral {
+		background: var(--text-faint);
 	}
 
 	.preset-name {
@@ -3005,14 +3148,107 @@
 		}
 	}
 
-	.quorum-note {
+	/* --- dynamic quorum risk panel (cairn-a1y8) ---
+	   Replaces the old .quorum-note. Five tiers on the Unchained security
+	   model's theft-vs-loss trade-off. Body text stays on --text-secondary /
+	   --text (not the saturated tier color) for AA contrast on tinted fills —
+	   same precedent as .seed-warning-body above. */
+	.risk-panel {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		padding: 12px 14px;
+		border-radius: var(--radius-control);
+		border: 1px solid var(--border-subtle);
+		transition:
+			background-color 180ms var(--ease),
+			border-color 180ms var(--ease),
+			color 180ms var(--ease);
+	}
+
+	.risk-header {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.risk-icon {
+		flex-shrink: 0;
+	}
+
+	.risk-label {
+		font-size: 13.5px;
+		font-weight: 500;
+	}
+
+	.risk-body {
+		margin: 0;
 		font-size: 12.5px;
 		line-height: 1.6;
 		color: var(--text-secondary);
 	}
 
-	.quorum-note strong {
-		color: var(--text);
+	.risk-combos {
+		margin: 0;
+		font-size: 11.5px;
+		line-height: 1.5;
+		color: var(--text-muted);
+	}
+
+	.risk-red {
+		background: var(--error-muted);
+		border-color: var(--error-border);
+		border-left: 4px solid var(--error);
+		color: var(--error);
+	}
+
+	.risk-red .risk-label {
+		font-weight: 700;
+	}
+
+	.risk-salmon {
+		background: var(--error-muted);
+		border-color: var(--error-border);
+		color: var(--error);
+	}
+
+	.risk-yellow {
+		background: var(--warning-muted);
+		border-color: var(--warning-border-strong);
+		color: var(--warning);
+	}
+
+	.risk-lightgreen {
+		background: var(--success-muted);
+		border-color: var(--success-border);
+		color: var(--success);
+	}
+
+	.risk-green {
+		background: var(--success-muted);
+		border-color: var(--success-border-strong);
+		border-left: 4px solid var(--success);
+		color: var(--success);
+	}
+
+	.risk-green .risk-label {
+		font-weight: 700;
+	}
+
+	/* Visually hidden but present for screen readers — the debounced live
+	   region announcing risk-tier changes (distinct from .visually-hidden-file,
+	   which also hides from pointer events / keeps assistive tech access to a
+	   file input, not a status message). */
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
 	}
 
 	/* --- disclosures --- */

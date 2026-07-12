@@ -69,6 +69,11 @@
 	--sage-muted: rgba(138, 160, 110, 0.1);
 	--success: var(--sage);
 	--success-muted: var(--sage-muted);
+	/* Border weights for the quorum risk panel's lightgreen/green tiers
+	   (cairn-a1y8) — same "default vs. emphasized callout" pattern as
+	   --accent-border / --accent-border-strong above. */
+	--success-border: color-mix(in srgb, var(--success) 45%, transparent);
+	--success-border-strong: color-mix(in srgb, var(--success) 70%, transparent);
 	--attention: #d8b27a;
 	--attention-muted: rgba(216, 178, 122, 0.1);
 	--warning: var(--attention);
