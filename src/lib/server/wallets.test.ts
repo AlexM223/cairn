@@ -344,3 +344,104 @@ describe('created wallet signs on hardware (cairn-alw8 end-to-end)', () => {
 		expect(() => trezorSignRequestFromPsbt(psbt)).toThrow(/key-origin/i);
 	});
 });
+
+// ---- QA R2 finding R7 / task #11: reject a derivation-purpose/prefix mismatch ----
+//
+// createWallet never used to cross-check a declared derivation path's BIP
+// purpose (44'/49'/84'/86') against the script type its own SLIP-132 prefix
+// (xpub/ypub/zpub) implies. Worst case: a BIP-86 (Taproot) xpub has no SLIP-132
+// prefix of its own (wallets export it as a plain xpub, same as BIP-44), so it
+// silently became a legacy p2pkh wallet — generating addresses that never
+// match what the same key produces anywhere Taproot-aware. Design decision:
+// REJECT (not warn-and-allow) on any purpose/prefix mismatch, and only when a
+// derivation path is actually declared (an absent/unknown path stays accepted,
+// same as before this fix).
+
+describe('createWallet rejects derivation-purpose/prefix mismatches (task #11)', () => {
+	// BIP49 test vector account ypub (same "abandon…about" mnemonic as ZPUB).
+	const YPUB =
+		'ypub6Ww3ibxVfGzLrAH1PNcjyAWenMTbbAosGNB6VvmSEgytSER9azLDWCxoJwW7Ke7icmizBMXrzBx9979FfaHxHcrArf3zbeJJJUZPf663zsP';
+	// BIP44 test vector account xpub (same mnemonic) — also the prefix real
+	// wallets use to export a BIP-86 Taproot account, since SLIP-132 has no
+	// distinct Taproot version bytes.
+	const XPUB =
+		'xpub6BosfCnifzxcFwrSzQiqu2DBVTshkCXacvNsWGYJVVhhawA7d4R5WSWGFNbi8Aw6ZRc1brxMyWMzG3DSSSSoekkudhUd9yLb6qx39T9nMdj';
+
+	function walletCount(userId: number): number {
+		const { n } = db
+			.prepare('SELECT COUNT(*) AS n FROM wallets WHERE user_id = ?')
+			.get(userId) as { n: number };
+		return n;
+	}
+
+	it('accepts each of the four standard purposes when they match their key prefix', async () => {
+		const u44 = await makeUser('match44@example.com');
+		const w44 = createWallet(u44.id, { xpub: XPUB, derivationPath: "m/44'/0'/0'" });
+		expect(getWallet(u44.id, w44.id)?.script_type).toBe('p2pkh');
+
+		const u49 = await makeUser('match49@example.com');
+		const w49 = createWallet(u49.id, { xpub: YPUB, derivationPath: "m/49'/0'/0'" });
+		expect(getWallet(u49.id, w49.id)?.script_type).toBe('p2sh-p2wpkh');
+
+		const u84 = await makeUser('match84@example.com');
+		const w84 = createWallet(u84.id, { xpub: ZPUB, derivationPath: "m/84'/0'/0'" });
+		expect(getWallet(u84.id, w84.id)?.script_type).toBe('p2wpkh');
+	});
+
+	it('rejects a 49-purpose path on a zpub (native SegWit) key with the exact mismatch copy', async () => {
+		const user = await makeUser('mismatch49z@example.com');
+		expect(() => createWallet(user.id, { xpub: ZPUB, derivationPath: "m/49'/0'/0'" })).toThrow(
+			"This key's derivation path (m/49'/0'/0') doesn't match its prefix type (zpub → native SegWit). Double-check you exported the right key."
+		);
+		expect(walletCount(user.id)).toBe(0);
+	});
+
+	it('rejects a 44-purpose path on a zpub key', async () => {
+		const user = await makeUser('mismatch44z@example.com');
+		expect(() => createWallet(user.id, { xpub: ZPUB, derivationPath: "m/44'/0'/0'" })).toThrow(
+			/doesn't match its prefix type \(zpub → native SegWit\)/
+		);
+		expect(walletCount(user.id)).toBe(0);
+	});
+
+	it('rejects an 84-purpose path on a plain xpub (legacy) key', async () => {
+		const user = await makeUser('mismatch84x@example.com');
+		expect(() => createWallet(user.id, { xpub: XPUB, derivationPath: "m/84'/0'/0'" })).toThrow(
+			/doesn't match its prefix type \(xpub → legacy\)/
+		);
+		expect(walletCount(user.id)).toBe(0);
+	});
+
+	it('rejects an 84-purpose path on a ypub (nested SegWit) key', async () => {
+		const user = await makeUser('mismatch84y@example.com');
+		expect(() => createWallet(user.id, { xpub: YPUB, derivationPath: "m/84'/0'/0'" })).toThrow(
+			/doesn't match its prefix type \(ypub → nested SegWit\)/
+		);
+		expect(walletCount(user.id)).toBe(0);
+	});
+
+	it('rejects a Taproot (86-purpose) path with the Taproot-specific copy, regardless of the key prefix', async () => {
+		// The realistic QA case: a BIP-86 key exported under the plain xpub prefix.
+		const userXpub = await makeUser('taproot-xpub@example.com');
+		expect(() => createWallet(userXpub.id, { xpub: XPUB, derivationPath: "m/86'/0'/0'" })).toThrow(
+			"Taproot wallets aren't supported yet. This key would generate legacy addresses that won't match your other wallet's."
+		);
+		expect(walletCount(userXpub.id)).toBe(0);
+
+		// Same rejection even when paired with a prefix that isn't legacy — 86'
+		// never matches ANY prefix-inferred type (none of xpub/ypub/zpub imply
+		// p2tr), so it always hits the Taproot branch, never the generic one.
+		const userZpub = await makeUser('taproot-zpub@example.com');
+		expect(() => createWallet(userZpub.id, { xpub: ZPUB, derivationPath: "m/86'/0'/0'" })).toThrow(
+			/Taproot wallets aren't supported yet/
+		);
+		expect(walletCount(userZpub.id)).toBe(0);
+	});
+
+	it('accepts a key with no declared derivation path, regardless of prefix (nothing to contradict)', async () => {
+		const user = await makeUser('nopath@example.com');
+		const w = createWallet(user.id, { xpub: ZPUB });
+		expect(getWallet(user.id, w.id)?.derivation_path).toBeNull();
+		expect(walletCount(user.id)).toBe(1);
+	});
+});

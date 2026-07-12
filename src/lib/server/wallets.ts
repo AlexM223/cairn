@@ -210,6 +210,81 @@ function normalizeOriginInput(input: {
 	return { fingerprint, path };
 }
 
+/** Standard BIP-purpose -> script type a derivation path's first component
+ *  implies, per BIP44/49/84/86. 86' (Taproot) has no SLIP-132 prefix of its
+ *  own — wallets export it under the plain xpub prefix — so it can never
+ *  match a prefix-inferred type below; see assertDerivationMatchesPrefix. */
+const PURPOSE_SCRIPT_TYPE: Record<number, ScriptType> = {
+	44: 'p2pkh',
+	49: 'p2sh-p2wpkh',
+	84: 'p2wpkh',
+	86: 'p2tr'
+};
+
+/** SLIP-132 prefix a prefix-inferred script type reads back as, for the
+ *  mismatch error message (mirrors xpub.ts's PUBLIC_VERSIONS). */
+const SCRIPT_TYPE_PREFIX: Partial<Record<ScriptType, string>> = {
+	p2pkh: 'xpub',
+	'p2sh-p2wpkh': 'ypub',
+	p2wpkh: 'zpub'
+};
+
+const SCRIPT_TYPE_LABEL: Record<ScriptType, string> = {
+	p2pkh: 'legacy',
+	'p2sh-p2wpkh': 'nested SegWit',
+	p2wpkh: 'native SegWit',
+	p2tr: 'Taproot'
+};
+
+/** The BIP-32 purpose (first component) of a canonical `m/84'/0'/0'`-form
+ *  path, or null when it doesn't start with a hardened number (shouldn't
+ *  happen for anything normalizeOriginPath/parseKeyOriginInput produced). */
+function purposeOf(path: string): number | null {
+	const m = /^m\/(\d+)'/.exec(path);
+	return m ? parseInt(m[1], 10) : null;
+}
+
+/**
+ * Cross-check a declared derivation path's purpose against the script type
+ * inferred from the key's own SLIP-132 prefix (xpub/ypub/zpub — see
+ * xpub.ts's parseXpub). A mismatch means the user almost certainly exported
+ * the wrong key: notably, a BIP-86 (Taproot) xpub uses the exact SAME prefix
+ * as an ordinary BIP-44 xpub (no distinct SLIP-132 prefix exists for
+ * Taproot), so without this check createWallet silently accepted it as a
+ * legacy p2pkh wallet — generating addresses that never match what the same
+ * key produces on any other Taproot-aware device/wallet (QA finding, task
+ * #11). REJECTS rather than warns: Cairn doesn't support Taproot spending
+ * yet, and a mismatched purpose/prefix pair is never a usable combination.
+ *
+ * Only enforced when a derivation path is actually declared (embedded in the
+ * key string or passed explicitly) — an absent/unrecognized path is accepted
+ * exactly as before, since there's nothing to contradict.
+ */
+function assertDerivationMatchesPrefix(
+	derivationPath: string | null,
+	prefixScriptType: ScriptType
+): void {
+	if (!derivationPath) return;
+	const purpose = purposeOf(derivationPath);
+	if (purpose === null) return;
+
+	if (purpose === 86) {
+		throw new Error(
+			"Taproot wallets aren't supported yet. This key would generate legacy addresses that won't match your other wallet's."
+		);
+	}
+
+	const impliedType = PURPOSE_SCRIPT_TYPE[purpose];
+	// An unrecognized purpose has no implied type to check — nothing to enforce.
+	if (!impliedType || impliedType === prefixScriptType) return;
+
+	const prefixLabel = SCRIPT_TYPE_PREFIX[prefixScriptType] ?? prefixScriptType;
+	throw new Error(
+		`This key's derivation path (${derivationPath}) doesn't match its prefix type ` +
+			`(${prefixLabel} → ${SCRIPT_TYPE_LABEL[prefixScriptType]}). Double-check you exported the right key.`
+	);
+}
+
 export function createWallet(
 	userId: number,
 	input: {
@@ -240,6 +315,7 @@ export function createWallet(
 	const explicit = normalizeOriginInput(input);
 	const masterFingerprint = parsedInput.fingerprint ?? explicit.fingerprint;
 	const derivationPath = parsedInput.path ?? explicit.path;
+	assertDerivationMatchesPrefix(derivationPath, scriptType);
 
 	let name = String(input.name ?? '').trim().slice(0, 64);
 	if (!name) {
