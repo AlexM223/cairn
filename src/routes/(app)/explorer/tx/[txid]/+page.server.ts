@@ -3,6 +3,7 @@ import { getChain } from '$lib/server/chain';
 import { coreRpcConfigured } from '$lib/server/settings';
 import { isNotFoundError, chainErrorMessage } from '$lib/server/search';
 import { readTxSnapshot, writeTxSnapshot, refreshTxSnapshot } from '$lib/server/txSnapshot';
+import { txOwnership } from '../../ownership.server';
 import type { PageServerLoad } from './$types';
 import type { CpfpInfo, FeeEstimates, RbfInfo, TxDetail } from '$lib/types';
 
@@ -122,6 +123,10 @@ export const load: PageServerLoad = async ({ params, url, depends, locals }) => 
 			txid,
 			tx,
 			replacedFrom,
+			// "This transaction involves your wallet" badges — synchronous, chain-free,
+			// viewer-scoped local lookup (ownership.server.ts). null when none of the
+			// viewing user's wallets touch this tx.
+			ownership: txOwnership(locals?.user?.id, tx),
 			// Streamed, not awaited (cairn-2zxt.3): supplementary display data only.
 			details: loadTxDetails(tx, isCoinbase)
 		};
@@ -150,13 +155,13 @@ export const load: PageServerLoad = async ({ params, url, depends, locals }) => 
 			// detail pages) rather than throwing a route-level error(404) — that
 			// would bubble to the generic app-wide error page with a hardcoded
 			// message instead of a contextual "Transaction not found" (cairn-t9b6).
-			return { ...base, notFound: true as const, loading: false as const, txid, tx: null, replacedFrom, details: null };
+			return { ...base, notFound: true as const, loading: false as const, txid, tx: null, replacedFrom, ownership: null, details: null };
 		}
 		// No backend that can serve tx detail (Core RPC unconfigured): render the
 		// honest CoreRpcRequiredNotice via the in-page not-found state (the svelte
 		// swaps the message on !coreRpcConfigured) instead of a route-level 502.
 		if (!base.coreRpcConfigured) {
-			return { ...base, notFound: true as const, loading: false as const, txid, tx: null, replacedFrom, details: null };
+			return { ...base, notFound: true as const, loading: false as const, txid, tx: null, replacedFrom, ownership: null, details: null };
 		}
 		error(502, chainErrorMessage(e));
 	}
@@ -166,7 +171,7 @@ export const load: PageServerLoad = async ({ params, url, depends, locals }) => 
 		// eventual result so the client's poll (re-invalidating 'cairn:tx') finds a
 		// warm cache and swaps in the real tx — without a second backend round-trip.
 		txPromise.then((tx) => writeTxSnapshot(txid, tx)).catch(() => {});
-		return { ...base, notFound: false as const, loading: true as const, txid, tx: null, replacedFrom, details: null };
+		return { ...base, notFound: false as const, loading: true as const, txid, tx: null, replacedFrom, ownership: null, details: null };
 	}
 
 	// Fetched in time: persist for future visits and render as before.
@@ -181,6 +186,8 @@ export const load: PageServerLoad = async ({ params, url, depends, locals }) => 
 		txid,
 		tx,
 		replacedFrom,
+		// See the cache-hit branch: viewer-scoped "involves your wallet" badges.
+		ownership: txOwnership(locals?.user?.id, tx),
 		// Streamed, not awaited (cairn-2zxt.3): supplementary display data only.
 		details: loadTxDetails(tx, isCoinbase)
 	};

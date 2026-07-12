@@ -170,6 +170,17 @@
 		<div class="head-wrap fade-in">
 			<header class="head">
 				<EyebrowBreadcrumb path={['Explorer']} current="Address" />
+				{#if data.ownership}
+					<a class="yours-badge" href={data.ownership.wallet.href}>
+						<Icon name="wallet" size={15} />
+						<span class="yours-text">
+							This is your wallet · <strong>{data.ownership.wallet.name}</strong>{#if data.ownership.change}<span
+									class="yours-sub"> · change address</span
+								>{/if}
+						</span>
+						<Icon name="chevron-right" size={14} />
+					</a>
+				{/if}
 				{#if info}
 					<div class="hero-row">
 						<span class="hero-number hero-bal" title="{formatSats(info.confirmedBalance)} sats">
@@ -479,6 +490,47 @@
 		gap: 0;
 		min-width: 0;
 		flex: 1 1 320px;
+	}
+
+	/* "This is your wallet" ownership badge — only ever shown for the viewing
+	   user's own wallets (see ownership.server.ts). */
+	.yours-badge {
+		display: inline-flex;
+		align-items: center;
+		gap: 9px;
+		align-self: flex-start;
+		margin-top: 16px;
+		padding: 8px 12px;
+		border: 1px solid var(--sage);
+		border-radius: var(--radius-strip);
+		background: color-mix(in srgb, var(--sage) 12%, transparent);
+		color: var(--text-rows);
+		font-size: 13.5px;
+		line-height: 1.3;
+		max-width: 100%;
+	}
+
+	.yours-badge:hover {
+		background: color-mix(in srgb, var(--sage) 18%, transparent);
+	}
+
+	.yours-badge :global(svg:first-child) {
+		color: var(--sage);
+		flex-shrink: 0;
+	}
+
+	.yours-badge :global(svg:last-child) {
+		color: var(--text-muted);
+		flex-shrink: 0;
+	}
+
+	.yours-text {
+		min-width: 0;
+		word-break: break-word;
+	}
+
+	.yours-sub {
+		color: var(--text-muted);
 	}
 
 	.hero-row {

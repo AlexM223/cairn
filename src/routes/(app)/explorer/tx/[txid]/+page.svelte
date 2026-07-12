@@ -27,6 +27,11 @@
 	// page then renders an in-page not-found state (cairn-t9b6), mirroring the
 	// block and address detail pages. All tx-derived values guard against null.
 	const tx = $derived(data.tx);
+	// Viewer-scoped wallet awareness (ownership.server.ts): which of THIS user's
+	// own wallets this tx touches, and which inputs/outputs pay their addresses.
+	// null/empty for a tx that involves none of their wallets. Never reveals
+	// anyone else's ownership.
+	const ownership = $derived(data.ownership ?? null);
 	const isCoinbase = $derived(tx ? tx.vin.some((v) => v.coinbase) : false);
 	const totalIn = $derived(tx ? tx.vin.reduce((sum, v) => sum + (v.value ?? 0), 0) : 0);
 	const totalOut = $derived(tx ? tx.vout.reduce((sum, v) => sum + v.value, 0) : 0);
@@ -167,6 +172,20 @@
 			<EyebrowBreadcrumb path={['Explorer']} current="Transaction" />
 			<h1 class="txid mono"><CopyText value={tx.txid} truncate={18} /></h1>
 		</header>
+
+		{#if ownership && ownership.wallets.length > 0}
+			<div class="yours-summary fade-in">
+				<Icon name="wallet" size={16} />
+				<span class="yours-summary-text">
+					This transaction involves your {ownership.wallets.length === 1
+						? 'wallet'
+						: 'wallets'}{' '}{#each ownership.wallets as w, i (w.kind + '-' + w.id)}<a
+							class="yours-link"
+							href={w.href}><strong>{w.name}</strong></a
+						>{#if i < ownership.wallets.length - 1}<span class="yours-sep">, </span>{/if}{/each}
+				</span>
+			</div>
+		{/if}
 
 		{#if data.replacedFrom}
 			<div class="replaced-note fade-in" role="status">
@@ -375,6 +394,7 @@
 						{tx.vin.length} input{tx.vin.length === 1 ? '' : 's'}
 					</span>
 					{#each tx.vin as vin, i (i)}
+						{@const vinOwner = vin.address ? (ownership?.addressOwners[vin.address] ?? null) : null}
 						<div class="io-item">
 							<div class="io-row">
 								{#if vin.coinbase}
@@ -400,6 +420,15 @@
 											</span>
 										{/if}
 									</span>
+									{#if vinOwner}
+										<a
+											class="io-yours"
+											href={vinOwner.href}
+											title="This input is spent from your wallet {vinOwner.name}"
+										>
+											<Icon name="wallet" size={11} /> Yours
+										</a>
+									{/if}
 									<span
 										class="io-value tabular"
 										title={vin.value !== null ? `${formatSats(vin.value)} sats` : undefined}
@@ -453,6 +482,7 @@
 						{tx.vout.length} output{tx.vout.length === 1 ? '' : 's'}
 					</span>
 					{#each tx.vout as vout, i (i)}
+						{@const voutOwner = vout.address ? (ownership?.addressOwners[vout.address] ?? null) : null}
 						<div class="io-item">
 							<div class="io-row">
 								<span class="io-addr">
@@ -465,6 +495,15 @@
 									{/if}
 								</span>
 								<span class="io-end">
+									{#if voutOwner}
+										<a
+											class="io-yours"
+											href={voutOwner.href}
+											title="This output pays your wallet {voutOwner.name}"
+										>
+											<Icon name="wallet" size={11} /> Yours
+										</a>
+									{/if}
 									{#if vout.address && inputAddresses.has(vout.address)}
 										<span
 											class="badge badge-accent"
@@ -669,6 +708,70 @@
 		border-radius: var(--radius-status-pill);
 		padding: 10px 14px;
 		margin-bottom: 16px;
+	}
+
+	/* "This transaction involves your wallet" summary — only ever rendered for the
+	   viewing user's own wallets (see ownership.server.ts). */
+	.yours-summary {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 10px 14px;
+		margin-bottom: 16px;
+		border: 1px solid var(--sage);
+		border-radius: var(--radius-status-pill);
+		background: color-mix(in srgb, var(--sage) 12%, transparent);
+		font-size: 13.5px;
+		line-height: 1.4;
+		color: var(--text-rows);
+	}
+
+	.yours-summary :global(svg) {
+		color: var(--sage);
+		flex-shrink: 0;
+	}
+
+	.yours-summary-text {
+		min-width: 0;
+	}
+
+	.yours-link {
+		color: var(--text-rows);
+		text-decoration: underline;
+		text-underline-offset: 2px;
+		text-decoration-color: var(--sage);
+	}
+
+	.yours-link:hover {
+		color: var(--sage);
+	}
+
+	.yours-sep {
+		color: var(--text-muted);
+	}
+
+	/* Per-input / per-output "Yours" pill. */
+	.io-yours {
+		display: inline-flex;
+		align-items: center;
+		gap: 3px;
+		flex-shrink: 0;
+		padding: 1px 7px;
+		border-radius: var(--radius-badge);
+		font-size: 11px;
+		font-weight: 600;
+		color: var(--sage);
+		background: color-mix(in srgb, var(--sage) 14%, transparent);
+		border: 1px solid color-mix(in srgb, var(--sage) 45%, transparent);
+		white-space: nowrap;
+	}
+
+	.io-yours:hover {
+		background: color-mix(in srgb, var(--sage) 22%, transparent);
+	}
+
+	.io-yours :global(svg) {
+		color: var(--sage);
 	}
 
 	/* --- status row --- */
