@@ -1,6 +1,7 @@
 <script lang="ts">
 	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
-	import { formatBtc, timeAgo } from '$lib/format';
+	import Amount from '$lib/components/Amount.svelte';
+	import { timeAgo } from '$lib/format';
 
 	type ActivityItem = {
 		key: string;
@@ -44,15 +45,8 @@
 						</span>
 					</span>
 
-					<span
-						class="amount tabular"
-						class:in={item.direction === 'in'}
-						class:out={item.direction === 'out'}
-					>
-						{item.direction === 'in' ? '+' : '−'}{formatBtc(item.sats)}<span class="unit"
-							>&nbsp;BTC</span
-						>
-					</span>
+					<Amount sats={item.sats} size="row" direction={item.direction} sign />
+
 				</a>
 			</li>
 		{/each}
@@ -100,6 +94,10 @@
 		background: rgba(255, 255, 255, 0.018);
 	}
 
+	.row :global(.hw-amount) {
+		flex-shrink: 0;
+	}
+
 	.mid {
 		display: flex;
 		flex-direction: column;
@@ -141,31 +139,6 @@
 		white-space: nowrap;
 	}
 
-	/* Amount: serif — a number that matters. Sage in, quiet rows-text out. */
-	.amount {
-		flex-shrink: 0;
-		text-align: right;
-		font-family: var(--font-serif);
-		font-size: 15.5px;
-		font-weight: 600;
-		white-space: nowrap;
-	}
-
-	.amount.in {
-		color: var(--sage);
-	}
-
-	.amount.out {
-		color: var(--text-rows);
-	}
-
-	.unit {
-		color: var(--text-muted);
-		font-family: var(--font-ui);
-		font-weight: 500;
-		font-size: 12px;
-	}
-
 	@media (max-width: 900px) {
 		/* Mobile Home (8a) shows just the two freshest rows — the Activity tab
 		   has the rest. */
@@ -183,10 +156,6 @@
 
 		.meta {
 			font-size: 10.5px;
-		}
-
-		.amount {
-			font-size: 13.5px;
 		}
 	}
 </style>

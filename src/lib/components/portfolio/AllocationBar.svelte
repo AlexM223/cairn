@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { formatBtc } from '$lib/format';
 	import Icon from '$lib/components/Icon.svelte';
+	import Amount from '$lib/components/Amount.svelte';
 
 	type Slice = {
 		key: string;
@@ -57,7 +58,7 @@
 							{/if}
 							<span class="name-text truncate">{slice.name}</span>
 						</span>
-						<span class="balance tabular">{formatBtc(slice.balance)}</span>
+						<Amount sats={slice.balance} size="row" />
 						<span class="pct tabular">
 							{total > 0 ? `${pct(slice.balance).toFixed(0)}%` : '—'}
 						</span>
@@ -164,15 +165,6 @@
 		transition: color 0.15s var(--ease);
 	}
 
-	/* Balances in serif — numbers that matter. */
-	.balance {
-		font-family: var(--font-serif);
-		font-size: 15px;
-		font-weight: 600;
-		color: var(--text-rows);
-		white-space: nowrap;
-	}
-
 	.pct {
 		font-family: var(--font-ui);
 		font-size: 11.5px;
@@ -188,10 +180,6 @@
 
 		.name {
 			font-size: 13px;
-		}
-
-		.balance {
-			font-size: 13.5px;
 		}
 	}
 </style>

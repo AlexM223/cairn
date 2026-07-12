@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { formatBtc } from '$lib/format';
+	import Amount from '$lib/components/Amount.svelte';
 	import { computeBalanceDelta } from './balanceDelta';
 
 	type Point = { t: number; sats: number };
@@ -382,7 +383,9 @@
 					class="tooltip"
 					style="left: {(tooltipX / VB_W) * 100}%; top: {(hoverPoint.y / VB_H) * 100}%;"
 				>
-					<div class="tooltip-balance tabular">{formatBtc(hoverPoint.p.sats)} BTC</div>
+					<div class="tooltip-balance">
+						<Amount sats={hoverPoint.p.sats} size="row" align="start" />
+					</div>
 					<div class="tooltip-date">{formatTooltipDate(hoverPoint.p.t)}</div>
 				</div>
 			{/if}

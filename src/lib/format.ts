@@ -87,6 +87,30 @@ export function formatHashrate(hs: number): string {
 	return `${hs.toFixed(hs >= 100 ? 0 : 1)} ${units[i]}`;
 }
 
+/** BTC amount * spot price -> USD amount (bead cairn-vnfs fiat foundation). */
+export function btcToFiat(btcAmount: number, usdPrice: number): number {
+	return btcAmount * usdPrice;
+}
+
+/** 1234.5 -> "$1,234.50"; large amounts compact to "$1.2M" etc. */
+export function formatFiat(usd: number): string {
+	const abs = Math.abs(usd);
+	if (abs >= 1_000_000) {
+		return new Intl.NumberFormat('en-US', {
+			style: 'currency',
+			currency: 'USD',
+			notation: 'compact',
+			maximumFractionDigits: 1
+		}).format(usd);
+	}
+	return new Intl.NumberFormat('en-US', {
+		style: 'currency',
+		currency: 'USD',
+		minimumFractionDigits: 2,
+		maximumFractionDigits: 2
+	}).format(usd);
+}
+
 export function formatFeeRate(satPerVb: number | null | undefined): string {
 	if (satPerVb == null) return '—';
 	return `${satPerVb < 10 ? satPerVb.toFixed(1).replace(/\.0$/, '') : Math.round(satPerVb)} sat/vB`;
