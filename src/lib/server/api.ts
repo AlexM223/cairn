@@ -15,6 +15,19 @@ import { childLogger } from './logger';
 
 const flagLog = childLogger('feature-flags');
 
+/**
+ * Throw a SvelteKit `error()` whose JSON body carries BOTH `message`
+ * (SvelteKit's own convention for a thrown `error()`) and `error` (the shape
+ * every `.svelte` client actually reads via `body?.error` — err-server.md §1,
+ * Wave 6). Additive: none of the ~100 existing client read-sites need to
+ * change to start seeing a guard's real message instead of silently falling
+ * back to their own generic string. Every guard/body-reader in this file
+ * throws through here instead of calling `error()` with a bare string.
+ */
+function apiError(status: number, message: string): never {
+	error(status, { message, error: message });
+}
+
 /** Best-effort client IP for the Bearer failure throttle. getClientAddress()
  *  throws in contexts with no connection info — fold those into one bucket. */
 function clientIp(event: RequestEvent): string {
@@ -45,12 +58,12 @@ function bearerUser(event: RequestEvent): SessionUser | null {
 
 	const ip = clientIp(event);
 	const wait = bearerRetryAfter(ip);
-	if (wait !== null) error(429, tooManyAttemptsMessage(wait));
+	if (wait !== null) apiError(429, tooManyAttemptsMessage(wait));
 
 	const user = getApiTokenUser(token);
 	if (!user) {
 		noteBearerFailure(ip);
-		error(401, 'Invalid or revoked API token');
+		apiError(401, 'Invalid or revoked API token');
 	}
 	noteBearerSuccess(ip);
 	event.locals.user = user;
@@ -65,13 +78,13 @@ export function requireUser(event: RequestEvent): SessionUser {
 	if (event.locals.user) return event.locals.user;
 	const tokenUser = bearerUser(event);
 	if (tokenUser) return tokenUser;
-	error(401, 'Authentication required');
+	apiError(401, 'Authentication required');
 }
 
 /** Guard for /api/admin routes: 403 when not an admin. */
 export function requireAdmin(event: RequestEvent): SessionUser {
 	const user = requireUser(event);
-	if (!user.isAdmin) error(403, 'Admin access required');
+	if (!user.isAdmin) apiError(403, 'Admin access required');
 	return user;
 }
 
@@ -96,7 +109,7 @@ export function requireFeature(event: RequestEvent, key: string): SessionUser {
 			{ userId: user.id, flag: key, method: event.request?.method, path: event.url?.pathname },
 			`feature blocked: ${key} for user ${user.id}`
 		);
-		error(403, def.userMessage);
+		apiError(403, def.userMessage);
 	}
 	return user;
 }
@@ -113,7 +126,7 @@ export function requireFeature(event: RequestEvent, key: string): SessionUser {
  * revoke access they already granted (cairn-7t0z.5).
  */
 export function assertTeamMode(): void {
-	if (getInstanceSettings().instanceMode !== 'team') error(404, 'Not found');
+	if (getInstanceSettings().instanceMode !== 'team') apiError(404, 'Not found');
 }
 
 /** Same as {@link assertTeamMode}, for /api routes: also requires sign-in. */
@@ -136,11 +149,11 @@ const MAX_JSON_BODY_BYTES = 1_000_000;
 async function readCappedBody(event: RequestEvent): Promise<string> {
 	const declared = Number(event.request.headers.get('content-length'));
 	if (Number.isFinite(declared) && declared > MAX_JSON_BODY_BYTES) {
-		error(413, 'Request body too large');
+		apiError(413, 'Request body too large');
 	}
 	const raw = await event.request.text();
 	if (raw.length > MAX_JSON_BODY_BYTES) {
-		error(413, 'Request body too large');
+		apiError(413, 'Request body too large');
 	}
 	return raw;
 }
@@ -151,7 +164,7 @@ export async function readJson<T = Record<string, unknown>>(event: RequestEvent)
 	try {
 		return JSON.parse(raw) as T;
 	} catch {
-		error(400, 'Invalid JSON body');
+		apiError(400, 'Invalid JSON body');
 	}
 }
 
@@ -167,7 +180,7 @@ export async function readOptionalJson<T = Record<string, unknown>>(event: Reque
 	try {
 		return JSON.parse(raw) as T;
 	} catch {
-		error(400, 'Invalid JSON body');
+		apiError(400, 'Invalid JSON body');
 	}
 }
 

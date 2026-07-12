@@ -254,16 +254,28 @@ describe('psbtBuildErrorResponse — shared error mapping', () => {
 		});
 	});
 
-	it('maps a generic Error to 502 and surfaces its message', async () => {
-		const res = psbtBuildErrorResponse(new Error('electrum unreachable'), { walletId: 1 });
+	it('maps a generic Error to 502 with house-standard copy that still surfaces the raw message (qa-findings-R8.md X1)', async () => {
+		const res = psbtBuildErrorResponse(
+			new Error('Electrum connection error (127.0.0.1:60401): connect ECONNREFUSED 127.0.0.1:60401'),
+			{ walletId: 1 }
+		);
 		expect(res.status).toBe(502);
-		expect(await bodyOf(res)).toEqual({ error: 'electrum unreachable' });
+		const body = await bodyOf(res);
+		// What happened + what to do (UX-PLAN §5.1), not a bare transport string.
+		expect(body.error).toMatch(/^Couldn't reach the Bitcoin network to build this transaction:/);
+		expect(body.error).toContain('Check your node');
+		// The raw detail is kept verbatim, never the only thing shown.
+		expect(body.error).toContain(
+			'Electrum connection error (127.0.0.1:60401): connect ECONNREFUSED 127.0.0.1:60401'
+		);
 	});
 
-	it('maps a non-Error throw to 502 with a safe generic message', async () => {
+	it('maps a non-Error throw to 502 with a safe generic message, still in house-standard form', async () => {
 		const res = psbtBuildErrorResponse('a bare string was thrown', { walletId: 1 });
 		expect(res.status).toBe(502);
-		expect(await bodyOf(res)).toEqual({ error: 'Could not build the transaction' });
+		const body = await bodyOf(res);
+		expect(body.error).toMatch(/^Couldn't reach the Bitcoin network to build this transaction:/);
+		expect(body.error).toContain('a bare string was thrown');
 	});
 });
 

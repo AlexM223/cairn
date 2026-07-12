@@ -31,7 +31,7 @@ vi.mock('../chainEvents', () => ({
 vi.mock('../packageRelay', () => ({ resetPackageRelaySupport: vi.fn() }));
 vi.mock('../activity', () => ({ recordActivity: vi.fn() }));
 
-import { ChainService } from './index';
+import { ChainService, testCoreRpc } from './index';
 import { CoreRpcError } from '../bitcoinCore/client';
 import { resetChainCaches, invalidateTipCache, clearRawTxCache, rawTxCacheSize } from './cache';
 
@@ -1338,5 +1338,53 @@ describe('getMempoolBlocks projection from the Electrum fee histogram', () => {
 		const svc = makeCoreService(makeCoreStub());
 		Object.assign(svc.electrum, { getFeeHistogram: vi.fn(async () => []) });
 		await expect(svc.getMempoolBlocks()).resolves.toBeNull();
+	});
+});
+
+// ---- testCoreRpc (admin settings "Test connection" — qa-findings-R8.md X3) ------
+
+describe('testCoreRpc', () => {
+	it('reports ok with the chain + tip height on success', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () =>
+				new Response(JSON.stringify({ result: { blocks: 868_123, chain: 'main' }, error: null }), {
+					status: 200
+				})
+			)
+		);
+		const res = await testCoreRpc({ url: 'http://127.0.0.1:8332', user: 'u', pass: 'p' });
+		expect(res).toEqual({ ok: true, blockHeight: 868_123, chain: 'main' });
+	});
+
+	it('wraps a transport failure (ECONNREFUSED) in house-standard "what happened + what to do" copy, keeping the raw detail', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => {
+				throw new TypeError('fetch failed', {
+					cause: Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:19999'), {
+						code: 'ECONNREFUSED'
+					})
+				});
+			})
+		);
+		const res = await testCoreRpc({ url: 'http://127.0.0.1:19999', user: 'bogus', pass: 'bogus' });
+		expect(res.ok).toBe(false);
+		expect(res.error).toMatch(/^Couldn't connect to Bitcoin Core:/);
+		expect(res.error).toContain('Check the RPC URL');
+		// The raw diagnosable detail (qa-findings-R8.md X3's own evidence) is kept
+		// verbatim, never the only thing an admin sees.
+		expect(res.error).toContain('ECONNREFUSED');
+	});
+
+	it('wraps a 401 Unauthorized failure the same way', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => new Response('Unauthorized', { status: 401 }))
+		);
+		const res = await testCoreRpc({ url: 'http://127.0.0.1:8332', user: 'wrong', pass: 'wrong' });
+		expect(res.ok).toBe(false);
+		expect(res.error).toMatch(/^Couldn't connect to Bitcoin Core:/);
+		expect(res.error).toContain('401 Unauthorized');
 	});
 });

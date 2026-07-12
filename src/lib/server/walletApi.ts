@@ -83,6 +83,22 @@ export async function readSpendRequest(event: RequestEvent): Promise<SpendReques
 }
 
 /**
+ * Wrap an unexpected PSBT-build failure in the house "what happened + what to
+ * do" copy (UX-PLAN §5.1) instead of surfacing the raw transport exception —
+ * almost always the chain backend (Electrum/Core) being unreachable, since
+ * anything the caller could otherwise act on is already a PsbtError handled
+ * above — as the only sentence the user sees (qa-findings-R8.md X1: a build
+ * attempt during an Electrum outage returned a bare "Electrum connection
+ * error (...): connect ECONNREFUSED ..." string). Same pattern as
+ * broadcastRejection.ts's friendlyBroadcastRejection: the raw detail is kept
+ * verbatim, it's just never the ONLY thing shown.
+ */
+function friendlyPsbtBuildError(e: unknown): string {
+	const raw = e instanceof Error ? e.message : String(e);
+	return `Couldn't reach the Bitcoin network to build this transaction: ${raw}. Check your node's connection and try again in a moment.`;
+}
+
+/**
  * The PSBT-build error mapping both psbt routes share: a known PsbtError is
  * the user's problem (400, or 404 when construction itself failed), anything
  * else is logged and surfaced as a 502. `logContext` carries the route's id
@@ -97,10 +113,7 @@ export function psbtBuildErrorResponse(
 		return json({ error: e.message, code: e.code }, { status });
 	}
 	log.error({ err: e, ...logContext }, 'wallet psbt build failed');
-	return json(
-		{ error: e instanceof Error ? e.message : 'Could not build the transaction' },
-		{ status: 502 }
-	);
+	return json({ error: friendlyPsbtBuildError(e) }, { status: 502 });
 }
 
 // ------------------------------------------------------------ utxo mass

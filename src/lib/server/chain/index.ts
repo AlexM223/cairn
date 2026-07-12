@@ -1626,6 +1626,20 @@ export async function testEsplora(
 }
 
 /**
+ * Wrap a Bitcoin Core RPC test-connection failure in the house "what happened
+ * + what to do" copy (UX-PLAN §5.1) instead of surfacing Core's raw
+ * transport/auth exception text as the only thing the admin sees
+ * (qa-findings-R8.md X3: a bogus RPC URL returned a bare "Core RPC
+ * getblockchaininfo request failed: fetch failed: connect ECONNREFUSED ..."
+ * string). The raw detail is kept verbatim — an operator may recognize
+ * node-specific phrasing a generic hint doesn't cover — it's just never the
+ * ONLY sentence shown, matching broadcastRejection.ts's friendlyBroadcastRejection.
+ */
+function friendlyCoreRpcTestError(raw: string): string {
+	return `Couldn't connect to Bitcoin Core: ${raw}. Check the RPC URL, username/password, and that Core is running and reachable from this server.`;
+}
+
+/**
  * Probe a Bitcoin Core RPC endpoint for the admin settings "Test connection"
  * button: ping() first (a never-throwing liveness+auth check), then
  * getBlockchainInfo() for the chain name and authoritative tip height. Any
@@ -1651,7 +1665,12 @@ export async function testCoreRpc(cfg: {
 		try {
 			const pong = await client.ping();
 			if (!pong.ok) {
-				return { ok: false, error: pong.error ?? 'Bitcoin Core did not respond to a ping.' };
+				return {
+					ok: false,
+					error: pong.error
+						? friendlyCoreRpcTestError(pong.error)
+						: "Bitcoin Core didn't respond to a ping. Check the RPC URL, username/password, and that Core is running and reachable from this server."
+				};
 			}
 			const info = await client.getBlockchainInfo();
 			return { ok: true, blockHeight: info.blocks, chain: info.chain };
@@ -1659,6 +1678,7 @@ export async function testCoreRpc(cfg: {
 			client.close();
 		}
 	} catch (e) {
-		return { ok: false, error: e instanceof Error ? e.message : String(e) };
+		const raw = e instanceof Error ? e.message : String(e);
+		return { ok: false, error: friendlyCoreRpcTestError(raw) };
 	}
 }
