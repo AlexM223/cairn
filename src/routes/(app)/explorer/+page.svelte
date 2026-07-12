@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
+	import { invalidate } from '$app/navigation';
 	import { onNewBlock } from '$lib/liveBlocks';
 	import { triggerChainRefresh } from '$lib/chainRefresh';
 	import Icon from '$lib/components/Icon.svelte';
@@ -42,6 +43,17 @@
 	onMount(() => {
 		void refresh();
 	});
+
+	// Paged/history view (data.before set) isn't SWR (see the comment on
+	// `chain` above) — refresh() intentionally no-ops there. Without this, the
+	// error banner's "Retry" button on a paged view called refresh(true),
+	// which silently did nothing: a dead-end error with a button that clicked
+	// but never acted (cairn-obg6). Re-running the server load via the
+	// `depends('cairn:chain')` key it already registers gives paged views a
+	// real retry instead.
+	async function retryPaged() {
+		await invalidate('cairn:chain');
+	}
 
 	const syncLabel = $derived(
 		data.before !== null
@@ -384,10 +396,24 @@
 		{/if}
 
 		{#if showError}
-			<div class="form-error chain-error fade-in" role="alert">
+			<!-- Calm, plain-language disconnected state (cairn-obg6) — no raw
+			     technical error text, no alarm tone (role="status", not "alert"):
+			     losing the chain source is expected/recoverable, not a crisis. -->
+			<div class="form-error chain-error fade-in" role="status" aria-live="polite">
 				<Icon name="alert-triangle" size={16} />
-				<span>Can't reach chain data sources{#if chainError} — {chainError}{/if}</span>
-				<button type="button" class="retry" onclick={() => refresh(true)}>Retry</button>
+				<span class="chain-error-text">
+					<strong>Heartwood can't reach the Bitcoin network right now.</strong>
+					<span class="detail">
+						Your money is safe — the explorer will wake up when the connection returns.
+					</span>
+				</span>
+				<button
+					type="button"
+					class="retry"
+					onclick={() => (data.before !== null ? retryPaged() : refresh(true))}
+				>
+					Retry
+				</button>
 			</div>
 		{/if}
 
@@ -396,10 +422,18 @@
 			<div class="hero-row">
 				{#if tipHeight !== null}
 					<span class="hero-number hero-height">{formatNumber(tipHeight)}</span>
-				{:else}
+					<span class="hero-sub">blocks · not one removed</span>
+				{:else if loading}
 					<span class="hero-number hero-height skeleton">000,000</span>
+					<span class="hero-sub">blocks · not one removed</span>
+				{:else}
+					<!-- Genuinely disconnected, not just loading (cairn-obg6) — a fake
+					     "000,000" placeholder used to sit here indefinitely, implying
+					     data that doesn't exist. A plain dash reads as "nothing to show"
+					     instead of "still counting". -->
+					<span class="hero-number hero-height dash" aria-hidden="true">—</span>
+					<span class="hero-sub">not connected right now</span>
 				{/if}
-				<span class="hero-sub">blocks · not one removed</span>
 			</div>
 			<div class="live-line tabular">
 				{#if forming}
@@ -486,7 +520,13 @@
 				<div class="empty-state">
 					<span class="empty-title">No rings to show</span>
 					<span>
-						{chainError ? 'Chain data is unavailable right now.' : 'Nothing found at this height range.'}
+						<!-- showError already covers both this (tip-view, never-synced)
+						     and the paged-history live-fetch failure — reusing it here
+						     fixes a case where a disconnected backend fell through to
+						     "Nothing found at this height range", technical-sounding
+						     jargon that implied a bad search rather than a lost
+						     connection (cairn-obg6). -->
+						{showError ? 'Chain data is unavailable right now.' : 'No blocks found in this range.'}
 					</span>
 				</div>
 			{:else}
@@ -763,6 +803,21 @@
 		margin-top: 14px;
 	}
 
+	.chain-error-text {
+		flex: 1;
+		min-width: 0;
+		line-height: 1.5;
+	}
+
+	.chain-error-text strong {
+		color: var(--text);
+		margin-right: 6px;
+	}
+
+	.chain-error-text .detail {
+		color: var(--text-secondary);
+	}
+
 	.chain-error .retry {
 		margin-left: auto;
 		color: inherit;
@@ -795,6 +850,13 @@
 
 	.hero-height.skeleton {
 		color: transparent;
+	}
+
+	/* Genuinely disconnected (not loading) — a calm dash, not a shimmering
+	   fake number and not hidden text; it should read as "nothing here"
+	   at a glance, unlike .skeleton which reads as "still coming". */
+	.hero-height.dash {
+		color: var(--text-faint);
 	}
 
 	.hero-sub {

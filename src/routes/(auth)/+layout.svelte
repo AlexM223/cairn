@@ -6,17 +6,56 @@
 
 	let { data, children } = $props();
 
+	// The probe below can take up to 2.5s to resolve — plenty of time for
+	// someone to have already started filling in a form (signup, especially)
+	// by the time it succeeds. win.location.replace() would then tear the
+	// page down mid-interaction with no error, silently orphaning whatever
+	// they were doing (a submit already in flight, or one about to be — a
+	// "dead button" with no visible cause, cairn-hmi4). Track interaction
+	// locally and veto the hop through a wrapped `location` object rather
+	// than touching the shared probe in secureRedirect.ts — its `win` param
+	// is already an injectable seam for exactly this (see its test file's
+	// fake storage), so this is a local, additive guard: once the user has
+	// touched a field, a same-origin hop must never preempt what they're doing.
+	let interacted = false;
+	function markInteracted() {
+		interacted = true;
+	}
+
 	// Auto-hop returning users to the secure address before sign-in
 	// (cairn-6uff) — the probe only succeeds once they've accepted the cert,
 	// so first-timers keep the plain-HTTP login untouched.
 	onMount(() => {
-		void maybeRedirectToSecure(data.httpsPort ?? null);
+		const guardedLocation = {
+			get hostname() {
+				return window.location.hostname;
+			},
+			get pathname() {
+				return window.location.pathname;
+			},
+			get search() {
+				return window.location.search;
+			},
+			get hash() {
+				return window.location.hash;
+			},
+			replace(url: string) {
+				// Re-check at the moment of navigation, not just at mount time —
+				// interaction may start any time during the up-to-2.5s probe.
+				if (!interacted) window.location.replace(url);
+			}
+		} as Location;
+		void maybeRedirectToSecure(data.httpsPort ?? null, {
+			location: guardedLocation,
+			isSecureContext: window.isSecureContext,
+			sessionStorage: window.sessionStorage
+		});
 	});
 </script>
 
 <div class="auth-page">
 	<GroveField volume="grove" />
-	<div class="auth-col fade-in">
+	<div class="auth-col fade-in" oninput={markInteracted} onfocusin={markInteracted}>
 		<div class="auth-brand">
 			<HeartwoodMark size={60} tone="copper" detail="full" />
 			<span class="auth-wordmark">Heartwood</span>
