@@ -26,22 +26,29 @@ export const POST: RequestHandler = async (event) => {
 
 		// Fan a restore out to every admin (cairn-cpb5): a restore is a high-impact,
 		// social-engineerable action, so it must be visible — and call out when the
-		// backup tried to import admin rows (all forced to non-admin on the way in).
+		// backup tried to import admin rows (all forced to non-admin on the way in),
+		// or tried to carry security-posture settings (cairn-0dg4 — withheld by
+		// restoreBackup's allowlist, see backup.ts).
 		const adminNote =
 			summary.adminDowngraded > 0
 				? ` ${summary.adminDowngraded} account(s) marked admin in the backup were imported as normal accounts — re-promote them yourself if that was intended.`
 				: '';
+		const settingsNote =
+			summary.settingsSkipped.length > 0
+				? ` ${summary.settingsSkipped.length} setting(s) in the backup were NOT restored (security/posture keys: ${summary.settingsSkipped.join(', ')}) — set them yourself in Admin → Settings if intended.`
+				: '';
 		notify({
 			type: 'admin_restore',
 			userId: null,
-			level: summary.adminDowngraded > 0 ? 'warn' : 'info',
+			level: summary.adminDowngraded > 0 || summary.settingsSkipped.length > 0 ? 'warn' : 'info',
 			title: 'Instance backup restored',
-			body: `${user.email} restored a backup: ${summary.usersAdded} account(s) added, ${summary.usersSkipped} skipped.${adminNote}`,
+			body: `${user.email} restored a backup: ${summary.usersAdded} account(s) added, ${summary.usersSkipped} skipped.${adminNote}${settingsNote}`,
 			detail: {
 				byUserId: user.id,
 				usersAdded: summary.usersAdded,
 				usersSkipped: summary.usersSkipped,
-				adminDowngraded: summary.adminDowngraded
+				adminDowngraded: summary.adminDowngraded,
+				settingsSkipped: summary.settingsSkipped
 			},
 			link: '/admin/users'
 		});

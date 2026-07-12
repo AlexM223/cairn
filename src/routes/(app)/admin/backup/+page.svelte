@@ -24,6 +24,10 @@
 		addresses: number;
 		labels: number;
 		settings: number;
+		// Setting keys the backup carried that were withheld — security-posture
+		// keys (registration mode, SSRF guard, auth/instance mode, …) are never
+		// silently adopted from an import (cairn-0dg4). Empty when nothing was withheld.
+		settingsSkipped: string[];
 		// One single-use recovery code per newly-restored account (cairn-j1q9) —
 		// shown once here so this admin can hand each owner a way back in. A
 		// restored account has no password and no passkeys (backups never
@@ -331,6 +335,14 @@
 					</ul>
 					Send each code to its owner out-of-band. They redeem it at
 					<code>/recover</code> to set a new passkey or password and sign back in.
+				</div>
+			{/if}
+			{#if summary.settingsSkipped.length > 0}
+				<div class="form-error" role="alert" style="margin-top: 8px">
+					<strong>Not restored (security-sensitive):</strong>
+					{summary.settingsSkipped.join(', ')}. These control this instance's auth/security posture
+					and are never adopted from an imported backup — set them yourself in Admin → Settings if
+					that was intended.
 				</div>
 			{/if}
 		{/if}
