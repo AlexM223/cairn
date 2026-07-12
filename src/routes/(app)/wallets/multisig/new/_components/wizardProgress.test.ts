@@ -86,13 +86,27 @@ describe('parseSavedMultisigProgress', () => {
 	});
 
 	it('accepts every resumable step', () => {
-		for (const step of ['why', 'keys', 'review', 'confirm']) {
+		for (const step of ['learn', 'quorum', 'keys', 'review', 'confirm']) {
 			// review/confirm need a full quorum to not get clamped in this fixture
 			// (customM/customN = 2/2, one key) — use 'keys' data as-is for those
 			// two and expect the clamp, tested separately below.
 			const p = parseSavedMultisigProgress(validSnapshot({ step }), NOW);
 			expect(p).not.toBeNull();
 		}
+	});
+
+	// MULTISIG-UX-DESIGN M2 split the old single 'why' step (education +
+	// quorum picker on one screen) into 'learn' (education) then 'quorum'
+	// (the picker). A snapshot saved by the pre-M2 wizard still has
+	// `step: "why"` on disk under the same WIZARD_PROGRESS_KEY — it must
+	// resume onto 'quorum' (the screen that actually owns the technical
+	// choice the rest of the snapshot describes) instead of being discarded,
+	// so a paused mid-key-collection session survives the M2 deploy.
+	it('maps a legacy "why" step (pre-M2 snapshot) onto "quorum" instead of rejecting it', () => {
+		const p = parseSavedMultisigProgress(validSnapshot({ step: 'why' }), NOW);
+		expect(p).not.toBeNull();
+		expect(p!.step).toBe('quorum');
+		expect(p!.keys).toHaveLength(1); // no data lost in the translation
 	});
 
 	it('rejects an invalid quorum (preset/customM/customN/scriptType) outright — never clamps it', () => {
@@ -179,7 +193,7 @@ describe('parseSavedMultisigProgress', () => {
 describe('hasMeaningfulMultisigProgress', () => {
 	function progress(overrides: Partial<WizardProgress>): WizardProgress {
 		return {
-			step: 'why',
+			step: 'learn',
 			preset: '2of3',
 			customM: 2,
 			customN: 3,
@@ -194,11 +208,12 @@ describe('hasMeaningfulMultisigProgress', () => {
 		};
 	}
 
-	it('is false on the Why step with untouched defaults', () => {
+	it('is false on the Learn step with untouched defaults', () => {
 		expect(hasMeaningfulMultisigProgress(progress({}))).toBe(false);
 	});
 
-	it('is true once past the Why step', () => {
+	it('is true once past the Learn step', () => {
+		expect(hasMeaningfulMultisigProgress(progress({ step: 'quorum' }))).toBe(true);
 		expect(hasMeaningfulMultisigProgress(progress({ step: 'keys' }))).toBe(true);
 		expect(hasMeaningfulMultisigProgress(progress({ step: 'review' }))).toBe(true);
 		expect(hasMeaningfulMultisigProgress(progress({ step: 'confirm' }))).toBe(true);
@@ -212,7 +227,7 @@ describe('hasMeaningfulMultisigProgress', () => {
 		expect(hasMeaningfulMultisigProgress(progress({ scriptType: 'p2sh' }))).toBe(true);
 	});
 
-	it('is true once a key is added or a vault mode is chosen, even while still on Why', () => {
+	it('is true once a key is added or a vault mode is chosen, even while still on Learn', () => {
 		expect(
 			hasMeaningfulMultisigProgress(
 				progress({

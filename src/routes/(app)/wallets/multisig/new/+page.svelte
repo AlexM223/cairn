@@ -39,17 +39,24 @@
 	// navigation without riding along in the reload-resume snapshot.
 	const PENDING_MULTISIG_IMPORT_KEY = 'cairn.pending-multisig-import.v1';
 
-	type StepKey = 'why' | 'keys' | 'review' | 'confirm' | 'done';
+	// Explain-first restructure (MULTISIG-UX-DESIGN M2): the old single 'why'
+	// step mixed pure education with the quorum choice on one screen. 'learn'
+	// is now a zero-input read (WHAT/WHY/WHAT-YOU-NEED, no decision) that
+	// always comes first; 'quorum' (renamed from 'why', same label
+	// "Protection") carries the first technical input. See wizardProgress.ts
+	// for how a pre-M2 resume snapshot's legacy `step: "why"` maps forward.
+	type StepKey = 'learn' | 'quorum' | 'keys' | 'review' | 'confirm' | 'done';
 
 	const STEPS: { key: StepKey; label: string }[] = [
-		{ key: 'why', label: 'Protection' },
+		{ key: 'learn', label: 'Multisig' },
+		{ key: 'quorum', label: 'Protection' },
 		{ key: 'keys', label: 'Add keys' },
 		{ key: 'review', label: 'Review' },
 		{ key: 'confirm', label: 'Confirm' },
 		{ key: 'done', label: 'Done' }
 	];
 
-	let step = $state<StepKey>('why');
+	let step = $state<StepKey>('learn');
 
 	// ------------------------------------------------------------ step 1: quorum
 	type Preset = '2of3' | '3of5' | 'custom';
@@ -680,6 +687,22 @@
 		await handleImport();
 	}
 
+	// Learn step's import opt-in (MULTISIG-UX-DESIGN 2b: "so an importer can
+	// skip the tutorial") — same handleImport/handleImportFile the quorum
+	// step's own disclosure uses, but auto-advances to Quorum on success so a
+	// returning user who already has a config isn't stranded on a zero-input
+	// education screen. The quorum step's copies stay exactly as they were
+	// (no auto-advance) — only these two learn-step call sites add it.
+	async function handleLearnImport() {
+		await handleImport();
+		if (!importError) advanceTo('quorum');
+	}
+
+	async function handleLearnImportFile(e: Event) {
+		await handleImportFile(e);
+		if (!importError) advanceTo('quorum');
+	}
+
 	// ------------------------------------------------------------ step 3: review
 	let previewAddresses = $state<string[]>([]);
 	let previewLoading = $state(false);
@@ -821,7 +844,7 @@
 	/** The escape hatch on the resume note: forget the snapshot, start clean. */
 	function startOver() {
 		resumed = false;
-		step = 'why';
+		step = 'learn';
 		preset = '2of3';
 		customM = 2;
 		customN = 3;
@@ -1034,42 +1057,177 @@
 		{/if}
 	{/snippet}
 
-	{#if step === 'why'}
-		<!-- ============================================= Step 1: why a multisig -->
+	{#if step === 'learn'}
+		<!-- ================================================== Step 1: learn -->
+		<!-- Explain-first (MULTISIG-UX-DESIGN M2): pure education, zero technical
+		     input. WHAT it is, WHY people use one, WHAT you need, and the
+		     owner/cosigner role split — all BEFORE the quorum choice on the next
+		     step. Repeat users (data.hasMultisigs) get it collapsed via
+		     HowItWorks, same pattern the old combined why/quorum screen used. -->
 		<section class="step-body card card-pad pane" tabindex="-1" aria-label={stepAriaLabel}>
-			<span class="overline">Step 1 · How much protection?</span>
+			<span class="overline">Step 1 · What a multisig wallet is</span>
 
 			{#if data.hasMultisigs}
 				<!-- Repeat users get the education collapsed out of the way. -->
-				<HowItWorks id="multisig-why" title="Why a multisig wallet?">
+				<HowItWorks id="multisig-learn" title="What a multisig wallet is">
 					<p>
-						A single key that's lost means the funds are gone. A multisig wallet
-						<strong>splits control</strong> across several keys — like a bank vault requiring
-						two keys turned at the same time.
+						An ordinary wallet has one key — lose it, and the money is gone. A
+						<strong>multisig</strong> wallet is guarded by <strong>several keys</strong>, and it
+						takes a set number of them — say, any 2 of 3 — to spend. Like a vault that needs two
+						keys turned at once.
 					</p>
 					<p>
-						<strong>Losing one key doesn't lose your funds</strong>, and a thief with one key
-						gets nothing. With 2-of-3, any two keys can spend; the third is your spare.
+						<strong>Losing one key doesn't lose your money.</strong> With 2-of-3, a lost or damaged
+						key just means you spend with the other two, and a thief needs two of your keys —
+						kept in different places — before they can touch a single sat. Heartwood only ever
+						sees <strong>public</strong> keys — it can watch and prepare transactions, never spend.
+					</p>
+					<p>
+						Sharing it with other people? <strong>One person owns the wallet</strong> — they create
+						it and broadcast spends — and the others are <strong>cosigners</strong> who approve with
+						their key. You can invite them from the wallet's page after it's created.
 					</p>
 				</HowItWorks>
 			{:else}
-				<div class="why-panel">
-					<p>
-						<strong>A single key that's lost means funds are gone.</strong> A multisig wallet splits
-						control across several keys — like a bank vault requiring two keys turned at the
-						same time.
-					</p>
-					<p>
-						<strong>Losing one key doesn't lose your funds.</strong> With a 2-of-3 multisig wallet, any
-						two keys can spend, so one lost or stolen key changes nothing: a thief with one
-						key gets nothing, and you still spend with the other two.
-					</p>
-					<p>
-						Heartwood only ever sees <strong>public</strong> keys — it can watch and prepare
-						transactions, never spend. Your keys stay on your devices.
-					</p>
+				<div class="why-panel learn-panel">
+					<div class="learn-section">
+						<h3 class="learn-heading">What a multisig wallet is</h3>
+						<p>
+							An ordinary wallet has one key — lose it, and the money is gone. A
+							<strong>multisig</strong> ("multi-signature") wallet is guarded by
+							<strong>several keys</strong>, and it takes a set number of them — say,
+							<strong>any 2 of 3</strong> — to spend. Like a vault that needs two keys turned at
+							once.
+						</p>
+					</div>
+					<div class="learn-section">
+						<h3 class="learn-heading">Why people use one</h3>
+						<ul class="learn-list">
+							<li>
+								<strong>Losing one key doesn't lose your money.</strong> With 2-of-3, a lost or
+								damaged key just means you spend with the other two.
+							</li>
+							<li>
+								<strong>A stolen key isn't enough.</strong> A thief needs two of your keys — kept
+								in different places — before they can touch a single sat.
+							</li>
+							<li>
+								<strong>No single point of failure.</strong> For savings you don't touch often,
+								this is the safest way to hold your own bitcoin.
+							</li>
+							<li>
+								Heartwood only ever sees <strong>public</strong> keys — it can watch and prepare
+								transactions, never spend. Your keys stay on your own devices.
+							</li>
+						</ul>
+					</div>
+					<div class="learn-section">
+						<h3 class="learn-heading">What you'll need before you start</h3>
+						<ul class="learn-list">
+							<li>
+								<strong>Several keys.</strong> For the recommended 2-of-3, that's three. A key can
+								be a hardware wallet (Trezor, Ledger, ColdCard, BitBox02, Jade), an air-gapped QR
+								signer, or a public key someone sends you.
+							</li>
+							<li>
+								<strong>Each key on a different device or in a different place</strong> — that
+								separation is the whole point of multisig.
+							</li>
+							<li>
+								<strong>Only the public key from each</strong> — nothing that can spend. You'll add
+								them one at a time on a later step.
+							</li>
+						</ul>
+					</div>
+					<div class="learn-section">
+						<h3 class="learn-heading">Sharing it with other people?</h3>
+						<p>
+							If this wallet is shared, you'll each contribute one key.
+							<strong>One person owns the wallet</strong> — they create it and broadcast the final
+							transaction — and the <strong>others are cosigners</strong> who approve spends with
+							their key. You can invite them from the wallet's page <strong>after</strong> it's
+							created; nothing is shared automatically.
+						</p>
+					</div>
 				</div>
 			{/if}
+
+			<!-- Quiet import opt-in (2b): lets someone who already has this wallet
+			     in another app skip the tutorial entirely — the same disclosure
+			     mechanics as the quorum step's copy below, just surfaced earlier. -->
+			<div class="disclosure">
+				<button
+					type="button"
+					class="disclosure-toggle"
+					onclick={() => (showImport = !showImport)}
+					aria-expanded={showImport}
+				>
+					<Icon name="arrow-down-left" size={14} />
+					Already have this wallet in another app? Import it
+					<span class="chev" class:open={showImport}><Icon name="chevron-down" size={14} /></span>
+				</button>
+				{#if showImport}
+					<div class="disclosure-body fade-in">
+						<p class="hint" style="margin-bottom: 8px">
+							Paste the wallet's <Term
+								tip="A descriptor is a single line of text that describes a multisig wallet completely — the quorum and every public key. Wallets like Sparrow export it under Settings."
+								>descriptor</Term
+							>, or a Caravan / Unchained wallet file (JSON) — Heartwood fills in the quorum and
+							keys for you.
+						</p>
+						<textarea
+							class="input mono import-input"
+							rows="3"
+							placeholder={'wsh(sortedmulti(2,[a1b2c3d4/48\'/0\'/0\'/2\']xpub…  or  {"name": …Caravan JSON…}'}
+							spellcheck="false"
+							bind:this={importTextareaEl}
+							bind:value={importText}
+						></textarea>
+						{#if importError}
+							<div class="form-error" role="alert">{importError}</div>
+						{/if}
+						<div class="row" style="gap: 8px; margin-top: 8px">
+							<button
+								type="button"
+								class="btn btn-secondary btn-sm"
+								disabled={importing || !importText.trim()}
+								onclick={handleLearnImport}
+							>
+								{#if importing}<span class="spinner"></span>{/if}
+								Read it
+							</button>
+							<input
+								type="file"
+								accept=".json,.txt,application/json,text/plain"
+								class="visually-hidden-file"
+								bind:this={importFileInput}
+								onchange={handleLearnImportFile}
+							/>
+							<button
+								type="button"
+								class="btn btn-ghost btn-sm"
+								disabled={importing}
+								onclick={() => importFileInput?.click()}
+							>
+								Upload a wallet file
+							</button>
+						</div>
+					</div>
+				{/if}
+			</div>
+
+			<div class="pane-actions">
+				<a href="/wallets" class="btn btn-ghost" onclick={clearProgressOnExit}>Cancel</a>
+				<button type="button" class="btn btn-primary" onclick={() => advanceTo('quorum')}>
+					Continue
+					<Icon name="chevron-right" size={14} />
+				</button>
+			</div>
+		</section>
+	{:else if step === 'quorum'}
+		<!-- ============================================ Step 2: pick a quorum -->
+		<section class="step-body card card-pad pane" tabindex="-1" aria-label={stepAriaLabel}>
+			<span class="overline">Step 2 · How much protection?</span>
 
 			{#if !importedNote}
 				<!-- Promoted, first-class import entry point (multisig-import UX) — the
@@ -1397,7 +1555,10 @@
 			{/if}
 
 			<div class="pane-actions">
-				<a href="/wallets" class="btn btn-ghost" onclick={clearProgressOnExit}>Cancel</a>
+				<button type="button" class="btn btn-ghost" onclick={stepBack}>
+					<Icon name="chevron-left" size={14} />
+					Back
+				</button>
 				<button
 					type="button"
 					class="btn btn-primary"
@@ -1410,9 +1571,9 @@
 			</div>
 		</section>
 	{:else if step === 'keys'}
-		<!-- ================================================ Step 2: add keys -->
+		<!-- ================================================ Step 3: add keys -->
 		<section class="step-body card card-pad pane" tabindex="-1" aria-label={stepAriaLabel}>
-			<span class="overline">Step 2 · Add your {totalKeys} keys</span>
+			<span class="overline">Step 3 · Add your {totalKeys} keys</span>
 			<p class="step-lead">
 				Each <Term
 					tip="A key is a device or backup that can approve spending — a hardware wallet, a phone wallet, or a seed phrase stored somewhere safe."
@@ -1523,6 +1684,11 @@
 							cosigner's wallet understands; personal vaults use the standard path for this
 							wallet type (<span class="mono">{personalPathHint}</span>). You can't mix the two
 							in one vault.
+						</p>
+						<p class="hint mode-note">
+							One reminder from step 1: <strong>you'll own this wallet</strong> — you broadcast the
+							spends everyone else approves. Invite cosigners from the wallet's page once it's
+							created.
 						</p>
 					{:else if method === null}
 						{#if vaultMode !== null}
@@ -2022,9 +2188,9 @@
 			</div>
 		</section>
 	{:else if step === 'review'}
-		<!-- ================================================== Step 3: review -->
+		<!-- ================================================== Step 4: review -->
 		<section class="step-body card card-pad pane" tabindex="-1" aria-label={stepAriaLabel}>
-			<span class="overline">Step 3 · Review</span>
+			<span class="overline">Step 4 · Review</span>
 			<p class="step-lead">
 				<strong>{threshold} of your {totalKeys} keys</strong> will be required to spend from
 				this wallet.
@@ -2114,9 +2280,9 @@
 			</div>
 		</section>
 	{:else if step === 'confirm'}
-		<!-- ================================================= Step 4: confirm -->
+		<!-- ================================================= Step 5: confirm -->
 		<section class="step-body card card-pad pane" tabindex="-1" aria-label={stepAriaLabel}>
-			<span class="overline">Step 4 · Confirm</span>
+			<span class="overline">Step 5 · Confirm</span>
 
 			<div class="field">
 				<label class="label" for="multisig-name">Name your wallet</label>
@@ -2204,7 +2370,7 @@
 			</div>
 		</section>
 	{:else if step === 'done'}
-		<!-- ==================================================== Step 5: done -->
+		<!-- ==================================================== Step 6: done -->
 		<section class="step-body card card-pad pane done-pane" tabindex="-1" aria-label={stepAriaLabel}>
 			<div class="done-hero">
 				<span class="done-icon"><Icon name="shield" size={24} /></span>
@@ -2617,6 +2783,40 @@
 
 	.why-panel strong {
 		color: var(--text);
+	}
+
+	/* --- learn step (MULTISIG-UX-DESIGN M2): stacked WHAT/WHY/NEED/sharing
+	   sections inside the (reused) why-panel box, expanded for new users. --- */
+	.learn-panel {
+		gap: 0;
+	}
+
+	.learn-section + .learn-section {
+		margin-top: 16px;
+		padding-top: 16px;
+		border-top: 1px solid var(--accent-border);
+	}
+
+	.learn-heading {
+		font-family: var(--font-ui);
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--text);
+		margin: 0 0 6px;
+	}
+
+	.learn-list {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		margin: 0;
+		padding-left: 18px;
+	}
+
+	.learn-list li {
+		font-size: 13px;
+		line-height: 1.65;
+		color: var(--text-secondary);
 	}
 
 	.need-panel {

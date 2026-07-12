@@ -38,11 +38,27 @@ export const WIZARD_PROGRESS_KEY = 'cairn.multisig-wizard.v1';
 /** A resume older than this is stale — likely a forgotten tab, not a reload. */
 export const WIZARD_PROGRESS_MAX_AGE_MS = 60 * 60 * 1000;
 
-// The four resumable steps. 'done' is terminal — like the single-sig wizard's
+// The five resumable steps. 'done' is terminal — like the single-sig wizard's
 // post-creation Done view, it is never saved (a created wallet clears the
 // snapshot outright).
-const STEP_KEYS = ['why', 'keys', 'review', 'confirm'] as const;
+//
+// 'learn' + 'quorum' replaced the single 'why' step (MULTISIG-UX-DESIGN M2:
+// the explain-first restructure split the overloaded why-a-multisig/pick-a-
+// quorum screen into a zero-input education step followed by the quorum
+// picker). A snapshot saved by the OLD wizard under the same
+// WIZARD_PROGRESS_KEY still has `step: "why"` on disk — LEGACY_STEP_ALIASES
+// below maps it forward at parse time (see parseSavedMultisigProgress)
+// instead of rejecting the whole snapshot, so a paused session mid-key-
+// collection doesn't lose any already-collected cosigner keys just because
+// the deploy landed while their tab was open.
+const STEP_KEYS = ['learn', 'quorum', 'keys', 'review', 'confirm'] as const;
 export type WizardStepKey = (typeof STEP_KEYS)[number];
+
+/** Old step name -> its nearest equivalent in the current STEP_KEYS. The old
+ *  'why' step held both the education AND the quorum picker, so it resumes
+ *  onto 'quorum' — the screen that actually carries the technical choice
+ *  (preset/custom quorum) the snapshot's other fields describe. */
+const LEGACY_STEP_ALIASES: Readonly<Record<string, WizardStepKey>> = { why: 'quorum' };
 
 const PRESETS = ['2of3', '3of5', 'custom'] as const;
 export type WizardPreset = (typeof PRESETS)[number];
@@ -145,8 +161,11 @@ export function parseSavedMultisigProgress(raw: string | null, now: number): Wiz
 	if (typeof o.savedAt !== 'number' || !Number.isFinite(o.savedAt)) return null;
 	if (now - o.savedAt > WIZARD_PROGRESS_MAX_AGE_MS || o.savedAt > now) return null;
 
-	if (typeof o.step !== 'string' || !STEP_KEYS.includes(o.step as WizardStepKey)) return null;
-	const step = o.step as WizardStepKey;
+	if (typeof o.step !== 'string') return null;
+	const step: WizardStepKey | undefined = STEP_KEYS.includes(o.step as WizardStepKey)
+		? (o.step as WizardStepKey)
+		: LEGACY_STEP_ALIASES[o.step];
+	if (!step) return null;
 
 	if (typeof o.preset !== 'string' || !PRESETS.includes(o.preset as WizardPreset)) return null;
 	const preset = o.preset as WizardPreset;
@@ -215,7 +234,7 @@ export function parseSavedMultisigProgress(raw: string | null, now: number): Wiz
 
 /** True when a snapshot holds progress worth telling the user about. */
 export function hasMeaningfulMultisigProgress(p: WizardProgress): boolean {
-	if (p.step !== 'why') return true;
+	if (p.step !== 'learn') return true;
 	return (
 		p.keys.length > 0 ||
 		p.vaultMode !== null ||
