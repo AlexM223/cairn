@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { invalidate } from '$app/navigation';
+	import { goto, invalidate } from '$app/navigation';
 	import { copyToClipboard } from '$lib/clipboard';
 	import Icon from '$lib/components/Icon.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
@@ -144,7 +144,14 @@
 	<GroveField volume="present" />
 	<div class="body">
 		<div class="top-row fade-in">
-			<a href="/explorer" class="back">
+			<a
+				href="/explorer"
+				class="back"
+				onclick={(e) => {
+					e.preventDefault();
+					goto('/explorer', { replaceState: true });
+				}}
+			>
 				<Icon name="chevron-left" size={15} /> Explorer
 			</a>
 		</div>

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import Icon from '$lib/components/Icon.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import CoreRpcRequiredNotice from '$lib/components/CoreRpcRequiredNotice.svelte';
@@ -166,7 +167,14 @@
 <GroveField volume="present" />
 <div class="page-body">
 <div class="top-row fade-in">
-	<a href="/explorer/mempool" class="back">
+	<a
+		href="/explorer/mempool"
+		class="back"
+		onclick={(e) => {
+			e.preventDefault();
+			goto('/explorer/mempool', { replaceState: true });
+		}}
+	>
 		<Icon name="chevron-left" size={15} /> Mempool
 	</a>
 </div>

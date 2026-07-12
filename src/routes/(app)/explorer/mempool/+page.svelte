@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { onNewBlock } from '$lib/liveBlocks';
 	import { triggerChainRefresh } from '$lib/chainRefresh';
 	import Icon from '$lib/components/Icon.svelte';
@@ -145,7 +146,14 @@
 	<GroveField volume="present" />
 	<div class="body">
 		<div class="top-row fade-in">
-			<a href="/explorer" class="back">
+			<a
+				href="/explorer"
+				class="back"
+				onclick={(e) => {
+					e.preventDefault();
+					goto('/explorer', { replaceState: true });
+				}}
+			>
 				<Icon name="chevron-left" size={15} /> Explorer
 			</a>
 		</div>

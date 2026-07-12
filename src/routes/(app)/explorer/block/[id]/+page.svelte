@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
 	import Icon from '$lib/components/Icon.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import Term from '$lib/components/Term.svelte';
@@ -115,7 +116,14 @@
 	<div class="body">
 		<!-- ============================================= back + prev/next -->
 		<div class="top-row fade-in">
-			<a href="/explorer" class="back">
+			<a
+				href="/explorer"
+				class="back"
+				onclick={(e) => {
+					e.preventDefault();
+					goto('/explorer', { replaceState: true });
+				}}
+			>
 				<Icon name="chevron-left" size={15} /> Explorer
 			</a>
 			{#if block}
