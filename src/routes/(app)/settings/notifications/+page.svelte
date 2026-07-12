@@ -2,7 +2,8 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import { goto } from '$app/navigation';
-	import { formatSats } from '$lib/format';
+	import { formatSats, formatBtc } from '$lib/format';
+	import { btcUsd } from '$lib/price';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
@@ -288,7 +289,7 @@
 				{ type: 'tx_received', label: 'Payment received', desc: 'An inbound transaction is first seen for a watched address.' },
 				{ type: 'tx_confirmed', label: 'Transaction confirmed', desc: 'A transaction crosses a confirmation threshold.', tunable: 'confirmations' },
 				{ type: 'tx_replaced', label: 'Incoming payment cancelled', desc: 'An unconfirmed inbound payment was double-spent or replaced before it confirmed.' },
-				{ type: 'tx_large', label: 'Large transaction', desc: 'A transaction exceeds your sats threshold.', tunable: 'threshold' },
+				{ type: 'tx_large', label: 'Large transaction', desc: 'A transaction is worth more than the amount you set below.', tunable: 'threshold' },
 				{ type: 'sign_session_waiting', label: 'Signature waiting', desc: 'A multisig transaction is waiting for signatures.' },
 				{ type: 'sign_session_complete', label: 'Ready to broadcast', desc: 'A multisig transaction has collected every signature and is ready to broadcast.' },
 				{ type: 'key_health_due', label: 'Key health check due', desc: 'A multisig key has not been verified in ~180 days.' },
@@ -406,6 +407,49 @@
 			config
 		}));
 		await patchPrefs(updates);
+	}
+
+	// ---- Dollar-primary threshold entry (cairn-7ph8) -------------------------
+	// The stored value is always sats (server shape unchanged) — this is a
+	// client-only presentation layer that converts a typed dollar amount to
+	// sats before calling the existing saveThreshold(). When the live price
+	// (btcUsd) is unavailable, the form falls back to the raw sats input.
+	let thrDraft = $state<Record<string, string>>({}); // live-typed dollar string, keyed by event type
+	let thrShowSats = $state<Record<string, boolean>>({}); // "enter in bitcoin instead" toggle, per event type
+
+	/** Dollar string -> sats, or null if blank/invalid. Accepts "$500", "500", "1,200.50". */
+	function usdDraftToSats(usdStr: string, price: number): number | null {
+		const trimmed = usdStr.trim();
+		if (trimmed === '') return null;
+		const usd = Number(trimmed.replace(/^\$/, '').replace(/,/g, ''));
+		if (!Number.isFinite(usd) || usd < 0) return null;
+		return Math.round((usd / price) * 1e8);
+	}
+
+	/** The dollar amount to show for a saved sats threshold, at the current price. */
+	function initialUsdDraft(eventType: string, price: number): string {
+		const sats = tunableConfig(eventType).thresholdSats;
+		if (typeof sats !== 'number') return '';
+		const usd = (sats / 1e8) * price;
+		return usd >= 1 ? String(Math.round(usd)) : usd.toFixed(2);
+	}
+
+	/** What the dollar input currently shows: the user's in-progress edit, else the saved value. */
+	function thrUsdDisplay(eventType: string, price: number): string {
+		return thrDraft[eventType] ?? initialUsdDraft(eventType, price);
+	}
+
+	async function saveThresholdUsd(eventType: string, usdStr: string, price: number) {
+		if (usdStr.trim() === '') {
+			await saveThreshold(eventType, '');
+			return;
+		}
+		const sats = usdDraftToSats(usdStr, price);
+		if (sats === null) {
+			prefError = 'Enter a dollar amount.';
+			return;
+		}
+		await saveThreshold(eventType, String(sats));
 	}
 
 	const CONFIRMATION_OPTIONS = [1, 3, 6];
@@ -864,20 +908,62 @@
 									{/if}
 
 									{#if ev.tunable === 'threshold'}
+										{@const price = $btcUsd}
 										<div class="tunable">
-											<label class="label" for="thr-{ev.type}">Alert when a transaction exceeds</label>
-											<div class="thr-row">
-												<input
-													class="input mono"
-													id="thr-{ev.type}"
-													inputmode="numeric"
-													value={largeTxSats(ev.type)}
-													placeholder="e.g. 1000000"
-													onchange={(e) => saveThreshold(ev.type, e.currentTarget.value)}
-												/>
-												<span class="unit">sats</span>
-											</div>
-											{#if largeTxSats(ev.type)}<span class="hint">≈ {formatSats(Number(largeTxSats(ev.type)))}</span>{/if}
+											<label class="label" for="thr-{ev.type}">Alert me when a transaction is worth more than</label>
+											{#if price && !thrShowSats[ev.type]}
+												{@const draft = thrUsdDisplay(ev.type, price)}
+												<div class="thr-row">
+													<span class="unit unit-prefix">$</span>
+													<input
+														class="input mono"
+														id="thr-{ev.type}"
+														inputmode="decimal"
+														value={draft}
+														placeholder="e.g. 500"
+														oninput={(e) => (thrDraft[ev.type] = e.currentTarget.value)}
+														onchange={(e) => saveThresholdUsd(ev.type, e.currentTarget.value, price)}
+													/>
+												</div>
+												{#if draft.trim() !== ''}
+													{@const sats = usdDraftToSats(draft, price)}
+													{#if sats !== null}
+														<span class="hint">≈ {formatBtc(sats)} BTC · {formatSats(sats)} sats</span>
+													{/if}
+												{/if}
+												{#if largeTxSats(ev.type)}
+													<span class="hint">The saved amount is fixed in bitcoin terms, so its dollar value will drift as the price changes.</span>
+												{/if}
+												<button type="button" class="link-btn" onclick={() => (thrShowSats[ev.type] = true)}>Enter in bitcoin instead</button>
+											{:else if price}
+												<div class="thr-row">
+													<input
+														class="input mono"
+														id="thr-{ev.type}"
+														inputmode="numeric"
+														value={largeTxSats(ev.type)}
+														placeholder="e.g. 1000000"
+														onchange={(e) => saveThreshold(ev.type, e.currentTarget.value)}
+													/>
+													<span class="unit">sats</span>
+												</div>
+												{#if largeTxSats(ev.type)}<span class="hint">≈ {formatBtc(Number(largeTxSats(ev.type)))} BTC</span>{/if}
+												<button type="button" class="link-btn" onclick={() => (thrShowSats[ev.type] = false)}>Enter in dollars instead</button>
+											{:else}
+												<p class="hint">Price data isn't available right now — enter the threshold in sats.</p>
+												<div class="thr-row">
+													<input
+														class="input mono"
+														id="thr-{ev.type}"
+														inputmode="numeric"
+														value={largeTxSats(ev.type)}
+														placeholder="e.g. 1000000"
+														onchange={(e) => saveThreshold(ev.type, e.currentTarget.value)}
+													/>
+													<span class="unit">sats</span>
+												</div>
+												{#if largeTxSats(ev.type)}<span class="hint">≈ {formatBtc(Number(largeTxSats(ev.type)))} BTC</span>{/if}
+											{/if}
 										</div>
 									{:else if ev.tunable === 'confirmations'}
 										<div class="tunable">
@@ -1408,6 +1494,26 @@
 	.unit {
 		font-size: 12.5px;
 		color: var(--text-muted);
+	}
+
+	.unit-prefix {
+		flex-shrink: 0;
+	}
+
+	.link-btn {
+		align-self: flex-start;
+		font-size: 12px;
+		color: var(--text-muted);
+		text-decoration: underline;
+		background: none;
+		border: none;
+		padding: 0;
+		cursor: pointer;
+		font-family: inherit;
+	}
+
+	.link-btn:hover {
+		color: var(--text-secondary);
 	}
 
 	.conf-row {
