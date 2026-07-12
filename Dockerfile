@@ -52,6 +52,21 @@ ENV PORT=3000
 # generated at first boot into /data/tls. Publish the port to enable it;
 # an unpublished port is harmless. Set CAIRN_HTTPS_PORT="" to disable.
 ENV CAIRN_HTTPS_PORT=3443
+# Wave 5 item 6 (log-request.md §1-C / §6): adapter-node's own default here is
+# a silent 512K, which 400s any request over that size WITHOUT going through
+# handle()/handleError — invisible in application logs (only Wave 1's
+# server.mjs access log ever sees it). A large multisig PSBT legitimately
+# exceeds 512K: a measured worst case — 20 inputs, 15-of-15 P2SH (legacy, so
+# no witness discount), each carrying a full nonWitnessUtxo (P2SH inputs
+# REQUIRE the whole previous transaction, not just its output) — serializes to
+# ~85KB base64'd inside its JSON request body (measured via a throwaway
+# script built on this repo's own @scure/btc-signer + multisigPsbt.ts sizing
+# constants; see the Wave 5 commit message for the exact figure). 200K is
+# ~2.3x that measured worst case: enough headroom for a legitimate large
+# multisig send/import without opening the limit up so wide it stops being a
+# meaningful DoS guard. Rollback: remove this line to restore adapter-node's
+# 512K default.
+ENV BODY_SIZE_LIMIT=200K
 # NOTE: deliberately no ADDRESS_HEADER default. adapter-node THROWS on any
 # getClientAddress() call when the configured header is absent, which breaks
 # login for direct (unproxied) deployments. Deployments that sit behind a

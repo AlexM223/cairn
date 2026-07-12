@@ -69,7 +69,17 @@ if (process.listenerCount('uncaughtException') === 0) {
 		// A synchronous throw means the process state is unknown. This is a
 		// wallet app — never keep serving requests in an undefined state.
 		// Exit non-zero so the container/supervisor restart policy takes over.
-		process.exit(1);
+		//
+		// Wave 5 item 8 (log-request.md §4-G1): defer the exit by one event-loop
+		// tick instead of calling process.exit(1) synchronously right here. In
+		// prod, stdout is frequently a pipe (docker/journald) rather than a TTY,
+		// and Node's stdout writes to a pipe are async — an immediate
+		// process.exit() can tear the process down before the console.error
+		// line above has actually flushed, dropping the very line that explains
+		// the crash. setImmediate runs after the current I/O callback queue,
+		// giving that pending write a chance to complete first. Cheap and
+		// trivially reversible (just inline the process.exit(1) call again).
+		setImmediate(() => process.exit(1));
 	});
 	process.on('unhandledRejection', (reason) => {
 		// Log-only, deliberately NOT process.exit() here: a single benign
@@ -215,7 +225,40 @@ if (httpsPort) {
 }
 
 // The heavy part — SvelteKit bundle, DB, Electrum — AFTER the ports are open.
-const { handler } = await import('./build/handler.js');
+//
+// Wave 5 item 5 (log-request.md §4-G2): this top-level await used to be bare.
+// If the app bundle throws during import (DB open, migrations, Electrum pool
+// — the slow boot work happens inside this import), the entry module used to
+// reject fatally: Node prints the raw error and exits non-zero WITHOUT going
+// through either the boot-phase fallback above or hooks.server.ts's real
+// guard (neither is a `catch` around this specific await), so the crash was
+// visible but unstructured — no `tag`, no way to grep/filter it apart from
+// any other stray stdout line. Catching it here and logging one structured
+// line before exiting closes that gap without changing the outcome: still
+// exit non-zero (recommended in the audit over silently keeping the 503
+// placeholder up forever, which would hide a permanently-broken boot behind
+// a "still starting" page that never resolves). Rollback: delete this
+// try/catch and restore the bare `const { handler } = await import(...)`.
+let handler;
+try {
+	({ handler } = await import('./build/handler.js'));
+} catch (err) {
+	console.error(
+		JSON.stringify({
+			t: new Date().toISOString(),
+			tag: 'boot',
+			phase: 'app-import',
+			err: err instanceof Error ? (err.stack ?? err.message) : String(err)
+		})
+	);
+	// See the G1 comment on the uncaughtException handler above: defer by one
+	// tick so this line has a chance to actually reach stdout before exit.
+	setImmediate(() => process.exit(1));
+	// Block here (rather than falling through to `handle = handler` below with
+	// an undefined handler, or returning and letting shutdown handlers register
+	// against a half-booted process) until the deferred exit above fires.
+	await new Promise(() => {});
+}
 handle = handler;
 console.log('cairn: app ready');
 

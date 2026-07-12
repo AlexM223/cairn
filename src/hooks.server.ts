@@ -86,7 +86,19 @@ if (!globalThis.__cairnProcessGuardInstalled) {
 		// A synchronous throw means the process state is unknown. This is a
 		// wallet app — never keep serving requests in an undefined state.
 		// Exit non-zero so the container/supervisor restart policy takes over.
-		process.exit(1);
+		//
+		// Wave 5 item 8 (log-request.md §4-G1): defer the exit by one
+		// event-loop tick rather than calling process.exit(1) synchronously
+		// right here. logger.ts's rotating FILE sink writes with fs.writeSync
+		// (synchronous/durable — see its own comment), so the crash line is
+		// already guaranteed to survive there; but the prod STDOUT stream
+		// (logger.ts's `stream: process.stdout`) is frequently a pipe rather
+		// than a TTY, and pipe writes are async — an immediate process.exit()
+		// can tear the process down before that line reaches `docker logs`.
+		// setImmediate runs after the current I/O callback queue, giving the
+		// pending write a chance to flush first. Cheap, trivially reversible
+		// (inline the process.exit(1) call again to roll back).
+		setImmediate(() => process.exit(1));
 	});
 
 	process.on('unhandledRejection', (reason) => {
