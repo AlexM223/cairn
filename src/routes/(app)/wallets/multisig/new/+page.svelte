@@ -34,6 +34,11 @@
 
 	let { data } = $props();
 
+	// Hand-off from the single-sig wizard (multisig-import UX): a file it
+	// detected as a multisig config, stashed here so it survives the
+	// navigation without riding along in the reload-resume snapshot.
+	const PENDING_MULTISIG_IMPORT_KEY = 'cairn.pending-multisig-import.v1';
+
 	type StepKey = 'why' | 'keys' | 'review' | 'confirm' | 'done';
 
 	const STEPS: { key: StepKey; label: string }[] = [
@@ -68,6 +73,18 @@
 	// Receive cursor carried from an imported config (cairn-u161); 0 for created.
 	let importedStartIndex = $state(0);
 	let importFileInput = $state<HTMLInputElement | null>(null);
+	// The import textarea, so the promoted "Import wallet config file" entry-step
+	// card can open the (unchanged) disclosure below it and focus straight in.
+	let importTextareaEl = $state<HTMLTextAreaElement | null>(null);
+
+	/** Promote-to-first-class entry point for the import disclosure: opens it and
+	 *  focuses the textarea, without changing the disclosure's own mechanics. */
+	async function openImportPrompt() {
+		showImport = true;
+		await tick();
+		importTextareaEl?.focus();
+		importTextareaEl?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+	}
 
 	const threshold = $derived(preset === '2of3' ? 2 : preset === '3of5' ? 3 : Number(customM));
 	const totalKeys = $derived(preset === '2of3' ? 3 : preset === '3of5' ? 5 : Number(customN));
@@ -938,7 +955,34 @@
 	}
 
 	onMount(() => {
-		if (savedProgress && hasMeaningfulMultisigProgress(savedProgress)) {
+		// A file dropped on the single-sig wizard that looked like a multisig
+		// config (multisig-import UX) — stashed in sessionStorage, not the
+		// reload-resume snapshot, so it takes priority over any in-progress
+		// wizard and is consumed exactly once.
+		let pending: string | null = null;
+		try {
+			pending = sessionStorage.getItem(PENDING_MULTISIG_IMPORT_KEY);
+		} catch {
+			// sessionStorage unavailable — fall through to the normal resume path.
+		}
+		if (pending) {
+			try {
+				sessionStorage.removeItem(PENDING_MULTISIG_IMPORT_KEY);
+			} catch {
+				// best-effort cleanup
+			}
+			try {
+				sessionStorage.removeItem(WIZARD_PROGRESS_KEY);
+			} catch {
+				// best-effort cleanup
+			}
+			importText = pending;
+			showImport = true;
+			void (async () => {
+				await handleImport();
+				if (!importError) advanceTo('keys');
+			})();
+		} else if (savedProgress && hasMeaningfulMultisigProgress(savedProgress)) {
 			step = savedProgress.step;
 			preset = savedProgress.preset;
 			customM = savedProgress.customM;
@@ -1090,6 +1134,29 @@
 						Heartwood only ever sees <strong>public</strong> keys — it can watch and prepare
 						transactions, never spend. Your keys stay on your devices.
 					</p>
+				</div>
+			{/if}
+
+			{#if !importedNote}
+				<!-- Promoted, first-class import entry point (multisig-import UX) — the
+				     import affordance used to be buried in the "Already have this wallet
+				     in another app?" disclosure further down; it's the same disclosure
+				     (still reachable there too), just also surfaced here so it isn't
+				     missed. -->
+				<div class="import-promo">
+					<div class="import-promo-text">
+						<Icon name="arrow-down-left" size={16} />
+						<div>
+							<span class="import-promo-title">Import wallet config file</span>
+							<p class="import-promo-desc">
+								Have this wallet in Sparrow, Caravan, or another app? Import its wallet config
+								file and Heartwood will fill in the keys for you.
+							</p>
+						</div>
+					</div>
+					<button type="button" class="btn btn-secondary btn-sm" onclick={openImportPrompt}>
+						Import wallet config file
+					</button>
 				</div>
 			{/if}
 
@@ -1312,6 +1379,7 @@
 							rows="3"
 							placeholder={'wsh(sortedmulti(2,[a1b2c3d4/48\'/0\'/0\'/2\']xpub…  or  {"name": …Caravan JSON…}'}
 							spellcheck="false"
+							bind:this={importTextareaEl}
 							bind:value={importText}
 						></textarea>
 						{#if importError}
@@ -2561,6 +2629,45 @@
 		background: var(--accent-muted);
 		border: 1px solid var(--accent-border);
 		border-radius: var(--radius-card);
+	}
+
+	/* Promoted import entry point (multisig-import UX) — first-class sibling of
+	   the why-panel education block, not buried in the disclosure below. */
+	.import-promo {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		padding: 12px 14px;
+		background: var(--bg);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-control);
+	}
+
+	.import-promo-text {
+		display: flex;
+		align-items: flex-start;
+		gap: 10px;
+	}
+
+	.import-promo-text :global(svg) {
+		color: var(--accent);
+		flex-shrink: 0;
+		margin-top: 2px;
+	}
+
+	.import-promo-title {
+		display: block;
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--text);
+	}
+
+	.import-promo-desc {
+		margin: 2px 0 0;
+		font-size: 12.5px;
+		line-height: 1.55;
+		color: var(--text-secondary);
 	}
 
 	.why-panel p {

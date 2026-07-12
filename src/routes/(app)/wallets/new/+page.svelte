@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { enhance, applyAction, deserialize } from '$app/forms';
 	import { page } from '$app/state';
-	import { pushState, replaceState } from '$app/navigation';
+	import { goto, pushState, replaceState } from '$app/navigation';
 	import { browser } from '$app/environment';
 	import { onDestroy, onMount, tick } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
@@ -28,6 +28,7 @@
 		type DeviceKey
 	} from './_components/deviceRead';
 	import { parseColdcardSingleSigExport } from './_components/coldcardImport';
+	import { detectMultisigConfig } from './_components/multisigDetect';
 	import {
 		WIZARD_PROGRESS_KEY,
 		parseSavedProgress,
@@ -56,6 +57,11 @@
 	let restoreFileInput = $state<HTMLInputElement | null>(null);
 	let restoreError = $state<string | null>(null);
 	let restoreNote = $state<string | null>(null);
+	// Detected-multisig hand-off (multisig-import UX): set when an uploaded
+	// file looks like a multisig config, whichever surface it was read from
+	// (the Key-step restore box, or a device's file import e.g. ColdCard).
+	const PENDING_MULTISIG_IMPORT_KEY = 'cairn.pending-multisig-import.v1';
+	let multisigDetected = $state<{ text: string; m?: number; n?: number } | null>(null);
 	let creating = $state(false);
 	let previewError = $state<string | null>(null);
 	let createError = $state<string | null>(null);
@@ -512,15 +518,23 @@
 		const file = input.files?.[0];
 		if (!file) return;
 		deviceError = null;
+		multisigDetected = null;
 		deviceBusy = true;
+		const text = await file.text();
 		try {
-			const key = parseColdcardSingleSigExport(await file.text(), deviceScriptType);
+			const key = parseColdcardSingleSigExport(text, deviceScriptType);
 			await acceptReadKey(key.xpub, 'coldcard', {
 				fingerprint: key.fingerprint,
 				path: key.path
 			});
 		} catch (err) {
-			deviceError = err instanceof Error ? err.message : 'Could not read that file.';
+			const det = detectMultisigConfig(text);
+			if (det.isMultisig) {
+				multisigDetected = { text, m: det.m, n: det.n };
+				deviceError = null;
+			} else {
+				deviceError = err instanceof Error ? err.message : 'Could not read that file.';
+			}
 		} finally {
 			deviceBusy = false;
 			input.value = '';
@@ -584,6 +598,19 @@
 
 	onDestroy(stopQrScan);
 
+	// Hand a detected-multisig file off to the multisig wizard: stash the raw
+	// text in sessionStorage (survives the navigation, not a reload-resume
+	// snapshot) and jump straight there — the wizard picks it up in onMount.
+	function handoffToMultisig(text: string) {
+		try {
+			sessionStorage.setItem(PENDING_MULTISIG_IMPORT_KEY, text);
+		} catch {
+			// sessionStorage unavailable (private browsing, etc.) — the wizard's
+			// own import UI still works, just not the auto hand-off.
+		}
+		goto('/wallets/multisig/new');
+	}
+
 	// Restore a single-sig wallet from a Cairn backup file. We only prefill the
 	// xpub + name inputs — the user still walks the normal Validate → Preview →
 	// Name → Backup flow, so nothing bypasses server validation.
@@ -595,10 +622,22 @@
 
 		restoreError = null;
 		restoreNote = null;
+		multisigDetected = null;
+
+		const raw = await file.text();
+
+		// A multisig / Caravan / descriptor / policy-text file — hand those off
+		// to the multisig wizard, which fills in the keys (multisig-import UX).
+		const det = detectMultisigConfig(raw);
+		if (det.isMultisig) {
+			multisigDetected = { text: raw, m: det.m, n: det.n };
+			restoreError = null;
+			return;
+		}
 
 		let config: unknown;
 		try {
-			config = JSON.parse(await file.text());
+			config = JSON.parse(raw);
 		} catch {
 			restoreError = "That file isn't valid JSON. Pick a Heartwood wallet-config backup (.json).";
 			return;
@@ -609,17 +648,6 @@
 			return;
 		}
 		const c = config as Record<string, unknown>;
-
-		// A multisig / Caravan file — restore those from the multisig wizard.
-		if (
-			'quorum' in c ||
-			'extendedPublicKeys' in c ||
-			c.type === 'multisig' ||
-			(typeof c.format === 'string' && c.format !== 'cairn-wallet-config')
-		) {
-			restoreError = 'multisig';
-			return;
-		}
 
 		if (c.format === 'cairn-wallet-config' && c.type === 'single-sig' && typeof c.xpub === 'string') {
 			// Re-attach the key origin the backup recorded: with both pieces,
@@ -727,11 +755,41 @@
 					>
 						Restore from a backup file (.json)
 					</button>
-					{#if restoreError === 'multisig'}
-						<div class="restore-msg restore-note" role="status">
-							This looks like a multisig backup — <a href="/wallets/multisig/new"
-								>restore it from the multisig wizard</a
-							>.
+					{#if multisigDetected}
+						{@const detected = multisigDetected}
+						<div class="restore-msg multisig-detected" role="status">
+							{#if page.data.flags?.multisig_create !== false}
+								<p class="md-title">
+									This looks like a multisig wallet{detected.m && detected.n
+										? ` (${detected.m}-of-${detected.n})`
+										: ''}.
+								</p>
+								<p class="md-body">
+									Multisig wallets are guarded by several keys and set up in their own guided
+									flow. Heartwood will carry this file over and fill in the keys for you.
+								</p>
+								<div class="row" style="gap: 8px">
+									<button
+										type="button"
+										class="btn btn-primary btn-sm"
+										onclick={() => handoffToMultisig(detected.text)}
+									>
+										Set up multisig wallet
+									</button>
+									<button
+										type="button"
+										class="btn btn-ghost btn-sm"
+										onclick={() => (multisigDetected = null)}
+									>
+										This is a single-key wallet
+									</button>
+								</div>
+							{:else}
+								<p class="md-title">This looks like a multisig wallet.</p>
+								<FeatureDisabled
+									message="Creating multisig wallets has been disabled by your administrator."
+								/>
+							{/if}
 						</div>
 					{:else if restoreError}
 						<div class="restore-msg form-error" role="alert">{restoreError}</div>
@@ -1130,7 +1188,43 @@
 						</form>
 					{/if}
 
-					{#if deviceError}
+					{#if multisigDetected}
+						{@const detected = multisigDetected}
+						<div class="restore-msg multisig-detected" role="status">
+							{#if page.data.flags?.multisig_create !== false}
+								<p class="md-title">
+									This looks like a multisig wallet{detected.m && detected.n
+										? ` (${detected.m}-of-${detected.n})`
+										: ''}.
+								</p>
+								<p class="md-body">
+									Multisig wallets are guarded by several keys and set up in their own guided
+									flow. Heartwood will carry this file over and fill in the keys for you.
+								</p>
+								<div class="row" style="gap: 8px">
+									<button
+										type="button"
+										class="btn btn-primary btn-sm"
+										onclick={() => handoffToMultisig(detected.text)}
+									>
+										Set up multisig wallet
+									</button>
+									<button
+										type="button"
+										class="btn btn-ghost btn-sm"
+										onclick={() => (multisigDetected = null)}
+									>
+										This is a single-key wallet
+									</button>
+								</div>
+							{:else}
+								<p class="md-title">This looks like a multisig wallet.</p>
+								<FeatureDisabled
+									message="Creating multisig wallets has been disabled by your administrator."
+								/>
+							{/if}
+						</div>
+					{:else if deviceError}
 						<div class="form-error" role="alert">{deviceError}</div>
 					{/if}
 				</div>
@@ -1631,9 +1725,24 @@
 		flex-shrink: 0;
 	}
 
-	.restore-note a {
-		color: var(--accent);
-		text-decoration: underline;
+	/* Detected-multisig hand-off card (multisig-import UX) */
+	.multisig-detected {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		padding: 12px 14px;
+		background: var(--bg);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-control);
+	}
+
+	.md-title {
+		font-weight: 600;
+		color: var(--text);
+	}
+
+	.md-body {
+		color: var(--text-secondary);
 	}
 
 	.visually-hidden-file {
