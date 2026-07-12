@@ -34,6 +34,7 @@
 		parseSavedProgress,
 		hasMeaningfulProgress
 	} from './_components/wizardProgress';
+	import { safeAction } from '$lib/safeAction';
 
 	// Three steps (cairn-l2pn): pasting a key you already have shouldn't take
 	// six screens. Key = pick a source and read/paste the key; Verify = check
@@ -309,49 +310,36 @@
 		previewError = null;
 		const body = new FormData();
 		body.set('xpub', xpub);
-		try {
-			const res = await fetch('?/preview', {
-				method: 'POST',
-				headers: { 'x-sveltekit-action': 'true' },
-				body
-			});
-			const result = deserialize(await res.text());
-			if (result.type === 'success' && result.data) {
-				const d = result.data as {
-					preview: { address: string; path: string }[];
-					scriptType: ScriptType;
-					xpub: string;
-					fingerprint: string | null;
-					path: string | null;
-				};
-				preview = d.preview;
-				scriptType = d.scriptType;
-				validatedXpub = d.xpub;
-				xpubInput = d.xpub;
-				// "00000000" is the placeholder some exports use for "unknown" —
-				// treat it as absent rather than storing a fake origin.
-				const readFp =
-					origin && /^[0-9a-fA-F]{8}$/.test(origin.fingerprint) && !/^0{8}$/.test(origin.fingerprint)
-						? origin.fingerprint.toLowerCase()
-						: null;
-				keyFingerprint = readFp ?? d.fingerprint ?? null;
-				// The path is useful on its own (config/descriptor export) even
-				// when the fingerprint is a placeholder, so it isn't tied to readFp.
-				keyPath = origin?.path ?? d.path ?? null;
-				readMethod = from;
-				deviceType = METHOD_DEVICE[from];
-				changeDevice = false;
-				advanceStep(1);
-			} else if (result.type === 'failure') {
-				deviceError =
-					(result.data as { error?: string } | undefined)?.error ??
-					'That key could not be read.';
-			} else {
-				deviceError = 'That key could not be read.';
-			}
-		} catch {
-			deviceError = 'Network hiccup — check your connection and try again.';
+		const res = await safeAction<{
+			preview: { address: string; path: string }[];
+			scriptType: ScriptType;
+			xpub: string;
+			fingerprint: string | null;
+			path: string | null;
+		}>({ deserialize, applyAction }, 'preview', body, 'That key could not be read.');
+		if (!res.ok) {
+			deviceError = res.error;
+			return;
 		}
+		const d = res.data;
+		preview = d.preview;
+		scriptType = d.scriptType;
+		validatedXpub = d.xpub;
+		xpubInput = d.xpub;
+		// "00000000" is the placeholder some exports use for "unknown" —
+		// treat it as absent rather than storing a fake origin.
+		const readFp =
+			origin && /^[0-9a-fA-F]{8}$/.test(origin.fingerprint) && !/^0{8}$/.test(origin.fingerprint)
+				? origin.fingerprint.toLowerCase()
+				: null;
+		keyFingerprint = readFp ?? d.fingerprint ?? null;
+		// The path is useful on its own (config/descriptor export) even
+		// when the fingerprint is a placeholder, so it isn't tied to readFp.
+		keyPath = origin?.path ?? d.path ?? null;
+		readMethod = from;
+		deviceType = METHOD_DEVICE[from];
+		changeDevice = false;
+		advanceStep(1);
 	}
 
 	/** Method → the device type saved on the wallet. Paste stays device-agnostic. */

@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { onDestroy, onMount, tick } from 'svelte';
-	import { deserialize } from '$app/forms';
+	import { deserialize, applyAction } from '$app/forms';
 	import { page } from '$app/state';
 	import { browser } from '$app/environment';
+	import { safeAction } from '$lib/safeAction';
 	import Icon from '$lib/components/Icon.svelte';
 	import SecureContextHelp from '$lib/components/signing/SecureContextHelp.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
@@ -374,24 +375,7 @@
 	): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
 		const body = new FormData();
 		for (const [k, v] of Object.entries(fields)) body.set(k, v);
-		try {
-			const res = await fetch(`?/${action}`, {
-				method: 'POST',
-				headers: { 'x-sveltekit-action': 'true' },
-				body
-			});
-			const result = deserialize(await res.text());
-			if (result.type === 'success' && result.data) return { ok: true, data: result.data as T };
-			if (result.type === 'failure') {
-				return {
-					ok: false,
-					error: (result.data as { error?: string } | undefined)?.error ?? fallback
-				};
-			}
-			return { ok: false, error: fallback };
-		} catch {
-			return { ok: false, error: 'Network hiccup — check your connection and try again.' };
-		}
+		return safeAction<T>({ deserialize, applyAction }, action, body, fallback);
 	}
 
 	/** `readFrom` names the device a LIVE in-browser read came from (so the
