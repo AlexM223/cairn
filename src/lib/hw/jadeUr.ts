@@ -54,7 +54,13 @@ const CRC32_TABLE = /* @__PURE__ */ (() => {
 	return t;
 })();
 
-function crc32(bytes: Uint8Array): number {
+// crc32 / bytewordsDecode / decodePart / ParsedPart / concat are exported (in
+// addition to this module's own crypto-psbt API below) so bcurKey.ts — the
+// crypto-hdkey/crypto-account cosigner-key QR import codec — can reuse the
+// exact same bytewords + BC-UR multipart-array framing instead of
+// duplicating it: both codecs share the BCR-2020-005/006 transport layer and
+// differ only in what CBOR shape the payload carries once reassembled.
+export function crc32(bytes: Uint8Array): number {
 	let crc = 0xffffffff;
 	for (let i = 0; i < bytes.length; i++) crc = CRC32_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
 	return (crc ^ 0xffffffff) >>> 0;
@@ -93,12 +99,12 @@ function bytewordsEncodeRaw(bytes: Uint8Array): string {
 }
 
 /** Encode bytes as minimal bytewords with the appended 4-byte CRC-32 checksum. */
-function bytewordsEncode(bytes: Uint8Array): string {
+export function bytewordsEncode(bytes: Uint8Array): string {
 	return bytewordsEncodeRaw(bytes) + bytewordsEncodeRaw(u32be(crc32(bytes)));
 }
 
 /** Decode a minimal-bytewords string, verifying and stripping its CRC-32. */
-function bytewordsDecode(text: string): Uint8Array {
+export function bytewordsDecode(text: string): Uint8Array {
 	const clean = text.trim().toLowerCase();
 	if (clean.length % 2 !== 0 || clean.length < 8) {
 		throw new Error('Malformed bytewords in the QR frame.');
@@ -125,7 +131,12 @@ function bytewordsDecode(text: string): Uint8Array {
 // [seqNum, seqLen, messageLen, checksum, fragment(bytes)]. We hand-encode/decode
 // exactly these two shapes rather than pull a CBOR library.
 
-function cborByteString(bytes: Uint8Array): Uint8Array {
+// cborByteString / cborUint / encodePart (below) are also exported (alongside
+// the bytewords helpers above) purely so bcurKey.ts's tests can build
+// realistic crypto-hdkey/crypto-account BC-UR fixtures without a second
+// hand-rolled CBOR encoder; production code only ever DECODES a scanned
+// crypto-hdkey/crypto-account (bcurKey.ts has no encoder of its own).
+export function cborByteString(bytes: Uint8Array): Uint8Array {
 	const len = bytes.length;
 	let header: Uint8Array;
 	if (len < 24) header = new Uint8Array([0x40 | len]);
@@ -142,7 +153,7 @@ function cborByteString(bytes: Uint8Array): Uint8Array {
 	return concat(header, bytes);
 }
 
-function cborUint(n: number): Uint8Array {
+export function cborUint(n: number): Uint8Array {
 	if (n < 24) return new Uint8Array([n]);
 	if (n < 0x100) return new Uint8Array([0x18, n]);
 	if (n < 0x10000) return new Uint8Array([0x19, (n >> 8) & 0xff, n & 0xff]);
@@ -218,7 +229,7 @@ function findNominalFragmentLength(
 	return fragmentLength;
 }
 
-function concat(...parts: Uint8Array[]): Uint8Array {
+export function concat(...parts: Uint8Array[]): Uint8Array {
 	const total = parts.reduce((s, p) => s + p.length, 0);
 	const out = new Uint8Array(total);
 	let o = 0;
@@ -230,7 +241,7 @@ function concat(...parts: Uint8Array[]): Uint8Array {
 }
 
 /** CBOR-encode one multipart part: array(5) of the five fields. */
-function encodePart(
+export function encodePart(
 	seqNum: number,
 	seqLen: number,
 	messageLen: number,
@@ -247,7 +258,7 @@ function encodePart(
 	);
 }
 
-interface ParsedPart {
+export interface ParsedPart {
 	seqNum: number;
 	seqLen: number;
 	messageLen: number;
@@ -255,7 +266,7 @@ interface ParsedPart {
 	fragment: Uint8Array;
 }
 
-function decodePart(cbor: Uint8Array): ParsedPart {
+export function decodePart(cbor: Uint8Array): ParsedPart {
 	if (cbor[0] !== 0x85) throw new Error('QR frame is not a BC-UR multipart array.');
 	let off = 1;
 	const a = readUint(cbor, off);

@@ -13,6 +13,7 @@
 // did before this migration.
 import { PsbtQrJoiner as BbqrJoiner, looksLikeBbqrFrame } from '$lib/hw/bbqr';
 import { PsbtQrJoiner as UrJoiner, looksLikeUrFrame } from '$lib/hw/jadeUr';
+import { BcurKeyJoiner, looksLikeBcurKeyFrame, looksLikePlainKeyText } from '$lib/hw/bcurKey';
 
 export interface QrJoinerLike {
 	add(frame: string): { complete: boolean; progress: { have: number; total: number } };
@@ -22,39 +23,61 @@ export interface QrJoinerLike {
 	reset(): void;
 }
 
-export type AnimatedCodec = 'bbqr' | 'ur';
+// 'bcur-key' is the multisig wizard's cosigner-key import (CARAVAN-QR-
+// REFERENCE.md): animated BC-UR crypto-hdkey/crypto-account, reusing the same
+// shared QrScanner progress UI/camera plumbing 'bbqr'/'ur' (PSBT signing) do.
+export type AnimatedCodec = 'bbqr' | 'ur' | 'bcur-key';
 export type ScanMode = 'single' | 'animated';
 
 export function createJoinerFor(codec: AnimatedCodec | undefined): QrJoinerLike {
-	return codec === 'ur' ? new UrJoiner() : new BbqrJoiner();
+	if (codec === 'ur') return new UrJoiner();
+	if (codec === 'bcur-key') return new BcurKeyJoiner();
+	return new BbqrJoiner();
 }
 
 export function looksLikeFrameFor(codec: AnimatedCodec | undefined): (text: string) => boolean {
-	return codec === 'ur' ? looksLikeUrFrame : looksLikeBbqrFrame;
+	if (codec === 'ur') return looksLikeUrFrame;
+	if (codec === 'bcur-key') return (s: string) => looksLikeBcurKeyFrame(s) || looksLikePlainKeyText(s);
+	return looksLikeBbqrFrame;
 }
 
 /** Codec-specific paste-box copy (divider label + textarea placeholder). */
 export function frameCopyFor(codec: AnimatedCodec | undefined): { label: string; placeholder: string } {
-	return codec === 'ur'
-		? { label: 'ur:crypto-psbt', placeholder: 'ur:crypto-psbt/… (one frame per line)  —  or  —  cHNidP8B…' }
-		: { label: 'BBQr', placeholder: 'B$2P… (one frame per line)  —  or  —  cHNidP8B…' };
+	if (codec === 'ur') {
+		return { label: 'ur:crypto-psbt', placeholder: 'ur:crypto-psbt/… (one frame per line)  —  or  —  cHNidP8B…' };
+	}
+	if (codec === 'bcur-key') {
+		return {
+			label: 'ur:crypto-hdkey',
+			placeholder:
+				"ur:crypto-hdkey/… or ur:crypto-account/… (one frame per line)  —  or  —  xpub6D…, or [a1b2c3d4/48'/0'/0'/2']xpub6D…"
+		};
+	}
+	return { label: 'BBQr', placeholder: 'B$2P… (one frame per line)  —  or  —  cHNidP8B…' };
 }
 
-export function resultNounFor(mode: ScanMode): string {
-	return mode === 'animated' ? 'the signed transaction' : 'the value';
+export function resultNounFor(mode: ScanMode, codec?: AnimatedCodec): string {
+	if (mode !== 'animated') return 'the value';
+	return codec === 'bcur-key' ? 'the key' : 'the signed transaction';
 }
 
-export function doneLabelFor(mode: ScanMode): string {
-	return mode === 'animated' ? 'Signed transaction received.' : 'Value captured.';
+export function doneLabelFor(mode: ScanMode, codec?: AnimatedCodec): string {
+	if (mode !== 'animated') return 'Value captured.';
+	return codec === 'bcur-key' ? 'Key captured.' : 'Signed transaction received.';
 }
 
 /** Matches the exact original wording ("BarcodeDetector isn't supported — try
- *  Chrome, Edge, or Brave. Paste the signed transaction instead.") for the one
- *  mode actually migrated (animated); single mode gets an analogous generic. */
-export function noCameraMessageFor(mode: ScanMode): string {
-	return mode === 'animated'
-		? "This browser can't scan QR codes from a camera (BarcodeDetector isn't supported — try Chrome, Edge, or Brave). Paste the signed transaction instead."
-		: "This browser can't scan QR codes from a camera (BarcodeDetector isn't supported — try Chrome, Edge, or Brave). Paste it instead.";
+ *  Chrome, Edge, or Brave. Paste the signed transaction instead.") for the
+ *  pre-existing animated/PSBT modes; the wizard's key-import codec gets its
+ *  own analogous copy; single mode gets an analogous generic. */
+export function noCameraMessageFor(mode: ScanMode, codec?: AnimatedCodec): string {
+	if (mode !== 'animated') {
+		return "This browser can't scan QR codes from a camera (BarcodeDetector isn't supported — try Chrome, Edge, or Brave). Paste it instead.";
+	}
+	if (codec === 'bcur-key') {
+		return "This browser can't scan QR codes from a camera (BarcodeDetector isn't supported — try Chrome, Edge, or Brave). Paste the key instead.";
+	}
+	return "This browser can't scan QR codes from a camera (BarcodeDetector isn't supported — try Chrome, Edge, or Brave). Paste the signed transaction instead.";
 }
 
 export type AnimatedPasteOutcome =

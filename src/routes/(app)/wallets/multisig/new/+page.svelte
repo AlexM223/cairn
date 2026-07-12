@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy, onMount, tick } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { deserialize, applyAction } from '$app/forms';
 	import { page } from '$app/state';
 	import { browser } from '$app/environment';
@@ -11,7 +11,6 @@
 	import Term from '$lib/components/Term.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
-	import { isCameraScanAvailable, startScan, type ScanHandle } from '$lib/hw/qrScan';
 	import { scrollToTop } from '$lib/scrollToTop';
 	import type { MultisigDeviceType, MultisigKeyCategory, MultisigScriptType } from '$lib/server/wallets/multisig';
 	import KeyCategoryIcon from '../_components/KeyCategoryIcon.svelte';
@@ -33,6 +32,7 @@
 		hasMeaningfulMultisigProgress
 	} from './_components/wizardProgress';
 	import WizardKeyCheck from './_components/WizardKeyCheck.svelte';
+	import QrKeyImport from './_components/QrKeyImport.svelte';
 	import { PROACTIVE_PASSPHRASE_NOTE } from '../_components/keyCheckCopy';
 
 	let { data } = $props();
@@ -305,7 +305,9 @@
 	}
 
 	function resetKeyForm() {
-		stopQrScan();
+		// The QR method's camera (QrKeyImport -> QrScanner) stops itself on
+		// unmount when this branch's {#if} condition changes — no manual stop
+		// call needed here anymore.
 		method = null;
 		keyName = '';
 		keyCategory = 'hardware';
@@ -532,59 +534,10 @@
 	}
 
 	// --- air-gapped QR scanning ---
-	let cameraAvailable = $state(false);
-	$effect(() => {
-		// qr_scan is a client-only feature (no server route); suppressing the camera
-		// path here is its enforcement. Falls back to paste when off.
-		cameraAvailable = isCameraScanAvailable() && page.data.flags?.qr_scan !== false;
-	});
-	let scanning = $state(false);
-	let videoEl = $state<HTMLVideoElement | null>(null);
-	let scanHandle: ScanHandle | null = null;
-	let qrBusy = false;
-
-	function stopQrScan() {
-		scanHandle?.stop();
-		scanHandle = null;
-		scanning = false;
-		qrBusy = false;
-	}
-
-	async function startQrScan() {
-		if (scanning) return;
-		addError = null;
-		scanning = true;
-		await tick(); // mount the <video> first
-		if (!videoEl) {
-			scanning = false;
-			return;
-		}
-		try {
-			scanHandle = await startScan(videoEl, (text) => void handleQrText(text), {
-				onError: (err) => {
-					addError = err.message;
-					stopQrScan();
-				}
-			});
-		} catch (e) {
-			addError = e instanceof Error ? e.message : 'Could not start the camera.';
-			stopQrScan();
-		}
-	}
-
-	async function handleQrText(text: string) {
-		if (qrBusy) return;
-		const cleaned = text.trim();
-		// Only react to something key-shaped; a steady camera re-reads frames.
-		if (!/pub/i.test(cleaned) && !cleaned.startsWith('[')) return;
-		qrBusy = true;
-		stopQrScan();
-		pasteValue = cleaned;
-		const ok = await submitKey();
-		if (!ok) qrBusy = false;
-	}
-
-	onDestroy(stopQrScan);
+	// Camera lifecycle, animated-BC-UR accumulation/progress, and the qr_scan
+	// feature-flag gate (forwarded as `cameraDisabled`) now live in
+	// QrKeyImport.svelte (wrapping the shared QrScanner) — see its mount in the
+	// `method === 'qr'` branch below.
 
 	function removeKey(i: number) {
 		keys = keys.filter((_, idx) => idx !== i);
@@ -1904,43 +1857,26 @@
 								<div class="connect-box">
 									<p class="connect-copy">
 										On the device, find <strong>Export xpub</strong> (or "show wallet key as
-										QR") and hold the code up to your camera. The key in the QR can
-										<strong>watch, never spend</strong>.
+										QR") and hold the code up to your camera — animated (multi-frame) BC-UR
+										exports reassemble automatically, with a progress bar while it films. The
+										key in the QR can <strong>watch, never spend</strong>.
 										{#if vaultMode === 'collaborative'}
 											Because this vault is shared, the QR must carry the
 											<span class="mono">m/45'</span> key <em>with</em> its origin info
 											(fingerprint + path) — a bare key can't be checked for a shared vault.
 										{/if}
 									</p>
-									{#if scanning}
-										<!-- svelte-ignore a11y_media_has_caption — live camera feed; the sr-only status below announces it -->
-										<video bind:this={videoEl} class="qr-video"></video>
-										<p class="sr-only" role="status">
-											Camera scanning in progress. Hold the device's QR code up to the camera —
-											the key is read automatically. Use the Stop scanning button to turn the
-											camera off.
-										</p>
-										<button type="button" class="btn btn-secondary btn-sm" onclick={stopQrScan}>
-											Stop scanning
-										</button>
-									{:else if cameraAvailable}
-										<button
-											type="button"
-											class="btn btn-primary"
-											disabled={adding}
-											onclick={startQrScan}
-										>
-											{#if adding}<span class="spinner"></span>{/if}
-											<Icon name="qr" size={14} />
-											Scan the QR code
-										</button>
-									{:else}
-										<p class="hint">
-											This browser can't scan QR codes from a camera — paste the key from the
-											QR instead ("Enter it as text" below).
-										</p>
-										<SecureContextHelp what="camera scanning" />
-									{/if}
+									<QrKeyImport
+										vaultMode={vaultMode ?? 'personal'}
+										existingKeys={keys}
+										cameraDisabled={page.data.flags?.qr_scan === false}
+										onaccepted={(k) => {
+											pasteValue = k.xpub;
+											fpValue = k.fingerprint;
+											pathValue = k.path;
+											void submitKey();
+										}}
+									/>
 								</div>
 							{:else}
 								<!-- paste a public key -->
@@ -3530,14 +3466,6 @@
 		color: var(--text);
 	}
 
-	.qr-video {
-		width: 100%;
-		max-width: 320px;
-		border-radius: var(--radius-control);
-		border: 1px solid var(--border);
-		background: #000;
-	}
-
 	.visually-hidden-file {
 		position: absolute;
 		width: 1px;
@@ -3545,19 +3473,6 @@
 		opacity: 0;
 		overflow: hidden;
 		pointer-events: none;
-	}
-
-	/* Visually hidden but announced — same idiom as the send flow's QR signer. */
-	.sr-only {
-		position: absolute;
-		width: 1px;
-		height: 1px;
-		padding: 0;
-		margin: -1px;
-		overflow: hidden;
-		clip: rect(0, 0, 0, 0);
-		white-space: nowrap;
-		border: 0;
 	}
 
 	.cat-grid {

@@ -66,14 +66,32 @@
 		 *  <DeviceHelpLink> — the one other per-consumer addition on top of an
 		 *  otherwise-identical error state. Absent for QrSigner (unchanged). */
 		errorExtra?: Snippet<[string]>;
+		/** Force the camera path off regardless of browser capability — the
+		 *  admin-facing `qr_scan` feature flag (multisig wizard's QR-import
+		 *  method, single-sig wizard, RecipientCombobox) is enforced by callers
+		 *  passing this rather than by suppressing the mount entirely, so the
+		 *  paste fallback (always available) still renders normally. Defaults to
+		 *  false — every pre-existing caller is unaffected. */
+		forceNoCamera?: boolean;
 	}
 
-	let { mode, codec, onresult, validate, pasteHint, deviceLabel = 'the device', errorExtra }: Props =
-		$props();
+	let {
+		mode,
+		codec,
+		onresult,
+		validate,
+		pasteHint,
+		deviceLabel = 'the device',
+		errorExtra,
+		forceNoCamera = false
+	}: Props = $props();
 
-	// ── Capability gating (computed once, like the pre-extraction components did:
-	//    `const cameraAvailable = isCameraScanAvailable();` was never reactive) ──
-	const cameraAvailable = isCameraScanAvailable();
+	// ── Capability gating (mirrors the pre-extraction components, which never
+	//    re-checked isCameraScanAvailable() after mount — only `forceNoCamera`
+	//    is reactive here, and only because it comes from a caller-supplied
+	//    feature flag that's read once anyway; $derived just avoids the
+	//    "references a prop locally" compiler warning a plain `const` gets) ──
+	const cameraAvailable = $derived(!forceNoCamera && isCameraScanAvailable());
 	const unavailableReason = cameraScanUnavailableReason();
 
 	// ── Copy that varies by mode/codec — kept here so the two migrated signers
@@ -82,16 +100,18 @@
 	//    props via $derived (not plain `const`) so a future caller that changes
 	//    `mode`/`codec`/`pasteHint` after mount gets correctly-updated copy
 	//    instead of whatever was true at first render. ──────────────────────────
-	const resultNoun = $derived(resultNounFor(mode));
-	const doneLabel = $derived(doneLabelFor(mode));
+	const resultNoun = $derived(resultNounFor(mode, codec));
+	const doneLabel = $derived(doneLabelFor(mode, codec));
 	const frameCopy = $derived(frameCopyFor(codec));
 	const pastePlaceholder = $derived(
 		mode === 'animated' ? frameCopy.placeholder : (pasteHint?.placeholder ?? 'Paste a value…')
 	);
 	const pasteDividerLabel = $derived(
-		mode === 'animated' ? `paste the ${frameCopy.label} frames or the base64 PSBT` : (pasteHint?.label ?? 'paste it')
+		mode === 'animated'
+			? `paste the ${frameCopy.label} frames or ${codec === 'bcur-key' ? 'the plain key' : 'the base64 PSBT'}`
+			: (pasteHint?.label ?? 'paste it')
 	);
-	const noCameraMessage = $derived(noCameraMessageFor(mode));
+	const noCameraMessage = $derived(noCameraMessageFor(mode, codec));
 
 	// ── Scan state (identical shape to the pre-extraction QrSigner/JadeQrSigner
 	//    scan phase) ──────────────────────────────────────────────────────────
@@ -292,7 +312,10 @@
 	{:else if cameraAvailable}
 		{#if !scanning && !showManual}
 			<p class="hint">
-				{#if mode === 'animated'}
+				{#if mode === 'animated' && codec === 'bcur-key'}
+					Start the camera, then hold {deviceLabel}'s public-key QR in view. Multi-frame sequences
+					reassemble as {deviceLabel} cycles them.
+				{:else if mode === 'animated'}
 					Start the camera, then hold {deviceLabel}'s signed-transaction QR in view. Multi-frame
 					sequences reassemble as {deviceLabel} cycles them.
 				{:else}

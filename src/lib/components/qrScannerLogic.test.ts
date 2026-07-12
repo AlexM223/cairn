@@ -96,6 +96,19 @@ describe('createJoinerFor / looksLikeFrameFor / frameCopyFor — codec dispatch'
 			placeholder: 'ur:crypto-psbt/… (one frame per line)  —  or  —  cHNidP8B…'
 		});
 	});
+
+	it('picks the bcur-key joiner/frame-shape/copy for codec "bcur-key" (the wizard\'s cosigner-key QR import)', () => {
+		expect(looksLikeFrameFor('bcur-key')('ur:crypto-hdkey/abcd')).toBe(true);
+		expect(looksLikeFrameFor('bcur-key')("[a1b2c3d4/48'/0'/0'/2']xpub6D...")).toBe(true); // plain-text fallback
+		expect(looksLikeFrameFor('bcur-key')('ur:crypto-psbt/abcd')).toBe(false); // cross-codec
+
+		const joiner = createJoinerFor('bcur-key');
+		const outcome = joiner.add('xpub6Dfoo');
+		expect(outcome.complete).toBe(true);
+		expect(JSON.parse(joiner.result())).toMatchObject({ kind: 'plain', xpub: 'xpub6Dfoo' });
+
+		expect(frameCopyFor('bcur-key').label).toBe('ur:crypto-hdkey');
+	});
 });
 
 describe('resultNounFor / doneLabelFor / noCameraMessageFor — exact copy fidelity', () => {
@@ -115,6 +128,15 @@ describe('resultNounFor / doneLabelFor / noCameraMessageFor — exact copy fidel
 		expect(resultNounFor('single')).toBe('the value');
 		expect(doneLabelFor('single')).toBe('Value captured.');
 		expect(noCameraMessageFor('single')).toMatch(/paste it instead/i);
+	});
+
+	it('bcur-key codec gets its own key-import copy, distinct from the PSBT-signing wording', () => {
+		expect(resultNounFor('animated', 'bcur-key')).toBe('the key');
+		expect(doneLabelFor('animated', 'bcur-key')).toBe('Key captured.');
+		expect(noCameraMessageFor('animated', 'bcur-key')).toMatch(/paste the key instead/i);
+		// codec is ignored outside animated mode, and PSBT-signing codecs are unaffected.
+		expect(resultNounFor('animated', 'ur')).toBe('the signed transaction');
+		expect(resultNounFor('single', 'bcur-key')).toBe('the value');
 	});
 });
 
