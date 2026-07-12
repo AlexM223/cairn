@@ -781,6 +781,30 @@ describe('combineMultisigPsbts finalization guard (cairn-vo6z)', () => {
 			expect((e as MultisigPsbtError).code).toBe('invalid_finalization');
 		}
 	});
+
+	// Sibling entry point: broadcastStatelessPsbt finalizes a client-submitted PSBT
+	// directly via finalizeMultisigPsbt, NOT through the validated combine — so the
+	// finalize path must re-validate any finalization present when the input still
+	// carries this multisig's witnessScript.
+	it('finalizeMultisigPsbt rejects a directly-submitted tampered finalization', async () => {
+		const { combinedA, bFinalized } = await legitFinalized();
+		// A validly-combined (thus witnessScript-retaining) finalized PSBT…
+		const good = combineMultisigPsbts(combinedA, bFinalized);
+		expect(() => finalizeMultisigPsbt(good)).not.toThrow(); // control: legit broadcast
+
+		// …with its trailing witnessScript element corrupted must be refused here too.
+		const tampered = withWitness(good, (w) => {
+			const script = w[w.length - 1];
+			script[script.length - 1] ^= 0xff;
+		});
+		try {
+			finalizeMultisigPsbt(tampered);
+			expect.unreachable();
+		} catch (e) {
+			expect(e).toBeInstanceOf(MultisigPsbtError);
+			expect((e as MultisigPsbtError).code).toBe('invalid_finalization');
+		}
+	});
 });
 
 // ── PSBT-substitution guard on the multisig combine path (cairn-sera) ────────

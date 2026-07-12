@@ -960,6 +960,32 @@ export function multisigPsbtProgress(psbtBase64: string, threshold: number): Mul
 // ------------------------------------------------------------------ finalize
 
 /**
+ * cairn-vo6z, finalize entry. Validate any finalization ALREADY present on an
+ * input when finalizeMultisigPsbt is reached directly — the stateless broadcast
+ * flow (broadcastStatelessPsbt) finalizes a client-submitted PSBT WITHOUT going
+ * through the validated combine, so this is the sibling entry point to
+ * combineMultisigPsbts's adoption guard. Only validates when the input still
+ * carries this multisig's authoritative witnessScript / redeemScript; a foreign
+ * tool that stripped the script post-finalization (a legitimate broadcast the
+ * user assembled elsewhere) can't be checked and is passed through unchanged.
+ */
+function assertFinalizationValid(
+	inp: {
+		witnessScript?: Uint8Array;
+		redeemScript?: Uint8Array;
+		finalScriptWitness?: Uint8Array[];
+		finalScriptSig?: Uint8Array;
+	},
+	index: number
+): void {
+	const hasScript = (inp.witnessScript?.length ?? 0) > 0 || (inp.redeemScript?.length ?? 0) > 0;
+	if (!hasScript) return;
+	// Validates the input's finalization against its own authoritative script;
+	// throws MultisigPsbtError('invalid_finalization') on a tampered witness.
+	validatedFinalization(inp, inp, index);
+}
+
+/**
  * Finalize a quorum-complete multisig PSBT and extract the raw transaction ready
  * for broadcast. btc-signer assembles the CHECKMULTISIG witness itself,
  * walking the witness script's pubkeys in order — which IS the BIP-67 order,
@@ -980,6 +1006,13 @@ export function finalizeMultisigPsbt(psbtBase64: string): {
 		tx = Transaction.fromPSBT(base64.decode(psbtBase64.trim()));
 	} catch {
 		throw new MultisigPsbtError('The stored PSBT could not be read.', 'combine_failed');
+	}
+	// Re-validate any pre-existing finalization BEFORE the finalize loop, so a
+	// tampered witness raises 'invalid_finalization' rather than being swallowed
+	// by the loop's 'not_enough_signatures' catch (cairn-vo6z, finalize entry).
+	for (let i = 0; i < tx.inputsLength; i++) {
+		const inp = tx.getInput(i);
+		if (inputFinalized(inp)) assertFinalizationValid(inp, i);
 	}
 	try {
 		for (let i = 0; i < tx.inputsLength; i++) {
