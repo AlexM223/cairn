@@ -18,6 +18,12 @@
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
 	import AtTipPill from '$lib/components/heartwood/AtTipPill.svelte';
 	import { formatBtc, formatSats, formatFeeRate, truncateMiddle } from '$lib/format';
+	import AmountEntry from '$lib/components/send/AmountEntry.svelte';
+	import FeeSpeedPicker from '$lib/components/send/FeeSpeedPicker.svelte';
+	import SendReviewCard from '$lib/components/send/SendReviewCard.svelte';
+	import { sendCtaLabel } from '$lib/components/send/sendMoney';
+	import { arrivalWords, type FeeChoiceKey } from '$lib/components/send/sendCopy';
+	import { btcUsd } from '$lib/price';
 	import { scrollToTop } from '$lib/scrollToTop';
 	import type { ScriptType, FeeEstimates } from '$lib/types';
 	import type { ConstructedPsbt } from '$lib/server/bitcoin/psbt';
@@ -223,57 +229,33 @@
 	// One-shot guards so the stream-resolve effect seeds derived values exactly
 	// once and never clobbers a user edit made while the data was in flight.
 	let consolidateSeeded = false;
-	let customFeeTouched = false;
 
 	// One row per output. A single row is the classic send; adding rows makes
-	// a batch payment — one transaction, several recipients, one fee.
-	// `amountText` is in the CURRENT display unit (see `unit` below).
-	type RecipientRow = { key: number; address: string; amountText: string };
+	// a batch payment — one transaction, several recipients, one fee. The amount
+	// is stored as canonical `sats` (0 = empty/invalid); AmountEntry owns all
+	// unit display/entry, so the page never thinks about BTC/sats/fiat units.
+	type RecipientRow = { key: number; address: string; sats: number };
 	let rowKey = 0;
 	function seedRows(): RecipientRow[] {
 		if (resumeTx && resumeTx.recipients.length > 0) {
 			return resumeTx.recipients.map((r) => ({
 				key: rowKey++,
 				address: r.address,
-				amountText: r.amount > 0 ? formatBtc(r.amount, { trim: true }) : ''
+				sats: r.amount > 0 ? r.amount : 0
 			}));
 		}
 		if (consolidateParams?.to) {
-			return [{ key: rowKey++, address: consolidateParams.to, amountText: '' }];
+			return [{ key: rowKey++, address: consolidateParams.to, sats: 0 }];
 		}
-		return [{ key: rowKey++, address: '', amountText: '' }];
+		return [{ key: rowKey++, address: '', sats: 0 }];
 	}
 	// svelte-ignore state_referenced_locally — intentional per-load seed
 	let rows = $state<RecipientRow[]>(seedRows());
 	// Consolidation is a self-sweep of the selected coins — Max is the point.
 	let amountMode = $state<'btc' | 'max'>(consolidateParams ? 'max' : 'btc');
 
-	// The hero's unit-swap circle: amounts are typed in BTC or sats. Rows seed
-	// in BTC; toggling converts every row's text in place so what the user sees
-	// stays the same amount. `rowSats` is the one converter every consumer uses.
-	let unit = $state<'btc' | 'sats'>('btc');
-
-	function rowSats(r: RecipientRow): number {
-		const n = Number(r.amountText);
-		if (!Number.isFinite(n) || n <= 0) return 0;
-		return unit === 'btc' ? Math.round(n * SATS_PER_BTC) : Math.round(n);
-	}
-
-	function toggleUnit() {
-		const next = unit === 'btc' ? 'sats' : 'btc';
-		rows = rows.map((r) => {
-			const sats = rowSats(r);
-			if (sats <= 0) return r; // empty/invalid text carries over untouched
-			return {
-				...r,
-				amountText: next === 'sats' ? String(sats) : formatBtc(sats, { trim: true })
-			};
-		});
-		unit = next;
-	}
-
 	function addRow() {
-		rows = [...rows, { key: rowKey++, address: '', amountText: '' }];
+		rows = [...rows, { key: rowKey++, address: '', sats: 0 }];
 		amountMode = 'btc'; // send-max is single-recipient-only
 	}
 
@@ -294,19 +276,11 @@
 	// moment its 100th block arrives.
 	let tipHeight = $state<number>(0);
 
-	type FeeChoice = 'fast' | 'normal' | 'economy' | 'custom';
-	let feeChoice = $state<FeeChoice>('normal');
-	// A neutral starting rate for the custom box; reseeded from the streamed
-	// half-hour estimate when it arrives, unless the user has already typed one.
-	let customFee = $state('5');
-
-	const feeRate = $derived.by(() => {
-		const fallback = Number(customFee) || 1;
-		if (feeChoice === 'fast') return fees?.fastest ?? fallback;
-		if (feeChoice === 'normal') return fees?.halfHour ?? fallback;
-		if (feeChoice === 'economy') return fees?.economy ?? fallback;
-		return Math.max(1, fallback);
-	});
+	// Fee tier + effective rate are owned by FeeSpeedPicker now; the page keeps
+	// only the bound values it needs — `feeRate` for build()/canBuild, `feeChoice`
+	// for the Review card's arrival words.
+	let feeChoice = $state<FeeChoiceKey>('standard');
+	let feeRate = $state(1);
 
 	// Fill the streamed fields in when the server's Electrum round-trips settle.
 	// A new-block invalidate (onMount) creates a fresh `data.live`, re-running
@@ -324,11 +298,6 @@
 				utxos = live.utxos;
 				// onNewBlock may have already advanced the tip past this snapshot.
 				if (live.tipHeight > tipHeight) tipHeight = live.tipHeight;
-				// Reseed the custom-fee box from the live half-hour rate, unless the
-				// user has already opened Custom and typed something.
-				if (!customFeeTouched && live.fees?.halfHour != null) {
-					customFee = String(live.fees.halfHour);
-				}
 				// Validate the consolidation handoff's coins against the now-known
 				// spendable set — exactly once, and never over a live user selection.
 				if (consolidateParams && !resumeTx && !consolidateSeeded) {
@@ -351,38 +320,12 @@
 		};
 	});
 
-	// Plain-language confirmation ETA per fee tier (send-affordances-progress.md
-	// Part 2 — was "next ring ≈ N min", brand/ring jargon a first-time sender
-	// wouldn't recognize as a time estimate).
-	const feeEta = $derived.by(() => {
-		if (feeChoice === 'fast') return '~10 min to confirm';
-		if (feeChoice === 'normal') return '~30 min to confirm';
-		if (feeChoice === 'economy') return '~1 hr or more to confirm';
-		return 'custom rate — timing depends on the mempool';
-	});
-
-	// Warn when the effective rate is drastically above the live fast tier —
-	// almost always a typo in the custom box, and an overpaid fee is gone the
-	// moment the transaction broadcasts. The 50 sat/vB floor keeps low-fee
-	// regimes (fast tier of 1-2 sat/vB) from tripping the warning on sane rates.
-	// Non-blocking: Review still forces a look at the absolute fee.
-	const feeWarning = $derived.by(() => {
-		const fast = fees?.fastest;
-		if (fast == null || fast <= 0) return null;
-		if (feeRate <= 50 || feeRate <= fast * 3) return null;
-		const multiple = feeRate / fast;
-		return {
-			fast,
-			multipleLabel: multiple >= 10 ? String(Math.round(multiple)) : multiple.toFixed(1)
-		};
-	});
-
 	const isMax = $derived(amountMode === 'max' && rows.length === 1);
 	const rowsValid = $derived(
 		rows.every((r) => {
 			if (r.address.trim().length === 0 || !looksLikeAddress(r.address)) return false;
 			if (isMax) return true;
-			return rowSats(r) > 0;
+			return r.sats > 0;
 		})
 	);
 
@@ -392,17 +335,14 @@
 	// server stays authoritative (and its errors surface via buildError without
 	// touching what the user typed).
 	function amountError(r: RecipientRow): string | null {
-		if (isMax || r.amountText.trim().length === 0) return null;
-		const n = Number(r.amountText);
-		if (!Number.isFinite(n) || n <= 0) return 'Amount must be a positive number.';
-		if (confirmed != null && rowSats(r) > confirmed)
-			return "That's more than this wallet holds.";
+		if (isMax || r.sats <= 0) return null;
+		if (confirmed != null && r.sats > confirmed) return "That's more than this wallet holds.";
 		return null;
 	}
 
 	// Running total across rows — shown on batch sends so the sum is visible
 	// before Review.
-	const createTotalSats = $derived(rows.reduce((s, r) => s + rowSats(r), 0));
+	const createTotalSats = $derived(rows.reduce((s, r) => s + r.sats, 0));
 
 	// The send as a whole can't exceed the confirmed balance either (a batch's
 	// rows may each pass alone but overshoot together). Fee-exclusive on
@@ -433,7 +373,7 @@
 		reservationWarning = null;
 		const recipients = rows.map((r) => ({
 			address: r.address.trim(),
-			amount: (isMax ? 'max' : rowSats(r)) as number | 'max'
+			amount: (isMax ? 'max' : r.sats) as number | 'max'
 		}));
 		// Manual coin control rides along only when coins are actually selected.
 		const onlyUtxos = selectedCoins.map((k) => {
@@ -475,12 +415,13 @@
 	}
 
 	// ------------------------------------------------------------- REVIEW step
-	let inputsOpen = $state(false);
-
-	const feePctOfAmount = $derived.by(() => {
-		if (!review || review.amount <= 0) return null;
-		return (review.fee / review.amount) * 100;
-	});
+	// The saved-address label for the (single) recipient, when the sent-to
+	// address is one the user has saved — passed to SendReviewCard.
+	const reviewRecipientLabel = $derived(
+		review && review.recipients.length === 1
+			? (savedAddresses.find((a) => a.address === review.recipient)?.label ?? null)
+			: null
+	);
 
 	// Signing-mass summary for the Review panel: a fresh build carries it on
 	// the build response; a resume may carry it on the PSBT summary. Absent =
@@ -932,45 +873,12 @@
 					<!-- The hero: the typed amount owns the page. -->
 					<div class="amount-hero">
 						{#if !isMax}
-							<div class="hero-line">
-								<!-- svelte-ignore a11y_autofocus -->
-								<input
-									class="hero-input"
-									inputmode="decimal"
-									placeholder={unit === 'btc' ? '0.00' : '0'}
-									bind:value={row.amountText}
-									aria-label="Amount in {unit === 'btc' ? 'BTC' : 'sats'}"
-									aria-invalid={amountError(row) !== null}
-									style:width="{Math.max(4, (row.amountText || '0.00').length + 0.5)}ch"
-								/>
-								<span class="hero-unit">{unit === 'btc' ? 'BTC' : 'sats'}</span>
-								<button
-									type="button"
-									class="unit-swap"
-									onclick={toggleUnit}
-									aria-label="Switch to {unit === 'btc' ? 'sats' : 'BTC'}"
-									title="Switch to {unit === 'btc' ? 'sats' : 'BTC'}"
-								>
-									<Icon name="refresh" size={14} />
-								</button>
-							</div>
-							{#if amountError(row)}
-								<p class="hero-sub attention">{amountError(row)}</p>
-							{:else if rowSats(row) > 0}
-								<p class="hero-sub tabular">
-									{unit === 'btc'
-										? `${formatSats(rowSats(row))} sats`
-										: `${formatBtc(rowSats(row))} BTC`}
-								</p>
-							{:else if !liveLoaded}
-								<p class="hero-sub"><span class="skeleton">0.00000000 BTC spendable</span></p>
-							{:else}
-								<p class="hero-sub">
-									{confirmed != null
-										? `${formatBtc(confirmed)} BTC spendable`
-										: 'Type an amount'}
-								</p>
-							{/if}
+							<AmountEntry
+								bind:sats={row.sats}
+								autofocus
+								spendableSats={confirmed}
+								ariaLabel="Amount to send"
+							/>
 						{:else}
 							<div class="hero-line">
 								<span class="hero-max">Everything</span>
@@ -1005,10 +913,10 @@
 							saved={savedAddresses}
 							invalid={row.address.length > 0 && !looksLikeAddress(row.address)}
 							ondelete={deleteSavedAddress}
-							currentAmountText={row.amountText}
+							currentAmountText={row.sats > 0 ? String(row.sats) : ''}
 							onamount={(sats) => {
 								if (amountMode === 'max') return;
-								row.amountText = unit === 'sats' ? String(sats) : formatBtc(sats, { trim: true });
+								row.sats = sats;
 							}}
 						/>
 						{#if row.address.length > 0 && !looksLikeAddress(row.address)}
@@ -1042,9 +950,9 @@
 										saved={savedAddresses}
 										invalid={row.address.length > 0 && !looksLikeAddress(row.address)}
 										ondelete={deleteSavedAddress}
-										currentAmountText={row.amountText}
+										currentAmountText={row.sats > 0 ? String(row.sats) : ''}
 										onamount={(sats) => {
-											row.amountText = unit === 'sats' ? String(sats) : formatBtc(sats, { trim: true });
+											row.sats = sats;
 										}}
 									/>
 									{#if row.address.length > 0 && !looksLikeAddress(row.address)}
@@ -1054,31 +962,14 @@
 									{/if}
 								</div>
 								<div class="field">
-									<div class="amount-input">
-										<input
-											class="batch-amount tabular"
-											inputmode="decimal"
-											placeholder={unit === 'btc' ? '0.00000000' : '0'}
-											bind:value={row.amountText}
-											aria-label={`Amount for recipient ${i + 1} in ${unit === 'btc' ? 'BTC' : 'sats'}`}
-											aria-invalid={amountError(row) !== null}
-										/>
-										<button
-											type="button"
-											class="unit-inline"
-											onclick={toggleUnit}
-											title="Switch to {unit === 'btc' ? 'sats' : 'BTC'}"
-											>{unit === 'btc' ? 'BTC' : 'sats'}</button
-										>
-									</div>
+									<AmountEntry
+										bind:sats={row.sats}
+										compact
+										spendableSats={confirmed}
+										ariaLabel={`Amount for recipient ${i + 1}`}
+									/>
 									{#if amountError(row)}
 										<p class="field-line attention">{amountError(row)}</p>
-									{:else if rowSats(row) > 0}
-										<p class="field-line tabular muted">
-											{unit === 'btc'
-												? `${formatSats(rowSats(row))} sats`
-												: `${formatBtc(rowSats(row))} BTC`}
-										</p>
 									{/if}
 								</div>
 							</div>
@@ -1104,67 +995,7 @@
 					</p>
 				{/if}
 
-				<!-- FEE: text toggles, not a dropdown. Label left, live rate + "next
-				     ring" ETA right (5a). -->
-				<div class="fee-section">
-					<div class="fee-head">
-						<span class="sec-label">Fee</span>
-						<span class="fee-caption">{formatFeeRate(feeRate)} · {feeEta}</span>
-					</div>
-					<div class="fee-toggles" role="group" aria-label="Fee rate">
-						{#each [{ k: 'economy', label: 'Low', rate: fees?.economy }, { k: 'normal', label: 'Medium', rate: fees?.halfHour }, { k: 'fast', label: 'High', rate: fees?.fastest }] as opt (opt.k)}
-							<button
-								type="button"
-								class="txt-toggle"
-								class:active={feeChoice === opt.k}
-								onclick={() => (feeChoice = opt.k as FeeChoice)}
-							>
-								{opt.label}{#if opt.rate != null}<span class="toggle-rate tabular"
-										>&nbsp;· {opt.rate < 10 ? Number(opt.rate.toFixed(1)) : Math.round(opt.rate)}</span
-									>{/if}
-							</button>
-						{/each}
-						<button
-							type="button"
-							class="txt-toggle"
-							class:active={feeChoice === 'custom'}
-							onclick={() => (feeChoice = 'custom')}
-						>
-							Custom
-						</button>
-					</div>
-					{#if feeChoice === 'custom'}
-						<div class="custom-fee">
-							<input
-								class="custom-fee-input tabular"
-								inputmode="decimal"
-								bind:value={customFee}
-								oninput={() => (customFeeTouched = true)}
-								aria-label="Custom fee rate in sat/vB"
-							/>
-							<span class="unit-sm">sat/vB</span>
-						</div>
-					{/if}
-					{#if !liveLoaded}
-						<p class="fee-caption"><span class="skeleton">Loading live fee estimates…</span></p>
-					{:else if !fees}
-						<p class="fee-caption">Live fee estimates are unavailable — set a custom sat/vB rate.</p>
-					{/if}
-					{#if feeWarning}
-						<div class="attention-panel" role="alert">
-							<Icon name="alert-triangle" size={16} />
-							<div>
-								<strong
-									>That's {feeWarning.multipleLabel}× the current fast rate ({formatFeeRate(
-										feeWarning.fast
-									)}).</strong
-								>
-								If this is a typo, the extra fee is gone the moment you broadcast — miners keep it
-								and there is no refund. Double-check the number before continuing.
-							</div>
-						</div>
-					{/if}
-				</div>
+				<FeeSpeedPicker {fees} bind:feeRate bind:choice={feeChoice} loading={!liveLoaded} />
 
 				{#if utxos.length > 0}
 					{#if data.flags?.coin_control === false}
@@ -1221,30 +1052,19 @@
 		<!-- ============================================================ REVIEW -->
 		{:else if step === 'review' && review}
 			<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
-				<div class="review-hero">
-					<span class="hero-amount">{formatBtc(review.amount)} <em>BTC</em></span>
-					{#if review.recipients.length === 1}
-						<span class="hero-sub tabular">{formatSats(review.amount)} sats</span>
-						<span class="recipient mono">{review.recipient}</span>
-					{:else}
-						<span class="hero-sub tabular"
-							>{formatSats(review.amount)} sats · {review.recipients.length} recipients</span
-						>
-						<div class="review-recipients">
-							{#each review.recipients as r, i (i)}
-								<div class="review-recipient-row">
-									<span class="tabular batch-amt">{formatBtc(r.amount)} BTC</span>
-									<span class="recipient mono">{r.address}</span>
-								</div>
-							{/each}
-						</div>
-					{/if}
-				</div>
-
-				<p class="step-lead">
-					Check every detail. Once you sign and broadcast, this transaction
-					<strong>cannot be reversed.</strong>
-				</p>
+				<SendReviewCard
+					mode="review"
+					amountSats={review.amount}
+					recipients={review.recipients}
+					feeSats={review.fee}
+					feeRate={review.feeRate}
+					changeSats={review.change?.value ?? null}
+					inputs={review.inputs}
+					vsize={review.vsize}
+					recipientLabel={reviewRecipientLabel}
+					arrivalWords={arrivalWords(feeChoice)}
+					multisig={null}
+				/>
 
 				{#if chainDepthWarning}
 					<div class="attention-panel" role="status">
@@ -1259,65 +1079,6 @@
 						<span>{reservationWarning.message}</span>
 					</div>
 				{/if}
-
-				<div class="detail-list">
-					<div class="detail-row">
-						<span class="text-secondary">Network fee</span>
-						<span class="detail-val tabular">
-							{formatSats(review.fee)} sats
-							<span class="text-muted"
-								>· {formatFeeRate(review.feeRate)}{#if feePctOfAmount != null}
-									· {feePctOfAmount < 0.01 ? '<0.01' : feePctOfAmount.toFixed(2)}% of amount{/if}</span
-							>
-						</span>
-					</div>
-					{#if review.change}
-						<div class="detail-row">
-							<span class="text-secondary">Change back to your wallet</span>
-							<span class="detail-val tabular">{formatSats(review.change.value)} sats</span>
-						</div>
-					{/if}
-					{#if review.inputs.length > 0}
-						{@const totalIn = review.inputs.every((i) => i.value != null)
-							? review.inputs.reduce((s, i) => s + (i.value ?? 0), 0)
-							: null}
-						{#if totalIn != null}
-							<div class="detail-row">
-								<span class="text-secondary">Total input</span>
-								<span class="detail-val tabular">{formatSats(totalIn)} sats</span>
-							</div>
-						{/if}
-						<button
-							class="utxo-toggle"
-							aria-expanded={inputsOpen}
-							aria-controls="review-utxo-list"
-							onclick={() => (inputsOpen = !inputsOpen)}
-						>
-							<Icon name={inputsOpen ? 'chevron-down' : 'chevron-right'} size={14} />
-							<span
-								>Coins being spent ({review.inputs.length}
-								{review.inputs.length === 1 ? 'input' : 'inputs'})</span
-							>
-						</button>
-						{#if inputsOpen}
-							<div class="utxo-list fade-in" id="review-utxo-list">
-								{#each review.inputs as inp (inp.txid + inp.vout)}
-									<div class="utxo-row">
-										<span class="mono text-muted">{truncateMiddle(inp.txid, 10, 8)}:{inp.vout}</span>
-										{#if inp.value != null}
-											<span class="tabular">{formatSats(inp.value)} sats</span>
-										{/if}
-									</div>
-								{/each}
-							</div>
-						{/if}
-					{:else}
-						<p class="field-line muted">
-							Input details aren't available for this draft — rebuild from Create to see the exact
-							coins.
-						</p>
-					{/if}
-				</div>
 
 				<!-- Signing-mass panel: advisory only, never blocks. Signing time is a
 				     property of where the coins came from — the network fee is untouched. -->
@@ -1370,7 +1131,8 @@
 						<Icon name="chevron-left" size={15} /> Back &amp; edit
 					</button>
 					<button class="btn btn-primary pill-lg" onclick={() => (step = 'sign')}>
-						Looks good — sign <Icon name="arrow-right" size={15} />
+						{sendCtaLabel(review.amount + review.fee, $btcUsd, 'review')}
+						<Icon name="arrow-right" size={15} />
 					</button>
 				</div>
 			</section>
@@ -1642,41 +1404,19 @@
 		<!-- =========================================================== CONFIRM -->
 		{:else if step === 'confirm' && review}
 			<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
-				<div class="review-hero">
-					<span class="hero-amount sm">{formatBtc(review.amount)} <em>BTC</em></span>
-					<span class="hero-sub">Signed and ready to broadcast</span>
-				</div>
-
-				<div class="detail-list">
-					{#if review.recipients.length === 1}
-						<div class="detail-row">
-							<span class="text-secondary">To</span>
-							<span class="mono confirm-recipient">{review.recipient}</span>
-						</div>
-					{:else}
-						<div class="detail-row confirm-batch">
-							<span class="text-secondary">To {review.recipients.length} recipients</span>
-							<div class="confirm-batch-list">
-								{#each review.recipients as r, i (i)}
-									<span class="mono confirm-recipient tabular"
-										>{formatBtc(r.amount)} BTC → {truncateMiddle(r.address, 12, 10)}</span
-									>
-								{/each}
-							</div>
-						</div>
-					{/if}
-					<div class="detail-row">
-						<span class="text-secondary">Fee</span>
-						<span class="detail-val tabular"
-							>{formatSats(review.fee)} sats · {formatFeeRate(review.feeRate)}</span
-						>
-					</div>
-				</div>
-
-				<p class="step-lead">
-					Broadcasting hands this transaction to the network. Once it's broadcast, there is no
-					undo.
-				</p>
+				<SendReviewCard
+					mode="confirm"
+					amountSats={review.amount}
+					recipients={review.recipients}
+					feeSats={review.fee}
+					feeRate={review.feeRate}
+					changeSats={review.change?.value ?? null}
+					inputs={review.inputs}
+					vsize={review.vsize}
+					recipientLabel={reviewRecipientLabel}
+					arrivalWords={arrivalWords(feeChoice)}
+					multisig={null}
+				/>
 
 				{#if broadcastError}
 					<Banner variant="error">
@@ -1703,8 +1443,11 @@
 						onclick={() => (confirmOpen = true)}
 						disabled={broadcasting}
 					>
-						{#if broadcasting}<span class="spinner"></span> Broadcasting…{:else}Broadcast
-							transaction{/if}
+						{#if broadcasting}<span class="spinner"></span> Broadcasting…{:else}{sendCtaLabel(
+								review.amount + review.fee,
+								$btcUsd,
+								'confirm'
+							)}{/if}
 					</button>
 				</div>
 			</section>
@@ -1982,10 +1725,6 @@
 
 	.hero-input::placeholder {
 		color: var(--text-faint);
-	}
-
-	.hero-input[aria-invalid='true'] {
-		color: var(--attention);
 	}
 
 	/* Serif 400 · 34 in the eyebrow tone, per the 5a unit spec. */
@@ -2768,10 +2507,6 @@
 		flex-direction: column;
 		align-items: flex-end;
 		gap: 4px;
-	}
-
-	.confirm-batch-list .confirm-recipient {
-		max-width: 100%;
 	}
 
 	/* ---- Sent: the grove moment ---- */
