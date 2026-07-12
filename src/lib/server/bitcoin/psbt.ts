@@ -6,7 +6,7 @@
 // deliberately independent of Bitcoin Core's wallet RPCs, because the
 // default deployment has no Core node behind it.
 
-import { Transaction, selectUTXO, p2wpkh, Address, OutScript, NETWORK } from '@scure/btc-signer';
+import { Transaction, selectUTXO, p2wpkh, Address, OutScript, Script, NETWORK } from '@scure/btc-signer';
 import { base64 } from '@scure/base';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
 import { parseXpub, addressToScriptPubKey, isValidAddress } from './xpub';
@@ -1013,6 +1013,108 @@ export class PsbtNotFullySignedError extends Error {
 }
 
 /**
+ * The only sighash flag Cairn broadcasts: SIGHASH_ALL (0x01), the
+ * whole-transaction commitment. A SIGHASH_SINGLE / SIGHASH_NONE / ANYONECANPAY
+ * signature commits to less than the entire transaction and could be replayed
+ * onto a different, attacker-chosen transaction spending the same input — so it
+ * is refused at finalization, mirroring multisigPsbt.ts's combine-time check
+ * (cairn-u2r5). assertSameTransaction only pins the CURRENT draft, so it cannot
+ * catch a wrong-sighash signature on its own.
+ */
+const SIGHASH_ALL = 0x01;
+
+/** Thrown by finalizePsbt when an input carries a signature flagged with a
+ *  sighash type other than SIGHASH_ALL. Carries the (0-based) input index so
+ *  callers can render an accurate, plain-language message. */
+export class PsbtSighashError extends Error {
+	constructor(
+		message: string,
+		public readonly inputIndex: number
+	) {
+		super(message);
+		this.name = 'PsbtSighashError';
+	}
+}
+
+/** SIGHASH classification of one witness/scriptSig stack item: whether it is a
+ *  signature and, if so, whether it commits with SIGHASH_ALL. Non-signatures
+ *  (pubkeys, redeem/witness scripts, the CHECKMULTISIG dummy) are 'skip'. */
+function stackItemSighash(item: Uint8Array): 'ok' | 'bad' | 'skip' {
+	if (item.length === 0) return 'skip';
+	// DER-encoded ECDSA signature (SEQUENCE tag 0x30) carries its sighash flag as
+	// the trailing byte.
+	if (item[0] === 0x30) return item[item.length - 1] === SIGHASH_ALL ? 'ok' : 'bad';
+	// 64-byte BIP-340 Schnorr signature = implicit SIGHASH_DEFAULT (== ALL).
+	if (item.length === 64) return 'ok';
+	// 65-byte Schnorr signature carries an explicit trailing sighash byte; a
+	// 65-byte item starting 0x04 is an uncompressed pubkey, not a signature.
+	if (item.length === 65 && item[0] !== 0x04) return item[64] === SIGHASH_ALL ? 'ok' : 'bad';
+	return 'skip';
+}
+
+/** True when a DER ECDSA signature ends in the SIGHASH_ALL flag byte. */
+function ecdsaSighashAll(sig: Uint8Array): boolean {
+	return sig.length > 0 && sig[sig.length - 1] === SIGHASH_ALL;
+}
+
+/** True when a BIP-340 Schnorr signature commits with SIGHASH_ALL: 64 bytes is
+ *  SIGHASH_DEFAULT (the taproot ALL-equivalent), 65 bytes must end in 0x01. */
+function schnorrSighashAll(sig: Uint8Array): boolean {
+	if (sig.length === 64) return true;
+	if (sig.length === 65) return sig[64] === SIGHASH_ALL;
+	return false;
+}
+
+/** The subset of a parsed PSBT input the sighash guard inspects. */
+interface SighashCheckableInput {
+	sighashType?: number;
+	partialSig?: [Uint8Array, Uint8Array][];
+	tapKeySig?: Uint8Array;
+	tapScriptSig?: [unknown, Uint8Array][];
+	finalScriptSig?: Uint8Array;
+	finalScriptWitness?: Uint8Array[];
+}
+
+/**
+ * Refuse any input signed with a sighash type other than SIGHASH_ALL, before it
+ * is finalized or passed through (cairn-u2r5). Guards BOTH sibling paths in
+ * finalizePsbt: the inputs Cairn finalizes itself (partialSig / tapKeySig) AND
+ * the inputs an external signer already finalized (their assembled
+ * finalScriptWitness / finalScriptSig), so neither is left unchecked.
+ */
+function assertInputSighashAll(inp: SighashCheckableInput, index: number): void {
+	const reject = () => {
+		throw new PsbtSighashError(
+			`Input ${index + 1} is signed with a sighash type other than SIGHASH_ALL. Cairn only broadcasts signatures that commit to the entire transaction — re-sign with the default (SIGHASH_ALL) setting.`,
+			index
+		);
+	};
+	// PSBT_IN_SIGHASH_TYPE (BIP174 field 0x03): an explicit non-ALL declaration is
+	// refused up front. SIGHASH_DEFAULT (0) is taproot's ALL-equivalent, allowed.
+	if (inp.sighashType !== undefined && inp.sighashType !== SIGHASH_ALL && inp.sighashType !== 0) {
+		reject();
+	}
+	for (const [, sig] of inp.partialSig ?? []) if (!ecdsaSighashAll(sig)) reject();
+	if (inp.tapKeySig && !schnorrSighashAll(inp.tapKeySig)) reject();
+	for (const entry of inp.tapScriptSig ?? []) {
+		const sig = entry[1];
+		if (sig instanceof Uint8Array && !schnorrSighashAll(sig)) reject();
+	}
+	for (const item of inp.finalScriptWitness ?? []) if (stackItemSighash(item) === 'bad') reject();
+	if (inp.finalScriptSig && inp.finalScriptSig.length > 0) {
+		let decoded: (number | Uint8Array | bigint)[] = [];
+		try {
+			decoded = Script.decode(inp.finalScriptSig) as (number | Uint8Array | bigint)[];
+		} catch {
+			decoded = [];
+		}
+		for (const item of decoded) {
+			if (item instanceof Uint8Array && stackItemSighash(item) === 'bad') reject();
+		}
+	}
+}
+
+/**
  * Finalize a fully-signed PSBT and extract the raw transaction hex ready for
  * broadcast.
  *
@@ -1036,6 +1138,10 @@ export function finalizePsbt(psbtBase64: string): { rawHex: string; txid: string
 	let unsigned = 0;
 	for (let i = 0; i < total; i++) {
 		const inp = tx.getInput(i);
+		// Funds-safety gate (cairn-u2r5): every signature on this input must commit
+		// to the WHOLE transaction (SIGHASH_ALL). Checked for both already-finalized
+		// pass-through inputs and the ones finalizeIdx handles below.
+		assertInputSighashAll(inp, i);
 		if (isInputFinalized(inp)) continue; // already done by the external signer — pass through
 		if (isInputUnsigned(inp)) {
 			unsigned++;

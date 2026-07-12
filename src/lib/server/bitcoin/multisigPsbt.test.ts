@@ -677,6 +677,136 @@ describe('combineMultisigPsbts', () => {
 	});
 });
 
+// ── finalization-adoption guard on the combine path (cairn-vo6z) ─────────────
+//
+// combineMultisigPsbts used to copy an incoming finalScriptWitness /
+// finalScriptSig verbatim whenever the base input wasn't yet finalized. Since
+// assertSameTransaction only pins the unsigned inputs/outputs (never the
+// witness), a cosigner could attach GARBAGE finalization — zero real signatures
+// — that durably marked a shared draft ready-to-broadcast while the network
+// rejects it, and honest signers couldn't recover: an availability DoS on shared
+// funds that also contradicted MANUAL §18.9's "tampered PSBT rejected" claim.
+describe('combineMultisigPsbts finalization guard (cairn-vo6z)', () => {
+	/** Reproduce a LEGITIMATE finalized cosigner PSBT: signer B takes the combined
+	 *  PSBT, adds its signature, and finalizes (stripping partialSig into a real
+	 *  witness) — exactly the Bitcoin-Core-style flow cairn-8y3b pins. */
+	async function legitFinalized() {
+		const draft = await build2of3();
+		const combinedA = combineMultisigPsbts(draft.psbtBase64, signWith(draft.psbtBase64, SIGNERS[0]));
+		const bWork = combineMultisigPsbts(combinedA, signWith(combinedA, SIGNERS[1]));
+		const bTx = Transaction.fromPSBT(base64.decode(bWork));
+		bTx.finalize();
+		return { draft, combinedA, bFinalized: base64.encode(bTx.toPSBT()) };
+	}
+
+	/** Rebuild `finalizedB64` with input 0's witness stack mutated in place. */
+	function withWitness(finalizedB64: string, mutate: (w: Uint8Array[]) => void): string {
+		const tx = Transaction.fromPSBT(base64.decode(finalizedB64));
+		const w = (tx.getInput(0).finalScriptWitness ?? []).map((x) => new Uint8Array(x));
+		mutate(w);
+		tx.updateInput(0, { finalScriptWitness: w }, true);
+		return base64.encode(tx.toPSBT());
+	}
+
+	it('adopts a LEGITIMATE finalized cosigner PSBT unchanged (flow unaffected)', async () => {
+		const { combinedA, bFinalized } = await legitFinalized();
+		const result = combineMultisigPsbts(combinedA, bFinalized);
+		// Earlier signer's partialSig survives; the transaction reads complete and
+		// finalizes for broadcast.
+		expect(partialSigCount(result, 0)).toBe(1);
+		expect(multisigPsbtProgress(result, 2)).toMatchObject({ complete: true });
+		expect(() => finalizeMultisigPsbt(result)).not.toThrow();
+	});
+
+	it('rejects GARBAGE finalization attached to an unsigned draft (the DoS)', async () => {
+		const draft = await build2of3();
+		// A witness shaped like a CHECKMULTISIG spend but carrying no real data —
+		// zero valid signatures, wrong trailing script.
+		const tampered = withWitness(draft.psbtBase64, (w) => {
+			w.length = 0;
+			w.push(new Uint8Array(0), new Uint8Array([1, 2, 3]), new Uint8Array([9, 9, 9, 9]));
+		});
+		try {
+			combineMultisigPsbts(draft.psbtBase64, tampered);
+			expect.unreachable();
+		} catch (e) {
+			expect(e).toBeInstanceOf(MultisigPsbtError);
+			expect((e as MultisigPsbtError).code).toBe('invalid_finalization');
+		}
+	});
+
+	it("rejects a finalization whose trailing witnessScript isn't this multisig's", async () => {
+		const { combinedA, bFinalized } = await legitFinalized();
+		// Flip a byte inside the trailing witnessScript element: real signatures,
+		// but bound to a script this multisig never produced.
+		const tampered = withWitness(bFinalized, (w) => {
+			const script = w[w.length - 1];
+			script[script.length - 1] ^= 0xff;
+		});
+		try {
+			combineMultisigPsbts(combinedA, tampered);
+			expect.unreachable();
+		} catch (e) {
+			expect((e as MultisigPsbtError).code).toBe('invalid_finalization');
+		}
+	});
+
+	it('rejects a finalization whose signatures are re-flagged to a non-ALL sighash', async () => {
+		const { combinedA, bFinalized } = await legitFinalized();
+		// Re-flag the DER signatures (all but the leading dummy and trailing script)
+		// from SIGHASH_ALL to SIGHASH_SINGLE.
+		const tampered = withWitness(bFinalized, (w) => {
+			for (let i = 1; i < w.length - 1; i++) {
+				const sig = w[i];
+				if (sig.length > 0) sig[sig.length - 1] = 0x03;
+			}
+		});
+		try {
+			combineMultisigPsbts(combinedA, tampered);
+			expect.unreachable();
+		} catch (e) {
+			expect((e as MultisigPsbtError).code).toBe('invalid_finalization');
+		}
+	});
+
+	it('rejects a finalization with the correct script but the signatures blanked out', async () => {
+		const { combinedA, bFinalized } = await legitFinalized();
+		const tampered = withWitness(bFinalized, (w) => {
+			for (let i = 1; i < w.length - 1; i++) w[i] = new Uint8Array(0);
+		});
+		try {
+			combineMultisigPsbts(combinedA, tampered);
+			expect.unreachable();
+		} catch (e) {
+			expect((e as MultisigPsbtError).code).toBe('invalid_finalization');
+		}
+	});
+
+	// Sibling entry point: broadcastStatelessPsbt finalizes a client-submitted PSBT
+	// directly via finalizeMultisigPsbt, NOT through the validated combine — so the
+	// finalize path must re-validate any finalization present when the input still
+	// carries this multisig's witnessScript.
+	it('finalizeMultisigPsbt rejects a directly-submitted tampered finalization', async () => {
+		const { combinedA, bFinalized } = await legitFinalized();
+		// A validly-combined (thus witnessScript-retaining) finalized PSBT…
+		const good = combineMultisigPsbts(combinedA, bFinalized);
+		expect(() => finalizeMultisigPsbt(good)).not.toThrow(); // control: legit broadcast
+
+		// …with its trailing witnessScript element corrupted must be refused here too.
+		const tampered = withWitness(good, (w) => {
+			const script = w[w.length - 1];
+			script[script.length - 1] ^= 0xff;
+		});
+		try {
+			finalizeMultisigPsbt(tampered);
+			expect.unreachable();
+		} catch (e) {
+			expect(e).toBeInstanceOf(MultisigPsbtError);
+			expect((e as MultisigPsbtError).code).toBe('invalid_finalization');
+		}
+	});
+});
+
 // ── PSBT-substitution guard on the multisig combine path (cairn-sera) ────────
 //
 // Pins the cairn-973 fix (assertSameTransaction wired into combineMultisigPsbts):
