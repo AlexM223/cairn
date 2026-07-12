@@ -4,6 +4,7 @@
 	import { afterNavigate, goto, invalidate, replaceState } from '$app/navigation';
 	import { onNewBlock } from '$lib/liveBlocks';
 	import Icon from '$lib/components/Icon.svelte';
+	import Amount from '$lib/components/Amount.svelte';
 	import SyncIndicator from '$lib/components/heartwood/SyncIndicator.svelte';
 	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
@@ -430,12 +431,7 @@
 
 			{#if detail}
 				<div class="hw-hero">
-					<span
-						class="hero-number hw-hero-btc"
-						title="{formatSats(detail.balance.confirmed)} sats"
-						>{formatBtc(detail.balance.confirmed)}</span
-					>
-					<span class="hw-hero-unit">BTC</span>
+					<Amount sats={detail.balance.confirmed} size="hero" />
 				</div>
 				<p class="hw-hero-sub">
 					<span class="tabular">{formatSats(detail.balance.confirmed)} sats</span>
@@ -780,7 +776,7 @@
 											<span class="mono hw-tx-link">{truncateMiddle(tx.txid, 8, 8)}</span>
 										{/if}
 										{#if tx.fee != null}
-											· fee {formatSats(tx.fee)} sats
+											· network fee <Amount sats={tx.fee} size="inline" />
 										{/if}
 									</span>
 									{#if tx.height <= 0 && speedUpByTxid[tx.txid] && data.role !== 'viewer'}
@@ -835,13 +831,12 @@
 									{/if}
 								</div>
 								<div class="hw-tx-right">
-									<span
-										class="hw-tx-amount tabular"
-										class:in={tx.delta >= 0}
-										title="{formatSats(tx.delta)} sats"
-									>
-										{tx.delta > 0 ? '+' : ''}{formatBtc(tx.delta)}
-									</span>
+									<Amount
+										sats={tx.delta}
+										size="row"
+										sign
+										direction={tx.delta >= 0 ? 'in' : 'out'}
+									/>
 									<span class="hw-tx-when">
 										{tx.height <= 0 ? 'in the mempool' : timeAgo(tx.time)}
 									</span>
@@ -968,9 +963,9 @@
 													</button>
 												{/if}
 											</td>
-											<td class="num" title="{formatSats(addr.balance)} sats">
+											<td class="num">
 												{#if addr.balance !== 0}
-													{formatBtc(addr.balance)}
+													<Amount sats={addr.balance} size="row" />
 												{:else}
 													<span class="text-muted">0</span>
 												{/if}
