@@ -5,6 +5,7 @@
 	import { browser } from '$app/environment';
 	import { onDestroy, onMount, tick } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
+	import Banner from '$lib/components/Banner.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
 	import DevicePicker from '$lib/components/DevicePicker.svelte';
@@ -748,7 +749,7 @@
 							{/if}
 						</div>
 					{:else if restoreError}
-						<div class="restore-msg form-error" role="alert">{restoreError}</div>
+						<Banner variant="error">{restoreError}</Banner>
 					{/if}
 				</div>
 
@@ -838,10 +839,7 @@
 					</div>
 
 					{#if restoreNote && method === 'paste'}
-						<div class="restore-msg restore-note" role="status">
-							<Icon name="check" size={13} />
-							{restoreNote}
-						</div>
+						<Banner variant="success">{restoreNote}</Banner>
 					{/if}
 
 					<!-- Address-type picker for direct device reads: chosen before the read
@@ -1115,7 +1113,7 @@
 							{/if}
 
 							{#if previewError}
-								<div class="form-error" role="alert">{previewError}</div>
+								<Banner variant="error">{previewError}</Banner>
 							{/if}
 
 							<div class="help-box">
@@ -1194,7 +1192,7 @@
 							{/if}
 						</div>
 					{:else if deviceError}
-						<div class="form-error" role="alert">{deviceError}</div>
+						<Banner variant="error">{deviceError}</Banner>
 					{/if}
 				</div>
 			{/if}
@@ -1219,15 +1217,7 @@
 			{#if sharedKeyNotice}
 				<!-- Outcome of the opt-in sharing-key prefetch (cairn-fdlf.1). Always
 				     soft: the wallet import itself already succeeded. -->
-				<div
-					class="shared-note"
-					class:shared-note-success={sharedKeyNotice.tone === 'success'}
-					class:shared-note-error={sharedKeyNotice.tone === 'error'}
-					role="status"
-				>
-					<Icon name={sharedKeyNotice.tone === 'success' ? 'check' : 'info'} size={14} />
-					<span>{sharedKeyNotice.text}</span>
-				</div>
+				<Banner variant={sharedKeyNotice.tone}>{sharedKeyNotice.text}</Banner>
 			{/if}
 			<p class="hint" style="line-height: 1.6">
 				These are the first five receive addresses derived from your key. Check they match
@@ -1356,7 +1346,7 @@
 				{/if}
 
 				{#if createError}
-					<div class="form-error" role="alert">{createError}</div>
+					<Banner variant="error">{createError}</Banner>
 				{/if}
 
 				<div class="pane-actions">
@@ -1718,18 +1708,6 @@
 		line-height: 1.55;
 	}
 
-	.restore-note {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-		color: var(--text-secondary);
-	}
-
-	.restore-note :global(svg) {
-		color: var(--success);
-		flex-shrink: 0;
-	}
-
 	/* Detected-multisig hand-off card (multisig-import UX) */
 	.multisig-detected {
 		display: flex;
@@ -1985,34 +1963,6 @@
 
 	.share-opt-in-caveat {
 		color: var(--text-muted);
-	}
-
-	/* Preview-step outcome of the sharing-key prefetch — always a soft note. */
-	.shared-note {
-		display: flex;
-		align-items: flex-start;
-		gap: 8px;
-		padding: 9px 12px;
-		font-size: 12.5px;
-		line-height: 1.55;
-		color: var(--text-secondary);
-		background: var(--bg);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-	}
-
-	.shared-note :global(svg) {
-		flex-shrink: 0;
-		margin-top: 2px;
-		color: var(--accent);
-	}
-
-	.shared-note-success :global(svg) {
-		color: var(--success);
-	}
-
-	.shared-note-error :global(svg) {
-		color: var(--warning, var(--accent));
 	}
 
 	.connect-copy {

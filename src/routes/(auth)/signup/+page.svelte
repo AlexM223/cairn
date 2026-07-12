@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import Banner from '$lib/components/Banner.svelte';
 
 	let { data } = $props();
 
@@ -65,9 +66,9 @@
 	</div>
 {:else}
 	{#if data.firstUser}
-		<div class="first-user-note">
+		<Banner variant="info">
 			You're setting up this instance — the first account becomes the administrator.
-		</div>
+		</Banner>
 	{/if}
 
 	<!--
@@ -79,7 +80,7 @@
 	-->
 	<form class="stack" onsubmit={createAccount} novalidate>
 		{#if error}
-			<div class="form-error" role="alert">{error}</div>
+			<Banner variant="error">{error}</Banner>
 		{/if}
 
 		<div class="field">
@@ -136,16 +137,6 @@
 <style>
 	form {
 		gap: 16px;
-	}
-
-	.first-user-note {
-		font-size: 12.5px;
-		color: var(--accent);
-		background: var(--accent-muted);
-		border-radius: 18px;
-		padding: 11px 18px;
-		margin-bottom: 16px;
-		line-height: 1.5;
 	}
 
 	.btn {

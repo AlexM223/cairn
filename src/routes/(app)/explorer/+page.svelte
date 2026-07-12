@@ -5,6 +5,7 @@
 	import { onNewBlock } from '$lib/liveBlocks';
 	import { triggerChainRefresh } from '$lib/chainRefresh';
 	import Icon from '$lib/components/Icon.svelte';
+	import Banner from '$lib/components/Banner.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
@@ -397,31 +398,33 @@
 
 		{#if showError}
 			<!-- Calm, plain-language disconnected state (cairn-obg6) — no raw
-			     technical error text, no alarm tone (role="status", not "alert"):
-			     losing the chain source is expected/recoverable, not a crisis. -->
-			<div class="form-error chain-error fade-in" role="status" aria-live="polite">
-				<Icon name="alert-triangle" size={16} />
-				<span class="chain-error-text">
-					<strong>Heartwood can't reach the Bitcoin network right now.</strong>
-					<span class="detail">
-						Your money is safe — the explorer will wake up when the connection returns.
+			     technical error text, no alarm tone (Banner's non-error variants
+			     render role="status", not "alert"): losing the chain source is
+			     expected/recoverable, not a crisis. -->
+			<div class="chain-error fade-in">
+				<Banner variant="warning">
+					<span class="chain-error-text">
+						<strong>Heartwood can't reach the Bitcoin network right now.</strong>
+						<span class="detail">
+							Your money is safe — the explorer will wake up when the connection returns.
+						</span>
 					</span>
-				</span>
-				<span class="chain-error-actions">
-					<button
-						type="button"
-						class="retry"
-						onclick={() => (data.before !== null ? retryPaged() : refresh(true))}
-					>
-						Retry
-					</button>
-					{#if data.isAdmin}
-						<!-- Retry was the only action here (cairn-obg6) — admins can
-						     actually fix a dead connection, so give them a direct path
-						     instead of just a spinner-and-hope Retry loop. -->
-						<a class="check-settings" href="/admin/settings">Check connection settings</a>
-					{/if}
-				</span>
+					{#snippet actions()}
+						<button
+							type="button"
+							class="retry"
+							onclick={() => (data.before !== null ? retryPaged() : refresh(true))}
+						>
+							Retry
+						</button>
+						{#if data.isAdmin}
+							<!-- Retry was the only action here (cairn-obg6) — admins can
+							     actually fix a dead connection, so give them a direct path
+							     instead of just a spinner-and-hope Retry loop. -->
+							<a class="check-settings" href="/admin/settings">Check connection settings</a>
+						{/if}
+					{/snippet}
+				</Banner>
 			</div>
 		{/if}
 
@@ -805,16 +808,7 @@
 	}
 
 	.chain-error {
-		display: flex;
-		align-items: center;
-		gap: 10px;
 		margin-top: 14px;
-	}
-
-	.chain-error-text {
-		flex: 1;
-		min-width: 0;
-		line-height: 1.5;
 	}
 
 	.chain-error-text strong {
@@ -826,15 +820,7 @@
 		color: var(--text-secondary);
 	}
 
-	.chain-error-actions {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		margin-left: auto;
-		flex-shrink: 0;
-	}
-
-	.chain-error .retry {
+	.retry {
 		color: inherit;
 		text-decoration: underline;
 		white-space: nowrap;
