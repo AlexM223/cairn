@@ -2,7 +2,6 @@
 	import { onDestroy, onMount, tick } from 'svelte';
 	import { deserialize } from '$app/forms';
 	import { page } from '$app/state';
-	import { pushState, replaceState } from '$app/navigation';
 	import { browser } from '$app/environment';
 	import Icon from '$lib/components/Icon.svelte';
 	import SecureContextHelp from '$lib/components/signing/SecureContextHelp.svelte';
@@ -860,13 +859,6 @@
 		} catch {
 			// Already reset in memory; a stale snapshot will age out.
 		}
-		// Collapse the history stack back to a single step-0 entry so a Back press
-		// after "Start over" doesn't strand the user on a now-empty later screen.
-		try {
-			replaceState('', { wizardStep: 0 });
-		} catch {
-			// Router not ready (mid-hydration) — the back-button aid just no-ops.
-		}
 	}
 
 	/** Clears any in-flight resume snapshot before an explicit exit — the Cancel
@@ -885,22 +877,14 @@
 	// -------------------------------------------------------------- navigation
 	//
 	// The wizard's screen lives in `step`, not the URL — it stays
-	// /wallets/multisig/new throughout — so without help the browser Back button
-	// escapes the whole flow (and the wallets list too, landing on the dashboard).
-	// We mirror the step position into the history stack with SvelteKit shallow
-	// routing: one same-URL entry per step reached. Forward moves push a new entry;
-	// in-app Back delegates to the browser (history.back → popstate → onPopState),
-	// so both Back paths are identical and there's no pushState⇄popstate loop
-	// (a pushState never fires popstate).
+	// /wallets/multisig/new throughout. Step transitions are plain state updates
+	// with no history writes at all, so the browser's history stack is never
+	// touched by the wizard — Back always leaves the wizard for whatever page
+	// preceded it, instead of walking back through steps.
 
-	/** Advance to a later step and record it as a new history entry. */
+	/** Advance to a later step. */
 	function advanceTo(key: StepKey) {
 		step = key;
-		try {
-			pushState('', { wizardStep: STEPS.findIndex((s) => s.key === key) });
-		} catch {
-			// Router not ready — the step still changes, only the Back aid is lost.
-		}
 	}
 
 	function goToReview() {
@@ -908,50 +892,25 @@
 		void loadPreview();
 	}
 
-	// Entering the Keys step — first time, via a forward move, or via any Back
-	// control — always lands on the method picker with no stale device/error state
-	// left over from a previous visit (e.g. a failed Ledger connect). Reuses the
-	// same reset as the in-form "Different source" button; added keys are kept.
-	//
-	// Forward move onto the Keys step (Protection → Add keys): reset the form AND
-	// push a history entry. Back-into-keys is handled by onPopState (which resets
-	// the form too), so both entry paths behave identically.
+	// Entering the Keys step — first time, via a forward move, or via the on-screen
+	// Back button — always lands on the method picker with no stale device/error
+	// state left over from a previous visit (e.g. a failed Ledger connect). Reuses
+	// the same reset as the in-form "Different source" button; added keys are kept.
 	function advanceToKeys() {
 		resetKeyForm();
 		advanceTo('keys');
 	}
 
-	/** In-app Back: pop one history entry so it behaves exactly like browser Back. */
+	/** In-app Back button: retreat one step in place (not a history operation).
+	 *  Mirrors STEPS order; re-resets the Keys form on the way back in, same as
+	 *  the forward path onto 'keys' (advanceToKeys), so both entries behave
+	 *  identically. */
 	function stepBack() {
-		history.back();
-	}
-
-	/** Apply a step the user reached via browser Back/Forward. */
-	function applyStepFromHistory(idx: number) {
-		const key = STEPS[idx]?.key;
-		if (!key || key === 'done') return; // Done is terminal (guarded by createdId)
-		if (key === 'keys') resetKeyForm();
-		step = key;
-	}
-
-	function onPopState() {
-		// Once created, the Done screen is terminal — don't reopen the form on Back.
-		if (createdId !== null) return;
-		const target = page.state.wizardStep;
-		if (typeof target === 'number' && target !== stepIndex) applyStepFromHistory(target);
-	}
-
-	/** Rebuild the history stack to match the current step (handles a mid-wizard
-	 *  resume — cairn-1u41 — the same way the single-sig wizard does). */
-	function seedStepHistory() {
-		try {
-			replaceState('', { wizardStep: 0 });
-			const target = STEPS.findIndex((s) => s.key === step);
-			for (let i = 1; i <= target; i++) pushState('', { wizardStep: i });
-		} catch {
-			// Router not ready — degrade gracefully; navigation still works, the
-			// Back button just isn't step-aware.
-		}
+		const idx = STEPS.findIndex((s) => s.key === step);
+		const prevKey = STEPS[idx - 1]?.key;
+		if (!prevKey || prevKey === 'done') return;
+		if (prevKey === 'keys') resetKeyForm();
+		step = prevKey;
 	}
 
 	onMount(() => {
@@ -1002,15 +961,6 @@
 			if (vaultMode !== null) void refreshKnownKeys(vaultMode);
 			if (step === 'review') void loadPreview();
 		}
-		// Browser Back should retreat one wizard screen (cairn-aiyw), not leave
-		// the wizard outright. Rebuild the whole 0..step history stack — not just
-		// the current entry — so a resume landing mid-wizard is Back-able right
-		// away. Runs AFTER the restore above so it seeds against the (possibly
-		// restored) step; pushState/replaceState never fire popstate, so this
-		// can't race or loop with onPopState below.
-		seedStepHistory();
-		window.addEventListener('popstate', onPopState);
-		return () => window.removeEventListener('popstate', onPopState);
 	});
 
 	// Every step change — button, back, or programmatic — moves focus to the
@@ -2394,7 +2344,11 @@
 
 			<div class="pane-actions" style="justify-content: center">
 				{#if backedUp || configImported}
-					<a href="/wallets/multisig/{createdId}?created=1" class="btn btn-primary">
+					<a
+						href="/wallets/multisig/{createdId}?created=1"
+						class="btn btn-primary"
+						data-sveltekit-replacestate
+					>
 						Go to your multisig wallet
 						<Icon name="arrow-right" size={14} />
 					</a>
