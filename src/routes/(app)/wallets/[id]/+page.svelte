@@ -187,14 +187,16 @@
 			});
 			const body = await res.json();
 			if (!res.ok) {
-				bumpError = typeof body?.error === 'string' ? body.error : 'Fee bump failed.';
+				const reason = typeof body?.error === 'string' ? body.error : 'Something unexpected happened.';
+				bumpError = `Couldn't speed this up — ${reason} Your original transaction is unchanged and still valid.`;
 				return;
 			}
 			// The send flow resumes drafts at Review with the full
 			// sign-and-broadcast machinery.
 			await goto(`/wallets/${data.wallet.id}/send?tx=${body.id}`);
 		} catch {
-			bumpError = 'Fee bump failed — check your connection and try again.';
+			bumpError =
+				"Couldn't speed this up — network hiccup, check your connection and try again. Your original transaction is unchanged and still valid.";
 		} finally {
 			bumping = false;
 		}

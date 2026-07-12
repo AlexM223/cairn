@@ -56,6 +56,7 @@ import {
 } from './transactions';
 import { BumpError, CpfpError, executeCpfpDraft, executeRbfBump } from './feeBump';
 import { checkSelectedInputsChainDepth, type ChainDepthWarning } from './chainDepth';
+import { friendlyBroadcastRejection } from './broadcastRejection';
 
 export type MultisigTxStatus = 'draft' | 'awaiting_signature' | 'completed' | 'superseded';
 
@@ -633,7 +634,7 @@ export async function broadcastMultisigTransaction(
 		} else {
 			// Release the claim: a failed broadcast must stay retryable.
 			db.prepare('UPDATE multisig_transactions SET broadcast_started_at = NULL WHERE id = ?').run(txId);
-			throw new BroadcastError(`The network rejected this transaction: ${raw}`, 'rejected');
+			throw new BroadcastError(friendlyBroadcastRejection(raw), 'rejected');
 		}
 	}
 

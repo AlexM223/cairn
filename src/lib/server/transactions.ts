@@ -35,6 +35,7 @@ import {
 	executeCpfpDraft,
 	executeRbfBump
 } from './feeBump';
+import { friendlyBroadcastRejection } from './broadcastRejection';
 import { childLogger } from './logger';
 import type { ScriptType } from '$lib/types';
 
@@ -915,8 +916,9 @@ export async function broadcastTransaction(
 		} else {
 			// Release the claim: a failed broadcast must stay retryable.
 			db.prepare('UPDATE transactions SET broadcast_started_at = NULL WHERE id = ?').run(txId);
-			// Surface the node's rejection reason in as-plain-as-possible language.
-			throw new BroadcastError(`The network rejected this transaction: ${raw}`, 'rejected');
+			// Surface the node's rejection reason in as-plain-as-possible language,
+			// always confirming nothing was sent (UX-PLAN §5.3 item 4).
+			throw new BroadcastError(friendlyBroadcastRejection(raw), 'rejected');
 		}
 	}
 

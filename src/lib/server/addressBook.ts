@@ -84,7 +84,7 @@ export function saveAddress(
 	const address = String(input.address ?? '').trim();
 	if (!isValidAddress(address)) {
 		throw new AddressBookError(
-			'That does not look like a valid Bitcoin address.',
+			"That's not a valid Bitcoin address — check for a typo or extra spaces.",
 			'invalid_address'
 		);
 	}
@@ -93,7 +93,7 @@ export function saveAddress(
 	const label = hasLabel ? String(input.label).trim() : '';
 	if (hasLabel && (label.length < 1 || label.length > ADDRESS_LABEL_MAX)) {
 		throw new AddressBookError(
-			`Label must be 1–${ADDRESS_LABEL_MAX} characters.`,
+			`Give this contact a name (1–${ADDRESS_LABEL_MAX} characters).`,
 			'invalid_label'
 		);
 	}
@@ -110,7 +110,7 @@ export function saveAddress(
 	}
 
 	if (!hasLabel) {
-		throw new AddressBookError('Give this address a label to save it.', 'invalid_label');
+		throw new AddressBookError('Give this contact a name to save it.', 'invalid_label');
 	}
 	db.prepare('INSERT INTO saved_addresses (user_id, label, address) VALUES (?, ?, ?)').run(
 		userId,

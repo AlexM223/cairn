@@ -191,13 +191,15 @@
 			}
 			const body = await res.json();
 			if (!res.ok) {
-				speedUpError = typeof body?.error === 'string' ? body.error : 'Speed up failed.';
+				const reason = typeof body?.error === 'string' ? body.error : 'Something unexpected happened.';
+				speedUpError = `Couldn't speed this up — ${reason} Your original transaction is unchanged and still valid.`;
 				return;
 			}
 			// The new draft re-enters the roster sign/broadcast flow.
 			await goto(`/wallets/multisig/${data.multisig.id}/send?tx=${body.id}`);
 		} catch {
-			speedUpError = 'Speed up failed — check your connection and try again.';
+			speedUpError =
+				"Couldn't speed this up — network hiccup, check your connection and try again. Your original transaction is unchanged and still valid.";
 		} finally {
 			speedingUp = false;
 		}
