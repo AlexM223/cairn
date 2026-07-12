@@ -394,4 +394,18 @@ export interface InstanceSettings {
 	 *  connection / the public-server default. Purely informational — it only
 	 *  changes what the settings UI renders, never which connection is active. */
 	chainProvisionedBy: string | null;
+	/** Pre-connect Umbrel Core RPC signal (Wave B, docs/UMBREL-AUTOCONNECT-WAVE-B-DESIGN.md
+	 *  §6): 'umbrel' once umbrelCoreProbe.ts's credential-free probe finds a
+	 *  bitcoind listener at the well-known Umbrel address, 'dismissed' once the
+	 *  admin dismisses the resulting assisted-connect banner, or null before any
+	 *  probe fires / on non-Umbrel deployments. Purely advisory — never consulted
+	 *  by getChainConfig() and never implies a live connection. */
+	coreRpcDetected: string | null;
+	/** Post-connect Core RPC provenance (Wave B §6), deliberately separate from
+	 *  the Electrum-scoped `chainProvisionedBy`: 'umbrel-env' when
+	 *  chainEnvSeed.ts seeded core_rpc_url from CAIRN_CORE_RPC_* env vars,
+	 *  'umbrel-detect' when the admin completed the assisted-connect flow that
+	 *  started from `coreRpcDetected==='umbrel'`, or null when Core is
+	 *  unconfigured or was entered by hand with no Umbrel involvement. */
+	coreRpcProvisionedBy: string | null;
 }

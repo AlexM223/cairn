@@ -11,6 +11,7 @@ import {
 } from '$lib/server/auth';
 import { seedChainConfigFromEnv } from '$lib/server/chainEnvSeed';
 import { probeAndSeedUmbrelElectrum } from '$lib/server/umbrelProbe';
+import { probeAndDetectUmbrelCore } from '$lib/server/umbrelCoreProbe';
 import { resolveAllFlags } from '$lib/server/featureFlags/resolve';
 import { appGateRedirect } from '$lib/server/appGate';
 import {
@@ -173,6 +174,21 @@ async function init(): Promise<void> {
 		seededKeys = seededKeys.concat(await probeAndSeedUmbrelElectrum());
 	} catch (e) {
 		errLog.error({ err: e }, 'umbrel electrum probe failed');
+	}
+
+	// Umbrel Bitcoin Core RPC detect-and-surface, Wave B Unit B1
+	// (docs/UMBREL-AUTOCONNECT-WAVE-B-DESIGN.md §4/§5, cairn-ylz5). Unlike the
+	// Electrum probe above, this NEVER connects anything — it only seeds the
+	// advisory `core_rpc_detected` marker when a bitcoind HTTP-RPC listener
+	// answers the well-known Umbrel address, so the settings UI can later
+	// offer an assisted one-paste connect. Same slot as the Electrum probe
+	// (after the env seed, so an env-provided core_rpc_url always wins and
+	// short-circuits this via coreRpcConfigured()); strictly gated to
+	// CAIRN_PLATFORM=umbrel inside the module. Never throws.
+	try {
+		seededKeys = seededKeys.concat(await probeAndDetectUmbrelCore());
+	} catch (e) {
+		errLog.error({ err: e }, 'umbrel core RPC detect probe failed');
 	}
 
 	// Decide instanceMode ('solo' | 'team') for installs that predate the setting.

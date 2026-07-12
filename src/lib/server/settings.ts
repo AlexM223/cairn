@@ -23,7 +23,9 @@ const DEFAULTS: InstanceSettings = {
 	coreRpcUrl: null,
 	coreRpcUser: null,
 	coreRpcPass: null,
-	chainProvisionedBy: null
+	chainProvisionedBy: null,
+	coreRpcDetected: null,
+	coreRpcProvisionedBy: null
 };
 
 /** Public-mode defaults for the chain backends (used when connectionMode === 'public'). */
@@ -139,6 +141,15 @@ export function getInstanceSettings(): InstanceSettings {
 	// (umbrelProbe.ts). Drives the settings page's "auto-connected" card; never
 	// affects which connection is actually used.
 	if (str('chain_provisioned_by')) s.chainProvisionedBy = str('chain_provisioned_by')!;
+	// Umbrel Core RPC detect-and-surface markers (Wave B,
+	// docs/UMBREL-AUTOCONNECT-WAVE-B-DESIGN.md §6) — kept separate from the
+	// Electrum-scoped chainProvisionedBy above. coreRpcDetected is the
+	// pre-connect signal (umbrelCoreProbe.ts, or 'dismissed'); coreRpcProvisionedBy
+	// is the post-connect provenance ('umbrel-env' | 'umbrel-detect'), written by
+	// the assisted-connect save path (Unit B2, not yet built). Neither is ever
+	// consulted by getChainConfig()/coreRpcConfigured() — display-only.
+	if (str('core_rpc_detected')) s.coreRpcDetected = str('core_rpc_detected')!;
+	if (str('core_rpc_provisioned_by')) s.coreRpcProvisionedBy = str('core_rpc_provisioned_by')!;
 
 	return s;
 }
@@ -153,6 +164,24 @@ export function getInstanceSettings(): InstanceSettings {
  */
 export function getInstanceMode(): InstanceMode {
 	return (getSetting('instance_mode') as InstanceMode | null) ?? DEFAULTS.instanceMode;
+}
+
+/**
+ * Whether this instance's chain connection has never been touched by an admin
+ * or an auto-connect mechanism — `connection_mode` was never written (so it's
+ * still silently on the DEFAULTS `'public'` value) AND no seed mechanism ever
+ * fired (`chain_provisioned_by` unset, docs/UMBREL-AUTOCONNECT-DESIGN.md §5).
+ *
+ * This distinguishes a fresh install quietly sitting on the public-server
+ * default from an instance an admin has actually set up (even if they chose
+ * to keep it on 'public') or that Umbrel auto-connected — see cairn-7zjo: the
+ * former deserves a calm "not connected yet, go set this up" banner; the
+ * latter, if it later goes unreachable, is a real "this broke" warning.
+ * Two cheap keyed lookups — no full settings-table scan or core_rpc_pass
+ * decrypt (unlike getInstanceSettings()).
+ */
+export function isChainNeverConfigured(): boolean {
+	return getSetting('connection_mode') === null && getSetting('chain_provisioned_by') === null;
 }
 
 /**
