@@ -462,12 +462,24 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		return bytes;
 	}
 
+	// Segwit inputs' nonWitnessUtxo fetch is DEFERRED past coin selection (see
+	// fetchChosenPrevTxs below, and the attach steps at each selection branch):
+	// selection only ever reads witnessUtxo's amount, so fetching the full
+	// previous transaction for every CANDIDATE here — most of which never end
+	// up spent — paid for one serial Electrum round-trip per candidate before a
+	// single input was even chosen (cairn perf: send-flow prev-tx fetch fixed
+	// upstream of coin selection). p2pkh carries no witnessUtxo at all —
+	// selectUTXO can only learn a legacy input's value from its full previous
+	// transaction — so that fetch cannot be deferred and stays eager below.
+	const deferredNonWitness = scriptType !== 'p2pkh' && scriptType !== 'p2tr' && !!params.fetchRawTx;
+
 	const inputs: Record<string, unknown>[] = [];
 	for (const utxo of spendable) {
 		// Coinbase inputs MUST carry the full previous transaction — hardware
 		// signers require it to safely sign a mining reward. Every non-p2tr input
-		// already attaches nonWitnessUtxo when fetchRawTx is present (below); this
-		// only rejects the pathological case of a coinbase spend with no fetcher.
+		// gets nonWitnessUtxo when fetchRawTx is present (eagerly for p2pkh here,
+		// deferred to the chosen set for segwit below); this only rejects the
+		// pathological case of a coinbase spend with no fetcher configured at all.
 		if (utxo.coinbase === true && !params.fetchRawTx) {
 			throw new PsbtError(
 				'Spending a mining reward needs its full previous transaction, which is unavailable right now.',
@@ -485,6 +497,9 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		};
 
 		if (scriptType === 'p2pkh') {
+			// Legacy inputs carry no witnessUtxo — selectUTXO can only learn their
+			// value from the full previous transaction, so this fetch cannot wait
+			// for selection to run.
 			input.nonWitnessUtxo = await rawPrevTx(utxo.txid);
 		} else {
 			input.witnessUtxo = {
@@ -497,9 +512,9 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 			// without it. Taproot inputs would not need this (BIP-341 commits to
 			// all input amounts), but p2tr spending is not supported yet anyway.
 			// witnessUtxo stays alongside — segwit signers use it for the sighash.
-			if (scriptType !== 'p2tr' && params.fetchRawTx) {
-				input.nonWitnessUtxo = await rawPrevTx(utxo.txid);
-			}
+			// Fetched AFTER selection, for only the coins actually chosen (see
+			// fetchChosenPrevTxs + each branch's attach step below) — never here,
+			// over the full candidate set.
 			if (scriptType === 'p2sh-p2wpkh') {
 				// Redeem script = the wrapped v0 keyhash program.
 				input.redeemScript = p2wpkh(child.publicKey, NETWORK).script;
@@ -513,6 +528,21 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		}
 
 		inputs.push(input);
+	}
+
+	/**
+	 * Fetch nonWitnessUtxo for exactly the CHOSEN coins, concurrently — the
+	 * entire point of deferring past the per-candidate loop above. Fires one
+	 * rawPrevTx per UNIQUE txid (prevTxCache already dedupes coins that share a
+	 * parent, and rawPrevTx itself keeps the existing hash-verification and, via
+	 * chain/index.ts's getTxHex, a cross-build LRU) and lets them race instead
+	 * of paying N serial round-trips. No-op when this wallet doesn't defer
+	 * (p2pkh, p2tr, or no fetchRawTx configured).
+	 */
+	async function fetchChosenPrevTxs(chosenUtxos: SpendableUtxo[]): Promise<void> {
+		if (!deferredNonWitness) return;
+		const uniqueTxids = [...new Set(chosenUtxos.map((u) => u.txid))];
+		await Promise.all(uniqueTxids.map((txid) => rawPrevTx(txid)));
 	}
 
 	// ------------------------------------------------------------- send max
@@ -533,6 +563,17 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 				'insufficient_funds'
 			);
 		}
+		// Send-max spends every candidate, so "chosen" is the whole set — no
+		// reduction in fetch count here, but the fetch still runs concurrently
+		// rather than serially (Part B of the fix).
+		await fetchChosenPrevTxs(spendable);
+		if (deferredNonWitness) {
+			for (let i = 0; i < inputs.length; i++) {
+				const raw = prevTxCache.get(spendable[i].txid);
+				if (raw) inputs[i].nonWitnessUtxo = raw;
+			}
+		}
+
 		const tx = new Transaction();
 		for (const input of inputs) tx.addInput(input);
 		tx.addOutputAddress(recipient, toBigInt(amount), NETWORK);
@@ -591,6 +632,17 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 				'insufficient_funds'
 			);
 		}
+		// exactInputs spends every provided coin, so "chosen" is the whole set —
+		// no reduction in fetch count here, but still concurrent rather than
+		// serial (Part B of the fix).
+		await fetchChosenPrevTxs(chosen);
+		if (deferredNonWitness) {
+			for (let i = 0; i < inputs.length; i++) {
+				const raw = prevTxCache.get(spendable[i].txid);
+				if (raw) inputs[i].nonWitnessUtxo = raw;
+			}
+		}
+
 		tx = new Transaction();
 		for (const input of inputs) tx.addInput(input);
 		// Deterministic BIP69-style output order (value asc, script tiebreak),
@@ -663,6 +715,22 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 			if (match) chosen.push(match);
 		}
 		changeExpected = selection.change === true;
+
+		// THE FIX: only now — knowing exactly which coins selectUTXO picked —
+		// fetch their previous transactions, concurrently. btc-signer already
+		// built `tx` from the witnessUtxo-only candidate inputs during
+		// selection, so wire nonWitnessUtxo in with updateInput now that the
+		// winners are known (mirrors how the change output's bip32Derivation is
+		// patched in below).
+		await fetchChosenPrevTxs(chosen);
+		if (deferredNonWitness) {
+			for (let i = 0; i < tx.inputsLength; i++) {
+				const inp = tx.getInput(i);
+				const txidHex = inp.txid ? bytesToHex(inp.txid) : null;
+				const raw = txidHex ? prevTxCache.get(txidHex) : undefined;
+				if (raw) tx.updateInput(i, { nonWitnessUtxo: raw });
+			}
+		}
 	}
 
 	const totalIn = chosen.reduce((s, u) => s + u.value, 0);

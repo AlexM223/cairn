@@ -739,6 +739,118 @@ describe('segwit nonWitnessUtxo (fee-lying protection)', () => {
 	});
 });
 
+// ── deferred prev-tx fetch (cairn perf: send-flow prev-tx fetch) ────────────
+//
+// Regression coverage for the send-flow performance fix: constructPsbt used
+// to fetch nonWitnessUtxo for EVERY candidate UTXO, serially, before coin
+// selection ran — O(N) Electrum round-trips where N = candidate count, most
+// of them thrown away. The fix defers the fetch past selection and only asks
+// for the CHOSEN inputs, concurrently.
+
+describe('deferred prev-tx fetch (send-flow perf fix)', () => {
+	// 10 confirmed candidates, distinct real-txid parents (10k..100k sats), so
+	// a request for 150k forces the selector's biggest-first accumulation to
+	// pick exactly the two largest (100k + 90k) — a deterministic 10-candidates
+	// / 2-selected scenario to pin the fetch count against.
+	const CAND_FUNDS = Array.from({ length: 10 }, (_, i) =>
+		fundingTx([{ address: RECEIVE_0, value: (i + 1) * 10_000 }])
+	);
+	const CAND_UTXOS: SpendableUtxo[] = CAND_FUNDS.map((f, i) => ({
+		txid: f.txid,
+		vout: 0,
+		value: (i + 1) * 10_000,
+		height: 800_000 + i,
+		address: RECEIVE_0,
+		chain: 0,
+		index: 0
+	}));
+	const CAND_RAW: Record<string, string> = Object.fromEntries(CAND_FUNDS.map((f) => [f.txid, f.hex]));
+
+	/** A fetchRawTx mock that counts every call it receives. */
+	function countingFetch(): { fetch: (txid: string) => Promise<string>; calls: () => number } {
+		let calls = 0;
+		return {
+			fetch: async (txid: string) => {
+				calls++;
+				const hex = CAND_RAW[txid];
+				if (!hex) throw new Error(`no such tx ${txid}`);
+				return hex;
+			},
+			calls: () => calls
+		};
+	}
+
+	const SEND_PARAMS = {
+		...COMMON,
+		utxos: CAND_UTXOS,
+		recipients: [{ address: RECIPIENT, amount: 150_000 }],
+		feeRate: 5
+	};
+
+	it('fetches prev-tx only for the SELECTED inputs, not every candidate (10 candidates, 2 selected → 2 fetches, was 10)', async () => {
+		const { fetch, calls } = countingFetch();
+		const draft = await constructPsbt({ ...SEND_PARAMS, fetchRawTx: fetch });
+		expect(draft.inputs).toHaveLength(2);
+		expect(draft.inputs.map((i) => i.value).sort((a, b) => b - a)).toEqual([100_000, 90_000]);
+		expect(calls()).toBe(2);
+	});
+
+	it('selection is unaffected by deferring the fetch — same coins, same fee as the witnessUtxo-only path', async () => {
+		// Regression guard: selection must read witnessUtxo alone and never
+		// nonWitnessUtxo, so deferring the fetch can never change WHICH coins
+		// win or what they cost. Compare against the pre-existing "no fetchRawTx
+		// at all" path (already covered above), which never had nonWitnessUtxo
+		// to read from even before this fix.
+		const { fetch } = countingFetch();
+		const withFetch = await constructPsbt({ ...SEND_PARAMS, fetchRawTx: fetch });
+		const withoutFetch = await constructPsbt(SEND_PARAMS);
+		expect(withFetch.inputs.map((i) => `${i.txid}:${i.vout}`).sort()).toEqual(
+			withoutFetch.inputs.map((i) => `${i.txid}:${i.vout}`).sort()
+		);
+		expect(withFetch.fee).toBe(withoutFetch.fee);
+		expect(withFetch.amount).toBe(withoutFetch.amount);
+	});
+
+	it('the chosen inputs still carry nonWitnessUtxo in the final PSBT (p2wpkh)', async () => {
+		const { fetch } = countingFetch();
+		const draft = await constructPsbt({ ...SEND_PARAMS, fetchRawTx: fetch });
+		const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
+		expect(tx.inputsLength).toBe(2);
+		for (let i = 0; i < tx.inputsLength; i++) {
+			expect(tx.getInput(i).witnessUtxo, `input ${i} keeps witnessUtxo`).toBeDefined();
+			expect(tx.getInput(i).nonWitnessUtxo, `input ${i} carries nonWitnessUtxo`).toBeDefined();
+		}
+	});
+
+	it('a caller-cached fetchRawTx (the real getChain().getTxHex contract) sees 0 new fetches on rebuild', async () => {
+		// constructPsbt's own prevTxCache only dedupes WITHIN one build (it is
+		// created fresh on every call). The cross-build cache that makes a
+		// rebuild (user tweaks amount/fee and resubmits) free lives one layer up
+		// at getChain().getTxHex (chain/cache.ts's raw-tx LRU — see
+		// chain.test.ts for the cache mechanism itself). This pins the contract
+		// constructPsbt relies on: a fetchRawTx that caches by txid pays for the
+		// selected coins exactly once across repeated builds of the same set.
+		const seen = new Map<string, string>();
+		let calls = 0;
+		const cachingFetch = async (txid: string): Promise<string> => {
+			const hit = seen.get(txid);
+			if (hit) return hit;
+			calls++;
+			const hex = CAND_RAW[txid];
+			if (!hex) throw new Error(`no such tx ${txid}`);
+			seen.set(txid, hex);
+			return hex;
+		};
+
+		await constructPsbt({ ...SEND_PARAMS, fetchRawTx: cachingFetch });
+		expect(calls).toBe(2);
+
+		// Rebuild with the identical candidates/amount/fee: 0 NEW fetches.
+		await constructPsbt({ ...SEND_PARAMS, fetchRawTx: cachingFetch });
+		expect(calls).toBe(2);
+	});
+});
+
 describe('summarizePsbt coin transparency', () => {
 	it('reports per-input txid/vout/value, txid in display order', async () => {
 		const draft = await constructPsbt({

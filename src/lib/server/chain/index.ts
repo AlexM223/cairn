@@ -25,7 +25,7 @@ import { childLogger } from '../logger';
 import { EsploraApi } from './esplora';
 import { CoreRpcClient, CoreRpcError } from '../bitcoinCore/client';
 import { readMempoolTrend } from '../mempoolSamples';
-import { cachedTip, cachedFeeEstimates, resetChainCaches } from './cache';
+import { cachedTip, cachedFeeEstimates, resetChainCaches, getCachedRawTx, cacheRawTx } from './cache';
 import type { EsploraBlock, EsploraTx } from './esplora';
 import type {
 	AddressInfo,
@@ -940,9 +940,18 @@ export class ChainService {
 	 * txid, not just wallet-owned ones. Throws when the server can't produce the
 	 * hex (tx not found, or a non-indexing server), matching the previous
 	 * esplora-backed contract so callers' existing try/catch handling is unchanged.
+	 *
+	 * Cross-build LRU cached by txid (cache.ts, cairn perf: send-flow prev-tx
+	 * fetch): a confirmed tx's bytes never change, so repeated builds (a user
+	 * adjusting amount/fee and rebuilding) or repeated fee-bump lookups reuse
+	 * the same fetch instead of round-tripping Electrum again.
 	 */
 	async getTxHex(txid: string): Promise<string> {
-		return String(await this.electrum.getTransaction(txid, false));
+		const cached = getCachedRawTx(txid);
+		if (cached !== undefined) return cached;
+		const hex = String(await this.electrum.getTransaction(txid, false));
+		cacheRawTx(txid, hex);
+		return hex;
 	}
 
 	/**

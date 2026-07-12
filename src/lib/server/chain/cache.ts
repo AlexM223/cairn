@@ -80,3 +80,51 @@ export function resetChainCaches(): void {
 	tipCache = null;
 	feeCache = null;
 }
+
+// -------------------------------------------------------- raw prev-tx LRU
+//
+// Cross-BUILD cache for raw transaction hex, keyed by txid (cairn perf:
+// send-flow prev-tx fetch — see psbt.ts's constructPsbt). A confirmed
+// transaction's serialized bytes never change once broadcast, so — unlike
+// tip/fees above — there is no TTL here, just a size bound: this is the
+// difference between "cache forever, bounded by count" and "cache briefly,
+// bounded by time". psbt.ts's own prevTxCache only dedupes fetches WITHIN one
+// build; without this, a user adjusting the amount/fee and rebuilding the
+// draft re-fetches the same selected inputs' previous transactions from
+// Electrum on every rebuild. Shared by every raw-tx consumer through
+// ChainService.getTxHex (PSBT construction, fee-bump parent lookups, …), not
+// just the send flow.
+
+const RAW_TX_CACHE_MAX = 200;
+const rawTxCache = new Map<string, string>();
+
+/** Cached raw tx hex for a txid, or undefined. Refreshes LRU recency. */
+export function getCachedRawTx(txid: string): string | undefined {
+	const hit = rawTxCache.get(txid);
+	if (hit !== undefined) {
+		// Map iterates in insertion order — re-insert to mark as recently used.
+		rawTxCache.delete(txid);
+		rawTxCache.set(txid, hit);
+	}
+	return hit;
+}
+
+/** Cache a fetched raw tx under its txid, evicting the least-recently-used entry past the cap. */
+export function cacheRawTx(txid: string, hex: string): void {
+	rawTxCache.delete(txid);
+	rawTxCache.set(txid, hex);
+	while (rawTxCache.size > RAW_TX_CACHE_MAX) {
+		const oldest = rawTxCache.keys().next().value;
+		if (oldest === undefined) break;
+		rawTxCache.delete(oldest);
+	}
+}
+
+export function rawTxCacheSize(): number {
+	return rawTxCache.size;
+}
+
+/** Test hook: drop every cached raw tx. */
+export function clearRawTxCache(): void {
+	rawTxCache.clear();
+}

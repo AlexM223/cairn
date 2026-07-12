@@ -33,7 +33,7 @@ vi.mock('../activity', () => ({ recordActivity: vi.fn() }));
 
 import { ChainService } from './index';
 import { CoreRpcError } from '../bitcoinCore/client';
-import { resetChainCaches, invalidateTipCache } from './cache';
+import { resetChainCaches, invalidateTipCache, clearRawTxCache, rawTxCacheSize } from './cache';
 
 // ---- fixtures -----------------------------------------------------------------
 
@@ -219,6 +219,9 @@ afterEach(() => {
 	// The tip/fee TTL caches are module-level and outlive a single service, so
 	// clear them between tests to keep cases isolated (cairn-vknb.5).
 	resetChainCaches();
+	// Same for the raw-tx LRU (cairn perf: send-flow prev-tx fetch) — otherwise
+	// a txid reused across tests would silently short-circuit on a stale entry.
+	clearRawTxCache();
 });
 
 // ---- tip (electrum-backed, cairn-zoz8.5) -----------------------------------------
@@ -466,6 +469,83 @@ describe('getTxHex (Electrum raw-hex path)', () => {
 		await expect(svc.getTxHex('b'.repeat(64))).rejects.toThrow(
 			/No such mempool or blockchain transaction/
 		);
+	});
+
+	// ---- cross-build raw-tx LRU (cairn perf: send-flow prev-tx fetch) --------------
+	//
+	// psbt.ts's constructPsbt fetches nonWitnessUtxo for its selected inputs via
+	// this exact method (params.fetchRawTx wraps getChain().getTxHex). A user who
+	// rebuilds a draft (adjusting amount/fee) re-requests the same selected
+	// coins' previous transactions — this cache is what makes that free the
+	// second time, mirroring getTip's TTL-cache test above but with no
+	// expiry (confirmed tx bytes never change).
+
+	it('serves a second lookup for the same txid from the LRU without re-hitting electrum', async () => {
+		const svc = makeService(makeEsploraStub());
+		const getTransaction = vi.fn(async () => CONFIRMED_TX_HEX);
+		withElectrum(svc, getTransaction);
+
+		const txid = 'c'.repeat(64);
+		await expect(svc.getTxHex(txid)).resolves.toBe(CONFIRMED_TX_HEX);
+		await expect(svc.getTxHex(txid)).resolves.toBe(CONFIRMED_TX_HEX);
+
+		// The second "build" pays zero additional Electrum round-trips.
+		expect(getTransaction).toHaveBeenCalledTimes(1);
+	});
+
+	it('keys the cache by txid, so a different txid always misses', async () => {
+		const svc = makeService(makeEsploraStub());
+		const getTransaction = vi.fn(async (txid: string) =>
+			txid === 'c'.repeat(64) ? CONFIRMED_TX_HEX : MEMPOOL_TX_HEX
+		);
+		withElectrum(svc, getTransaction);
+
+		await svc.getTxHex('c'.repeat(64));
+		await svc.getTxHex('d'.repeat(64));
+
+		expect(getTransaction).toHaveBeenCalledTimes(2);
+	});
+
+	it('clearRawTxCache forces the next lookup to re-hit electrum', async () => {
+		const svc = makeService(makeEsploraStub());
+		const getTransaction = vi.fn(async () => CONFIRMED_TX_HEX);
+		withElectrum(svc, getTransaction);
+
+		const txid = 'c'.repeat(64);
+		await svc.getTxHex(txid);
+		clearRawTxCache();
+		await svc.getTxHex(txid);
+
+		expect(getTransaction).toHaveBeenCalledTimes(2);
+	});
+
+	it('does not cache a failed fetch', async () => {
+		const svc = makeService(makeEsploraStub());
+		let calls = 0;
+		const getTransaction = vi.fn(async () => {
+			calls++;
+			if (calls === 1) throw new Error('Electrum error: timeout');
+			return CONFIRMED_TX_HEX;
+		});
+		withElectrum(svc, getTransaction);
+
+		const txid = 'c'.repeat(64);
+		await expect(svc.getTxHex(txid)).rejects.toThrow(/timeout/);
+		await expect(svc.getTxHex(txid)).resolves.toBe(CONFIRMED_TX_HEX);
+		expect(getTransaction).toHaveBeenCalledTimes(2);
+	});
+
+	it('bounds cache growth at the LRU cap', async () => {
+		const svc = makeService(makeEsploraStub());
+		const getTransaction = vi.fn(async () => CONFIRMED_TX_HEX);
+		withElectrum(svc, getTransaction);
+
+		// One over the 200-entry cap (cache.ts RAW_TX_CACHE_MAX) — the oldest
+		// entry must be evicted rather than the map growing unbounded.
+		for (let i = 0; i < 201; i++) {
+			await svc.getTxHex(i.toString(16).padStart(64, '0'));
+		}
+		expect(rawTxCacheSize()).toBe(200);
 	});
 });
 
