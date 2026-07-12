@@ -1793,8 +1793,12 @@
 				{/if}
 
 				<div class="row step-actions" style="justify-content: center">
-					<a class="btn btn-primary pill-lg" href={explorerUrl}>Watch it get buried</a>
-					<a class="btn btn-secondary" href={`/wallets/${walletId}`}>Done</a>
+					{#if data.flags?.explorer !== false}
+						<a class="btn btn-primary pill-lg" href={explorerUrl}>Watch it get buried</a>
+						<a class="btn btn-secondary" href={`/wallets/${walletId}`}>Done</a>
+					{:else}
+						<a class="btn btn-primary pill-lg" href={`/wallets/${walletId}`}>Done</a>
+					{/if}
 				</div>
 				<p class="sent-caption">We'll nudge you at the first ring — and at six.</p>
 				<a class="sent-again" href={`/wallets/${walletId}/send`} data-sveltekit-reload

@@ -877,9 +877,11 @@
 							<a href="/wallets/multisig/new">import the config as a multisig wallet</a>.
 						</p>
 						<div class="row step-actions" style="justify-content: center">
-							<a class="btn btn-primary pill-lg" href={`/explorer/tx/${sentTxid}`}
-								>Watch it get buried</a
-							>
+							{#if data.flags?.explorer !== false}
+								<a class="btn btn-primary pill-lg" href={`/explorer/tx/${sentTxid}`}
+									>Watch it get buried</a
+								>
+							{/if}
 							<button class="btn btn-secondary" onclick={startOver}>Start over</button>
 						</div>
 					</div>

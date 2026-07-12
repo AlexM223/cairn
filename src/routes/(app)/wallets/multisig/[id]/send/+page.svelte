@@ -1669,8 +1669,12 @@
 			{/if}
 
 			<div class="row step-actions" style="justify-content: center">
-				<a class="btn btn-primary pill-lg" href={explorerUrl}>Watch it get buried</a>
-				<a class="btn btn-secondary" href={`/wallets/multisig/${multisigId}`}>Done</a>
+				{#if data.flags?.explorer !== false}
+					<a class="btn btn-primary pill-lg" href={explorerUrl}>Watch it get buried</a>
+					<a class="btn btn-secondary" href={`/wallets/multisig/${multisigId}`}>Done</a>
+				{:else}
+					<a class="btn btn-primary pill-lg" href={`/wallets/multisig/${multisigId}`}>Done</a>
+				{/if}
 			</div>
 			<p class="sent-caption">We'll nudge you at the first ring — and at six.</p>
 			<a class="sent-again" href={`/wallets/multisig/${multisigId}/send`} data-sveltekit-reload

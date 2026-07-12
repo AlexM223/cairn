@@ -1,6 +1,7 @@
 <script lang="ts">
 	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
 	import { formatBtc, timeAgo } from '$lib/format';
+	import { page } from '$app/state';
 
 	type ActivityItem = {
 		key: string;
@@ -14,6 +15,9 @@
 	};
 
 	let { items }: { items: ActivityItem[] } = $props();
+	// With the explorer feature flag off, /explorer/** 403s server-side — so
+	// each row degrades to a non-interactive summary instead of a dead link.
+	const explorerEnabled = $derived(page.data.flags?.explorer !== false);
 </script>
 
 {#if items.length === 0}
@@ -22,7 +26,11 @@
 	<ul class="list">
 		{#each items as item (item.key)}
 			<li>
-				<a class="row" href={`/explorer/tx/${item.txid}`}>
+				<svelte:element
+					this={explorerEnabled ? 'a' : 'div'}
+					class="row"
+					href={explorerEnabled ? `/explorer/tx/${item.txid}` : undefined}
+				>
 					<BurialRings
 						confirmations={item.time === null ? 0 : item.confirmations}
 						direction={item.direction}
@@ -53,7 +61,7 @@
 							>&nbsp;BTC</span
 						>
 					</span>
-				</a>
+				</svelte:element>
 			</li>
 		{/each}
 	</ul>
