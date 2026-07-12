@@ -850,7 +850,8 @@
 			<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
 				{#if scanError}
 					<Banner variant="error">
-						Couldn't reach your node to load spendable coins: {scanError}
+						Couldn't reach your node to load spendable coins. Check that your
+						node is running and reachable, then try again in a moment.
 					</Banner>
 				{/if}
 
