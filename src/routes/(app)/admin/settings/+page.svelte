@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import { tick } from 'svelte';
 	import { formatNumber } from '$lib/format';
 
 	let { data, form } = $props();
@@ -8,6 +9,60 @@
 	let connectionMode = $state(data.settings.connectionMode);
 	let saving = $state(false);
 	let testing = $state<'electrum' | 'esplora' | 'coreRpc' | null>(null);
+
+	// Umbrel Wave B assisted-connect (cairn-ylz5 B3 / cairn-mz9p). Mirrors
+	// src/lib/server/umbrelCoreProbe.ts's UMBREL_CORE_RPC_URL/UMBREL_CORE_RPC_USER
+	// (docs/UMBREL-AUTOCONNECT-WAVE-B-DESIGN.md §9) — that module lives under
+	// $lib/server and cannot be imported into this isomorphic component, so the
+	// same literal constants are duplicated here. These are NEVER read from any
+	// probe response (design §7) — keep in sync with umbrelCoreProbe.ts only if
+	// the well-known Umbrel address itself ever changes.
+	const UMBREL_CORE_RPC_URL = 'http://10.21.21.8:8332';
+	const UMBREL_CORE_RPC_USER = 'umbrel';
+
+	// The Core RPC url/user inputs need to be programmatically pre-fillable (the
+	// "Connect it" button below), so — unlike the other custom-fields inputs —
+	// they're bound to local state seeded from the load, instead of a plain
+	// value={...} read.
+	// svelte-ignore state_referenced_locally
+	let coreRpcUrlField = $state(data.settings.coreRpcUrl ?? '');
+	// svelte-ignore state_referenced_locally
+	let coreRpcUserField = $state(data.settings.coreRpcUser ?? '');
+	let coreRpcPassEl = $state<HTMLInputElement | undefined>();
+
+	// Config-presence check mirrored from settings.ts's coreRpcConfigured() —
+	// only a non-empty stored coreRpcUrl counts (the parenthetical field check
+	// specified for this task), independent of connectionMode since Core RPC is
+	// mode-independent (design §4).
+	const coreRpcIsConfigured = $derived(!!data.settings.coreRpcUrl);
+
+	/**
+	 * Pre-fill the existing Core RPC fields with the hardcoded Umbrel constants
+	 * and reveal them (switching the mode radio to Custom, since the Core RPC
+	 * subgroup only renders inside the `connectionMode === 'custom'` block).
+	 * Does NOT submit anything — the admin still pastes the password and clicks
+	 * the existing Test connection / Save settings buttons.
+	 *
+	 * KNOWN LIMITATION (documented here, not user-facing): saving core_rpc_* in
+	 * `public` connection mode is currently broken — the admin-settings save
+	 * action only persists core_rpc_url/user/pass inside the
+	 * `connectionMode === 'custom'` block (+page.server.ts, outside this
+	 * session's edit boundary), even though Core RPC is mode-independent. Filed
+	 * as cairn-6uok (Unit B2, not yet built). Switching the radio to 'custom'
+	 * here works around it for the common Umbrel path: Wave A's Electrum probe
+	 * has typically already flipped connection_mode to 'custom' by the time
+	 * Core is also detected, so the save actually persists. If an operator
+	 * somehow reaches this card while still on 'public' mode with Wave A not
+	 * having flipped it, the save will silently no-op the Core fields until
+	 * cairn-6uok lands — that's the one gap this card can't close from the
+	 * client side alone.
+	 */
+	function useDetectedCoreNode() {
+		connectionMode = 'custom';
+		coreRpcUrlField = UMBREL_CORE_RPC_URL;
+		coreRpcUserField = UMBREL_CORE_RPC_USER;
+		tick().then(() => coreRpcPassEl?.focus());
+	}
 
 	type TestResult = { ok: boolean; tipHeight?: number; error?: string } | null;
 	type CoreRpcTestResult = { ok: boolean; blockHeight?: number; chain?: string; error?: string } | null;
@@ -167,6 +222,65 @@
 			</label>
 		</div>
 
+		<!-- Provenance card (cairn-mz9p): calm, informational, no behavior change.
+		     Only rendered when Wave A actually auto-connected Electrum. -->
+		{#if data.settings.chainProvisionedBy === 'umbrel-env' || data.settings.chainProvisionedBy === 'umbrel-probe'}
+			<div class="provenance-card fade-in" role="status">
+				<span class="provenance-dot"></span>
+				<div class="provenance-text">
+					<span class="provenance-title">
+						Connected automatically to your Umbrel's Electrum server
+					</span>
+					<span class="provenance-sub">
+						{data.settings.chainProvisionedBy === 'umbrel-env'
+							? 'Set up from your Umbrel Bitcoin Node app.'
+							: 'Found automatically on your Umbrel.'} You can still point this at a different
+						server below.
+					</span>
+				</div>
+			</div>
+		{/if}
+
+		<!-- Core RPC provenance, once an assisted or env connect has actually
+		     completed (Unit B2, not yet built — core_rpc_provisioned_by is never
+		     written today, but this renders correctly the moment it lands). -->
+		{#if coreRpcIsConfigured && (data.settings.coreRpcProvisionedBy === 'umbrel-env' || data.settings.coreRpcProvisionedBy === 'umbrel-detect')}
+			<div class="provenance-card fade-in" role="status">
+				<span class="provenance-dot"></span>
+				<div class="provenance-text">
+					<span class="provenance-title">Connected to your Umbrel's Bitcoin Core</span>
+					<span class="provenance-sub">
+						{data.settings.coreRpcProvisionedBy === 'umbrel-env'
+							? 'Set up from your Umbrel Bitcoin Node app.'
+							: 'Connected using the details found on your Umbrel.'}
+					</span>
+				</div>
+			</div>
+		{/if}
+
+		<!-- Core RPC assisted-connect (cairn-ylz5 Unit B3): Bitcoin Core was found
+		     on the Umbrel network but isn't wired up yet. Pre-fills the existing
+		     Core RPC fields; never auto-submits. -->
+		{#if data.settings.coreRpcDetected === 'umbrel' && !coreRpcIsConfigured}
+			<div class="provenance-card core-detect fade-in" role="status">
+				<span class="provenance-dot detect"></span>
+				<div class="provenance-text">
+					<span class="provenance-title">Bitcoin Core detected on your Umbrel</span>
+					<span class="provenance-sub">
+						Connect it for full block and transaction details in the explorer.
+						{#if connectionMode === 'custom'}
+							The RPC address and username below are already filled in — paste the RPC
+							password (copy it from your Umbrel Bitcoin app's Connect screen), then use
+							Test connection or Save settings below.
+						{/if}
+					</span>
+				</div>
+				<button type="button" class="btn btn-secondary btn-sm" onclick={useDetectedCoreNode}>
+					{connectionMode === 'custom' ? 'Re-fill detected values' : 'Connect it'}
+				</button>
+			</div>
+		{/if}
+
 		{#if connectionMode === 'custom'}
 			<div class="custom-fields fade-in">
 				<div class="subgroup">
@@ -296,7 +410,7 @@
 							id="coreRpcUrl"
 							name="coreRpcUrl"
 							placeholder="http://127.0.0.1:8332"
-							value={data.settings.coreRpcUrl ?? ''}
+							bind:value={coreRpcUrlField}
 						/>
 					</div>
 					<div class="row-fields">
@@ -308,7 +422,7 @@
 								name="coreRpcUser"
 								autocomplete="off"
 								placeholder="rpcuser"
-								value={data.settings.coreRpcUser ?? ''}
+								bind:value={coreRpcUserField}
 							/>
 						</div>
 						<div class="field grow">
@@ -322,6 +436,7 @@
 								placeholder={data.settings.hasCoreRpcPass
 									? '•••••••• saved — leave blank to keep'
 									: 'RPC password'}
+								bind:this={coreRpcPassEl}
 							/>
 						</div>
 					</div>
@@ -677,6 +792,58 @@
 	.radio-desc {
 		font-size: 12px;
 		color: var(--text-muted);
+	}
+
+	/* Umbrel auto-connect provenance / assisted-connect cards (cairn-mz9p,
+	   cairn-ylz5 B3). Calm and informational by default (sage, matches the
+	   existing "connected" tone in .saved-note / .health-dot.ok); the
+	   actionable Core-detected variant uses the accent color instead, since it
+	   asks for a click rather than just reporting status. */
+	.provenance-card {
+		display: flex;
+		align-items: flex-start;
+		gap: 10px;
+		font-size: 12.5px;
+		background: var(--sage-muted);
+		border: 1px solid rgba(138, 160, 110, 0.3);
+		border-radius: var(--radius-control);
+		padding: 10px 12px;
+	}
+
+	.provenance-dot {
+		flex-shrink: 0;
+		width: 7px;
+		height: 7px;
+		margin-top: 4px;
+		border-radius: 50%;
+		background: var(--sage);
+	}
+
+	.provenance-dot.detect {
+		background: var(--accent);
+	}
+
+	.provenance-text {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		flex: 1;
+		min-width: 0;
+	}
+
+	.provenance-title {
+		font-weight: 500;
+	}
+
+	.provenance-sub {
+		color: var(--text-muted);
+	}
+
+	.provenance-card.core-detect {
+		background: var(--bg-input);
+		border-color: var(--border-ghost);
+		align-items: center;
+		flex-wrap: wrap;
 	}
 
 	.custom-fields {
