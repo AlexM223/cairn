@@ -12,6 +12,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { createBase58check } from '@scure/base';
 import { db } from '../db';
 import { recordActivity } from '../activity';
+import { childLogger } from '../logger';
 import {
 	MultisigError,
 	multisigTestAddress,
@@ -31,6 +32,11 @@ import { invalidateMultisigCache } from '../multisigScan';
 // from this module) — same safety argument: unwatchMultisig is only reached
 // from inside deleteMultisig's function body, never at module top level.
 import { unwatchMultisig } from '../addressWatcher';
+
+// Wave 2 / log-ops.md: this module had ZERO log lines of any kind (not even a
+// failure log) — an even bigger blind spot than wallets.ts's single-sig
+// equivalent. create/deleteMultisig below now log success at info.
+const log = childLogger('multisig');
 
 export type MultisigScriptType = 'p2wsh' | 'p2sh-p2wsh' | 'p2sh';
 export const MULTISIG_SCRIPT_TYPES: MultisigScriptType[] = ['p2wsh', 'p2sh-p2wsh', 'p2sh'];
@@ -391,6 +397,18 @@ export function createMultisig(
 			source
 		}
 	});
+	// Wave 2 / log-ops.md: this module previously logged nothing at all — no
+	// success, no failure. No xpubs here either, same rationale as above.
+	log.info(
+		{
+			userId,
+			walletId: multisigId,
+			threshold: params.threshold,
+			totalKeys: params.keys.length,
+			source
+		},
+		'multisig wallet created'
+	);
 
 	// Reused-key warning (cairn-1kc3.4): tell the user where the key already
 	// lives. Best-effort, never blocking; no xpubs in the detail — identity only.
@@ -444,6 +462,9 @@ export function deleteMultisig(userId: number, id: number): boolean {
 		// notified_txids rows and firing notifications that deep-link to a 404
 		// multisig page. Electrum-side unsubscribe is Phase 2 (cairn-gakd).
 		unwatchMultisig(id);
+		// Wave 2 / log-ops.md: no log line existed for this destructive action
+		// either. No xpubs — identity only.
+		log.info({ userId, walletId: id }, 'multisig wallet deleted');
 	}
 	return info.changes > 0;
 }

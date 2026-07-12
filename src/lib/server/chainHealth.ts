@@ -16,6 +16,16 @@
 // real outage the address watcher's eager reconnect loop and ordinary page
 // loads keep attempting connections, so the signal stays fresh on its own.
 
+import { childLogger } from './logger';
+
+// Wave 2 / log-chain.md: this module used to mutate in-memory state with ZERO
+// log output — the single biggest logging blind spot in the app. An operator
+// watching `docker logs` had no way to see the instance-wide "can't reach the
+// Bitcoin network" banner go up (or come back down). Logged only on the
+// actual state FLIP (not every call) so a flapping connection doesn't spam
+// the log.
+const log = childLogger('chain');
+
 /**
  * Consecutive failed connection attempts before the transport is called
  * unhealthy. >1 so a single transient socket drop (public servers cycle idle
@@ -57,9 +67,15 @@ export interface ChainHealth {
 
 /** A successful Electrum handshake — the transport is reachable right now. */
 export function recordChainOk(): void {
+	// Only the recovery FLIP is worth a log line — every other call while
+	// already healthy is a routine handshake, not news.
+	const wasUnhealthy = state.consecutiveFailures >= UNHEALTHY_AFTER;
 	state.lastOkAt = Date.now();
 	state.consecutiveFailures = 0;
 	state.lastError = null;
+	if (wasUnhealthy) {
+		log.info('chain transport recovered: Electrum handshake succeeded');
+	}
 }
 
 /** A failed connection attempt (proxy rejection, TLS error, timeout, …). */
@@ -67,6 +83,16 @@ export function recordChainError(err: unknown): void {
 	state.lastErrorAt = Date.now();
 	state.lastError = err instanceof Error ? err.message : String(err);
 	state.consecutiveFailures++;
+	// Log exactly once at the moment the transport crosses into "unhealthy" —
+	// this is the "can't reach the Bitcoin network" banner going up. lastError
+	// is deliberately included and never redacted (matches logger.ts's `err`
+	// exemption): it's the one piece of text that tells an operator WHY.
+	if (state.consecutiveFailures === UNHEALTHY_AFTER) {
+		log.warn(
+			{ consecutiveFailures: state.consecutiveFailures, lastError: state.lastError },
+			'chain transport unhealthy: too many consecutive connection failures'
+		);
+	}
 }
 
 /** Record whether a SOCKS5/Tor proxy is currently configured (from settings). */

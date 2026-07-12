@@ -280,6 +280,14 @@ export function createWallet(
 				hasKeyOrigin: masterFingerprint !== null
 			}
 		});
+		// Wave 2 / log-ops.md: createWallet previously logged only on failure —
+		// no positive confirmation ever reached the server log, only the DB
+		// activity feed (a separate store an operator reading `docker logs`
+		// never sees). No xpub here either, same rationale as recordActivity above.
+		log.info(
+			{ userId, walletId: row.id, scriptType, deviceType, hasKeyOrigin: masterFingerprint !== null },
+			'wallet created'
+		);
 		return toWalletSummary(row);
 	} catch (e) {
 		if (e instanceof Error && /UNIQUE/i.test(e.message)) {
@@ -330,6 +338,10 @@ export function deleteWallet(userId: number, id: number): boolean {
 	// notified_txids rows and firing notifications that deep-link to a 404
 	// wallet page. Electrum-side unsubscribe is Phase 2 (cairn-gakd).
 	unwatchWallet(id);
+	// Wave 2 / log-ops.md: deletion had NO log line at all (log file or
+	// activity feed) — the invisible-failure class applies to deliberate,
+	// destructive actions too. No xpub — identity only.
+	log.info({ userId, walletId: id }, 'wallet deleted');
 	return true;
 }
 

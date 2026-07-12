@@ -406,7 +406,14 @@ export class ElectrumClient extends EventEmitter {
 				this.ensureConnected().catch((e: unknown) => {
 					// ensureConnected failure re-triggers onDisconnect via 'close',
 					// which schedules the next backoff attempt. Never throw.
-					log.debug({ err: e, server: this.server }, 'reconnect attempt failed; will back off');
+					// Wave 2 / log-chain.md: this was `debug` (prod-invisible) — the
+					// only place a reconnect's actual failure reason (proxy
+					// rejection, TLS error, timeout, …) surfaced per-attempt.
+					// chainHealth's warn line covers the state FLIP; this covers
+					// every attempt in between — real signal during an active
+					// outage, cheap otherwise (bounded by backoff, at most one line
+					// per RECONNECT_MAX_MS once fully backed off).
+					log.warn({ err: e, server: this.server }, 'reconnect attempt failed; will back off');
 				});
 			}, delay);
 			this.reconnectTimer.unref?.();
