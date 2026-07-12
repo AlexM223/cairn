@@ -7,12 +7,7 @@ services:
       APP_PORT: 3000
 
   web:
-    # PLACEHOLDER DIGEST: the 0.2.16 image build succeeded locally (multi-arch
-    # push blocked on GHCR credentials — see cairn-x26e) but was never pushed to
-    # ghcr.io, so this tag@digest pair does NOT resolve yet. Do not deploy until
-    # Alex pushes the real multi-arch image and replaces this with the actual
-    # digest (docker buildx imagetools inspect ghcr.io/alexm223/cairn:0.2.16).
-    image: ghcr.io/alexm223/cairn:0.2.16@sha256:PENDING_ALEX_PUSH_REPLACE_BEFORE_MERGE
+    image: ghcr.io/alexm223/cairn:0.2.16@sha256:817fc1128a67f1389af37089daf0c3c5737a107ffa1b1fc913d55f38c9e5076f
     restart: on-failure
     stop_grace_period: 1m
     init: true
