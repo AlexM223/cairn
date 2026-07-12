@@ -47,7 +47,7 @@ function canonicalXpubs(multisig: MultisigRow): string[] {
 /**
  * The ColdCard multisig setup file:
  *
- *   # Cairn multisig setup file
+ *   # Heartwood multisig setup file
  *   Name: My multisig
  *   Policy: 2 of 3
  *   Format: P2WSH

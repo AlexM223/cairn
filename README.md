@@ -1,11 +1,10 @@
-# Cairn
+# Heartwood
 
 **Your bitcoin. Your rules.**
 
-Cairn is a self-hosted Bitcoin command center — a block explorer, a wallet
+Heartwood is a self-hosted Bitcoin command center — a block explorer, a wallet
 suite that watches, sends, and signs with your hardware wallets (single-sig
-or multisig), and a multi-user instance you run yourself. A cairn is a
-waymarker: a stack of stones marking the path.
+or multisig), and a multi-user instance you run yourself.
 
 |                                                                       |                                                                                |
 | --------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
@@ -78,7 +77,7 @@ the instance.
 
 ## Deployment
 
-The recommended way to run Cairn in production is Docker:
+The recommended way to run Heartwood in production is Docker:
 
 ```sh
 docker compose up -d --build
@@ -109,7 +108,7 @@ reverse proxy that **sets or overwrites** `X-Forwarded-For` — if clients
 can reach the port directly, they can spoof the header; leave the
 variable unset in that case.
 
-**If you serve Cairn over plain HTTP** (a LAN deployment with no TLS),
+**If you serve Heartwood over plain HTTP** (a LAN deployment with no TLS),
 the server must know that: SvelteKit **assumes `https` by default**, which
 makes it mark the session cookie `Secure` (browsers silently drop it on
 http, so login goes nowhere) and reject form posts as cross-site. Behind
@@ -119,7 +118,7 @@ caveat as `ADDRESS_HEADER`. With no proxy, set `ORIGIN` to the exact URL
 users type into the browser instead.
 
 Reverse-proxy note: live updates use Server-Sent Events, so response
-buffering must be off for `/api/events`. Cairn already sends
+buffering must be off for `/api/events`. Heartwood already sends
 `X-Accel-Buffering: no` (nginx honors it out of the box); for other
 proxies, disable buffering for that route.
 

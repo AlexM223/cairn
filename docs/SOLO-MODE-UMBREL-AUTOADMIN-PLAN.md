@@ -1,8 +1,15 @@
 # Solo Mode + Umbrel Auto-Admin — Scoping Plan
 
-Status: scoping only, nothing built yet. Two related asks bundled into one doc
-because they share a theme: **a fresh Cairn install should feel like a single-user
-appliance, not a multi-tenant server you have to configure.**
+Status: both parts are now built. Part 1's auto-admin loop closed 2026-07-06
+(cairn-49xi.2 — see docs/PUBLISH-PLAN.md's status note): `bootstrapAdminFromEnv()`
+flags the account with `users.must_reset_password` and the `(app)` layout gate
+forces `/setup-admin` before any other route. Part 2's `instanceMode` setting
+and the three gated surfaces are implemented (`src/lib/server/settings.ts`,
+`src/lib/server/instanceModeMigration.ts`, and the gates in
+`admin/+layout.svelte`, `settings/+page.svelte`, and
+`wallets/multisig/[id]/+page.server.ts`). Two related asks bundled into one doc
+because they share a theme: **a fresh Heartwood install should feel like a
+single-user appliance, not a multi-tenant server you have to configure.**
 
 ---
 
@@ -14,7 +21,7 @@ Many Umbrel apps boot with an admin account already created and a generated
 password shown on the install card, so the user opens the app and logs in —
 no signup form, no email to pick.
 
-### What Cairn has today
+### What Heartwood has today
 
 - `bootstrapAdminFromEnv()` ([auth.ts:237](../src/lib/server/auth.ts:237)) already
   does most of the mechanical work: if `CAIRN_ADMIN_PASSWORD` (or the legacy
@@ -31,7 +38,7 @@ no signup form, no email to pick.
 - `docs/PUBLISH-PLAN.md` §5/§7.3 already looked at this and made an explicit
   decision for the *v1 App Store submission*: don't wire Umbrel's own derived
   `APP_PASSWORD` (via `derive_entropy "app-cairn-seed-APP_PASSWORD"`) into
-  Cairn's login, because it collides in name with Cairn's own legacy
+  Heartwood's login, because it collides in name with Heartwood's own legacy
   `APP_PASSWORD` alias for break-glass admin recovery. The draft manifest ships
   `defaultUsername: ""` / `defaultPassword: ""` — i.e., v1 is plain browser
   signup, not auto-admin.
@@ -47,7 +54,7 @@ flagged: *"derive a distinctly named secret rather than reusing Umbrel's
 1. **Distinctly-named derived secret.** In the Umbrel package's `exports.sh`,
    derive e.g. `derive_entropy "app-cairn-seed-admin-password"` into an env var
    that is **not** named `APP_PASSWORD` (avoids the collision). Pass it into
-   `docker-compose.yml` as Cairn's own `CAIRN_ADMIN_PASSWORD` — this reuses
+   `docker-compose.yml` as Heartwood's own `CAIRN_ADMIN_PASSWORD` — this reuses
    `bootstrapAdminFromEnv()` completely unchanged.
 2. **Manifest fields.** Set `defaultUsername: admin@cairn.local` and
    `defaultPassword: $<the derived var>` in `umbrel-app.yml` so Umbrel's
@@ -88,7 +95,7 @@ ever logs in — it must never be the long-term address.
 
 ### Baseline definition
 
-**Solo mode** = the experience of a single-user Cairn instance: no invite
+**Solo mode** = the experience of a single-user Heartwood instance: no invite
 system, no user list, no contacts, no wallet sharing/cosigner-role UI visible
 anywhere. Everything else — send, multisig with your *own* multiple hardware
 keys, hardware wallet support, notifications, the explorer — stays fully on,

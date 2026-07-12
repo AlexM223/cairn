@@ -568,7 +568,7 @@ export function multisigAccountPath(scriptType: MultisigScriptType, account = 0)
  * Sanitize a multisig name into a Ledger policy name: printable ASCII only,
  * trimmed, at most 64 characters (the app's limit), with an ASCII "..."
  * truncation marker (a Unicode ellipsis would re-introduce the very byte the
- * filter just removed). Empty input falls back to "Cairn multisig".
+ * filter just removed). Empty input falls back to "Heartwood multisig".
  *
  * Exported for unit testing.
  */
