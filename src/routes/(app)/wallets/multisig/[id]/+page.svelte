@@ -41,6 +41,10 @@
 	const speedUp = $derived(scan.speedUp);
 	const savedTxs = $derived(scan.savedTxs);
 
+	// Advanced expander on the receive panel: derivation path is power-user
+	// detail, collapsed by default (never persisted — always resets closed).
+	let showReceiveAdvanced = $state(false);
+
 	let syncing = $state(false);
 	// A refresh failure with nothing cached surfaces as the scan-error state; with
 	// cached data showing it's swallowed (keep the stale snapshot up, SWR contract).
@@ -562,7 +566,6 @@
 							<h2 class="hw-receive-headline">A fresh address, every time.</h2>
 							<div class="hw-addr-row">
 								<span class="mono hw-addr">{receive.address}</span>
-								<span class="hw-addr-path mono">…/0/{receive.index}</span>
 							</div>
 							{#if form?.receiveError}
 								<div class="form-error" role="alert">{form.receiveError}</div>
@@ -598,6 +601,25 @@
 								deposit, cross-check this address in another tool (Sparrow can open your backup
 								file) — two tools agreeing proves the wallet is built from your keys alone.
 							</p>
+							<div class="disclosure hw-receive-advanced">
+								<button
+									type="button"
+									class="disclosure-toggle"
+									onclick={() => (showReceiveAdvanced = !showReceiveAdvanced)}
+									aria-expanded={showReceiveAdvanced}
+								>
+									<Icon name="settings" size={14} />
+									Advanced
+									<span class="chev" class:open={showReceiveAdvanced}
+										><Icon name="chevron-down" size={14} /></span
+									>
+								</button>
+								{#if showReceiveAdvanced}
+									<div class="disclosure-body fade-in">
+										<span class="hw-addr-path mono">Derivation path: …/0/{receive.index}</span>
+									</div>
+								{/if}
+							</div>
 						</div>
 					</div>
 				</section>
@@ -749,7 +771,14 @@
 									<span class="hw-tx-title">{tx.delta >= 0 ? 'Received' : 'Sent'}</span>
 									<span class="hw-tx-meta">
 										{burialRingsLabel(conf)}
-										· <a href="/explorer/tx/{tx.txid}" class="mono hw-tx-link">{truncateMiddle(tx.txid, 8, 8)}</a>
+										·
+										{#if data.flags?.explorer !== false}
+											<a href="/explorer/tx/{tx.txid}" class="mono hw-tx-link"
+												>{truncateMiddle(tx.txid, 8, 8)}</a
+											>
+										{:else}
+											<span class="mono hw-tx-link">{truncateMiddle(tx.txid, 8, 8)}</span>
+										{/if}
 										{#if tx.fee != null}
 											· fee {formatSats(tx.fee)} sats
 										{/if}
@@ -1431,6 +1460,51 @@
 	.hw-addr-path {
 		font-size: 11px;
 		color: var(--text-faint);
+	}
+
+	/* Advanced disclosure (matches the multisig-new wizard's convention). */
+	.hw-receive-advanced {
+		margin-top: 4px;
+	}
+
+	.disclosure {
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-control);
+		overflow: hidden;
+	}
+
+	.disclosure-toggle {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		width: 100%;
+		padding: 10px 12px;
+		background: transparent;
+		border: none;
+		color: var(--text-secondary);
+		font: inherit;
+		font-size: 12.5px;
+		font-weight: 500;
+		cursor: pointer;
+		text-align: left;
+	}
+
+	.disclosure-toggle:hover {
+		color: var(--text);
+	}
+
+	.chev {
+		margin-left: auto;
+		display: inline-flex;
+		transition: transform 140ms var(--ease);
+	}
+
+	.chev.open {
+		transform: rotate(180deg);
+	}
+
+	.disclosure-body {
+		padding: 2px 12px 12px;
 	}
 
 	.hw-receive-actions {

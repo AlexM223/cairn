@@ -13,6 +13,7 @@
 	import { timeAgo } from '$lib/format';
 	import { createResilientEventSource } from '$lib/sseReconnect';
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
 
 	// Mirrors the server's ActivityEvent (kept local so this client component
 	// never imports a $lib/server module), plus the readAt field.
@@ -112,11 +113,18 @@
 	// A notification's deep link: an explicit detail.link wins (that's what
 	// notify(payload.link) stores), otherwise fall back to a txid → explorer link
 	// like the activity page does. Only same-origin relative paths are honoured.
+	// With the explorer feature flag off, /explorer/** 403s server-side, so any
+	// link that would land there is suppressed and the row renders as plain,
+	// non-interactive text instead (see the {#if href} branch below).
 	function linkFor(n: Notification): string | null {
+		const explorerEnabled = page.data.flags?.explorer !== false;
 		const raw = n.detail?.link;
-		if (typeof raw === 'string' && raw.startsWith('/')) return raw;
+		if (typeof raw === 'string' && raw.startsWith('/')) {
+			if (!explorerEnabled && raw.startsWith('/explorer/')) return null;
+			return raw;
+		}
 		const txid = n.detail?.txid;
-		if (typeof txid === 'string') return `/explorer/tx/${txid}`;
+		if (typeof txid === 'string') return explorerEnabled ? `/explorer/tx/${txid}` : null;
 		return null;
 	}
 
