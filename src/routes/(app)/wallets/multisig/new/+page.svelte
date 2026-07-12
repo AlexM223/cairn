@@ -5,6 +5,7 @@
 	import { browser } from '$app/environment';
 	import { safeAction } from '$lib/safeAction';
 	import Icon from '$lib/components/Icon.svelte';
+	import Banner from '$lib/components/Banner.svelte';
 	import SecureContextHelp from '$lib/components/signing/SecureContextHelp.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
@@ -1227,7 +1228,7 @@
 							bind:value={importText}
 						></textarea>
 						{#if importError}
-							<div class="form-error" role="alert">{importError}</div>
+							<Banner variant="error">{importError}</Banner>
 						{/if}
 						<div class="row" style="gap: 8px; margin-top: 8px">
 							<button
@@ -1420,9 +1421,9 @@
 						</label>
 					</div>
 					{#if !quorumValid}
-						<div class="form-error" role="alert">
+						<Banner variant="error">
 							The required number must be between 1 and the total, and the total at most 15.
-						</div>
+						</Banner>
 					{/if}
 				</div>
 			{/if}
@@ -1537,7 +1538,7 @@
 							bind:value={importText}
 						></textarea>
 						{#if importError}
-							<div class="form-error" role="alert">{importError}</div>
+							<Banner variant="error">{importError}</Banner>
 						{/if}
 						<div class="row" style="gap: 8px; margin-top: 8px">
 							<button
@@ -1700,10 +1701,10 @@
 			{/if}
 
 			{#if keys.length > totalKeys}
-				<div class="form-error" role="alert">
+				<Banner variant="error">
 					You've added {keys.length} keys but the wallet only holds {totalKeys} — remove
 					{keys.length - totalKeys} or go back and raise the total.
-				</div>
+				</Banner>
 			{:else if keys.length < totalKeys}
 				<!-- ------------------------------------------ add-key sub-wizard -->
 				<div class="add-key">
@@ -2033,10 +2034,10 @@
 										bind:value={pasteValue}
 									></textarea>
 									{#if pasteIsPrivate}
-										<div class="form-error" role="alert">
+										<Banner variant="error">
 											That's a private key. Never paste it anywhere. Export the public key
 											instead (look for 'xpub' in your wallet).
-										</div>
+										</Banner>
 									{:else if pasteFormat}
 										<span class="hint detect-line">
 											<Icon name="check" size={12} />
@@ -2213,7 +2214,7 @@
 							{/if}
 
 							{#if addError}
-								<div class="form-error" role="alert">{addError}</div>
+								<Banner variant="error">{addError}</Banner>
 							{/if}
 						</div>
 					{/if}
@@ -2279,11 +2280,15 @@
 				{#if previewLoading}
 					<div class="row" style="gap: 8px"><span class="spinner"></span><span class="hint">Deriving addresses…</span></div>
 				{:else if previewError}
-					<div class="form-error" role="alert">{previewError}</div>
-					<button type="button" class="btn btn-secondary btn-sm" onclick={loadPreview}>
-						<Icon name="refresh" size={13} />
-						Try again
-					</button>
+					<Banner variant="error">
+						{previewError}
+						{#snippet actions()}
+							<button type="button" class="btn btn-secondary btn-sm" onclick={loadPreview}>
+								<Icon name="refresh" size={13} />
+								Try again
+							</button>
+						{/snippet}
+					</Banner>
 				{:else if previewAddresses.length > 0}
 					<div class="test-addr-main">
 						<span class="hint">First receive address</span>
@@ -2424,7 +2429,7 @@
 			</label>
 
 			{#if createError}
-				<div class="form-error" role="alert">{createError}</div>
+				<Banner variant="error">{createError}</Banner>
 			{/if}
 
 			<div class="pane-actions">

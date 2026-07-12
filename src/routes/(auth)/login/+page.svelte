@@ -4,6 +4,7 @@
 	import { page } from '$app/state';
 	import { signInWithPasskey, browserSupportsWebAuthn } from '$lib/passkey';
 	import { resolveNextUrl } from './nextUrl';
+	import Banner from '$lib/components/Banner.svelte';
 
 	let { data } = $props();
 
@@ -103,7 +104,7 @@
 
 <form class="stack" onsubmit={signInPassword}>
 	{#if error}
-		<div class="form-error" role="alert">{error}</div>
+		<Banner variant="error">{error}</Banner>
 	{/if}
 
 	<div class="field">

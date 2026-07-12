@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import Icon from '$lib/components/Icon.svelte';
+	import Banner from '$lib/components/Banner.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
@@ -166,10 +167,13 @@
 			     isn't configured, be honest about what unlocks it (cairn-zoz8.10). -->
 			<CoreRpcRequiredNotice feature="Block detail" isAdmin={data.isAdmin} />
 		{:else if chainError}
-			<div class="form-error block-error fade-in" role="alert">
-				<Icon name="alert-triangle" size={16} />
-				<span>Can't reach chain data sources — {chainError}</span>
-				<a href={page.url.pathname + page.url.search} class="retry">Retry</a>
+			<div class="block-error fade-in">
+				<Banner variant="error">
+					Can't reach chain data sources — {chainError}
+					{#snippet actions()}
+						<a href={page.url.pathname + page.url.search} class="retry">Retry</a>
+					{/snippet}
+				</Banner>
 			</div>
 		{:else if block}
 			<!-- ========================================================= hero -->
@@ -339,10 +343,7 @@
 			</div>
 
 			{#if txError}
-				<div class="form-error tx-error" role="alert">
-					<Icon name="alert-triangle" size={15} />
-					<span>Couldn't load transactions — {txError}</span>
-				</div>
+				<Banner variant="error">Couldn't load transactions — {txError}</Banner>
 			{:else if txs.length === 0}
 				<div class="empty-state">
 					<span class="empty-title">No transactions on this page</span>
@@ -686,22 +687,11 @@
 		color: var(--text-muted);
 	}
 
-	.tx-error {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		margin-top: 12px;
-	}
-
 	.block-error {
-		display: flex;
-		align-items: center;
-		gap: 10px;
 		margin-top: 24px;
 	}
 
-	.block-error .retry {
-		margin-left: auto;
+	.retry {
 		color: inherit;
 		text-decoration: underline;
 		white-space: nowrap;

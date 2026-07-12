@@ -4,6 +4,7 @@
 	import { startRegistration, browserSupportsWebAuthn, WebAuthnError } from '@simplewebauthn/browser';
 	import { guessPasskeyName } from '$lib/passkey';
 	import type { SessionUser } from '$lib/types';
+	import Banner from '$lib/components/Banner.svelte';
 
 	let { data } = $props();
 
@@ -206,7 +207,7 @@
 		</div>
 
 		{#if error}
-			<div class="form-error" role="alert">{error}</div>
+			<Banner variant="error">{error}</Banner>
 		{/if}
 
 		<div class="field">
@@ -305,7 +306,7 @@
 		</div>
 
 		{#if error}
-			<div class="form-error" role="alert">{error}</div>
+			<Banner variant="error">{error}</Banner>
 		{/if}
 
 		{#if passkeySupported}
