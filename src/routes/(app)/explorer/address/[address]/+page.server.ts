@@ -3,6 +3,7 @@ import QRCode from 'qrcode';
 import { getChain } from '$lib/server/chain';
 import { isExplorerAddress } from '$lib/server/bitcoin/xpub';
 import { isNotFoundError, chainErrorMessage } from '$lib/server/search';
+import { addressOwnership } from '../../ownership.server';
 import type { PageServerLoad } from './$types';
 import type { AddressInfo, AddressTx } from '$lib/types';
 
@@ -39,7 +40,7 @@ async function loadAddressTxs(address: string): Promise<{ txs: AddressTx[]; erro
 	}
 }
 
-export const load: PageServerLoad = async ({ params }) => {
+export const load: PageServerLoad = async ({ params, locals }) => {
 	const address = params.address.trim();
 	// Syntactic validation stays a synchronous 404 — pure routing decision, no
 	// chain round-trip.
@@ -63,6 +64,10 @@ export const load: PageServerLoad = async ({ params }) => {
 	return {
 		address,
 		qr,
+		// "This is your wallet" badge — a synchronous, chain-free, viewer-scoped
+		// local lookup (see ownership.server.ts), so it paints with the SSR shell.
+		// null when the address isn't one of the viewing user's own wallets.
+		ownership: addressOwnership(locals.user?.id, address),
 		// Streamed, not awaited (cairn-2zxt.3): the two chain round-trips.
 		infoResult: loadAddressInfo(address),
 		txsResult: loadAddressTxs(address)
