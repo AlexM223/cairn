@@ -10,6 +10,7 @@ import {
 	getAuthMode
 } from '$lib/server/auth';
 import { seedChainConfigFromEnv } from '$lib/server/chainEnvSeed';
+import { probeAndSeedUmbrelElectrum } from '$lib/server/umbrelProbe';
 import { resolveAllFlags } from '$lib/server/featureFlags/resolve';
 import { appGateRedirect } from '$lib/server/appGate';
 import {
@@ -158,6 +159,20 @@ async function init(): Promise<void> {
 		seededKeys = seedChainConfigFromEnv();
 	} catch (e) {
 		errLog.error({ err: e }, 'chain config env seed failed');
+	}
+
+	// Umbrel zero-config Electrum auto-connect, Wave A
+	// (docs/UMBREL-AUTOCONNECT-DESIGN.md). Credential-free probe
+	// of the well-known Umbrel electrs/Fulcrum fixed IPs — runs right after the
+	// env-based seed above so an env value always wins when present (the probe
+	// itself also no-ops once connection_mode is set, which the env seed just
+	// did if its vars were present). Strictly gated on CAIRN_PLATFORM=umbrel
+	// inside the module; a no-op, effectively-instant return on every other
+	// deployment. Never throws.
+	try {
+		seededKeys = seededKeys.concat(await probeAndSeedUmbrelElectrum());
+	} catch (e) {
+		errLog.error({ err: e }, 'umbrel electrum probe failed');
 	}
 
 	// Decide instanceMode ('solo' | 'team') for installs that predate the setting.

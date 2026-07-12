@@ -386,4 +386,12 @@ export interface InstanceSettings {
 	coreRpcUrl: string | null;
 	coreRpcUser: string | null;
 	coreRpcPass: string | null;
+	/** Provenance marker for a zero-config chain-backend connection (Umbrel
+	 *  auto-connect, docs/UMBREL-AUTOCONNECT-DESIGN.md): 'umbrel-env' when the
+	 *  Umbrel store compose's CAIRN_ELECTRUM and CAIRN_CORE_RPC env vars seeded
+	 *  it (chainEnvSeed.ts), 'umbrel-probe' when the credential-free Electrum
+	 *  probe found it (umbrelProbe.ts), or null for a manually-entered custom
+	 *  connection / the public-server default. Purely informational — it only
+	 *  changes what the settings UI renders, never which connection is active. */
+	chainProvisionedBy: string | null;
 }

@@ -64,6 +64,9 @@ describe('seedChainConfigFromEnv', () => {
 		expect(readSecretSetting('core_rpc_pass')).toBe('hunter2');
 		// The secret must never land in the plain settings table.
 		expect(getSetting('core_rpc_pass')).toBeNull();
+		// Umbrel auto-connect design §4.1 A2: the settings UI's "auto-connected"
+		// card keys off this marker.
+		expect(getSetting('chain_provisioned_by')).toBe('umbrel-env');
 	});
 
 	it('never overrides values an admin has already set, even with env vars present', () => {
@@ -91,6 +94,26 @@ describe('seedChainConfigFromEnv', () => {
 		expect(getSetting('core_rpc_url')).toBe('http://admin-chosen:8332');
 		expect(getSetting('core_rpc_user')).toBe('admin-user');
 		expect(readSecretSetting('core_rpc_pass')).toBe('admin-pass');
+		// The provenance marker must not be stamped — this is a manually-entered
+		// connection, not an auto-connected one, even though the env vars exist.
+		expect(getSetting('chain_provisioned_by')).toBeNull();
+	});
+
+	// Wave A (design §4.1 A2): chain_provisioned_by must reflect whether the
+	// env-provided host was actually ADOPTED, not merely whether the env var
+	// was present — otherwise an admin's own pre-existing custom host would get
+	// mislabeled as "auto-connected via Umbrel" the moment this env var shows
+	// up in their compose (e.g. after an unrelated store update).
+	it('does not stamp the provenance marker when the electrum_host write is skipped (admin-set host wins)', () => {
+		setSetting('electrum_host', 'admin-host.example'); // admin-set, no connection_mode chosen yet
+
+		process.env.CAIRN_ELECTRUM_HOST = 'env-host.example';
+
+		seedChainConfigFromEnv();
+
+		expect(getSetting('electrum_host')).toBe('admin-host.example'); // untouched
+		expect(getSetting('connection_mode')).toBe('custom'); // still flips (existing behavior)
+		expect(getSetting('chain_provisioned_by')).toBeNull(); // NOT stamped
 	});
 
 	it('does not flip an already-chosen connectionMode even when the electrum host is freshly seeded', () => {

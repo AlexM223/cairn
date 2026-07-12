@@ -22,7 +22,8 @@ const DEFAULTS: InstanceSettings = {
 	socks5Port: null,
 	coreRpcUrl: null,
 	coreRpcUser: null,
-	coreRpcPass: null
+	coreRpcPass: null,
+	chainProvisionedBy: null
 };
 
 /** Public-mode defaults for the chain backends (used when connectionMode === 'public'). */
@@ -133,6 +134,11 @@ export function getInstanceSettings(): InstanceSettings {
 	// Lives in instance_secrets (with a legacy `settings` fallback), not the map.
 	const rpcPass = readSecretSetting('core_rpc_pass');
 	if (rpcPass) s.coreRpcPass = rpcPass;
+	// Umbrel auto-connect provenance marker (docs/UMBREL-AUTOCONNECT-DESIGN.md
+	// §4.1 A2/A1) — 'umbrel-env' (chainEnvSeed.ts) or 'umbrel-probe'
+	// (umbrelProbe.ts). Drives the settings page's "auto-connected" card; never
+	// affects which connection is actually used.
+	if (str('chain_provisioned_by')) s.chainProvisionedBy = str('chain_provisioned_by')!;
 
 	return s;
 }

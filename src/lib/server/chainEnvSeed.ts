@@ -73,7 +73,16 @@ export function seedChainConfigFromEnv(): string[] {
 
 		const electrumHost = env.CAIRN_ELECTRUM_HOST?.trim();
 		if (electrumHost) {
-			note('electrum_host', seedIfUnset('electrum_host', electrumHost));
+			const wroteHost = seedIfUnset('electrum_host', electrumHost);
+			note('electrum_host', wroteHost);
+			// Provenance marker (Umbrel auto-connect design §4.1 A2): only stamped
+			// when the env-provided host was actually ADOPTED (wroteHost), never
+			// when an admin's own pre-existing custom host silently blocked the
+			// write above — otherwise a manually-entered connection would get
+			// mislabeled as auto-connected-via-Umbrel in the settings UI (§5).
+			if (wroteHost) {
+				note('chain_provisioned_by', seedIfUnset('chain_provisioned_by', 'umbrel-env'));
+			}
 			// A stored Electrum host is inert unless connectionMode is 'custom' —
 			// getChainConfig() ignores it entirely in 'public' mode. Only flip this
 			// when the admin hasn't chosen a mode yet, mirroring the per-setting
