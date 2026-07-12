@@ -2,7 +2,7 @@ manifestVersion: 1
 id: heartwood
 category: bitcoin
 name: Heartwood
-version: "0.2.15"
+version: "0.2.16"
 tagline: Your self-hosted Bitcoin command center
 description: >-
   Heartwood is a self-hosted Bitcoin command center: a block explorer,
@@ -26,15 +26,14 @@ description: >-
   RPC. Configure this under Settings → Chain Backend after logging in; no
   external services are contacted.
 releaseNotes: >-
-  Send screen made simpler: scan a QR code or paste an address right from
-  the send field (the old copy button is gone), with a clear confirmation
-  when a code is scanned, and plain-language confirmation times. Multisig
-  gets serious key-safety tools: verify each cosigner key by re-checking it
-  against your hardware wallet or a pasted key, with clear guidance if it
-  does not match (wrong seed, or a passphrase in use) and an upfront warning
-  that passphrases with multisig risk permanent loss of funds. You can also
-  now scan cosigner keys via animated QR. Plus: wizards always start at the
-  top of each step so you are never left scrolled past the content.
+  Heartwood now finds your own node automatically: if you're running a local
+  Electrum-compatible server (like electrs) on your Umbrel, Heartwood
+  connects to it right away with no manual setup step, and safely falls back
+  to the public-server default if nothing local is found. This release also
+  ships a full security hardening pass: stricter transaction-signing checks,
+  a locked-down backup-restore process, tighter admin-access rules, a much
+  larger send-flow test suite, and correct handling of transactions that get
+  replaced with a higher fee or double-spent.
 developer: Alex Martinez
 website: https://github.com/AlexM223/cairn
 dependencies: []

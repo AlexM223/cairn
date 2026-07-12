@@ -7,7 +7,12 @@ services:
       APP_PORT: 3000
 
   web:
-    image: ghcr.io/alexm223/cairn:0.2.15@sha256:f9ff72f6b16bd8ef07f0c8b4c7aa75f04e191236d7c6371267dece4203c813a5
+    # PLACEHOLDER DIGEST: the 0.2.16 image build succeeded locally (multi-arch
+    # push blocked on GHCR credentials — see cairn-x26e) but was never pushed to
+    # ghcr.io, so this tag@digest pair does NOT resolve yet. Do not deploy until
+    # Alex pushes the real multi-arch image and replaces this with the actual
+    # digest (docker buildx imagetools inspect ghcr.io/alexm223/cairn:0.2.16).
+    image: ghcr.io/alexm223/cairn:0.2.16@sha256:PENDING_ALEX_PUSH_REPLACE_BEFORE_MERGE
     restart: on-failure
     stop_grace_period: 1m
     init: true
@@ -21,6 +26,11 @@ services:
     environment:
       # HTTP port app_proxy connects to
       PORT: 3000
+      # Gates the Wave A Umbrel Electrum auto-connect probe (umbrelProbe.ts) —
+      # without this, the probe never fires and the app silently stays on the
+      # public electrum.blockstream.info default even when local electrs is
+      # installed (see cairn-x26e). Never set on non-Umbrel deployments.
+      CAIRN_PLATFORM: umbrel
       # First-run admin bootstrap; forces a credential reset on first login
       CAIRN_ADMIN_PASSWORD: ${APP_PASSWORD}
       # Keeps the session cookie non-Secure over plain-HTTP Umbrel and sets the
