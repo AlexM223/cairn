@@ -287,6 +287,7 @@
 			events: [
 				{ type: 'tx_received', label: 'Payment received', desc: 'An inbound transaction is first seen for a watched address.' },
 				{ type: 'tx_confirmed', label: 'Transaction confirmed', desc: 'A transaction crosses a confirmation threshold.', tunable: 'confirmations' },
+				{ type: 'tx_replaced', label: 'Incoming payment cancelled', desc: 'An unconfirmed inbound payment was double-spent or replaced before it confirmed.' },
 				{ type: 'tx_large', label: 'Large transaction', desc: 'A transaction exceeds your sats threshold.', tunable: 'threshold' },
 				{ type: 'sign_session_waiting', label: 'Signature waiting', desc: 'A multisig transaction is waiting for signatures.' },
 				{ type: 'sign_session_complete', label: 'Ready to broadcast', desc: 'A multisig transaction has collected every signature and is ready to broadcast.' },

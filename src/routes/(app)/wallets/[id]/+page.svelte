@@ -39,6 +39,10 @@
 	const coinbaseUtxos = $derived(chainData.coinbaseUtxos);
 	const tipHeight = $derived(chainData.tipHeight);
 	const speedUp = $derived(chainData.speedUp);
+	// Inbound payments double-spent / RBF'd away before confirming (cairn-a2p1) —
+	// the live scan drops them from the balance, so these amber rows reconcile the
+	// vanished amount the user briefly saw "on its way".
+	const cancelledTxs = $derived(data.cancelledTxs ?? []);
 
 	let syncing = $state(false);
 	// A refresh failure while we have NOTHING cached surfaces as the scan-error
@@ -767,7 +771,35 @@
 			{#if tab === 'transactions'}
 				<!-- Hairline tx rows with burial-ring confirmation glyphs (5d). -->
 				<section class="hw-txs" aria-label="Transactions">
-					{#if scan.txs.length === 0}
+					{#if cancelledTxs.length > 0}
+						{#each cancelledTxs as ctx (ctx.txid)}
+							<div class="hw-tx-row cancelled-row">
+								<span class="cancel-glyph" aria-hidden="true">
+									<Icon name="x" size={15} />
+								</span>
+								<div class="hw-tx-main">
+									<span class="hw-tx-title">
+										Payment cancelled
+										<span class="cancel-badge">Cancelled</span>
+									</span>
+									<span class="hw-tx-meta">
+										This incoming payment was cancelled by the sender before it confirmed
+										· <span class="mono">{truncateMiddle(ctx.txid, 8, 8)}</span>
+									</span>
+								</div>
+								<div class="hw-tx-right">
+									<span
+										class="hw-tx-amount cancel-amount tabular"
+										title="{formatSats(ctx.amountSats)} sats — no longer on its way"
+									>
+										{formatBtc(ctx.amountSats)}
+									</span>
+									<span class="hw-tx-when">no longer on its way</span>
+								</div>
+							</div>
+						{/each}
+					{/if}
+					{#if scan.txs.length === 0 && cancelledTxs.length === 0}
 						<div class="empty-state">
 							<Icon name="activity" size={22} />
 							<span class="empty-title">No transactions yet</span>
@@ -1346,6 +1378,40 @@
 </div>
 
 <style>
+	/* Double-spent / RBF'd-away inbound payment (cairn-a2p1): amber, never red —
+	   the house "attention" tone (same token .hw-pending uses), so a cancellation
+	   reads as a heads-up rather than an error. */
+	.cancel-glyph {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 30px;
+		height: 30px;
+		flex-shrink: 0;
+		border-radius: 50%;
+		color: var(--attention);
+		background: rgba(232, 147, 90, 0.1);
+	}
+
+	.cancel-badge {
+		margin-left: 6px;
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		color: var(--attention);
+		background: rgba(232, 147, 90, 0.12);
+		padding: 2px 7px;
+		border-radius: var(--radius-badge, 4px);
+		vertical-align: middle;
+	}
+
+	.cancel-amount {
+		color: var(--attention);
+		text-decoration: line-through;
+		opacity: 0.85;
+	}
+
 	/* The Heartwood grove field needs a positioned ancestor; content rides
 	   above it at z-index 1. */
 	.hw-page {

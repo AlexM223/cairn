@@ -5,6 +5,7 @@ import { listTransactions } from '$lib/server/transactions';
 import { getAddressLabels } from '$lib/server/addressLabels';
 import { isBackedUp } from '$lib/server/backups';
 import { readWalletSnapshot, EMPTY_WALLET_SNAPSHOT } from '$lib/server/walletSync';
+import { listReplacedInbound } from '$lib/server/addressWatcher';
 import type { Actions, PageServerLoad } from './$types';
 
 const QR_OPTS = {
@@ -59,7 +60,12 @@ export const load: PageServerLoad = ({ params, locals, url, depends }) => {
 		// already resolved (not a promise). Empty-but-shaped until the first
 		// background refresh lands.
 		chainData: cached?.snapshot ?? EMPTY_WALLET_SNAPSHOT,
-		lastSyncedAt: cached?.lastSyncedAt ?? null
+		lastSyncedAt: cached?.lastSyncedAt ?? null,
+		// Inbound payments that were double-spent / RBF'd away before confirming
+		// (cairn-a2p1). The live scan naturally drops them from the balance + tx
+		// list, so we surface them here as amber "cancelled" rows to reconcile the
+		// vanished amount for the user.
+		cancelledTxs: listReplacedInbound('wallet', id)
 	};
 };
 

@@ -808,6 +808,31 @@ db.exec(`
 	}
 }
 
+// Double-spend / RBF reconciliation for INBOUND transactions (cairn-a2p1). Two
+// additive columns on notified_txids, guarded so existing databases upgrade in
+// place:
+//   • status — lifecycle of a tracked inbound. 'pending' = an UNCONFIRMED inbound
+//     the watcher has SEEN and is tracking, but has deliberately NOT surfaced as
+//     "payment received" yet (the SPV gate defers the user-facing tx_received
+//     until the tx confirms). 'notified' = tx_received has fired. 'replaced' = the
+//     tx disappeared from the mempool without confirming, or was reorg'd away
+//     after — i.e. double-spent / RBF'd — AND it was a genuine external inbound
+//     the user should be told about (surfaced as a "cancelled" row + notified).
+//     'dropped' = it vanished too, but silently (our own bumped send, a zero-value
+//     sighting, or an inbound fee-bump that still pays us): balance is corrected
+//     but no cancellation is shown. A NULL status is a legacy or baselined row:
+//     treated as already-handled (never re-notified, never reconciled).
+//   • amount_sats — the inbound value credited to this wallet, so the correcting
+//     "payment cancelled" notification and the wallet-detail cancelled row can
+//     show the amount without re-fetching a transaction that no longer exists.
+{
+	const cols = (db.prepare('PRAGMA table_info(notified_txids)').all() as { name: string }[]).map(
+		(c) => c.name
+	);
+	if (!cols.includes('status')) db.exec('ALTER TABLE notified_txids ADD COLUMN status TEXT');
+	if (!cols.includes('amount_sats')) db.exec('ALTER TABLE notified_txids ADD COLUMN amount_sats INTEGER');
+}
+
 // Polymorphic child-table cleanup (cairn-97ui). balance_snapshots, wallet_backups,
 // address_labels, backup_missing_notified, and notified_txids all key off a
 // (wallet_kind, wallet_id) pair rather than a real foreign key — SQLite has no

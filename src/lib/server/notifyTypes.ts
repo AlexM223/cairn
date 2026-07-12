@@ -12,6 +12,7 @@
 export const NOTIFICATION_EVENT_TYPES = [
 	'tx_received', // inbound tx first seen for a watched address
 	'tx_confirmed', // a tx crossed a confirmation threshold (1/3/6, configurable)
+	'tx_replaced', // a tracked inbound tx disappeared before confirming (double-spent / RBF'd away) — cairn-a2p1
 	'tx_large', // an inbound OR outbound tx exceeded the user's configured sats threshold
 	'key_health_due', // a multisig key hasn't been verified in ~180 days (mirrors existing key_health nudge)
 	'backup_missing', // wallet/multisig created with no descriptor/Caravan backup ever downloaded

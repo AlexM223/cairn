@@ -161,6 +161,7 @@ export const USER_FEED_TYPES: ReadonlySet<string> = new Set([
 	// Your bitcoin moving
 	'tx_received',
 	'tx_confirmed',
+	'tx_replaced',
 	'tx_large',
 	'broadcast',
 	// Your wallets
