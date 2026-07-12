@@ -30,3 +30,8 @@ services:
       CAIRN_HTTPS_EXTERNAL_PORT: 4488
       # Better client IPs for rate-limiting/audit behind the proxy; safely ignored if absent
       ADDRESS_HEADER: x-forwarded-for
+      # Trust app_proxy's forwarded protocol/host so SvelteKit derives the real
+      # http origin — without these, form POSTs fail SvelteKit's CSRF origin
+      # check (adapter-node assumes https). app_proxy sets both by default.
+      PROTOCOL_HEADER: x-forwarded-proto
+      HOST_HEADER: x-forwarded-host
