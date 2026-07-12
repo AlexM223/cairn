@@ -11,7 +11,7 @@ function inputs(overrides: Partial<SyncInputs> = {}): SyncInputs {
 	return {
 		historyDone: false,
 		fetchActive: false,
-		consecutiveFailures: 0,
+		chainHealthy: true,
 		tipHeight: null,
 		epochsKnown: 0,
 		epochsTotal: 0,
@@ -50,25 +50,45 @@ describe('deriveSyncStatus', () => {
 		expect(s.phase).toBe('history');
 	});
 
-	it('plateaus at unreachable after repeated failures with no active fetch', () => {
-		const s = deriveSyncStatus(
-			inputs({ consecutiveFailures: 2, epochsTotal: 475, epochsKnown: 100 })
-		);
+	it('plateaus at unreachable when the chain transport itself is down', () => {
+		const s = deriveSyncStatus(inputs({ chainHealthy: false, epochsTotal: 475, epochsKnown: 100 }));
 		expect(s.phase).toBe('unreachable');
 		// Frozen at the progress the last attempt reached, not reset to zero.
 		expect(s.percent).toBeGreaterThan(4);
 	});
 
-	it('failures during an active retry still count as history in flight', () => {
+	it('reports unreachable even while a fetch attempt is nominally active, once the transport is confirmed down', () => {
 		const s = deriveSyncStatus(
 			inputs({
-				consecutiveFailures: 2,
+				chainHealthy: false,
 				fetchActive: true,
 				tipHeight: 956_237,
 				epochsTotal: 475,
 				epochsKnown: 100
 			})
 		);
+		expect(s.phase).toBe('unreachable');
+	});
+
+	// Regression for the false "Can't reach your node" banner (QA F1): the
+	// decorative epoch-history walk (chainEpochs.ts) can exhaust its own retry
+	// budget and give up (fetchActive: false, epochs stalled short of total)
+	// while the actual chain transport (chainHealth.ts) is perfectly healthy —
+	// e.g. a young/short chain where the boundary-block quorum can't be met, or
+	// a flaky third-party retarget-history endpoint. That must NOT surface as
+	// "unreachable"; the wallet's real connection is fine, so this stays
+	// 'history' (stalled progress, not a scary banner).
+	it('stays healthy (history) when chain-health is ok even though the epochs strip is failing', () => {
+		const s = deriveSyncStatus(
+			inputs({
+				chainHealthy: true,
+				fetchActive: false,
+				tipHeight: 116,
+				epochsTotal: 1,
+				epochsKnown: 1
+			})
+		);
+		expect(s.phase).not.toBe('unreachable');
 		expect(s.phase).toBe('history');
 	});
 

@@ -32,6 +32,7 @@ import {
 	epochIndexForHeight
 } from './chainEpochs';
 import { getWatcherScanProgress } from './addressWatcher';
+import { getChainHealth } from './chainHealth';
 import { yearNoteFor } from '$lib/syncYearNotes';
 import { childLogger } from './logger';
 
@@ -40,7 +41,10 @@ const log = childLogger('firstSync');
 const EPOCH = 2016;
 /** Pause between retries when the chain backend is unreachable. */
 const RETRY_MS = 20_000;
-/** Consecutive failed build attempts before we call the grove unreachable. */
+/** Consecutive failed epoch-history build attempts before we log a warning
+ *  (purely diagnostic — the user-facing 'unreachable' phase is driven by the
+ *  real chain-transport signal in chainHealth.ts, not by this counter; see
+ *  the 'unreachable' branch in deriveSyncStatus below). */
 const UNREACHABLE_AFTER = 2;
 /** Tip lookups are cheap but there's no reason to spam them under polling. */
 const TIP_TTL_MS = 10_000;
@@ -80,7 +84,18 @@ export interface SyncStatus {
 export interface SyncInputs {
 	historyDone: boolean;
 	fetchActive: boolean;
-	consecutiveFailures: number;
+	/**
+	 * Real chain-transport health (chainHealth.ts's recorded Electrum
+	 * connect/handshake outcomes — the same signal behind /api/chain-health).
+	 * Deliberately NOT derived from the epoch-history walk's own fetch
+	 * failures: that walk (chainEpochs.ts) is a decorative, best-effort
+	 * feature (the ChainStrip / wood-growth visualization) that can legitimately
+	 * fail its own internal quorum (e.g. too few boundary blocks resolved) while
+	 * the wallet's actual chain connection is perfectly healthy. Conflating the
+	 * two used to make the first-sync banner falsely claim "Can't reach your
+	 * node" whenever only the decorative strip degraded.
+	 */
+	chainHealthy: boolean;
 	tipHeight: number | null;
 	epochsKnown: number;
 	epochsTotal: number;
@@ -122,8 +137,12 @@ export function deriveSyncStatus(i: SyncInputs): {
 		return { phase: 'synced', percent: 100, verifyingYear, verifyingNote };
 	}
 
-	if (i.consecutiveFailures >= UNREACHABLE_AFTER && !i.fetchActive) {
-		// Freeze at whatever progress the last attempt reached.
+	if (!i.chainHealthy) {
+		// The chain transport itself is down (real connect/handshake failures) —
+		// freeze at whatever progress the last successful attempt reached. This
+		// must NOT trip just because the decorative epoch-history walk is
+		// struggling; that's covered by the 'history' fallback below, which
+		// keeps reporting real (if stalled) progress instead of scaring the user.
 		return {
 			phase: 'unreachable',
 			percent: Math.round(4 + 82 * historyFrac),
@@ -328,7 +347,7 @@ export async function getSyncStatus(): Promise<SyncStatus> {
 	const derived = deriveSyncStatus({
 		historyDone,
 		fetchActive: fetch.active,
-		consecutiveFailures: state.consecutiveFailures,
+		chainHealthy: getChainHealth().healthy,
 		tipHeight: tip,
 		epochsKnown,
 		epochsTotal,
