@@ -1660,18 +1660,6 @@
 		flex-shrink: 0;
 	}
 
-	.hw-tx-amount {
-		font-family: var(--font-serif);
-		font-weight: 600;
-		font-size: 16px;
-		font-variant-numeric: tabular-nums;
-		color: var(--text-value, #cbbfb3);
-	}
-
-	.hw-tx-amount.in {
-		color: var(--sage);
-	}
-
 	.hw-tx-when {
 		font-size: 11.5px;
 		color: var(--text-faint);
@@ -1876,10 +1864,6 @@
 
 		.hw-tx-title {
 			font-size: 13px;
-		}
-
-		.hw-tx-amount {
-			font-size: 14px;
 		}
 	}
 </style>

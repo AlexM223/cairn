@@ -1395,12 +1395,6 @@
 		vertical-align: middle;
 	}
 
-	.cancel-amount {
-		color: var(--attention);
-		text-decoration: line-through;
-		opacity: 0.85;
-	}
-
 	/* The Heartwood grove field needs a positioned ancestor; content rides
 	   above it at z-index 1. */
 	.hw-page {
@@ -1451,13 +1445,6 @@
 
 	.hw-hero-muted {
 		color: var(--text-muted);
-	}
-
-	.hw-hero-unit {
-		font-family: var(--font-serif);
-		font-weight: 600;
-		font-size: clamp(20px, 3vw, 30px);
-		color: var(--text-secondary);
 	}
 
 	.hw-hero-sub {
@@ -1859,18 +1846,6 @@
 		flex-shrink: 0;
 	}
 
-	.hw-tx-amount {
-		font-family: var(--font-serif);
-		font-weight: 600;
-		font-size: 16px;
-		font-variant-numeric: tabular-nums;
-		color: var(--text-value, #cbbfb3);
-	}
-
-	.hw-tx-amount.in {
-		color: var(--sage);
-	}
-
 	.hw-tx-when {
 		font-size: 11.5px;
 		color: var(--text-faint);
@@ -2201,10 +2176,6 @@
 
 		.hw-tx-title {
 			font-size: 13px;
-		}
-
-		.hw-tx-amount {
-			font-size: 14px;
 		}
 	}
 

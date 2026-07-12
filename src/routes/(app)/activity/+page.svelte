@@ -595,10 +595,6 @@
 		color: #cbbfb3;
 	}
 
-	.amount.in {
-		color: var(--sage);
-	}
-
 	.quorum-badge {
 		flex-shrink: 0;
 		font-size: 10.5px;
