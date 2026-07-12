@@ -9,7 +9,7 @@
 // multisigPsbtProgress, the single progress authority every endpoint shares, so
 // the UI can never disagree with the actual signature state.
 
-import { Transaction, p2ms, p2sh, p2wsh, NETWORK } from '@scure/btc-signer';
+import { Transaction, p2ms, p2sh, p2wsh, Script, NETWORK } from '@scure/btc-signer';
 import { base64 } from '@scure/base';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
 import {
@@ -58,6 +58,7 @@ export class MultisigPsbtError extends Error {
 			| 'different_transaction'
 			| 'foreign_signature'
 			| 'wrong_sighash'
+			| 'invalid_finalization'
 			| 'not_enough_signatures'
 			| 'combine_failed'
 	) {
@@ -567,6 +568,113 @@ export async function constructMultisigPsbt(params: MultisigConstructParams): Pr
 
 // ------------------------------------------------------------------- combine
 
+/** The multisig CHECKMULTISIG threshold M encoded as a script's leading opcode
+ *  (OP_1..OP_16 => 0x51..0x60); null when it isn't a recognizable small-int op. */
+function scriptThreshold(script: Uint8Array): number | null {
+	if (script.length === 0) return null;
+	const op = script[0];
+	return op >= 0x51 && op <= 0x60 ? op - 0x50 : null;
+}
+
+/** True when a byte array is a DER-encoded ECDSA signature ending in the
+ *  SIGHASH_ALL flag byte — the only signature form a CHECKMULTISIG witness may
+ *  contain for Cairn to adopt an incoming finalization. */
+function isSighashAllDerSig(item: Uint8Array): boolean {
+	return item.length >= 9 && item[0] === 0x30 && item[item.length - 1] === SIGHASH_ALL;
+}
+
+/**
+ * cairn-vo6z guard. Validate an incoming PSBT's finalization for input `index`
+ * against the multisig scripts CAIRN ITSELF attached to the base input, and
+ * return the finalization fields safe to adopt — or throw.
+ *
+ * combineMultisigPsbts used to copy an incoming finalScriptWitness /
+ * finalScriptSig verbatim once the base input wasn't yet finalized. Since
+ * assertSameTransaction only pins the unsigned inputs/outputs (never the witness),
+ * a cosigner could attach GARBAGE finalization — zero real signatures — that
+ * durably marked the shared draft "ready to broadcast" while the network rejects
+ * it, and honest signers couldn't recover: an availability DoS on shared funds
+ * that also contradicted MANUAL §18.9's "tampered PSBT rejected" claim.
+ *
+ * We bind the finalization to the base input's authoritative witnessScript /
+ * redeemScript (a garbage or foreign witness can't reproduce it) and require
+ * every embedded signature to be a SIGHASH_ALL ECDSA signature meeting the
+ * script's own quorum — refusing anything else. Legitimate finalizations (e.g.
+ * a cosigner tool like Bitcoin Core that finalizes as it adds the last signature
+ * and strips its partialSig into the witness — cairn-8y3b) reproduce the exact
+ * witnessScript and carry real SIGHASH_ALL signatures, so they pass untouched.
+ */
+function validatedFinalization(
+	cur: { witnessScript?: Uint8Array; redeemScript?: Uint8Array },
+	inc: { finalScriptWitness?: Uint8Array[]; finalScriptSig?: Uint8Array },
+	index: number
+): { finalScriptWitness?: Uint8Array[]; finalScriptSig?: Uint8Array } {
+	const fail = (why: string): never => {
+		throw new MultisigPsbtError(
+			`The finalized signature data for input ${index + 1} ${why} — refusing to adopt it. If a cosigner's tool finalized the transaction, ask them to share the PSBT with its individual signatures instead of a finalized one.`,
+			'invalid_finalization'
+		);
+	};
+
+	// Segwit multisig (p2wsh, p2sh-p2wsh): the witness stack is
+	// <dummy> <sig_1> … <sig_M> <witnessScript>. Bind the trailing element to the
+	// witnessScript Cairn attached at construction.
+	if (cur.witnessScript && cur.witnessScript.length > 0) {
+		const witness = inc.finalScriptWitness ?? [];
+		if (witness.length < 2) fail('is missing its witness data');
+		const trailing = witness[witness.length - 1];
+		if (bytesToHex(trailing) !== bytesToHex(cur.witnessScript)) {
+			fail("doesn't match this multisig's script");
+		}
+		const sigItems = witness.slice(0, -1).filter((w) => w.length > 0);
+		if (sigItems.length === 0) fail('carries no signatures');
+		for (const sig of sigItems) {
+			if (!isSighashAllDerSig(sig)) fail('contains a signature that is not a SIGHASH_ALL signature');
+		}
+		const m = scriptThreshold(cur.witnessScript);
+		if (m !== null && sigItems.length < m) fail('does not carry enough signatures to be complete');
+		// Adopt the validated witness. For p2sh-p2wsh, rebuild the scriptSig from
+		// the authoritative redeemScript rather than trusting the incoming one.
+		const adopted: { finalScriptWitness?: Uint8Array[]; finalScriptSig?: Uint8Array } = {
+			finalScriptWitness: witness
+		};
+		if (cur.redeemScript && cur.redeemScript.length > 0) {
+			adopted.finalScriptSig = Script.encode([cur.redeemScript]);
+		}
+		return adopted;
+	}
+
+	// Legacy p2sh multisig: everything rides in the scriptSig
+	// (OP_0 <sig_1> … <sig_M> <redeemScript>).
+	if (cur.redeemScript && cur.redeemScript.length > 0) {
+		if (!inc.finalScriptSig || inc.finalScriptSig.length === 0) fail('is missing its scriptSig');
+		let decoded: (number | Uint8Array | bigint)[];
+		try {
+			decoded = Script.decode(inc.finalScriptSig!) as (number | Uint8Array | bigint)[];
+		} catch {
+			return fail('could not be parsed');
+		}
+		const trailing = decoded[decoded.length - 1];
+		if (!(trailing instanceof Uint8Array) || bytesToHex(trailing) !== bytesToHex(cur.redeemScript)) {
+			fail("doesn't match this multisig's script");
+		}
+		const sigItems = decoded
+			.slice(0, -1)
+			.filter((d): d is Uint8Array => d instanceof Uint8Array && d.length > 0);
+		if (sigItems.length === 0) fail('carries no signatures');
+		for (const sig of sigItems) {
+			if (!isSighashAllDerSig(sig)) fail('contains a signature that is not a SIGHASH_ALL signature');
+		}
+		const m = scriptThreshold(cur.redeemScript);
+		if (m !== null && sigItems.length < m) fail('does not carry enough signatures to be complete');
+		return { finalScriptSig: inc.finalScriptSig };
+	}
+
+	// No authoritative script on the base input — we cannot validate the
+	// finalization (Cairn's own drafts always carry it), so refuse to adopt.
+	return fail('could not be validated against this multisig');
+}
+
 /**
  * Merge the partial signatures of `incoming` into `base` — Cairn's local
  * combinepsbt. Both PSBTs must commit to the IDENTICAL unsigned transaction
@@ -582,8 +690,12 @@ export async function constructMultisigPsbt(params: MultisigConstructParams): Pr
  * the wrong wallet signed).
  *
  * If the incoming PSBT arrives already finalized (a device that completes the
- * quorum may finalize and strip partialSig), the final witness is carried
- * through so the signature work isn't lost.
+ * quorum may finalize and strip partialSig), its finalization is adopted ONLY
+ * after validatedFinalization binds it to this multisig's own witnessScript /
+ * redeemScript and confirms every embedded signature is a real SIGHASH_ALL
+ * signature — a cosigner cannot brick a shared draft with garbage finalization
+ * (cairn-vo6z). A finalization that fails validation is refused with
+ * 'invalid_finalization'.
  *
  * Every incoming signature must also be flagged SIGHASH_ALL (trailing byte
  * 0x01). A co-signer or a buggy/malicious device could otherwise slip in a
@@ -649,14 +761,21 @@ export function combineMultisigPsbts(basePsbt: string, incomingPsbt: string): st
 			base.updateInput(i, { partialSig: [...(cur.partialSig ?? []), ...additions] }, true);
 		}
 
-		// Adopt finalization produced by the quorum-completing signer.
+		// Adopt finalization produced by the quorum-completing signer — but ONLY
+		// after validating it against this multisig's own scripts (cairn-vo6z).
+		// Copying an incoming witness verbatim let a cosigner brick a shared draft
+		// with garbage finalization; validatedFinalization binds it to the base
+		// input's authoritative witnessScript / redeemScript and requires real
+		// SIGHASH_ALL signatures, throwing 'invalid_finalization' otherwise.
 		const curFinal = (cur.finalScriptWitness?.length ?? 0) > 0 || (cur.finalScriptSig?.length ?? 0) > 0;
-		if (!curFinal) {
-			if ((inc.finalScriptWitness?.length ?? 0) > 0) {
-				base.updateInput(i, { finalScriptWitness: inc.finalScriptWitness }, true);
+		const incFinal = (inc.finalScriptWitness?.length ?? 0) > 0 || (inc.finalScriptSig?.length ?? 0) > 0;
+		if (!curFinal && incFinal) {
+			const adopted = validatedFinalization(cur, inc, i);
+			if (adopted.finalScriptWitness) {
+				base.updateInput(i, { finalScriptWitness: adopted.finalScriptWitness }, true);
 			}
-			if ((inc.finalScriptSig?.length ?? 0) > 0) {
-				base.updateInput(i, { finalScriptSig: inc.finalScriptSig }, true);
+			if (adopted.finalScriptSig) {
+				base.updateInput(i, { finalScriptSig: adopted.finalScriptSig }, true);
 			}
 		}
 	}

@@ -16,6 +16,7 @@ import {
 	summarizePsbt,
 	PsbtMismatchError,
 	PsbtNotFullySignedError,
+	PsbtSighashError,
 	DEFAULT_ORIGIN_PATH,
 	PsbtError,
 	estimateTxVsize,
@@ -864,6 +865,11 @@ export async function broadcastTransaction(
 				`This transaction isn't fully signed yet — ${e.unsignedCount} of ${e.totalCount} input${plural} still need${e.unsignedCount === 1 ? 's' : ''} a signature. Sign it with your device or wallet, then try again.`,
 				'incomplete'
 			);
+		}
+		// A wrong-sighash signature is user-actionable (re-sign with SIGHASH_ALL) —
+		// surface its clear message rather than the generic finalize failure.
+		if (e instanceof PsbtSighashError) {
+			throw new BroadcastError(e.message, 'incomplete');
 		}
 		throw new BroadcastError(
 			"This transaction couldn't be finalized. Make sure it's fully signed, then try again.",

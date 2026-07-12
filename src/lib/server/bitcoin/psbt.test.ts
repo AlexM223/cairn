@@ -3,7 +3,7 @@ import { HDKey } from '@scure/bip32';
 import { base64, base58check } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
-import { Transaction, NETWORK, Address, OutScript, p2wpkh } from '@scure/btc-signer';
+import { Transaction, NETWORK, Address, OutScript, p2wpkh, SigHash } from '@scure/btc-signer';
 import { addressToScriptPubKey, parseXpub, deriveAddress } from './xpub';
 import {
 	constructPsbt,
@@ -15,6 +15,7 @@ import {
 	PsbtError,
 	PsbtMismatchError,
 	PsbtNotFullySignedError,
+	PsbtSighashError,
 	type SpendableUtxo
 } from './psbt';
 import {
@@ -322,6 +323,74 @@ describe('finalizePsbt: already-finalized inputs (cairn QA F3)', () => {
 		const { rawHex, txid } = finalizePsbt(signedOnly);
 		expect(txid).toBe(reference.id);
 		expect(rawHex).toBe(reference.hex);
+	});
+});
+
+// ── finalizePsbt: SIGHASH_ALL enforcement (cairn-u2r5) ───────────────────────
+//
+// A buggy or malicious external signer can return a fully-valid-looking PSBT
+// whose signature commits with SIGHASH_SINGLE / NONE / ANYONECANPAY instead of
+// SIGHASH_ALL — a signature over LESS than the whole transaction, replayable
+// onto a different transaction spending the same input. assertSameTransaction
+// only pins the current draft's inputs/outputs, so it can't catch this;
+// finalizePsbt must. Mirrors the multisig combine-time check (cairn-srte).
+describe('finalizePsbt: SIGHASH_ALL enforcement (cairn-u2r5)', () => {
+	/** A single-input p2wpkh draft (30k from the 60k coin) → one input, one
+	 *  matching output index, so SIGHASH_SINGLE signing is well-defined. */
+	function oneInputDraft() {
+		return constructPsbt({ ...COMMON, recipients: [{ address: RECIPIENT, amount: 30_000 }], feeRate: 10 });
+	}
+
+	/** Sign every input with the given sighash flag, the way a device that used a
+	 *  non-default sighash setting would: declare it on the input, then sign. */
+	function signAllWithSighash(psbtBase64: string, flag: number): Transaction {
+		const account = accountKey();
+		const tx = Transaction.fromPSBT(base64.decode(psbtBase64));
+		for (let i = 0; i < tx.inputsLength; i++) {
+			const path = tx.getInput(i).bip32Derivation![0][1].path;
+			tx.updateInput(i, { sighashType: flag });
+			tx.signIdx(account.deriveChild(path[3]).deriveChild(path[4]).privateKey!, i, [flag]);
+		}
+		return tx;
+	}
+
+	it.each([
+		['SIGHASH_NONE', SigHash.NONE],
+		['SIGHASH_SINGLE', SigHash.SINGLE],
+		['SIGHASH_ALL|ANYONECANPAY', SigHash.ALL_ANYONECANPAY],
+		['SIGHASH_SINGLE|ANYONECANPAY', SigHash.SINGLE_ANYONECANPAY]
+	])('rejects a %s signature (still-partialSig input) with a clear error', async (_label, flag) => {
+		const draft = await oneInputDraft();
+		const signed = base64.encode(signAllWithSighash(draft.psbtBase64, flag).toPSBT());
+		let caught: unknown;
+		try {
+			finalizePsbt(signed);
+		} catch (e) {
+			caught = e;
+		}
+		expect(caught).toBeInstanceOf(PsbtSighashError);
+		expect((caught as PsbtSighashError).message).toMatch(/SIGHASH_ALL/);
+	});
+
+	it('rejects a wrong-sighash input the external signer ALREADY finalized (parallel path)', async () => {
+		// The sibling path: a signer (e.g. Bitcoin Core finalize=true) hands back an
+		// input already carrying final_scriptwitness. finalizePsbt passes those
+		// through — but must still inspect the assembled witness's sighash byte.
+		const draft = await oneInputDraft();
+		const tx = signAllWithSighash(draft.psbtBase64, SigHash.SINGLE);
+		for (let i = 0; i < tx.inputsLength; i++) tx.finalizeIdx(i);
+		const coreFinalized = base64.encode(tx.toPSBT());
+		expect(() => finalizePsbt(coreFinalized)).toThrow(PsbtSighashError);
+	});
+
+	it('still finalizes an ordinary SIGHASH_ALL signature (positive control)', async () => {
+		const draft = await oneInputDraft();
+		const signed = base64.encode(signAllWithSighash(draft.psbtBase64, SigHash.ALL).toPSBT());
+		// Sanity: btc-signer appended the 0x01 flag byte.
+		const sig = Transaction.fromPSBT(base64.decode(signed)).getInput(0).partialSig![0][1];
+		expect(sig[sig.length - 1]).toBe(0x01);
+		const { txid } = finalizePsbt(signed);
+		expect(txid).toMatch(/^[0-9a-f]{64}$/);
 	});
 });
 
