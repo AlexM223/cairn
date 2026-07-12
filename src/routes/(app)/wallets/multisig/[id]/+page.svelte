@@ -638,6 +638,7 @@
 							name: key.name,
 							deviceType: key.deviceType,
 							fingerprint: key.fingerprint,
+							xpub: key.xpub,
 							path: key.path,
 							lastVerifiedAt: keyVerifiedAt(key)
 						}}

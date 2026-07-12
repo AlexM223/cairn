@@ -73,6 +73,11 @@ export const load: PageServerLoad = ({ params, locals, url, depends }) => {
 				category: k.category,
 				deviceType: k.deviceType,
 				fingerprint: k.fingerprint,
+				// Safe to include: redactMultisigKeysForViewer never redacts xpub or
+				// fingerprint for any role (multisigShares.ts) -- only path is scoped
+				// to the viewers own key. Feeds the Keys section supporting
+				// audit display (copy/expand) and the key-check UI.
+				xpub: k.xpub,
 				path: k.path,
 				lastVerifiedAt: k.lastVerifiedAt ?? null
 			}))

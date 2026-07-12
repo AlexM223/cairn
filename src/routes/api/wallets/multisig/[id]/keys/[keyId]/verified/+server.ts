@@ -14,6 +14,12 @@ import type { RequestHandler } from './$types';
  *       match    → 200 { verified: true, keyId, lastVerifiedAt }
  *       mismatch → 200 { verified: false, fingerprintMatch, xpubMatch,
  *                        expectedFingerprint, deviceFingerprint }
+ *   { "method": "paste", "xpub": "...", "fingerprint": "..." }
+ *     A re-entered/re-imported xpub — the air-gapped / ColdCard / no-device
+ *     (and plain-HTTP, where WebHID/Web Serial are withheld) fallback to a
+ *     live re-read. Same shape, same compare — the endpoint doesn't check
+ *     the source of a reading, only the values — so it shares every response
+ *     shape with "device" above.
  *   { "method": "manual" }
  *     A guided manual verification the user explicitly confirmed (ColdCard /
  *     QR / file keys, which Cairn cannot re-read directly).
@@ -30,10 +36,10 @@ export const POST: RequestHandler = async (event) => {
 
 	const body = await readJson<{ method?: unknown; xpub?: unknown; fingerprint?: unknown }>(event);
 
-	if (body.method === 'device') {
+	if (body.method === 'device' || body.method === 'paste') {
 		if (typeof body.xpub !== 'string' || typeof body.fingerprint !== 'string') {
 			return json(
-				{ error: 'A device check needs the xpub and fingerprint the device reported.' },
+				{ error: 'A key check needs the xpub and fingerprint to compare — both are required.' },
 				{ status: 400 }
 			);
 		}
@@ -48,7 +54,7 @@ export const POST: RequestHandler = async (event) => {
 			});
 		}
 	} else if (body.method !== 'manual') {
-		return json({ error: 'method must be "device" or "manual".' }, { status: 400 });
+		return json({ error: 'method must be "device", "paste", or "manual".' }, { status: 400 });
 	}
 
 	const updated = markKeyVerified(user.id, id, keyId);
