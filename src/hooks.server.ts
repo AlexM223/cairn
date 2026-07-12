@@ -30,6 +30,7 @@ import { startRetentionSweep } from '$lib/server/dataRetention';
 import { startFirstSync } from '$lib/server/syncStatus';
 import { migratePlaintextSecretsAtRest } from '$lib/server/secretsMigration';
 import { migrateInstanceMode } from '$lib/server/instanceModeMigration';
+import { migrateExplorerDefault } from '$lib/server/explorerDefaultMigration';
 import { ensureDefaultAgreementVersion } from '$lib/server/disclosures';
 import { httpsExternalPort } from '$lib/server/httpsPort';
 import { DB_PATH } from '$lib/server/db';
@@ -124,6 +125,18 @@ if (!globalThis.__cairnProcessGuardInstalled) {
 // is invoked once into the module-scope `initReady` promise, and `handle`
 // awaits that promise as its first step instead.
 async function init(): Promise<void> {
+	// UX Wave A (docs/UX-PLAN.md): decide whether the block explorer defaults
+	// off, before anything below can create a user. MUST run first — its
+	// "genuinely new install" test is a literal zero-user database, which is
+	// only true before bootstrapAdminFromEnv() (next) runs. See
+	// explorerDefaultMigration.ts for the full rationale. Idempotent; never
+	// throws.
+	try {
+		migrateExplorerDefault();
+	} catch (e) {
+		errLog.error({ err: e }, 'explorer default migration failed');
+	}
+
 	// Non-interactive admin bootstrap for deployment tooling (Umbrel/Docker set
 	// CAIRN_ADMIN_PASSWORD / APP_PASSWORD). Runs once at server start; never throws.
 	try {

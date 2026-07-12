@@ -25,8 +25,14 @@ export function getGlobalFlags(): Map<string, boolean> {
 	return new Map(rows.map((r) => [r.key, r.enabled === 1]));
 }
 
-/** Upsert the instance-wide value for one flag. */
-export function setGlobalFlag(key: string, enabled: boolean, updatedBy: number): void {
+/**
+ * Upsert the instance-wide value for one flag. `updatedBy` is `null` only for
+ * system-initiated writes with no attributable admin (e.g.
+ * explorerDefaultMigration.ts's one-time fresh-install default) — every real
+ * admin action still passes its own user id, matching the file header's
+ * attributability rationale.
+ */
+export function setGlobalFlag(key: string, enabled: boolean, updatedBy: number | null): void {
 	assertKnownKey(key);
 	db.prepare(
 		`INSERT INTO feature_flags (key, enabled, updated_by, updated_at)

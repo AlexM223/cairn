@@ -113,7 +113,13 @@ export const FEATURE_FLAGS: FeatureFlagDef[] = [
 		category: 'wallet',
 		label: 'Block explorer',
 		description: 'In-app address/tx explorer view.',
-		userMessage: 'The explorer has been disabled by your administrator.',
+		// UX Wave A (docs/UX-PLAN.md): fresh installs now default this off (see
+		// explorerDefaultMigration.ts), which is a newcomer-declutter DEFAULT, not
+		// an admin restriction — unlike every other flag's userMessage, this one
+		// deliberately avoids "disabled by your administrator" so it reads
+		// correctly for a solo self-hoster who never touched any setting.
+		userMessage:
+			"The explorer isn't enabled on this instance. An admin can turn it on under Admin → Feature flags.",
 		defaultEnabled: true
 	},
 

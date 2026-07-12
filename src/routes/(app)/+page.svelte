@@ -246,20 +246,26 @@
 							your devices.
 						</span>
 					</a>
-					<a href="/explorer" class="tour-item" onclick={dismissTour}>
-						<Icon name="blocks" size={18} />
-						<span class="tour-item-title">Explorer</span>
-						<span class="tour-item-desc">
-							Browse blocks, transactions, and addresses — every technical term explains itself.
-						</span>
-					</a>
-					<a href="/explorer/mempool" class="tour-item" onclick={dismissTour}>
-						<Icon name="zap" size={18} />
-						<span class="tour-item-title">Mempool</span>
-						<span class="tour-item-desc">
-							See what's waiting to confirm and what a transaction costs right now.
-						</span>
-					</a>
+					<!-- UX Wave A: an Explorer/Mempool tour tile would be a dead link once
+					     the explorer feature flag is off (server-side requireFeature 403s
+					     /explorer/**, matching the nav's own flags.explorer !== false hide
+					     hook) — never advertise a destination the newcomer can't reach. -->
+					{#if data.flags?.explorer !== false}
+						<a href="/explorer" class="tour-item" onclick={dismissTour}>
+							<Icon name="blocks" size={18} />
+							<span class="tour-item-title">Explorer</span>
+							<span class="tour-item-desc">
+								Browse blocks, transactions, and addresses — every technical term explains itself.
+							</span>
+						</a>
+						<a href="/explorer/mempool" class="tour-item" onclick={dismissTour}>
+							<Icon name="zap" size={18} />
+							<span class="tour-item-title">Mempool</span>
+							<span class="tour-item-desc">
+								See what's waiting to confirm and what a transaction costs right now.
+							</span>
+						</a>
+					{/if}
 				</div>
 			</section>
 		{/if}
@@ -427,54 +433,60 @@
 						</div>
 						<AllocationBar slices={portfolio.allocation} total={portfolio.confirmed} />
 
-						<!-- next-block footer -->
-						<div class="next-block">
-							<div class="nb-head">
-								<span class="nb-label">Next block</span>
-								{#if chain !== null && chain.tipHeight !== null}
-									<a href="/explorer/block/{chain.tipHeight}" class="nb-tip tabular">
-										{formatNumber(chain.tipHeight)} · {timeAgo(chain.tipTime)}
-									</a>
-								{:else if chain === null && !syncFailed}
-									<span class="nb-tip skeleton">000,000 · just now</span>
+						<!-- next-block footer (UX Wave A: block-explorer furniture — mempool
+						     depth, next-block fee estimate, "ring" wording — demoted off the
+						     newcomer's default surface behind the same flags.explorer hook the
+						     nav already uses. Power users / existing installs with the
+						     explorer flag on see it exactly as before.) -->
+						{#if data.flags?.explorer !== false}
+							<div class="next-block">
+								<div class="nb-head">
+									<span class="nb-label">Next block</span>
+									{#if chain !== null && chain.tipHeight !== null}
+										<a href="/explorer/block/{chain.tipHeight}" class="nb-tip tabular">
+											{formatNumber(chain.tipHeight)} · {timeAgo(chain.tipTime)}
+										</a>
+									{:else if chain === null && !syncFailed}
+										<span class="nb-tip skeleton">000,000 · just now</span>
+									{/if}
+								</div>
+								{#if chain === null && !syncFailed}
+									<div class="nb-fee skeleton">next ring ≈ 00 sat/vB</div>
+								{:else if chain === null && syncFailed}
+									<div class="nb-error">
+										Can't reach chain data sources — check the connection in Admin → Settings.
+									</div>
+								{:else if chain !== null}
+									{#if chain.fees}
+										<div class="nb-fee">
+											next ring ≈ <span class="nb-fee-num tabular"
+												>{Math.round(chain.fees.fastest)}</span
+											> sat/vB
+										</div>
+									{/if}
+									{#if mempoolSegs}
+										<div
+											class="mempool-bar"
+											role="img"
+											aria-label="Mempool depth: about {mempoolSegs.blocks} blocks of transactions waiting"
+										>
+											<span class="seg s1" style="width: {mempoolSegs.widths[0]}%"></span>
+											<span class="seg s2" style="width: {mempoolSegs.widths[1]}%"></span>
+											<span class="seg s3" style="width: {mempoolSegs.widths[2]}%"></span>
+										</div>
+										<div class="nb-caption">
+											{formatBytes(chain.mempool?.vsize ?? 0)} waiting · ~{mempoolSegs.blocks}
+											block{mempoolSegs.blocks === 1 ? '' : 's'}
+										</div>
+									{:else if chain.mempool}
+										<div class="nb-caption">mempool is clear</div>
+									{/if}
+								{/if}
+								{#if syncLabel}
+									<div class="sync-status" class:updating={syncing}>{syncLabel}</div>
 								{/if}
 							</div>
-							{#if chain === null && !syncFailed}
-								<div class="nb-fee skeleton">next ring ≈ 00 sat/vB</div>
-							{:else if chain === null && syncFailed}
-								<div class="nb-error">
-									Can't reach chain data sources — check the connection in Admin → Settings.
-								</div>
-							{:else if chain !== null}
-								{#if chain.fees}
-									<div class="nb-fee">
-										next ring ≈ <span class="nb-fee-num tabular"
-											>{Math.round(chain.fees.fastest)}</span
-										> sat/vB
-									</div>
-								{/if}
-								{#if mempoolSegs}
-									<div
-										class="mempool-bar"
-										role="img"
-										aria-label="Mempool depth: about {mempoolSegs.blocks} blocks of transactions waiting"
-									>
-										<span class="seg s1" style="width: {mempoolSegs.widths[0]}%"></span>
-										<span class="seg s2" style="width: {mempoolSegs.widths[1]}%"></span>
-										<span class="seg s3" style="width: {mempoolSegs.widths[2]}%"></span>
-									</div>
-									<div class="nb-caption">
-										{formatBytes(chain.mempool?.vsize ?? 0)} waiting · ~{mempoolSegs.blocks}
-										block{mempoolSegs.blocks === 1 ? '' : 's'}
-									</div>
-								{:else if chain.mempool}
-									<div class="nb-caption">mempool is clear</div>
-								{/if}
-							{/if}
-							{#if syncLabel}
-								<div class="sync-status" class:updating={syncing}>{syncLabel}</div>
-							{/if}
-						</div>
+						{/if}
 					</section>
 				</div>
 			{/if}
