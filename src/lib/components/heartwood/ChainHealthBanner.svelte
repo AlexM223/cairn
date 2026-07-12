@@ -14,6 +14,20 @@
 	 * until the transport is actually unhealthy. The /api/chain-health read is an
 	 * in-memory, last-known signal (no fresh probe), so this poll adds no chain
 	 * traffic of its own.
+	 *
+	 * cairn-7zjo: this is the SOLE owner of the "chain unreachable" root cause.
+	 * SyncBanner's own 'unreachable' phase is derived from the exact same
+	 * chainHealth signal (see syncStatus.ts's deriveSyncStatus), so it hides
+	 * itself whenever this banner is showing instead of duplicating the message
+	 * — no two banners ever both go red for one underlying cause.
+	 *
+	 * It also distinguishes two causes that used to look identical: a FRESH
+	 * install that has never had its connection touched (still on the public
+	 * default, no admin/auto-connect action ever recorded — health.neverConfigured)
+	 * renders a calm, neutral "not connected yet" notice instead of a red error,
+	 * since nothing is actually broken — nobody has set this up yet. An instance
+	 * that WAS configured (custom, or Umbrel auto-connected) and has since gone
+	 * unreachable still gets the real warning-styled "can't reach it" banner.
 	 */
 	import { onMount } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
@@ -40,12 +54,18 @@
 	}
 
 	function headline(h: ChainHealth): string {
+		if (h.neverConfigured) return "Heartwood isn't connected to the Bitcoin network yet.";
 		return h.proxyConfigured
 			? "Can't reach the Bitcoin network through the configured proxy."
 			: "Can't reach the Bitcoin network.";
 	}
 
 	function subline(h: ChainHealth): string {
+		if (h.neverConfigured) {
+			return isAdmin
+				? 'Balances and history will appear once a node or server is connected.'
+				: 'Balances and history will appear once your instance operator connects it. Ask your instance operator.';
+		}
 		const when = agoLabel(h.lastErrorAt);
 		const proxy = h.proxyConfigured
 			? 'Check that your SOCKS5/Tor proxy is running and reachable.'
@@ -77,13 +97,20 @@
 </script>
 
 {#if unhealthy && health}
-	<div class="chain-health-banner" role="status" aria-live="polite">
-		<Icon name="alert-triangle" size={16} />
+	<div
+		class="chain-health-banner"
+		class:neutral={health.neverConfigured}
+		role="status"
+		aria-live="polite"
+	>
+		<Icon name={health.neverConfigured ? 'server' : 'alert-triangle'} size={16} />
 		<span class="grow">
 			<strong>{headline(health)}</strong>
 			<span class="detail">{subline(health)}</span>
 			{#if isAdmin}
-				<a href="/admin/settings">Review connection settings</a>
+				<a href="/admin/settings">
+					{health.neverConfigured ? 'Connect a node' : 'Review connection settings'}
+				</a>
 			{/if}
 		</span>
 	</div>
@@ -109,6 +136,18 @@
 	.chain-health-banner :global(svg) {
 		color: var(--warning);
 		flex-shrink: 0;
+	}
+
+	/* A fresh, never-configured instance isn't broken — nobody has set it up
+	   yet. Same shape as the layout's own gentle .reminder-banner (soft
+	   surface fill, muted icon) so the calm state doesn't read as an error. */
+	.chain-health-banner.neutral {
+		background: var(--surface);
+		border-color: var(--border-subtle);
+	}
+
+	.chain-health-banner.neutral :global(svg) {
+		color: var(--text-muted);
 	}
 
 	.grow {

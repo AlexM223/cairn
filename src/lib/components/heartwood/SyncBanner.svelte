@@ -13,6 +13,15 @@
 	 * banner then polls /api/sync (the same endpoint the /sync page polls) for the
 	 * real phase / ring counts / ETA, and removes itself the moment the count
 	 * reaches 'synced' — no reload needed.
+	 *
+	 * cairn-7zjo: `phase === 'unreachable'` is derived from the exact same
+	 * chain-transport signal as ChainHealthBanner's `unhealthy` (see
+	 * syncStatus.ts's deriveSyncStatus — it requires `!chainHealthy`), so
+	 * whenever this phase is reached, ChainHealthBanner (always mounted above
+	 * this one in the layout) is necessarily already showing the "can't reach
+	 * it" / "not connected yet" message for the identical root cause. This
+	 * banner defers to it rather than stacking a second, redundant "can't
+	 * reach your node" banner underneath.
 	 */
 	import { onMount } from 'svelte';
 	import EpochDial from './EpochDial.svelte';
@@ -30,6 +39,10 @@
 	const dialState = $derived<'syncing' | 'behind'>(
 		status?.phase === 'unreachable' ? 'behind' : 'syncing'
 	);
+	// Same root cause as ChainHealthBanner's unhealthy state (both derive from
+	// chainHealth.ts) — defer to it instead of stacking a second red banner
+	// for one underlying problem (cairn-7zjo).
+	const suppressed = $derived(status?.phase === 'unreachable');
 
 	function fmt(n: number | null | undefined): string {
 		return n === null || n === undefined ? '—' : n.toLocaleString('en-US');
@@ -83,7 +96,7 @@
 	});
 </script>
 
-{#if !hidden}
+{#if !hidden && !suppressed}
 	<div class="sync-banner" role="status" aria-live="polite">
 		<EpochDial state={dialState} progress={percent / 100} size={22} showPercent />
 		<span class="grow">

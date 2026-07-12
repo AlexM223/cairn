@@ -17,6 +17,7 @@
 // loads keep attempting connections, so the signal stays fresh on its own.
 
 import { childLogger } from './logger';
+import { isChainNeverConfigured } from './settings';
 
 // Wave 2 / log-chain.md: this module used to mutate in-memory state with ZERO
 // log output — the single biggest logging blind spot in the app. An operator
@@ -63,6 +64,14 @@ export interface ChainHealth {
 	lastErrorAt: number | null;
 	/** ms epoch of the latest successful connect, or null if none seen. */
 	lastOkAt: number | null;
+	/**
+	 * True when nobody has ever set up this instance's chain connection — still
+	 * silently on the public-server default, and no auto-connect mechanism ever
+	 * fired (settings.ts's isChainNeverConfigured(), cairn-7zjo). Lets the banner
+	 * tell "fresh install, hasn't been connected yet" (calm, informational) apart
+	 * from "was working, now can't reach it" (a real warning).
+	 */
+	neverConfigured: boolean;
 }
 
 /** A successful Electrum handshake — the transport is reachable right now. */
@@ -122,7 +131,9 @@ export function getChainHealth(): ChainHealth {
 		// so a single in-band blip never surfaces a scary message.
 		lastError: healthy ? null : state.lastError,
 		lastErrorAt: state.lastErrorAt,
-		lastOkAt: state.lastOkAt
+		lastOkAt: state.lastOkAt,
+		// Only relevant while unhealthy; a cheap settings read either way.
+		neverConfigured: isChainNeverConfigured()
 	};
 }
 
