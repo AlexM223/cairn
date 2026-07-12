@@ -67,7 +67,7 @@ async function loadOlderBlocks(before: number): Promise<ExplorerChainData> {
 
 // The `explorer` feature gate lives in +layout.server.ts so it covers every
 // explorer sub-route, not just this index page.
-export const load: PageServerLoad = async ({ url, depends }) => {
+export const load: PageServerLoad = async ({ url, depends, locals }) => {
 	// Re-run on new-block SSE events / after a background refresh, without
 	// re-running unrelated loads.
 	depends('cairn:chain');
@@ -104,6 +104,10 @@ export const load: PageServerLoad = async ({ url, depends }) => {
 		before,
 		chain,
 		lastSyncedAt: snap?.lastSyncedAt ?? null,
+		// Admins get a direct link to connection settings on the no-chain-backend
+		// banner below (cairn-obg6); non-admins keep the calm retry-only copy since
+		// they can't act on it.
+		isAdmin: locals?.user?.isAdmin ?? false,
 		// The ChainStrip dataset (cairn-koy4.7): real difficulty-epoch boundaries,
 		// cached hard after the first computation. Streamed separately so a slow
 		// first-ever boundary fetch can't hold up the block list; resolves to null

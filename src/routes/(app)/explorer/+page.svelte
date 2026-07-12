@@ -407,13 +407,21 @@
 						Your money is safe — the explorer will wake up when the connection returns.
 					</span>
 				</span>
-				<button
-					type="button"
-					class="retry"
-					onclick={() => (data.before !== null ? retryPaged() : refresh(true))}
-				>
-					Retry
-				</button>
+				<span class="chain-error-actions">
+					<button
+						type="button"
+						class="retry"
+						onclick={() => (data.before !== null ? retryPaged() : refresh(true))}
+					>
+						Retry
+					</button>
+					{#if data.isAdmin}
+						<!-- Retry was the only action here (cairn-obg6) — admins can
+						     actually fix a dead connection, so give them a direct path
+						     instead of just a spinner-and-hope Retry loop. -->
+						<a class="check-settings" href="/admin/settings">Check connection settings</a>
+					{/if}
+				</span>
 			</div>
 		{/if}
 
@@ -818,8 +826,15 @@
 		color: var(--text-secondary);
 	}
 
-	.chain-error .retry {
+	.chain-error-actions {
+		display: flex;
+		align-items: center;
+		gap: 12px;
 		margin-left: auto;
+		flex-shrink: 0;
+	}
+
+	.chain-error .retry {
 		color: inherit;
 		text-decoration: underline;
 		white-space: nowrap;
@@ -828,6 +843,12 @@
 		padding: 0;
 		font: inherit;
 		cursor: pointer;
+	}
+
+	.chain-error .check-settings {
+		color: var(--text-secondary);
+		text-decoration: underline;
+		white-space: nowrap;
 	}
 
 	/* --- hero --- */

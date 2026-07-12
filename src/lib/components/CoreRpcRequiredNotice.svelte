@@ -83,6 +83,12 @@
 			</a>
 		{:else}
 			<span class="notice-hint">Ask your instance operator to connect a Bitcoin Core node.</span>
+			<!-- Non-admins can't act on the hint above, and the tiny breadcrumb link
+			     up top can be scrolled off-screen on mobile (cairn-uibo) — give them
+			     an explicit way back instead of a dead end. -->
+			<a class="btn btn-secondary btn-sm" href="/explorer">
+				<Icon name="chevron-left" size={14} /> Back to explorer
+			</a>
 		{/if}
 	</div>
 {/if}
