@@ -5,6 +5,8 @@
 	import { guessPasskeyName } from '$lib/passkey';
 	import type { SessionUser } from '$lib/types';
 
+	let { data } = $props();
+
 	// Two secret kinds the user can present. A PHRASE is 12 words; a CODE is one
 	// short XXXXX-XXXXX code. We offer both, clearly labeled.
 	type Method = 'phrase' | 'code';
@@ -16,6 +18,13 @@
 	let submitting = $state(false);
 	let error = $state<string | null>(null);
 	let passkeySupported = $state(true);
+	// SAFE mitigation for desktop passkey failures: registering a passkey here
+	// on an origin that doesn't match the server's expected WebAuthn origin
+	// (data.passkeyOriginOk, see $lib/server/passkeyOrigin.ts) would create a
+	// passkey that fails to verify on EVERY origin. Distinguish that reason
+	// from the ordinary insecure-context case so the fallback hint can name
+	// the address where it does work.
+	let showPasskeyOriginHint = $state(false);
 
 	// Once verify succeeds we hold the grant (via httpOnly cookie) and prompt the
 	// user to finish with a new passkey OR a new password.
@@ -30,7 +39,9 @@
 		// ceremony there fails outright, so gate on both (cairn-nhfe). The "Set a
 		// new password instead" form below is the completion path that always
 		// works, regardless of this check.
-		passkeySupported = browserSupportsWebAuthn() && window.isSecureContext;
+		const supported = browserSupportsWebAuthn() && window.isSecureContext;
+		passkeySupported = supported && data.passkeyOriginOk;
+		showPasskeyOriginHint = supported && !data.passkeyOriginOk;
 	});
 
 	// The one generic failure message the client shows. It intentionally mirrors
@@ -309,7 +320,12 @@
 		<form class="stack" onsubmit={setNewPassword}>
 			{#if !passkeySupported}
 				<p class="hint" style="text-align: center; margin-bottom: -4px">
-					This browser or connection can't create passkeys — set a new password to finish instead.
+					{#if showPasskeyOriginHint}
+						Passkeys are available at {data.passkeyExpectedOrigin} — on this address, set a new
+						password to finish instead.
+					{:else}
+						This browser or connection can't create passkeys — set a new password to finish instead.
+					{/if}
 				</p>
 			{/if}
 

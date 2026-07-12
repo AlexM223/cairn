@@ -1,11 +1,12 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { enhance } from '$app/forms';
 	import { page } from '$app/state';
 	import { timeAgo } from '$lib/format';
 	import Icon from '$lib/components/Icon.svelte';
 	import Toasts from '$lib/components/Toasts.svelte';
 	import { toast } from '$lib/components/toast.svelte';
-	import { addPasskey } from '$lib/passkey';
+	import { addPasskey, browserSupportsWebAuthn } from '$lib/passkey';
 	import type { CredentialInfo } from '$lib/types';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
@@ -38,6 +39,21 @@
 	let busy = $state(false);
 	let editingId = $state<number | null>(null);
 	let editName = $state('');
+
+	// SAFE mitigation for desktop passkey failures: registering a passkey on
+	// an origin that doesn't match the server's expected WebAuthn origin
+	// (data.passkeyOriginOk, see $lib/server/passkeyOrigin.ts) would create a
+	// passkey that fails to verify on EVERY origin (e.g. the raw HTTPS
+	// listener when CAIRN_ORIGIN pins the proxy's plain-HTTP origin). Hide
+	// "Add passkey" there and explain where it does work instead.
+	let canAddPasskey = $state(false);
+	let showAddPasskeyOriginHint = $state(false);
+
+	onMount(() => {
+		const supported = browserSupportsWebAuthn() && window.isSecureContext;
+		canAddPasskey = supported && data.passkeyOriginOk;
+		showAddPasskeyOriginHint = supported && !data.passkeyOriginOk;
+	});
 
 	async function onAdd() {
 		busy = true;
@@ -393,10 +409,17 @@
 			</ul>
 
 			<div>
-				<button class="btn btn-secondary btn-sm" onclick={onAdd} disabled={busy}>
-					{#if busy}<span class="spinner"></span>{:else}<Icon name="plus" size={14} />{/if}
-					Add passkey
-				</button>
+				{#if canAddPasskey}
+					<button class="btn btn-secondary btn-sm" onclick={onAdd} disabled={busy}>
+						{#if busy}<span class="spinner"></span>{:else}<Icon name="plus" size={14} />{/if}
+						Add passkey
+					</button>
+				{:else if showAddPasskeyOriginHint}
+					<p class="hint">
+						Passkeys are available at {data.passkeyExpectedOrigin} — open Settings from that address
+						to add one.
+					</p>
+				{/if}
 			</div>
 		</div>
 	{/if}

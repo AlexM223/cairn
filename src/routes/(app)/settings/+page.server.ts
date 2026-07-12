@@ -17,11 +17,12 @@ import {
 import { hasRecoverySetup } from '$lib/server/recovery';
 import { notify } from '$lib/server/notifications';
 import { sessionContextFrom } from '$lib/server/deviceTracking';
+import { expectedPasskeyOrigin, passkeyAvailableOn } from '$lib/server/passkeyOrigin';
 import type { Actions, PageServerLoad } from './$types';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-export const load: PageServerLoad = async ({ locals }) => {
+export const load: PageServerLoad = async ({ locals, url }) => {
 	const uid = locals.user!.id;
 	// Passkeys are managed client-side against /api/auth/passkeys; the first
 	// paint ships the current list.
@@ -36,7 +37,14 @@ export const load: PageServerLoad = async ({ locals }) => {
 			phrase: recovery.phrase,
 			codesRemaining: recovery.codesRemaining,
 			complete: recovery.phrase && recovery.codesRemaining > 0
-		}
+		},
+		// SAFE mitigation for desktop passkey failures: whether a passkey
+		// registered from THIS request's origin would actually verify (see
+		// $lib/server/passkeyOrigin.ts). "Add passkey" hides itself on an
+		// origin where WebAuthn is guaranteed to fail — registering there
+		// would create a passkey that never works, on any origin.
+		passkeyOriginOk: passkeyAvailableOn(url.origin),
+		passkeyExpectedOrigin: expectedPasskeyOrigin(url.origin)
 	};
 };
 

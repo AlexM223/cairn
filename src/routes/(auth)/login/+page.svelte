@@ -5,14 +5,26 @@
 	import { signInWithPasskey, browserSupportsWebAuthn } from '$lib/passkey';
 	import { resolveNextUrl } from './nextUrl';
 
+	let { data } = $props();
+
 	let email = $state('');
 	let password = $state('');
 	let submitting = $state(false);
 	let error = $state<string | null>(null);
 	let passkeySupported = $state(false);
+	// SAFE mitigation for desktop passkey failures: the button only renders
+	// when the ceremony can succeed on THIS origin — secure context AND this
+	// origin matches the server's expected WebAuthn origin (data.passkeyOriginOk,
+	// see $lib/server/passkeyOrigin.ts). When a secure context hides it for
+	// the origin-mismatch reason specifically (not the ordinary insecure-HTTP
+	// case, which is unaffected and unchanged), show a hint pointing at the
+	// address where passkeys do work.
+	let showPasskeyOriginHint = $state(false);
 
 	onMount(() => {
-		passkeySupported = browserSupportsWebAuthn();
+		const supported = browserSupportsWebAuthn();
+		passkeySupported = supported && data.passkeyOriginOk;
+		showPasskeyOriginHint = supported && !data.passkeyOriginOk;
 	});
 
 	function nextUrl(): string {
@@ -129,6 +141,11 @@
 		<button type="button" class="btn btn-secondary" onclick={signInPasskey} disabled={submitting}>
 			Sign in with a passkey
 		</button>
+	{:else if showPasskeyOriginHint}
+		<p class="hint origin-hint">
+			Passkeys are available at {data.passkeyExpectedOrigin} — on this address, sign in with your
+			email and password.
+		</p>
 	{/if}
 
 	<p class="alt"><a href="/recover">Lost your passkey?</a></p>
@@ -150,5 +167,10 @@
 		text-align: center;
 		font-size: 13px;
 		color: var(--text-muted);
+	}
+
+	.origin-hint {
+		text-align: center;
+		margin-top: 2px;
 	}
 </style>
