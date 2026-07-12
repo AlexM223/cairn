@@ -3,13 +3,12 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
+	import QrScanner from '$lib/components/QrScanner.svelte';
 	import DeviceHelpLink from '$lib/components/signing/DeviceHelpLink.svelte';
 	import { formatBtc, formatSats, truncateMiddle } from '$lib/format';
-	import { encodePsbtToFrames, PsbtQrJoiner, looksLikeUrFrame } from '$lib/hw/jadeUr';
-	import { isCameraScanAvailable, startScan, type ScanHandle } from '$lib/hw/qrScan';
+	import { encodePsbtToFrames } from '$lib/hw/jadeUr';
 	import { psbtHasKeyOrigin } from '$lib/hw/keyOrigin';
 	import type { SignerProps } from './signerContract';
-	import { onDestroy } from 'svelte';
 	import { MediaQuery } from 'svelte/reactivity';
 
 	// Air-gapped QR signer for a Blockstream Jade in its camera ("QR") mode. This
@@ -119,148 +118,23 @@
 		if (phase === 'display') currentFrame = 0;
 	});
 
-	// ── SCAN: camera + BarcodeDetector, feeding frames into the joiner ─────────
-	const cameraAvailable = isCameraScanAvailable();
-	let videoEl = $state<HTMLVideoElement | null>(null);
-	let scanHandle: ScanHandle | null = null;
-	let scanning = $state(false);
-	let scanError = $state<string | null>(null);
-
-	let joiner = new PsbtQrJoiner();
-	let progress = $state<{ have: number; total: number }>({ have: 0, total: 0 });
-	let scanComplete = $state(false);
-
-	const scanAnnouncement = $derived(
-		scanComplete
-			? 'Signed transaction received.'
-			: progress.total > 0
-				? `${progress.have} of ${progress.total} frames captured.`
-				: ''
-	);
-
-	// Manual paste fallback (no camera, camera permission locked down, or a Jade
-	// companion app that exports plain base64). Offered up front alongside the
-	// camera — not just as error recovery — and still auto-opened when the camera
-	// fails to start.
-	let showManual = $state(false);
-	let manualText = $state('');
-	let manualError = $state<string | null>(null);
-
-	function feedFrame(text: string) {
-		if (scanComplete) return;
-		try {
-			const { complete, progress: p } = joiner.add(text);
-			progress = p;
-			scanError = null;
-			if (complete) {
-				finishScan();
-			}
-		} catch {
-			// A non-UR QR wandered into view (an address QR elsewhere, or a BBQr
-			// frame from a different device). Ignore silently during a live scan —
-			// it's noise, not a failure.
-		}
-	}
-
-	function finishScan() {
-		scanComplete = true;
-		stopCamera();
-		try {
-			const signed = joiner.result();
-			onsigned(signed);
-		} catch (e) {
-			scanError =
-				e instanceof Error ? e.message : 'The scanned frames could not be reassembled — rescan.';
-			scanComplete = false;
-		}
-	}
-
-	async function beginCameraScan() {
-		scanError = null;
-		manualError = null;
-		showManual = false;
-		joiner = new PsbtQrJoiner();
-		progress = { have: 0, total: 0 };
-		scanComplete = false;
-		scanning = true;
-		await Promise.resolve();
-		if (!videoEl) {
-			scanning = false;
-			scanError = 'Could not find the camera preview element.';
-			return;
-		}
-		try {
-			scanHandle = await startScan(videoEl, feedFrame, {
-				onError: (err) => {
-					scanError = err.message;
-					scanning = false;
-				}
-			});
-		} catch (e) {
-			scanning = false;
-			scanError = e instanceof Error ? e.message : 'Could not start the camera.';
-			showManual = true;
-		}
-	}
-
-	function stopCamera() {
-		scanHandle?.stop();
-		scanHandle = null;
-		scanning = false;
-	}
-
+	// ── SCAN: the camera/paste loop itself is <QrScanner mode="animated"
+	//    codec="ur">, extracted from what used to live here (identical to
+	//    QrSigner's BBQr twin, minus the codec) — see QR-SCAN-DESIGN.md §6 Wave
+	//    2. Cancelling just flips the phase back to 'display'; unmounting
+	//    <QrScanner> (only rendered while phase === 'scan') runs its onDestroy
+	//    cleanup, which stops the camera. ─────────────────────────────────────
 	function cancelScan() {
-		stopCamera();
 		phase = 'display';
 	}
-
-	// Manual fallback: accept either pasted ur:crypto-psbt frame strings (one per
-	// line) or a raw base64 PSBT. UR frames go through the joiner (so a multi-frame
-	// paste still reassembles); a base64 PSBT is passed straight through.
-	function submitManual() {
-		manualError = null;
-		const raw = manualText.trim();
-		if (!raw) {
-			manualError = 'Paste the signed transaction — its QR frames or its base64.';
-			return;
-		}
-		const lines = raw
-			.split(/\s+/)
-			.map((l) => l.trim())
-			.filter(Boolean);
-
-		if (lines.some(looksLikeUrFrame)) {
-			const j = new PsbtQrJoiner();
-			try {
-				for (const line of lines) {
-					if (looksLikeUrFrame(line)) j.add(line);
-				}
-			} catch (e) {
-				manualError = e instanceof Error ? e.message : 'Those QR frames could not be read.';
-				return;
-			}
-			if (!j.isComplete()) {
-				const p = j.progress();
-				manualError = `Incomplete — ${p.have} of ${p.total} QR frames pasted. Paste all frames.`;
-				return;
-			}
-			try {
-				onsigned(j.result());
-				scanComplete = true;
-			} catch (e) {
-				manualError = e instanceof Error ? e.message : 'Could not reassemble those frames.';
-			}
-			return;
-		}
-
-		// Not UR → assume it's a base64 PSBT the device/app exported directly. The
-		// parent re-validates it (same-transaction guard) before broadcast.
-		onsigned(raw);
-		scanComplete = true;
-	}
-
-	onDestroy(stopCamera);
 </script>
+
+{#snippet jadeScanErrorHelp(_message: string)}
+	<!-- Official troubleshooting resource — always shown on an error, never
+	     flag-gated (it is help, not promotion). The one addition JadeQrSigner
+	     had over QrSigner's otherwise-identical scan phase. -->
+	<DeviceHelpLink device="jade" kind="support" />
+{/snippet}
 
 <div class="method-active qr-signer">
 	<div class="method-head">
@@ -423,99 +297,13 @@
 					<span class="scan-title">Scan the signed transaction from your Jade</span>
 				</div>
 
-				<div class="sr-only" role="status" aria-live="polite">{scanAnnouncement}</div>
-
-				{#if scanComplete}
-					<div class="scan-done">
-						<Icon name="check" size={20} />
-						<span>Signed transaction received.</span>
-					</div>
-				{:else if cameraAvailable}
-					{#if !scanning && !showManual}
-						<p class="hint">
-							Start the camera, then hold the Jade's signed-transaction QR in view. Multi-frame
-							sequences reassemble as the Jade cycles them.
-						</p>
-						<div class="scan-actions">
-							<button type="button" class="btn btn-primary btn-sm" onclick={beginCameraScan}>
-								<Icon name="eye" size={14} /> Start camera
-							</button>
-							<button type="button" class="btn btn-secondary btn-sm" onclick={() => (showManual = true)}>
-								Paste the signed transaction instead
-							</button>
-						</div>
-					{/if}
-
-					{#if scanning}
-						<div class="scan-stage">
-							<!-- svelte-ignore a11y_media_has_caption -->
-							<video bind:this={videoEl} class="scan-video" playsinline muted></video>
-							<div class="scan-progress">
-								{#if progress.total > 0}
-									<span class="frame-count tabular">Scanned {progress.have} / {progress.total} frames</span>
-									<div class="scan-bar">
-										<div class="scan-bar-fill" style={`width:${(progress.have / progress.total) * 100}%`}></div>
-									</div>
-								{:else}
-									<span class="hint">Point the camera at the Jade's QR…</span>
-								{/if}
-							</div>
-							<button type="button" class="btn btn-ghost btn-sm" onclick={stopCamera}>
-								<Icon name="x" size={14} /> Stop camera
-							</button>
-						</div>
-					{/if}
-				{:else}
-					<div class="no-camera">
-						<Icon name="info" size={15} />
-						<span>
-							This browser can't scan QR codes from a camera (BarcodeDetector isn't supported — try
-							Chrome, Edge, or Brave). Paste the signed transaction instead.
-						</span>
-					</div>
-				{/if}
-
-				{#if scanError}
-					<div class="form-error" role="alert">{scanError}</div>
-					<!-- Official troubleshooting resource — always shown on an error,
-					     never flag-gated (it is help, not promotion). -->
-					<DeviceHelpLink device="jade" kind="support" />
-				{/if}
-
-				{#if !scanComplete}
-					<div class="manual">
-						{#if cameraAvailable && !showManual && scanning}
-							<button type="button" class="link-btn" onclick={() => (showManual = true)}>
-								Camera not working? Paste the signed transaction instead
-							</button>
-						{/if}
-						{#if showManual || !cameraAvailable}
-							<div class="or-divider"><span>paste the ur:crypto-psbt frames or the base64 PSBT</span></div>
-							<textarea
-								class="input mono"
-								rows="4"
-								placeholder="ur:crypto-psbt/… (one frame per line)  —  or  —  cHNidP8B…"
-								bind:value={manualText}
-							></textarea>
-							{#if manualError}
-								<div class="form-error" role="alert">{manualError}</div>
-							{/if}
-							<button
-								type="button"
-								class="btn btn-primary btn-sm"
-								onclick={submitManual}
-								disabled={manualText.trim().length === 0}
-							>
-								Use pasted transaction
-							</button>
-							{#if cameraAvailable && !scanning}
-								<button type="button" class="link-btn" onclick={beginCameraScan}>
-									Scan with the camera instead
-								</button>
-							{/if}
-						{/if}
-					</div>
-				{/if}
+				<QrScanner
+					mode="animated"
+					codec="ur"
+					deviceLabel="the Jade"
+					onresult={onsigned}
+					errorExtra={jadeScanErrorHelp}
+				/>
 			</div>
 		{/if}
 
@@ -754,137 +542,10 @@
 		flex-wrap: wrap;
 	}
 
-	.scan-actions {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		flex-wrap: wrap;
-	}
-
-	.sr-only {
-		position: absolute;
-		width: 1px;
-		height: 1px;
-		padding: 0;
-		margin: -1px;
-		overflow: hidden;
-		clip: rect(0, 0, 0, 0);
-		white-space: nowrap;
-		border: 0;
-	}
-
 	.scan-title {
 		font-size: 13.5px;
 		font-weight: 500;
 		color: var(--text);
-	}
-
-	.scan-stage {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: 12px;
-	}
-
-	.scan-video {
-		width: 320px;
-		max-width: 100%;
-		aspect-ratio: 4 / 3;
-		object-fit: cover;
-		background: #000;
-		border-radius: var(--radius-card);
-		border: 1px solid var(--border);
-	}
-
-	.scan-progress {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: 6px;
-		width: 100%;
-		max-width: 320px;
-	}
-
-	.scan-bar {
-		width: 100%;
-		height: 6px;
-		background: var(--surface-elevated);
-		border-radius: 3px;
-		overflow: hidden;
-	}
-
-	.scan-bar-fill {
-		height: 100%;
-		background: var(--accent);
-		transition: width 150ms var(--ease);
-	}
-
-	.scan-done {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		color: var(--success);
-		font-size: 13.5px;
-		font-weight: 500;
-		background: var(--success-muted);
-		border-radius: var(--radius-control);
-		padding: 12px 14px;
-	}
-
-	.no-camera {
-		display: flex;
-		gap: 8px;
-		align-items: flex-start;
-		font-size: 13px;
-		color: var(--text-secondary);
-		background: var(--surface-elevated);
-		border-radius: var(--radius-control);
-		padding: 12px 14px;
-	}
-
-	.no-camera :global(svg) {
-		flex-shrink: 0;
-		margin-top: 1px;
-		color: var(--text-muted);
-	}
-
-	.manual {
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-	}
-
-	.link-btn {
-		background: none;
-		border: none;
-		padding: 0;
-		color: var(--accent);
-		font-family: var(--font-ui);
-		font-size: 12.5px;
-		text-align: left;
-		cursor: pointer;
-		text-decoration: underline;
-		text-underline-offset: 2px;
-	}
-
-	.or-divider {
-		display: flex;
-		align-items: center;
-		text-align: center;
-		color: var(--text-muted);
-		font-size: 11.5px;
-	}
-
-	.or-divider::before,
-	.or-divider::after {
-		content: '';
-		flex: 1;
-		height: 1px;
-		background: var(--border-subtle);
-	}
-
-	.or-divider span {
-		padding: 0 10px;
 	}
 
 	.signer-foot {
