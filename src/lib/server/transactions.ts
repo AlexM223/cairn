@@ -722,17 +722,86 @@ export async function tryPackageRescue(
 	}
 }
 
+// ------------------------------------------------------- broadcast dedup
+//
+// cairn QA R7 B4 sub-case 1 (P1): several drafts built from IDENTICAL inputs,
+// recipient, amount and fee rate (the coin-reservation race above is exactly
+// how this happens — concurrent builds landing on the same coin before the
+// fix) sign to the byte-identical transaction (deterministic ECDSA/RFC6979:
+// same sighash in, same signature out). Broadcasting each one individually
+// used to return 200 OK and mark EVERY row 'completed' with the one real
+// txid — N "successful sends" on record for a single transfer. Fix: once a
+// wallet has ANY 'completed' row for a txid, every OTHER draft that resolves
+// to that same txid is recorded as a duplicate instead of a second completed
+// send.
+//
+// Reuses the existing 'superseded' status rather than adding a new one: the
+// schema's `status` column is unconstrained TEXT (no CHECK, so no migration
+// either way), but 'superseded' already carries exactly the right meaning —
+// "this row really was broadcast, but it is not the copy of the payment that
+// counts" — and is already wired everywhere a terminal, kept-for-the-record,
+// non-"in progress" status needs to be: deleteTransaction refuses to erase
+// it, the wallet page's in-progress card excludes it, TxStatusBadge renders
+// it neutrally. The one existing message that assumed 'superseded' always
+// meant "replaced by a fee bump" (feeBump.ts's executeRbfBump) is reworded
+// below to stay accurate for both meanings.
+
+/**
+ * Another (different) row in this wallet already recorded as 'completed'
+ * with this exact txid — i.e. this call's payment was already delivered by
+ * an earlier, identical draft. Case-insensitive: txid casing only has to
+ * match what that row's own broadcast recorded.
+ */
+function findCompletedDuplicateId(walletId: number, txid: string, excludeId: number): number | null {
+	const row = db
+		.prepare(
+			`SELECT id FROM transactions
+			 WHERE wallet_id = ? AND status = 'completed' AND id != ? AND LOWER(txid) = LOWER(?)
+			 LIMIT 1`
+		)
+		.get(walletId, excludeId, txid) as { id: number } | undefined;
+	return row?.id ?? null;
+}
+
+/** copy explaining a duplicate resolution — shared by the early and late checks. */
+const DUPLICATE_BROADCAST_MESSAGE =
+	'This transaction duplicated another draft that already broadcast the identical payment — no new transaction was sent.';
+
+/** Record this draft as a duplicate of an already-completed identical
+ *  broadcast, never touching (or re-touching) the network for it. */
+function markDuplicateBroadcast(
+	userId: number,
+	walletId: number,
+	txId: number,
+	txid: string
+): { txid: string; transaction: SavedTransaction; duplicate: true; message: string } {
+	db.prepare(
+		`UPDATE transactions
+		 SET status = 'superseded', txid = ?, broadcast_started_at = NULL,
+		     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+		 WHERE id = ?`
+	).run(txid, txId);
+	return {
+		txid,
+		transaction: getTransaction(userId, walletId, txId)!,
+		duplicate: true,
+		message: DUPLICATE_BROADCAST_MESSAGE
+	};
+}
+
 /**
  * Finalize a saved transaction's (fully-signed) PSBT and broadcast it. Guards
  * against double-broadcast: a transaction already carrying a txid is refused.
- * On success the txid is recorded and the row moves to 'completed'.
+ * On success the txid is recorded and the row moves to 'completed' — unless
+ * another row of this wallet already completed with the identical txid, in
+ * which case this row is recorded as a duplicate instead (see above).
  */
 export async function broadcastTransaction(
 	userId: number,
 	walletId: number,
 	txId: number,
 	signedPsbt?: string
-): Promise<{ txid: string; transaction: SavedTransaction }> {
+): Promise<{ txid: string; transaction: SavedTransaction; duplicate?: boolean; message?: string }> {
 	const tx = getTransaction(userId, walletId, txId);
 	if (!tx) throw new BroadcastError('Transaction not found.', 'not_found');
 	if (tx.status === 'completed' || tx.txid)
@@ -785,6 +854,16 @@ export async function broadcastTransaction(
 			"This transaction couldn't be finalized. Make sure it's fully signed, then try again.",
 			'incomplete'
 		);
+	}
+
+	// Early duplicate short-circuit: finalized.txid is a deterministic hash of
+	// the exact bytes we're about to send, known BEFORE touching the network.
+	// If some OTHER draft of this wallet already completed with this txid,
+	// this one is a duplicate — skip the network call entirely; it would only
+	// ever re-announce the same transaction the chain already has.
+	const earlyDuplicate = findCompletedDuplicateId(walletId, finalized.txid, txId);
+	if (earlyDuplicate !== null) {
+		return markDuplicateBroadcast(userId, walletId, txId, finalized.txid);
 	}
 
 	// Atomically claim the broadcast before touching the network. The opening
@@ -841,6 +920,19 @@ export async function broadcastTransaction(
 		);
 	}
 	const broadcastTxid = finalized.txid;
+
+	// Late re-check: the network call just awaited above is the one place a
+	// concurrent, byte-identical broadcast (a second draft racing this one)
+	// could have completed FIRST while we were both mid-flight — the early
+	// check above can't see that. node:sqlite is synchronous and Node is
+	// single-threaded, so from here down nothing yields until we've written a
+	// status: this SELECT-then-UPDATE pair can't itself be interleaved by
+	// another request. Whichever caller reaches it first wins 'completed';
+	// the other is recorded as a duplicate rather than a second "success".
+	const lateDuplicate = findCompletedDuplicateId(walletId, broadcastTxid, txId);
+	if (lateDuplicate !== null) {
+		return markDuplicateBroadcast(userId, walletId, txId, broadcastTxid);
+	}
 
 	const updated = updateTransaction(userId, walletId, txId, {
 		status: 'completed',

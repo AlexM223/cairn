@@ -465,6 +465,45 @@ export function deleteMultisigTransaction(userId: number, multisigId: number, tx
 	return Number(result.changes) > 0;
 }
 
+/** The multisig-table mirror of transactions.ts's findCompletedDuplicateId
+ *  (cairn QA R7 B4 sub-case 1). */
+function findCompletedDuplicateMultisigId(
+	multisigId: number,
+	txid: string,
+	excludeId: number
+): number | null {
+	const row = db
+		.prepare(
+			`SELECT id FROM multisig_transactions
+			 WHERE multisig_id = ? AND status = 'completed' AND id != ? AND LOWER(txid) = LOWER(?)
+			 LIMIT 1`
+		)
+		.get(multisigId, excludeId, txid) as { id: number } | undefined;
+	return row?.id ?? null;
+}
+
+/** The multisig-table mirror of transactions.ts's markDuplicateBroadcast. */
+function markDuplicateMultisigBroadcast(
+	userId: number,
+	multisigId: number,
+	txId: number,
+	txid: string
+): { txid: string; transaction: SavedMultisigTransaction; duplicate: true; message: string } {
+	db.prepare(
+		`UPDATE multisig_transactions
+		 SET status = 'superseded', txid = ?, broadcast_started_at = NULL,
+		     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+		 WHERE id = ?`
+	).run(txid, txId);
+	return {
+		txid,
+		transaction: getMultisigTransaction(userId, multisigId, txId)!,
+		duplicate: true,
+		message:
+			'This transaction duplicated another draft that already broadcast the identical payment — no new transaction was sent.'
+	};
+}
+
 /**
  * Finalize a quorum-complete multisig PSBT and broadcast it. Refuses below
  * quorum with an "X of M signatures collected" message — quorum is judged
@@ -473,13 +512,23 @@ export function deleteMultisigTransaction(userId: number, multisigId: number, tx
  * the broadcast step). Uses the same atomic broadcast claim as wallet sends:
  * one guarded UPDATE lets exactly one concurrent caller through, and a failed
  * network send releases the claim so the user can retry.
+ *
+ * `duplicate`/`message` (cairn QA R7 B4 sub-case 1) are present when this
+ * draft's finalized transaction is byte-identical to one another draft of
+ * this multisig already broadcast — see broadcastTransaction in
+ * transactions.ts for the full rationale (identical here, mirrored table).
  */
 export async function broadcastMultisigTransaction(
 	userId: number,
 	multisigId: number,
 	txId: number,
 	signedPsbt?: string
-): Promise<{ txid: string; transaction: SavedMultisigTransaction }> {
+): Promise<{
+	txid: string;
+	transaction: SavedMultisigTransaction;
+	duplicate?: boolean;
+	message?: string;
+}> {
 	// Broadcast stays owner-only (plan §3, §8): a cosigner signs, only the owner
 	// sends the fully-signed transaction to the network.
 	const multisig = getMultisig(userId, multisigId);
@@ -533,6 +582,15 @@ export async function broadcastMultisigTransaction(
 		);
 	}
 
+	// Early duplicate short-circuit — see broadcastTransaction (transactions.ts)
+	// for the full rationale: finalized.txid is known before touching the
+	// network, so a draft that already matches another completed row of this
+	// multisig never needs a redundant broadcast call.
+	const earlyDuplicate = findCompletedDuplicateMultisigId(multisigId, finalized.txid, txId);
+	if (earlyDuplicate !== null) {
+		return markDuplicateMultisigBroadcast(userId, multisigId, txId, finalized.txid);
+	}
+
 	// Atomically claim the broadcast before touching the network — identical
 	// idiom to transactions.ts: the friendly checks above are racy on their
 	// own; this single guarded UPDATE lets exactly one caller through, and a
@@ -580,6 +638,15 @@ export async function broadcastMultisigTransaction(
 		);
 	}
 	const broadcastTxid = finalized.txid;
+
+	// Late re-check — see broadcastTransaction (transactions.ts) for the full
+	// rationale: closes the true-concurrency window the network `await` above
+	// opens, using node:sqlite's synchronous, single-threaded-Node guarantee
+	// that this SELECT-then-UPDATE pair can't itself be interleaved.
+	const lateDuplicate = findCompletedDuplicateMultisigId(multisigId, broadcastTxid, txId);
+	if (lateDuplicate !== null) {
+		return markDuplicateMultisigBroadcast(userId, multisigId, txId, broadcastTxid);
+	}
 
 	const updated = updateMultisigTransaction(userId, multisigId, txId, {
 		status: 'completed',

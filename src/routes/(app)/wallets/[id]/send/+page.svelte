@@ -581,12 +581,17 @@
 	let confirmOpen = $state(false);
 	// svelte-ignore state_referenced_locally — intentional per-load seed
 	let sentTxid = $state<string | null>(resumeTx?.txid ?? null);
+	// Set only when this broadcast turned out to duplicate another draft's
+	// already-sent, byte-identical transaction (cairn QA R7 B4 sub-case 1) —
+	// no new payment went out; shown as an informational note on Sent.
+	let duplicateBroadcastNote = $state<string | null>(null);
 
 	async function broadcast() {
 		if (broadcasting || !draft) return;
 		broadcasting = true; // disabled immediately — no double-broadcast
 		broadcastError = null;
 		broadcastRejected = false;
+		duplicateBroadcastNote = null;
 		try {
 			const res = await fetch(`/api/wallets/${walletId}/transactions/${draft.id}/broadcast`, {
 				method: 'POST',
@@ -608,6 +613,7 @@
 			}
 			sentTxid = body.txid as string;
 			draft = body.transaction as SavedTransaction;
+			if (body.duplicate) duplicateBroadcastNote = body.message ?? null;
 			step = 'sent';
 		} catch {
 			broadcastError = 'Could not reach Heartwood to broadcast.';
@@ -1750,6 +1756,10 @@
 						<span class="mono">{truncateMiddle(sentTxid, 12, 12)}</span>
 						<CopyText value={sentTxid} display="Copy" mono={false} />
 					</div>
+				{/if}
+
+				{#if duplicateBroadcastNote}
+					<Banner variant="info">{duplicateBroadcastNote}</Banner>
 				{/if}
 
 				{#if showSaveOffer && sentRecipient}

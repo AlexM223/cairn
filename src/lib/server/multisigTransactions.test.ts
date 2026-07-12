@@ -506,6 +506,43 @@ describe('broadcastMultisigTransaction', () => {
 		});
 		expect(broadcastMock).not.toHaveBeenCalled();
 	});
+
+	// cairn QA R7 B4 sub-case 1: two drafts built from identical inputs,
+	// recipient, amount and fee rate — signed by the same two cosigners — merge
+	// to the byte-identical finalized transaction (deterministic signing).
+	// Broadcasting each individually used to mark BOTH 'completed' with the same
+	// real txid; now the second is recorded as a duplicate instead.
+	it('broadcasting two identical multisig drafts yields one completed and one duplicate row', async () => {
+		const { userId, multisigId } = await seedMultisig('dup@example.com');
+		const txId1 = await signedToQuorum(userId, multisigId);
+		const txId2 = await signedToQuorum(userId, multisigId);
+
+		const want = finalizeMultisigPsbt(getMultisigTransaction(userId, multisigId, txId1)!.psbt).txid;
+		expect(finalizeMultisigPsbt(getMultisigTransaction(userId, multisigId, txId2)!.psbt).txid).toBe(
+			want
+		);
+
+		honestBroadcastOnce();
+		const first = await broadcastMultisigTransaction(userId, multisigId, txId1);
+		expect(first.transaction.status).toBe('completed');
+		expect(first.duplicate).toBeFalsy();
+
+		const second = await broadcastMultisigTransaction(userId, multisigId, txId2);
+		expect(second.duplicate).toBe(true);
+		expect(second.txid).toBe(want);
+		expect(second.transaction.status).toBe('superseded');
+		expect(second.transaction.txid).toBe(want);
+		expect(second.message).toMatch(/duplicat/i);
+
+		// The second broadcast never touched the network — only the first call
+		// to honestBroadcastOnce() was consumed.
+		expect(broadcastMock).toHaveBeenCalledTimes(1);
+
+		const all = listMultisigTransactions(userId, multisigId)!;
+		expect(all.filter((t) => t.status === 'completed')).toHaveLength(1);
+		expect(all.filter((t) => t.status === 'superseded')).toHaveLength(1);
+		expect(new Set(all.filter((t) => t.txid).map((t) => t.txid)).size).toBe(1);
+	});
 });
 
 // ── RBF fee bump (cairn-mklv) ────────────────────────────────────────────────

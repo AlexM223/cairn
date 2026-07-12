@@ -14,6 +14,10 @@ const log = childLogger('wallet');
  * attach path first). Refuses below quorum with "X of M signatures collected"
  * and refuses transactions that already carry a txid; the underlying service
  * claims the broadcast atomically, so concurrent calls cannot double-send.
+ *
+ * `duplicate`/`message` (cairn QA R7 B4 sub-case 1) are present when this
+ * draft's finalized transaction is byte-identical to one another draft of
+ * this multisig already broadcast: no second network send happens.
  */
 export const POST: RequestHandler = async (event) => {
 	// Gate broadcasting behind the 'send' feature flag.
@@ -24,7 +28,7 @@ export const POST: RequestHandler = async (event) => {
 	const body = await readOptionalJson<{ psbt?: string }>(event);
 
 	try {
-		const { txid, transaction } = await broadcastMultisigTransaction(
+		const { txid, transaction, duplicate, message } = await broadcastMultisigTransaction(
 			user.id,
 			multisigId,
 			txId,
@@ -34,10 +38,12 @@ export const POST: RequestHandler = async (event) => {
 			userId: user.id,
 			type: 'broadcast',
 			level: 'success',
-			message: `Transaction broadcast successfully: ${txid.slice(0, 12)}…`,
-			detail: { scope: 'wallet', multisigId, txId, txid }
+			message: duplicate
+				? `Broadcast skipped — draft duplicated an already-sent transaction: ${txid.slice(0, 12)}…`
+				: `Transaction broadcast successfully: ${txid.slice(0, 12)}…`,
+			detail: { scope: 'wallet', multisigId, txId, txid, duplicate: duplicate ?? false }
 		});
-		return json({ txid, transaction });
+		return json({ txid, transaction, duplicate, message });
 	} catch (e) {
 		if (e instanceof BroadcastError) {
 			const status = e.code === 'not_found' ? 404 : e.code === 'already_sent' ? 409 : 400;

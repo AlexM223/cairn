@@ -659,11 +659,15 @@
 	let confirmOpen = $state(false);
 	// svelte-ignore state_referenced_locally — intentional per-load seed
 	let sentTxid = $state<string | null>(resumeTx?.txid ?? null);
+	// Set only when this broadcast turned out to duplicate another draft's
+	// already-sent, byte-identical transaction (cairn QA R7 B4 sub-case 1).
+	let duplicateBroadcastNote = $state<string | null>(null);
 
 	async function broadcast() {
 		if (broadcasting || !draft) return;
 		broadcasting = true;
 		broadcastError = null;
+		duplicateBroadcastNote = null;
 		try {
 			const res = await fetch(`/api/wallets/multisig/${multisigId}/transactions/${draft.id}/broadcast`, {
 				method: 'POST',
@@ -682,6 +686,7 @@
 			}
 			sentTxid = body.txid as string;
 			draft = body.transaction as SavedMultisigTransaction;
+			if (body.duplicate) duplicateBroadcastNote = body.message ?? null;
 			step = 'sent';
 		} catch {
 			broadcastError = 'Could not reach Heartwood to broadcast.';
@@ -1641,6 +1646,10 @@
 					<span class="mono">{truncateMiddle(sentTxid, 12, 12)}</span>
 					<CopyText value={sentTxid} display="Copy" mono={false} />
 				</div>
+			{/if}
+
+			{#if duplicateBroadcastNote}
+				<Banner variant="info">{duplicateBroadcastNote}</Banner>
 			{/if}
 
 			<div class="row step-actions" style="justify-content: center">

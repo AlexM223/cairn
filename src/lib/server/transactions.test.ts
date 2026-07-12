@@ -320,6 +320,53 @@ describe('transaction lifecycle', () => {
 		expect(broadcastMock).toHaveBeenCalledTimes(1);
 	});
 
+	// cairn QA R7 B4 sub-case 1: several drafts built from IDENTICAL inputs,
+	// recipient, amount and fee rate (the exact shape the coin-reservation race
+	// produces before its fix) sign to the byte-identical transaction
+	// (deterministic ECDSA). Broadcasting each individually used to return 200
+	// OK and mark EVERY row 'completed' with the one real txid — N "sends" on
+	// record for a single transfer. Now only the first completes; the rest are
+	// recorded as duplicates and never touch the network.
+	it('broadcasting several identical drafts yields one completed row and marks the rest duplicates', async () => {
+		const { userId, walletId } = await seedWallet('dup@example.com');
+		const signed = await signedPsbt();
+		const want = await signedTxid();
+		const txIds = [
+			seedTx(walletId, 'awaiting_signature', null, signed),
+			seedTx(walletId, 'awaiting_signature', null, signed),
+			seedTx(walletId, 'awaiting_signature', null, signed)
+		];
+		broadcastMock.mockResolvedValueOnce(want); // only the first draft should ever call this
+
+		const first = await broadcastTransaction(userId, walletId, txIds[0]);
+		expect(first.txid).toBe(want);
+		expect(first.transaction.status).toBe('completed');
+		expect(first.duplicate).toBeFalsy();
+
+		for (const txId of txIds.slice(1)) {
+			const dup = await broadcastTransaction(userId, walletId, txId);
+			expect(dup.duplicate).toBe(true);
+			expect(dup.txid).toBe(want);
+			expect(dup.transaction.status).toBe('superseded');
+			expect(dup.transaction.txid).toBe(want);
+			expect(dup.message).toMatch(/duplicat/i);
+		}
+
+		// Only the FIRST draft ever reached the network — the rest short-circuited.
+		expect(broadcastMock).toHaveBeenCalledTimes(1);
+
+		// History integrity: exactly one completed row, the rest superseded
+		// (kept for the record, never deletable), all pointing at the ONE real
+		// txid — never N "successful" completed sends for a single transfer.
+		const all = listTransactions(userId, walletId)!;
+		expect(all.filter((t) => t.status === 'completed')).toHaveLength(1);
+		expect(all.filter((t) => t.status === 'superseded')).toHaveLength(2);
+		expect(new Set(all.filter((t) => t.txid).map((t) => t.txid))).toEqual(new Set([want]));
+		for (const txId of txIds.slice(1)) {
+			expect(deleteTransaction(userId, walletId, txId)).toBe(false); // kept, not erasable
+		}
+	});
+
 	it('gives an accurate, non-raw-library message when a PSBT genuinely lacks a signature', async () => {
 		const { userId, walletId } = await seedWallet('a@example.com');
 		// Same single-UTXO shape as signedPsbt(), just never signed.

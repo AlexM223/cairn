@@ -159,7 +159,12 @@ export async function executeRbfBump<TDraft, TDetails extends ConstructedSpendDe
 	const { spec, tx, newFeeRate } = args;
 
 	if (tx.status === 'superseded') {
-		throw new BumpError('This transaction was already replaced by a fee bump.', 'superseded');
+		// 'superseded' now covers two cases (transactions.ts's broadcast dedup,
+		// cairn QA R7 B4 sub-case 1): a genuine RBF-replaced original, or a draft
+		// that turned out to duplicate another draft's already-broadcast, byte-
+		// identical payment. Both are equally "not bumpable from here" — the
+		// message stays accurate without needing to tell them apart.
+		throw new BumpError('This transaction is no longer bumpable from here — it was superseded.', 'superseded');
 	}
 	if (tx.status !== 'completed' || !tx.txid) {
 		throw new BumpError(
