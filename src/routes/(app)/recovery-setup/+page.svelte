@@ -139,7 +139,11 @@
 <div class="hw-page hw-owns-header fade-in">
 	<!-- Mobile flow header: back circle + centered eyebrow + spacer. -->
 	<header class="flow-header">
-		<BackCircle href="/settings" label="Back to settings" />
+		{#if !data.isAdmin}
+			<BackCircle href="/settings" label="Back to settings" />
+		{:else}
+			<span class="flow-spacer"></span>
+		{/if}
 		<span class="flow-eyebrow">ACCOUNT RECOVERY</span>
 		<span class="flow-spacer"></span>
 	</header>
