@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { copyToClipboard } from '$lib/clipboard';
+	import { scrollToTop } from '$lib/scrollToTop';
 	import Icon from '$lib/components/Icon.svelte';
 	import Stepper from '$lib/components/Stepper.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
@@ -72,6 +73,7 @@
 	function toPhraseStep() {
 		step = 'phrase';
 		error = null;
+		scrollToTop();
 		generatePhrase();
 	}
 
@@ -79,6 +81,7 @@
 		if (!wroteItDown) return;
 		step = 'codes';
 		error = null;
+		scrollToTop();
 		generateCodes();
 	}
 
@@ -122,6 +125,7 @@
 	function finish() {
 		step = 'done';
 		error = null;
+		scrollToTop();
 	}
 
 	// Kick off phrase generation as soon as the page mounts.

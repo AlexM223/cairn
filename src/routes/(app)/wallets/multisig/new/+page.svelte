@@ -12,6 +12,7 @@
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import { isCameraScanAvailable, startScan, type ScanHandle } from '$lib/hw/qrScan';
+	import { scrollToTop } from '$lib/scrollToTop';
 	import type { MultisigDeviceType, MultisigKeyCategory, MultisigScriptType } from '$lib/server/wallets/multisig';
 	import KeyCategoryIcon from '../_components/KeyCategoryIcon.svelte';
 	import { KEY_CATEGORY_LABELS, DEVICE_LABELS, MULTISIG_SCRIPT_LABELS } from '../labels';
@@ -973,15 +974,18 @@
 	// Every step change — button, back, or programmatic — moves focus to the
 	// new step's section so screen readers announce the step and keyboard users
 	// aren't stranded on a button that just unmounted. (Same pattern as the
-	// send flow.)
+	// send flow.) Also scrolls back to the top (#26) — on mobile especially,
+	// advancing from a long step (e.g. Review) otherwise leaves the new step's
+	// top scrolled out of view.
 	let pageEl = $state<HTMLElement | null>(null);
-	let initialStepRendered = false; // don't steal focus on page load
+	let initialStepRendered = false; // don't steal focus/scroll on page load
 	$effect(() => {
 		void step; // the only dependency — rerun on every step change
 		if (!initialStepRendered) {
 			initialStepRendered = true;
 			return;
 		}
+		scrollToTop();
 		void tick().then(() => {
 			pageEl?.querySelector<HTMLElement>('.step-body')?.focus();
 		});

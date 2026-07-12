@@ -18,6 +18,7 @@
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
 	import AtTipPill from '$lib/components/heartwood/AtTipPill.svelte';
 	import { formatBtc, formatSats, formatFeeRate, truncateMiddle } from '$lib/format';
+	import { scrollToTop } from '$lib/scrollToTop';
 	import type { ScriptType, FeeEstimates } from '$lib/types';
 	import type { ConstructedPsbt } from '$lib/server/bitcoin/psbt';
 	import type { SavedTransaction } from '$lib/server/transactions';
@@ -629,14 +630,17 @@
 	// broadcast → Sent) — moves focus to the new step's section so screen
 	// readers announce the step and keyboard users aren't stranded on a button
 	// that just unmounted. Watching `step` in one effect covers all paths.
+	// Also scrolls back to the top (#26) — a long step (e.g. Review with coin
+	// control expanded) otherwise leaves the next step's top out of view.
 	let pageEl = $state<HTMLElement | null>(null);
-	let initialStepRendered = false; // don't steal focus on page load / resume
+	let initialStepRendered = false; // don't steal focus/scroll on page load / resume
 	$effect(() => {
 		void step; // the only dependency — rerun on every step change
 		if (!initialStepRendered) {
 			initialStepRendered = true;
 			return;
 		}
+		scrollToTop();
 		// The new step's DOM doesn't exist until after this flush.
 		void tick().then(() => {
 			pageEl?.querySelector<HTMLElement>('.step-body')?.focus();

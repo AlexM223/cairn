@@ -15,6 +15,7 @@
 	import { SCRIPT_TYPE_LABELS, WALLET_DEVICE_LABELS } from '../labels';
 	import { isCameraScanAvailable, startScan, type ScanHandle } from '$lib/hw/qrScan';
 	import { bitbox02SupportsScriptType } from '$lib/hw/bitbox02';
+	import { scrollToTop } from '$lib/scrollToTop';
 	import { referralDeviceId, type ReferralBuyUrls } from '$lib/referrals';
 	import {
 		readKeyFromTrezor,
@@ -216,6 +217,21 @@
 	function stepBack() {
 		step = Math.max(0, step - 1);
 	}
+
+	// Every step change — forward, back, or a "Start over" reset — scrolls back
+	// to the top (#26): advancing from a long step (e.g. a device's Verify
+	// addresses list) otherwise leaves the new step's top scrolled out of view,
+	// especially on mobile. Watching `step` in one effect covers every path
+	// that changes it, not just advanceStep/stepBack.
+	let initialStepRendered = false; // don't steal scroll position on page load / resume
+	$effect(() => {
+		void step; // the only dependency — rerun on every step change
+		if (!initialStepRendered) {
+			initialStepRendered = true;
+			return;
+		}
+		scrollToTop();
+	});
 
 	// -------------------------------------------------- Step 2: how the key arrives
 	//

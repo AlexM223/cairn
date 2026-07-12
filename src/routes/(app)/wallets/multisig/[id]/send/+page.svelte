@@ -17,6 +17,7 @@
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import { formatBtc, formatSats, formatFeeRate, truncateMiddle } from '$lib/format';
+	import { scrollToTop } from '$lib/scrollToTop';
 	import type { ConstructedMultisigPsbt, MultisigSigningProgress } from '$lib/server/bitcoin/multisigPsbt';
 	// Signing-mass estimator: the pure constants + math live in the shared
 	// (environment-neutral) module so this page runs the SAME arithmetic the
@@ -703,6 +704,9 @@
 	}
 
 	// -------------------------------------------------------------- navigation
+	// Every step change moves focus to the new step's section (screen readers /
+	// keyboard users) and scrolls back to the top (#26) — a long step otherwise
+	// leaves the next step's top scrolled out of view.
 	let pageEl = $state<HTMLElement | null>(null);
 	let initialStepRendered = false;
 	$effect(() => {
@@ -711,6 +715,7 @@
 			initialStepRendered = true;
 			return;
 		}
+		scrollToTop();
 		void tick().then(() => {
 			pageEl?.querySelector<HTMLElement>('.step-body')?.focus();
 		});
