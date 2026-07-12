@@ -416,7 +416,12 @@
 									<span class="unreachable">· {unreachable} unreachable</span>
 								{/if}
 							</span>
-							<a href="/wallets" class="see-all">All <Icon name="arrow-right" size={13} /></a>
+							<div class="col-head-actions">
+								<a href="/wallets/new" class="add-wallet-link">
+									<Icon name="plus" size={12} /> Add wallet
+								</a>
+								<a href="/wallets" class="see-all">All <Icon name="arrow-right" size={13} /></a>
+							</div>
 						</div>
 						<AllocationBar slices={portfolio.allocation} total={portfolio.confirmed} />
 
@@ -802,6 +807,26 @@
 	}
 
 	.see-all:hover {
+		color: var(--accent);
+	}
+
+	.col-head-actions {
+		display: flex;
+		align-items: center;
+		gap: 16px;
+	}
+
+	.add-wallet-link {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		font-size: 12.5px;
+		font-weight: 500;
+		color: var(--text-muted);
+		white-space: nowrap;
+	}
+
+	.add-wallet-link:hover {
 		color: var(--accent);
 	}
 
