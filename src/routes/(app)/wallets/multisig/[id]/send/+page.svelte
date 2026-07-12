@@ -29,6 +29,11 @@
 	// multisig math), so the wallets flow's component is reused as-is.
 	import QrSigner from '../../../[id]/send/_components/QrSigner.svelte';
 	import type { SignerContext } from '../../../[id]/send/_components/signerContract';
+	// Multisig has no address book, but the destination field's scan/paste
+	// affordances (QR-SCAN-DESIGN.md Wave 3) are identical — reuse the
+	// single-sig send flow's combobox with an empty saved list, which makes it
+	// behave as a plain text input (see its own doc comment) plus scan/paste.
+	import RecipientCombobox from '../../../[id]/send/_components/RecipientCombobox.svelte';
 	import MultisigFileSigner from './_components/MultisigFileSigner.svelte';
 	import TrezorSigner from '$lib/components/signing/TrezorSigner.svelte';
 	import LedgerSigner from '$lib/components/signing/LedgerSigner.svelte';
@@ -835,14 +840,18 @@
 							{#if rows.length === 1}
 								<label class="sec-label" for={`recipient-${row.key}`}>To</label>
 							{/if}
-							<input
+							<RecipientCombobox
 								id={`recipient-${row.key}`}
-								class="to-input mono"
-								placeholder="bc1q…"
 								bind:value={row.address}
-								autocomplete="off"
-								spellcheck="false"
-								aria-label={rows.length > 1 ? `Recipient ${i + 1} address` : undefined}
+								saved={[]}
+								invalid={row.address.length > 0 && !looksLikeAddress(row.address)}
+								ondelete={() => {}}
+								ariaLabel={rows.length > 1 ? `Recipient ${i + 1} address` : undefined}
+								currentAmountText={row.amountBtc}
+								onamount={(sats) => {
+									if (isMax) return;
+									row.amountBtc = formatBtc(sats, { trim: true });
+								}}
 							/>
 							{#if row.address.length > 0 && !looksLikeAddress(row.address)}
 								<p class="field-line attention">That doesn't look like a Bitcoin address yet.</p>
@@ -1878,34 +1887,6 @@
 	.mode-toggles {
 		display: flex;
 		gap: 4px;
-	}
-
-	/* The address field: a plain hairline-boxed input (no giant hero — the
-	   amount hero grammar is single-sig only). */
-	.to-input {
-		width: 100%;
-		padding: 11px 14px;
-		background: var(--bg-input);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-icon-btn);
-		color: var(--text);
-		caret-color: var(--accent);
-		font-family: var(--font-ui);
-		font-size: 14px;
-		line-height: 1.45;
-		transition:
-			border-color 120ms var(--ease),
-			box-shadow 120ms var(--ease);
-	}
-
-	.to-input::placeholder {
-		color: var(--text-muted);
-	}
-
-	.to-input:focus {
-		outline: none;
-		border-color: var(--accent);
-		box-shadow: 0 0 0 3px rgba(232, 147, 90, 0.12);
 	}
 
 	.field-line {

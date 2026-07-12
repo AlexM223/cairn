@@ -714,16 +714,6 @@
 	);
 	const explorerUrl = $derived(sentTxid ? `/explorer/tx/${sentTxid}` : '#');
 
-	async function copyAddress(text: string) {
-		if (!text) return;
-		try {
-			await navigator.clipboard.writeText(text);
-			toast.success('Address copied.');
-		} catch {
-			toast.error('Could not copy — select and copy it by hand.');
-		}
-	}
-
 	// ---------------------------------------------------- Sign: method selection
 	// One signing method is active (expanded) at a time; the rest collapse to
 	// selectable tiles. `null` = nothing chosen yet (pure method selection).
@@ -1000,30 +990,21 @@
 						</div>
 					</div>
 
-					<!-- TO: hairline field, mono, with copy. -->
+					<!-- TO: hairline field, mono, with scan + paste. -->
 					<div class="to-field">
 						<span class="sec-label" id="to-label">To</span>
-						<div class="to-row">
-							<div class="grow">
-								<RecipientCombobox
-									id={`recipient-${row.key}`}
-									bind:value={row.address}
-									saved={savedAddresses}
-									invalid={row.address.length > 0 && !looksLikeAddress(row.address)}
-									ondelete={deleteSavedAddress}
-								/>
-							</div>
-							<button
-								type="button"
-								class="icon-btn"
-								aria-label="Copy address"
-								title="Copy address"
-								disabled={row.address.trim().length === 0}
-								onclick={() => copyAddress(row.address.trim())}
-							>
-								<Icon name="copy" size={15} />
-							</button>
-						</div>
+						<RecipientCombobox
+							id={`recipient-${row.key}`}
+							bind:value={row.address}
+							saved={savedAddresses}
+							invalid={row.address.length > 0 && !looksLikeAddress(row.address)}
+							ondelete={deleteSavedAddress}
+							currentAmountText={row.amountText}
+							onamount={(sats) => {
+								if (amountMode === 'max') return;
+								row.amountText = unit === 'sats' ? String(sats) : formatBtc(sats, { trim: true });
+							}}
+						/>
 						{#if row.address.length > 0 && !looksLikeAddress(row.address)}
 							<p class="field-line attention">That doesn't look like a Bitcoin address yet.</p>
 						{:else if looksLikeAddress(row.address)}
@@ -1055,6 +1036,10 @@
 										saved={savedAddresses}
 										invalid={row.address.length > 0 && !looksLikeAddress(row.address)}
 										ondelete={deleteSavedAddress}
+										currentAmountText={row.amountText}
+										onamount={(sats) => {
+											row.amountText = unit === 'sats' ? String(sats) : formatBtc(sats, { trim: true });
+										}}
 									/>
 									{#if row.address.length > 0 && !looksLikeAddress(row.address)}
 										<p class="field-line attention">
@@ -2052,39 +2037,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
-	}
-
-	.to-row {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-	}
-
-	.icon-btn {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 32px;
-		height: 32px;
-		flex-shrink: 0;
-		border: 1px solid var(--border-control);
-		border-radius: var(--radius-icon-btn);
-		background: transparent;
-		color: var(--text-secondary);
-		cursor: pointer;
-		transition:
-			color 120ms var(--ease),
-			border-color 120ms var(--ease);
-	}
-
-	.icon-btn:hover:not(:disabled) {
-		color: var(--accent);
-		border-color: var(--border-ghost);
-	}
-
-	.icon-btn:disabled {
-		opacity: 0.4;
-		cursor: not-allowed;
 	}
 
 	.field-line {
