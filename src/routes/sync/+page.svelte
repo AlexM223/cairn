@@ -76,11 +76,17 @@
 		// /sync is now an OPTIONAL details view (cairn-2zxt.1) — the (app) layout no
 		// longer blocks on first sync, so this is a plain navigation back to the app
 		// (no escape cookie needed). The count keeps running on the node either way.
-		void goto('/');
+		// replaceState (not a plain push): /sync is a transient details view, not a
+		// stop on the user's real navigation path, so leaving it shouldn't add a
+		// stack entry — otherwise Back from '/' returns to /sync instead of
+		// wherever the "View details" link was clicked from, and a repeat
+		// visit+leave cycle alternates Back between the two forever (same push-loop
+		// shape as cairn-y7ac).
+		void goto('/', { replaceState: true });
 	}
 
 	function enterApp() {
-		void goto('/', { invalidateAll: true });
+		void goto('/', { invalidateAll: true, replaceState: true });
 	}
 </script>
 
