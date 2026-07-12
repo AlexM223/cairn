@@ -2,7 +2,7 @@ manifestVersion: 1
 id: heartwood
 category: bitcoin
 name: Heartwood
-version: "0.2.11"
+version: "0.2.12"
 tagline: Your self-hosted Bitcoin command center
 description: >-
   Heartwood is a self-hosted Bitcoin command center: a block explorer,
@@ -26,12 +26,14 @@ description: >-
   RPC. Configure this under Settings → Chain Backend after logging in; no
   external services are contacted.
 releaseNotes: >-
-  Multisig setup overhaul: uploading a multisig wallet config file anywhere
-  in the add-wallet flow is now detected and hands off to the multisig
-  wizard with all keys pre-filled, and the multisig wizard has a prominent
-  "Import wallet config file" option. Also fixes the browser Back button
-  after wallet creation - it now returns to your wallets list instead of
-  stepping back through the wizard.
+  Quality release. Desktop sign-in fixed: passkey buttons now appear only on
+  addresses where passkeys can actually work, with a hint pointing to the
+  right address (email + password works everywhere). Much better
+  diagnostics for operators: every error response is now visible in the app
+  logs (including failures that were previously invisible), plus a startup
+  configuration summary, connection-health logging for your Electrum/Core
+  backend, and logs for wallet operations. Also includes documentation
+  fixes and 30 new automated tests.
 developer: Alex Martinez
 website: https://github.com/AlexM223/cairn
 dependencies: []
