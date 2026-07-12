@@ -11,7 +11,8 @@ import {
 	PASSPHRASE_CAUSE_HEADLINE,
 	PASSPHRASE_CAUSE_BODY,
 	PASSPHRASE_LOSS_WARNING,
-	PASSPHRASE_NOT_RECOMMENDED
+	PASSPHRASE_NOT_RECOMMENDED,
+	PROACTIVE_PASSPHRASE_NOTE
 } from './keyCheckCopy';
 
 describe('key-check copy (MULTISIG-KEY-AUDIT-DESIGN §2)', () => {
@@ -38,6 +39,11 @@ describe('key-check copy (MULTISIG-KEY-AUDIT-DESIGN §2)', () => {
 		expect(PASSPHRASE_NOT_RECOMMENDED).toBe('Using a passphrase with multisig is not recommended.');
 	});
 
+	it('the proactive add-key passphrase note mentions BIP39/passphrase and the lockout risk (§4)', () => {
+		expect(PROACTIVE_PASSPHRASE_NOTE.toLowerCase()).toContain('passphrase');
+		expect(PROACTIVE_PASSPHRASE_NOTE.toLowerCase()).toContain('lock yourself out');
+	});
+
 	it('none of the copy strings are empty (a hollow constant would still "pass" a truthy check elsewhere)', () => {
 		for (const s of [
 			KEY_MATCH_HEADLINE,
@@ -46,7 +52,8 @@ describe('key-check copy (MULTISIG-KEY-AUDIT-DESIGN §2)', () => {
 			PASSPHRASE_CAUSE_HEADLINE,
 			PASSPHRASE_CAUSE_BODY,
 			PASSPHRASE_LOSS_WARNING,
-			PASSPHRASE_NOT_RECOMMENDED
+			PASSPHRASE_NOT_RECOMMENDED,
+			PROACTIVE_PASSPHRASE_NOTE
 		]) {
 			expect(s.length).toBeGreaterThan(0);
 		}

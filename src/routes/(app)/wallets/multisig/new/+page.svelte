@@ -32,6 +32,8 @@
 		parseSavedMultisigProgress,
 		hasMeaningfulMultisigProgress
 	} from './_components/wizardProgress';
+	import WizardKeyCheck from './_components/WizardKeyCheck.svelte';
+	import { PROACTIVE_PASSPHRASE_NOTE } from '../_components/keyCheckCopy';
 
 	let { data } = $props();
 
@@ -1779,6 +1781,15 @@
 								</button>
 							</div>
 
+							<!-- Proactive passphrase caution (MULTISIG-KEY-AUDIT-DESIGN §4): a
+							     lighter nudge shown for EVERY key source, before any mismatch has
+							     happened — passphrase + multisig is an anti-pattern worth keeping
+							     visible up front, not only after someone locks themselves out. -->
+							<p class="hint passphrase-note">
+								<Icon name="info" size={12} />
+								{PROACTIVE_PASSPHRASE_NOTE}
+							</p>
+
 							<div class="field">
 								<label class="label" for="key-name">
 									Name this key <span class="optional">(you can change it later)</span>
@@ -2329,6 +2340,27 @@
 								? 'Nested SegWit'
 								: 'Legacy (P2SH)'}
 					</span>
+				</div>
+			</div>
+
+			<!-- Wave 2 verify block (MULTISIG-KEY-AUDIT-DESIGN §3/§7): the last
+			     checkpoint before the wallet exists — re-derive-and-compare each
+			     cosigner key now, while nothing is funded yet, instead of only
+			     discovering a wrong export or a passphrase-enabled device later. -->
+			<div class="key-check-block">
+				<span class="key-check-title">
+					<Icon name="shield" size={15} />
+					Verify your keys before creating this wallet
+				</span>
+				<p class="hint">
+					Re-connect each device (or re-paste its key) and Heartwood proves it still has the
+					exact key you added — this is the moment to catch a mistake, before any money is at
+					stake.
+				</p>
+				<div class="key-check-rows">
+					{#each keys as key (key.xpub)}
+						<WizardKeyCheck keyInfo={key} {scriptType} vaultMode={vaultMode ?? 'personal'} />
+					{/each}
 				</div>
 			</div>
 
@@ -3468,6 +3500,19 @@
 		gap: 14px;
 	}
 
+	/* Proactive passphrase caution (§4) — a quiet inline note, not a warning box. */
+	.passphrase-note {
+		display: flex;
+		align-items: flex-start;
+		gap: 6px;
+		margin: 0;
+	}
+
+	.passphrase-note :global(svg) {
+		flex-shrink: 0;
+		margin-top: 2px;
+	}
+
 	.connect-box {
 		display: flex;
 		flex-direction: column;
@@ -3791,6 +3836,32 @@
 	.confirm-row .hint {
 		width: 110px;
 		flex-shrink: 0;
+	}
+
+	/* Wave 2 verify block (MULTISIG-KEY-AUDIT-DESIGN §3/§7) — the last
+	   checkpoint before the wallet is created. */
+	.key-check-block {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		padding: 14px;
+		background: var(--bg);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-control);
+	}
+
+	.key-check-title {
+		display: inline-flex;
+		align-items: center;
+		gap: 7px;
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--text);
+	}
+
+	.key-check-rows {
+		display: flex;
+		flex-direction: column;
 	}
 
 	.verify-gate {

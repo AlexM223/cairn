@@ -33,3 +33,15 @@ export const PASSPHRASE_LOSS_WARNING =
 
 /** Plain statement that passphrase + multisig is not a recommended combination. */
 export const PASSPHRASE_NOT_RECOMMENDED = 'Using a passphrase with multisig is not recommended.';
+
+/**
+ * PROACTIVE passphrase caution — shown while ADDING a cosigner key, before any
+ * mismatch has happened (MULTISIG-KEY-AUDIT-DESIGN §4). Lighter than the
+ * loss-of-funds warning above: a one-line nudge to keep the anti-pattern
+ * visible up front, in the creation wizard's add-key sub-wizard, rather than
+ * only after someone has already locked themselves out.
+ */
+export const PROACTIVE_PASSPHRASE_NOTE =
+	"If this device uses a BIP39 passphrase, make sure it's the same one every time you connect it " +
+	'— a passphrase with multisig is an easy way to lock yourself out, since it derives a completely ' +
+	'different set of keys.';
