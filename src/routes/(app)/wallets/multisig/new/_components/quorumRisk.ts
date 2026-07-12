@@ -80,6 +80,10 @@ export function classifyQuorum(m: number, n: number): QuorumRisk {
 
 	if (m === n) {
 		const suggest = n === 2 ? '2-of-3' : `${n - 1}-of-${n}`;
+		const suggestion =
+			n === 2
+				? `Most people add a third key — ${suggest} — so one accident isn't a catastrophe.`
+				: `Most people require one fewer key — like ${suggest} — so one accident isn't a catastrophe.`;
 		return {
 			tier: 'yellow',
 			label: 'Fragile — every key must survive',
@@ -87,8 +91,7 @@ export function classifyQuorum(m: number, n: number): QuorumRisk {
 			body:
 				`All ${n} keys are required, every time. A thief would have to steal every single one, ` +
 				'so it\'s very hard to rob. But lose just one key and the money is frozen forever, with ' +
-				`no way back. Most people add a spare — like ${suggest} — so one accident isn't a ` +
-				'catastrophe.',
+				`no way back. ${suggestion}`,
 			combos: `All ${n} keys together — the only combination that can spend.`
 		};
 	}
