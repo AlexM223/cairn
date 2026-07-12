@@ -2,7 +2,7 @@ manifestVersion: 1
 id: heartwood
 category: bitcoin
 name: Heartwood
-version: "0.2.13"
+version: "0.2.14"
 tagline: Your self-hosted Bitcoin command center
 description: >-
   Heartwood is a self-hosted Bitcoin command center: a block explorer,
@@ -26,16 +26,14 @@ description: >-
   RPC. Configure this under Settings → Chain Backend after logging in; no
   external services are contacted.
 releaseNotes: >-
-  Big quality release. Sending is dramatically faster (large wallets build
-  transactions in a fraction of a second). Fixed: deposits wrongly shown as
-  immature mining rewards and blocked from spending on Electrum-only setups;
-  transactions signed with Bitcoin Core default settings are now accepted;
-  desktop sign-in (passkey options only appear where they can work); the false
-  "cannot reach your node" banner; transaction history not populating.
-  Concurrent sends now reserve coins correctly and duplicate broadcasts are
-  handled cleanly. Errors across the app now say what happened and what to do.
-  Simpler first-run home screen (the block explorer is now an optional feature
-  admins can enable). Over 100 new automated tests.
+  Navigation and multisig release. The back button now always takes you
+  somewhere sensible - no more loops on the node screen, explorer, or sync
+  pages. Multisig is front and center: a new card on your wallets page and a
+  guided setup that explains what multisig is, why you would want it, and
+  what you need before asking for anything technical. Dashboard polish: no
+  more alarming percentage swings on tiny balances, and empty states now
+  suggest what to do next. Plus groundwork for camera QR scanning and a
+  cleaner scan experience for hardware signers.
 developer: Alex Martinez
 website: https://github.com/AlexM223/cairn
 dependencies: []
