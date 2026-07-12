@@ -13,6 +13,7 @@ import {
 	assertSameTransaction,
 	addressFromScript,
 	PsbtMismatchError,
+	PsbtNotFullySignedError,
 	DEFAULT_ORIGIN_PATH,
 	PsbtError,
 	estimateTxVsize,
@@ -620,11 +621,22 @@ export async function broadcastTransaction(
 	try {
 		finalized = finalizePsbt(psbt);
 	} catch (e) {
-		// finalize() throws when signatures are missing or malformed.
+		// Genuinely-missing signatures get an accurate count; anything else
+		// (parse failure, malformed signature data, …) gets a generic message —
+		// never btc-signer's raw exception text, which reads as a library-author
+		// message, not an end-user one (cairn QA F3). Notably, an input an
+		// external signer already finalized (e.g. Bitcoin Core's
+		// descriptorprocesspsbt/walletprocesspsbt default finalize=true) is NOT
+		// an error case at all — finalizePsbt passes those through.
+		if (e instanceof PsbtNotFullySignedError) {
+			const plural = e.totalCount === 1 ? '' : 's';
+			throw new BroadcastError(
+				`This transaction isn't fully signed yet — ${e.unsignedCount} of ${e.totalCount} input${plural} still need${e.unsignedCount === 1 ? 's' : ''} a signature. Sign it with your device or wallet, then try again.`,
+				'incomplete'
+			);
+		}
 		throw new BroadcastError(
-			e instanceof Error
-				? `This PSBT isn't fully signed yet: ${e.message}`
-				: 'This PSBT is not fully signed.',
+			"This transaction couldn't be finalized. Make sure it's fully signed, then try again.",
 			'incomplete'
 		);
 	}

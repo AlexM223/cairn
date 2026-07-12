@@ -14,6 +14,7 @@ import {
 	parseOriginPath,
 	PsbtError,
 	PsbtMismatchError,
+	PsbtNotFullySignedError,
 	type SpendableUtxo
 } from './psbt';
 import {
@@ -199,6 +200,128 @@ describe('constructPsbt', () => {
 		for (let i = 0; i < tx.outputsLength; i++) {
 			expect(tx.getOutput(i).bip32Derivation ?? []).toHaveLength(0);
 		}
+	});
+});
+
+// ── finalizePsbt: already-finalized inputs (cairn QA F3) ────────────────────
+//
+// Bitcoin Core's descriptorprocesspsbt/walletprocesspsbt default `finalize` to
+// true: the PSBT they hand back already has each input's partial_sig replaced
+// with final_scriptSig/final_scriptwitness (BIP174 finalizer output), with NO
+// partial_sig left. Verified empirically (not just asserted) that
+// @scure/btc-signer's own finalizeIdx() clears partialSig immediately upon
+// finalizing an input, and that this survives a toPSBT()/fromPSBT() round
+// trip — so a fresh parse of such a fixture is indistinguishable, for this
+// bug's purposes, from Core's real wire output.
+describe('finalizePsbt: already-finalized inputs (cairn QA F3)', () => {
+	function signAllInputs(tx: Transaction, account: HDKey): void {
+		for (let i = 0; i < tx.inputsLength; i++) {
+			const path = tx.getInput(i).bip32Derivation![0][1].path;
+			tx.signIdx(account.deriveChild(path[3]).deriveChild(path[4]).privateKey!, i);
+		}
+	}
+
+	/** A 2-input draft: 70,000 sats needs both the 60k and 40k UTXOs, giving
+	 *  enough inputs to exercise "some finalized, some not" mixes. */
+	function twoInputDraft() {
+		return constructPsbt({ ...COMMON, recipients: [{ address: RECIPIENT, amount: 70_000 }], feeRate: 12 });
+	}
+
+	it('finalizes successfully when ALL inputs are already Core-finalized (case a)', async () => {
+		const draft = await twoInputDraft();
+		const account = accountKey();
+		const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
+		signAllInputs(tx, account);
+		for (let i = 0; i < tx.inputsLength; i++) tx.finalizeIdx(i);
+		const expectedTxid = tx.id;
+		const expectedHex = tx.hex;
+		// Sanity: partialSig is genuinely gone (matches Core's real output), not
+		// merely a lingering in-memory field the classification has to see through.
+		for (let i = 0; i < tx.inputsLength; i++) {
+			expect(tx.getInput(i).partialSig).toBeUndefined();
+			expect(tx.getInput(i).finalScriptWitness?.length).toBeGreaterThan(0);
+		}
+		const coreStylePsbt = base64.encode(tx.toPSBT());
+
+		const { rawHex, txid } = finalizePsbt(coreStylePsbt);
+		expect(txid).toBe(expectedTxid);
+		expect(rawHex).toBe(expectedHex);
+	});
+
+	it('finalizes successfully with a MIX of already-finalized and still-partialSig inputs (case b)', async () => {
+		const draft = await twoInputDraft();
+		const account = accountKey();
+
+		// Reference: what the fully-finalized transaction looks like.
+		const reference = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
+		signAllInputs(reference, account);
+		for (let i = 0; i < reference.inputsLength; i++) reference.finalizeIdx(i);
+		const expectedTxid = reference.id;
+
+		// The mixed fixture: input 0 finalized (Core-style), input 1 left as a
+		// plain partialSig — e.g. a signer that finalized only what it could.
+		const mixed = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
+		signAllInputs(mixed, account);
+		mixed.finalizeIdx(0);
+		expect(mixed.getInput(0).partialSig).toBeUndefined();
+		expect(mixed.getInput(1).partialSig?.length).toBeGreaterThan(0);
+		expect(mixed.getInput(1).finalScriptWitness).toBeUndefined();
+		const mixedPsbt = base64.encode(mixed.toPSBT());
+
+		const { txid } = finalizePsbt(mixedPsbt);
+		expect(txid).toBe(expectedTxid);
+	});
+
+	it('throws PsbtNotFullySignedError with an accurate unsigned count when NO input is signed', async () => {
+		const draft = await twoInputDraft();
+		let caught: unknown;
+		try {
+			finalizePsbt(draft.psbtBase64);
+		} catch (e) {
+			caught = e;
+		}
+		expect(caught).toBeInstanceOf(PsbtNotFullySignedError);
+		const err = caught as PsbtNotFullySignedError;
+		expect(err.unsignedCount).toBe(2);
+		expect(err.totalCount).toBe(2);
+		expect(err.message).not.toMatch(/partial sign/i); // never the raw library string
+	});
+
+	it('throws PsbtNotFullySignedError with the right N of M when only SOME inputs are unsigned', async () => {
+		const draft = await twoInputDraft();
+		const account = accountKey();
+		const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
+		// Sign only input 0; input 1 stays genuinely unsigned.
+		const path = tx.getInput(0).bip32Derivation![0][1].path;
+		tx.signIdx(account.deriveChild(path[3]).deriveChild(path[4]).privateKey!, 0);
+		const partiallySigned = base64.encode(tx.toPSBT());
+
+		let caught: unknown;
+		try {
+			finalizePsbt(partiallySigned);
+		} catch (e) {
+			caught = e;
+		}
+		expect(caught).toBeInstanceOf(PsbtNotFullySignedError);
+		expect((caught as PsbtNotFullySignedError).unsignedCount).toBe(1);
+		expect((caught as PsbtNotFullySignedError).totalCount).toBe(2);
+	});
+
+	it('unchanged: the ordinary today-path (no pre-finalized input) still finalizes correctly', async () => {
+		// Regression guard for the refactor itself: an everyday fully-partialSig-
+		// signed PSBT (no external signer pre-finalizing anything) must produce
+		// byte-identical output to the old unconditional tx.finalize() path.
+		const draft = await twoInputDraft();
+		const account = accountKey();
+		const tx = Transaction.fromPSBT(base64.decode(draft.psbtBase64));
+		signAllInputs(tx, account);
+		const signedOnly = base64.encode(tx.toPSBT());
+
+		const reference = Transaction.fromPSBT(base64.decode(signedOnly));
+		reference.finalize(); // the OLD unconditional path, for comparison
+		const { rawHex, txid } = finalizePsbt(signedOnly);
+		expect(txid).toBe(reference.id);
+		expect(rawHex).toBe(reference.hex);
 	});
 });
 

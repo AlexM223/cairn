@@ -96,6 +96,18 @@ async function signedTxid(): Promise<string> {
 	return tx.id;
 }
 
+/** Simulates Bitcoin Core's descriptorprocesspsbt/walletprocesspsbt with their
+ *  default `finalize=true`: the PSBT handed back already carries each input's
+ *  final witness data, with partial_sig cleared (cairn QA F3). */
+let finalizedByExternalSignerCache: string | null = null;
+async function finalizedByExternalSigner(): Promise<string> {
+	if (finalizedByExternalSignerCache) return finalizedByExternalSignerCache;
+	const tx = Transaction.fromPSBT(base64.decode(await signedPsbt()));
+	for (let i = 0; i < tx.inputsLength; i++) tx.finalizeIdx(i);
+	finalizedByExternalSignerCache = base64.encode(tx.toPSBT());
+	return finalizedByExternalSignerCache;
+}
+
 async function seedWallet(userEmail: string): Promise<{ userId: number; walletId: number }> {
 	const user = await registerUser({ email: userEmail, password: 'correct horse battery', displayName: 'u' });
 	const res = db
@@ -287,6 +299,54 @@ describe('transaction lifecycle', () => {
 		await expect(
 			broadcastTransaction(userId, walletId, txId, corrupt)
 		).rejects.toThrow(/truncated or corrupted/);
+		expect(broadcastMock).not.toHaveBeenCalled();
+	});
+
+	// cairn QA F3: Core's descriptorprocesspsbt/walletprocesspsbt default
+	// finalize=true — the PSBT they hand back has NO partial_sig, only final
+	// witness data. The old unconditional tx.finalize() crashed on this with
+	// "Not enough partial sign"; finalizePsbt() now passes already-finalized
+	// inputs through instead of re-finalizing them.
+	it('broadcasts a PSBT already finalized by an external signer (Bitcoin Core default finalize=true)', async () => {
+		const { userId, walletId } = await seedWallet('a@example.com');
+		const finalized = await finalizedByExternalSigner();
+		const txId = seedTx(walletId, 'awaiting_signature', null, finalized);
+		const want = await signedTxid();
+		broadcastMock.mockResolvedValueOnce(want);
+
+		const { txid, transaction } = await broadcastTransaction(userId, walletId, txId);
+		expect(txid).toBe(want);
+		expect(transaction.status).toBe('completed');
+		expect(broadcastMock).toHaveBeenCalledTimes(1);
+	});
+
+	it('gives an accurate, non-raw-library message when a PSBT genuinely lacks a signature', async () => {
+		const { userId, walletId } = await seedWallet('a@example.com');
+		// Same single-UTXO shape as signedPsbt(), just never signed.
+		const draft = await constructPsbt({
+			xpub: ZPUB,
+			utxos: [
+				{ txid: '11'.repeat(32), vout: 0, value: 60_000, height: 800_000, address: RECEIVE_0, chain: 0, index: 0 }
+			],
+			recipients: [{ address: RECIPIENT, amount: 30_000 }],
+			feeRate: 5,
+			changeAddress: CHANGE_0,
+			changeIndex: 0,
+			origin: { fingerprint: '73c5da0a', path: "m/84'/0'/0'" }
+		});
+		const txId = seedTx(walletId, 'awaiting_signature', null, draft.psbtBase64);
+
+		let caught: unknown;
+		try {
+			await broadcastTransaction(userId, walletId, txId);
+		} catch (e) {
+			caught = e;
+		}
+		expect(caught).toBeInstanceOf(BroadcastError);
+		const err = caught as BroadcastError;
+		expect(err.code).toBe('incomplete');
+		expect(err.message).toMatch(/1 of 1 input still needs a signature/);
+		expect(err.message).not.toMatch(/partial sign/i); // never btc-signer's raw exception text
 		expect(broadcastMock).not.toHaveBeenCalled();
 	});
 

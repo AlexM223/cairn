@@ -932,12 +932,97 @@ export function assertSameTransaction(draftPsbtBase64: string, signedPsbtBase64:
 	}
 }
 
+/** Shape shared by @scure/btc-signer's cloned per-input data (psbt.TransactionInput) —
+ *  narrowed to just the fields the finalized/signed/unsigned classification below needs. */
+interface FinalizeClassifiableInput {
+	finalScriptSig?: Uint8Array;
+	finalScriptWitness?: Uint8Array[];
+	partialSig?: [Uint8Array, Uint8Array][];
+	tapKeySig?: Uint8Array;
+	tapScriptSig?: unknown[];
+}
+
+/**
+ * True when an input already carries BIP174 finalizer output (final_scriptSig /
+ * final_scriptwitness) rather than a raw partial_sig — e.g. Bitcoin Core's
+ * descriptorprocesspsbt/walletprocesspsbt, whose `finalize` param defaults to
+ * `true`. Mirrors multisigPsbt.ts's inputFinalized() (kept file-local: the two
+ * finalizers are otherwise independent and there's no shared PSBT-input helper
+ * module yet).
+ */
+function isInputFinalized(inp: FinalizeClassifiableInput): boolean {
+	return (inp.finalScriptSig?.length ?? 0) > 0 || (inp.finalScriptWitness?.length ?? 0) > 0;
+}
+
+/** True when an input carries no signature material at all — not already
+ *  finalized, and no partial/taproot signature to finalize from either. */
+function isInputUnsigned(inp: FinalizeClassifiableInput): boolean {
+	if (isInputFinalized(inp)) return false;
+	if (inp.partialSig && inp.partialSig.length) return false;
+	if (inp.tapKeySig) return false;
+	if (inp.tapScriptSig && inp.tapScriptSig.length) return false;
+	return true;
+}
+
+/**
+ * Thrown by finalizePsbt when one or more inputs genuinely carry no signature
+ * yet (as opposed to a parse/finalize-mechanics failure) — carries the exact
+ * counts so callers can render an accurate, non-raw message instead of
+ * btc-signer's library-internal exception text.
+ */
+export class PsbtNotFullySignedError extends Error {
+	constructor(
+		message: string,
+		public readonly unsignedCount: number,
+		public readonly totalCount: number
+	) {
+		super(message);
+		this.name = 'PsbtNotFullySignedError';
+	}
+}
+
 /**
  * Finalize a fully-signed PSBT and extract the raw transaction hex ready for
- * broadcast. Throws (with btc-signer's reason) when signatures are missing.
+ * broadcast.
+ *
+ * Inputs an external signer already finalized (Core's descriptorprocesspsbt /
+ * walletprocesspsbt default to finalize=true, replacing partial_sig with final
+ * witness/scriptSig data per BIP174) are left untouched rather than re-run
+ * through btc-signer's finalizeIdx(), which has no "already finalized?"
+ * short-circuit and throws "Not enough partial sign" on such inputs. Only
+ * inputs that still carry a partial/taproot signature (the normal, not-yet-
+ * finalized path) are finalized here.
+ *
+ * Throws PsbtNotFullySignedError when one or more inputs have no signature at
+ * all yet; throws a plain Error (parse failure, malformed signature data,
+ * etc.) for anything else — callers must not surface that raw message to end
+ * users (cairn QA F3).
  */
 export function finalizePsbt(psbtBase64: string): { rawHex: string; txid: string } {
 	const tx = Transaction.fromPSBT(base64.decode(psbtBase64.trim()));
-	tx.finalize();
+	const total = tx.inputsLength;
+
+	let unsigned = 0;
+	for (let i = 0; i < total; i++) {
+		const inp = tx.getInput(i);
+		if (isInputFinalized(inp)) continue; // already done by the external signer — pass through
+		if (isInputUnsigned(inp)) {
+			unsigned++;
+			continue; // no signature to finalize from — don't hand this to finalizeIdx
+		}
+		tx.finalizeIdx(i);
+	}
+	if (unsigned > 0) {
+		throw new PsbtNotFullySignedError(
+			`${unsigned} of ${total} input${total === 1 ? '' : 's'} still need${unsigned === 1 ? 's' : ''} a signature.`,
+			unsigned,
+			total
+		);
+	}
+	// Defensive: finalizeIdx above either finalizes an input or throws, so this
+	// should always hold once the loop completes with unsigned === 0. Kept as a
+	// belt-and-suspenders check (mirrors finalizeMultisigPsbt's same guard)
+	// rather than trusting that invariant silently.
+	if (!tx.isFinal) throw new Error('Transaction has unfinalized inputs.');
 	return { rawHex: tx.hex, txid: tx.id };
 }
