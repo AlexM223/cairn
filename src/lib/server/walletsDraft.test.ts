@@ -56,7 +56,7 @@ import {
 	getWalletDetail,
 	nextReceiveAddress
 } from './wallets';
-import { buildDraft, listTransactions } from './transactions';
+import { buildDraft, listTransactions, deleteTransaction } from './transactions';
 import { addressToScripthash } from './bitcoin/xpub';
 import type { WalletScanResult } from './bitcoin/walletScan';
 
@@ -340,5 +340,100 @@ describe('buildDraft coin control + persistence', () => {
 		await expect(buildDraft(userId, 999_999, draftInput())).rejects.toThrow('Wallet not found.');
 		await expect(buildDraft(other.id, w.id, draftInput())).rejects.toThrow('Wallet not found.');
 		expect(listTransactions(userId, w.id)).toEqual([]);
+	});
+});
+
+// cairn QA R7 §4.7 B4 (P0): concurrent buildDraft calls against the same
+// wallet used to see the identical live UTXO set every time, with no notion
+// of "already claimed by another draft" — colliding on the same coin. Fixed
+// by excluding coins referenced by this wallet's own in-flight ('draft' /
+// 'awaiting_signature') drafts from automatic selection.
+describe('buildDraft coin reservation (cairn QA R7 B4)', () => {
+	function draftInput(over: Partial<Parameters<typeof buildDraft>[2]> = {}) {
+		return { recipients: [{ address: RECIPIENT, amount: 10_000 as const }], feeRate: 5, ...over };
+	}
+
+	it('two concurrent (sequential) builds against the same wallet select disjoint coins', async () => {
+		const w = createWallet(userId, { name: 'Spending', xpub: ZPUB });
+
+		// Neither send alone needs both 60k/40k coins — without reservation,
+		// automatic selection would pick the identical coin both times (the exact
+		// R7 B4 repro: same candidate set, same deterministic algorithm).
+		const { details: d1, reservationWarning: w1 } = await buildDraft(userId, w.id, draftInput());
+		const { details: d2, reservationWarning: w2 } = await buildDraft(userId, w.id, draftInput());
+
+		const keys1 = new Set(d1.inputs.map((i) => `${i.txid}:${i.vout}`));
+		const keys2 = new Set(d2.inputs.map((i) => `${i.txid}:${i.vout}`));
+		expect(keys1.size).toBeGreaterThan(0);
+		for (const k of keys2) expect(keys1.has(k)).toBe(false);
+		// Automatic selection never warns — it just avoids the coin outright.
+		expect(w1).toBeNull();
+		expect(w2).toBeNull();
+		expect(listTransactions(userId, w.id)).toHaveLength(2);
+	});
+
+	it('an insufficient-funds shortfall caused entirely by reservation names the blocking draft(s)', async () => {
+		const w = createWallet(userId, { name: 'Spending', xpub: ZPUB });
+
+		// 70k needs BOTH coins (see the "auto-selection covers amount + fee" test
+		// above) — this single draft reserves the wallet's entire spendable set.
+		const { draft: draft1 } = await buildDraft(userId, w.id, {
+			recipients: [{ address: RECIPIENT, amount: 70_000 }],
+			feeRate: 5
+		});
+
+		let error: unknown;
+		try {
+			await buildDraft(userId, w.id, draftInput());
+		} catch (e) {
+			error = e;
+		}
+		expect(error).toMatchObject({ code: 'no_utxos' });
+		const message = (error as Error).message;
+		expect(message).toContain(`#${draft1.id}`);
+		// The full 100k (60k + 40k) is reserved — not just the amount short.
+		expect(message).toContain('0.001 BTC');
+		expect(message).toContain('first');
+		// The failed attempt persisted no half-built draft.
+		expect(listTransactions(userId, w.id)).toHaveLength(1);
+	});
+
+	it('manual coin control may still select a reserved coin, flagged with a reservationWarning', async () => {
+		const w = createWallet(userId, { name: 'Spending', xpub: ZPUB });
+
+		const { draft: draft1 } = await buildDraft(userId, w.id, {
+			...draftInput(),
+			onlyUtxos: [{ txid: FUND_A.txid, vout: 0 }]
+		});
+
+		// Same coin, deliberately, via coin control again — not blocked, but flagged.
+		const { details, reservationWarning } = await buildDraft(userId, w.id, {
+			...draftInput(),
+			onlyUtxos: [{ txid: FUND_A.txid, vout: 0 }]
+		});
+		expect(details.inputs).toEqual([expect.objectContaining({ txid: FUND_A.txid, vout: 0 })]);
+		expect(reservationWarning).not.toBeNull();
+		expect(reservationWarning!.draftIds).toEqual([draft1.id]);
+		expect(reservationWarning!.coins).toEqual([{ txid: FUND_A.txid, vout: 0 }]);
+		expect(reservationWarning!.message).toContain(`#${draft1.id}`);
+		// Both drafts persisted — coin control was honored, not blocked.
+		expect(listTransactions(userId, w.id)).toHaveLength(2);
+	});
+
+	it('a coin freed by deleting its reserving draft becomes selectable again', async () => {
+		const w = createWallet(userId, { name: 'Spending', xpub: ZPUB });
+		const { draft: draft1 } = await buildDraft(userId, w.id, {
+			recipients: [{ address: RECIPIENT, amount: 70_000 }],
+			feeRate: 5
+		});
+		await expect(buildDraft(userId, w.id, draftInput())).rejects.toMatchObject({
+			code: 'no_utxos'
+		});
+
+		expect(deleteTransaction(userId, w.id, draft1.id)).toBe(true);
+
+		// No longer reserved — the same small send now succeeds normally.
+		const { details } = await buildDraft(userId, w.id, draftInput());
+		expect(details.inputs.length).toBeGreaterThan(0);
 	});
 });

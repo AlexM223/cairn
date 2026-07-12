@@ -219,6 +219,9 @@
 	// Non-blocking warning when a draft spends an unconfirmed coin whose mempool
 	// chain is near the network limit (cairn-u9ob.5). Shown on Review; never blocks.
 	let chainDepthWarning = $state<{ message: string } | null>(null);
+	// Non-blocking warning when manual coin control deliberately selected a coin
+	// another in-flight draft of this multisig also references (cairn QA R7 B4).
+	let reservationWarning = $state<{ message: string } | null>(null);
 
 	// Manual coin control (optional): selected "txid:vout" keys, empty = automatic.
 	let selectedCoins = $state<string[]>([]);
@@ -228,6 +231,7 @@
 		building = true;
 		buildError = null;
 		chainDepthWarning = null;
+		reservationWarning = null;
 		const recipients = rows.map((r) => ({
 			address: r.address.trim(),
 			amount: (isMax ? 'max' : Math.round(Number(r.amountBtc) * SATS_PER_BTC)) as number | 'max'
@@ -256,6 +260,7 @@
 			draft = body.draft as SavedMultisigTransaction;
 			details = body.details as ConstructedMultisigPsbt;
 			chainDepthWarning = body.chainDepthWarning ?? null;
+			reservationWarning = body.reservationWarning ?? null;
 			progress = (body.progress as MultisigSigningProgress) ?? null;
 			activeKeyId = null;
 			syncTxParam(draft.id);
@@ -1040,6 +1045,13 @@
 				<div class="attention-panel" role="status">
 					<Icon name="alert-triangle" size={16} />
 					<span>{chainDepthWarning.message}</span>
+				</div>
+			{/if}
+
+			{#if reservationWarning}
+				<div class="attention-panel" role="status">
+					<Icon name="alert-triangle" size={16} />
+					<span>{reservationWarning.message}</span>
 				</div>
 			{/if}
 

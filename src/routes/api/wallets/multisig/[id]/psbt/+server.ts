@@ -22,6 +22,10 @@ import type { RequestHandler } from './$types';
  * `totalSeconds` scaled by this multisig's quorum M (every signer processes the
  * full parent mass; see signingMass.ts). Absent when the chosen inputs'
  * parents weren't all available.
+ *
+ * `reservationWarning` (cairn QA R7 B4) is non-null only when `onlyUtxos` coin
+ * control deliberately selected a coin another in-flight draft of this
+ * multisig also references (see buildMultisigDraft).
  */
 export const POST: RequestHandler = async (event) => {
 	// Building a spend is the core gated action; coin control and batching are
@@ -34,7 +38,7 @@ export const POST: RequestHandler = async (event) => {
 	const spend = await readSpendRequest(event);
 
 	try {
-		const { draft, details, chainDepthWarning } = await buildMultisigDraft(
+		const { draft, details, chainDepthWarning, reservationWarning } = await buildMultisigDraft(
 			user.id,
 			multisigId,
 			spend
@@ -48,7 +52,13 @@ export const POST: RequestHandler = async (event) => {
 			detail: { multisigId, threshold: multisig.threshold, keys: multisig.keys.length }
 		});
 		return json(
-			{ draft, details, progress: multisigTransactionProgress(multisig, draft), chainDepthWarning },
+			{
+				draft,
+				details,
+				progress: multisigTransactionProgress(multisig, draft),
+				chainDepthWarning,
+				reservationWarning
+			},
 			{ status: 201 }
 		);
 	} catch (e) {

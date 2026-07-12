@@ -252,6 +252,59 @@ describe('multisig transaction lifecycle', () => {
 	});
 });
 
+// ── coin reservation (cairn QA R7 B4 — multisig mirror) ─────────────────────
+//
+// buildMultisigDraft must exhibit the exact same fix as buildDraft
+// (transactions.ts): automatic selection excludes coins another in-flight
+// draft of THIS multisig already references, since multisig drafts wait
+// longest for signatures and are the most exposed to this race.
+describe('buildMultisigDraft coin reservation (cairn QA R7 B4)', () => {
+	/** Two real, distinct funding coins on the multisig's own 0/0 and 0/1
+	 *  addresses — buildMultisigDraft attaches full previous transactions
+	 *  (fee-lying protection), so each txid must verify against real hex. */
+	function twoFundedCoins(userId: number, multisigId: number) {
+		const multisig = getMultisig(userId, multisigId)!;
+		const config = toMultisigConfig(multisig);
+		const addrA = deriveMultisigAddress(config, 0, 0).address;
+		const addrB = deriveMultisigAddress(config, 0, 1).address;
+		const fundA = new Transaction({ allowUnknownInputs: true, disableScriptCheck: true });
+		fundA.addInput({ txid: '00'.repeat(32), index: 0 });
+		fundA.addOutputAddress(addrA, 200_000n, NETWORK);
+		const fundB = new Transaction({ allowUnknownInputs: true, disableScriptCheck: true });
+		fundB.addInput({ txid: '00'.repeat(32), index: 1 });
+		fundB.addOutputAddress(addrB, 150_000n, NETWORK);
+		return { addrA, addrB, fundA, fundB };
+	}
+
+	it('two sequential builds against the same multisig select disjoint coins', async () => {
+		const { userId, multisigId } = await seedMultisig('reserve@example.com');
+		const { addrA, addrB, fundA, fundB } = twoFundedCoins(userId, multisigId);
+		utxosMock.mockResolvedValue([
+			{ txid: fundA.id, vout: 0, value: 200_000, height: 800_000, address: addrA, chain: 0, index: 0 },
+			{ txid: fundB.id, vout: 0, value: 150_000, height: 800_000, address: addrB, chain: 0, index: 1 }
+		]);
+		getTxHexMock.mockImplementation(async (txid: string) => {
+			if (txid === fundA.id) return fundA.hex;
+			if (txid === fundB.id) return fundB.hex;
+			throw new Error(`unexpected txid ${txid}`);
+		});
+
+		const { details: d1 } = await buildMultisigDraft(userId, multisigId, {
+			recipients: [{ address: RECIPIENT, amount: 10_000 }],
+			feeRate: 5
+		});
+		const { details: d2 } = await buildMultisigDraft(userId, multisigId, {
+			recipients: [{ address: RECIPIENT, amount: 10_000 }],
+			feeRate: 5
+		});
+
+		const keys1 = new Set(d1.inputs.map((i) => `${i.txid}:${i.vout}`));
+		const keys2 = new Set(d2.inputs.map((i) => `${i.txid}:${i.vout}`));
+		expect(keys1.size).toBeGreaterThan(0);
+		for (const k of keys2) expect(keys1.has(k)).toBe(false);
+	});
+});
+
 // ── attach (per-key signature merging) ───────────────────────────────────────
 
 describe('attachMultisigSignature', () => {

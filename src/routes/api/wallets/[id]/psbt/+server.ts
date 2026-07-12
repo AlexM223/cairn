@@ -18,6 +18,11 @@ import type { RequestHandler } from './$types';
  * `signingMass` block (parent-transaction mass, tier, per-device signing-time
  * estimates, totalSeconds, warnLevel, splitSuggested — see signingMass.ts);
  * absent when the chosen inputs' parents weren't all available.
+ *
+ * `reservationWarning` (cairn QA R7 B4) is non-null only when `onlyUtxos` coin
+ * control deliberately selected a coin another in-flight draft of this wallet
+ * also references — automatic selection excludes those coins instead of
+ * warning about them (see buildDraft in transactions.ts).
  */
 export const POST: RequestHandler = async (event) => {
 	// Building a spend is the core gated action. Coin control and batching are
@@ -30,8 +35,12 @@ export const POST: RequestHandler = async (event) => {
 	const spend = await readSpendRequest(event);
 
 	try {
-		const { draft, details, chainDepthWarning } = await buildDraft(user.id, walletId, spend);
-		return json({ draft, details, chainDepthWarning }, { status: 201 });
+		const { draft, details, chainDepthWarning, reservationWarning } = await buildDraft(
+			user.id,
+			walletId,
+			spend
+		);
+		return json({ draft, details, chainDepthWarning, reservationWarning }, { status: 201 });
 	} catch (e) {
 		return psbtBuildErrorResponse(e, { walletId });
 	}

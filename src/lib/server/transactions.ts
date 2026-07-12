@@ -12,6 +12,7 @@ import {
 	finalizePsbt,
 	assertSameTransaction,
 	addressFromScript,
+	summarizePsbt,
 	PsbtMismatchError,
 	PsbtNotFullySignedError,
 	DEFAULT_ORIGIN_PATH,
@@ -262,6 +263,107 @@ export interface BuildDraftInput {
 	onlyUtxos?: { txid: string; vout: number }[];
 }
 
+// ------------------------------------------------------ coin reservation
+//
+// cairn QA R7 §4.7 B4 (P0): concurrent buildDraft calls against the same
+// wallet all read the same live Electrum UTXO set with no notion of "already
+// claimed by another draft", so they routinely select the identical coin.
+// Downstream defenses (the atomic broadcast claim, the network's own
+// RBF/conflict rejection) keep this from ever double-spending on-chain, but
+// users could not safely have more than one draft in flight against a
+// UTXO-constrained wallet. Fix: automatic (non-coin-control) selection
+// excludes any coin already referenced by one of this wallet's OTHER
+// in-flight drafts ('draft' | 'awaiting_signature' — the only two pre-
+// broadcast statuses; 'completed' and 'superseded' rows are done and their
+// coins are either genuinely spent or free again). Coin control may still
+// deliberately re-target a reserved coin (RBF/respend stays possible); the
+// build response then carries a `reservationWarning` naming the draft(s) it
+// collides with, mirroring the existing chainDepthWarning field shape.
+
+/** BTC-denominated amount for user-facing messages — trims trailing zeros. */
+function formatBtc(sats: number): string {
+	return `${(sats / 1e8).toFixed(8).replace(/0+$/, '').replace(/\.$/, '')} BTC`;
+}
+
+/**
+ * Coins referenced by a set of in-flight draft rows, keyed by "txid:vout" →
+ * the id(s) of every draft that references it. Pure/shared: both the
+ * single-sig (reservedWalletCoins below) and multisig
+ * (reservedMultisigCoins, multisigTransactions.ts) builders feed it their own
+ * table's rows — a PSBT's input list is read the same way regardless of
+ * which table stored it.
+ */
+export function coinsReservedByDrafts(rows: { id: number; psbt: string }[]): Map<string, number[]> {
+	const reserved = new Map<string, number[]>();
+	for (const row of rows) {
+		let inputs: { txid: string; vout: number }[];
+		try {
+			inputs = summarizePsbt(row.psbt).inputs;
+		} catch {
+			continue; // an unparsable stored draft can't be reasoned about — reserves nothing
+		}
+		for (const inp of inputs) {
+			const key = `${inp.txid}:${inp.vout}`;
+			const ids = reserved.get(key);
+			if (ids) ids.push(row.id);
+			else reserved.set(key, [row.id]);
+		}
+	}
+	return reserved;
+}
+
+/** In-flight (pre-broadcast) draft coin references for one wallet. */
+export function reservedWalletCoins(walletId: number): Map<string, number[]> {
+	const rows = db
+		.prepare(
+			`SELECT id, psbt FROM transactions
+			 WHERE wallet_id = ? AND status IN ('draft', 'awaiting_signature')`
+		)
+		.all(walletId) as { id: number; psbt: string }[];
+	return coinsReservedByDrafts(rows);
+}
+
+/** Non-blocking notice that a coin-control build deliberately selected a coin
+ *  another in-flight draft also references (RBF/respend stays possible). */
+export interface ReservationWarning {
+	message: string;
+	draftIds: number[];
+	coins: { txid: string; vout: number }[];
+}
+
+export function reservationErrorMessage(reservedSats: number, draftIds: number[]): string {
+	const ids = draftIds.map((id) => `#${id}`).join(', ');
+	const one = draftIds.length === 1;
+	return (
+		`${formatBtc(reservedSats)} is reserved by pending draft${one ? '' : 's'} ${ids} — ` +
+		`complete or abort ${one ? 'it' : 'them'} first.`
+	);
+}
+
+/** Built from the ACTUALLY chosen inputs, so it only fires when a coin-control
+ *  build really did land on a reserved coin (never a false positive from a
+ *  candidate that selection didn't end up using). */
+export function reservationWarningFor(
+	chosenInputs: { txid: string; vout: number }[],
+	reserved: Map<string, number[]>
+): ReservationWarning | null {
+	if (reserved.size === 0) return null;
+	const hits = chosenInputs.filter((i) => reserved.has(`${i.txid}:${i.vout}`));
+	if (hits.length === 0) return null;
+	const draftIds = [...new Set(hits.flatMap((i) => reserved.get(`${i.txid}:${i.vout}`)!))].sort(
+		(a, b) => a - b
+	);
+	const ids = draftIds.map((id) => `#${id}`).join(', ');
+	const one = draftIds.length === 1;
+	return {
+		message:
+			`${hits.length === 1 ? 'This coin is' : 'These coins are'} also referenced by pending ` +
+			`draft${one ? '' : 's'} ${ids} — broadcasting this transaction may conflict with ${one ? 'it' : 'them'}.`,
+		draftIds,
+		coins: hits.map((i) => ({ txid: i.txid, vout: i.vout }))
+	};
+}
+
 /**
  * How batch rows persist: `recipient` holds the FIRST address and `amount` the
  * TOTAL sats (so every existing single-recipient consumer — wallet-page rows,
@@ -287,6 +389,7 @@ export async function buildDraft(
 	draft: SavedTransaction;
 	details: ConstructedPsbt;
 	chainDepthWarning: ChainDepthWarning | null;
+	reservationWarning: ReservationWarning | null;
 }> {
 	const wallet = ownedWallet(userId, walletId);
 	if (!wallet) throw new PsbtError('Wallet not found.', 'construction_failed');
@@ -325,18 +428,56 @@ export async function buildDraft(
 			}
 		: null;
 
-	const details = await constructPsbt({
-		xpub: wallet.xpub,
-		utxos,
-		recipients: input.recipients,
-		feeRate: input.feeRate,
-		changeAddress,
-		changeIndex,
-		origin,
-		fetchRawTx: (txid) => getChain().getTxHex(txid),
-		onlyUtxos: input.onlyUtxos,
-		tipHeight
-	});
+	// cairn QA R7 B4: exclude coins another in-flight draft of THIS wallet
+	// already references from automatic selection, so concurrent builds stop
+	// colliding on the same coin. Coin control is exempt — a user explicitly
+	// naming a reserved coin (RBF/respend) still gets it, flagged below.
+	const hasCoinControl = (input.onlyUtxos?.length ?? 0) > 0;
+	const reserved = reservedWalletCoins(walletId);
+	let candidateUtxos = utxos;
+	let reservedSats = 0;
+	const reservedDraftIds = new Set<number>();
+	if (!hasCoinControl && reserved.size > 0) {
+		candidateUtxos = utxos.filter((u) => {
+			const ids = reserved.get(`${u.txid}:${u.vout}`);
+			if (!ids) return true;
+			reservedSats += u.value;
+			for (const id of ids) reservedDraftIds.add(id);
+			return false;
+		});
+	}
+
+	let details: ConstructedPsbt;
+	try {
+		details = await constructPsbt({
+			xpub: wallet.xpub,
+			utxos: candidateUtxos,
+			recipients: input.recipients,
+			feeRate: input.feeRate,
+			changeAddress,
+			changeIndex,
+			origin,
+			fetchRawTx: (txid) => getChain().getTxHex(txid),
+			onlyUtxos: input.onlyUtxos,
+			tipHeight
+		});
+	} catch (e) {
+		// Only reframe a shortfall genuinely caused by the exclusion above — a
+		// wallet that has no coins (or no ELIGIBLE coins) regardless of any
+		// reservation keeps its ordinary message.
+		if (
+			!hasCoinControl &&
+			reservedDraftIds.size > 0 &&
+			e instanceof PsbtError &&
+			(e.code === 'insufficient_funds' || e.code === 'no_utxos')
+		) {
+			throw new PsbtError(
+				reservationErrorMessage(reservedSats, [...reservedDraftIds].sort((a, b) => a - b)),
+				e.code
+			);
+		}
+		throw e;
+	}
 
 	const res = db
 		.prepare(
@@ -362,7 +503,12 @@ export async function buildDraft(
 	// Only touches the network when an unconfirmed coin was selected; degrades
 	// silently on backends without the v1 CPFP endpoint.
 	const chainDepthWarning = await checkSelectedInputsChainDepth(details.inputs, utxos);
-	return { draft, details, chainDepthWarning };
+	// Coin control deliberately CAN still land on a reserved coin (RBF/respend) —
+	// surface it as a warning, never a block, keyed off what was actually chosen.
+	const reservationWarning = hasCoinControl
+		? reservationWarningFor(details.inputs, reserved)
+		: null;
+	return { draft, details, chainDepthWarning, reservationWarning };
 }
 
 /** Parse the batch `recipients` JSON column; null/garbage falls back to single-recipient. */

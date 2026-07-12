@@ -417,12 +417,17 @@
 	// mempool chain is near the network's ancestor/descendant limit (cairn-u9ob.5).
 	// Shown on the Review step; never prevents signing/broadcast.
 	let chainDepthWarning = $state<{ message: string } | null>(null);
+	// A non-blocking warning when manual coin control deliberately selected a
+	// coin another in-flight draft of this wallet also references (cairn QA
+	// R7 B4) — RBF/respend stays possible, this just flags the collision.
+	let reservationWarning = $state<{ message: string } | null>(null);
 
 	async function build() {
 		if (!canBuild || building) return;
 		building = true;
 		buildError = null;
 		chainDepthWarning = null;
+		reservationWarning = null;
 		const recipients = rows.map((r) => ({
 			address: r.address.trim(),
 			amount: (isMax ? 'max' : rowSats(r)) as number | 'max'
@@ -454,6 +459,7 @@
 			draft = body.draft as SavedTransaction;
 			details = body.details as ConstructedPsbt;
 			chainDepthWarning = body.chainDepthWarning ?? null;
+			reservationWarning = body.reservationWarning ?? null;
 			signedComplete = false;
 			for (const r of recipients) touchSavedAddress(r.address);
 			syncTxParam(draft.id);
@@ -1247,6 +1253,13 @@
 					<div class="attention-panel" role="status">
 						<Icon name="alert-triangle" size={16} />
 						<span>{chainDepthWarning.message}</span>
+					</div>
+				{/if}
+
+				{#if reservationWarning}
+					<div class="attention-panel" role="status">
+						<Icon name="alert-triangle" size={16} />
+						<span>{reservationWarning.message}</span>
 					</div>
 				{/if}
 

@@ -47,7 +47,11 @@ import {
 	detectUnconfirmedInflows,
 	classifyUnconfirmedTrust,
 	tryPackageRescue,
-	type UnconfirmedInflow
+	coinsReservedByDrafts,
+	reservationErrorMessage,
+	reservationWarningFor,
+	type UnconfirmedInflow,
+	type ReservationWarning
 } from './transactions';
 import { BumpError, CpfpError, executeCpfpDraft, executeRbfBump } from './feeBump';
 import { checkSelectedInputsChainDepth, type ChainDepthWarning } from './chainDepth';
@@ -214,6 +218,19 @@ export interface BuildMultisigDraftInput {
 	onlyUtxos?: { txid: string; vout: number }[];
 }
 
+/** In-flight (pre-broadcast) draft coin references for one multisig — the
+ *  multisig-table mirror of transactions.ts's reservedWalletCoins (cairn QA
+ *  R7 B4). */
+function reservedMultisigCoins(multisigId: number): Map<string, number[]> {
+	const rows = db
+		.prepare(
+			`SELECT id, psbt FROM multisig_transactions
+			 WHERE multisig_id = ? AND status IN ('draft', 'awaiting_signature')`
+		)
+		.all(multisigId) as { id: number; psbt: string }[];
+	return coinsReservedByDrafts(rows);
+}
+
 /**
  * Build an unsigned multisig PSBT from live UTXOs and persist it as a draft.
  * Throws PsbtError (user-presentable message) on construction problems.
@@ -226,6 +243,7 @@ export async function buildMultisigDraft(
 	draft: SavedMultisigTransaction;
 	details: ConstructedMultisigPsbt;
 	chainDepthWarning: ChainDepthWarning | null;
+	reservationWarning: ReservationWarning | null;
 }> {
 	// A wallet-level cosigner (or the owner) may initiate a spend; the roster
 	// frozen just below records who is then expected to sign it.
@@ -256,16 +274,50 @@ export async function buildMultisigDraft(
 		}
 	}
 
-	const details = await constructMultisigPsbt({
-		config: toMultisigConfig(multisig),
-		utxos,
-		recipients: input.recipients,
-		feeRate: input.feeRate,
-		changeIndex,
-		fetchRawTx: (txid) => getChain().getTxHex(txid),
-		onlyUtxos: input.onlyUtxos,
-		tipHeight
-	});
+	// cairn QA R7 B4: exclude coins another in-flight draft of THIS multisig
+	// already references from automatic selection (see buildDraft in
+	// transactions.ts for the full rationale — identical here).
+	const hasCoinControl = (input.onlyUtxos?.length ?? 0) > 0;
+	const reserved = reservedMultisigCoins(multisigId);
+	let candidateUtxos = utxos;
+	let reservedSats = 0;
+	const reservedDraftIds = new Set<number>();
+	if (!hasCoinControl && reserved.size > 0) {
+		candidateUtxos = utxos.filter((u) => {
+			const ids = reserved.get(`${u.txid}:${u.vout}`);
+			if (!ids) return true;
+			reservedSats += u.value;
+			for (const id of ids) reservedDraftIds.add(id);
+			return false;
+		});
+	}
+
+	let details: ConstructedMultisigPsbt;
+	try {
+		details = await constructMultisigPsbt({
+			config: toMultisigConfig(multisig),
+			utxos: candidateUtxos,
+			recipients: input.recipients,
+			feeRate: input.feeRate,
+			changeIndex,
+			fetchRawTx: (txid) => getChain().getTxHex(txid),
+			onlyUtxos: input.onlyUtxos,
+			tipHeight
+		});
+	} catch (e) {
+		if (
+			!hasCoinControl &&
+			reservedDraftIds.size > 0 &&
+			e instanceof PsbtError &&
+			(e.code === 'insufficient_funds' || e.code === 'no_utxos')
+		) {
+			throw new PsbtError(
+				reservationErrorMessage(reservedSats, [...reservedDraftIds].sort((a, b) => a - b)),
+				e.code
+			);
+		}
+		throw e;
+	}
 
 	const res = db
 		.prepare(
@@ -296,7 +348,10 @@ export async function buildMultisigDraft(
 	// chain is near the limit (cairn-u9ob.5). Network cost only when an
 	// unconfirmed coin was actually selected; silent without the v1 CPFP endpoint.
 	const chainDepthWarning = await checkSelectedInputsChainDepth(details.inputs, utxos);
-	return { draft, details, chainDepthWarning };
+	const reservationWarning = hasCoinControl
+		? reservationWarningFor(details.inputs, reserved)
+		: null;
+	return { draft, details, chainDepthWarning, reservationWarning };
 }
 
 /** Raw lifecycle setter — the attach/broadcast paths below use it. */
