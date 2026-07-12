@@ -7,7 +7,7 @@ services:
       APP_PORT: 3000
 
   web:
-    image: ghcr.io/alexm223/cairn:0.2.9@sha256:1891948a4af614a43cb7adfee2990e56008494907f5582c042629b75fcb5b814
+    image: ghcr.io/alexm223/cairn:0.2.11@sha256:855fc0cd818d67731ad70ae24784112249ff49826472dd9ab0a7972bef28781b
     restart: on-failure
     stop_grace_period: 1m
     init: true
