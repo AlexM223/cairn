@@ -10,6 +10,8 @@ import { getChain } from '../chain/index';
 import { addressToScripthash, scriptPubKeyHex } from './xpub';
 import type { ElectrumBalance, ElectrumHistoryItem } from '../electrum/client';
 import type { ElectrumLane } from '../electrum/pool';
+import { Transaction } from '@scure/btc-signer';
+import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
 
 export const GAP_LIMIT = 20;
 const BATCH_SIZE = 20;
@@ -17,6 +19,12 @@ const HARD_CAP = 400; // per chain (receive / change)
 const TX_DETAIL_CAP = 50;
 const TX_FETCH_CONCURRENCY = 8;
 export const SCAN_CACHE_TTL_MS = 60_000;
+
+const RAW_TX_OPTS = {
+	allowUnknownInputs: true,
+	allowUnknownOutputs: true,
+	disableScriptCheck: true
+} as const;
 
 /** What the engine learns about every derived address. Callers extend this
  *  with their own derivation metadata via the `deriveAt` type parameter. */
@@ -101,6 +109,97 @@ export async function scanChainAddresses<TExtra extends { address: string }>(
 	return out.filter((a) => a.index <= lastUsed + GAP_LIMIT);
 }
 
+/** Coinbase's synthetic prevout: 32 zero bytes at index 0xffffffff (consensus
+ *  rule, not backend-specific — mirrors coinbaseScan.ts's isCoinbasePrevout). */
+function isCoinbaseInput(input: { txid?: Uint8Array; index?: number }): boolean {
+	return (
+		input.index === 0xffffffff &&
+		!!input.txid &&
+		input.txid.length === 32 &&
+		input.txid.every((b) => b === 0)
+	);
+}
+
+/**
+ * Wallet-relevant delta + fee for one transaction, derived ENTIRELY from raw
+ * transaction bytes (chain.getTxHex — plain Electrum, no Core RPC / Esplora
+ * needed). This is collectScanTxs()'s fallback for when chain.getTx() is
+ * unavailable: in an Electrum-only deployment getTx() unconditionally throws
+ * (no backend can serve decoded/verbose tx detail — see chain/index.ts), which
+ * used to make EVERY wallet transaction silently vanish from the activity
+ * feed (QA F4) — balance and per-address txCount stayed correct (both come
+ * straight from Electrum history/balance calls) but the aggregated tx list,
+ * and therefore wallet.lastActivity, stayed permanently empty.
+ *
+ * Outputs are read straight off the parsed tx (script + amount, no further
+ * fetch). Each non-coinbase INPUT additionally needs its spent output's
+ * script + amount, which only exists in the input's PARENT transaction, so
+ * every distinct parent referenced by `txid`'s inputs is fetched too (same
+ * getTxHex, deduped across the whole scan via `rawCache`, since a parent can
+ * be shared by several of the wallet's own transactions — e.g. a change
+ * output later spent). A parent that can't be fetched or parsed degrades that
+ * one input out of the fee total (never guessed) and marks the fee
+ * unresolvable (null); the tx itself is still reported (delta from whatever
+ * DID resolve) rather than dropped, unlike the pre-fix behavior.
+ */
+async function txDeltaFromRaw(
+	chain: ReturnType<typeof getChain>,
+	txid: string,
+	walletScripts: Set<string>,
+	rawCache: Map<string, Uint8Array>
+): Promise<{ delta: number; fee: number | null }> {
+	async function rawBytes(id: string): Promise<Uint8Array> {
+		const hit = rawCache.get(id);
+		if (hit) return hit;
+		const bytes = hexToBytes(await chain.getTxHex(id));
+		rawCache.set(id, bytes);
+		return bytes;
+	}
+
+	const tx = Transaction.fromRaw(await rawBytes(txid), RAW_TX_OPTS);
+
+	let delta = 0;
+	let totalOut = 0;
+	for (let i = 0; i < tx.outputsLength; i++) {
+		const out = tx.getOutput(i);
+		const amount = Number(out.amount ?? 0n);
+		totalOut += amount;
+		if (out.script && walletScripts.has(bytesToHex(out.script).toLowerCase())) {
+			delta += amount;
+		}
+	}
+
+	let totalIn = 0;
+	let feeResolvable = true;
+	for (let i = 0; i < tx.inputsLength; i++) {
+		const input = tx.getInput(i);
+		if (isCoinbaseInput(input)) continue;
+		if (!input.txid || input.index === undefined) {
+			feeResolvable = false;
+			continue;
+		}
+		try {
+			const parent = Transaction.fromRaw(await rawBytes(bytesToHex(input.txid)), RAW_TX_OPTS);
+			const spent = parent.getOutput(input.index);
+			if (!spent) {
+				feeResolvable = false;
+				continue;
+			}
+			const value = Number(spent.amount ?? 0n);
+			totalIn += value;
+			if (spent.script && walletScripts.has(bytesToHex(spent.script).toLowerCase())) {
+				delta -= value;
+			}
+		} catch {
+			// Parent unfetchable/unparseable — skip its contribution (never guess)
+			// rather than fail the whole tx.
+			feeResolvable = false;
+		}
+	}
+
+	return { delta, fee: feeResolvable ? totalIn - totalOut : null };
+}
+
 /**
  * Attribute recent transactions to the wallet from the scanned addresses'
  * merged histories. Matching is by scriptPubKey, NOT by address string: the
@@ -109,8 +208,11 @@ export async function scanChainAddresses<TExtra extends { address: string }>(
  * Cairn's mainnet-only derivation (bc1…) — an address-string match would miss
  * every output and report delta 0. See scriptPubKeyHex in xpub.ts.
  *
- * Newest TX_DETAIL_CAP transactions only, fetched with bounded concurrency; a
- * failed detail fetch (esplora hiccup) omits that tx rather than guessing.
+ * Newest TX_DETAIL_CAP transactions only, fetched with bounded concurrency.
+ * chain.getTx() (Core RPC / Esplora) is tried first; when it's unavailable —
+ * always the case in an Electrum-only deployment — txDeltaFromRaw() derives
+ * the same delta/fee purely from Electrum raw-tx data instead of dropping the
+ * transaction (QA F4). Only a genuine failure of BOTH paths omits a tx.
  */
 export async function collectScanTxs(
 	scanned: { address: string; history: ElectrumHistoryItem[] }[]
@@ -144,6 +246,17 @@ export async function collectScanTxs(
 	});
 	const recent = ordered.slice(0, TX_DETAIL_CAP);
 
+	const rawCache = new Map<string, Uint8Array>();
+	const blockTimeCache = new Map<number, number | null>();
+	async function blockTimeAt(height: number): Promise<number | null> {
+		if (height <= 0) return null;
+		const hit = blockTimeCache.get(height);
+		if (hit !== undefined) return hit;
+		const t = await chain.getBlockTimeAtHeight(height).catch(() => null);
+		blockTimeCache.set(height, t);
+		return t;
+	}
+
 	const txs: GapScanTx[] = [];
 	for (let i = 0; i < recent.length; i += TX_FETCH_CONCURRENCY) {
 		const chunk = recent.slice(i, i + TX_FETCH_CONCURRENCY);
@@ -168,8 +281,17 @@ export async function collectScanTxs(
 					}
 					return { txid, height, time: tx.blockTime, delta, fee: tx.fee };
 				} catch {
-					// Detail fetch failed (esplora hiccup) — omit rather than guess.
-					return null;
+					// getTx() needs Core RPC or Esplora — always throws in an
+					// Electrum-only deployment (QA F4). Fall back to deriving the
+					// same delta/fee straight from Electrum raw-tx data before
+					// giving up on this transaction.
+					try {
+						const { delta, fee } = await txDeltaFromRaw(chain, txid, walletScripts, rawCache);
+						return { txid, height, time: await blockTimeAt(height), delta, fee };
+					} catch {
+						// Genuinely unfetchable/unparseable — omit rather than guess.
+						return null;
+					}
 				}
 			})
 		);
