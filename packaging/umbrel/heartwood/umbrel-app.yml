@@ -2,7 +2,7 @@ manifestVersion: 1
 id: heartwood
 category: bitcoin
 name: Heartwood
-version: "0.2.14"
+version: "0.2.15"
 tagline: Your self-hosted Bitcoin command center
 description: >-
   Heartwood is a self-hosted Bitcoin command center: a block explorer,
@@ -26,14 +26,15 @@ description: >-
   RPC. Configure this under Settings → Chain Backend after logging in; no
   external services are contacted.
 releaseNotes: >-
-  Navigation and multisig release. The back button now always takes you
-  somewhere sensible - no more loops on the node screen, explorer, or sync
-  pages. Multisig is front and center: a new card on your wallets page and a
-  guided setup that explains what multisig is, why you would want it, and
-  what you need before asking for anything technical. Dashboard polish: no
-  more alarming percentage swings on tiny balances, and empty states now
-  suggest what to do next. Plus groundwork for camera QR scanning and a
-  cleaner scan experience for hardware signers.
+  Send screen made simpler: scan a QR code or paste an address right from
+  the send field (the old copy button is gone), with a clear confirmation
+  when a code is scanned, and plain-language confirmation times. Multisig
+  gets serious key-safety tools: verify each cosigner key by re-checking it
+  against your hardware wallet or a pasted key, with clear guidance if it
+  does not match (wrong seed, or a passphrase in use) and an upfront warning
+  that passphrases with multisig risk permanent loss of funds. You can also
+  now scan cosigner keys via animated QR. Plus: wizards always start at the
+  top of each step so you are never left scrolled past the content.
 developer: Alex Martinez
 website: https://github.com/AlexM223/cairn
 dependencies: []
