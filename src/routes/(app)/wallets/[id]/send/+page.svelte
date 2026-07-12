@@ -350,11 +350,13 @@
 		};
 	});
 
-	// "next ring ≈ N min" — the brand way to say confirmation ETA per tier.
+	// Plain-language confirmation ETA per fee tier (send-affordances-progress.md
+	// Part 2 — was "next ring ≈ N min", brand/ring jargon a first-time sender
+	// wouldn't recognize as a time estimate).
 	const feeEta = $derived.by(() => {
-		if (feeChoice === 'fast') return 'next ring ≈ 10 min';
-		if (feeChoice === 'normal') return 'next ring ≈ 30 min';
-		if (feeChoice === 'economy') return 'next ring ≈ 1 hr or more';
+		if (feeChoice === 'fast') return '~10 min to confirm';
+		if (feeChoice === 'normal') return '~30 min to confirm';
+		if (feeChoice === 'economy') return '~1 hr or more to confirm';
 		return 'custom rate — timing depends on the mempool';
 	});
 
@@ -576,7 +578,7 @@
 	let broadcasting = $state(false);
 	let broadcastError = $state<string | null>(null);
 	let broadcastRejected = $state(false);
-	// The irreversible-act modal ("Once it takes a ring, there is no undo.") —
+	// The irreversible-act modal ("Once it's broadcast, there is no undo.") —
 	// broadcast() only runs from its confirm.
 	let confirmOpen = $state(false);
 	// svelte-ignore state_referenced_locally — intentional per-load seed
@@ -1668,7 +1670,7 @@
 				</div>
 
 				<p class="step-lead">
-					Broadcasting hands this transaction to the network. Once it takes a ring, there is no
+					Broadcasting hands this transaction to the network. Once it's broadcast, there is no
 					undo.
 				</p>
 
@@ -1802,7 +1804,7 @@
 <Modal
 	bind:open={confirmOpen}
 	title="Broadcast this transaction?"
-	message="Once it takes a ring, there is no undo."
+	message="Once it's broadcast, there is no undo."
 	confirmLabel="Broadcast"
 	onConfirm={() => void broadcast()}
 />
