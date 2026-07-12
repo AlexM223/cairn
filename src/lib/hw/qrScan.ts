@@ -45,6 +45,43 @@ export function isCameraScanAvailable(): boolean {
 	return barcodeDetectorCtor() !== undefined;
 }
 
+/** Why `isCameraScanAvailable()` is false, so the UI can pick the right fix. */
+export type CameraScanUnavailableReason =
+	| 'ok'
+	| 'insecure-context'
+	| 'unsupported-browser'
+	| 'no-camera';
+
+/**
+ * Distinguishes WHY camera scanning isn't available, so a call site can show
+ * the right nudge: `SecureContextHelp` (point at the HTTPS origin) for
+ * 'insecure-context', vs. a "try Chrome/Edge/Brave" note for
+ * 'unsupported-browser'. SSR-safe (no `window`/`navigator` access at module
+ * load; every probe is guarded) and pure — same globals `isCameraScanAvailable`
+ * reads, just told apart.
+ *
+ * Order matters: on an insecure context the browser withholds
+ * `navigator.mediaDevices` entirely, so that check must come FIRST — otherwise
+ * an insecure context would be misreported as 'no-camera' or
+ * 'unsupported-browser' instead of the actionable 'insecure-context'.
+ */
+export function cameraScanUnavailableReason(): CameraScanUnavailableReason {
+	if (typeof window !== 'undefined' && window.isSecureContext === false) {
+		return 'insecure-context';
+	}
+	if (
+		typeof navigator === 'undefined' ||
+		!navigator.mediaDevices ||
+		typeof navigator.mediaDevices.getUserMedia !== 'function'
+	) {
+		return 'no-camera';
+	}
+	if (barcodeDetectorCtor() === undefined) {
+		return 'unsupported-browser';
+	}
+	return 'ok';
+}
+
 /** Handle returned by `startScan` — stop the loop and release the camera. */
 export interface ScanHandle {
 	/** Stop polling and stop the camera stream. Idempotent. */
