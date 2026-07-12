@@ -35,3 +35,8 @@ npm-debug.log*
 
 # Runtime data (SQLite database)
 data/
+
+# Load-test harness output (cairn-h2of / cairn-3h0v) — server logs, per-run
+# JSON results, sessions.json (bearer tokens for a throwaway DB, but no sense
+# keeping them around either).
+scripts/load-test/results/
