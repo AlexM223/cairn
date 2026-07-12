@@ -1,11 +1,25 @@
 import { error, redirect } from '@sveltejs/kit';
 import type { Handle, HandleServerError } from '@sveltejs/kit';
 import { randomBytes } from 'node:crypto';
-import { getSessionUser, SESSION_COOKIE, bootstrapAdminFromEnv, cookieSecure } from '$lib/server/auth';
+import { env } from '$env/dynamic/private';
+import {
+	getSessionUser,
+	SESSION_COOKIE,
+	bootstrapAdminFromEnv,
+	cookieSecure,
+	getAuthMode
+} from '$lib/server/auth';
 import { seedChainConfigFromEnv } from '$lib/server/chainEnvSeed';
 import { resolveAllFlags } from '$lib/server/featureFlags/resolve';
 import { appGateRedirect } from '$lib/server/appGate';
-import { childLogger } from '$lib/server/logger';
+import {
+	childLogger,
+	LEVEL,
+	FILE_ENABLED,
+	LOG_FILE,
+	MAX_FILE_BYTES,
+	MAX_FILES
+} from '$lib/server/logger';
 import { startNotificationQueueWorker } from '$lib/server/notificationQueue';
 import { startAddressWatcher } from '$lib/server/addressWatcher';
 import { startKeyHealthWatcher } from '$lib/server/keyHealth';
@@ -18,10 +32,15 @@ import { migratePlaintextSecretsAtRest } from '$lib/server/secretsMigration';
 import { migrateInstanceMode } from '$lib/server/instanceModeMigration';
 import { ensureDefaultAgreementVersion } from '$lib/server/disclosures';
 import { httpsExternalPort } from '$lib/server/httpsPort';
+import { DB_PATH } from '$lib/server/db';
+import { getChainConfig, getInstanceMode } from '$lib/server/settings';
+import { CURRENT_VERSION } from '$lib/server/updateCheck';
 
 const httpLog = childLogger('http');
 const errLog = childLogger('error');
 const adminGuardLog = childLogger('admin-guard');
+const gateLog = childLogger('gate');
+const startupLog = childLogger('startup');
 
 /**
  * Process-level crash guard (cairn-ldvt-adjacent).
@@ -107,9 +126,11 @@ async function init(): Promise<void> {
 	// anything below that can construct the ChainService singleton
 	// (startAddressWatcher/startFirstSync/startPortfolioWarm all call
 	// getChain()), so it's synchronous and placed right after the admin
-	// bootstrap, before any watcher starts. Never throws.
+	// bootstrap, before any watcher starts. Never throws. The returned key set
+	// feeds the startup summary line below (`seededThisBoot`).
+	let seededKeys: string[] = [];
 	try {
-		seedChainConfigFromEnv();
+		seededKeys = seedChainConfigFromEnv();
 	} catch (e) {
 		errLog.error({ err: e }, 'chain config env seed failed');
 	}
@@ -201,6 +222,53 @@ async function init(): Promise<void> {
 		startScheduledBackupWatcher();
 	} catch (e) {
 		errLog.error({ err: e }, 'scheduled backup watcher start failed');
+	}
+
+	// Startup config summary (Wave 1 / log-request.md §5): today's boot output
+	// only logs FAILURES of each step above, never a positive confirmation of
+	// which env actually took effect — on a logs-only Umbrel deployment that's
+	// the difference between a 5-minute and a multi-hour debug of "wrong
+	// Electrum", "empty DB / wrong path", "cookies won't stick", "logs not
+	// writing". One structured line, emitted once at the end of init() (after
+	// every step above, including the instanceMode/chain-env migrations, so
+	// the values below reflect what actually landed this boot). Deliberately
+	// secret-free by construction — never include password/rpc-pass/token
+	// fields, don't just rely on the logger's redact-by-key defense-in-depth.
+	try {
+		const chain = getChainConfig();
+		startupLog.info(
+			{
+				version: CURRENT_VERSION,
+				node: process.version,
+				dbPath: DB_PATH,
+				httpPort: Number(env.PORT ?? 3000),
+				httpsPort: env.CAIRN_HTTPS_PORT ? Number(env.CAIRN_HTTPS_PORT) : null,
+				httpsExternalPort: httpsExternalPort(),
+				origin: env.CAIRN_ORIGIN?.trim() || '(derived from Host header)',
+				authMode: getAuthMode(),
+				rpId: env.CAIRN_RP_ID ?? null,
+				chain: {
+					electrumHost: chain.electrumHost,
+					electrumPort: chain.electrumPort,
+					electrumTls: chain.electrumTls,
+					coreRpcUrl: chain.coreRpcUrl,
+					coreRpcUser: chain.coreRpcUser
+				},
+				seededThisBoot: seededKeys.length > 0,
+				log: {
+					level: LEVEL,
+					toFile: FILE_ENABLED,
+					file: LOG_FILE,
+					maxBytes: MAX_FILE_BYTES,
+					maxFiles: MAX_FILES
+				},
+				adminBootstrapped: Boolean(env.CAIRN_ADMIN_PASSWORD ?? env.APP_PASSWORD),
+				instanceMode: getInstanceMode()
+			},
+			'startup config honored'
+		);
+	} catch (e) {
+		errLog.error({ err: e }, 'startup summary failed');
 	}
 }
 const initReady = init();
@@ -412,6 +480,14 @@ export const handle: Handle = async ({ event, resolve }) => {
 	if (pathname === '/vaults' || pathname.startsWith('/vaults/')) {
 		const rest = pathname.slice('/vaults'.length);
 		const target = rest === '' || rest === '/' ? '/wallets' : `/wallets/multisig${rest}`;
+		// This throw jumps straight over the httpLog block below (Wave 1 /
+		// log-request.md §1-F) — without a line here, every /vaults hit was
+		// silent in the logs. Info level: a 301 to a known-good target isn't a
+		// problem, just worth being able to see.
+		gateLog.info(
+			{ method, path: redactPath(pathname), target },
+			'gate: /vaults legacy redirect'
+		);
 		redirect(301, `${target}${event.url.search}`);
 	}
 
@@ -435,6 +511,10 @@ export const handle: Handle = async ({ event, resolve }) => {
 		const target = appGateRedirect(event.locals.user, pathname);
 		if (target) {
 			if (method === 'GET' || method === 'HEAD') {
+				// Silent today (Wave 1 / log-request.md §1-F) — this throw jumps
+				// straight over the httpLog block below. Info level: a 302 to a
+				// known gate target isn't itself a failure.
+				gateLog.info({ method, path: redactPath(pathname), target }, 'gate: (app) redirect');
 				redirect(302, target);
 			}
 			// A thrown redirect() breaks use:enhance's applyAction for a form
@@ -446,9 +526,23 @@ export const handle: Handle = async ({ event, resolve }) => {
 			// same way the admin-mutation backstop above does; 403 covers every
 			// other gate (reset/disclosure/agreement/recovery) — the caller IS
 			// authenticated but blocked pending required setup.
-			if (!event.locals.user) {
+			//
+			// This error() branch is the highest-priority line in this wave: it's
+			// the use:enhance-swallowed form-action case an operator previously
+			// had ZERO visibility into ("my action returns 403 and the form just
+			// resets").
+			const user = event.locals.user;
+			if (!user) {
+				gateLog.warn(
+					{ method, path: redactPath(pathname), target },
+					'gate: (app) action blocked — unauthenticated'
+				);
 				error(401, 'Authentication required');
 			}
+			gateLog.warn(
+				{ method, path: redactPath(pathname), target, userId: user.id },
+				'gate: (app) action blocked pending required setup'
+			);
 			error(403, 'Action blocked pending required setup');
 		}
 	}

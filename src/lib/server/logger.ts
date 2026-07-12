@@ -34,8 +34,13 @@ export type LogLevel = 'error' | 'warn' | 'info' | 'debug';
 const dev = import.meta.env.DEV;
 const isTest = import.meta.env.MODE === 'test';
 
-/** LOG_LEVEL env overrides the default (debug in dev, info in prod, off in test). */
-const LEVEL: string = (
+/**
+ * LOG_LEVEL env overrides the default (debug in dev, info in prod, off in
+ * test). Exported (Wave 1 / log-request.md §5) so hooks.server.ts's startup
+ * summary line can report the effective logging config alongside the rest of
+ * the honored env.
+ */
+export const LEVEL: string = (
 	env.LOG_LEVEL ?? (isTest ? 'silent' : dev ? 'debug' : 'info')
 ).toLowerCase();
 
@@ -52,11 +57,12 @@ export const LOG_FILE: string =
 	env.CAIRN_LOG_FILE ??
 	path.join(process.cwd(), 'data', 'logs', 'cairn.log');
 
-const FILE_ENABLED = !isTest && env.CAIRN_LOG_TO_FILE !== 'false';
+// Exported alongside LOG_FILE/LEVEL (Wave 1 startup summary — same rationale).
+export const FILE_ENABLED = !isTest && env.CAIRN_LOG_TO_FILE !== 'false';
 
 /** Rotate when the active file passes this size, keeping this many old files. */
-const MAX_FILE_BYTES = numberFromEnv(env.CAIRN_LOG_MAX_SIZE, 10 * 1024 * 1024);
-const MAX_FILES = Math.max(1, numberFromEnv(env.CAIRN_LOG_MAX_FILES, 5));
+export const MAX_FILE_BYTES = numberFromEnv(env.CAIRN_LOG_MAX_SIZE, 10 * 1024 * 1024);
+export const MAX_FILES = Math.max(1, numberFromEnv(env.CAIRN_LOG_MAX_FILES, 5));
 
 function numberFromEnv(raw: string | undefined, fallback: number): number {
 	const n = raw == null ? NaN : Number(raw);

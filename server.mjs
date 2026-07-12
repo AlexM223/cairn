@@ -85,6 +85,87 @@ const host = process.env.HOST ?? '0.0.0.0';
 const httpsPort = process.env.CAIRN_HTTPS_PORT ? Number(process.env.CAIRN_HTTPS_PORT) : null;
 
 /**
+ * Catch-all NDJSON access log (Wave 1 / log-request.md §2). This wrapper is
+ * the ONLY layer that observes the FINAL res.statusCode for every response on
+ * BOTH listeners — including responses produced before src/hooks.server.ts's
+ * `handle` hook ever runs: SvelteKit's own framework CSRF 403 for a
+ * cross-origin form POST, adapter-node's body-size-limit 400, and this file's
+ * own 503 "still booting" placeholder. None of those reach hooks.server.ts's
+ * httpLog (it only sees requests that reach `resolve()`), so an operator
+ * debugging one of them from `docker logs` previously had nothing at all.
+ *
+ * NDJSON via plain console.log, not $lib/server/logger: this file runs before
+ * Vite/SvelteKit's `$lib` alias resolution exists (see the process-guard
+ * comment above), so childLogger isn't importable here. accessRedactSegment/
+ * accessRedactPath below are an intentional, LOCAL duplicate of
+ * hooks.server.ts's redactSegment/redactPath — same precedent as this file's
+ * BODY_SIZE_LIMIT/CSP-adjacent duplication elsewhere in the codebase; keep the
+ * two redactors in sync by hand.
+ *
+ * Noise policy (deliberately narrow — this is a boot/edge safety net, not a
+ * replacement for httpLog's richer per-request line):
+ *   - ALWAYS log status >= 400 (the whole point: CSRF 403 / adapter 400 / the
+ *     503 boot window all surface only here) and aborted connections (no
+ *     `finish` event — the docker-proxy-race / ERR_EMPTY_RESPONSE symptom
+ *     this file's own header comment worries about).
+ *   - NEVER log a successful (<400) /api/health poll or a successful static
+ *     asset — the dominant noise sources on a self-hosted box.
+ *   - Everything else only when slower than SLOW_MS — a slow-request
+ *     heartbeat, not per-request spam.
+ *   - No client IP, ever — mirrors $lib/server/logger's REDACT_KEYS policy
+ *     (an admin-readable /admin/logs must not carry it either).
+ */
+function accessRedactSegment(seg) {
+	if (/^[0-9a-fA-F]{64}$/.test(seg)) return `${seg.slice(0, 8)}…`; // txid / block hash
+	if (/^(bc1|tb1|bcrt1)[a-z0-9]{6,}$/i.test(seg)) return `${seg.slice(0, 10)}…`; // bech32
+	if (/^[13mn2][a-km-zA-HJ-NP-Z1-9]{25,34}$/.test(seg)) return `${seg.slice(0, 8)}…`; // base58
+	return seg;
+}
+function accessRedactPath(pathname) {
+	return pathname.split('/').map(accessRedactSegment).join('/');
+}
+
+const ACCESS_ASSET_RE = /\.(?:js|css|map|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|eot)$/i;
+const ACCESS_SLOW_MS = 1000;
+
+function withAccessLog(proto, next) {
+	return (req, res) => {
+		const start = process.hrtime.bigint();
+		let logged = false;
+		const done = (aborted) => {
+			if (logged) return;
+			logged = true;
+			const ms = Number(process.hrtime.bigint() - start) / 1e6;
+			const status = res.statusCode;
+			const pathOnly = (req.url || '').split('?')[0];
+			const isAsset = pathOnly.startsWith('/_app/') || ACCESS_ASSET_RE.test(pathOnly);
+			const isHealth = pathOnly === '/api/health';
+			const emit =
+				aborted || status >= 400 || (!isAsset && !isHealth && ms >= ACCESS_SLOW_MS);
+			if (!emit) return;
+			console.log(
+				JSON.stringify({
+					t: new Date().toISOString(),
+					tag: 'access',
+					proto,
+					method: req.method,
+					path: accessRedactPath(pathOnly),
+					status,
+					ms: Math.round(ms),
+					len: Number(res.getHeader('content-length')) || undefined,
+					aborted: aborted || undefined
+				})
+			);
+		};
+		res.on('finish', () => done(false));
+		res.on('close', () => {
+			if (!res.writableFinished) done(true);
+		});
+		next(req, res);
+	};
+}
+
+/**
  * Swappable request handler: starts as a "still booting" 503 that refreshes
  * itself, becomes the SvelteKit handler once ./build/handler.js has loaded.
  */
@@ -103,7 +184,7 @@ let handle = (req, res) => {
 
 const servers = [];
 
-const httpServer = http.createServer((req, res) => handle(req, res));
+const httpServer = http.createServer(withAccessLog('http', (req, res) => handle(req, res)));
 httpServer.listen(httpPort, host, () => {
 	console.log(`cairn: http listening on ${host}:${httpPort}`);
 });
@@ -117,7 +198,10 @@ if (httpsPort) {
 			: path.join(process.cwd(), 'data', 'tls'));
 	try {
 		const { key, cert } = await ensureCert(tlsDir);
-		const httpsServer = https.createServer({ key, cert }, (req, res) => handle(req, res));
+		const httpsServer = https.createServer(
+			{ key, cert },
+			withAccessLog('https', (req, res) => handle(req, res))
+		);
 		httpsServer.listen(httpsPort, host, () => {
 			console.log(`cairn: https listening on ${host}:${httpsPort} (self-signed, ${tlsDir})`);
 		});

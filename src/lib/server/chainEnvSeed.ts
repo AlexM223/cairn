@@ -46,22 +46,34 @@ function seedIfUnset(key: string, value: string): boolean {
 }
 
 /**
- * Seed chain-backend settings from the CAIRN_ELECTRUM_ and CAIRN_CORE_RPC_ env vars.
- * Never throws — a bad/missing env value just means that field isn't seeded,
- * not a boot failure.
+ * Seed chain-backend settings from the CAIRN_ELECTRUM_ and CAIRN_CORE_RPC_ env
+ * vars. Never throws — a bad/missing env value just means that field isn't
+ * seeded, not a boot failure.
+ *
+ * Returns the setting keys actually WRITTEN this call (empty array if env
+ * vars were absent, invalid, or every one was already customized and thus
+ * skipped) — Wave 1 / log-request.md §5 wants this so hooks.server.ts's
+ * startup summary line can report `seededThisBoot` without re-reading
+ * `settings` itself. Previously `void`; purely additive, callers that ignore
+ * the return value are unaffected.
  */
-export function seedChainConfigFromEnv(): void {
+export function seedChainConfigFromEnv(): string[] {
+	const applied: string[] = [];
 	try {
 		let seeded = false;
 		let skipped = false;
-		const note = (wrote: boolean) => {
-			if (wrote) seeded = true;
-			else skipped = true;
+		const note = (key: string, wrote: boolean) => {
+			if (wrote) {
+				seeded = true;
+				applied.push(key);
+			} else {
+				skipped = true;
+			}
 		};
 
 		const electrumHost = env.CAIRN_ELECTRUM_HOST?.trim();
 		if (electrumHost) {
-			note(seedIfUnset('electrum_host', electrumHost));
+			note('electrum_host', seedIfUnset('electrum_host', electrumHost));
 			// A stored Electrum host is inert unless connectionMode is 'custom' —
 			// getChainConfig() ignores it entirely in 'public' mode. Only flip this
 			// when the admin hasn't chosen a mode yet, mirroring the per-setting
@@ -69,6 +81,7 @@ export function seedChainConfigFromEnv(): void {
 			if (getSetting('connection_mode') === null) {
 				setSetting('connection_mode', 'custom');
 				seeded = true;
+				applied.push('connection_mode');
 			}
 		}
 
@@ -76,7 +89,7 @@ export function seedChainConfigFromEnv(): void {
 		if (electrumPortRaw) {
 			const port = Number(electrumPortRaw);
 			if (Number.isInteger(port) && port >= 1 && port <= 65535) {
-				note(seedIfUnset('electrum_port', String(port)));
+				note('electrum_port', seedIfUnset('electrum_port', String(port)));
 			} else {
 				log.debug({ value: electrumPortRaw }, 'ignoring invalid CAIRN_ELECTRUM_PORT');
 			}
@@ -84,14 +97,17 @@ export function seedChainConfigFromEnv(): void {
 
 		const electrumTlsRaw = env.CAIRN_ELECTRUM_TLS?.trim();
 		if (electrumTlsRaw) {
-			note(seedIfUnset('electrum_tls', parseBoolEnv(electrumTlsRaw) ? 'true' : 'false'));
+			note(
+				'electrum_tls',
+				seedIfUnset('electrum_tls', parseBoolEnv(electrumTlsRaw) ? 'true' : 'false')
+			);
 		}
 
 		const coreRpcUrl = env.CAIRN_CORE_RPC_URL?.trim();
-		if (coreRpcUrl) note(seedIfUnset('core_rpc_url', coreRpcUrl));
+		if (coreRpcUrl) note('core_rpc_url', seedIfUnset('core_rpc_url', coreRpcUrl));
 
 		const coreRpcUser = env.CAIRN_CORE_RPC_USER?.trim();
-		if (coreRpcUser) note(seedIfUnset('core_rpc_user', coreRpcUser));
+		if (coreRpcUser) note('core_rpc_user', seedIfUnset('core_rpc_user', coreRpcUser));
 
 		// Not trimmed — a password's leading/trailing whitespace, however
 		// unlikely, is significant, and the admin form's own coreRpcPass field
@@ -101,6 +117,7 @@ export function seedChainConfigFromEnv(): void {
 			if (!hasSecretSetting('core_rpc_pass')) {
 				setSecretSetting('core_rpc_pass', coreRpcPass);
 				seeded = true;
+				applied.push('core_rpc_pass');
 			} else {
 				skipped = true;
 			}
@@ -108,7 +125,7 @@ export function seedChainConfigFromEnv(): void {
 
 		if (seeded) {
 			log.info(
-				{ event: 'chain_env_seeded' },
+				{ event: 'chain_env_seeded', keys: applied },
 				'chain-backend settings seeded from env (Umbrel zero-config)'
 			);
 		} else if (skipped) {
@@ -120,4 +137,5 @@ export function seedChainConfigFromEnv(): void {
 	} catch (e) {
 		log.error({ err: e }, 'chain config env seed failed');
 	}
+	return applied;
 }
