@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { formatBtc } from '$lib/format';
+	import { computeBalanceDelta } from './balanceDelta';
 
 	type Point = { t: number; sats: number };
 	let { series }: { series: Point[] } = $props();
@@ -29,15 +30,12 @@
 	});
 
 	// Per-range delta chip: change across the visible window. Sage up, calm
-	// amber down — never red (Heartwood grammar).
+	// amber down — never red (Heartwood grammar). Dust-level windows (#22)
+	// render a neutral em-dash instead — see computeBalanceDelta's `dust` flag.
 	const delta = $derived.by(() => {
 		const pts = filtered;
 		if (pts.length < 2) return null;
-		const first = pts[0].sats;
-		const last = pts[pts.length - 1].sats;
-		const sats = last - first;
-		const pct = first > 0 ? (sats / first) * 100 : null;
-		return { sats, pct, dir: sats > 0 ? 'up' : sats < 0 ? 'down' : 'flat' };
+		return computeBalanceDelta(pts[0].sats, pts[pts.length - 1].sats);
 	});
 
 	// Layout: the SVG viewBox tracks the rendered width so scaling stays
@@ -252,14 +250,21 @@
 		{#if delta}
 			<span
 				class="delta-chip tabular"
-				class:up={delta.dir === 'up'}
-				class:down={delta.dir === 'down'}
+				class:up={!delta.dust && delta.dir === 'up'}
+				class:down={!delta.dust && delta.dir === 'down'}
 			>
-				{delta.dir === 'up' ? '▲' : delta.dir === 'down' ? '▼' : '—'}
-				{#if delta.pct !== null}
-					{Math.abs(delta.pct) < 0.05 && delta.sats !== 0 ? '<0.1' : Math.abs(delta.pct).toFixed(1)}%
+				{#if delta.dust}
+					<!-- Dust-level window (#22): a %/BTC change here is noise, not a
+					     trend — a neutral dash reads honestly instead of a colored
+					     up/down badge that overstates a handful of sats moving. -->
+					—
 				{:else}
-					{formatBtc(Math.abs(delta.sats))} BTC
+					{delta.dir === 'up' ? '▲' : delta.dir === 'down' ? '▼' : '—'}
+					{#if delta.pct !== null}
+						{Math.abs(delta.pct) < 0.05 && delta.sats !== 0 ? '<0.1' : Math.abs(delta.pct).toFixed(1)}%
+					{:else}
+						{formatBtc(Math.abs(delta.sats))} BTC
+					{/if}
 				{/if}
 				<span class="delta-range">{range.label}</span>
 			</span>
@@ -288,7 +293,8 @@
 				Heartwood (wallets with past transactions chart their full history), and fills in from
 				here as balances change.
 			{:else}
-				Not enough history in the {range.caption} window yet — try a longer range.
+				Not enough history in the {range.caption} window yet — try a longer range. Send or
+				receive bitcoin to see activity here.
 			{/if}
 		</div>
 	{:else}
