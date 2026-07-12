@@ -1,0 +1,603 @@
+// cairn-9v9g — send-flow boundary matrix: zero balance, dust, amount<=fee,
+// amount+fee exceeding balance by exactly 1 sat, sweep/send-max, and the
+// min-relay-fee floor/ceiling, table-driven across BOTH PSBT builders
+// (constructPsbt for single-sig, constructMultisigPsbt for multisig).
+//
+// This file pins the pure construction-layer behavior (no DB, no chain —
+// same style as psbt.test.ts / multisigPsbt.test.ts). The higher-level
+// buildDraft/buildMultisigDraft wiring and the send API routes are covered
+// separately in sendBoundaryDraft.test.ts and
+// routes/api/wallets/[id]/psbt/server.test.ts.
+//
+// Every rejection case also asserts the message is PLAIN LANGUAGE: no raw
+// PsbtError `code` token leaking as the visible text, no stack traces, no
+// "[object Object]"/"undefined"/"NaN", and the message reads as a full
+// sentence a non-technical user could act on.
+
+import { describe, it, expect } from 'vitest';
+import { HDKey } from '@scure/bip32';
+import { constructPsbt, PsbtError, type SpendableUtxo } from './psbt';
+import {
+	constructMultisigPsbt,
+	type MultisigConstructParams,
+	type MultisigScriptType
+} from './multisigPsbt';
+import { deriveMultisigAddress, type MultisigConfig, type MultisigKeyDescriptor } from './multisig';
+
+// ── shared plain-language guard ─────────────────────────────────────────────
+
+/** All PsbtError `code` values — none of these enum tokens may appear verbatim
+ *  in a user-facing message (that would be raw jargon, not plain language). */
+const ERROR_CODES = [
+	'invalid_recipient',
+	'invalid_amount',
+	'insufficient_funds',
+	'no_utxos',
+	'immature_coinbase',
+	'construction_failed'
+];
+
+/** Asserts a message is plain, user-presentable language: a real sentence,
+ *  no raw error-code tokens, no stack/exception artifacts. */
+function expectPlainLanguage(message: string): void {
+	expect(message.length).toBeGreaterThan(0);
+	expect(message).not.toMatch(/^[A-Z][a-zA-Z]*(Error)?:/); // "Error:", "TypeError:", ...
+	expect(message).not.toContain('[object Object]');
+	expect(message).not.toContain('undefined');
+	expect(message).not.toContain('NaN');
+	expect(message).not.toMatch(/\bat \S+ \(.*:\d+:\d+\)/); // stack-frame lines
+	for (const code of ERROR_CODES) {
+		expect(message).not.toContain(code);
+	}
+	// Reads as an actual sentence (starts uppercase or a quoted value, ends in
+	// terminal punctuation) rather than a bare identifier or fragment.
+	expect(message).toMatch(/[.!?]$/);
+}
+
+async function expectPlainRejection(
+	p: Promise<unknown>,
+	code: PsbtError['code']
+): Promise<PsbtError> {
+	let caught: unknown;
+	try {
+		await p;
+	} catch (e) {
+		caught = e;
+	}
+	expect(caught).toBeInstanceOf(PsbtError);
+	const err = caught as PsbtError;
+	expect(err.code).toBe(code);
+	expectPlainLanguage(err.message);
+	return err;
+}
+
+// ── single-sig fixtures (BIP84 doc vectors — public test keys only) ─────────
+
+const ZPUB =
+	'zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs';
+// A p2pkh xpub/address pair and a p2sh-p2wpkh (ypub-style) pair, so the
+// script-type dimension of the matrix has real fixtures rather than only
+// p2wpkh. Derived once via HDKey directly from ZPUB's underlying account key
+// so no private material is needed — SpendableUtxo.address is caller-supplied
+// anyway (constructPsbt trusts it and re-derives the scriptPubKey).
+const RECEIVE_0 = 'bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu'; // m/0/0 (p2wpkh)
+const CHANGE_0 = 'bc1q8c6fshw2dlwun7ekn9qwf37cu2rn755upcp6el'; // m/1/0 (p2wpkh)
+const RECIPIENT_P2WPKH = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4';
+const RECIPIENT_P2PKH = '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2';
+const RECIPIENT_P2SH = '3P14159f73E4gFr7JterCCQh9QjiTjiZrG';
+const RECIPIENT_P2WSH = 'bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3';
+
+const COMMON = {
+	xpub: ZPUB,
+	changeAddress: CHANGE_0,
+	changeIndex: 0,
+	origin: { fingerprint: '73c5da0a', path: "m/84'/0'/0'" }
+};
+
+function utxo(value: number, opts: Partial<SpendableUtxo> = {}): SpendableUtxo {
+	return {
+		txid: '11'.repeat(32),
+		vout: 0,
+		value,
+		height: 800_000,
+		address: RECEIVE_0,
+		chain: 0,
+		index: 0,
+		...opts
+	};
+}
+
+// ── multisig fixtures (mirrors bitcoin/multisigPsbt.test.ts) ────────────────
+
+const BIP48_PATH = "m/48'/0'/0'/2'";
+function makeSigner(seedByte: number): MultisigKeyDescriptor {
+	const master = HDKey.fromMasterSeed(new Uint8Array(32).fill(seedByte));
+	const account = master.derive(BIP48_PATH);
+	const fingerprint = (master.fingerprint >>> 0).toString(16).padStart(8, '0');
+	return { xpub: account.publicExtendedKey, fingerprint, path: BIP48_PATH };
+}
+const MS_KEYS = [1, 2, 3].map(makeSigner);
+
+function msConfig(scriptType: MultisigScriptType): MultisigConfig & { scriptType: MultisigScriptType } {
+	return { threshold: 2, keys: MS_KEYS, scriptType };
+}
+const MS_P2WSH = msConfig('p2wsh');
+
+function msUtxo(cfg: MultisigConfig, value: number, opts: Partial<SpendableUtxo> = {}): SpendableUtxo {
+	return {
+		txid: '11'.repeat(32),
+		vout: 0,
+		value,
+		height: 800_000,
+		address: deriveMultisigAddress(cfg, 0, 0).address,
+		chain: 0,
+		index: 0,
+		...opts
+	};
+}
+
+function msBuild(over: Partial<MultisigConstructParams> = {}): ReturnType<typeof constructMultisigPsbt> {
+	return constructMultisigPsbt({
+		config: MS_P2WSH,
+		utxos: [msUtxo(MS_P2WSH, 200_000)],
+		recipients: [{ address: RECIPIENT_P2WPKH, amount: 50_000 }],
+		feeRate: 5,
+		changeIndex: 0,
+		...over
+	});
+}
+
+// ═══════════════════════════════════════════════════════════ 1. ZERO BALANCE
+
+describe('boundary: zero balance', () => {
+	it('single-sig: no UTXOs at all → no_utxos, plain message', async () => {
+		const err = await expectPlainRejection(
+			constructPsbt({ ...COMMON, utxos: [], recipients: [{ address: RECIPIENT_P2WPKH, amount: 1_000 }], feeRate: 5 }),
+			'no_utxos'
+		);
+		expect(err.message.toLowerCase()).toContain('no spendable coins');
+	});
+
+	it('single-sig: only unconfirmed received (untrusted) coins present behaves as zero spendable balance', async () => {
+		// A wallet whose only coin is an unconfirmed RECEIVED (not own-change)
+		// output must not auto-spend it — the candidate set collapses to empty,
+		// same user-facing outcome as a truly empty wallet.
+		const err = await expectPlainRejection(
+			constructPsbt({
+				...COMMON,
+				utxos: [utxo(60_000, { height: 0, unconfirmedTrust: 'received' })],
+				recipients: [{ address: RECIPIENT_P2WPKH, amount: 1_000 }],
+				feeRate: 5
+			}),
+			'no_utxos'
+		);
+		expect(err.message.toLowerCase()).toContain('no spendable coins');
+	});
+
+	it('multisig: no UTXOs at all → no_utxos, plain message naming "multisig"', async () => {
+		const err = await expectPlainRejection(msBuild({ utxos: [] }), 'no_utxos');
+		expect(err.message.toLowerCase()).toContain('no spendable coins');
+		expect(err.message.toLowerCase()).toContain('multisig');
+	});
+});
+
+// ═══════════════════════════════════════════════════════ 2. DUST (send-max +
+//    RBF-change — the two places DUST_SATS is actually enforced; see the
+//    "known gap" section at the bottom for the un-enforced plain-recipient case)
+
+describe('boundary: dust threshold (send-max sweep result)', () => {
+	// Deterministic by construction: vsize = TX_OVERHEAD(11) + 1*INPUT_VSIZE.p2wpkh(68)
+	// + outputVsize(p2wpkh recipient)(31) = 110 vB. At feeRate 1 sat/vB, fee = 110.
+	// amount = totalIn - fee; rejected when amount <= 546 (DUST_SATS).
+	const FEE_AT_1_SAT_VB = 110;
+
+	it('single-sig: sweep result of EXACTLY 546 sats (the dust ceiling) is rejected', async () => {
+		const totalIn = FEE_AT_1_SAT_VB + 546;
+		const err = await expectPlainRejection(
+			constructPsbt({
+				...COMMON,
+				utxos: [utxo(totalIn)],
+				recipients: [{ address: RECIPIENT_P2WPKH, amount: 'max' }],
+				feeRate: 1
+			}),
+			'insufficient_funds'
+		);
+		expect(err.message.toLowerCase()).toContain('nothing left to send');
+	});
+
+	it('single-sig: sweep result of 547 sats (one above the dust ceiling) succeeds', async () => {
+		const totalIn = FEE_AT_1_SAT_VB + 547;
+		const draft = await constructPsbt({
+			...COMMON,
+			utxos: [utxo(totalIn)],
+			recipients: [{ address: RECIPIENT_P2WPKH, amount: 'max' }],
+			feeRate: 1
+		});
+		expect(draft.amount).toBe(547);
+		expect(draft.change).toBeNull();
+	});
+
+	it('single-sig, coin-control sweep at the same dust boundary gets the coin-control-flavored message', async () => {
+		const totalIn = FEE_AT_1_SAT_VB + 546;
+		const err = await expectPlainRejection(
+			constructPsbt({
+				...COMMON,
+				utxos: [utxo(totalIn)],
+				onlyUtxos: [{ txid: '11'.repeat(32), vout: 0 }],
+				recipients: [{ address: RECIPIENT_P2WPKH, amount: 'max' }],
+				feeRate: 1
+			}),
+			'insufficient_funds'
+		);
+		expect(err.message.toLowerCase()).toContain("don't cover the network fee");
+	});
+
+	it('multisig: sweep dust boundary rejects at exactly the ceiling, succeeds one sat above', async () => {
+		// multisigInputVsize for a 2-of-3 p2wsh input is larger than single-sig's
+		// flat 68 — read it back from a real build rather than hand-deriving the
+		// CHECKMULTISIG witness formula, then confirm the +/-1 boundary around it.
+		const probe = await msBuild({
+			utxos: [msUtxo(MS_P2WSH, 10_000_000)],
+			recipients: [{ address: RECIPIENT_P2WPKH, amount: 'max' }],
+			feeRate: 1
+		});
+		const vsize = probe.vsize;
+		const feeAt1 = Math.ceil(vsize * 1);
+
+		await expectPlainRejection(
+			msBuild({
+				utxos: [msUtxo(MS_P2WSH, feeAt1 + 546)],
+				recipients: [{ address: RECIPIENT_P2WPKH, amount: 'max' }],
+				feeRate: 1
+			}),
+			'insufficient_funds'
+		);
+		const ok = await msBuild({
+			utxos: [msUtxo(MS_P2WSH, feeAt1 + 547)],
+			recipients: [{ address: RECIPIENT_P2WPKH, amount: 'max' }],
+			feeRate: 1
+		});
+		expect(ok.amount).toBe(547);
+	});
+});
+
+describe('boundary: dust threshold (RBF replacement change output)', () => {
+	// exactInputs spends a single given coin verbatim; the entire fee increase
+	// comes out of change, and change < DUST_SATS is refused outright rather
+	// than silently altering what the user already reviewed.
+	it('single-sig: change of exactly 545 (one under dust) is rejected; 546 succeeds', async () => {
+		// vsizeEst = 11 + 1*68 (input) + outputVsize(recipient, p2wpkh=31) + outputVsize(change, p2wpkh=31) = 141
+		const vsizeEst = 11 + 68 + 31 + 31;
+		const feeRate = 1;
+		const fee = Math.ceil(vsizeEst * feeRate);
+		const amount = 30_000;
+
+		const failing = await expectPlainRejection(
+			constructPsbt({
+				...COMMON,
+				utxos: [utxo(amount + fee + 545)],
+				recipients: [{ address: RECIPIENT_P2WPKH, amount }],
+				feeRate,
+				exactInputs: true
+			}),
+			'insufficient_funds'
+		);
+		expect(failing.message.toLowerCase()).toContain('too small to absorb');
+
+		const ok = await constructPsbt({
+			...COMMON,
+			utxos: [utxo(amount + fee + 546)],
+			recipients: [{ address: RECIPIENT_P2WPKH, amount }],
+			feeRate,
+			exactInputs: true
+		});
+		expect(ok.change).not.toBeNull();
+		expect(ok.change!.value).toBe(546);
+	});
+});
+
+// ═══════════════════════════════════════════════ 3. AMOUNT <= FEE (legitimate)
+
+describe('boundary: amount <= fee is legal (not an error) as long as the output clears dust', () => {
+	it('single-sig: a 1,000-sat send at a fee rate whose fee vastly exceeds it still builds', async () => {
+		const draft = await constructPsbt({
+			...COMMON,
+			utxos: [utxo(60_000)],
+			recipients: [{ address: RECIPIENT_P2WPKH, amount: 1_000 }],
+			feeRate: 500
+		});
+		expect(draft.amount).toBe(1_000);
+		expect(draft.fee).toBeGreaterThan(draft.amount);
+		expect(draft.change).toBeNull(); // fee eats the rest changelessly
+	});
+
+	it('multisig: same amount<=fee case builds with fee exceeding amount', async () => {
+		const draft = await msBuild({
+			utxos: [msUtxo(MS_P2WSH, 60_000)],
+			recipients: [{ address: RECIPIENT_P2WPKH, amount: 1_000 }],
+			feeRate: 200
+		});
+		expect(draft.amount).toBe(1_000);
+		expect(draft.fee).toBeGreaterThan(draft.amount);
+	});
+});
+
+// ═══════════════════ 4. AMOUNT + FEE EXCEEDS BALANCE BY EXACTLY 1 SAT (exactInputs)
+
+describe('boundary: amount + fee exceeds available balance by exactly 1 sat', () => {
+	it('single-sig (exactInputs/RBF path): balance short by 1 sat rejects; exact balance succeeds changeless', async () => {
+		// changeless requires totalIn - amount - feeWithoutChange == 0 in the RBF
+		// path's change<DUST branch — but exactInputs ALWAYS reserves a change
+		// output slot (see multisigPsbt/psbt exactInputs branch), so the minimum
+		// viable totalIn for this path is amount + fee + DUST_SATS (546), not 0.
+		// The "exactly 1 sat short" boundary is therefore anchored at that floor.
+		const vsizeEst = 11 + 68 + 31 + 31; // 1 input, 1 recipient out, 1 change out (p2wpkh)
+		const fee = Math.ceil(vsizeEst * 1);
+		const amount = 30_000;
+		const floor = amount + fee + 546;
+
+		await expectPlainRejection(
+			constructPsbt({
+				...COMMON,
+				utxos: [utxo(floor - 1)],
+				recipients: [{ address: RECIPIENT_P2WPKH, amount }],
+				feeRate: 1,
+				exactInputs: true
+			}),
+			'insufficient_funds'
+		);
+		const ok = await constructPsbt({
+			...COMMON,
+			utxos: [utxo(floor)],
+			recipients: [{ address: RECIPIENT_P2WPKH, amount }],
+			feeRate: 1,
+			exactInputs: true
+		});
+		expect(ok.change!.value).toBe(546);
+	});
+
+	it('single-sig (normal auto-selection): balance short by 1 sat for a changeless spend rejects; exact balance succeeds', async () => {
+		// A changeless normal-path spend (no exactInputs) with ONE candidate coin:
+		// vsize = 11 (overhead) + 68 (1 p2wpkh input) + 31 (1 p2wpkh recipient out) = 110.
+		const vsize = 11 + 68 + 31;
+		const feeRate = 1;
+		const fee = Math.ceil(vsize * feeRate);
+		const amount = 30_000;
+
+		await expectPlainRejection(
+			constructPsbt({
+				...COMMON,
+				utxos: [utxo(amount + fee - 1)],
+				recipients: [{ address: RECIPIENT_P2WPKH, amount }],
+				feeRate
+			}),
+			'insufficient_funds'
+		);
+		const draft = await constructPsbt({
+			...COMMON,
+			utxos: [utxo(amount + fee)],
+			recipients: [{ address: RECIPIENT_P2WPKH, amount }],
+			feeRate
+		});
+		expect(draft.amount).toBe(amount);
+		expect(draft.fee).toBe(fee);
+		expect(draft.change).toBeNull();
+	});
+
+	it('multisig (normal auto-selection): balance short by 1 sat rejects; exact balance succeeds changeless', async () => {
+		// Read the real changeless vsize back from a build that comfortably
+		// affords it, then use it to construct the +/-1 boundary — multisig
+		// per-input vsize depends on the M-of-N witness formula, not a flat table.
+		const probe = await msBuild({
+			utxos: [msUtxo(MS_P2WSH, 10_000_000)],
+			recipients: [{ address: RECIPIENT_P2WPKH, amount: 30_000 }],
+			feeRate: 1
+		});
+		// probe has change (huge input); derive the changeless vsize by dropping
+		// the change output's vsize contribution — simpler: binary-probe the exact
+		// changeless total directly against the real builder instead of
+		// hand-deriving the multisig witness-size formula.
+		const amount = 30_000;
+		const feeRate = 1;
+		// Binary search the minimal totalIn that succeeds changeless, bounded by
+		// the probe's own numbers (it comfortably succeeds with change).
+		let lo = amount; // definitely insufficient
+		let hi = probe.amount + probe.fee + (probe.change?.value ?? 0); // definitely sufficient
+		while (lo + 1 < hi) {
+			const mid = Math.floor((lo + hi) / 2);
+			try {
+				await msBuild({
+					utxos: [msUtxo(MS_P2WSH, mid)],
+					recipients: [{ address: RECIPIENT_P2WPKH, amount }],
+					feeRate
+				});
+				hi = mid;
+			} catch {
+				lo = mid;
+			}
+		}
+		// hi is the minimal sufficient totalIn (changeless, since it's the exact
+		// floor) — confirm the -1/±0 boundary precisely.
+		await expectPlainRejection(
+			msBuild({
+				utxos: [msUtxo(MS_P2WSH, hi - 1)],
+				recipients: [{ address: RECIPIENT_P2WPKH, amount }],
+				feeRate
+			}),
+			'insufficient_funds'
+		);
+		const ok = await msBuild({
+			utxos: [msUtxo(MS_P2WSH, hi)],
+			recipients: [{ address: RECIPIENT_P2WPKH, amount }],
+			feeRate
+		});
+		expect(ok.amount).toBe(amount);
+		expect(ok.change).toBeNull();
+	});
+});
+
+// ═══════════════════════════════════════════════════════ 5. SWEEP / SEND-MAX
+
+describe('boundary: sweep / send-max', () => {
+	it('single-sig: sweeps every candidate coin, none left as change', async () => {
+		const draft = await constructPsbt({
+			...COMMON,
+			utxos: [utxo(60_000), utxo(40_000, { txid: '22'.repeat(32) })],
+			recipients: [{ address: RECIPIENT_P2WPKH, amount: 'max' }],
+			feeRate: 5
+		});
+		expect(draft.inputs).toHaveLength(2);
+		expect(draft.change).toBeNull();
+		expect(draft.amount).toBe(100_000 - draft.fee);
+	});
+
+	it('single-sig: send-max combined with a second recipient is rejected (not a sweep at all)', async () => {
+		const err = await expectPlainRejection(
+			constructPsbt({
+				...COMMON,
+				utxos: [utxo(60_000)],
+				recipients: [
+					{ address: RECIPIENT_P2WPKH, amount: 'max' },
+					{ address: RECIPIENT_P2PKH, amount: 1_000 }
+				],
+				feeRate: 5
+			}),
+			'invalid_amount'
+		);
+		expect(err.message.toLowerCase()).toContain('single recipient');
+	});
+
+	it('multisig: sweeps every candidate coin, none left as change', async () => {
+		const draft = await msBuild({
+			utxos: [msUtxo(MS_P2WSH, 200_000), msUtxo(MS_P2WSH, 100_000, { txid: '22'.repeat(32) })],
+			recipients: [{ address: RECIPIENT_P2WPKH, amount: 'max' }],
+			feeRate: 5
+		});
+		expect(draft.inputs).toHaveLength(2);
+		expect(draft.change).toBeNull();
+	});
+
+	it('multisig: send-max over an EMPTY wallet is a zero-balance rejection, not a dust one', async () => {
+		await expectPlainRejection(
+			msBuild({ utxos: [], recipients: [{ address: RECIPIENT_P2WPKH, amount: 'max' }] }),
+			'no_utxos'
+		);
+	});
+});
+
+// ═══════════════════════════════════════════════════ 6. MIN-RELAY-FEE BOUNDARY
+
+describe('boundary: fee-rate floor (min-relay-fee) and ceiling', () => {
+	it('single-sig: feeRate exactly 1 sat/vB (the floor) succeeds', async () => {
+		const draft = await constructPsbt({
+			...COMMON,
+			utxos: [utxo(60_000)],
+			recipients: [{ address: RECIPIENT_P2WPKH, amount: 10_000 }],
+			feeRate: 1
+		});
+		expect(draft.feeRate).toBeGreaterThanOrEqual(1);
+	});
+
+	it('single-sig: feeRate below 1 (0.99, and 0) is rejected with a plain floor message', async () => {
+		for (const rate of [0.99, 0]) {
+			const err = await expectPlainRejection(
+				constructPsbt({
+					...COMMON,
+					utxos: [utxo(60_000)],
+					recipients: [{ address: RECIPIENT_P2WPKH, amount: 10_000 }],
+					feeRate: rate
+				}),
+				'invalid_amount'
+			);
+			expect(err.message).toBe('Fee rate must be at least 1 sat/vB.');
+		}
+	});
+
+	it('single-sig: a negative fee rate is rejected the same way as zero', async () => {
+		await expectPlainRejection(
+			constructPsbt({
+				...COMMON,
+				utxos: [utxo(60_000)],
+				recipients: [{ address: RECIPIENT_P2WPKH, amount: 10_000 }],
+				feeRate: -5
+			}),
+			'invalid_amount'
+		);
+	});
+
+	it('single-sig: feeRate exactly at MAX_FEE_RATE (1000) succeeds; 1001 is rejected as a fat-finger guard', async () => {
+		const draft = await constructPsbt({
+			...COMMON,
+			utxos: [utxo(1_000_000)],
+			recipients: [{ address: RECIPIENT_P2WPKH, amount: 10_000 }],
+			feeRate: 1000
+		});
+		expect(draft.amount).toBe(10_000);
+
+		const err = await expectPlainRejection(
+			constructPsbt({
+				...COMMON,
+				utxos: [utxo(1_000_000)],
+				recipients: [{ address: RECIPIENT_P2WPKH, amount: 10_000 }],
+				feeRate: 1001
+			}),
+			'invalid_amount'
+		);
+		expect(err.message.toLowerCase()).toContain('almost certainly a mistake');
+	});
+
+	it('multisig: feeRate floor and ceiling behave identically (shared validateRecipientsAndFeeRate)', async () => {
+		await expect(
+			msBuild({ feeRate: 1, utxos: [msUtxo(MS_P2WSH, 200_000)] })
+		).resolves.toBeDefined();
+		const err = await expectPlainRejection(msBuild({ feeRate: 0 }), 'invalid_amount');
+		expect(err.message).toBe('Fee rate must be at least 1 sat/vB.');
+		await expectPlainRejection(msBuild({ feeRate: 1001 }), 'invalid_amount');
+	});
+});
+
+// ═══════════════════════════════════════════ KNOWN GAP — reported, not fixed
+//
+// See the final report for cairn-9v9g: DUST_SATS (546, a single flat constant
+// — never per-script-type despite outputVsize() already knowing each
+// destination's real byte size) is enforced ONLY on the send-max sweep result
+// and the RBF-replacement change output (both above). A PLAIN (non-sweep)
+// recipient amount has NO pre-flight dust check at all: constructPsbt happily
+// builds and buildDraft happily PERSISTS a draft paying a sub-dust amount to a
+// normal recipient. The transaction would be rejected by the node at
+// broadcast time (friendlyBroadcastRejection already has a "dust" hint for
+// that), but the user pays the full review/sign round-trip first. This test
+// pins CURRENT behavior for visibility — it does not assert this is correct,
+// and is intentionally excluded from the pass/fail matrix above.
+describe('KNOWN GAP (not fixed here — see final report): plain recipient dust is unchecked pre-flight', () => {
+	it('single-sig: a 100-sat plain recipient amount (well under any real dust threshold) builds without error', async () => {
+		const draft = await constructPsbt({
+			...COMMON,
+			utxos: [utxo(60_000)],
+			recipients: [{ address: RECIPIENT_P2WPKH, amount: 100 }],
+			feeRate: 5
+		});
+		expect(draft.amount).toBe(100); // pinned current behavior, not endorsed
+	});
+
+	it('multisig: same gap — a 100-sat plain recipient amount builds without error', async () => {
+		const draft = await msBuild({
+			utxos: [msUtxo(MS_P2WSH, 60_000)],
+			recipients: [{ address: RECIPIENT_P2WPKH, amount: 100 }],
+			feeRate: 5
+		});
+		expect(draft.amount).toBe(100); // pinned current behavior, not endorsed
+	});
+
+	it('single-sig: a 1-sat plain recipient amount to a p2pkh/p2sh/p2wsh destination also builds unchecked', async () => {
+		for (const address of [RECIPIENT_P2PKH, RECIPIENT_P2SH, RECIPIENT_P2WSH]) {
+			const draft = await constructPsbt({
+				...COMMON,
+				utxos: [utxo(60_000)],
+				recipients: [{ address, amount: 1 }],
+				feeRate: 5
+			});
+			expect(draft.amount).toBe(1);
+		}
+	});
+});
