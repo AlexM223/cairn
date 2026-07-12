@@ -467,6 +467,22 @@ describe('cookieSecure', () => {
 		process.env.CAIRN_ORIGIN = 'not a url';
 		expect(cookieSecure(new URL('https://cairn.example.com/login'))).toBe(true);
 	});
+
+	// Finding 3 (test-units): auth.ts:131 `env.CAIRN_ORIGIN?.trim(); if (declared)` —
+	// an empty or whitespace-only CAIRN_ORIGIN is falsy after trim and is a
+	// DISTINCT branch from truly unset (existing tests only `delete` the var or
+	// set a real/malformed value). A compose file that injects `CAIRN_ORIGIN=`
+	// (empty) is a real Umbrel shape and must fall back to the request protocol,
+	// same as unset.
+	it('empty or whitespace-only CAIRN_ORIGIN behaves as if unset (falls back to request protocol)', () => {
+		process.env.CAIRN_ORIGIN = '';
+		expect(cookieSecure(new URL('https://cairn.example.com/login'))).toBe(true);
+		expect(cookieSecure(new URL('http://umbrel.local/login'))).toBe(false);
+
+		process.env.CAIRN_ORIGIN = '   ';
+		expect(cookieSecure(new URL('https://cairn.example.com/login'))).toBe(true);
+		expect(cookieSecure(new URL('http://umbrel.local/login'))).toBe(false);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -521,6 +537,51 @@ describe('bootstrapAdminFromEnv + forced credential reset', () => {
 		process.env.CAIRN_ADMIN_PASSWORD = 'short';
 		await bootstrapAdminFromEnv();
 		expect(userCount()).toBe(0);
+	});
+
+	// Finding 1 (test-units): auth.ts:311 `env.CAIRN_ADMIN_PASSWORD ?? env.APP_PASSWORD` —
+	// APP_PASSWORD is the Docker/legacy env name. Every other bootstrap test in
+	// this file drives CAIRN_ADMIN_PASSWORD, so the fallback half of that `??`
+	// had no coverage: a regression dropping it would silently leave an
+	// Umbrel/Docker operator who only sets APP_PASSWORD with no admin bootstrapped
+	// and no error.
+	it('bootstraps the first admin from APP_PASSWORD alone (CAIRN_ADMIN_PASSWORD unset)', async () => {
+		process.env.APP_PASSWORD = 'app-pw-longenough';
+		await bootstrapAdminFromEnv();
+
+		expect(userCount()).toBe(1);
+		const admin = getUserByEmail(BOOTSTRAP_PLACEHOLDER_EMAIL)!;
+		expect(admin.isAdmin).toBe(true);
+		expect(mustResetPassword(admin.id)).toBe(true);
+		expect((await loginWithPassword(BOOTSTRAP_PLACEHOLDER_EMAIL, 'app-pw-longenough')).id).toBe(
+			admin.id
+		);
+	});
+
+	it('CAIRN_ADMIN_PASSWORD wins over APP_PASSWORD when both are set', async () => {
+		process.env.CAIRN_ADMIN_PASSWORD = 'preferred-pw';
+		process.env.APP_PASSWORD = 'fallback-pw';
+		await bootstrapAdminFromEnv();
+
+		const admin = getUserByEmail(BOOTSTRAP_PLACEHOLDER_EMAIL)!;
+		expect((await loginWithPassword(BOOTSTRAP_PLACEHOLDER_EMAIL, 'preferred-pw')).id).toBe(admin.id);
+		await expect(
+			loginWithPassword(BOOTSTRAP_PLACEHOLDER_EMAIL, 'fallback-pw')
+		).rejects.toThrowError(AuthError);
+	});
+
+	// Finding 2 (test-units): auth.ts:312 `pw.length < MIN_PASSWORD_LENGTH` — the
+	// existing "below the minimum" test above uses a far-too-short password
+	// ('short', 5 chars); the boundary itself (`<` vs `<=`) was untested.
+	it('bootstraps the admin at exactly MIN_PASSWORD_LENGTH (8) and no-ops one below it (7)', async () => {
+		process.env.CAIRN_ADMIN_PASSWORD = '1234567'; // 7 chars — below the minimum
+		await bootstrapAdminFromEnv();
+		expect(userCount()).toBe(0);
+
+		process.env.CAIRN_ADMIN_PASSWORD = '12345678'; // exactly 8 chars — accepted
+		await bootstrapAdminFromEnv();
+		expect(userCount()).toBe(1);
+		expect((await loginWithPassword(BOOTSTRAP_PLACEHOLDER_EMAIL, '12345678')).id).toBeDefined();
 	});
 
 	it('flags an existing passwordless first admin when giving it the env password', async () => {

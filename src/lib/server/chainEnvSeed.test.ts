@@ -107,6 +107,24 @@ describe('seedChainConfigFromEnv', () => {
 		expect(getSetting('connection_mode')).toBe('public');
 	});
 
+	// Finding 6 (test-units): the connection_mode flip is gated only on
+	// `connection_mode === null`, independent of whether seedIfUnset actually
+	// WROTE the host. Scenario: an admin previously set electrum_host via
+	// Settings but never picked a connection_mode; on restart with
+	// CAIRN_ELECTRUM_HOST present, the host write is skipped (already
+	// customized) yet connection_mode is still flipped to 'custom'. Likely
+	// intended, but unpinned — a refactor could break either direction silently.
+	it('flips connection_mode to custom even when the admin-set host itself is NOT overwritten', () => {
+		setSetting('electrum_host', 'admin-host.example'); // admin-set, no connection_mode chosen yet
+
+		process.env.CAIRN_ELECTRUM_HOST = 'env-host.example';
+
+		seedChainConfigFromEnv();
+
+		expect(getSetting('electrum_host')).toBe('admin-host.example'); // untouched
+		expect(getSetting('connection_mode')).toBe('custom'); // flipped anyway
+	});
+
 	it('seeds only the env vars that are present, leaving the rest unset (partial env)', () => {
 		process.env.CAIRN_CORE_RPC_URL = 'http://10.21.0.5:8332';
 		process.env.CAIRN_CORE_RPC_USER = 'cairn';
@@ -161,5 +179,38 @@ describe('seedChainConfigFromEnv', () => {
 		process.env.CAIRN_ELECTRUM_PORT = 'not-a-port';
 		seedChainConfigFromEnv();
 		expect(getSetting('electrum_port')).toBeNull();
+	});
+
+	// Finding 5 (test-units): chainEnvSeed.ts's port validation
+	// (`Number.isInteger(port) && port >= 1 && port <= 65535`) only had the
+	// non-numeric-string case covered above; the numeric boundaries themselves
+	// (0, 65536, negative, non-integer) and the trim path were untested.
+	describe('CAIRN_ELECTRUM_PORT boundaries', () => {
+		it.each([
+			['0', null],
+			['65536', null],
+			['-1', null],
+			['50001.5', null], // Number.isInteger('50001.5') is false
+			['1', '1'],
+			['65535', '65535'],
+			[' 50001 ', '50001'] // whitespace trimmed before storing
+		])('%s -> %s', (raw, expected) => {
+			process.env.CAIRN_ELECTRUM_PORT = raw;
+			seedChainConfigFromEnv();
+			expect(getSetting('electrum_port')).toBe(expected);
+		});
+	});
+
+	// Finding 4 (test-units): chainEnvSeed.ts deliberately does NOT `.trim()`
+	// core_rpc_pass — the comment above that field is explicit that leading/
+	// trailing whitespace in a password is significant, matching the admin
+	// settings form. Every other seeded field in this file IS trimmed, so this
+	// is exactly the kind of inconsistency a "tidying" refactor would silently
+	// "fix" by adding `.trim()` here too, corrupting passwords with edge
+	// whitespace with no test failing. Regression-locked verbatim below.
+	it('does NOT trim core_rpc_pass — leading/trailing whitespace is preserved verbatim', () => {
+		process.env.CAIRN_CORE_RPC_PASS = '  spaced-secret  ';
+		seedChainConfigFromEnv();
+		expect(readSecretSetting('core_rpc_pass')).toBe('  spaced-secret  ');
 	});
 });

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // Mock the transport before importing the channel: nodemailer.createTransport
 // returns a stub whose sendMail we control per-test. vi.hoisted lets the mocked
@@ -111,6 +111,30 @@ describe('send', () => {
 		expect(opts.subject).toBe('Payment received');
 		expect(opts.text).toContain('0.01 BTC to Savings');
 		expect(opts.text).toContain('/wallets/3');
+	});
+
+	// Finding 9 (test-units): email.ts:296 `const link = absoluteNotificationLink(payload.link);`
+	// feeds renderEmail(), which only adds the CTA button/link line `if (input.link)`.
+	// src/tests/setup.ts forces CAIRN_ORIGIN for the whole suite, so this branch
+	// was never exercised — cleared per-test here (not in setup.ts) to lock the
+	// omit behavior for both the plain-text and HTML parts.
+	describe('link omission when CAIRN_ORIGIN is unset', () => {
+		const ORIGINAL = process.env.CAIRN_ORIGIN;
+		afterEach(() => {
+			if (ORIGINAL === undefined) delete process.env.CAIRN_ORIGIN;
+			else process.env.CAIRN_ORIGIN = ORIGINAL;
+		});
+
+		it('omits the link/CTA entirely from both the text and html parts', async () => {
+			delete process.env.CAIRN_ORIGIN;
+			configureSmtp();
+			const res = await emailChannel.send(userId, PAYLOAD);
+			expect(res.ok).toBe(true);
+			const opts = sendMail.mock.calls[0][0] as { text: string; html?: string };
+			expect(opts.text).not.toContain('/wallets/3');
+			expect(opts.html).not.toContain('/wallets/3');
+			expect(opts.html).not.toContain('<a href=');
+		});
 	});
 
 	it('honours an explicit per-user address override', async () => {

@@ -364,6 +364,39 @@ describe('relay publish timeout (cairn-49qw)', () => {
 	});
 });
 
+// Finding 9 (test-units): nostr.ts:275 `const link = absoluteNotificationLink(payload.link); if (link) parts.push(link);`.
+// src/tests/setup.ts forces CAIRN_ORIGIN for the whole suite (the "succeeds and
+// the DM decrypts..." test above only exercises the resolved-absolute path).
+// Cleared per-test to lock the omit behavior at the channel level.
+describe('link omission when CAIRN_ORIGIN is unset', () => {
+	const ORIGINAL = process.env.CAIRN_ORIGIN;
+	afterEach(() => {
+		if (ORIGINAL === undefined) delete process.env.CAIRN_ORIGIN;
+		else process.env.CAIRN_ORIGIN = ORIGINAL;
+	});
+
+	it('omits the link line from the DM body entirely', async () => {
+		delete process.env.CAIRN_ORIGIN;
+		const u = await makeUser('link-omit@example.com');
+		saveConfig(u, { recipientPubkey: RECIPIENT_PUBKEY, relays: ['wss://r1'] });
+
+		let capturedEvent: { content: string; pubkey: string } | undefined;
+		publishImpl = (relays, event) => {
+			capturedEvent = event as typeof capturedEvent;
+			return relays.map(() => Promise.resolve('ok'));
+		};
+
+		const res = await nostrChannel.send(u, payload);
+		expect(res.ok).toBe(true);
+
+		const convKey = nip44.v2.utils.getConversationKey(hexToBytes(RECIPIENT_SK), capturedEvent!.pubkey);
+		const plaintext = nip44.decrypt(capturedEvent!.content, convKey);
+		expect(plaintext).toContain('Payment received');
+		expect(plaintext).toContain('0.01 BTC to Savings');
+		expect(plaintext).not.toContain('/wallets/3');
+	});
+});
+
 describe('test()', () => {
 	it('reports "published to at least one relay" on success', async () => {
 		const u = await makeUser('k@example.com');

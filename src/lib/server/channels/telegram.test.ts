@@ -130,6 +130,34 @@ describe('send', () => {
 	});
 });
 
+// Finding 9 (test-units): telegram.ts:66-67 `const link = absoluteNotificationLink(payload.link); if (link) …`.
+// src/tests/setup.ts forces CAIRN_ORIGIN='https://cairn.test' for every test,
+// so the link===null (CAIRN_ORIGIN unset) branch is never exercised by the
+// suite's shared default — and PAYLOAD above already ships an ABSOLUTE link,
+// so even the resolution itself was untested at the channel level. Cleared
+// here per-test (not in setup.ts, which must stay forced for the rest of the
+// suite) to lock in the omit behavior tied to the "broken deep links" issue.
+describe('link omission when CAIRN_ORIGIN is unset', () => {
+	const ORIGINAL = process.env.CAIRN_ORIGIN;
+	afterEach(() => {
+		if (ORIGINAL === undefined) delete process.env.CAIRN_ORIGIN;
+		else process.env.CAIRN_ORIGIN = ORIGINAL;
+	});
+
+	it('omits the link line entirely from the rendered message', async () => {
+		delete process.env.CAIRN_ORIGIN;
+		configure();
+		fetchMock.mockResolvedValueOnce(jsonResponse(200, { ok: true }));
+		const res = await telegramChannel.send(userId, { ...PAYLOAD, link: '/wallets/3' });
+		expect(res.ok).toBe(true);
+
+		const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+		const sent = JSON.parse(init.body as string) as { text: string };
+		expect(sent.text).not.toContain('/wallets/3');
+		expect(sent.text).toBe('<b>Payment &lt;received&gt;</b>\nA &amp; B');
+	});
+});
+
 describe('test()', () => {
 	it('rewrites a 403 into a friendly "message your bot first" hint', async () => {
 		configure();

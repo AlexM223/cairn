@@ -194,6 +194,31 @@ describe('send', () => {
 	});
 });
 
+// Finding 9 (test-units): ntfy.ts:120 `const link = absoluteNotificationLink(payload.link); if (link) body.click = link;`.
+// src/tests/setup.ts forces CAIRN_ORIGIN for the whole suite, so this branch
+// (and PAYLOAD's own link is already absolute) had no coverage. Cleared
+// per-test to lock the omit behavior.
+describe('link omission when CAIRN_ORIGIN is unset', () => {
+	const ORIGINAL = process.env.CAIRN_ORIGIN;
+	afterEach(() => {
+		if (ORIGINAL === undefined) delete process.env.CAIRN_ORIGIN;
+		else process.env.CAIRN_ORIGIN = ORIGINAL;
+	});
+
+	it('omits body.click entirely rather than sending a broken relative path', async () => {
+		delete process.env.CAIRN_ORIGIN;
+		configureUser({ server: 'https://push.example.com', topic: 'mytopic' });
+		sendMock.mockResolvedValueOnce(textResponse(200));
+		const res = await ntfyChannel.send(userId, { ...PAYLOAD, link: '/wallets/3' });
+		expect(res.ok).toBe(true);
+
+		const body = JSON.parse((sendMock.mock.calls[0][2] as RequestInit).body as string) as {
+			click?: string;
+		};
+		expect(body.click).toBeUndefined();
+	});
+});
+
 describe('test()', () => {
 	it('publishes a canned test message', async () => {
 		setSetting('ntfy_default_server', 'https://ntfy.sh');
