@@ -57,13 +57,19 @@ source, with optional Bitcoin Core RPC for explorer-grade detail and Esplora
 as a last-resort HTTP fallback. All durable state lives in one synchronous
 `node:sqlite` database.
 
-The name split is deliberate and permanent: package metadata, UI copy, and
-the Umbrel package directory now say "Heartwood," but the database file
-(`cairn.db`), every `CAIRN_*` environment variable, and the container image
-(`ghcr.io/alexm223/cairn`) stay `cairn` — renaming them in place would orphan
-every existing install's data. New `HEARTWOOD_DB` / `HEARTWOOD_LOG_FILE`
-env-var aliases were added *alongside* the `CAIRN_*` ones, not instead of
-them. Don't "fix" this inconsistency; it's load-bearing. (See §12, §15.)
+The name split is deliberate, and the internals half of it is permanent
+regardless of how the product-facing half resolves: package metadata, UI
+copy, and the Umbrel package directory now say "Heartwood," but the
+database file (`cairn.db`), every `CAIRN_*` environment variable, and the
+container image (`ghcr.io/alexm223/cairn`) stay `cairn` — renaming them in
+place would orphan every existing install's data. New `HEARTWOOD_DB` /
+`HEARTWOOD_LOG_FILE` env-var aliases were added *alongside* the `CAIRN_*`
+ones, not instead of them. Don't "fix" the internals-vs-branding
+inconsistency; it's load-bearing. What is **not** yet settled: the
+Umbrel/App-Store operational identity (app ID, listing, whether this is a
+rename of the existing `cairn` listing or a new one) is an open decision,
+not a closed one — tracked in `cairn-koy4.13`, blocked on Alex. Don't treat
+the app-store identity as final until that bead closes. (See §12, §15.)
 
 ### The five invariants
 
@@ -310,6 +316,13 @@ requests. Reconnects **eagerly only if there are active subscriptions**
 (headers or scripthash); otherwise the next `request()` call reconnects
 lazily. Backoff doubles each attempt, 1s → 30s ceiling. Every reconnect
 failure is logged at `warn` (previously invisible at `debug` in prod logs).
+**Caveat (`cairn-sp74`, open):** that ceiling only bounds the *scheduled*
+eager-reconnect timer path. `ensureConnected()` itself never checks
+`reconnectTimer` — any ordinary `request()`/`batchRequest()` call during an
+outage triggers its own fresh connect attempt regardless of backoff state,
+so ambient request traffic (not just the subscription-driven reconnect
+loop) can still hammer a dead server faster than the nominal 1s→30s
+schedule implies.
 
 **Message framing**: buffers by newline, JSON-parses each line, and
 defensively rejects non-object payloads (null/array/primitive) rather than
@@ -498,10 +511,19 @@ The single largest piece of notification plumbing. First and only consumer
 of `ElectrumClient.subscribeScripthash()`. Started once from
 `hooks.server.ts`, logger channel `notify:txwatch`.
 
-- Derives every address in each wallet's gap-limit window
-  (`WATCH_WINDOW = 30`, receive + change = 60 subscriptions per wallet) for
-  every single-sig wallet and multisig, across **all** users, and subscribes
-  each to its Electrum scripthash.
+- Derives the first `WATCH_WINDOW = 30` addresses per chain (receive +
+  change = 60 subscriptions per wallet) for every single-sig wallet and
+  multisig, across **all** users, and subscribes each to its Electrum
+  scripthash for **live** push notifications. **This is a fixed window from
+  index 0, not tied to the wallet's actual gap-limit scan cursor**
+  (`cairn-43dx`, open) — a wallet whose last-used receive index sits past 30
+  (a heavy long-lived wallet, or one restored from software using a larger
+  gap limit) has a live-notification **blind spot** beyond index 30: a
+  deposit to address 31+ fires no `tx_received`/`tx_confirmed` push. This is
+  a notification-*timeliness* gap only, not a funds/balance bug — the full
+  `gapLimitScanner` pass (`GAP_LIMIT = 20`, tied to the real last-used
+  cursor) still picks the deposit up correctly on the next portfolio load,
+  it just doesn't push a live notification for it.
 - On a `'scripthash'` change event → `handleScripthashChange()`: fetches
   history, diffs new txids against the `notified_txids` table, fires
   `tx_received` (+ `tx_large` above a per-user threshold) for genuinely new
@@ -514,6 +536,29 @@ of `ElectrumClient.subscribeScripthash()`. Started once from
   deliberately, to avoid an import cycle with the wallet layer. A brand-new
   wallet is not watched instantly; don't "fix" this by adding a redundant
   creation hook (§15).
+
+**`notified_txids` lifecycle (`cairn-a2p1`)**: each tracked row carries a
+`status` and an `amount_sats`. States: `'pending'` — an unconfirmed inbound
+the watcher has seen and is tracking, but has **not yet** surfaced as
+"payment received" (the SPV gate still defers that until the tx confirms —
+see below); `'notified'` — the tx has cleared the SPV gate and `tx_received`
+has fired; `'replaced'` — a previously `'pending'` or `'notified'` tx
+disappeared from the mempool/block-tip history on a later rescan (detected
+by reconciling against observed chain history, not merely by absence —
+a genuine double-spend/RBF-replacement, not just a slow relay), firing the
+correcting `tx_replaced` notification; `'dropped'` — the same disappearance
+case but silent (no correcting notification), used when nothing was ever
+surfaced to correct (a `'pending'` row that never reached `'notified'`
+doesn't need a user-facing "cancelled" message, since the user was never
+told they'd been paid). A `'replaced'` row with `amount_sats > 0` is what
+feeds the wallet-detail page's amber "Cancelled" row and the `/activity`
+correcting event (§20 QA below). **Unconfirmed inbound handling**: an
+unconfirmed (mempool) inbound is now recorded as `'pending'` immediately —
+tracked so a later disappearance can be detected and reconciled — but the
+existing SPV gate is **preserved**: `tx_received` still only fires once the
+transaction is independently proven confirmed in a PoW-valid block (never
+for a bare mempool sighting), so this change adds disappearance-tracking
+without weakening invariant 3 from §1.
 
 **SPV verification gate** (see invariant 3 in §1). Before firing *any*
 payment notification, `spvVerifyConfirmed(txid, height)` fetches the merkle
@@ -828,6 +873,22 @@ rejects if change would drop below `DUST_SATS` (546) rather than pulling in
 new inputs to cover a bigger fee — the code deliberately refuses rather than
 silently changing what the user reviewed.
 
+**Known gap (`cairn-ykk6`, open): plain recipient amounts have NO pre-flight
+dust check.** `DUST_SATS = 546` is only enforced on the two paths above —
+the send-max sweep result and the RBF change-output floor. A plain
+recipient amount (e.g. `amount: 100`) has no equivalent check at
+`constructPsbt`/`constructMultisigPsbt` time: the draft builds and persists
+silently, and the dust output only ever fails much later, at broadcast,
+via the network's mempool relay policy — a confusing, late failure instead
+of an immediate, clear one. Found (not fixed) during the `cairn-9v9g`
+send-flow boundary-matrix work and pinned in "KNOWN GAP" `describe()`
+blocks in `src/lib/server/bitcoin/sendBoundaryMatrix.test.ts` and
+`src/lib/server/sendBoundaryDraft.test.ts` so a future fix can't land
+without those tests being updated. A correct fix needs
+per-destination-script-type dust thresholds (via `outputVsize()` —
+P2SH/P2WPKH/P2TR outputs have different dust floors), applied at
+draft-build time for plain sends, not just the sweep/RBF paths.
+
 **`nonWitnessUtxo` deferral (perf).** For segwit inputs (not p2pkh/p2tr),
 fetching each candidate's full previous transaction is deferred until
 *after* coin selection (`fetchChosenPrevTxs`) and fetched concurrently only
@@ -939,7 +1000,17 @@ same real txid — N phantom "sends" on record for one transfer. The fix:
 - Broadcast is additionally protected by an atomic UPDATE-based claim
   (`broadcast_started_at`) so two concurrent calls for the *same* row can't
   both reach the network — the loser sees `'already_sent'`. A stale claim
-  (crash mid-broadcast) expires after 60s so retry isn't wedged forever.
+  (crash mid-broadcast) expires after 60s so **retry** isn't wedged forever
+  — `broadcastTransaction`/`broadcastMultisigTransaction` let a claim older
+  than 60s be overwritten by a fresh attempt. That 60s staleness window is
+  **not** mirrored on the delete path: `deleteTransaction`/
+  `deleteMultisigTransaction` refuse to delete a row whenever
+  `broadcast_started_at IS NOT NULL`, full stop, with no age check — so a
+  row left behind by a broadcast that crashed mid-flight blocks deletion
+  indefinitely until it's explicitly reclaimed by a retry or transitions to
+  `completed`/`superseded` (`cairn-ytnc`, open — low-severity by design,
+  since it errs toward never silently losing a broadcast record, but the
+  60s figure is retry-only, not a universal expiry).
 - After a real Electrum broadcast, the *reported* txid is checked against
   the locally recomputed deterministic txid (`finalized.txid`) — this closes
   invariant 2 from §1 (`cairn-ziwm`).
@@ -1014,16 +1085,30 @@ pubkey, BIP-67-sorts them, and wraps per script form, returning
 material for PSBT construction, sorted to match witness-script pubkey order.
 
 **Cosigner path validation** (`validateCosignerKeyPath`, `CosignerPathMode =
-'create' | 'import'`) is a substantial acceptance gate: rejects single-sig
-purposes (44/49/84/86) on a multisig key outright; for BIP-48 paths,
-enforces coin type 0 (mainnet) and the BIP-48 script suffix matching the
-multisig's script form; for bare p2sh, accepts `m/45'` and Trezor's `0'`
-extension, and (import-mode **only**) tolerates a historical `1'` suffix
-mislabel with a warning — an old Cairn HW driver bug that really produced
-legacy-P2SH keys at that path; on CREATE that same `1'` is a hard rejection
-(it's the nested-segwit slot — accepting it on create would mask a
-wrong-key paste). This create-vs-import asymmetry (`cairn-acft`) is
-deliberate, not an inconsistency.
+'create' | 'import'`) is a meaningful but **not exhaustive** acceptance
+gate: rejects single-sig purposes (44/49/84/86) on a multisig key outright;
+for BIP-48 paths, enforces coin type 0 (mainnet) and the BIP-48 script
+suffix matching the multisig's script form; for bare p2sh, accepts `m/45'`
+and Trezor's `0'` extension, and (import-mode **only**) tolerates a
+historical `1'` suffix mislabel with a warning — an old Cairn HW driver bug
+that really produced legacy-P2SH keys at that path; on CREATE that same
+`1'` is a hard rejection (it's the nested-segwit slot — accepting it on
+create would mask a wrong-key paste). Bare-P2SH **creation** itself was
+additionally removed from the multisig wizard (`cairn-acft`, closed
+4d447fe) — the wizard's script-type radio disables `p2sh`, and
+`hw/common.ts` throws rather than derive at the wrong `…1'` slot; see §18.1
+row G. This create-vs-import asymmetry is deliberate, not an
+inconsistency. Two known gaps in the gate itself, both open: **`cairn-ryjc`**
+— the BIP-48 coin/account/script-type levels are checked by numeric value
+only (`unhardened()`), never confirming the hardened bit is actually set,
+so `m/48'/0/0'/2'` (unhardened coin type) or `m/48'/0'/0'/2` (unhardened
+script-type) both pass when they shouldn't; every existing acceptance test
+happens to use fully-hardened paths, so this hole doesn't show up in
+practice yet. **`cairn-e8de`** — `stateless.ts`'s descriptor-import escape
+hatch never calls `validateMultisigKeyPaths` at all, so a malformed or
+wrong-script-type cosigner path pasted through that path is not caught at
+ingestion the way the wizard and Caravan-JSON import paths are. Don't
+describe this gate as airtight when reviewing or extending it.
 
 **Descriptor import/export**: `multisigToDescriptor()` / `parseDescriptor()`.
 Byte-compatible with Bastion's format (`[fp/48h/0h/0h/2h]xpub/0/*`, lowercase
@@ -1723,6 +1808,9 @@ hiding alone is not enforcement.
 
 **Event types** (`NOTIFICATION_EVENT_TYPES` — the source of truth, since
 SQLite has no enum): `tx_received`, `tx_confirmed`, `tx_large`,
+`tx_replaced` ("Incoming payment cancelled" — a tracked inbound tx
+disappeared before confirming, double-spent or RBF'd-away; level `warn`,
+`inapp` by default channel, `cairn-a2p1`),
 `key_health_due`, `backup_missing`, `backup_stale`, `sign_session_waiting`,
 `sign_session_complete`, `admin_new_signup`, `admin_invite_used`,
 `admin_restore`, `admin_server_health`, `admin_user_disabled`,
@@ -1755,11 +1843,52 @@ inside domain code (e.g. `auth.ts`'s `registerUserWithHash` fires
 `admin_new_signup`) — always best-effort/non-throwing, so a notification
 failure can never abort the triggering action. Non-inapp sends go through
 `notification_queue`, drained by `startNotificationQueueWorker()`.
-Triggering sites: `addressWatcher.ts` (tx_received/tx_confirmed/tx_large),
-`keyHealth.ts` (key_health_due, daily scan), `backupHealth.ts`
-(backup_missing/backup_stale), `deviceTracking.ts` (security_new_device),
+Triggering sites: `addressWatcher.ts`
+(tx_received/tx_confirmed/tx_large/tx_replaced — see the watcher
+lifecycle note below), `keyHealth.ts` (key_health_due, daily scan),
+`backupHealth.ts` (backup_missing/backup_stale), `deviceTracking.ts`
+(security_new_device),
 `auth.ts`/`recovery.ts` (security_* events, admin_new_signup,
 admin_invite_used) — all started/wired from `hooks.server.ts`'s `init()`.
+
+### Backup & restore (`src/lib/server/backup.ts`)
+
+An encrypted, passphrase-protected export/import of the whole instance
+(all users, wallets, multisigs, settings) via `admin/backup` (export) and
+`admin/restore` (import). Two hardening fixes landed together in the
+2026-07-12 hardening wave, both on the restore path — a backup file is
+**untrusted input** (an admin can be social-engineered into restoring an
+attacker-crafted file), and restore used to trust it more than it should
+have:
+
+- **Schema-version rejection (`cairn-lka5`, closed).** The backup envelope
+  and inner payload both stamp `version: VERSION` on export; `decryptBackup`
+  now rejects if either `env.version` or `data.version` is not a number or
+  exceeds the current `VERSION` constant (`backup.ts:172-184`), throwing
+  "This backup was made by a newer version of Heartwood and cannot be
+  restored here." Before this fix the version field was written but never
+  checked — a future-schema backup would proceed straight into
+  `restoreBackup`'s upserts instead of being refused up front.
+- **Settings restore allowlist (`cairn-0dg4`, closed).** `restoreBackup`
+  used to blindly upsert every row in `data.settings`, including
+  security-posture keys that control the instance's auth/security surface.
+  Restore now goes through `RESTORABLE_SETTING_KEYS`, a **default-deny
+  allowlist** (not a denylist of known-bad keys, so a new security-relevant
+  setting added later is safe by construction rather than depending on
+  someone remembering to blocklist it). Five keys are deliberately **never**
+  adopted from an imported backup, no matter what the file contains:
+  `registration_mode` (could reopen self-registration on an
+  invite-only/closed instance), `webhook_allow_private_targets` (could
+  silently disable the SSRF/LAN guard on outbound webhook/ntfy targets),
+  `instance_mode` (could silently unlock collaborative-custody nav the
+  admin never opted into), `auth_mode` (could silently change the primary
+  sign-up method), and `electrum_tls_insecure` (could silently disable
+  certificate validation on a custom Electrum server). Anything skipped is
+  collected into `RestoreSummary.settingsSkipped` and surfaced in three
+  places so the admin can see exactly what was withheld and set it
+  deliberately if intended: the `api/admin/restore` response body, an
+  `admin_restore` notification whose level bumps to `warn` when anything
+  was skipped, and the `admin/backup` page's restore-summary panel.
 
 ### Observability
 
@@ -2270,11 +2399,20 @@ against published test vectors.
 
 **Caravan/Unchained format** is Cairn's chosen multisig interchange
 standard (`src/lib/server/multisigExport.ts`). `caravanExport()` /
-`parseCaravanImport()` round-trip Caravan wallet-config JSON losslessly,
-including the receive descriptor's own BIP-380 checksum as `uuid` (omitting
-it triggers Caravan's own "undefined" re-export bug) and the multisig's live
-receive cursor as `startingAddressIndex` (so a backup→restore round-trip
-resumes issuing fresh addresses instead of reusing index 0).
+`parseCaravanImport()` round-trip Caravan wallet-config JSON byte-for-byte
+on the JSON shape itself, including the receive descriptor's own BIP-380
+checksum as `uuid` (omitting it triggers Caravan's own "undefined"
+re-export bug) and the multisig's live receive cursor as
+`startingAddressIndex` (so a backup→restore round-trip resumes issuing
+fresh addresses instead of reusing index 0). **Caveat (`cairn-o7zy`,
+open):** "lossless" describes the JSON round-trip, not necessarily the key
+*paths* it encodes — export masks an unknown-origin key to a fabricated
+`m/0/0/0/0` for Caravan compatibility, and import reads that literally with
+no recognition of the masking. Round-tripping Cairn's own export of an
+unknown-origin key can silently turn it into a concrete (and wrong) path.
+A byte-identical re-exported JSON can still hide semantic path corruption
+underneath — don't treat JSON-diff-clean as proof the underlying key
+provenance survived the round-trip.
 `coldcardRegistration()` produces the ColdCard multisig setup-file format
 (also read by Passport/Keystone/SeedSigner).
 
@@ -2529,6 +2667,47 @@ separately from Vitest.
 `npm ci`, `npm run check`, `npm test`. No Docker build step in CI today
 (flagged as a still-open improvement).
 
+### Standing security regression gate: admin-data leak audit (`cairn-f5gh`)
+
+`src/tests/adminLeakAudit.test.ts` is a standing regression gate asserting
+"no admin-only data ever reaches a non-admin session" — a directive that
+previously had no test enforcing it. Two independent halves, both run as
+part of the normal test suite (no separate invocation needed):
+
+1. **Structural sweep.** Every `+server.ts` under `src/routes/api/admin/**`
+   and every `+page.server.ts` action under `src/routes/(app)/admin/**` is
+   discovered by **walking the filesystem**, never hand-listed, so a route
+   added after this test was written is automatically covered. Each
+   discovered handler is called as an anonymous or authenticated-but-
+   non-admin caller and must be rejected (401/403), never resolving with
+   real data. The `(app)/admin` layout's own `load()` is pinned directly
+   (it's the single gate every admin *page* load relies on — children
+   deliberately don't re-check admin in their own `load`), but a form
+   `action` does **not** run the parent layout's `load()` (the historical
+   `cairn-fame`/`jnlx`/`bgv1` bug class), so every discovered admin action
+   is swept independently too.
+2. **Marker-diff sweep.** Distinctive secret marker strings are seeded into
+   every admin-only surface (Core RPC password, SMTP password, a
+   draft/inactive announcement, an inactive referral service, a per-admin
+   feature-flag override), plus a denylist of exact sensitive field names.
+   Every user-reachable `(app)` page load and `/api` endpoint a regular
+   signed-in user actually hits — the shared `(app)` layout (rendered on
+   every page), every `/settings` page, `/activity`, and their `/api`
+   equivalents — is invoked **as the regular (non-admin) user**, and the
+   returned JSON is asserted to contain neither any marker nor any
+   denylisted key, anywhere in the (deeply-walked) payload. The seeding is
+   deliberately mutation-proven (a marker injected into a leak path is
+   confirmed to actually fail the test) rather than just trusted to work.
+
+**Extending it:** a new admin API route or admin-only page action needs no
+manual wiring — the filesystem walk picks it up automatically. Adding a new
+admin-only **secret** (a new credential, draft-content field, or
+admin-scoped config value) does need one manual step: add its marker string
+to the seed block so the marker-diff half actually looks for it. Known
+current scope limit: the marker sweep deliberately skips chain-backed
+routes (`/api/wallets`, `/api/portfolio`, explorer) pending chain-service
+mocks — filed as a separate P3 follow-up, not a gap in what's covered today.
+
 ### Regtest + hardware-emulator stack (NOT part of normal `npm test`/CI)
 
 Two parallel trees hold manual/E2E scaffolding against a real regtest node
@@ -2771,7 +2950,10 @@ actually biting someone.
    data). New `HEARTWOOD_DB`/`HEARTWOOD_LOG_FILE` aliases were added
    *alongside* the `CAIRN_*` ones, checked first, falling back to the
    `CAIRN_*` names. Do not "fix" this inconsistency by renaming the
-   runtime identifiers.
+   runtime identifiers. This internals-vs-branding split is permanent; the
+   separate question of the Umbrel/App-Store **operational identity** (app
+   ID, listing) is genuinely undecided, not settled — open decision
+   `cairn-koy4.13`, blocked on Alex (§1).
 9. **Watcher registration is poll-based (5-minute `refreshWatches()`), not
    event-driven** — a newly created wallet is not watched instantly; it
    picks up on the next 5-minute sweep. This is a deliberate choice (avoids
@@ -3083,6 +3265,11 @@ against share-via-leaked-user-id). Multisig create flag on (`multisig_create`, d
    - **Expected (share path):** B sees the same vault, same balance/addresses.
 - **PASS:** B can open the vault; a re-export from B round-trips byte-identically (verify
   via the gated `parseCaravanImport(caravanExport(...))` test if driving modules).
+  **Caveat (`cairn-o7zy`, open):** a byte-identical re-export JSON diff is not proof the
+  underlying key *paths* survived intact — an unknown-origin key is exported as a masked
+  `m/0/0/0/0` path and re-imported literally as that concrete (wrong) path, with no JSON-level
+  signal that anything was masked. If this scenario includes an unknown-origin cosigner key,
+  additionally verify its origin path by hand, not just the JSON diff.
 - **Cleanup:** A revokes B's share; delete the imported copy if 2(b) was used.
 
 ### 17.3 Draft created, both sign (order A→B), broadcast `[emulator]`
@@ -3169,6 +3356,15 @@ As B (cosigner) verify each is **denied** (expected 403/404, or the control is a
 The matrix covers only **actually-supported** spendable types. p2tr and multisig `tr()`
 are **expected-clear-error rows**, not pass rows.
 
+**Automated boundary coverage (`cairn-9v9g`, closed):** the classic send edge cases this
+matrix doesn't spell out row-by-row — zero balance, dust-threshold outputs, amount ≤ fee,
+sweep-all with fee subtraction, exact min-relay-fee boundary — are now covered by 49
+table-driven tests across `src/lib/server/bitcoin/sendBoundaryMatrix.test.ts` (unit-level,
+`buildDraft`/`buildMultisigDraft`), `src/lib/server/sendBoundaryDraft.test.ts`
+(draft-persistence layer), and `src/routes/api/wallets/[id]/psbt/server.test.ts` (the send
+API route itself). Treat those as the source of truth for boundary behavior; this manual's
+matrix is the happy-path/address-type cross-reference, not a substitute for them.
+
 ### 18.1 Address-type matrix
 For each **spendable** row: create the wallet (18.2), receive funds (16.5 on regtest / GUI
 on mainnet), build a draft, sign, broadcast, and verify `tx_confirmed` appears in
@@ -3182,13 +3378,15 @@ on mainnet), build a draft, sign, broadcast, and verify `tx_confirmed` appears i
 | D | single-sig | `p2tr` (taproot) | BIP86 `m/86'/0'/0'` | `bc1p…` | `/wallets/new` | **NO** | **expected-error:** creation hard-rejected — `"Taproot wallets aren't supported yet…"`. Even if forced, spend throws `"Spending from p2tr wallets is not supported yet."` (no `INPUT_VSIZE` entry). p2tr is valid only as a **recipient** address. |
 | E | multisig | `p2wsh` (default) | BIP48 `…/2'` | `bc1q…`(long) | `/wallets/multisig/new` | **yes** | full N-of-M pass; the vault-e2e 2-of-3 default |
 | F | multisig | `p2sh-p2wsh` | BIP48 `…/1'` | `3…` | `/wallets/multisig/new` | **yes** | full pass; returns both witnessScript + redeemScript |
-| G | multisig | `p2sh` (legacy) | BIP45 `m/45'` (or Trezor `0'` ext) | `3…` | `/wallets/multisig/new` | **yes** | full pass; no BIP-48 suffix; import tolerates historic `1'` mislabel with warning |
+| G | multisig | `p2sh` (legacy) | BIP45 `m/45'` (or Trezor `0'` ext) | `3…` | **import-only** — Caravan JSON / descriptor import at `/wallets/multisig/new`; **NOT** creatable via the wizard | **import-only** | **`cairn-acft`, closed 4d447fe: bare-P2SH creation was removed from the wizard** (the radio option renders `disabled`, and `hw/common.ts`'s account-path derivation now throws for p2sh instead of deriving the wrong `…1'` account key). Importing an existing bare-P2SH wallet (Caravan JSON or descriptor, `m/45'`/Trezor `0'`) still fully works and spends normally; import mode also tolerates a historic `1'` nested-segwit mislabel with a warning. **`cairn-etz9` (open):** the server create action itself has no matching guard yet — a scripted `POST` with `scriptType=p2sh` and valid non-`1'` keys can still mint a bare-P2SH wallet, bypassing the wizard-level removal. |
 | H | multisig | `tr()` (taproot) | — | `bc1p…` | `/wallets/multisig/new` | **NO** | **expected-error:** `tr()` descriptor rejected by name (no mature MuSig2/FROST). Caravan/descriptor import also rejects `tr()` and unsorted `multi()`. |
 
-**PASS (matrix):** rows A/B/C/E/F/G complete the full lifecycle and confirm; rows D and H
-produce the exact documented refusal messages (clear error, `--error` red is acceptable
-here since it is an irrecoverable "not supported" condition) and never a silent failure or
-a raw exception.
+**PASS (matrix):** rows A/B/C/E/F complete the full creation→send→broadcast lifecycle and
+confirm; row G is **import-only** (creating a fresh bare-P2SH wallet through the wizard is
+not offered — importing an existing one and spending from it is the row to exercise); rows
+D and H produce the exact documented refusal messages (clear error, `--error` red is
+acceptable here since it is an irrecoverable "not supported" condition) and never a silent
+failure or a raw exception.
 
 ### 18.2 Per-row wallet creation `[none]` / receive+sign `[emulator or mainnet]`
 1. `/wallets/new` (single-sig) or `/wallets/multisig/new` (multisig): **Key → Verify →
@@ -3247,6 +3445,33 @@ unconfirmed output on it).
 - **PASS:** stranger-unconfirmed never auto-selected; own-change used only as confirmed
   fallback; immature coinbase blocked with a clear message.
 
+### 18.5a Inbound double-spend / RBF'd-away reconciliation `[emulator]` — regression guard (`cairn-a2p1`)
+Precondition: an unconfirmed inbound deposit to a watched wallet has already fired
+`tx_received` (i.e. its `notified_txids` row is `'notified'`, not `'pending'`).
+1. Double-spend or RBF-replace-away that inbound tx (regtest: rebroadcast a conflicting tx
+   spending the same input(s) at a higher fee, then mine past it) so the original txid
+   disappears from both mempool and the chain.
+2. Let the watcher's next rescan run (block-tip / mempool history reconciliation, not a
+   bare "not found" check — see §4's `addressWatcher.ts` lifecycle note).
+   - **Expected:** the `notified_txids` row transitions `'notified'` → `'replaced'`, and a
+     correcting `tx_replaced` notification ("Incoming payment cancelled") fires — in-app by
+     default, level `warn`.
+3. Open the wallet's detail page.
+   - **Expected:** the cancelled tx shows as an amber "Cancelled" row (`cancelled-row` /
+     `cancel-badge` in `src/routes/(app)/wallets/[id]/+page.svelte`), distinct from both a
+     normal pending and a confirmed row — **not** red/error styling, since this is a
+     correction, not a failure of Cairn's.
+4. Check `/activity`.
+   - **Expected:** the correcting `tx_replaced` event appears in the feed, so a user who saw
+     the original "payment received" notification also sees the correction, not just a
+     silent balance change.
+5. Repeat with a `'pending'` (never-yet-notified) inbound that gets replaced away instead.
+   - **Expected:** the row transitions to `'dropped'` (silent) — no correcting notification,
+     since nothing was ever surfaced to correct in the first place.
+- **PASS:** balance reflects the disappearance either way; a previously-notified payment
+  gets a correcting `tx_replaced` notification + amber wallet-detail row + `/activity` entry;
+  a never-notified one is dropped silently with no spurious "cancelled" message.
+
 ### 18.6 Coin control `[emulator]`
 1. At `/wallets/{id}/send`, open Coin Control (`coin_control` flag) and hand-pick UTXOs.
    - **Expected:** only the chosen coins are spent; `onlyUtxos` overrides normal
@@ -3286,6 +3511,55 @@ unconfirmed output on it).
 2. On a successful broadcast, the Electrum-reported txid must equal Cairn's locally-computed
    deterministic txid — a mismatched/fabricated success txid is refused (cairn-ziwm).
 - **PASS:** tampered PSBT rejected; only a matching-txid broadcast is recorded `completed`.
+  This claim is **currently true** (re-verified post-hardening-wave, `cairn-u2r5`/`cairn-vo6z`,
+  both closed) — see §18.9a for the enforcement detail and the specific tamper shapes it
+  covers, which go beyond the destination/coin-set commitment check above.
+
+### 18.9a Tampered/non-standard finalization is rejected, not just recomputed-txid mismatch `[emulator]`
+Prior to this hardening wave, `assertSameTransaction` only pinned inputs/outputs — it never
+inspected the actual signature/finalization bytes a "signed" PSBT carried, so two narrower
+tamper shapes could still slip through the commitment check. Both are now closed:
+- **Single-sig (`bitcoin/psbt.ts`):** `finalizePsbt` enforces `SIGHASH_ALL` (trailing byte
+  `0x01`) on every partial signature before finalizing — a signer returning `SIGHASH_NONE`/
+  `SIGHASH_SINGLE`/`ANYONECANPAY` is rejected, not silently finalized into a transaction whose
+  signature doesn't actually commit to everything the user reviewed. The rejection is
+  surfaced at broadcast (`transactions.ts` catches `PsbtSighashError`/
+  `PsbtNotFullySignedError` from `finalizePsbt` and returns a plain-language re-sign message,
+  not a raw exception).
+- **Multisig (`bitcoin/multisigPsbt.ts`):** both `combineMultisigPsbts` (the two entry points
+  where an incoming cosigner PSBT is merged) and `finalizeMultisigPsbt`'s pre-loop now
+  validate any *pre-existing* finalization fields (`finalScriptWitness`/`finalScriptSig`)
+  structurally — script binding, DER encoding, `SIGHASH_ALL` trailing byte, and quorum
+  signature count — before treating an input as already-finalized, throwing
+  `MultisigPsbtError('invalid_finalization')` otherwise. Previously a cosigner could attach
+  garbage `finalScriptWitness` with zero real signatures and it would be copied through
+  verbatim, durably marking the draft "ready to broadcast" when it wasn't (availability DoS
+  — only the owner deleting/rebuilding could recover). Fixed at both combine entries **and**
+  the finalize pre-loop so neither path can be used to smuggle a tampered finalization past
+  the other.
+
+**Scenarios:**
+1. Sign a single-sig PSBT with a test signer forced to emit `SIGHASH_NONE` (or `SIGHASH_SINGLE`)
+   instead of the default `SIGHASH_ALL`, then upload it for broadcast.
+   - **Expected:** broadcast refuses with a plain-language "re-sign with the default
+     (SIGHASH_ALL) setting" message — never finalizes, never reaches the network.
+2. On a multisig draft, hand-craft a cosigner PSBT whose `finalScriptWitness` is garbage
+   (not a real quorum of `SIGHASH_ALL` signatures over the correct `witnessScript`) and
+   submit it both (a) as the incoming PSBT to combine, and (b) already sitting on a PSBT
+   passed directly to `finalizeMultisigPsbt`.
+   - **Expected:** both paths throw `invalid_finalization` — refused at combine **and**
+     refused at finalize; neither path adopts the tampered finalization.
+3. Import a PSBT that Bitcoin Core itself already finalized legitimately (e.g. via
+   `walletprocesspsbt`/`descriptorprocesspsbt`, real quorum signatures, correct
+   `witnessScript`/`redeemScript`).
+   - **Expected:** this is **not** rejected — the structural check passes and the
+     already-finalized input is adopted normally. The gate distinguishes tampered
+     finalization from a legitimately-finalized import.
+- **PASS:** scenario 1 refused with a re-sign message; scenario 2 refused at both combine and
+  finalize; scenario 3's legitimate Core-finalized import still succeeds. **Residual scope**
+  (not a gap in this scenario, just don't overclaim it): validation is structural (script +
+  encoding + count), not full cryptographic signature verification against the descriptor's
+  actual pubkeys — tracked as a separate P3 hardening follow-up, not required for this PASS.
 
 ### 18.10 Fee-rate ceiling + send-max `[none]/[emulator]`
 1. Enter a fee **rate** above `MAX_FEE_RATE = 1000` sat/vB (or a sats-total fat-fingered
@@ -3419,7 +3693,14 @@ was ever stored).
      cached balance is never replaced by a fake zero (`portfolioViewState`: `lastSyncedAt`
      wins over `refreshFailed` → `'ready'`/`'unreachable'`/`'first-sync'`).
 - **PASS:** all wallets show; no wallet flips to a false 0 balance on a transient refresh
-  failure.
+  failure. **Caveat (`cairn-kxhv`, open):** this PASS bar assumes the wallet's real activity
+  fits inside `gapLimitScanner`'s `HARD_CAP = 400` (per chain — receive/change). A wallet
+  with legitimate address activity past index 399 (a heavy long-lived wallet, or one
+  restored from software using a larger gap limit) has its scan **silently truncated** —
+  no log, no flag, no user-facing warning — and the balance shown will be an undercount of
+  coins that are still on-chain and unspendable through Cairn. This scenario does not
+  exercise that depth; treat a wallet believed to have >400 consecutive addresses used on
+  either chain as a separate, not-yet-covered case, not an automatic PASS.
 
 ### 20.2 Concurrent draft builds on one wallet (serialization) `[emulator]`
 - Same as §18.8. **PASS:** `withLock('wallet:<id>')` prevents two concurrent builds from
@@ -3503,7 +3784,14 @@ was ever stored).
 2. Observe `/activity` and the notification panel.
    - **Expected:** no flood of false "payment received"/"confirmed" for old txs.
 - **PASS:** zero false notifications for pre-existing history; new deposits still notify
-  once each (dedup via `notified_txids`).
+  once each (dedup via `notified_txids`). **Caveat (`cairn-43dx`, open):** live push
+  notifications only cover the first `WATCH_WINDOW = 30` addresses per chain from index 0,
+  independent of the wallet's actual gap-limit cursor (§4). A deposit to receive/change
+  index 31+ on a wallet with that much history fires **no** live `tx_received`/`tx_confirmed`
+  push — it's still picked up correctly (and correctly reflected in balance) on the next
+  portfolio-load gap-limit scan, so this is a notification-timeliness blind spot, not a
+  balance-correctness one. Don't test this scenario only with a fresh, low-index wallet and
+  assume it also proves live-notification coverage at higher indices.
 
 ### 20.10 Back-button / browser-history regression sweep `[none]`
 Covers the five-commit fix series (`cairn-y7ac`, `4b98a1e`, `7fbbdd4`, `d22888c`, `a19dfa2`
