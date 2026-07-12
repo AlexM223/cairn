@@ -4,7 +4,41 @@
 // (throttle returns cached without scanning; concurrent callers coalesce to ONE
 // scan) are covered without a live Electrum backend or a wallet fixture.
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { Transaction, NETWORK } from '@scure/btc-signer';
+
+// Mocks for the doWalletScan coinbase-bucketing regression tests (QA finding
+// F2) below — same shape as cpfp.test.ts's chain/walletScan mock, exposing
+// ONLY getTxHex (no getTx) to mirror an Electrum-only backend.
+const { getTxHexMock, listUnspentMock, scanWalletMock, findNextUnusedIndexMock } = vi.hoisted(() => ({
+	getTxHexMock: vi.fn(),
+	listUnspentMock: vi.fn(),
+	scanWalletMock: vi.fn(),
+	findNextUnusedIndexMock: vi.fn()
+}));
+
+vi.mock('./chain', () => ({
+	getChain: () => ({
+		getTxHex: getTxHexMock,
+		getTip: () => Promise.resolve({ height: 900_050 }),
+		electrum: {
+			listUnspent: listUnspentMock,
+			// getWalletUtxos batches listunspent via batchRequest — dispatch each
+			// sub-request to the same per-scripthash listUnspent mock.
+			batchRequest: (items: { method: string; params: unknown[] }[]) =>
+				Promise.all(items.map((it) => listUnspentMock(it.params[0])))
+		}
+	})
+}));
+
+vi.mock('./bitcoin/walletScan', async (orig) => {
+	const actual = await orig<typeof import('./bitcoin/walletScan')>();
+	return { ...actual, scanWallet: scanWalletMock, findNextUnusedIndex: findNextUnusedIndexMock };
+});
+
+import { db } from './db';
+import { registerUser } from './auth';
+import { setSetting } from './settings';
 import {
 	singleFlightThrottled,
 	THROTTLE_MS,
@@ -15,6 +49,7 @@ import {
 	summarizeWalletSnapshot,
 	summarizeMultisigSnapshot,
 	finalizeCachedBalance,
+	refreshWalletSnapshot,
 	EMPTY_WALLET_SNAPSHOT,
 	EMPTY_MULTISIG_SNAPSHOT,
 	type PortfolioRefreshItem,
@@ -490,5 +525,112 @@ describe('summarizeWalletSnapshot / finalizeCachedBalance', () => {
 			hasPending: false,
 			latestConfirmedTime: 1_699_000_000
 		});
+	});
+});
+
+// --------------------------------------- doWalletScan coinbase bucketing (F2)
+//
+// QA finding F2 (P0): in Electrum-only mode, isCoinbaseTx used to resolve
+// EVERY utxo to 'unknown' (getTx requires Core RPC), and this module's
+// doWalletScan bucketed coinbaseUtxos with a bare truthiness filter
+// (`.filter((u) => u.coinbase)`) — so 'unknown' (truthy) rendered every
+// ordinary deposit and change output as an immature mining reward. These
+// tests exercise the REAL doWalletScan (via refreshWalletSnapshot, since
+// doWalletScan itself isn't exported) against a seeded wallet row, with the
+// chain/scan mocked at the same seam cpfp.test.ts uses.
+
+const ZPUB =
+	'zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs';
+const RECEIVE_0 = 'bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu'; // m/0/0
+
+function wipeWalletFixtures(): void {
+	db.exec(
+		'DELETE FROM wallet_snapshots; DELETE FROM sessions; DELETE FROM wallets; DELETE FROM users; DELETE FROM settings;'
+	);
+}
+
+async function seedWallet(): Promise<{ userId: number; walletId: number }> {
+	setSetting('registration_mode', 'open');
+	const user = await registerUser({
+		email: `f2-${Math.random().toString(36).slice(2)}@example.com`,
+		password: 'correct horse battery',
+		displayName: 'u'
+	});
+	const res = db
+		.prepare(
+			"INSERT INTO wallets (user_id, name, type, xpub, script_type, master_fingerprint, derivation_path) VALUES (?, 'W', 'xpub', ?, 'p2wpkh', '73c5da0a', ?)"
+		)
+		.run(user.id, ZPUB, "m/84'/0'/0'");
+	return { userId: user.id, walletId: Number(res.lastInsertRowid) };
+}
+
+/** Point the mocked scan + listunspent at ONE confirmed UTXO on RECEIVE_0. */
+function stubOneConfirmedUtxo(fundingTxid: string, value: number, height: number): void {
+	scanWalletMock.mockResolvedValue({
+		addresses: [{ address: RECEIVE_0, index: 0, change: false, used: true, balance: value }],
+		txs: [],
+		confirmed: value,
+		unconfirmed: 0
+	});
+	listUnspentMock.mockResolvedValue([{ tx_hash: fundingTxid, tx_pos: 0, value, height }]);
+	findNextUnusedIndexMock.mockResolvedValue(1);
+}
+
+/** Raw hex of an ordinary (non-coinbase) funding tx — a real prevout input. */
+function normalRawHex(): string {
+	const tx = new Transaction({ allowUnknownInputs: true, disableScriptCheck: true });
+	tx.addInput({ txid: 'ab'.repeat(32), index: 0 });
+	tx.addOutputAddress(RECEIVE_0, 150_000_000n, NETWORK);
+	return tx.hex;
+}
+
+/** Raw hex of a genuine coinbase tx — the synthetic zero-prevout/0xffffffff input. */
+function coinbaseRawHex(): string {
+	const tx = new Transaction({ allowUnknownInputs: true, disableScriptCheck: true });
+	tx.addInput({ txid: '00'.repeat(32), index: 0xffffffff });
+	tx.addOutputAddress(RECEIVE_0, 5_000_000_000n, NETWORK);
+	return tx.hex;
+}
+
+describe('doWalletScan coinbase bucketing — QA finding F2 regression lock', () => {
+	beforeEach(() => {
+		wipeWalletFixtures();
+		getTxHexMock.mockReset();
+		listUnspentMock.mockReset();
+		scanWalletMock.mockReset();
+		findNextUnusedIndexMock.mockReset();
+	});
+
+	it('an ordinary confirmed deposit (Electrum-only: getTxHex works) is NOT bucketed as a mining reward', async () => {
+		const { userId, walletId } = await seedWallet();
+		stubOneConfirmedUtxo('ab'.repeat(32), 150_000_000, 900_000); // 51 confs at tip 900_050
+		getTxHexMock.mockResolvedValue(normalRawHex());
+
+		const snap = await refreshWalletSnapshot(userId, walletId, { force: true });
+		expect(snap).not.toBeNull();
+		expect(snap!.coinbaseUtxos).toEqual([]);
+	});
+
+	it('a genuine MATURE coinbase deposit IS bucketed as a mining reward', async () => {
+		const { userId, walletId } = await seedWallet();
+		stubOneConfirmedUtxo('cd'.repeat(32), 5_000_000_000, 800_000); // 100+ confs — mature
+		getTxHexMock.mockResolvedValue(coinbaseRawHex());
+
+		const snap = await refreshWalletSnapshot(userId, walletId, { force: true });
+		expect(snap).not.toBeNull();
+		expect(snap!.coinbaseUtxos).toHaveLength(1);
+		expect(snap!.coinbaseUtxos[0]).toMatchObject({ txid: 'cd'.repeat(32), vout: 0 });
+	});
+
+	it("a chain hiccup (getTxHex failing => coinbase 'unknown') does NOT bucket the coin as a mining reward", async () => {
+		const { userId, walletId } = await seedWallet();
+		stubOneConfirmedUtxo('ef'.repeat(32), 150_000_000, 900_000);
+		getTxHexMock.mockRejectedValue(new Error('electrum: connection reset'));
+
+		const snap = await refreshWalletSnapshot(userId, walletId, { force: true });
+		expect(snap).not.toBeNull();
+		// The pre-fix bug: 'unknown' is truthy, so a bare `.filter((u) => u.coinbase)`
+		// would have put this coin here. Strict `=== true` must exclude it.
+		expect(snap!.coinbaseUtxos).toEqual([]);
 	});
 });

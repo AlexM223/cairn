@@ -1,26 +1,42 @@
 // Coinbase-maturity fail-closed behavior on chain-RPC failure (cairn-9lnj,
-// pinning the cairn-7fmd fix in commit c17328b).
+// pinning the cairn-7fmd fix in commit c17328b), PLUS the Electrum-only
+// fund-freeze fix (QA finding F2, P0): isCoinbaseTx now derives coinbase-ness
+// from the funding tx's RAW HEX (getTxHex — served by a plain Electrum
+// connection via blockchain.transaction.get) instead of a decoded/verbose tx
+// lookup (getTx, which requires Core RPC or an Esplora backend and
+// unconditionally throws without one). The old getTx-based check returned
+// 'unknown' for EVERY UTXO in Electrum-only deployments, which walletSync.ts's
+// bare-truthiness filter then rendered as an immature mining reward — freezing
+// every ordinary deposit and change output for ~100 confirmations.
+//
+// The mocked chain seam below deliberately exposes ONLY getTxHex (no getTx) —
+// mirroring a real Electrum-only backend and guarding against a future
+// regression back to getTx: if isCoinbaseTx ever called getTx again, the mock
+// object wouldn't have that method, the call would throw, and every
+// happy-path assertion in this file would fail (status degrading to
+// 'unknown' instead of a definitive true/false).
 //
 // isCoinbaseTx used to swallow a transient chain failure and return FALSE —
 // an immature mining reward then looked ordinary and spendable, bypassing the
 // 100-block maturity guard. The fix propagates 'unknown', and the shared spend
 // rules (selectSpendCandidates in psbt.ts) treat an unverifiable coin inside
 // the maturity window conservatively: dropped from automatic selection,
-// refused with a clear error under coin control. These tests mock the chain
-// seam (getChain from ../chain) and pin the whole path: annotation verdict →
-// selection outcome.
+// refused with a clear error under coin control. These tests pin the whole
+// path: annotation verdict → selection outcome.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { Transaction, NETWORK } from '@scure/btc-signer';
 
-const getTxMock = vi.fn<(txid: string) => Promise<{ vin: Record<string, unknown>[] }>>();
+const getTxHexMock = vi.fn<(txid: string) => Promise<string>>();
 vi.mock('../chain', () => ({
-	getChain: () => ({ getTx: getTxMock })
+	getChain: () => ({ getTxHex: getTxHexMock })
 }));
 
 import { annotateCoinbase } from './coinbaseScan';
 import { selectSpendCandidates, PsbtError, type SpendableUtxo } from './psbt';
 
 const ADDRESS = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4';
+const CHANGE_ADDRESS = 'bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu';
 
 /** A confirmed UTXO with a caller-chosen txid; coinbase status undetermined. */
 function utxo(txid: string, height = 900_000): SpendableUtxo {
@@ -35,16 +51,45 @@ function freshTxid(): string {
 	return (nextTxid++).toString(16).padStart(2, '0').repeat(32).slice(0, 64);
 }
 
-const NORMAL_TX = { vin: [{ prevout: 'aa'.repeat(32) }] };
-const COINBASE_TX = { vin: [{ coinbase: '044c86041b020602' }] };
+/**
+ * Raw hex of an ordinary (non-coinbase) funding tx: a real (non-synthetic)
+ * prevout input. `withChangeOutput` adds a second output to model the
+ * "wallet's own change output" scenario from QA finding F2's corroboration —
+ * coinbase-ness is a property of the funding tx's INPUT, not of what its
+ * outputs are later spent as, so a normal input stays non-coinbase regardless
+ * of how many outputs it has.
+ */
+function normalRawHex(withChangeOutput = false): string {
+	const tx = new Transaction({ allowUnknownInputs: true, disableScriptCheck: true });
+	tx.addInput({ txid: 'ab'.repeat(32), index: 0 });
+	tx.addOutputAddress(ADDRESS, 150_000_000n, NETWORK);
+	if (withChangeOutput) tx.addOutputAddress(CHANGE_ADDRESS, 44_999_856n, NETWORK);
+	return tx.hex;
+}
+
+/**
+ * Raw hex of a genuine coinbase tx: exactly one input carrying the synthetic
+ * marker prevout (32 zero bytes, index 0xffffffff) — the consensus-level
+ * definition isCoinbaseTx now checks directly.
+ */
+function coinbaseRawHex(): string {
+	const tx = new Transaction({ allowUnknownInputs: true, disableScriptCheck: true });
+	tx.addInput({ txid: '00'.repeat(32), index: 0xffffffff });
+	tx.addOutputAddress(ADDRESS, 5_000_000_000n, NETWORK);
+	return tx.hex;
+}
+
+const NORMAL_HEX = normalRawHex();
+const CHANGE_HEX = normalRawHex(true);
+const COINBASE_HEX = coinbaseRawHex();
 
 beforeEach(() => {
-	getTxMock.mockReset();
+	getTxHexMock.mockReset();
 });
 
 describe('annotateCoinbase under chain-RPC failure (cairn-9lnj / cairn-7fmd)', () => {
 	it("marks the UTXO 'unknown' — NOT a silent 'not a coinbase' — when the funding-tx fetch fails", async () => {
-		getTxMock.mockRejectedValue(new Error('electrum: connection reset'));
+		getTxHexMock.mockRejectedValue(new Error('electrum: connection reset'));
 		const u = utxo(freshTxid());
 		await annotateCoinbase([u]);
 		expect(u.coinbase).toBe('unknown');
@@ -54,9 +99,9 @@ describe('annotateCoinbase under chain-RPC failure (cairn-9lnj / cairn-7fmd)', (
 	it('a fetch failure never fails the whole scan, and other coins still resolve', async () => {
 		const bad = utxo(freshTxid());
 		const good = utxo(freshTxid());
-		getTxMock.mockImplementation(async (txid) => {
+		getTxHexMock.mockImplementation(async (txid) => {
 			if (txid === bad.txid) throw new Error('timeout');
-			return NORMAL_TX;
+			return NORMAL_HEX;
 		});
 		await expect(annotateCoinbase([bad, good])).resolves.toBeDefined();
 		expect(bad.coinbase).toBe('unknown');
@@ -65,24 +110,31 @@ describe('annotateCoinbase under chain-RPC failure (cairn-9lnj / cairn-7fmd)', (
 
 	it("never caches 'unknown': a later scan re-fetches and can resolve the truth", async () => {
 		const u = utxo(freshTxid());
-		getTxMock.mockRejectedValueOnce(new Error('hiccup'));
+		getTxHexMock.mockRejectedValueOnce(new Error('hiccup'));
 		await annotateCoinbase([u]);
 		expect(u.coinbase).toBe('unknown');
 
 		// The chain recovers — the SAME txid must be fetched again, not served
 		// from a poisoned cache, and now resolves definitively.
-		getTxMock.mockResolvedValueOnce(COINBASE_TX);
+		getTxHexMock.mockResolvedValueOnce(COINBASE_HEX);
 		await annotateCoinbase([u]);
 		expect(u.coinbase).toBe(true);
-		expect(getTxMock).toHaveBeenCalledTimes(2);
+		expect(getTxHexMock).toHaveBeenCalledTimes(2);
 	});
 
 	it('caches definitive results: the second scan of a known txid never re-fetches', async () => {
 		const u = utxo(freshTxid());
-		getTxMock.mockResolvedValue(NORMAL_TX);
+		getTxHexMock.mockResolvedValue(NORMAL_HEX);
 		await annotateCoinbase([u]);
 		await annotateCoinbase([utxo(u.txid)]);
-		expect(getTxMock).toHaveBeenCalledTimes(1);
+		expect(getTxHexMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("a malformed/unparseable raw hex resolves 'unknown' too, not a crash or a silent false", async () => {
+		getTxHexMock.mockResolvedValue('not-valid-hex-zz');
+		const u = utxo(freshTxid());
+		await annotateCoinbase([u]);
+		expect(u.coinbase).toBe('unknown');
 	});
 });
 
@@ -92,7 +144,7 @@ describe('unknown-coinbase coins are unspendable inside the maturity window (cai
 	const TIP = 900_050;
 
 	async function unknownUtxo(height = 900_000): Promise<SpendableUtxo> {
-		getTxMock.mockRejectedValue(new Error('chain down'));
+		getTxHexMock.mockRejectedValue(new Error('chain down'));
 		const u = utxo(freshTxid(), height);
 		await annotateCoinbase([u]);
 		expect(u.coinbase).toBe('unknown'); // fixture sanity
@@ -114,7 +166,7 @@ describe('unknown-coinbase coins are unspendable inside the maturity window (cai
 	it('automatic selection with other coins available excludes exactly the unverifiable one', async () => {
 		const suspect = await unknownUtxo();
 		const clean = utxo(freshTxid(), 800_000);
-		getTxMock.mockResolvedValue(NORMAL_TX);
+		getTxHexMock.mockResolvedValue(NORMAL_HEX);
 		await annotateCoinbase([clean]);
 		const { spendable } = selectSpendCandidates({ utxos: [suspect, clean], tipHeight: TIP }, 'wallet');
 		expect(spendable.map((s) => s.txid)).toEqual([clean.txid]);
@@ -144,11 +196,65 @@ describe('unknown-coinbase coins are unspendable inside the maturity window (cai
 	});
 });
 
-describe('happy path: RPC works (cairn-9lnj)', () => {
+describe('Electrum-only mode (getTxHex works, no getTx configured) — QA finding F2 regression lock', () => {
+	const TIP = 900_050;
+
+	it('an ordinary deposit resolves coinbase === false, is spendable, and is NOT flagged as a mining reward', async () => {
+		getTxHexMock.mockResolvedValue(NORMAL_HEX);
+		const u = utxo(freshTxid(), 900_000); // 51 confs — would be immature IF it were a coinbase
+		await annotateCoinbase([u]);
+		expect(u.coinbase).toBe(false);
+		const { spendable } = selectSpendCandidates({ utxos: [u], tipHeight: TIP }, 'wallet');
+		expect(spendable).toEqual([u]);
+	});
+
+	it('a change-output scenario (ordinary input, two outputs) resolves coinbase === false', async () => {
+		getTxHexMock.mockResolvedValue(CHANGE_HEX);
+		const u = utxo(freshTxid(), 900_000);
+		await annotateCoinbase([u]);
+		expect(u.coinbase).toBe(false);
+		const { spendable } = selectSpendCandidates({ utxos: [u], tipHeight: TIP }, 'wallet');
+		expect(spendable).toEqual([u]);
+	});
+
+	it('a true coinbase tx (raw hex with the zero-prevout/0xffffffff input) resolves coinbase === true and gets maturity treatment', async () => {
+		getTxHexMock.mockResolvedValue(COINBASE_HEX);
+		const immature = utxo(freshTxid(), 900_000); // 51 confs — immature
+		await annotateCoinbase([immature]);
+		expect(immature.coinbase).toBe(true);
+		expect(() => selectSpendCandidates({ utxos: [immature], tipHeight: TIP }, 'wallet')).toThrow(
+			/no mature coins/
+		);
+
+		const mature = utxo(freshTxid(), 800_000); // 100+ confs — mature
+		await annotateCoinbase([mature]);
+		expect(mature.coinbase).toBe(true);
+		const { spendable } = selectSpendCandidates({ utxos: [mature], tipHeight: TIP }, 'wallet');
+		expect(spendable).toEqual([mature]);
+	});
+
+	it('getTxHex ALSO failing (a true transient failure) still resolves unknown and the spend guard still refuses', async () => {
+		getTxHexMock.mockRejectedValue(new Error('electrum: connection reset'));
+		const u = utxo(freshTxid(), 900_000);
+		await annotateCoinbase([u]);
+		expect(u.coinbase).toBe('unknown');
+		try {
+			selectSpendCandidates(
+				{ utxos: [u], onlyUtxos: [{ txid: u.txid, vout: 0 }], tipHeight: TIP },
+				'wallet'
+			);
+			expect.unreachable();
+		} catch (e) {
+			expect((e as PsbtError).code).toBe('immature_coinbase');
+		}
+	});
+});
+
+describe('happy path: raw-hex parsing works (cairn-9lnj)', () => {
 	const TIP = 900_050;
 
 	it('a non-coinbase coin resolves false and passes selection untouched', async () => {
-		getTxMock.mockResolvedValue(NORMAL_TX);
+		getTxHexMock.mockResolvedValue(NORMAL_HEX);
 		const u = utxo(freshTxid());
 		await annotateCoinbase([u]);
 		expect(u.coinbase).toBe(false);
@@ -157,7 +263,7 @@ describe('happy path: RPC works (cairn-9lnj)', () => {
 	});
 
 	it('an immature coinbase resolves true and is flagged: dropped from auto, rejected under coin control', async () => {
-		getTxMock.mockResolvedValue(COINBASE_TX);
+		getTxHexMock.mockResolvedValue(COINBASE_HEX);
 		const u = utxo(freshTxid(), 900_000); // 51 confs at TIP — immature
 		await annotateCoinbase([u]);
 		expect(u.coinbase).toBe(true);
@@ -178,7 +284,7 @@ describe('happy path: RPC works (cairn-9lnj)', () => {
 	});
 
 	it('a MATURE coinbase (100+ confirmations) resolves true and stays spendable', async () => {
-		getTxMock.mockResolvedValue(COINBASE_TX);
+		getTxHexMock.mockResolvedValue(COINBASE_HEX);
 		const u = utxo(freshTxid(), 800_000);
 		await annotateCoinbase([u]);
 		expect(u.coinbase).toBe(true);

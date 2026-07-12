@@ -426,8 +426,11 @@ async function doWalletScan(userId: number, row: WalletRow): Promise<WalletSnaps
 			getChain().getTip()
 		]);
 		tipHeight = tip.height;
+		// Strict equality: u.coinbase can be 'unknown' (unverifiable, truthy in
+		// JS) as well as true/false. Only a DEFINITE coinbase belongs in this
+		// bucket — 'unknown' must never render as a mining reward.
 		coinbaseUtxos = utxos
-			.filter((u) => u.coinbase)
+			.filter((u) => u.coinbase === true)
 			.map((u) => ({ txid: u.txid, vout: u.vout, value: u.value, height: u.height }));
 	} catch {
 		coinbaseUtxos = [];
@@ -500,8 +503,10 @@ async function doMultisigScan(userId: number, multisig: MultisigRow): Promise<Mu
 		// guard the tip separately so a tip hiccup just hides the coinbase section.
 		const tip = await getChain().getTip();
 		tipHeight = tip.height;
+		// Strict equality — see the single-sig scan above: 'unknown' is truthy
+		// but must not be bucketed as a mining reward.
 		coinbaseUtxos = detail.utxos
-			.filter((u) => u.coinbase)
+			.filter((u) => u.coinbase === true)
 			.map((u) => ({ txid: u.txid, vout: u.vout, value: u.value, height: u.height }));
 	} catch {
 		coinbaseUtxos = [];
