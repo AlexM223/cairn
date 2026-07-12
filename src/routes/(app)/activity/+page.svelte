@@ -1,9 +1,11 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
+	import Amount from '$lib/components/Amount.svelte';
+	import CopyText from '$lib/components/CopyText.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
 	import RingStub from '$lib/components/heartwood/RingStub.svelte';
-	import { timeAgo, formatBtc, formatNumber } from '$lib/format';
+	import { timeAgo, formatNumber, truncateMiddle } from '$lib/format';
 
 	// Mirrors the server's ActivityEvent (kept local so this client component
 	// never imports a $lib/server module).
@@ -342,7 +344,10 @@
 								<div class="meta">
 									<span>{metaFor(e)}</span>
 									{#if txid(e)}
-										<a class="mono link" href="/explorer/tx/{txid(e)}">{txid(e)!.slice(0, 12)}…</a>
+										<a class="mono link" href="/explorer/tx/{txid(e)}"
+											>{truncateMiddle(txid(e)!, 6, 6)}</a
+										>
+										<CopyText value={txid(e)!} display="copy" mono={false} />
 									{:else if height(e)}
 										<a class="mono link" href="/explorer/block/{height(e)}">
 											ring segment {formatNumber(height(e)!)}
@@ -351,8 +356,13 @@
 								</div>
 							</div>
 							{#if sats !== null}
-								<span class="amount" class:in={marker.kind === 'rings' && marker.direction === 'in'}>
-									{marker.kind === 'rings' && marker.direction === 'out' ? '−' : '+'}{formatBtc(sats)}
+								<span class="amount">
+									<Amount
+										sats={marker.kind === 'rings' && marker.direction === 'out' ? -Math.abs(sats) : Math.abs(sats)}
+										size="row"
+										sign
+										direction={marker.kind === 'rings' && marker.direction === 'in' ? 'in' : 'out'}
+									/>
 								</span>
 							{:else if q}
 								<span class="quorum-badge">{q}</span>

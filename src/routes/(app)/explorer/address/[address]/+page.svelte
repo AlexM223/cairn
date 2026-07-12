@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import Icon from '$lib/components/Icon.svelte';
+	import Amount from '$lib/components/Amount.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
@@ -183,10 +184,7 @@
 				{/if}
 				{#if info}
 					<div class="hero-row">
-						<span class="hero-number hero-bal" title="{formatSats(info.confirmedBalance)} sats">
-							{formatBtc(info.confirmedBalance)}
-						</span>
-						<span class="hero-unit">BTC</span>
+						<Amount sats={info.confirmedBalance} size="hero" />
 					</div>
 					<div class="addr mono"><CopyText value={info.address} /></div>
 					<div class="meta">
@@ -194,8 +192,6 @@
 							<Term tip={typeInfo.explanation}>
 								<span class="badge badge-accent">{typeInfo.label} · {typeInfo.prefix}</span>
 							</Term>
-						{:else if info.scriptType}
-							<span class="badge badge-neutral">{info.scriptType.toUpperCase()}</span>
 						{/if}
 						{#if info.used}
 							<span
@@ -269,13 +265,16 @@
 							>Pending</Term
 						>
 					</span>
-					<span class="stat-value tabular" title="{formatSats(info.unconfirmedBalance)} sats">
+					<span class="stat-value tabular">
 						{#if info.unconfirmedBalance === 0}
 							—
 						{:else}
-							<span class={info.unconfirmedBalance > 0 ? 'pos' : 'neg'}>
-								{info.unconfirmedBalance > 0 ? '+' : ''}{formatBtc(info.unconfirmedBalance)} BTC
-							</span>
+							<Amount
+								sats={info.unconfirmedBalance}
+								size="inline"
+								sign
+								direction={info.unconfirmedBalance > 0 ? 'in' : 'out'}
+							/>
 						{/if}
 					</span>
 				</div>
@@ -286,17 +285,13 @@
 				{#if info.totalReceived !== null}
 					<div class="stat">
 						<span class="stat-label">Total received</span>
-						<span class="stat-value tabular" title="{formatSats(info.totalReceived)} sats">
-							{formatBtc(info.totalReceived)} BTC
-						</span>
+						<span class="stat-value tabular"><Amount sats={info.totalReceived} size="inline" /></span>
 					</div>
 				{/if}
 				{#if info.totalSent !== null && info.totalSent > 0}
 					<div class="stat">
 						<span class="stat-label">Total sent</span>
-						<span class="stat-value tabular" title="{formatSats(info.totalSent)} sats">
-							{formatBtc(info.totalSent)} BTC
-						</span>
+						<span class="stat-value tabular"><Amount sats={info.totalSent} size="inline" /></span>
 					</div>
 				{/if}
 			</section>

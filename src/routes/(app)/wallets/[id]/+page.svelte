@@ -4,6 +4,7 @@
 	import { afterNavigate, goto, invalidate, replaceState } from '$app/navigation';
 	import { onNewBlock } from '$lib/liveBlocks';
 	import Icon from '$lib/components/Icon.svelte';
+	import Amount from '$lib/components/Amount.svelte';
 	import SyncIndicator from '$lib/components/heartwood/SyncIndicator.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
@@ -517,10 +518,7 @@
 
 			{#if scan}
 				<div class="hw-hero">
-					<span class="hero-number hw-hero-btc" title="{formatSats(scan.confirmed)} sats"
-						>{formatBtc(scan.confirmed)}</span
-					>
-					<span class="hw-hero-unit">BTC</span>
+					<Amount sats={scan.confirmed} size="hero" />
 				</div>
 				<p class="hw-hero-sub">
 					<span class="tabular">{formatSats(scan.confirmed)} sats</span>
@@ -635,9 +633,7 @@
 							<li class="progress-row">
 								<TxStatusBadge status={tx.status} />
 								<span class="mono text-muted">{truncateMiddle(tx.recipient, 8, 6)}</span>
-								<span class="tabular grow" title="{formatSats(tx.amount)} sats">
-									{formatBtc(tx.amount)} BTC
-								</span>
+								<span class="grow"><Amount sats={tx.amount} size="inline" /></span>
 								<span class="hint">{timeAgo(isoToUnix(tx.createdAt))}</span>
 								<a href="/wallets/{data.wallet.id}/send?tx={tx.id}" class="btn btn-secondary btn-sm">
 									Resume
@@ -788,12 +784,7 @@
 									</span>
 								</div>
 								<div class="hw-tx-right">
-									<span
-										class="hw-tx-amount cancel-amount tabular"
-										title="{formatSats(ctx.amountSats)} sats — no longer on its way"
-									>
-										{formatBtc(ctx.amountSats)}
-									</span>
+									<Amount sats={ctx.amountSats} size="row" />
 									<span class="hw-tx-when">no longer on its way</span>
 								</div>
 							</div>
@@ -828,7 +819,7 @@
 										{burialRingsLabel(conf)}
 										· <a href="/explorer/tx/{tx.txid}" class="mono hw-tx-link">{truncateMiddle(tx.txid, 8, 8)}</a>
 										{#if tx.fee != null}
-											· fee {formatSats(tx.fee)} sats
+											· network fee <Amount sats={tx.fee} size="inline" />
 										{/if}
 										{#if !labels[tx.txid] && editingTxid !== tx.txid}
 											<button
@@ -940,13 +931,12 @@
 									{/if}
 								</div>
 								<div class="hw-tx-right">
-									<span
-										class="hw-tx-amount tabular"
-										class:in={tx.delta >= 0}
-										title="{formatSats(tx.delta)} sats"
-									>
-										{tx.delta > 0 ? '+' : ''}{formatBtc(tx.delta)}
-									</span>
+									<Amount
+										sats={tx.delta}
+										size="row"
+										sign
+										direction={tx.delta >= 0 ? 'in' : 'out'}
+									/>
 									<span class="hw-tx-when">
 										{tx.height <= 0 ? 'in the mempool' : timeAgo(tx.time)}
 									</span>
@@ -1051,9 +1041,9 @@
 													</button>
 												{/if}
 											</td>
-											<td class="num" title="{formatSats(addr.balance)} sats">
+											<td class="num">
 												{#if addr.balance !== 0}
-													{formatBtc(addr.balance)}
+													<Amount sats={addr.balance} size="row" />
 												{:else}
 													<span class="text-muted">0</span>
 												{/if}
@@ -1134,14 +1124,13 @@
 									</div>
 									<div class="saved-field">
 										<span class="saved-label">Amount</span>
-										<span class="tabular" title="{formatSats(tx.amount)} sats">
-											{formatBtc(tx.amount)} BTC
-										</span>
+										<Amount sats={tx.amount} size="inline" />
 									</div>
 									<div class="saved-field">
-										<span class="saved-label">Fee</span>
-										<span class="tabular" title="{formatSats(tx.fee)} sats">
-											{formatSats(tx.fee)} sats · {formatFeeRate(tx.feeRate)}
+										<span class="saved-label">Network fee</span>
+										<span class="tabular">
+											<Amount sats={tx.fee} size="inline" />
+											· {formatFeeRate(tx.feeRate)}
 										</span>
 									</div>
 								</div>
