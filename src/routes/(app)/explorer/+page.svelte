@@ -11,6 +11,7 @@
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
 	import ChainStrip from '$lib/components/heartwood/ChainStrip.svelte';
 	import RingStub from '$lib/components/heartwood/RingStub.svelte';
+	import FormingRing from '$lib/components/heartwood/FormingRing.svelte';
 	import { formatNumber, formatBytes, formatFeeRate, timeAgo, truncateMiddle } from '$lib/format';
 	import type { SearchResult } from '$lib/types';
 
@@ -93,6 +94,26 @@
 		};
 	});
 
+	// ---- forming ring (T-A, cairn-6efi.2) ----
+	// The next block visibly grows: --growth = min(1, secsSinceLastBlock/600),
+	// ticked client-side from the tip block's timestamp (no chain call — the
+	// snapshot already carries blocks[0].time). A real new block seals the ring
+	// (one-shot bloom) and rolls the tip counter; both are derived from the
+	// tip-height increase the SSE stream already drives (see onNewBlock below).
+	const tipTime = $derived(blocks[0]?.time ?? null);
+	let nowSec = $state(Math.floor(Date.now() / 1000));
+	onMount(() => {
+		const t = setInterval(() => (nowSec = Math.floor(Date.now() / 1000)), 5_000);
+		return () => clearInterval(t);
+	});
+	const growth = $derived(
+		tipTime !== null ? Math.min(1, Math.max(0, (nowSec - tipTime) / 600)) : 0
+	);
+	// Show the forming ring on the live tip view whenever we know the tip height.
+	const formingVisible = $derived(data.before === null && tipHeight !== null);
+	// One-shot seal/roll trigger — bumped only on a genuine new block (see below).
+	let sealKey = $state(0);
+
 	// Live new-block updates: refresh only the chain snapshot (tip view only).
 	let lastSeenHeight: number | null = null;
 	onMount(() => {
@@ -103,6 +124,8 @@
 			if (chain !== null && chain.tipHeight !== null) {
 				// SSE replays the current tip on connect — ignore what we already show.
 				if (height <= chain.tipHeight) return;
+				// A genuine new block: seal the forming ring + roll the tip counter once.
+				sealKey += 1;
 				// Optimistic tip (cairn-9vav): reflect the new height immediately;
 				// the block list refreshes in the background via the forced refresh.
 				chain = { ...chain, tipHeight: height };
@@ -446,7 +469,14 @@
 		<header class="hero fade-in">
 			<div class="hero-row">
 				{#if tipHeight !== null}
-					<span class="hero-number hero-height">{formatNumber(tipHeight)}</span>
+					<!-- Tip counter rolls once when a new block seals (cairn-6efi.2);
+					     the {#key} remount restarts the CSS roll, gated to real blocks
+					     (sealKey > 0) so first paint doesn't animate. -->
+					{#key sealKey}
+						<span class="hero-number hero-height" class:roll={sealKey > 0}>
+							{formatNumber(tipHeight)}
+						</span>
+					{/key}
 					<span class="hero-sub">blocks · not one removed</span>
 				{:else if loading}
 					<span class="hero-number hero-height skeleton">000,000</span>
@@ -492,16 +522,23 @@
 		</header>
 
 		<!-- =================================================== up next strip -->
-		{#if upcoming}
+		{#if formingVisible || upcoming}
 			<section class="upcoming fade-in" aria-label="Upcoming blocks">
 				<div class="upcoming-head">
 					<span class="upcoming-title">Up next</span>
-					<a href="/explorer/mempool/blocks" class="upcoming-link">
-						Full view <Icon name="arrow-right" size={13} />
-					</a>
+					{#if upcoming}
+						<a href="/explorer/mempool/blocks" class="upcoming-link">
+							Full view <Icon name="arrow-right" size={13} />
+						</a>
+					{/if}
 				</div>
 				<div class="upcoming-row">
-					{#each upcoming as block, i (i)}
+					{#if formingVisible}
+						<!-- The forming ring is the HEAD of the strip (cairn-6efi.2);
+						     projected blocks queue behind it. -->
+						<FormingRing {growth} {nextFee} {sealKey} />
+					{/if}
+					{#each upcoming ?? [] as block, i (i)}
 						<div class="upcoming-chip" class:next={i === 0} style:--depth={i}>
 							<span class="chip-eta">{i === 0 ? 'next ring' : `~${(i + 1) * 10} min`}</span>
 							<span class="chip-fee tabular">{formatFeeRate(block.medianFee)}</span>
@@ -905,6 +942,28 @@
 
 	.hero-height.skeleton {
 		color: transparent;
+	}
+
+	/* Tip counter roll on a genuine new block (cairn-6efi.2) — one-shot, calm. */
+	.hero-height.roll {
+		animation: tip-roll 0.6s var(--ease) 1;
+	}
+
+	@keyframes tip-roll {
+		0% {
+			transform: translateY(0.28em);
+			opacity: 0;
+		}
+		100% {
+			transform: translateY(0);
+			opacity: 1;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.hero-height.roll {
+			animation: none;
+		}
 	}
 
 	/* Genuinely disconnected (not loading) — a calm dash, not a shimmering
