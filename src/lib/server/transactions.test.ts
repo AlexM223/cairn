@@ -24,14 +24,15 @@ import {
 
 // The broadcast/bump tests exercise the real service path up to the network
 // edge; only the chain source itself is faked.
-const { broadcastMock, getTxMock, getTxHexMock } = vi.hoisted(() => ({
+const { broadcastMock, getTxMock, getTxHexMock, broadcastPackageMock } = vi.hoisted(() => ({
 	broadcastMock: vi.fn(),
 	getTxMock: vi.fn(),
-	getTxHexMock: vi.fn()
+	getTxHexMock: vi.fn(),
+	broadcastPackageMock: vi.fn()
 }));
 vi.mock('./chain', () => ({
 	getChain: () => ({
-		electrum: { broadcast: broadcastMock },
+		electrum: { broadcast: broadcastMock, broadcastPackage: broadcastPackageMock },
 		getTx: getTxMock,
 		getTxHex: getTxHexMock
 	})
@@ -48,6 +49,7 @@ beforeEach(() => {
 	broadcastMock.mockReset();
 	getTxMock.mockReset();
 	getTxHexMock.mockReset();
+	broadcastPackageMock.mockReset();
 	setSetting('registration_mode', 'open');
 });
 
@@ -286,6 +288,55 @@ describe('transaction lifecycle', () => {
 		broadcastMock.mockResolvedValueOnce(want);
 		const retry = await broadcastTransaction(userId, walletId, txId);
 		expect(retry.txid).toBe(want);
+	});
+
+	// cairn-kva0: prior coverage here only ever fed tryPackageRescue a
+	// NON-rescuable rejection ('mempool full' above, which fails
+	// PACKAGE_RESCUABLE_REJECTION's regex and returns null before ever touching
+	// chain.getTx/getTxHex/broadcastPackage). This pins the actual rescue
+	// SUCCESS path: a min-relay-fee rejection, an unconfirmed+fetchable parent,
+	// and an Electrum server that accepts the [parent, child] package — the
+	// broadcast must be recorded as completed with the (locally-computed, not
+	// server-echoed) child txid, never surfacing the original rejection.
+	it('rescues a min-relay-fee rejection via package relay and records the child txid as completed', async () => {
+		const { userId, walletId } = await seedWallet('a@example.com');
+		const txId = seedTx(walletId, 'awaiting_signature', null, await signedPsbt());
+		const want = await signedTxid();
+		const PARENT_TXID = '11'.repeat(32); // the fixture PSBT's one spent input
+
+		broadcastMock.mockRejectedValueOnce(new Error('min relay fee not met'));
+		getTxMock.mockResolvedValueOnce({ confirmed: false }); // the parent hasn't confirmed
+		getTxHexMock.mockResolvedValueOnce('aa'.repeat(110)); // its raw hex, fetchable
+		broadcastPackageMock.mockResolvedValueOnce({ accepted: true }); // server takes the package
+
+		const { txid, transaction } = await broadcastTransaction(userId, walletId, txId);
+
+		expect(txid).toBe(want);
+		expect(transaction.status).toBe('completed');
+		expect(transaction.txid).toBe(want);
+
+		expect(getTxMock).toHaveBeenCalledWith(PARENT_TXID);
+		expect(getTxHexMock).toHaveBeenCalledWith(PARENT_TXID);
+
+		// Parent first, child (the just-rejected raw tx) last — dependency order.
+		expect(broadcastPackageMock).toHaveBeenCalledTimes(1);
+		const [rawTxHexes] = broadcastPackageMock.mock.calls[0] as [string[]];
+		expect(rawTxHexes[0]).toBe('aa'.repeat(110));
+		expect(rawTxHexes).toHaveLength(2);
+
+		// The single standalone broadcast attempt, no separate direct rebroadcast.
+		expect(broadcastMock).toHaveBeenCalledTimes(1);
+	});
+
+	it('does not attempt a package rescue for a non-rescuable rejection reason (regression guard: mempool full stays a plain rejection)', async () => {
+		const { userId, walletId } = await seedWallet('a@example.com');
+		const txId = seedTx(walletId, 'awaiting_signature', null, await signedPsbt());
+
+		broadcastMock.mockRejectedValueOnce(new Error('mempool full'));
+		await expect(broadcastTransaction(userId, walletId, txId)).rejects.toMatchObject({ code: 'rejected' });
+
+		expect(getTxMock).not.toHaveBeenCalled();
+		expect(broadcastPackageMock).not.toHaveBeenCalled();
 	});
 
 	it('rejects a corrupt signed PSBT with a plain corruption message, not the substitution guard', async () => {

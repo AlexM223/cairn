@@ -29,16 +29,19 @@ import { isRosterMember } from './multisigRoster';
 // (whose UTXOs would otherwise come from Electrum). Everything else — multisig
 // rows, PSBT construction, signature merging, quorum math, the broadcast
 // claim — runs the real code path.
-const { broadcastMock, getTxHexMock, getTxMock, utxosMock, changeIndexMock } = vi.hoisted(() => ({
-	broadcastMock: vi.fn(),
-	getTxHexMock: vi.fn(),
-	getTxMock: vi.fn(),
-	utxosMock: vi.fn(),
-	changeIndexMock: vi.fn()
-}));
+const { broadcastMock, getTxHexMock, getTxMock, utxosMock, changeIndexMock, broadcastPackageMock } = vi.hoisted(
+	() => ({
+		broadcastMock: vi.fn(),
+		getTxHexMock: vi.fn(),
+		getTxMock: vi.fn(),
+		utxosMock: vi.fn(),
+		changeIndexMock: vi.fn(),
+		broadcastPackageMock: vi.fn()
+	})
+);
 vi.mock('./chain', () => ({
 	getChain: () => ({
-		electrum: { broadcast: broadcastMock },
+		electrum: { broadcast: broadcastMock, broadcastPackage: broadcastPackageMock },
 		getTxHex: getTxHexMock,
 		getTx: getTxMock,
 		// buildMultisigDraft reads the tip for the coinbase-maturity guard.
@@ -63,6 +66,7 @@ beforeEach(() => {
 	getTxMock.mockReset();
 	utxosMock.mockReset();
 	changeIndexMock.mockReset();
+	broadcastPackageMock.mockReset();
 	changeIndexMock.mockResolvedValue(0);
 	setSetting('registration_mode', 'open');
 });
@@ -492,6 +496,51 @@ describe('broadcastMultisigTransaction', () => {
 		honestBroadcastOnce();
 		const retry = await broadcastMultisigTransaction(userId, multisigId, txId);
 		expect(retry.txid).toMatch(/^[0-9a-f]{64}$/);
+	});
+
+	// cairn-kva0: this suite, like the single-sig one, only ever fed
+	// tryPackageRescue a NON-rescuable rejection ('mempool full' above) — the
+	// parent-fetch -> broadcastPackage -> record-as-completed branch never ran.
+	// Pin the actual rescue SUCCESS path here too.
+	it('rescues a min-relay-fee rejection via package relay and records the child txid as completed', async () => {
+		const { userId, multisigId } = await seedMultisig('pkgrescue@example.com');
+		const txId = await signedToQuorum(userId, multisigId);
+		const want = finalizeMultisigPsbt(getMultisigTransaction(userId, multisigId, txId)!.psbt).txid;
+		const PARENT_TXID = '11'.repeat(32); // multisigUtxos' one spent input
+
+		broadcastMock.mockRejectedValueOnce(new Error('min relay fee not met'));
+		getTxMock.mockResolvedValueOnce({ confirmed: false }); // parent unconfirmed
+		getTxHexMock.mockResolvedValueOnce('bb'.repeat(110)); // its raw hex, fetchable
+		broadcastPackageMock.mockResolvedValueOnce({ accepted: true }); // server takes the package
+
+		const { txid, transaction } = await broadcastMultisigTransaction(userId, multisigId, txId);
+
+		expect(txid).toBe(want);
+		expect(transaction.status).toBe('completed');
+		expect(transaction.txid).toBe(want);
+
+		expect(getTxMock).toHaveBeenCalledWith(PARENT_TXID);
+		expect(getTxHexMock).toHaveBeenCalledWith(PARENT_TXID);
+
+		expect(broadcastPackageMock).toHaveBeenCalledTimes(1);
+		const [rawTxHexes] = broadcastPackageMock.mock.calls[0] as [string[]];
+		expect(rawTxHexes[0]).toBe('bb'.repeat(110)); // parent first
+		expect(rawTxHexes).toHaveLength(2);
+
+		expect(broadcastMock).toHaveBeenCalledTimes(1); // one standalone attempt, no direct retry
+	});
+
+	it('does not attempt a package rescue for a non-rescuable rejection (regression guard: mempool full stays a plain rejection)', async () => {
+		const { userId, multisigId } = await seedMultisig('nopkgrescue@example.com');
+		const txId = await signedToQuorum(userId, multisigId);
+
+		broadcastMock.mockRejectedValueOnce(new Error('mempool full'));
+		await expect(broadcastMultisigTransaction(userId, multisigId, txId)).rejects.toMatchObject({
+			code: 'rejected'
+		});
+
+		expect(getTxMock).not.toHaveBeenCalled();
+		expect(broadcastPackageMock).not.toHaveBeenCalled();
 	});
 
 	it('refuses double-broadcast of a completed transaction before touching the network', async () => {
