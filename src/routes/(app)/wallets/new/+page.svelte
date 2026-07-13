@@ -792,7 +792,10 @@
 					{#each METHOD_CARDS as m (m.key)}
 						{@const buyDevice = referralDeviceId(m.key)}
 						{@const buyUrl = buyDevice && buyUrls ? buyUrls[buyDevice] : null}
-						<div class="method-cell">
+						<!-- data-method drives the mobile reorder below (cairn-sahi): phones
+						     can't plug in a hardware device, so "Paste public key" is pulled
+						     to the front on narrow viewports without touching desktop order. -->
+						<div class="method-cell" data-method={m.key}>
 							<!-- Explicit aria-label so each card announces its key source by name
 							     ("Trezor", "Paste public key", …) instead of a generic "button"
 							     to screen readers (cairn-oqri). -->
@@ -1848,6 +1851,18 @@
 		display: grid;
 		grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 		gap: 10px;
+	}
+
+	/* Mobile (cairn-sahi): a phone can't plug in a hardware device, so the
+	   most-usable option for a keyless beginner — pasting an xpub — leads
+	   instead of trailing behind six device-brand cards. Desktop keeps the
+	   original DOM order (device brands first, paste last). Grid item
+	   `order` reorders visually/for auto-placement without touching the
+	   underlying array or tab order semantics beyond the visual reflow. */
+	@media (max-width: 900px) {
+		.method-cell[data-method='paste'] {
+			order: -1;
+		}
 	}
 
 	/* Narrow screens: one full-width card per row keeps labels readable. */
