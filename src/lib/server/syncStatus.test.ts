@@ -153,4 +153,15 @@ describe('deriveSyncStatus', () => {
 		expect(s.verifyingYear).toBeNull();
 		expect(s.verifyingNote).toBeNull();
 	});
+
+	// cairn-7zjo — SyncBanner's `suppressed` logic coalesces the chain-health
+	// banner and the sync banner into one message by relying on this exact
+	// invariant: chainHealthy: false always drives the derived phase to
+	// 'unreachable', regardless of any other input. If this ever stopped being
+	// a hard implication, SyncBanner could show a redundant/contradictory
+	// "still syncing" banner underneath the "can't reach chain" banner.
+	it('chainHealthy: false always implies phase === "unreachable" (banner coalescing invariant, cairn-7zjo)', () => {
+		const s = deriveSyncStatus(inputs({ chainHealthy: false }));
+		expect(s.phase).toBe('unreachable');
+	});
 });

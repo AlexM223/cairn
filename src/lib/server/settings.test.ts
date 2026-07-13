@@ -14,7 +14,8 @@ import {
 	readSecretSetting,
 	getInstanceSettings,
 	getPublicInstanceSettings,
-	getChainConfig
+	getChainConfig,
+	isChainNeverConfigured
 } from './settings';
 import { isSecretEnvelope } from './secretKey';
 
@@ -147,5 +148,37 @@ describe('getChainConfig — Bitcoin Core RPC passthrough', () => {
 		expect(cfg.coreRpcUrl).toBe(RPC_URL);
 		expect(cfg.coreRpcUser).toBe(RPC_USER);
 		expect(cfg.coreRpcPass).toBe(SECRET);
+	});
+});
+// cairn-7zjo -- isChainNeverConfigured() is the "has this instance ever been
+// pointed at a chain source" signal that gates the calm first-run chain
+// banner and SyncBanner suppression. It must read true ONLY when BOTH
+// connection_mode and chain_provisioned_by are still unset; either one being
+// set (explicit user choice, or an env/probe auto-seed) means the instance
+// has been configured at least once, even if the other key never got stamped.
+describe('isChainNeverConfigured (cairn-7zjo)', () => {
+	it('is true when both connection_mode and chain_provisioned_by are absent', () => {
+		expect(isChainNeverConfigured()).toBe(true);
+	});
+
+	it('is false once connection_mode is set to public', () => {
+		setSetting('connection_mode', 'public');
+		expect(isChainNeverConfigured()).toBe(false);
+	});
+
+	it('is false once connection_mode is set to custom', () => {
+		setSetting('connection_mode', 'custom');
+		expect(isChainNeverConfigured()).toBe(false);
+	});
+
+	it('is false when only chain_provisioned_by is set (env/probe auto-seed, no explicit mode)', () => {
+		setSetting('chain_provisioned_by', 'umbrel-env');
+		expect(isChainNeverConfigured()).toBe(false);
+	});
+
+	it('is false when both keys are set', () => {
+		setSetting('connection_mode', 'custom');
+		setSetting('chain_provisioned_by', 'umbrel-env');
+		expect(isChainNeverConfigured()).toBe(false);
 	});
 });
