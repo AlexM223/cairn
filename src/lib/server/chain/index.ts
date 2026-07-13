@@ -34,13 +34,17 @@ import {
 	getCachedRawTx,
 	cacheRawTx,
 	getCachedBlockStats,
-	cacheBlockStats
+	cacheBlockStats,
+	getCachedPool,
+	cachePool
 } from './cache';
+import { identifyPool } from './pools';
 import type { EsploraBlock, EsploraTx } from './esplora';
 import type {
 	AddressInfo,
 	AddressTx,
 	BlockDetail,
+	BlockPool,
 	BlockSummary,
 	CpfpInfo,
 	DifficultyAdjustment,
@@ -753,6 +757,10 @@ export class ChainService {
 		const core = this.core;
 		if (core) {
 			await mapWithConcurrency(rows, RECENT_BLOCK_STATS_CONCURRENCY, async (row) => {
+				// Stats and pool are independent enrichments — a failure of one must not
+				// suppress the other, so each carries its own catch and degrades only its
+				// own fields. Both are immutable-cached by hash, so steady-state only the
+				// newly-arrived tip block actually hits Core (cairn-6efi.1/.4).
 				try {
 					const stats = await this.getRecentBlockStats(core, row.hash);
 					if (stats) applyBlockStats(row, stats);
@@ -761,9 +769,54 @@ export class ChainService {
 					// this row at its null baseline rather than failing the whole list.
 					log.debug({ err: e, height: row.height }, 'getblockstats enrichment failed; row stays null');
 				}
+				try {
+					row.pool = await this.identifyBlockPool(core, row.hash);
+				} catch (e) {
+					// Coinbase lookup failed — leave pool undefined (unknown), never guess.
+					log.debug({ err: e, height: row.height }, 'pool identification failed; row stays null');
+				}
 			});
 		}
 		return rows;
+	}
+
+	/**
+	 * Identify a block's mining pool from its coinbase (cairn-6efi.4, T-C), served
+	 * from the immutable poolCache when present. A buried block's coinbase never
+	 * changes, so a cache hit — including a cached "no known pool" (null) — is
+	 * always correct; this keeps the steady-state SWR refresh to a single new-tip
+	 * pool lookup. Two RPCs on a miss: getblock(hash,1) for the coinbase txid, then
+	 * getrawtransaction(txid, 2, hash) for the coinbase scriptSig + payout outputs
+	 * (verbosity 2, blockhash-scoped so it needs no txindex; older Core rejecting
+	 * `2` falls back to verbose=true — enough for the coinbase tag). Returns null
+	 * for any unknown coinbase so the UI shows nothing rather than a wrong pool.
+	 */
+	private async identifyBlockPool(core: CoreRpcClient, hash: string): Promise<BlockPool | null> {
+		const cached = getCachedPool(hash);
+		if (cached) return cached.pool;
+
+		const block = (await core.getBlock(hash, 1)) as CoreBlock;
+		const coinbaseTxid = Array.isArray(block.tx) ? block.tx[0] : undefined;
+		if (!coinbaseTxid) {
+			cachePool(hash, null);
+			return null;
+		}
+
+		let raw: CoreRawTx;
+		try {
+			raw = await core.call<CoreRawTx>('getrawtransaction', [coinbaseTxid, 2, hash]);
+		} catch (e) {
+			if (!(e instanceof CoreRpcError)) throw e;
+			raw = await core.call<CoreRawTx>('getrawtransaction', [coinbaseTxid, true, hash]);
+		}
+
+		const coinbaseHex = raw.vin?.[0]?.coinbase ?? null;
+		const outputAddrs = (raw.vout ?? []).map(
+			(v) => v.scriptPubKey?.address ?? v.scriptPubKey?.addresses?.[0] ?? null
+		);
+		const pool = identifyPool(coinbaseHex, outputAddrs);
+		cachePool(hash, pool);
+		return pool;
 	}
 
 	/**

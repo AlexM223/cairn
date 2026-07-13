@@ -1,6 +1,7 @@
 import { getChain } from '$lib/server/chain';
 import { classifySearch, chainErrorMessage } from '$lib/server/search';
 import { getEpochStrip } from '$lib/server/chainEpochs';
+import { ownedBlockHeights } from './ownership.server';
 import { readChainSnapshot } from '$lib/server/chainSnapshot';
 import type { PersistedChainData } from '$lib/server/chainSnapshot';
 import type { PageServerLoad } from './$types';
@@ -106,11 +107,17 @@ export const load: PageServerLoad = async ({ url, depends, locals }) => {
 				: null
 			: await loadOlderBlocks(before);
 
+	// "Yours" pip data (cairn-6efi.4): block heights where the viewing user has a
+	// tx. Viewer-scoped, DB-only (no chain call — safe in load()), bounded by the
+	// viewer's own tx count. Serialize the Set as an array for the client payload.
+	const yoursHeights = [...ownedBlockHeights(locals?.user?.id)];
+
 	return {
 		q,
 		search,
 		before,
 		chain,
+		yoursHeights,
 		lastSyncedAt: snap?.lastSyncedAt ?? null,
 		// Admins get a direct link to connection settings on the no-chain-backend
 		// banner below (cairn-obg6); non-admins keep the calm retry-only copy since

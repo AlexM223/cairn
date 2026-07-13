@@ -12,8 +12,9 @@
 	import ChainStrip from '$lib/components/heartwood/ChainStrip.svelte';
 	import RingStub from '$lib/components/heartwood/RingStub.svelte';
 	import FormingRing from '$lib/components/heartwood/FormingRing.svelte';
+	import RingBar from '$lib/components/heartwood/RingBar.svelte';
 	import { formatNumber, formatBytes, formatFeeRate, timeAgo, truncateMiddle } from '$lib/format';
-	import type { SearchResult } from '$lib/types';
+	import type { BlockSummary, SearchResult } from '$lib/types';
 
 	let { data } = $props();
 
@@ -197,6 +198,32 @@
 		if (!mb || mb.length === 0) return null;
 		return mb.slice(0, 4);
 	});
+
+	// ---- rich block rows (T-C, cairn-6efi.4) ----
+	// "Yours" pip: viewer-scoped set of block heights the current user has a tx in
+	// (computed server-side in load, zero chain calls). O(1) per row.
+	const yoursSet = $derived(new Set(data.yoursHeights ?? []));
+	// "~N BTC moved" from total_out (sats). Compact: whole numbers for big blocks,
+	// a little precision for small ones; null total_out renders nothing.
+	function movedBtc(totalOut: number | null): string | null {
+		if (totalOut === null) return null;
+		const btc = totalOut / 1e8;
+		if (btc >= 100) return `~${formatNumber(Math.round(btc))} BTC`;
+		if (btc >= 1) return `~${btc.toFixed(1)} BTC`;
+		return `~${btc.toFixed(3)} BTC`;
+	}
+	function feeRangeLabel(range: [number, number] | null): string | null {
+		if (!range) return null;
+		return `${range[0]}–${range[1]} sat/vB`;
+	}
+	// Pool copy: "Likely X" for a coinbase-derived identification (Core path); a
+	// plain miner name when it came from esplora extras (already definitive). Null
+	// (nothing rendered) when no pool is known — never a wrong guess.
+	function poolLabel(block: BlockSummary): string | null {
+		if (block.pool?.name) return `Likely ${block.pool.name}`;
+		if (block.miner) return block.miner;
+		return null;
+	}
 
 	// ---- search-as-you-type: debounced live classification of the query ----
 	//
@@ -623,14 +650,25 @@
 								: 'past'}
 							size={17}
 						/>
-						<span
-							class="row-height tabular"
-							class:tip={i === 0 && data.before === null && block.height === tipHeight}
-						>
-							{formatNumber(block.height)}
+						<span class="row-headcol">
+							<span
+								class="row-height tabular"
+								class:tip={i === 0 && data.before === null && block.height === tipHeight}
+							>
+								{formatNumber(block.height)}
+							</span>
+							{#if yoursSet.has(block.height)}
+								<span class="yours-pip" title="One of your transactions is in this block">
+									Yours
+								</span>
+							{/if}
 						</span>
+						<RingBar fullness={block.fullness} medianFee={block.medianFee} width={40} />
 						<span class="row-meta">
-							{timeAgo(block.time)}{block.miner ? ` · ${block.miner}` : ''}
+							{timeAgo(block.time)}{#if poolLabel(block)} ·
+								<span class="row-pool">{poolLabel(block)}</span>{/if}{#if feeRangeLabel(block.feeRange)}
+								· <span class="row-detail">{feeRangeLabel(block.feeRange)}</span>{/if}{#if movedBtc(block.total_out)}
+								· <span class="row-detail">{movedBtc(block.total_out)}</span>{/if}
 						</span>
 						<span class="row-txs tabular">
 							{block.txCount === null ? '—' : `${formatNumber(block.txCount)} tx`}
@@ -643,7 +681,10 @@
 				{#if pending}
 					<div class="ring-row pending-row">
 						<RingStub state="pending" size={17} />
-						<span class="row-height pending-label">pending</span>
+						<span class="row-headcol">
+							<span class="row-height pending-label">pending</span>
+						</span>
+						<span class="ringbar-spacer" aria-hidden="true"></span>
 						<span class="row-meta">{pending.meta}</span>
 						<span class="row-txs tabular">{pending.txs}</span>
 						<span class="row-size tabular">{pending.size}</span>
@@ -1166,9 +1207,17 @@
 		flex-shrink: 0;
 	}
 
-	.row-height {
-		width: 110px;
+	/* Head column: block height + optional "Yours" pip, fixed width so the
+	   fullness sliver and meta stay aligned across rows (T-C, cairn-6efi.4). */
+	.row-headcol {
+		display: flex;
+		align-items: baseline;
+		gap: 7px;
+		width: 118px;
 		flex-shrink: 0;
+	}
+
+	.row-height {
 		font-family: var(--font-serif);
 		font-weight: 600;
 		font-size: 16px;
@@ -1179,6 +1228,35 @@
 
 	.row-height.tip {
 		color: var(--accent-bright);
+	}
+
+	/* "Yours" pip — sage, quiet; the viewer has a tx in this block. */
+	.yours-pip {
+		font-size: 9.5px;
+		font-weight: 600;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		color: var(--sage);
+		background: var(--sage-muted);
+		padding: 1px 6px;
+		border-radius: 999px;
+		white-space: nowrap;
+	}
+
+	/* Fullness sliver spacer keeps the pending row's meta aligned with block rows. */
+	.ringbar-spacer {
+		width: 40px;
+		flex-shrink: 0;
+	}
+
+	/* Pool + fee-range + BTC-moved detail tokens live in the meta line; each is
+	   rendered only when its stat is present (null degrades to nothing). */
+	.row-pool {
+		color: var(--text-secondary);
+	}
+
+	.row-detail {
+		color: var(--text-faint);
 	}
 
 	.pending-label {
@@ -1333,9 +1411,18 @@
 			padding: 11px 0;
 		}
 
+		.row-headcol {
+			width: 88px;
+			gap: 5px;
+		}
+
 		.row-height {
-			width: 76px;
 			font-size: 13.5px;
+		}
+
+		.yours-pip {
+			font-size: 8.5px;
+			padding: 1px 5px;
 		}
 
 		.row-meta {
@@ -1347,6 +1434,16 @@
 		}
 
 		.row-size {
+			display: none;
+		}
+
+		/* Fullness sliver + its pending-row spacer fold away on mobile; the size
+		   column already hides here, and the meta line carries the rich detail. */
+		.ringbar-spacer {
+			display: none;
+		}
+
+		:global(.ring-row .ringbar) {
 			display: none;
 		}
 

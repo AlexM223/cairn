@@ -44,6 +44,11 @@ interface UserWalletIndex {
 	addr: Map<string, AddrEntry>;
 	/** txid -> the user's wallet(s) whose stored history contains it. */
 	txid: Map<string, OwnedWalletRef[]>;
+	/** Confirmed block heights at which the viewing user has ANY wallet tx — the
+	 *  "Yours" pip on the explorer block list (cairn-6efi.4, T-C). Driven by the
+	 *  viewer's own (small) tx set, so marking a block is O(1) lookup and needs
+	 *  ZERO per-block chain calls / no fan-out over block size. */
+	heights: Set<number>;
 }
 
 // Owner OR any accepted share (viewer/cosigner). Same access predicate as
@@ -60,6 +65,13 @@ const viewableMultisigsStmt = db.prepare(
 function buildIndex(userId: number): UserWalletIndex {
 	const addr = new Map<string, AddrEntry>();
 	const txid = new Map<string, OwnedWalletRef[]>();
+	const heights = new Set<number>();
+
+	// Confirmed txs carry a positive block height (0 / -1 = unconfirmed); an
+	// unconfirmed tx isn't in any listed block yet, so skip it.
+	const addHeight = (h: number) => {
+		if (h > 0) heights.add(h);
+	};
 
 	const addTx = (t: string, ref: OwnedWalletRef) => {
 		const arr = txid.get(t);
@@ -84,7 +96,10 @@ function buildIndex(userId: number): UserWalletIndex {
 		for (const a of snap.scan.addresses) {
 			if (!addr.has(a.address)) addr.set(a.address, { wallet: ref, change: a.change });
 		}
-		for (const t of snap.scan.txs) addTx(t.txid, ref);
+		for (const t of snap.scan.txs) {
+			addTx(t.txid, ref);
+			addHeight(t.height);
+		}
 	}
 
 	// Multisigs the user owns OR has an accepted share in.
@@ -101,10 +116,13 @@ function buildIndex(userId: number): UserWalletIndex {
 			// MultisigScanAddress.chain: 0 = receive, 1 = change.
 			if (!addr.has(a.address)) addr.set(a.address, { wallet: ref, change: a.chain === 1 });
 		}
-		for (const t of snap.detail.history) addTx(t.txid, ref);
+		for (const t of snap.detail.history) {
+			addTx(t.txid, ref);
+			addHeight(t.height);
+		}
 	}
 
-	return { addr, txid };
+	return { addr, txid, heights };
 }
 
 // Per-process memo, keyed by userId. Snapshots only change on the background
@@ -142,6 +160,18 @@ export function addressOwnership(
 	if (!userId) return null;
 	const entry = getIndex(userId).addr.get(address);
 	return entry ? { wallet: entry.wallet, change: entry.change } : null;
+}
+
+/**
+ * Block heights at which the viewing user has any wallet transaction, for the
+ * "Yours" pip on the explorer block list (cairn-6efi.4, T-C). Viewer-scoped and
+ * bounded by the viewer's own confirmed-tx count — never by block size or instance
+ * size — and reuses the same per-process memo as the address/tx badges (zero extra
+ * chain calls). Returns an empty set for a logged-out viewer.
+ */
+export function ownedBlockHeights(userId: number | undefined): Set<number> {
+	if (!userId) return new Set();
+	return getIndex(userId).heights;
 }
 
 /** Badge data for an explorer tx page. */

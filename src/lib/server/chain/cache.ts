@@ -18,7 +18,7 @@
 //          "changed" event to hook. A flat short TTL is the honest model — same
 //          reasoning as PEERS_TTL_MS in ../syncStatus.ts.
 
-import type { FeeEstimates, FeeHistogram, MempoolSummary } from '$lib/types';
+import type { BlockPool, FeeEstimates, FeeHistogram, MempoolSummary } from '$lib/types';
 import type { BlockStats } from './index';
 
 /** Safety ceiling only — the tip is normally invalidated on the 'header' event
@@ -208,4 +208,51 @@ export function blockStatsCacheSize(): number {
 /** Test hook: drop every cached block stats entry. */
 export function clearBlockStatsCache(): void {
 	blockStatsCache.clear();
+}
+
+// ---------------------------------------------------- pool-tag LRU (cairn-6efi.4, T-C)
+//
+// A block's mining pool is derived from its coinbase (chain/pools.ts). Like
+// blockStatsCache above, the coinbase of a buried block NEVER changes (a reorg
+// mints a NEW hash), so keying by block hash makes stale data structurally
+// impossible — the same "cache forever, bounded by count" model, NOT the tip/fee
+// TTL model. A NULL result (coinbase matched no known pool) is cached too: it's an
+// equally immutable, equally expensive-to-recompute fact, so re-deriving it every
+// refresh would waste the getblock + getrawtransaction round-trips. This keeps the
+// steady-state SWR refresh to a single new-tip pool lookup; the other ~14 blocks
+// are cache hits.
+
+const POOL_CACHE_MAX = 300;
+const poolCache = new Map<string, BlockPool | null>();
+
+/** Cached pool for a block hash. Returns `{ pool }` on a hit (pool may be null —
+ *  a cached "no known pool"), or undefined on a miss. Refreshes LRU recency. */
+export function getCachedPool(hash: string): { pool: BlockPool | null } | undefined {
+	if (!poolCache.has(hash)) return undefined;
+	const pool = poolCache.get(hash) ?? null;
+	// Re-insert to mark as recently used (Map iterates in insertion order).
+	poolCache.delete(hash);
+	poolCache.set(hash, pool);
+	return { pool };
+}
+
+/** Cache a block's pool (or null for "no known pool") under its hash, evicting the
+ *  least-recently-used entry past the cap. */
+export function cachePool(hash: string, pool: BlockPool | null): void {
+	poolCache.delete(hash);
+	poolCache.set(hash, pool);
+	while (poolCache.size > POOL_CACHE_MAX) {
+		const oldest = poolCache.keys().next().value;
+		if (oldest === undefined) break;
+		poolCache.delete(oldest);
+	}
+}
+
+export function poolCacheSize(): number {
+	return poolCache.size;
+}
+
+/** Test hook: drop every cached pool entry. */
+export function clearPoolCache(): void {
+	poolCache.clear();
 }

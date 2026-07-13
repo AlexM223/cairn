@@ -91,6 +91,18 @@ export interface BlockSummary {
 	/** Block fullness 0..1 (weight ÷ 4,000,000 WU), or null when weight unknown. */
 	fullness: number | null;
 	miner?: string;
+	/** Mining pool identified from the coinbase (T-C, cairn-6efi.4), or null when
+	 *  the coinbase matches no known pool. Only ever a POSITIVE identification —
+	 *  an unknown coinbase stays null so the UI never shows a wrong pool. */
+	pool?: BlockPool | null;
+}
+
+/** A mining pool identified from a block's coinbase transaction. */
+export interface BlockPool {
+	/** Display name, e.g. "Foundry USA". Rendered as "Likely {name}". */
+	name: string;
+	/** Pool homepage, when the vendored DB carries one. */
+	link?: string;
 }
 
 export interface BlockDetail extends BlockSummary {
