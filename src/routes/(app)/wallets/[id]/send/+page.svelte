@@ -18,6 +18,7 @@
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
 	import AtTipPill from '$lib/components/heartwood/AtTipPill.svelte';
 	import { formatBtc, formatSats, formatFeeRate, truncateMiddle } from '$lib/format';
+	import { classifyRecipientAddress, looksLikeAddress } from './addressShape';
 	import Amount from '$lib/components/Amount.svelte';
 	import AmountEntry from '$lib/components/send/AmountEntry.svelte';
 	import FeeSpeedPicker from '$lib/components/send/FeeSpeedPicker.svelte';
@@ -183,9 +184,9 @@
 
 	// ------------------------------------------------------------- CREATE step
 	// Basic client-side shape check — the server does authoritative validation.
-	// BC1 alternative: bech32/bech32m addresses are valid in all-uppercase too
-	// (the QR-code form); mixed case slips this pre-check but the server rejects it.
-	const looksLikeAddress = (a: string) => /^(bc1|BC1|[13])[a-zA-HJ-NP-Z0-9]{6,90}$/.test(a.trim());
+	// looksLikeAddress stays mainnet-only (unchanged contract); classify also
+	// recognises test-network shapes so we can say so instead of calling a valid
+	// testnet/regtest address "garbage" (cairn-a8n7).
 
 	// --------------------------------------------------- consolidation handoff
 	// The wallet detail page's "Consolidate now" button lands here with
@@ -921,7 +922,12 @@
 								row.sats = sats;
 							}}
 						/>
-						{#if row.address.length > 0 && !looksLikeAddress(row.address)}
+						{#if classifyRecipientAddress(row.address) === 'testnet'}
+							<p class="field-line attention">
+								That looks like a test-network address — this wallet uses regular Bitcoin
+								(mainnet).
+							</p>
+						{:else if row.address.length > 0 && !looksLikeAddress(row.address)}
 							<p class="field-line attention">That doesn't look like a Bitcoin address yet.</p>
 						{:else if looksLikeAddress(row.address)}
 							<p class="field-line sage">
@@ -957,7 +963,12 @@
 											row.sats = sats;
 										}}
 									/>
-									{#if row.address.length > 0 && !looksLikeAddress(row.address)}
+									{#if classifyRecipientAddress(row.address) === 'testnet'}
+										<p class="field-line attention">
+											That looks like a test-network address — this wallet uses regular
+											Bitcoin (mainnet).
+										</p>
+									{:else if row.address.length > 0 && !looksLikeAddress(row.address)}
 										<p class="field-line attention">
 											That doesn't look like a Bitcoin address yet.
 										</p>
