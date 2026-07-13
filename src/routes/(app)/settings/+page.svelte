@@ -893,6 +893,12 @@
 	}
 
 	.unit {
+		/* >=44px tap target on touch without changing the text-toggle look
+		   (cairn-amyl). */
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-height: 44px;
 		border: none;
 		background: none;
 		cursor: pointer;
@@ -1203,6 +1209,9 @@
 	}
 
 	.danger-btn {
+		/* Guarantee a >=44px touch target for the account-deletion controls
+		   (cairn-amyl). */
+		min-height: 44px;
 		color: var(--error);
 		border-color: rgba(224, 96, 76, 0.4);
 	}

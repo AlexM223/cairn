@@ -173,6 +173,7 @@
 	}
 
 	.search-btn {
+		position: relative;
 		width: 32px;
 		height: 32px;
 		border-radius: var(--radius-icon-btn);
@@ -229,6 +230,14 @@
 			content: '';
 			position: absolute;
 			inset: -7px;
+		}
+
+		/* Same invisible-hit-area treatment for the 32x32 Explorer search icon
+		   (cairn-amyl): -6px => 44x44 effective, visual unchanged. */
+		.search-btn::after {
+			content: '';
+			position: absolute;
+			inset: -6px;
 		}
 	}
 

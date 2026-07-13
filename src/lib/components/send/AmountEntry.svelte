@@ -262,6 +262,7 @@
 
 	.unit-cycle {
 		align-self: center;
+		position: relative;
 		display: flex;
 		align-items: center;
 		gap: 5px;
@@ -280,6 +281,14 @@
 		transition:
 			color 120ms var(--ease),
 			border-color 120ms var(--ease);
+	}
+
+	/* Invisible tap-area expansion to a >=44px touch target without enlarging
+	   the 30px visual pill (cairn-amyl): -7px top/bottom => 30 + 14 = 44px. */
+	.unit-cycle::before {
+		content: '';
+		position: absolute;
+		inset: -7px 0;
 	}
 
 	.unit-cycle:hover {

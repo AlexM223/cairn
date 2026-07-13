@@ -30,6 +30,11 @@
 	}
 
 	.tab {
+		/* min-height keeps the tap target >=44px on touch without enlarging the
+		   text pill's visual weight (cairn-amyl). */
+		display: inline-flex;
+		align-items: center;
+		min-height: 44px;
 		padding: 6px 13px;
 		border-radius: var(--radius-toggle);
 		font-size: 12.5px;
