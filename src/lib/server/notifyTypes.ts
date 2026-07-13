@@ -19,6 +19,7 @@ export const NOTIFICATION_EVENT_TYPES = [
 	'backup_stale', // an instance backup exists but is older than the reminder interval
 	'sign_session_waiting', // a multisig transaction is awaiting_signature and has sat for a while
 	'sign_session_complete', // the final required signature landed — quorum met, ready to broadcast (cairn-5gpv.7)
+	'multisig_removed', // a shared multisig was destroyed because its owner deleted their account (cairn-8r0l)
 	'admin_new_signup', // a new user account was created
 	'admin_invite_used', // an invite code was redeemed
 	'admin_restore', // an encrypted instance backup was restored (may import accounts)

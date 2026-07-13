@@ -319,7 +319,7 @@ describe('cascade completeness beyond accountDeletion.test.ts / deleteCascade.te
 	// ON DELETE clause (NO ACTION, the SQLite default) — this probe observes
 	// what actually happens when an admin deletes a user who has created an
 	// invite or touched a feature flag.
-	it('PROBE: deleteUser(victim) when the victim created an invite and touched a feature flag', async () => {
+	it('deleteUser(victim) cleans up no-action FKs instead of throwing a raw FK error (cairn-piow FIXED)', async () => {
 		await makeUser('admin@example.com', { admin: true });
 		const victim = await makeUser('victim@example.com');
 		db.prepare("INSERT INTO invites (code, created_by) VALUES ('CODE9', ?)").run(victim);
@@ -328,31 +328,19 @@ describe('cascade completeness beyond accountDeletion.test.ts / deleteCascade.te
 			"INSERT INTO user_feature_flags (user_id, key, enabled, updated_by) VALUES (?, 'flag9', 1, ?)"
 		).run(victim, victim);
 
-		// KNOWN GAP (candidate P1, cairn-684u extension): deleteUser has no
-		// pre-cleanup for these NO-ACTION columns, so the bare DELETE FROM users
-		// violates the FK and throws — the victim row (and everything that WOULD
-		// have cascaded) survives untouched. Pinned current behavior, not
-		// endorsed; see the final report for the exact error text observed.
-		let caught: unknown;
-		try {
-			deleteUser(victim);
-		} catch (e) {
-			caught = e;
-		}
-		expect(caught).toBeDefined();
-		expect(caught).not.toBeInstanceOf(AuthError); // not the last_admin/not_found guard — a raw FK failure
-		expect((caught as Error).message).toMatch(/FOREIGN KEY constraint failed/i);
+		// FIXED (cairn-piow): deleteUser now routes through userDeletion.purgeUserRow,
+		// which deletes invites.created_by rows and NULLs the two updated_by authors
+		// in the same transaction as the user delete — no more raw "FOREIGN KEY
+		// constraint failed", the victim is gone, and the flag rows survive with a
+		// NULL author.
+		expect(() => deleteUser(victim)).not.toThrow();
 
-		// The victim row must still be there — the failed DELETE did not partially apply.
-		expect(count('users', 'id = ?', victim)).toBe(1);
-		expect(count('invites', 'created_by = ?', victim)).toBe(1);
-		expect(count('feature_flags', 'updated_by = ?', victim)).toBe(1);
+		expect(count('users', 'id = ?', victim)).toBe(0);
+		expect(count('invites', 'created_by = ?', victim)).toBe(0);
+		expect(count('feature_flags', 'updated_by = ?', victim)).toBe(0);
+		expect(count('feature_flags', "key = 'flag9'")).toBe(1); // row kept, author NULLed
 
-		// And the shared connection must not be left inside an open transaction —
-		// node:sqlite's exec-based DELETE isn't wrapped in an explicit
-		// BEGIN/COMMIT in deleteUser, so a subsequent BEGIN should still succeed
-		// regardless; this guards against the cairn-hl87 failure mode recurring
-		// here.
+		// The shared connection must not be left inside an open transaction.
 		expect(() => {
 			db.prepare('BEGIN').run();
 			db.prepare('COMMIT').run();
@@ -386,18 +374,20 @@ describe('last-admin guard — edge cases beyond accountDeletion.test.ts / admin
 		expect(count('users', 'id = ?', admin)).toBe(1);
 	});
 
-	it('KNOWN GAP (candidate bead: disabled-sole-admin self-delete leaves zero admins): a DISABLED sole admin can self-delete because the guard only fires for is_admin=1 AND disabled=0', async () => {
+	it('a DISABLED sole admin can NOT self-delete or be deleted into a zero-admin instance (cairn-sclk FIXED)', async () => {
 		const admin = await makeUser('admin@example.com', { admin: true });
 		db.prepare('UPDATE users SET disabled = 1 WHERE id = ?').run(admin);
 		// Sanity: this admin was already the only is_admin=1 row, just disabled.
 		expect(count('users', 'is_admin = 1')).toBe(1);
 
-		expect(() => deleteOwnAccount(admin)).not.toThrow(); // pinned current behavior, not endorsed
-		expect(count('users', 'id = ?', admin)).toBe(0);
-		// The instance now has NO admin row at all — not just zero ACTIVE admins,
-		// which was already true before this call (the guard's own adminCount()
-		// query already excludes disabled rows), but zero admin rows, period.
-		expect(count('users', 'is_admin = 1')).toBe(0); // pinned current behavior, not endorsed
+		// FIXED (cairn-sclk): deletionOrphansAdmins now guards the last admin ROW,
+		// not just active admins, so both entry points refuse and the row survives.
+		expect(() => deleteOwnAccount(admin)).toThrowError(
+			expect.objectContaining({ code: 'last_admin' })
+		);
+		expect(() => deleteUser(admin)).toThrowError(expect.objectContaining({ code: 'last_admin' }));
+		expect(count('users', 'id = ?', admin)).toBe(1);
+		expect(count('users', 'is_admin = 1')).toBe(1);
 	});
 });
 
@@ -549,7 +539,7 @@ describe('factory reset — additional coverage beyond admin.test.ts (cairn-rksw
 // ═══════════════════════════════════════════════════════ GROUP 6 — shared-multisig destruction
 
 describe('shared-multisig destruction (cairn-8r0l / cairn-z93o)', () => {
-	it('KNOWN GAP (cairn-8r0l): the OWNER leaving destroys an in-flight collaborative multisig with no notice to the other participants', async () => {
+	it('the OWNER self-deleting still destroys the shared multisig but now NOTIFIES every participant (cairn-8r0l FIXED)', async () => {
 		await makeUser('admin@example.com', { admin: true });
 		const alice = await makeUser('alice@example.com');
 		const bob = await makeUser('bob@example.com');
@@ -577,18 +567,25 @@ describe('shared-multisig destruction (cairn-8r0l / cairn-z93o)', () => {
 			"INSERT INTO multisig_transaction_signers (transaction_id, user_id, assigned_key_ids) VALUES (?, ?, '[]')"
 		).run(mtx, bob);
 
+		// A self-delete is intentionally NOT blocked (a user must be able to close
+		// their own account; the danger-zone copy already warns) — the wallet is
+		// still destroyed by the users FK cascade.
 		deleteOwnAccount(alice);
 
-		// Pinned current behavior, not endorsed — see the final report (cairn-8r0l).
 		expect(count('multisigs', 'id = ?', m)).toBe(0);
 		expect(count('multisig_shares', 'multisig_id = ?', m)).toBe(0);
 		expect(count('multisig_transactions', 'id = ?', mtx)).toBe(0);
 		expect(count('multisig_transaction_signers', 'transaction_id = ?', mtx)).toBe(0);
-		// Carol (viewer) and bob (cosigner) get no in-app or queued notification
-		// that their shared multisig — including an in-flight, awaiting-signature
-		// spend — just vanished.
-		expect(count('events', 'user_id IN (?, ?)', bob, carol)).toBe(0); // pinned current behavior, not endorsed
-		expect(count('notification_queue', 'user_id IN (?, ?)', bob, carol)).toBe(0); // pinned current behavior, not endorsed
+
+		// FIXED (cairn-8r0l): both bob (cosigner) and carol (viewer) now receive an
+		// in-app `multisig_removed` notification naming the wallet, so it no longer
+		// vanishes on them in silence.
+		expect(count('events', "user_id = ? AND type = 'multisig_removed'", bob)).toBe(1);
+		expect(count('events', "user_id = ? AND type = 'multisig_removed'", carol)).toBe(1);
+		const notice = db
+			.prepare("SELECT message FROM events WHERE user_id = ? AND type = 'multisig_removed'")
+			.get(bob) as { message: string };
+		expect(notice.message).toContain('Shared');
 	});
 
 	it('GREEN: a COSIGNER leaving leaves the multisig, all its keys, and the in-flight tx intact for the owner', async () => {

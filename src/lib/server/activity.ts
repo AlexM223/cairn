@@ -176,6 +176,9 @@ export const USER_FEED_TYPES: ReadonlySet<string> = new Set([
 	// Signing
 	'signing_started',
 	'sign_session_waiting',
+	// A shared multisig you had access to was removed because its owner deleted
+	// their account (cairn-8r0l) — the cosigner must see this, non-blocking.
+	'multisig_removed',
 	// Key health nudge
 	'key_health_due',
 	// Social graph (collaborative custody): a pending request the recipient must

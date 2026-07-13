@@ -21,32 +21,39 @@
 import { db } from './db';
 import { AuthError } from './auth';
 import { childLogger } from './logger';
+import {
+	deletionOrphansAdmins,
+	ownedSharedMultisigs,
+	purgeUserRow,
+	notifyOwnerDeletionCosigners,
+	type UserDeletionRow
+} from './userDeletion';
 
 const log = childLogger('account-deletion');
 
 /**
  * Delete the caller's own account and everything they own. Throws AuthError
  * ('not_found' for a missing user; 'last_admin' when the caller is the only
- * active administrator — deleting them would orphan the instance).
+ * usable administrator — deleting them would orphan the instance).
+ *
+ * A self-delete is NOT blocked when the user owns multisigs shared with others:
+ * the danger-zone copy already warns those wallets are destroyed for everyone
+ * (cairn-8r0l UX half, 2d67da8), and a user must always be able to close their
+ * own account. Instead the affected cosigners are notified so the wallets don't
+ * simply vanish on them without a word.
  */
 export function deleteOwnAccount(userId: number): void {
 	const user = db
-		.prepare('SELECT id, is_admin, disabled FROM users WHERE id = ?')
-		.get(userId) as { id: number; is_admin: number; disabled: number } | undefined;
+		.prepare('SELECT id, is_admin, disabled, display_name, email FROM users WHERE id = ?')
+		.get(userId) as (UserDeletionRow & { display_name: string; email: string }) | undefined;
 	if (!user) throw new AuthError('User not found.', 'not_found');
 
-	if (user.is_admin === 1 && user.disabled === 0) {
-		const admins = (
-			db.prepare('SELECT COUNT(*) AS n FROM users WHERE is_admin = 1 AND disabled = 0').get() as {
-				n: number;
-			}
-		).n;
-		if (admins <= 1) {
-			throw new AuthError(
-				'You are the only administrator. Promote another admin (or reset the instance) before deleting this account.',
-				'last_admin'
-			);
-		}
+	// Last-admin guard, now robust to a disabled sole admin (cairn-sclk).
+	if (deletionOrphansAdmins(user)) {
+		throw new AuthError(
+			'You are the only administrator. Promote another admin (or reset the instance) before deleting this account.',
+			'last_admin'
+		);
 	}
 
 	// Owned wallet/multisig counts, captured before the cascade removes the
@@ -60,33 +67,17 @@ export function deleteOwnAccount(userId: number): void {
 		}
 	).n;
 
-	db.prepare('BEGIN').run();
-	try {
-		// FK targets with no ON DELETE action — clear before the user row goes.
-		db.prepare('DELETE FROM invites WHERE created_by = ?').run(userId);
-		db.prepare('UPDATE feature_flags SET updated_by = NULL WHERE updated_by = ?').run(userId);
-		db.prepare('UPDATE user_feature_flags SET updated_by = NULL WHERE updated_by = ?').run(userId);
+	// Enumerate shared-out multisigs BEFORE the cascade destroys them, so we can
+	// tell their collaborators afterward (cairn-8r0l).
+	const shared = ownedSharedMultisigs(userId);
 
-		// The user row — sessions, credentials, wallets (and their transactions/
-		// tx_labels), owned multisigs (keys/transactions/registrations), share
-		// rows in BOTH directions, saved addresses, notification config/queue,
-		// events, balance snapshots, devices, acceptances, and contacts all
-		// cascade from here. The wallets/multisigs rows disappearing here in turn
-		// fires trg_wallets_delete_children / trg_multisigs_delete_children,
-		// sweeping address_labels/wallet_backups/backup_missing_notified/
-		// balance_snapshots for them (cairn-97ui).
-		db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+	purgeUserRow(userId);
 
-		// notified_txids.user_id has no FK at all (not even the polymorphic
-		// wallet_kind/wallet_id triggers reach it by user), so it's never
-		// touched by the cascade above — clear this user's rows by hand.
-		db.prepare('DELETE FROM notified_txids WHERE user_id = ?').run(userId);
+	// Post-commit, best-effort: the wallets are gone, now let their cosigners know.
+	notifyOwnerDeletionCosigners(shared, user.display_name || user.email);
 
-		db.prepare('COMMIT').run();
-	} catch (e) {
-		db.prepare('ROLLBACK').run();
-		throw e;
-	}
-
-	log.info({ userId, wallets: walletCount, multisigs: multisigCount }, 'user deleted their own account');
+	log.info(
+		{ userId, wallets: walletCount, multisigs: multisigCount, sharedMultisigs: shared.length },
+		'user deleted their own account'
+	);
 }

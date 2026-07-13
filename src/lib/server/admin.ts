@@ -1,5 +1,11 @@
 import { db } from './db';
 import { destroyUserSessions, generateInviteCode, AuthError } from './auth';
+import {
+	deletionOrphansAdmins,
+	ownedSharedMultisigs,
+	purgeUserRow,
+	notifyOwnerDeletionCosigners
+} from './userDeletion';
 import type { AdminUserInfo, InviteInfo } from '$lib/types';
 
 // ---------- Users ----------
@@ -95,15 +101,51 @@ export function setUserAdmin(id: number, isAdmin: boolean): void {
 	db.prepare('UPDATE users SET is_admin = ? WHERE id = ?').run(isAdmin ? 1 : 0, id);
 }
 
-export function deleteUser(id: number): void {
+/**
+ * Delete a user (admin action). Throws AuthError:
+ *  - 'not_found' — no such user.
+ *  - 'last_admin' — the target is the last usable administrator (now robust to a
+ *    disabled sole admin too, cairn-sclk).
+ *  - 'owns_shared_multisigs' — the target owns multisig wallet(s) shared with
+ *    other participants; deleting them destroys those wallets (and any in-flight
+ *    PSBTs) for the cosigners (cairn-8r0l). Blocks by default so an admin can't
+ *    wipe collaborators' wallets by accident; pass { force: true } to proceed
+ *    anyway, which notifies the affected cosigners.
+ *
+ * Unlike the old bare `DELETE FROM users`, this cleans up the three non-cascade
+ * user FKs first via purgeUserRow(), so a target who created invites or touched
+ * feature flags no longer triggers a raw FK-constraint error (cairn-piow).
+ */
+export function deleteUser(id: number, opts: { force?: boolean } = {}): void {
 	const user = getUserRow(id);
 	if (!user) throw new AuthError('User not found.', 'not_found');
-	if (user.is_admin === 1 && user.disabled === 0 && adminCount() <= 1)
+	if (deletionOrphansAdmins(user))
 		throw new AuthError('Cannot delete the only administrator.', 'last_admin');
 
-	db.prepare('DELETE FROM users WHERE id = ?').run(id); // sessions + wallets cascade
-	// notified_txids has no FK, so it does not cascade with the user (cairn-zari).
-	db.prepare('DELETE FROM notified_txids WHERE user_id = ?').run(id);
+	// Enumerate owned-and-shared multisigs before the cascade (cairn-8r0l).
+	const shared = ownedSharedMultisigs(id);
+	if (shared.length > 0 && !opts.force) {
+		const names = shared.map((s) => `“${s.name}”`).join(', ');
+		const pending = shared.reduce((n, s) => n + s.pendingTxCount, 0);
+		throw new AuthError(
+			`This user owns ${shared.length} shared multisig wallet${shared.length === 1 ? '' : 's'} (${names})` +
+				`${pending > 0 ? ` with ${pending} transaction${pending === 1 ? '' : 's'} awaiting signature` : ''}. ` +
+				'Deleting the account permanently destroys those wallets for every cosigner. ' +
+				'Re-submit with force to proceed and notify them.',
+			'owns_shared_multisigs'
+		);
+	}
+
+	const label = db.prepare('SELECT display_name, email FROM users WHERE id = ?').get(id) as
+		| { display_name: string; email: string }
+		| undefined;
+
+	// purgeUserRow() clears the three no-cascade FKs + notified_txids inside one
+	// transaction, so this no longer throws a raw FK error (cairn-piow).
+	purgeUserRow(id);
+
+	if (shared.length > 0)
+		notifyOwnerDeletionCosigners(shared, label ? label.display_name || label.email : `user #${id}`);
 }
 
 /**

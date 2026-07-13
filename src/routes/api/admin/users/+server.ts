@@ -105,16 +105,24 @@ export const POST: RequestHandler = async (event) => {
 	return json({ users: listUsers() });
 };
 
-/** DELETE { id } */
+/**
+ * DELETE { id, force? }
+ *
+ * `force: true` acknowledges the `owns_shared_multisigs` guard (cairn-8r0l): the
+ * target owns multisig wallets shared with other participants, and proceeding
+ * destroys those wallets for the cosigners. Without it the first attempt returns
+ * a 400 whose `code` is 'owns_shared_multisigs' and whose message enumerates the
+ * affected wallets, so the caller can decide before re-submitting with force.
+ */
 export const DELETE: RequestHandler = async (event) => {
 	const admin = requireAdmin(event);
-	const body = await readJson<{ id?: number }>(event);
+	const body = await readJson<{ id?: number; force?: boolean }>(event);
 	if (typeof body.id !== 'number') return json({ error: 'id is required' }, { status: 400 });
 	if (body.id === admin.id)
 		return json({ error: 'You cannot delete your own account.' }, { status: 400 });
 
 	try {
-		deleteUser(body.id);
+		deleteUser(body.id, { force: body.force === true });
 	} catch (e) {
 		if (e instanceof AuthError) return json({ error: e.message, code: e.code }, { status: 400 });
 		throw e;

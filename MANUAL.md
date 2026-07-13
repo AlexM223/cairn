@@ -1671,6 +1671,44 @@ This deliberately never gates the read path a cosigner already has
 (`getViewableMultisig`) — toggling back to solo must not silently revoke
 access already granted.
 
+### User & account deletion invariants (`userDeletion.ts`)
+
+Both deletion entry points — `admin.ts`'s `deleteUser(id, { force? })` (an admin
+removing someone else) and `accountDeletion.ts`'s `deleteOwnAccount(userId)` (a
+user removing themselves) — route through the shared primitives in
+`src/lib/server/userDeletion.ts`, so three invariants can't drift apart:
+
+- **FK pre-cleanup** (`purgeUserRow`). A bare `DELETE FROM users` violates the
+  only three user FKs with **no** `ON DELETE` action — `invites.created_by`,
+  `feature_flags.updated_by`, `user_feature_flags.updated_by` — and throws a raw
+  `FOREIGN KEY constraint failed` (cairn-piow). `purgeUserRow` deletes the
+  invites and NULLs the two `updated_by` authors inside the same transaction as
+  the user delete, then clears the no-FK-at-all `notified_txids` rows. Every
+  other user FK is `ON DELETE CASCADE` (or `SET NULL` on
+  `multisig_keys.assigned_user_id`); if you add a new user FK **without** a
+  cascade action, add it here.
+- **Last-admin guard** (`deletionOrphansAdmins`). Refuses to delete an admin when
+  it would leave the instance with no usable admin. Counts the last admin **row**
+  of any kind — not just active admins — so a *disabled* sole admin can no longer
+  self-delete into a zero-admin instance (cairn-sclk). A usable (enabled) admin
+  is still blocked when no other *usable* admin remains, even if a disabled admin
+  row exists. Throws `AuthError` code `last_admin`.
+- **Shared-multisig owner deletion** (cairn-8r0l). `multisigs.user_id` is `ON
+  DELETE CASCADE`, so deleting an owner destroys every multisig they own —
+  including ones shared OUT to cosigners, plus any in-flight PSBTs — for everyone.
+  `deleteUser` **blocks** this by default (`AuthError` code
+  `owns_shared_multisigs`, message enumerates the affected wallets + pending
+  signature count); the admin re-submits `DELETE /api/admin/users` with
+  `force: true` to proceed. `deleteOwnAccount` does **not** block (the danger-zone
+  copy already warns, and a user must be able to close their own account). When a
+  deletion of a shared-multisig owner proceeds (forced admin delete OR any
+  self-delete), every affected participant receives an in-app `multisig_removed`
+  notification (`notifyOwnerDeletionCosigners`, best-effort, post-commit).
+  `multisig_removed` is registered in `notifyTypes.ts`, `DEFAULT_PREFERENCES`
+  (inapp-only), and `USER_FEED_TYPES`, but is intentionally NOT in the curated
+  Settings > Notifications toggle list (no per-channel opt-out — it's a
+  can't-miss account event).
+
 ### Solo mode / instanceMode
 
 `settings.instanceMode`: `'solo' | 'team'`, default `'solo'` for new
