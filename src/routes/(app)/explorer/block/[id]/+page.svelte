@@ -14,6 +14,7 @@
 	import RingBar from '$lib/components/heartwood/RingBar.svelte';
 	import ValueFlowBar from '$lib/components/heartwood/ValueFlowBar.svelte';
 	import CoreRpcRequiredNotice from '$lib/components/CoreRpcRequiredNotice.svelte';
+	import { blockPageTitle } from './blockTitle';
 	import { blockSubsidy } from '$lib/bitcoin';
 	import { computeValueFlow, largestPassages, type PassageTag } from './blockDepth';
 	import {
@@ -150,7 +151,15 @@
 </script>
 
 <svelte:head>
-	<title>{block !== null ? `Block ${formatNumber(block.height)}` : 'Block'} — Heartwood</title>
+	<title
+		>{blockPageTitle({
+			block,
+			loading,
+			notFound,
+			chainError,
+			coreRpcConfigured: data.coreRpcConfigured
+		})} — Heartwood</title
+	>
 </svelte:head>
 
 <div class="block-page">

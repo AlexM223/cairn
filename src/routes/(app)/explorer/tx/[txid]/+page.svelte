@@ -13,6 +13,7 @@
 	import { computeTxFlow, computeFeePosition } from '$lib/components/heartwood/txFlow';
 	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
 	import CoreRpcRequiredNotice from '$lib/components/CoreRpcRequiredNotice.svelte';
+	import { txPageTitle } from './txTitle';
 	import { feeOutlook } from '$lib/bitcoin';
 	import {
 		formatNumber,
@@ -161,7 +162,9 @@
 </script>
 
 <svelte:head>
-	<title>{tx ? `Tx ${truncateMiddle(tx.txid, 8, 8)}` : 'Transaction not found'} — Heartwood</title>
+	<title
+		>{txPageTitle({ tx, loading: data.loading, coreRpcConfigured: data.coreRpcConfigured })} — Heartwood</title
+	>
 </svelte:head>
 
 <div class="tx-page">
