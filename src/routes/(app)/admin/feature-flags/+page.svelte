@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import Banner from '$lib/components/Banner.svelte';
 
 	let { data, form } = $props();
 
@@ -36,7 +37,7 @@
 </p>
 
 {#if form?.error}
-	<div class="form-error" role="alert" style="margin-bottom: 14px">{form.error}</div>
+	<div style="margin-bottom: 14px"><Banner variant="error">{form.error}</Banner></div>
 {/if}
 
 <div class="stack">

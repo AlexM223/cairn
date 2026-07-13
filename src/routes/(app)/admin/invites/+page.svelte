@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
 	import { copyToClipboard } from '$lib/clipboard';
+	import Banner from '$lib/components/Banner.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import { timeAgo } from '$lib/format';
 
@@ -80,7 +81,7 @@
 	</form>
 
 	{#if form?.error}
-		<div class="form-error" role="alert">{form.error}</div>
+		<Banner variant="error">{form.error}</Banner>
 	{/if}
 
 	{#if form?.created?.length}

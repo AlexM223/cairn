@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Banner from '$lib/components/Banner.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import { timeAgo } from '$lib/format';
 
@@ -156,7 +157,7 @@
 		<span class="count">{events.length} of {total}</span>
 	</div>
 	{#if loadError}
-		<div class="form-error" role="alert" style="margin-top: 10px">{loadError}</div>
+		<div style="margin-top: 10px"><Banner variant="error">{loadError}</Banner></div>
 	{/if}
 </div>
 

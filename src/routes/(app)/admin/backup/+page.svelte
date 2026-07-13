@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import Banner from '$lib/components/Banner.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import { timeAgo, formatDateTime } from '$lib/format';
 
@@ -199,7 +200,7 @@
 			Encrypted with a passphrase you choose (AES-256-GCM). Store the passphrase safely — without it
 			the backup can't be restored.
 		</p>
-		{#if backupError}<div class="form-error" role="alert">{backupError}</div>{/if}
+		{#if backupError}<Banner variant="error">{backupError}</Banner>{/if}
 		<div class="two-col">
 			<div class="field">
 				<label class="label" for="pp">Passphrase</label>
@@ -244,13 +245,13 @@
 		</p>
 
 		{#if data.schedule.enabled && data.schedule.lastError}
-			<div class="form-error" role="alert">
+			<Banner variant="error">
 				The last scheduled backup failed: {data.schedule.lastError}
-			</div>
+			</Banner>
 		{/if}
-		{#if form?.error}<div class="form-error" role="alert">{form.error}</div>{/if}
+		{#if form?.error}<Banner variant="error">{form.error}</Banner>{/if}
 		{#if form?.scheduleSaved}
-			<div class="saved-note" role="status">Scheduled backup settings saved.</div>
+			<Banner variant="success">Scheduled backup settings saved.</Banner>
 		{/if}
 
 		<form method="POST" action="?/saveSchedule" class="section" use:enhance>
@@ -314,9 +315,9 @@
 			arrive with no password and no passkeys — each gets a single-use recovery code below that you
 			hand its owner out-of-band; they redeem it at the recover-access screen to sign back in.
 		</p>
-		{#if restoreError}<div class="form-error" role="alert">{restoreError}</div>{/if}
+		{#if restoreError}<Banner variant="error">{restoreError}</Banner>{/if}
 		{#if summary}
-			<div class="saved-note" role="status">
+			<Banner variant="success">
 				Restored {summary.usersAdded} account{summary.usersAdded === 1 ? '' : 's'}
 				({summary.usersSkipped} already existed), {summary.wallets} wallet{summary.wallets === 1
 					? ''
@@ -324,25 +325,29 @@
 				saved address{summary.addresses === 1 ? '' : 'es'}, {summary.labels} label{summary.labels === 1
 					? ''
 					: 's'}, and {summary.settings} setting{summary.settings === 1 ? '' : 's'}.
-			</div>
+			</Banner>
 			{#if summary.reclaimCodes.length > 0}
-				<div class="saved-note" role="status" style="margin-top: 8px">
-					<strong>Recovery codes — shown once, save them now:</strong>
-					<ul class="reclaim-codes">
-						{#each summary.reclaimCodes as rc (rc.email)}
-							<li><span class="mono">{rc.code}</span> — {rc.email}</li>
-						{/each}
-					</ul>
-					Send each code to its owner out-of-band. They redeem it at
-					<code>/recover</code> to set a new passkey or password and sign back in.
+				<div style="margin-top: 8px">
+					<Banner variant="success">
+						<strong>Recovery codes — shown once, save them now:</strong>
+						<ul class="reclaim-codes">
+							{#each summary.reclaimCodes as rc (rc.email)}
+								<li><span class="mono">{rc.code}</span> — {rc.email}</li>
+							{/each}
+						</ul>
+						Send each code to its owner out-of-band. They redeem it at
+						<code>/recover</code> to set a new passkey or password and sign back in.
+					</Banner>
 				</div>
 			{/if}
 			{#if summary.settingsSkipped.length > 0}
-				<div class="form-error" role="alert" style="margin-top: 8px">
-					<strong>Not restored (security-sensitive):</strong>
-					{summary.settingsSkipped.join(', ')}. These control this instance's auth/security posture
-					and are never adopted from an imported backup — set them yourself in Admin → Settings if
-					that was intended.
+				<div style="margin-top: 8px">
+					<Banner variant="warning">
+						<strong>Not restored (security-sensitive):</strong>
+						{summary.settingsSkipped.join(', ')}. These control this instance's auth/security posture
+						and are never adopted from an imported backup — set them yourself in Admin → Settings if
+						that was intended.
+					</Banner>
 				</div>
 			{/if}
 		{/if}
@@ -454,16 +459,6 @@
 		gap: 8px;
 		font-size: 13.5px;
 		cursor: pointer;
-	}
-
-	.saved-note {
-		font-size: 13px;
-		color: var(--sage);
-		background: var(--sage-muted);
-		border: 1px solid rgba(138, 160, 110, 0.3);
-		border-radius: var(--radius-control);
-		padding: 9px 12px;
-		line-height: 1.5;
 	}
 
 	.reclaim-codes {
