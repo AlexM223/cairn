@@ -18,7 +18,7 @@
 //          "changed" event to hook. A flat short TTL is the honest model — same
 //          reasoning as PEERS_TTL_MS in ../syncStatus.ts.
 
-import type { FeeEstimates } from '$lib/types';
+import type { FeeEstimates, FeeHistogram, MempoolSummary } from '$lib/types';
 import type { BlockStats } from './index';
 
 /** Safety ceiling only — the tip is normally invalidated on the 'header' event
@@ -26,6 +26,11 @@ import type { BlockStats } from './index';
 const TIP_TTL_MS = 10 * 60_000;
 /** Fee estimates drift continuously; a flat short TTL is the honest model. */
 const FEE_TTL_MS = 30_000;
+/** Mempool summary + fee histogram churn continuously like fees; same short-TTL
+ *  honest model. Short enough that a new-block forced refresh reflects the drained
+ *  mempool promptly, long enough to dedupe repeated reads within one refresh cycle
+ *  and across the mempool sub-pages (cairn-6efi.1, U3). */
+const MEMPOOL_TTL_MS = 30_000;
 
 interface Entry<T> {
 	value: T;
@@ -36,6 +41,8 @@ type Tip = { height: number; hash: string };
 
 let tipCache: Entry<Tip> | null = null;
 let feeCache: Entry<FeeEstimates> | null = null;
+let mempoolSummaryCache: Entry<MempoolSummary> | null = null;
+let feeHistogramCache: Entry<FeeHistogram | null> | null = null;
 
 /**
  * Return the cached tip if still fresh, else fetch via `load`, cache, return.
@@ -64,6 +71,33 @@ export async function cachedFeeEstimates(
 	return value;
 }
 
+/** As {@link cachedFeeEstimates} but for the mempool summary (30s flat TTL). */
+export async function cachedMempoolSummary(
+	load: () => Promise<MempoolSummary>
+): Promise<MempoolSummary> {
+	const now = Date.now();
+	if (mempoolSummaryCache && now - mempoolSummaryCache.at < MEMPOOL_TTL_MS) {
+		return mempoolSummaryCache.value;
+	}
+	const value = await load();
+	mempoolSummaryCache = { value, at: now };
+	return value;
+}
+
+/** As {@link cachedFeeEstimates} but for the mempool fee histogram (30s flat TTL).
+ *  A null result (empty mempool) is a valid cached value, not a miss. */
+export async function cachedFeeHistogram(
+	load: () => Promise<FeeHistogram | null>
+): Promise<FeeHistogram | null> {
+	const now = Date.now();
+	if (feeHistogramCache && now - feeHistogramCache.at < MEMPOOL_TTL_MS) {
+		return feeHistogramCache.value;
+	}
+	const value = await load();
+	feeHistogramCache = { value, at: now };
+	return value;
+}
+
 /**
  * Drop the cached tip. Called from the 'header' handler in ../chainEvents.ts the
  * instant a new block arrives, so the next getTip() reflects the new tip without
@@ -80,6 +114,8 @@ export function invalidateTipCache(): void {
 export function resetChainCaches(): void {
 	tipCache = null;
 	feeCache = null;
+	mempoolSummaryCache = null;
+	feeHistogramCache = null;
 }
 
 // -------------------------------------------------------- raw prev-tx LRU

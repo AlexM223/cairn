@@ -1112,6 +1112,48 @@ describe('getFeeHistogram (electrum-backed)', () => {
 		const { svc } = withElectrumHistogram([]);
 		await expect(svc.getFeeHistogram()).resolves.toBeNull();
 	});
+
+	// ---- 30s TTL caches + single-fetch projection (cairn-6efi.1, U3) -----------
+	it('serves a second getFeeHistogram from the TTL cache (one electrum round-trip)', async () => {
+		const svc = makeService(makeEsploraStub());
+		const getFeeHistogram = vi.fn(async () => [[20, 1000]] as [number, number][]);
+		Object.assign(svc, { electrum: { getFeeHistogram } });
+
+		const a = await svc.getFeeHistogram();
+		const b = await svc.getFeeHistogram();
+		expect(getFeeHistogram).toHaveBeenCalledTimes(1); // second is a cache hit
+		expect(a).toEqual(b);
+	});
+
+	it('serves a second getMempoolSummary from the TTL cache (one Core round-trip)', async () => {
+		const core = makeCoreStub();
+		core.getMempoolInfo.mockResolvedValue({
+			size: 5,
+			bytes: 2000,
+			usage: 0,
+			total_fee: 0.001,
+			mempoolminfee: 0
+		});
+		const svc = makeCoreService(core);
+
+		await svc.getMempoolSummary();
+		await svc.getMempoolSummary();
+		expect(core.getMempoolInfo).toHaveBeenCalledTimes(1);
+	});
+
+	it('getMempoolBlocks(sharedHistogram) projects from the passed value without re-fetching', async () => {
+		const svc = makeService(makeEsploraStub());
+		const getFeeHistogram = vi.fn(async () => null);
+		Object.assign(svc, { electrum: { getFeeHistogram } });
+
+		const projected = await svc.getMempoolBlocks([
+			[100, 1_000_000],
+			[10, 500_000]
+		]);
+		// The shared histogram was used directly — no internal histogram fetch.
+		expect(getFeeHistogram).not.toHaveBeenCalled();
+		expect(projected).not.toBeNull();
+	});
 });
 
 // ---- Bitcoin Core RPC path (Esplora removal Wave 2) --------------------------------

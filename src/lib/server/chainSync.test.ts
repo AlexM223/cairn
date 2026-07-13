@@ -181,3 +181,25 @@ describe('refreshChainSnapshot — persistence & failure', () => {
 		expect(readChainSnapshot()).toBeNull();
 	});
 });
+
+describe('refreshChainSnapshot — fee histogram fetched once (cairn-6efi.1, U3)', () => {
+	it('fetches the histogram once per refresh and feeds it into getMempoolBlocks', async () => {
+		const HIST: [number, number][] = [
+			[50, 1000],
+			[10, 5000]
+		];
+		h.chain.getFeeHistogram.mockResolvedValue(HIST);
+		h.chain.getMempoolBlocks.mockResolvedValue(null);
+
+		await refreshChainSnapshot();
+
+		// Exactly one histogram fetch — previously getMempoolBlocks re-fetched it,
+		// doubling the round-trip every refresh.
+		expect(h.chain.getFeeHistogram).toHaveBeenCalledTimes(1);
+		expect(h.chain.getMempoolBlocks).toHaveBeenCalledTimes(1);
+		// The SAME fetched histogram is passed into the projection…
+		expect(h.chain.getMempoolBlocks).toHaveBeenCalledWith(HIST);
+		// …and persisted as the snapshot's own histogram field.
+		expect(readChainSnapshot()!.data.feeHistogram).toEqual(HIST);
+	});
+});

@@ -28,6 +28,8 @@ import { readMempoolTrend } from '../mempoolSamples';
 import {
 	cachedTip,
 	cachedFeeEstimates,
+	cachedMempoolSummary,
+	cachedFeeHistogram,
 	resetChainCaches,
 	getCachedRawTx,
 	cacheRawTx,
@@ -1358,22 +1360,26 @@ export class ChainService {
 	 * Esplora backend. Core reports the total fee in BTC — convert to sats.
 	 */
 	async getMempoolSummary(): Promise<MempoolSummary> {
-		if (this.core) {
-			try {
-				const m = await this.core.getMempoolInfo();
-				return { txCount: m.size, vsize: m.bytes, totalFees: btcToSats(m.total_fee) };
-			} catch (e) {
-				if (!this.esplora) throw e;
-				log.debug({ err: e }, 'Core getmempoolinfo failed; falling back to esplora');
+		// 30s TTL-cached (cairn-6efi.1, U3) so the SWR refresh and the mempool
+		// sub-pages don't each pay for a fresh getmempoolinfo round-trip.
+		return cachedMempoolSummary(async () => {
+			if (this.core) {
+				try {
+					const m = await this.core.getMempoolInfo();
+					return { txCount: m.size, vsize: m.bytes, totalFees: btcToSats(m.total_fee) };
+				} catch (e) {
+					if (!this.esplora) throw e;
+					log.debug({ err: e }, 'Core getmempoolinfo failed; falling back to esplora');
+				}
 			}
-		}
-		if (this.esplora) {
-			const m = await this.esplora.getMempool();
-			return { txCount: m.count, vsize: m.vsize, totalFees: m.total_fee };
-		}
-		throw new Error(
-			'Mempool summary requires a Bitcoin Core RPC connection (configure it in admin settings).'
-		);
+			if (this.esplora) {
+				const m = await this.esplora.getMempool();
+				return { txCount: m.count, vsize: m.vsize, totalFees: m.total_fee };
+			}
+			throw new Error(
+				'Mempool summary requires a Bitcoin Core RPC connection (configure it in admin settings).'
+			);
+		});
 	}
 
 	/**
@@ -1385,8 +1391,12 @@ export class ChainService {
 	 * that only collapses an empty mempool to null.
 	 */
 	async getFeeHistogram(): Promise<FeeHistogram | null> {
-		const histogram = await this.electrum.getFeeHistogram();
-		return Array.isArray(histogram) && histogram.length > 0 ? histogram : null;
+		// 30s TTL-cached (cairn-6efi.1, U3): mempool sub-pages and the SWR refresh
+		// share one histogram round-trip instead of re-fetching it each.
+		return cachedFeeHistogram(async () => {
+			const histogram = await this.electrum.getFeeHistogram();
+			return Array.isArray(histogram) && histogram.length > 0 ? histogram : null;
+		});
 	}
 
 	/**
@@ -1398,12 +1408,20 @@ export class ChainService {
 	 * explicitly-configured Esplora backend's own projection when the histogram is
 	 * empty/unavailable.
 	 */
-	async getMempoolBlocks(): Promise<MempoolBlockProjection[] | null> {
-		let hist: FeeHistogram | null = null;
-		try {
-			hist = await this.getFeeHistogram();
-		} catch (e) {
-			log.debug({ err: e }, 'fee histogram unavailable for mempool-block projection');
+	async getMempoolBlocks(sharedHistogram?: FeeHistogram | null): Promise<MempoolBlockProjection[] | null> {
+		// The SWR refresh (chainSync.ts) fetches the histogram ONCE per pass and
+		// passes it in here so the projection and the snapshot's own histogram field
+		// don't each trigger a fetch (cairn-6efi.1, U3). `undefined` means "no shared
+		// value — fetch it myself" (the mempool sub-pages' own callers); an explicit
+		// `null` means "already fetched, it was empty" → fall through to esplora.
+		let hist = sharedHistogram;
+		if (hist === undefined) {
+			try {
+				hist = await this.getFeeHistogram();
+			} catch (e) {
+				log.debug({ err: e }, 'fee histogram unavailable for mempool-block projection');
+				hist = null;
+			}
 		}
 		if (hist && hist.length > 0) return projectBlocksFromHistogram(hist);
 

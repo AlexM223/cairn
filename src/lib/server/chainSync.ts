@@ -74,14 +74,19 @@ async function doRefresh(current: ChainSnapshotRow | null): Promise<ChainSnapsho
 		// fee estimates, projected blocks, the fee histogram and the backlog trend are
 		// genuinely volatile — they can change within a single block — so they refetch
 		// on every pass.
+		// Fetch the fee histogram exactly ONCE per refresh, then feed the SAME value
+		// into both the mempool-block projection and the snapshot's histogram field.
+		// Previously getMempoolBlocks() re-fetched it internally, so every refresh
+		// paid for two identical histogram round-trips (cairn-6efi.1, U3).
+		const histPromise = chain.getFeeHistogram().catch(() => null);
 		const [blocks, mempoolSummary, fees, tip, mempoolBlocks, feeHistogram, mempoolTrend] =
 			await Promise.all([
 				chain.getRecentBlocks(SNAPSHOT_BLOCKS),
 				chain.getMempoolSummary().catch(() => null),
 				chain.getFeeEstimates().catch(() => null),
 				chain.getTip().catch(() => null),
-				chain.getMempoolBlocks().catch(() => null),
-				chain.getFeeHistogram().catch(() => null),
+				histPromise.then((h) => chain.getMempoolBlocks(h)).catch(() => null),
+				histPromise,
 				chain.getMempoolTrend().catch(() => null)
 			]);
 
