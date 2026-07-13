@@ -206,6 +206,7 @@
 	}
 
 	.avatar {
+		position: relative;
 		width: 30px;
 		height: 30px;
 		border: none;
@@ -218,6 +219,17 @@
 		color: var(--on-accent);
 		cursor: pointer;
 		padding: 0;
+	}
+
+	/* Touch-target batch (cairn-uxdev batch 2, item 3): the visual avatar stays
+	   30x30, but an invisible ::after extends the actual hit area to ~44x44 on
+	   mobile, where this bar is shown (.topbar is display:none above 900px). */
+	@media (max-width: 900px) {
+		.avatar::after {
+			content: '';
+			position: absolute;
+			inset: -7px;
+		}
 	}
 
 	.menu {

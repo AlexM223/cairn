@@ -2308,6 +2308,18 @@
 		.hw-tx-title {
 			font-size: 13px;
 		}
+
+		/* Touch-target batch (cairn-uxdev batch 2, item 3): raise the tab row's
+		   hit area to the ~44px guideline on mobile without changing the visual
+		   chip size — extra vertical padding lands in the same border-bottom
+		   strip these already sit against. */
+		.hw-toggle {
+			display: inline-flex;
+			align-items: center;
+			min-height: 44px;
+			padding-top: 12px;
+			padding-bottom: 12px;
+		}
 	}
 
 	@media (max-width: 480px) {
