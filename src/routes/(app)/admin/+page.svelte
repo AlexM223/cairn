@@ -95,10 +95,10 @@
 	<div class="hero-main">
 		{#if nodeLoading}
 			<div class="hero-row">
-				<span class="hero-number hero-height skeleton">000,000</span>
+				<span class="hero-number hero-height skeleton" aria-hidden="true">000,000</span>
 				<span class="hero-sub">at the tip</span>
 			</div>
-			<div class="hero-ring skeleton skeleton-line">ring 000 forming — 0,000 of 2,016 laid</div>
+			<div class="hero-ring skeleton skeleton-line" aria-hidden="true">ring 000 forming — 0,000 of 2,016 laid</div>
 		{:else if tip !== null}
 			<div class="hero-row">
 				<span class="hero-number hero-height">{formatNumber(tip)}</span>
@@ -136,7 +136,7 @@
 			<span class="v">Electrum · {node.mode === 'public' ? 'public servers' : 'yours'}</span>
 			<span class="dot-badge" class:sage={connected} class:amber={!connected}></span>
 		{:else}
-			<span class="v skeleton">Electrum · public servers</span>
+			<span class="v skeleton" aria-hidden="true">Electrum · public servers</span>
 		{/if}
 	</div>
 	<div class="kv">
@@ -144,7 +144,7 @@
 		{#if node}
 			<span class="v mono server">{node.server}</span>
 		{:else}
-			<span class="v mono server skeleton">host.example:50002</span>
+			<span class="v mono server skeleton" aria-hidden="true">host.example:50002</span>
 		{/if}
 	</div>
 	<div class="kv">

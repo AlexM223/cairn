@@ -143,9 +143,9 @@ export const FEATURE_FLAGS: FeatureFlagDef[] = [
 	{
 		key: 'hw_coldcard',
 		category: 'hardware',
-		label: 'Coldcard',
+		label: 'ColdCard',
 		description: '',
-		userMessage: 'Coldcard support has been disabled by your administrator.',
+		userMessage: 'ColdCard support has been disabled by your administrator.',
 		defaultEnabled: true
 	},
 	{
@@ -240,7 +240,7 @@ export const FEATURE_FLAGS: FeatureFlagDef[] = [
 		key: 'fee_bumping',
 		category: 'upcoming',
 		label: 'RBF / CPFP fee bumping',
-		description: 'Tracks docs/CPFP-UNCONFIRMED-PLAN.md (cairn-u9ob).',
+		description: 'Lets users speed up a stuck transaction by bumping its fee.',
 		userMessage: 'Fee bumping has been disabled by your administrator.',
 		defaultEnabled: true
 	},
