@@ -23,7 +23,6 @@
 	let snap = $derived(data.mempool);
 	const projected = $derived(snap?.projected ?? null);
 	const histogram = $derived(snap?.histogram ?? null);
-	const fees = $derived(snap?.fees ?? null);
 	const tipHeight = $derived(snap?.tipHeight ?? null);
 
 	let syncing = $state(false);
@@ -74,8 +73,6 @@
 	);
 
 	const blocks = $derived(synthesizeBlocks(histogram, projected, 6));
-
-	void fees; // reserved for a future "what should I pay" cross-link; keeps the prop wired through
 
 	// Shared tooltip that follows the pointer (or, for keyboard users, sits
 	// below-right of the focused rectangle).
