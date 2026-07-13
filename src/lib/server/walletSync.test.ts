@@ -633,4 +633,22 @@ describe('doWalletScan coinbase bucketing — QA finding F2 regression lock', ()
 		// would have put this coin here. Strict `=== true` must exclude it.
 		expect(snap!.coinbaseUtxos).toEqual([]);
 	});
+
+	// cairn-zdgt: a single refresh must fetch the wallet's UTXO set ONCE. The
+	// coinbase bucketing and the speed-up (RBF/CPFP) detection both need it;
+	// pre-fix each fetched independently (coinbase via getWalletUtxos, speed-up
+	// via detectWalletUnconfirmedInflows, which re-fetched internally), so a
+	// refresh did TWO full listunspent-per-used-address passes for the same
+	// wallet. listUnspentMock fires once per candidate address per getWalletUtxos
+	// call, so with a single used address the call count is exactly the number of
+	// UTXO fetches: 1 after the fix, was 2 before it.
+	it('fetches the wallet UTXO set only ONCE per refresh (cairn-zdgt)', async () => {
+		const { userId, walletId } = await seedWallet();
+		stubOneConfirmedUtxo('12'.repeat(32), 150_000_000, 900_000);
+		getTxHexMock.mockResolvedValue(normalRawHex());
+
+		await refreshWalletSnapshot(userId, walletId, { force: true });
+
+		expect(listUnspentMock).toHaveBeenCalledTimes(1);
+	});
 });

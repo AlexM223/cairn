@@ -38,9 +38,11 @@ import {
 } from './wallets';
 import {
 	getWalletUtxos,
-	detectWalletUnconfirmedInflows,
+	detectUnconfirmedInflows,
+	ownBroadcastTxids,
 	type UnconfirmedInflow
 } from './transactions';
+import type { SpendableUtxo } from './bitcoin/psbt';
 import { getChain } from './chain';
 import { getViewableMultisig, listMultisigs, type MultisigRow } from './wallets/multisig';
 import {
@@ -51,7 +53,7 @@ import {
 	type MultisigTx,
 	type MultisigSummary
 } from './multisigScan';
-import { detectMultisigUnconfirmedInflows } from './multisigTransactions';
+import { ownMultisigTxids } from './multisigTransactions';
 import { listSharedMultisigs } from './multisigShares';
 import { assemblePortfolio, type AggregateInput } from './portfolio';
 import { writePortfolioSnapshot } from './portfolioSnapshot';
@@ -416,15 +418,23 @@ async function doWalletScan(userId: number, row: WalletRow): Promise<WalletSnaps
 	const receive = await peekReceiveAddress(row);
 	const qr = await QRCode.toDataURL(receive.address, QR_OPTS);
 
-	// Mining-reward (coinbase) UTXOs + chain tip — tolerate a hiccup; the balance
-	// and receive card are what matter. Empty for almost every wallet.
+	// One UTXO fetch feeds BOTH the coinbase section and the speed-up (RBF/CPFP)
+	// detection below. Previously the coinbase read called getWalletUtxos and the
+	// speed-up read called detectWalletUnconfirmedInflows, which fetched the UTXO
+	// set AGAIN internally — so a single refresh did two full listunspent-per-
+	// used-address round-trips against the same wallet (cairn-zdgt). Fetch once
+	// here (background lane), on the chain tip too; a hiccup degrades both
+	// features together (empty coinbase, no speed-up button) rather than being
+	// caught in two separate places.
+	let utxos: SpendableUtxo[] = [];
 	let coinbaseUtxos: CoinbaseUtxo[] = [];
 	let tipHeight = 0;
 	try {
-		const [utxos, tip] = await Promise.all([
+		const [fetched, tip] = await Promise.all([
 			getWalletUtxos(row.xpub, 'background'),
 			getChain().getTip()
 		]);
+		utxos = fetched;
 		tipHeight = tip.height;
 		// Strict equality: u.coinbase can be 'unknown' (unverifiable, truthy in
 		// JS) as well as true/false. Only a DEFINITE coinbase belongs in this
@@ -433,15 +443,17 @@ async function doWalletScan(userId: number, row: WalletRow): Promise<WalletSnaps
 			.filter((u) => u.coinbase === true)
 			.map((u) => ({ txid: u.txid, vout: u.vout, value: u.value, height: u.height }));
 	} catch {
+		utxos = [];
 		coinbaseUtxos = [];
 		tipHeight = 0;
 	}
 
-	// Which unconfirmed txs can be sped up (RBF vs CPFP). Tolerate a hiccup — the
-	// button just doesn't appear.
+	// Which unconfirmed txs can be sped up (RBF vs CPFP), from the SAME UTXO set
+	// fetched above — no second Electrum round-trip (cairn-zdgt). Tolerate a
+	// hiccup — the button just doesn't appear.
 	let speedUp: UnconfirmedInflow[] = [];
 	try {
-		speedUp = (await detectWalletUnconfirmedInflows(userId, row.id)) ?? [];
+		speedUp = await detectUnconfirmedInflows(utxos, ownBroadcastTxids(row.id));
 	} catch {
 		speedUp = [];
 	}
@@ -499,8 +511,9 @@ async function doMultisigScan(userId: number, multisig: MultisigRow): Promise<Mu
 	let coinbaseUtxos: CoinbaseUtxo[] = [];
 	let tipHeight = 0;
 	try {
-		// getMultisigDetail already ran the scan, so getMultisigUtxos hits the cache;
-		// guard the tip separately so a tip hiccup just hides the coinbase section.
+		// getMultisigDetail already fetched the UTXO set (detail.utxos), so reuse
+		// it for the coinbase bucket rather than a second listunspent pass; guard
+		// the tip separately so a tip hiccup just hides the coinbase section.
 		const tip = await getChain().getTip();
 		tipHeight = tip.height;
 		// Strict equality — see the single-sig scan above: 'unknown' is truthy
@@ -513,9 +526,13 @@ async function doMultisigScan(userId: number, multisig: MultisigRow): Promise<Mu
 		tipHeight = 0;
 	}
 
+	// Speed-up detection reuses detail.utxos too (cairn-zdgt): the previous
+	// detectMultisigUnconfirmedInflows call re-fetched the UTXO set via
+	// getMultisigUtxos, so a single multisig refresh did two listunspent passes
+	// even though only scanMultisig — not listunspent — is cached.
 	let speedUp: UnconfirmedInflow[] = [];
 	try {
-		speedUp = (await detectMultisigUnconfirmedInflows(userId, multisig.id)) ?? [];
+		speedUp = await detectUnconfirmedInflows(detail.utxos, ownMultisigTxids(multisig.id));
 	} catch {
 		speedUp = [];
 	}
