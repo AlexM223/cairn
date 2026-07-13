@@ -283,11 +283,17 @@
 		await refreshKnownKeys(mode);
 	}
 
-	function changeVaultMode() {
-		// Only offered while no keys are added — the mode is locked per vault.
-		vaultMode = null;
-		knownKeys = [];
+	// Flip personal <-> collaborative in place (cairn bug report: the old
+	// "Change" link dropped back to the full onboarding question — two big
+	// cards plus paragraphs of explanation — which read as "restart the
+	// wizard" even though no keys were lost. This swaps the mode directly, so
+	// the derivation-path text next to the control updates immediately.
+	// Only offered while no keys are added — the mode is locked per vault.
+	async function switchVaultMode(mode: VaultMode) {
+		if (vaultMode === mode) return;
+		vaultMode = mode;
 		resetKeyForm();
+		await refreshKnownKeys(mode);
 	}
 
 	// The first-class ways a key arrives — none of them "advanced".
@@ -1767,9 +1773,26 @@
 									{/if}
 								</span>
 								{#if keys.length === 0}
-									<button type="button" class="mode-change" onclick={changeVaultMode}>
-										Change
-									</button>
+									<div class="mode-toggle" role="group" aria-label="Vault mode">
+										<button
+											type="button"
+											class="mode-toggle-btn"
+											class:selected={vaultMode === 'personal'}
+											aria-pressed={vaultMode === 'personal'}
+											onclick={() => switchVaultMode('personal')}
+										>
+											Personal
+										</button>
+										<button
+											type="button"
+											class="mode-toggle-btn"
+											class:selected={vaultMode === 'collaborative'}
+											aria-pressed={vaultMode === 'collaborative'}
+											onclick={() => switchVaultMode('collaborative')}
+										>
+											Shared
+										</button>
+									</div>
 								{/if}
 							</div>
 						{/if}
@@ -3527,15 +3550,31 @@
 		min-width: 0;
 	}
 
-	.mode-change {
+	.mode-toggle {
+		display: inline-flex;
+		flex-shrink: 0;
+		gap: 2px;
+		padding: 2px;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-control);
+	}
+
+	.mode-toggle-btn {
 		background: none;
 		border: none;
-		padding: 0;
+		padding: 3px 8px;
 		font: inherit;
-		font-size: 12px;
-		color: var(--accent);
+		font-size: 11.5px;
+		font-weight: 500;
+		color: var(--text-secondary);
 		cursor: pointer;
-		text-decoration: underline;
+		border-radius: calc(var(--radius-control) - 2px);
+	}
+
+	.mode-toggle-btn.selected {
+		background: var(--accent-muted);
+		color: var(--text);
 	}
 
 	/* --- known-device-keys reuse offers (cairn-fdlf.4) --- */
