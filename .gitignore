@@ -40,3 +40,7 @@ data/
 # JSON results, sessions.json (bearer tokens for a throwaway DB, but no sense
 # keeping them around either).
 scripts/load-test/results/
+
+# beads_rust crash-recovery backups (can balloon to hundreds of MB, e.g.
+# beads.db-wal.*.bak) — never belongs in history.
+.beads/.br_recovery/
