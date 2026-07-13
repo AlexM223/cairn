@@ -268,6 +268,43 @@ export function noteContactRequest(ip: string, userId: number): void {
 	for (const key of contactKeys(ip, userId)) recordFailure(key);
 }
 
+// ---------------------------------------------------------------- search
+
+// GET /api/search fans out to real chain RPC (getTip / getTx / getBlock —
+// search.ts) per request, gated only by auth (and, since cairn-he4e, the
+// `explorer` feature flag) — nothing previously bounded request RATE, so an
+// authenticated loop of random 64-hex queries could exhaust the shared
+// Electrum/Core connection pool for every user on the instance (cairn-hwta).
+// Mirrors the contacts limiter's shape: EVERY request counts (a search has no
+// "failure" to key on), limited per-user AND per-IP on the same 15-minute
+// window as the rest of this module. Generous enough that real interactive
+// type-ahead use (a handful of searches while poking around the explorer)
+// never comes close, tight enough to cap the amplification.
+const SEARCH_LIMITS = { user: 120, ip: 300 } as const;
+
+const searchKeys = (ip: string, userId: number) => [
+	`search:ip:${ip}`,
+	`search:user:${userId}`
+];
+
+/** Seconds the caller must wait before another search, or null if under the limit. */
+export function searchRetryAfter(ip: string, userId: number): number | null {
+	const [ipKey, userKey] = searchKeys(ip, userId);
+	const wait = retryAfter(userKey, SEARCH_LIMITS.user) ?? retryAfter(ipKey, SEARCH_LIMITS.ip);
+	if (wait !== null) {
+		log.warn(
+			{ event: 'search_throttled', ip, userId, retryAfter: wait },
+			'search request throttled by rate limiter'
+		);
+	}
+	return wait;
+}
+
+/** Count a search request against both buckets (every attempt, success or not). */
+export function noteSearchRequest(ip: string, userId: number): void {
+	for (const key of searchKeys(ip, userId)) recordFailure(key);
+}
+
 /** Human phrasing shared by the endpoints. */
 export function tooManyAttemptsMessage(seconds: number): string {
 	const minutes = Math.ceil(seconds / 60);
