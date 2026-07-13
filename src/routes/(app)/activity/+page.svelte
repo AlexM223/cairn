@@ -21,6 +21,10 @@
 
 	let { data } = $props();
 
+	// With the explorer feature flag off, /explorer/** 403s server-side — so
+	// each link below degrades to a non-interactive summary instead of a dead link.
+	const explorerEnabled = $derived(data.flags?.explorer !== false);
+
 	// Server load provides the first paint; a manual/auto refresh replaces it.
 	// `fetched` stays null until the first client refresh, so navigating back to
 	// this page still shows fresh server data.
@@ -344,14 +348,21 @@
 								<div class="meta">
 									<span>{metaFor(e)}</span>
 									{#if txid(e)}
-										<a class="mono link" href="/explorer/tx/{txid(e)}"
-											>{truncateMiddle(txid(e)!, 6, 6)}</a
+										<svelte:element
+											this={explorerEnabled ? 'a' : 'span'}
+											class="mono link"
+											href={explorerEnabled ? `/explorer/tx/${txid(e)}` : undefined}
+											>{truncateMiddle(txid(e)!, 6, 6)}</svelte:element
 										>
 										<CopyText value={txid(e)!} display="copy" mono={false} />
 									{:else if height(e)}
-										<a class="mono link" href="/explorer/block/{height(e)}">
+										<svelte:element
+											this={explorerEnabled ? 'a' : 'span'}
+											class="mono link"
+											href={explorerEnabled ? `/explorer/block/${height(e)}` : undefined}
+										>
 											ring segment {formatNumber(height(e)!)}
-										</a>
+										</svelte:element>
 									{/if}
 								</div>
 							</div>

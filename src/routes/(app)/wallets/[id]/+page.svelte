@@ -30,6 +30,10 @@
 
 	let { data, form } = $props();
 
+	// With the explorer feature flag off, /explorer/** 403s server-side — so
+	// each link below degrades to a non-interactive summary instead of a dead link.
+	const explorerEnabled = $derived(data.flags?.explorer !== false);
+
 	// Stale-while-revalidate (cairn-2zxt): the scan/receive/tip/speed-up bundle now
 	// comes from a persisted snapshot read synchronously in load() — instant, no
 	// Electrum on navigation. `refresh()` (below) POSTs to the /refresh endpoint to
@@ -817,7 +821,11 @@
 									</span>
 									<span class="hw-tx-meta">
 										{burialRingsLabel(conf)}
-										· <a href="/explorer/tx/{tx.txid}" class="mono hw-tx-link">{truncateMiddle(tx.txid, 8, 8)}</a>
+										· <svelte:element
+											this={explorerEnabled ? 'a' : 'span'}
+											href={explorerEnabled ? `/explorer/tx/${tx.txid}` : undefined}
+											class="mono hw-tx-link">{truncateMiddle(tx.txid, 8, 8)}</svelte:element
+										>
 										{#if tx.fee != null}
 											· network fee <Amount sats={tx.fee} size="inline" />
 										{/if}
@@ -1118,9 +1126,13 @@
 								<div class="saved-grid">
 									<div class="saved-field">
 										<span class="saved-label">To</span>
-										<a href="/explorer/address/{tx.recipient}" class="mono saved-recipient">
+										<svelte:element
+											this={explorerEnabled ? 'a' : 'span'}
+											href={explorerEnabled ? `/explorer/address/${tx.recipient}` : undefined}
+											class="mono saved-recipient"
+										>
 											{truncateMiddle(tx.recipient, 10, 8)}
-										</a>
+										</svelte:element>
 									</div>
 									<div class="saved-field">
 										<span class="saved-label">Amount</span>
@@ -1138,9 +1150,13 @@
 								{#if (tx.status === 'completed' || tx.status === 'superseded') && tx.txid}
 									<div class="saved-field">
 										<span class="saved-label">Transaction</span>
-										<a href="/explorer/tx/{tx.txid}" class="mono">
+										<svelte:element
+											this={explorerEnabled ? 'a' : 'span'}
+											href={explorerEnabled ? `/explorer/tx/${tx.txid}` : undefined}
+											class="mono"
+										>
 											{truncateMiddle(tx.txid, 10, 8)}
-										</a>
+										</svelte:element>
 									</div>
 									{#if tx.status === 'superseded'}
 										<span class="hint">Replaced by a fee-bumped transaction.</span>
