@@ -158,14 +158,30 @@ async function readCappedBody(event: RequestEvent): Promise<string> {
 	return raw;
 }
 
+/**
+ * `JSON.parse` cleanly accepts a body of literal `null`, or a top-level
+ * string/number/boolean/array — every caller in this file destructures the
+ * result as if it were an object, so those shapes parsed "successfully" and
+ * then crashed with an uncaught TypeError deep in the route (500 instead of
+ * 400 — cairn-8oo3). No /api route's body type accepts a top-level array
+ * either (every readJson/readOptionalJson call site declares an object
+ * shape), so arrays are rejected the same as any other non-object body.
+ */
+function isJsonBodyShape(value: unknown): boolean {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 /** Read a JSON body, returning 400 on malformed input. */
 export async function readJson<T = Record<string, unknown>>(event: RequestEvent): Promise<T> {
 	const raw = await readCappedBody(event);
+	let parsed: unknown;
 	try {
-		return JSON.parse(raw) as T;
+		parsed = JSON.parse(raw);
 	} catch {
 		apiError(400, 'Invalid JSON body');
 	}
+	if (!isJsonBodyShape(parsed)) apiError(400, 'Invalid JSON body');
+	return parsed as T;
 }
 
 /**
@@ -177,11 +193,14 @@ export async function readJson<T = Record<string, unknown>>(event: RequestEvent)
 export async function readOptionalJson<T = Record<string, unknown>>(event: RequestEvent): Promise<T> {
 	const raw = (await readCappedBody(event)).trim();
 	if (!raw) return {} as T;
+	let parsed: unknown;
 	try {
-		return JSON.parse(raw) as T;
+		parsed = JSON.parse(raw);
 	} catch {
 		apiError(400, 'Invalid JSON body');
 	}
+	if (!isJsonBodyShape(parsed)) apiError(400, 'Invalid JSON body');
+	return parsed as T;
 }
 
 export { json };

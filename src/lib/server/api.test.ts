@@ -115,4 +115,46 @@ describe('api.ts guards emit the dual-field {error, message} shape (Wave 6)', ()
 		});
 		await expectDualFieldThrowAsync(() => readJson(event), 413, 'Request body too large');
 	});
+
+	// cairn-8oo3: a body that is valid JSON but not an object (a top-level
+	// `null`, string, number, boolean, or array) used to parse cleanly and
+	// then crash the first caller that destructured it — an uncaught
+	// TypeError surfacing as a 500 instead of the 400 every other malformed
+	// body gets. readJson/readOptionalJson must reject these the same way
+	// they reject a syntax error.
+	describe('cairn-8oo3: non-object JSON bodies are rejected, not crashed on', () => {
+		const nonObjectBodies: [string, string][] = [
+			['null', 'null'],
+			['a bare number', '42'],
+			['a bare string', '"str"'],
+			['a bare boolean', 'true'],
+			['a top-level array', '[1,2,3]']
+		];
+
+		for (const [label, body] of nonObjectBodies) {
+			it(`readJson: 400 "Invalid JSON body" for ${label}`, async () => {
+				const event = makeEvent({
+					request: new Request('http://localhost/api/x', { method: 'POST', body })
+				});
+				await expectDualFieldThrowAsync(() => readJson(event), 400, 'Invalid JSON body');
+			});
+
+			it(`readOptionalJson: 400 "Invalid JSON body" for ${label}`, async () => {
+				const event = makeEvent({
+					request: new Request('http://localhost/api/x', { method: 'POST', body })
+				});
+				await expectDualFieldThrowAsync(() => readOptionalJson(event), 400, 'Invalid JSON body');
+			});
+		}
+
+		it('readJson: a genuine object body still parses through untouched', async () => {
+			const event = makeEvent({
+				request: new Request('http://localhost/api/x', {
+					method: 'POST',
+					body: JSON.stringify({ name: 'ok' })
+				})
+			});
+			await expect(readJson(event)).resolves.toEqual({ name: 'ok' });
+		});
+	});
 });

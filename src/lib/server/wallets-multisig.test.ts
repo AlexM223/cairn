@@ -335,6 +335,35 @@ describe('createMultisig activity event (cairn-cvcu)', () => {
 
 import { MultisigError } from './bitcoin/multisig';
 
+describe('createMultisig double-submit guard (cairn-50ng)', () => {
+	it('a second create with the same (user, name) throws duplicate_name and stores nothing new', async () => {
+		const user = await makeUser('dupname@example.com');
+		makeMultisig(user.id);
+		expect(db.prepare('SELECT COUNT(*) AS n FROM multisigs').get()).toEqual({ n: 1 });
+
+		// Two sequential calls, not raced promises: createMultisig's check and its
+		// INSERT are separated by zero `await`s, so a synchronous SQLite backend
+		// makes the two atomic regardless of request timing — this pins the
+		// guard's logic directly rather than depending on scheduler luck.
+		expect(() => makeMultisig(user.id)).toThrow(/already have a multisig named/i);
+		try {
+			makeMultisig(user.id);
+		} catch (e) {
+			expect(e).toBeInstanceOf(MultisigError);
+			expect((e as MultisigError).code).toBe('duplicate_name');
+		}
+		expect(db.prepare('SELECT COUNT(*) AS n FROM multisigs').get()).toEqual({ n: 1 });
+	});
+
+	it('the same name is free again for a different user', async () => {
+		const alice = await makeUser('alice-dup@example.com');
+		const bob = await makeUser('bob-dup@example.com');
+		makeMultisig(alice.id);
+		expect(() => makeMultisig(bob.id)).not.toThrow();
+		expect(db.prepare('SELECT COUNT(*) AS n FROM multisigs').get()).toEqual({ n: 2 });
+	});
+});
+
 describe('createMultisig cosigner path validation (cairn-1kc3.1/.3)', () => {
 	it('rejects a key declaring a single-sig path — the audit case (cairn-1kc3.3)', async () => {
 		const user = await makeUser('paths@example.com');

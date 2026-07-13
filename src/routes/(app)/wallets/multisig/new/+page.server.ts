@@ -2,7 +2,6 @@ import { fail, redirect } from '@sveltejs/kit';
 import {
 	deriveMultisigAddress,
 	parseDescriptor,
-	multisigToDescriptor,
 	validateMultisigKeyPaths,
 	MultisigError,
 	type MultisigConfig
@@ -24,6 +23,7 @@ import {
 	type MultisigKeyCategory,
 	type MultisigScriptType
 } from '$lib/server/wallets/multisig';
+import { normalizeMultisigKeyInput, PASTED_PRIVATE_KEY_REFUSAL } from '$lib/server/wallets/keyInput';
 import { containsPrivateKeyMaterial, parseCaravanImport } from '$lib/server/multisigExport';
 import { detectCosignerContacts } from '$lib/server/cosignerDetection';
 import { listMultisigs } from '$lib/server/wallets/multisig';
@@ -88,51 +88,11 @@ function rememberLiveRead(
 	}
 }
 
-const PASTED_PRIVATE_KEY_REFUSAL =
-	"That's a private key. Never paste it anywhere. Export the public key instead (look for 'xpub' in your wallet).";
-
 function errMessage(e: unknown): string {
 	const msg = e instanceof Error ? e.message : String(e);
 	// Single-key validation wraps the key in a 1-of-1 descriptor, so the
 	// library prefixes errors with "Key 1:" / "key 1:" — noise here.
 	return msg.replace(/^[Kk]ey 1: /, '');
-}
-
-/**
- * Normalize one pasted/imported key. Accepts a bare xpub, a SLIP-132
- * Ypub/Zpub, or a descriptor-style `[fingerprint/path]xpub` expression —
- * whatever the multisig library's key parsing accepts, by wrapping the paste
- * in a 1-of-1 sortedmulti descriptor. Separate fingerprint/path fields fill
- * in whatever the paste itself didn't carry.
- */
-function normalizeKey(paste: string, fpField: string, pathField: string) {
-	const raw = paste.replace(/\s+/g, '');
-	if (!raw) {
-		throw new MultisigError('Paste the key first — it starts with xpub, Zpub or [.', 'invalid_key');
-	}
-	if (containsPrivateKeyMaterial(raw)) {
-		throw new MultisigError(PASTED_PRIVATE_KEY_REFUSAL, 'invalid_key');
-	}
-	if (/^(wsh|sh)\(/i.test(raw)) {
-		throw new MultisigError(
-			'That looks like a full multisig descriptor — use "Import an existing multisig" instead.',
-			'invalid_descriptor'
-		);
-	}
-	const parsed = parseDescriptor(`wsh(sortedmulti(1,${raw}))`).keys[0];
-
-	let fingerprint = parsed.fingerprint;
-	let path = parsed.path;
-	const fp = fpField.trim().toLowerCase();
-	const p = pathField.trim();
-	if (fingerprint === '00000000' && fp) fingerprint = fp;
-	if (path === 'm' && p) path = p;
-
-	// Full validation (fingerprint format, path syntax, key parses) plus
-	// SLIP-132 canonicalization, via a descriptor round-trip — one code path.
-	const single: MultisigConfig = { threshold: 1, keys: [{ xpub: parsed.xpub, fingerprint, path }] };
-	const canonical = parseDescriptor(multisigToDescriptor(single)).keys[0].xpub;
-	return { xpub: canonical, fingerprint, path };
 }
 
 function parseConfigJson(json: string): MultisigConfig {
@@ -177,7 +137,7 @@ export const actions: Actions = {
 		const scriptType = MULTISIG_SCRIPT_TYPES.includes(scriptTypeRaw) ? scriptTypeRaw : 'p2wsh';
 
 		try {
-			const normalized = normalizeKey(
+			const normalized = normalizeMultisigKeyInput(
 				String(form.get('xpub') ?? ''),
 				String(form.get('fingerprint') ?? ''),
 				String(form.get('path') ?? '')
@@ -281,7 +241,11 @@ export const actions: Actions = {
 			});
 			return { multisigId: multisig.id };
 		} catch (e) {
-			return fail(400, {
+			// Double-submit guard (cairn-50ng): createMultisig's synchronous
+			// check-then-insert throws 'duplicate_name' when this (user, name)
+			// pair already exists — a distinct status from a validation failure.
+			const status = e instanceof MultisigError && e.code === 'duplicate_name' ? 409 : 400;
+			return fail(status, {
 				error: e instanceof MultisigError ? e.message : 'Could not create that multisig.'
 			});
 		}
