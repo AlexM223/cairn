@@ -1475,7 +1475,39 @@ by `decryptSecret()` for forward compatibility.)
 dedicated `instance_secrets` table (not `settings`) and delete any legacy
 plaintext row in `settings` for the same key on write. An explicit-clear is
 stored as `''` (falsy, not absent). Current secret keys: `smtp_pass`,
-`core_rpc_pass`, `telegram_bot_token`, `nostr_sender_privkey`.
+`core_rpc_pass`, `telegram_bot_token`, `nostr_sender_privkey`,
+`scheduled_backup_pass` (backup.ts).
+
+### Factory reset (`resetInstance()`, `admin.ts`)
+
+`resetInstance()` (called from the admin settings "Danger Zone" action)
+deletes every user, session, wallet, invite, `settings` row, `events` row,
+`notified_txids` row, announcement and multisig-service-referral in one
+transaction, then the next visit to `/signup` is the first-run flow again.
+
+It ALSO deletes every row of `instance_secrets` (every encrypted SMTP/
+Core-RPC/Telegram/Nostr credential and the scheduled-backup passphrase) and
+every row of `feature_flags` outright — fixed cairn-rksw, previously both
+tables survived a reset (the `feature_flags` NO-ACTION FK fix for cairn-hl87
+only nulled `updated_by`, it didn't clear the rows), which meant a "reset"
+instance silently handed the next operator the prior operator's SMTP
+password, Core RPC password, Telegram bot token, and Nostr identity key —
+a confidentiality leak on device handover/resale, made worse by the
+settings UI copy inviting reuse of an orphaned stored password. Per-user
+secrets (e.g. the personal SMTP password embedded in
+`notification_channel_config.config`, see §6/§9) are not a separate case:
+they cascade away as an ordinary side effect of `DELETE FROM users` via
+that table's `ON DELETE CASCADE` FK, same as every other per-user row.
+`feature_flags` must be deleted BEFORE `DELETE FROM users` in the same
+transaction (its `updated_by` FK is NO ACTION, not CASCADE) — deleting
+`instance_secrets` has no such ordering constraint since it carries no
+user FK at all.
+
+Regression coverage: `destructiveOps.test.ts`'s factory-reset group has a
+table-driven test enumerating every known `instance_secrets` key plus the
+per-user encrypted-SMTP case, so a future secret store added without wiring
+into the reset (or into this table) fails loudly instead of silently
+repeating cairn-rksw.
 
 ### Data retention (`dataRetention.ts`)
 
