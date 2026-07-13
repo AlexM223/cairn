@@ -9,7 +9,14 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import Amount from '$lib/components/Amount.svelte';
 	import { btcUsd } from '$lib/price';
-	import { formatSats, formatFeeRate, formatFiat, formatBtc, truncateMiddle } from '$lib/format';
+	import {
+		formatSats,
+		formatFeeRate,
+		formatFiat,
+		formatBtc,
+		btcToFiat,
+		truncateMiddle
+	} from '$lib/format';
 	import { summarySentence } from './sendCopy';
 
 	type ReviewRecipient = { address: string; amount: number };
@@ -87,6 +94,16 @@
 			? inputs.reduce((s, i) => s + (i.value ?? 0), 0)
 			: null;
 	});
+
+	// Fiat suffix for Details-expander money rows (change/total-input/per-UTXO):
+	// muted "· $12.34" alongside the sats value, matching the fee-pct suffix
+	// style already in the fee-rate row. Degrades to null (sats-only, no
+	// broken/empty fiat text) when no price is available — same rule Amount.svelte
+	// applies everywhere else money is shown.
+	function fiatSuffix(sats: number): string | null {
+		if ($btcUsd == null) return null;
+		return formatFiat(btcToFiat(sats / SATS_PER_BTC, $btcUsd));
+	}
 
 	const irreversibility = $derived.by(() => {
 		if (mode === 'confirm') {
@@ -180,13 +197,21 @@
 			{#if changeSats != null}
 				<div class="detail-row">
 					<span class="text-secondary">Change back to your wallet</span>
-					<span class="detail-val tabular">{formatSats(changeSats)} sats</span>
+					<span class="detail-val tabular"
+						>{formatSats(changeSats)} sats{#if fiatSuffix(changeSats) != null}
+							<span class="text-muted">· {fiatSuffix(changeSats)}</span>
+						{/if}</span
+					>
 				</div>
 			{/if}
 			{#if totalIn != null}
 				<div class="detail-row">
 					<span class="text-secondary">Total input</span>
-					<span class="detail-val tabular">{formatSats(totalIn)} sats</span>
+					<span class="detail-val tabular"
+						>{formatSats(totalIn)} sats{#if fiatSuffix(totalIn) != null}
+							<span class="text-muted">· {fiatSuffix(totalIn)}</span>
+						{/if}</span
+					>
 				</div>
 			{/if}
 			{#if inputs.length > 0}
@@ -200,7 +225,11 @@
 						<div class="utxo-row">
 							<span class="mono text-muted">{truncateMiddle(inp.txid, 10, 8)}:{inp.vout}</span>
 							{#if inp.value != null}
-								<span class="tabular">{formatSats(inp.value)} sats</span>
+								<span class="tabular"
+									>{formatSats(inp.value)} sats{#if fiatSuffix(inp.value) != null}
+										<span class="text-muted">· {fiatSuffix(inp.value)}</span>
+									{/if}</span
+								>
 							{/if}
 						</div>
 					{/each}

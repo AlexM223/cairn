@@ -8,7 +8,9 @@ import {
 	formatHashrate,
 	formatFeeRate,
 	truncateMiddle,
-	formatDuration
+	formatDuration,
+	btcToFiat,
+	formatFiat
 } from './format';
 
 describe('formatBtc', () => {
@@ -192,5 +194,25 @@ describe('formatDuration', () => {
 		[36_000, '10.0 h']
 	])('%d s -> %s', (seconds, expected) => {
 		expect(formatDuration(seconds)).toBe(expected);
+	});
+});
+
+describe('btcToFiat', () => {
+	it('multiplies BTC amount by spot price', () => {
+		expect(btcToFiat(1, 65_000)).toBe(65_000);
+		expect(btcToFiat(0.5, 65_000)).toBe(32_500);
+		expect(btcToFiat(0, 65_000)).toBe(0);
+	});
+});
+
+describe('formatFiat', () => {
+	it('formats as USD currency with 2 decimals', () => {
+		expect(formatFiat(1234.5)).toBe('$1,234.50');
+		expect(formatFiat(0)).toBe('$0.00');
+		expect(formatFiat(0.5)).toBe('$0.50');
+	});
+
+	it('compacts amounts >= $1M', () => {
+		expect(formatFiat(1_200_000)).toBe('$1.2M');
 	});
 });
