@@ -13,7 +13,8 @@
 		PASSPHRASE_CAUSE_HEADLINE,
 		PASSPHRASE_CAUSE_BODY,
 		PASSPHRASE_LOSS_WARNING,
-		PASSPHRASE_NOT_RECOMMENDED
+		PASSPHRASE_NOT_RECOMMENDED,
+		NO_FINGERPRINT_ON_RECORD_NOTE
 	} from './keyCheckCopy';
 
 	// One key's health check (cairn-hvp), Casa-style: prove now and then that
@@ -70,7 +71,7 @@
 	const verifiedAt = $derived(freshStamp ?? keyInfo.lastVerifiedAt);
 
 	type CheckResult =
-		| { kind: 'ok' }
+		| { kind: 'ok'; noFingerprintOnRecord?: boolean }
 		| { kind: 'mismatch'; deviceFingerprint: string; fingerprintMatch: boolean }
 		| { kind: 'error'; message: string };
 	let result = $state<CheckResult | null>(null);
@@ -126,7 +127,7 @@
 			freshStamp = data.lastVerifiedAt;
 			onVerified(keyInfo.id, data.lastVerifiedAt);
 		}
-		result = { kind: 'ok' };
+		result = { kind: 'ok', noFingerprintOnRecord: data.matchedWithoutFingerprint === true };
 	}
 
 	function mismatchFrom(data: Record<string, unknown>): CheckResult {
@@ -467,6 +468,9 @@
 						for another while.
 					</span>
 				</div>
+				{#if result.noFingerprintOnRecord}
+					<p class="khr-copy khr-neutral-note">{NO_FINGERPRINT_ON_RECORD_NOTE}</p>
+				{/if}
 			{:else if result?.kind === 'mismatch'}
 				<div class="khr-result khr-warn" role="alert">
 					<Icon name="alert-triangle" size={14} />
@@ -774,6 +778,10 @@
 
 	.khr-ok strong {
 		color: var(--text);
+	}
+
+	.khr-neutral-note {
+		color: var(--text-muted);
 	}
 
 	.khr-warn {

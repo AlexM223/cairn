@@ -45,3 +45,15 @@ export const PROACTIVE_PASSPHRASE_NOTE =
 	"If this device uses a BIP39 passphrase, make sure it's the same one every time you connect it " +
 	'— a passphrase with multisig is an easy way to lock yourself out, since it derives a completely ' +
 	'different set of keys.';
+
+/**
+ * Neutral (non-alarming) note shown alongside a MATCH result when the stored
+ * key never had a real fingerprint on record — added as a bare xpub with no
+ * [fingerprint/path] origin (cairn-9p6z). The xpub still matched, which is a
+ * genuine verification, but the fingerprint half of the check was skipped
+ * rather than passed, so this is deliberately lower-key than
+ * KEY_MATCH_HEADLINE — a nudge, not a warning.
+ */
+export const NO_FINGERPRINT_ON_RECORD_NOTE =
+	'This key had no fingerprint on record, so only its public key could be checked — consider ' +
+	"re-adding it with its origin info (e.g. [a1b2c3d4/48'/0'/0'/2']xpub…) for a fuller check next time.";

@@ -114,6 +114,39 @@ describe('POST .../keys/:keyId/verified — method: device (regression)', () => 
 	});
 });
 
+// cairn-9p6z: a key added as a bare xpub (no [fingerprint/path] origin) is
+// stored with the '00000000' placeholder fingerprint — there was never a
+// real fingerprint on record, so a differing supplied fingerprint must not
+// fail the check (and must not surface as a false "wrong seed" mismatch)
+// when the xpub itself genuinely matches.
+describe('POST .../keys/:keyId/verified — stored placeholder fingerprint (00000000)', () => {
+	beforeEach(() => {
+		db.prepare('UPDATE multisig_keys SET fingerprint = ? WHERE id = ?').run('00000000', keyId);
+	});
+
+	it('a matching xpub with a real supplied fingerprint verifies, flagged matchedWithoutFingerprint', async () => {
+		const res = await POST(
+			event({ method: 'device', xpub: stored.xpub, fingerprint: stored.fingerprint })
+		);
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.verified).toBe(true);
+		expect(body.matchedWithoutFingerprint).toBe(true);
+		expect(typeof body.lastVerifiedAt).toBe('string');
+	});
+
+	it('a non-matching xpub is still reported as a mismatch (paste method, same fix)', async () => {
+		const other = fixtureKey(77);
+		const res = await POST(
+			event({ method: 'paste', xpub: other.xpub, fingerprint: other.fingerprint })
+		);
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.verified).toBe(false);
+		expect(body.xpubMatch).toBe(false);
+	});
+});
+
 describe('POST .../keys/:keyId/verified — method: paste (Wave 1 addition)', () => {
 	it('a matching pasted xpub+fingerprint records the check — same as device', async () => {
 		const res = await POST(event({ method: 'paste', xpub: stored.xpub, fingerprint: stored.fingerprint }));

@@ -10,8 +10,11 @@ import type { RequestHandler } from './$types';
  *   { "method": "device", "xpub": "...", "fingerprint": "..." }
  *     A live hardware re-read. The SERVER compares the reading against the
  *     stored row (canonicalizing SLIP-132 xpub aliases), so a check is only
- *     ever recorded for a key that actually matched:
- *       match    → 200 { verified: true, keyId, lastVerifiedAt }
+ *     ever recorded for a key that actually matched. A stored '00000000'
+ *     placeholder fingerprint (bare-xpub add, no origin ever captured) never
+ *     disagreed with anything real, so it doesn't fail the check on its own —
+ *     matchedWithoutFingerprint flags that case (cairn-9p6z):
+ *       match    → 200 { verified: true, keyId, lastVerifiedAt, matchedWithoutFingerprint }
  *       mismatch → 200 { verified: false, fingerprintMatch, xpubMatch,
  *                        expectedFingerprint, deviceFingerprint }
  *   { "method": "paste", "xpub": "...", "fingerprint": "..." }
@@ -36,6 +39,7 @@ export const POST: RequestHandler = async (event) => {
 
 	const body = await readJson<{ method?: unknown; xpub?: unknown; fingerprint?: unknown }>(event);
 
+	let matchedWithoutFingerprint = false;
 	if (body.method === 'device' || body.method === 'paste') {
 		if (typeof body.xpub !== 'string' || typeof body.fingerprint !== 'string') {
 			return json(
@@ -44,7 +48,10 @@ export const POST: RequestHandler = async (event) => {
 			);
 		}
 		const cmp = compareMultisigKey(key, { xpub: body.xpub, fingerprint: body.fingerprint });
-		if (!cmp.fingerprintMatch || !cmp.xpubMatch) {
+		// A stored '00000000' placeholder fingerprint (bare-xpub add, no
+		// [fingerprint/path] origin) never disagreed with anything real — the
+		// xpub match alone decides the check in that case (cairn-9p6z).
+		if (!cmp.xpubMatch || !(cmp.fingerprintMatch || cmp.matchedWithoutFingerprint)) {
 			return json({
 				verified: false,
 				fingerprintMatch: cmp.fingerprintMatch,
@@ -53,11 +60,17 @@ export const POST: RequestHandler = async (event) => {
 				deviceFingerprint: body.fingerprint.trim().toLowerCase()
 			});
 		}
+		matchedWithoutFingerprint = cmp.matchedWithoutFingerprint;
 	} else if (body.method !== 'manual') {
 		return json({ error: 'method must be "device", "paste", or "manual".' }, { status: 400 });
 	}
 
 	const updated = markKeyVerified(user.id, id, keyId);
 	if (!updated) return json({ error: 'Key not found' }, { status: 404 });
-	return json({ verified: true, keyId: updated.id, lastVerifiedAt: updated.lastVerifiedAt });
+	return json({
+		verified: true,
+		keyId: updated.id,
+		lastVerifiedAt: updated.lastVerifiedAt,
+		matchedWithoutFingerprint
+	});
 };

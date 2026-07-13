@@ -21,7 +21,8 @@
 		PASSPHRASE_CAUSE_HEADLINE,
 		PASSPHRASE_CAUSE_BODY,
 		PASSPHRASE_LOSS_WARNING,
-		PASSPHRASE_NOT_RECOMMENDED
+		PASSPHRASE_NOT_RECOMMENDED,
+		NO_FINGERPRINT_ON_RECORD_NOTE
 	} from '../../_components/keyCheckCopy';
 
 	// Wave 2 of the multisig key-check redesign (MULTISIG-KEY-AUDIT-DESIGN §7):
@@ -58,7 +59,7 @@
 	let busy = $state(false);
 
 	type CheckResult =
-		| { kind: 'ok' }
+		| { kind: 'ok'; noFingerprintOnRecord?: boolean }
 		| { kind: 'mismatch'; deviceFingerprint: string; fingerprintMatch: boolean }
 		| { kind: 'error'; message: string };
 	let result = $state<CheckResult | null>(null);
@@ -82,7 +83,7 @@
 	const deviceLabel = $derived(keyInfo.deviceType ? DEVICE_LABELS[keyInfo.deviceType] : 'this key');
 
 	function fromComparison(cmp: WizardKeyCompareResult, deviceFingerprint: string): CheckResult {
-		if (cmp.verified) return { kind: 'ok' };
+		if (cmp.verified) return { kind: 'ok', noFingerprintOnRecord: cmp.matchedWithoutFingerprint };
 		return { kind: 'mismatch', deviceFingerprint, fingerprintMatch: cmp.fingerprintMatch };
 	}
 
@@ -279,6 +280,9 @@
 						{keyInfo.name} still checks out.
 					</span>
 				</div>
+				{#if result.noFingerprintOnRecord}
+					<p class="wkc-copy wkc-neutral-note">{NO_FINGERPRINT_ON_RECORD_NOTE}</p>
+				{/if}
 			{:else if result?.kind === 'mismatch'}
 				<div class="wkc-result wkc-warn" role="alert">
 					<Icon name="alert-triangle" size={14} />
@@ -484,6 +488,10 @@
 
 	.wkc-ok strong {
 		color: var(--text);
+	}
+
+	.wkc-neutral-note {
+		color: var(--text-muted);
 	}
 
 	.wkc-warn {
