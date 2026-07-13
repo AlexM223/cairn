@@ -8,6 +8,8 @@
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
 	import Modal from '$lib/components/heartwood/Modal.svelte';
+	import { page } from '$app/state';
+	import { isChannelVisible, visibleChannelIds } from './notifyChannelVisibility';
 
 	let { data } = $props();
 
@@ -280,6 +282,12 @@
 		{ id: 'webhook', label: 'Webhook' }
 	];
 
+	// cairn-lv2t: a channel whose notify_* flag is off for this user is hidden
+	// entirely — the same convention DevicePicker.svelte uses for hw_* flags —
+	// rather than rendered normally with server enforcement as the only gate.
+	const visibleExternalChannels = $derived(visibleChannelIds(EXTERNAL_CHANNELS, page.data.flags));
+	const anyChannelVisible = $derived(visibleExternalChannels.length > 0);
+
 	// Event catalogue grouped by category. Admin rows hidden for non-admins.
 	type EventDef = { type: string; label: string; desc: string; tunable?: 'threshold' | 'confirmations' };
 	const GROUPS: { title: string; admin?: boolean; events: EventDef[] }[] = [
@@ -485,11 +493,13 @@
 	}
 
 	function enabledSummary(eventType: string): string {
-		const on = ['inapp', ...EXTERNAL_CHANNELS.map((c) => c.id)].filter((ch) =>
+		// cairn-lv2t: a flagged-off channel is never an option here, so it never
+		// appears in the summary even if a stale saved row still marks it enabled.
+		const on = ['inapp', ...visibleExternalChannels.map((c) => c.id)].filter((ch) =>
 			ch === 'inapp' ? true : isEnabled(eventType, ch as ChannelId)
 		);
 		if (on.length === 1) return 'In-app only';
-		const labels = on.map((c) => (c === 'inapp' ? 'In-app' : EXTERNAL_CHANNELS.find((e) => e.id === c)?.label));
+		const labels = on.map((c) => (c === 'inapp' ? 'In-app' : visibleExternalChannels.find((e) => e.id === c)?.label));
 		return labels.join(', ');
 	}
 
@@ -586,7 +596,15 @@
 	<section class="hw-section">
 		<h2 class="section-title">Channels</h2>
 
+		{#if !anyChannelVisible}
+			<p class="hint">
+				Your administrator has disabled every external notification channel. In-app alerts are
+				still available.
+			</p>
+		{/if}
+
 		<!-- Email -->
+		{#if isChannelVisible('email', page.data.flags)}
 		<button type="button" class="hw-row" aria-expanded={!!open.email} onclick={() => toggleRow('email')}>
 			<span class="row-title">Email</span>
 			{@render connMeta('email')}
@@ -730,8 +748,10 @@
 				</div>
 			</div>
 		{/if}
+		{/if}
 
 		<!-- Telegram -->
+		{#if isChannelVisible('telegram', page.data.flags)}
 		<button type="button" class="hw-row" aria-expanded={!!open.telegram} onclick={() => toggleRow('telegram')}>
 			<span class="row-title">Telegram</span>
 			{@render connMeta('telegram')}
@@ -754,8 +774,10 @@
 				</div>
 			</div>
 		{/if}
+		{/if}
 
 		<!-- ntfy -->
+		{#if isChannelVisible('ntfy', page.data.flags)}
 		<button type="button" class="hw-row" aria-expanded={!!open.ntfy} onclick={() => toggleRow('ntfy')}>
 			<span class="row-title"><Term tip="ntfy is a simple, self-hostable push notification service. You pick a topic name — no account needed — and subscribe to it on your phone.">ntfy</Term> push</span>
 			{@render connMeta('ntfy')}
@@ -789,8 +811,10 @@
 				</div>
 			</div>
 		{/if}
+		{/if}
 
 		<!-- Nostr -->
+		{#if isChannelVisible('nostr', page.data.flags)}
 		<button type="button" class="hw-row" aria-expanded={!!open.nostr} onclick={() => toggleRow('nostr')}>
 			<span class="row-title">Nostr</span>
 			{@render connMeta('nostr')}
@@ -821,8 +845,10 @@
 				</div>
 			</div>
 		{/if}
+		{/if}
 
 		<!-- Webhook -->
+		{#if isChannelVisible('webhook', page.data.flags)}
 		<button type="button" class="hw-row" aria-expanded={!!open.webhook} onclick={() => toggleRow('webhook')}>
 			<span class="row-title"><Term tip="A webhook is a URL Heartwood sends an HTTP POST to when an event happens, so your own scripts or tools can react to it.">Webhook</Term></span>
 			{@render connMeta('webhook')}
@@ -849,6 +875,7 @@
 					{@render resultBadge('webhook')}
 				</div>
 			</div>
+		{/if}
 		{/if}
 	</section>
 
@@ -890,7 +917,7 @@
 										<span class="toggle always-on" title="Always on">
 											<Icon name="check" size={13} /> In-app
 										</span>
-										{#each EXTERNAL_CHANNELS as c (c.id)}
+										{#each visibleExternalChannels as c (c.id)}
 											<label class="toggle" class:disabled={!channel(c.id).configured}>
 												<input
 													type="checkbox"
@@ -903,7 +930,7 @@
 											</label>
 										{/each}
 									</div>
-									{#if EXTERNAL_CHANNELS.some((c) => !channel(c.id).configured)}
+									{#if visibleExternalChannels.some((c) => !channel(c.id).configured)}
 										<p class="hint tiny">Greyed-out channels aren't connected yet — set them up above.</p>
 									{/if}
 
