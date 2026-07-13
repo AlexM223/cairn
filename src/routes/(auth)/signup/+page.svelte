@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import Banner from '$lib/components/Banner.svelte';
+	import { validateSignup } from './validate';
 
 	let { data } = $props();
 
@@ -14,13 +15,13 @@
 	let error = $state<string | null>(null);
 
 	function validate(): string | null {
-		if (!displayName.trim()) return 'Enter a display name.';
-		if (!email.trim()) return 'Enter your email address.';
-		if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return 'Enter a valid email address.';
-		if (password.length < 8) return 'Password must be at least 8 characters.';
-		if (data.needsInvite && !inviteCode.trim())
-			return 'This instance requires an invite code to join.';
-		return null;
+		return validateSignup({
+			displayName,
+			email,
+			password,
+			needsInvite: data.needsInvite,
+			inviteCode
+		});
 	}
 
 	async function createAccount(e: SubmitEvent) {
