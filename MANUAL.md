@@ -1581,7 +1581,39 @@ missing/disabled/expired (deleting the expired row on the way out).
 forced non-secure when `CAIRN_ORIGIN` explicitly declares `http:`. This
 exists because adapter-node assumes https by default behind a plain-HTTP
 reverse proxy (e.g. Umbrel's `app_proxy`), which would otherwise silently
-drop the `Secure` cookie and break login with no visible error. Personal API
+drop the `Secure` cookie and break login with no visible error.
+
+`cookieSecure(url)`'s `url` comes from SvelteKit's own request URL, which
+adapter-node derives from `PROTOCOL_HEADER` (or defaults to `https` if
+neither `ORIGIN` nor `PROTOCOL_HEADER` is set) — so the CAIRN_ORIGIN escape
+hatch above only ever helped single-listener, fixed-origin deployments.
+**`server.mjs`'s bare-node (no reverse proxy) deployments hit the same
+default-to-https trap on their plain-HTTP listener too** (`cairn-wrph`,
+`cairn-9njl`, fixed `0ff9557`): with no `ORIGIN` and no operator-set
+`PROTOCOL_HEADER`, adapter-node's `get_origin()` reported every request as
+`https` regardless of which of the two listeners (HTTP port / self-signed
+HTTPS port, §9.7) actually received it, so `cookieSecure()` stamped `Secure`
+on the session cookie even over plain HTTP — the browser silently drops a
+`Secure` cookie set over an insecure response, so login looked like a
+successful 200 but the cookie never stuck. The fix, entirely in
+`server.mjs`/`scripts/serverProto.mjs` (no `auth.ts` changes): for
+unconfigured deployments (`!ORIGIN && !PROTOCOL_HEADER`), `server.mjs` now
+defaults `PROTOCOL_HEADER=x-forwarded-proto` and each listener's request
+handler calls `fillForwardedProto(req.headers, 'http' | 'https')` — a
+**fill-when-absent** helper that stamps that listener's own protocol onto
+the header only if it isn't already present. The "only if absent" rule is
+load-bearing: a TLS-terminating reverse proxy sitting in front of the plain
+HTTP port (or Umbrel's `app_proxy`, which sets its own forwarded headers)
+must set its own `X-Forwarded-Proto` — that value is honored as-is, never
+overwritten by this fill. A proxy that terminates TLS but doesn't set
+`X-Forwarded-Proto` gets a loud regression (browser drops the wrongly-Secure
+cookie) rather than the old silent one; the alternative is setting
+`ORIGIN`/`CAIRN_ORIGIN` to the externally-visible `https://` URL instead,
+which bypasses header-based detection entirely. See the env var table
+(`PROTOCOL_HEADER`) and the Umbrel compose vars below — Umbrel's `app_proxy`
+already sets `PROTOCOL_HEADER=x-forwarded-proto` explicitly, so it was never
+affected by this bug; this fix is specifically for direct/unproxied
+deployments. Personal API
 tokens (`apiTokens.ts`) share the exact same `hashToken()` scheme so both
 stores are hash-only-at-rest. **See also §8** for the full bearer-token
 auth path (`Authorization: Bearer cairn_...`, rate-limited, resolved via
@@ -1904,6 +1936,19 @@ per-channel, absence = `DEFAULT_PREFERENCES[eventType]`),
 never returned to the client verbatim), `user_pgp_keys` (optional email
 encryption), `user_notification_settings` (quiet hours).
 
+**Channel visibility in Settings > Notifications** (`cairn-lv2t`, fixed):
+before `39bf477` the `settings/notifications` page rendered every channel
+row (email/telegram/ntfy/nostr/webhook) regardless of the viewer's resolved
+`notify_*` feature flags — only the save endpoint enforced them (403 on
+submit), so a user with e.g. `notify_telegram` disabled by an admin could
+still see and fill in a Telegram row that would then silently reject on
+save. `notifyChannelVisibility.ts`'s `isChannelVisible`/`visibleChannelIds`
+(unit tested) now gate both the channel rows and the per-event-type channel
+toggles, mirroring `DevicePicker.svelte`'s `hw_*` hide convention. If every
+channel is flagged off, the page shows an explanatory line instead of an
+empty list. Server-side enforcement is unchanged — this is a UI-parity fix,
+not a new security boundary.
+
 **SMTP — global + per-user creds**: `channels/email.ts`'s
 `readSmtpConfig(userId)` resolves SMTP host/port/user/`smtp_pass`/from/tls
 per-user from `notification_channel_config`; `resolveSmtp(userId)` wraps
@@ -2039,9 +2084,28 @@ Wraps every authenticated page with:
   a tab route for consistency, but **has no real pages** — see the route
   table note below before "helpfully" building one.
 - `ChainHealthBanner` — always mounted, silent unless Electrum/SOCKS5 is
-  unhealthy.
+  unhealthy. Two distinct unhealthy states, both from `getChainHealth()`
+  (`chainHealth.ts`): **never-configured** (`health.neverConfigured` true —
+  `isChainNeverConfigured()` in `settings.ts` sees `connection_mode` still on
+  its `'public'` default AND `chain_provisioned_by` unset, i.e. a fresh
+  install nobody has touched) renders a calm neutral `.neutral`-variant
+  banner ("Heartwood isn't connected to the Bitcoin network yet", admin-only
+  "Connect a node" link to `/admin/settings`, operator-facing copy for
+  non-admins) instead of red warning styling; any other unhealthy state
+  (admin configured it, or Umbrel auto-connected, and it's now actually
+  unreachable) keeps the original red "can't reach it" copy/styling. Fixed
+  `cairn-7zjo` (`c90481f`/`85a24da`) — previously every unhealthy state used
+  the same red error treatment, which read as "broken" rather than
+  "not connected yet, please configure a node" on a healthy fresh install.
 - `SyncBanner` — shown until first chain-history sync completes (polls
-  `/api/sync`).
+  `/api/sync`); self-suppresses (`{#if !hidden && !suppressed}`) when
+  `syncStatus.ts`'s `deriveSyncStatus` reports phase `'unreachable'`, since
+  that phase is only reached when `chainHealthy` is already false — i.e. the
+  identical root cause `ChainHealthBanner` is already showing. Also fixed in
+  `cairn-7zjo`: before this, a never-configured or unreachable instance
+  could show BOTH banners stacked, which read as doubly broken; distinct
+  causes (connecting/history-scan progress while the chain IS reachable)
+  still show `SyncBanner` normally.
 - `AnnouncementBanner` — admin announcements, server-filtered by flag/
   expiry/dismissal.
 - Backup nudge banners: an urgent "N wallets aren't backed up" banner
@@ -2588,7 +2652,7 @@ The table below is built from source, not from either doc alone.
 | `PORT` | 3000 | HTTP listen port, read in `server.mjs` |
 | `HOST` | `0.0.0.0` | listen host |
 | `ADDRESS_HEADER` | unset | header trusted for client IP (e.g. `x-forwarded-for`). Deliberately **not** baked into the Dockerfile — adapter-node's `getClientAddress()` throws if the configured header is absent, which 500'd login on unproxied deployments. Only set when a reverse proxy actually sets/overwrites the header (Umbrel's `app_proxy` does) |
-| `PROTOCOL_HEADER` | unset | e.g. `x-forwarded-proto` — the **CSRF fix** for running behind a plain-HTTP reverse proxy (SvelteKit assumes https by default, marking the session cookie `Secure`, which browsers drop over http, and failing form-POST CSRF checks) |
+| `PROTOCOL_HEADER` | unset, but `server.mjs` defaults it to `x-forwarded-proto` whenever both this and `ORIGIN` are unset | e.g. `x-forwarded-proto` — the **CSRF/cookie fix** for running behind a plain-HTTP reverse proxy (SvelteKit assumes https by default, marking the session cookie `Secure`, which browsers drop over http, and failing form-POST CSRF checks). For direct/unproxied deployments, `server.mjs` (`scripts/serverProto.mjs`) fills this header per-listener with that listener's own protocol whenever a request arrives without one — fill-when-absent, never overwrites a value a reverse proxy already set (`cairn-wrph`/`cairn-9njl`, §7 Sessions) |
 | `HOST_HEADER` | unset | e.g. `x-forwarded-host` — paired with `PROTOCOL_HEADER` so SvelteKit derives the right origin |
 | `ORIGIN` | unset | fixed public origin (e.g. `http://192.168.1.20:3000`) for no-proxy deployments |
 | `BODY_SIZE_LIMIT` | `200K` (Dockerfile) | adapter-node's own default is a silent 512K that 400s oversized requests invisibly; sized against a measured worst-case multisig PSBT (~85KB) with ~2.3x headroom |
@@ -2663,6 +2727,19 @@ to cairn-6uok this was only true of the JSON endpoint — the form action wrote
 `'public'`-mode submission that included Core RPC fields (e.g. the Umbrel
 Wave B assisted-connect flow, `docs/UMBREL-AUTOCONNECT-WAVE-B-DESIGN.md`) was
 silently dropped, never persisted.
+
+**The `/admin/settings` UI now matches that backend contract too
+(`cairn-3p9z`, swept into `03879a0`).** The Bitcoin Core RPC subgroup in
+`+page.svelte` used to be nested inside the same `connectionMode === 'custom'`
+conditional as the manual Electrum fields, so a `'public'`-mode admin had no
+way to even reach the Core RPC inputs without first flipping to custom mode
+— cosmetic by then, since the backend already accepted and persisted those
+fields mode-independently since cairn-6uok, but confusing, and the reason
+`useDetectedCoreNode()` used to force-flip the mode radio (see the
+assisted-connect card note below). The subgroup now renders unconditionally
+regardless of `connectionMode`, with its hint copy updated to say the Core
+connection "works whether you're on public servers or a custom Electrum
+server above."
 
 **The assisted-connect card has its own validated, non-mode-mutating save
 path (cairn-6uok follow-up cairn-3p9z).** When `!coreRpcConfigured() &&
@@ -4041,6 +4118,30 @@ sub-scenarios need `CAIRN_PLATFORM=umbrel` set and a fresh `settings` table (no
 - **Cleanup:** stop any electrs/Fulcrum test listener; unset `CAIRN_PLATFORM`; reset
   `connection_mode`/`electrum_host`/`chain_provisioned_by` via 16.6 or a fresh DB.
 
+### 20.15 Never-configured vs. configured-but-unreachable — banner tone `[none]`
+Covers `cairn-7zjo` (fixed `c90481f`/`85a24da`, 40 unit tests in `28df11a`, §9). Two visually
+distinct unhealthy states must never be confused — do this alongside 16.6's DB reset so
+`connection_mode` genuinely has no row yet, not just "set to public."
+1. **State 1 — never configured.** Fresh DB, no `connection_mode` row, `chain_provisioned_by`
+   unset (a true fresh install, not a reset-to-default). Load `/` as both an admin and a
+   regular user, desktop and mobile (375x812).
+   - **Expected:** a single calm, neutral-toned banner ("Heartwood isn't connected to the
+     Bitcoin network yet") — `.neutral` surface-tone styling, **not** red. Admin sees a
+     "Connect a node" link to `/admin/settings`; non-admin sees "ask your instance operator"
+     copy, no link. `SyncBanner` is absent from the DOM (suppressed, since `deriveSyncStatus`
+     reaches phase `'unreachable'` for this state too — one banner, not two).
+2. **State 2 — configured but unreachable** (this is 20.4's scenario). An admin has explicitly
+   set `connection_mode` (even to `'public'`) or Umbrel auto-connected
+   (`chain_provisioned_by` set), and the endpoint is now genuinely unreachable.
+   - **Expected:** the original red "can't reach the Bitcoin network" `ChainHealthBanner`,
+     per 20.4. `neverConfigured` is `false` here even though `healthy` is also `false` — the
+     distinguishing signal is `chain_provisioned_by`/`connection_mode`, not reachability alone.
+- **PASS:** state 1 reads as an expected setup step, not an error, for both roles at both
+  breakpoints, with only one banner visible; state 2 still reads as a real fault (20.4's PASS
+  criteria). Don't test these two against the same DB row-state — they're distinguished by
+  `isChainNeverConfigured()`'s two independent conditions, not by whether the chain currently
+  answers.
+
 ---
 
 ## 21. UX evaluation checklist — new-Umbrel-user journey
@@ -4122,7 +4223,10 @@ backups, clear house-standard errors, **never red for routine states**, working 
    - ✅ Routine validation + nudges are `--attention` (warm tan); `--error` red appears only
      for irrecoverable failures (broadcast rejected, invalid PSBT, node unreachable).
    - ✅ A `ChainHealthBanner` / `SyncBanner` appears only when actually relevant (silent
-     when healthy / after first sync).
+     when healthy / after first sync), and only one banner shows at a time — never both
+     stacked for the same root cause (§20.15). A never-configured fresh install reads as a
+     calm "not connected yet" setup step (neutral tone), not red error styling; red is
+     reserved for a genuinely unreachable, previously-configured instance.
    - ✅ Toasts are transient action feedback; persistent/recoverable conditions use an inline
      `<Banner>` instead — the two are not confused.
 - **PASS (journey):** every ✅ above holds through one uninterrupted new-user pass. Any raw
