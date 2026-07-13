@@ -42,6 +42,25 @@ describe('bucketFees', () => {
 		expect(buckets[buckets.length - 1].vsize).toBe(20);
 		expect(buckets[buckets.length - 1].label).toMatch(/\+$/);
 	});
+
+	it('places a 19 sat/vB next-block estimate in the 15-20 band, well clear of the lowest "cheap" band (ported regression, cairn-6efi QA P2-b)', () => {
+		// Source: explorer/heartwood-wave2's mempoolWeather.test.ts pinned a
+		// 19 sat/vB next-block fee to a discrete "Normal (5-20)" band, never
+		// "Cheap" -- that lineage's FeeWeather classifies into named bands.
+		// Canonical's FeeWeather (this file) has no discrete band labels; it's
+		// a continuous ridge over bucketFees()/feeRateToX(). This re-implements
+		// the same invariant against that model: 19 sat/vB must bucket into
+		// [15, 20), not the lowest ~1-2 sat/vB bucket, and its ridge-marker
+		// x-position must sit well right of that lowest bucket's edge -- i.e.
+		// the marker can never visually read as sitting in the "cheap" region.
+		const buckets = bucketFees([[19, 1000]])!;
+		const hit = buckets.find((b) => b.vsize > 0)!;
+		expect(hit.min).toBe(15);
+		expect(hit.max).toBe(20);
+		const x19 = feeRateToX(19);
+		const xCheapEdge = feeRateToX(2); // right edge of the lowest bucket
+		expect(x19).toBeGreaterThan(xCheapEdge + 0.3);
+	});
 });
 
 describe('buildRidge', () => {

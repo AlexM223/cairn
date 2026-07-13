@@ -4,7 +4,7 @@ import { coreRpcConfigured } from '$lib/server/settings';
 import { isNotFoundError, chainErrorMessage } from '$lib/server/search';
 import { getEpochStrip } from '$lib/server/chainEpochs';
 import { gatherNodeTrust } from '$lib/server/chain/nodeTrust';
-import { ownedTxsInBlock, type OwnedBlockTx } from '../../ownership.server';
+import { ownedTxsInBlock, ownedTxids, type OwnedBlockTx } from '../../ownership.server';
 import type { PageServerLoad } from './$types';
 import type { BlockDetail, TxDetail } from '$lib/types';
 
@@ -20,6 +20,11 @@ interface BlockPageData {
 	 *  by the block height — bounded by the viewer's own tx count, adds no chain
 	 *  round-trip. Empty for anonymous viewers / blocks they have nothing in. */
 	yours: OwnedBlockTx[];
+	/** Which txids on THIS page's tx list are the viewer's own (cairn-6efi.12) —
+	 *  a per-row "Yours" pip, viewer-scoped and chain-free (memoized ownership
+	 *  index lookup), consistent with the explorer index's block-level pip.
+	 *  Empty for anonymous viewers. */
+	ownedTxids: Set<string>;
 	/** The block hash/height parsed but no matching block exists on the backend. */
 	notFound: boolean;
 	/** The backend was unreachable or errored (distinct from a genuine 404). */
@@ -51,6 +56,7 @@ async function loadBlockData(
 			txError: null,
 			tipHeight: null,
 			yours: [],
+			ownedTxids: new Set(),
 			notFound: isNotFoundError(e),
 			error: isNotFoundError(e) ? null : chainErrorMessage(e)
 		};
@@ -78,6 +84,9 @@ async function loadBlockData(
 		// Viewer-scoped, chain-free: keyed by the now-known block height. No extra
 		// round-trip — a pure lookup into the memoized ownership index.
 		yours: ownedTxsInBlock(userId, block.height),
+		// Per-row pip for this page's tx list (cairn-6efi.12) — same memoized
+		// index, no extra chain call.
+		ownedTxids: ownedTxids(userId, txsRes.txs.map((t) => t.txid)),
 		notFound: false,
 		error: null
 	};

@@ -59,6 +59,9 @@
 	// The viewing user's own confirmed txs in this block (viewer-scoped, chain-free
 	// lookup done server-side keyed by block height). Empty for anonymous viewers.
 	const yours = $derived(chain?.yours ?? []);
+	// Per-row "Yours" pip (cairn-6efi.12): which txids on THIS page's tx list are
+	// the viewer's own. Same viewer-scoped, chain-free lookup as `yours`.
+	const ownedTxids = $derived(chain?.ownedTxids ?? new Set<string>());
 
 	const confirmations = $derived(
 		block !== null && tipHeight !== null ? Math.max(1, tipHeight - block.height + 1) : null
@@ -473,6 +476,10 @@
 				{#each txs as tx (tx.txid)}
 					<div class="tx-row">
 						<a href="/explorer/tx/{tx.txid}" class="tx-id mono">
+							{#if ownedTxids.has(tx.txid)}
+								<span class="tx-yours-pip" title="One of your own wallet transactions" aria-hidden="true"
+								></span>
+							{/if}
 							{truncateMiddle(tx.txid, 6, 4)}
 						</a>
 						<span class="tx-io">
@@ -994,10 +1001,21 @@
 		font-size: 13px;
 		font-weight: 500;
 		color: var(--on-accent-ghost);
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
 	}
 
 	.tx-id:hover {
 		color: var(--accent-bright);
+	}
+
+	.tx-yours-pip {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: var(--sage);
+		flex-shrink: 0;
 	}
 
 	.tx-io {

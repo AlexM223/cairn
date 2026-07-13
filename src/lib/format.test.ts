@@ -7,6 +7,7 @@ import {
 	formatBytes,
 	formatHashrate,
 	formatFeeRate,
+	formatMovedBtc,
 	truncateMiddle,
 	formatDuration,
 	btcToFiat,
@@ -214,5 +215,35 @@ describe('formatFiat', () => {
 
 	it('compacts amounts >= $1M', () => {
 		expect(formatFiat(1_200_000)).toBe('$1.2M');
+	});
+});
+
+describe('formatMovedBtc', () => {
+	it('renders nothing for null/undefined (unknown total_out)', () => {
+		expect(formatMovedBtc(null)).toBeNull();
+		expect(formatMovedBtc(undefined)).toBeNull();
+	});
+
+	it('renders nothing for non-finite values', () => {
+		expect(formatMovedBtc(NaN)).toBeNull();
+		expect(formatMovedBtc(Infinity)).toBeNull();
+	});
+
+	it('renders nothing for 0 or negative (a real block always moves >0 value; 0 is an imperfect/synthetic snapshot artifact, not a fact — cairn-6efi.11)', () => {
+		expect(formatMovedBtc(0)).toBeNull();
+		expect(formatMovedBtc(-100)).toBeNull();
+	});
+
+	it('shows 3 decimals under 1 BTC', () => {
+		expect(formatMovedBtc(50_000_000)).toBe('~0.500 BTC');
+	});
+
+	it('shows 1 decimal from 1 up to 100 BTC', () => {
+		expect(formatMovedBtc(250_000_000)).toBe('~2.5 BTC');
+	});
+
+	it('rounds to a whole, thousands-separated number at >=100 BTC', () => {
+		expect(formatMovedBtc(150_00_000_000)).toBe('~150 BTC');
+		expect(formatMovedBtc(1_234 * 100_000_000)).toBe('~1,234 BTC');
 	});
 });

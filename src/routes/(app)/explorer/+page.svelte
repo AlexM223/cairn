@@ -14,7 +14,14 @@
 	import FormingRing from '$lib/components/heartwood/FormingRing.svelte';
 	import RingBar from '$lib/components/heartwood/RingBar.svelte';
 	import NodeTrustChip from '$lib/components/heartwood/NodeTrustChip.svelte';
-	import { formatNumber, formatBytes, formatFeeRate, timeAgo, truncateMiddle } from '$lib/format';
+	import {
+		formatNumber,
+		formatBytes,
+		formatFeeRate,
+		formatMovedBtc,
+		timeAgo,
+		truncateMiddle
+	} from '$lib/format';
 	import type { BlockSummary, SearchResult } from '$lib/types';
 
 	let { data } = $props();
@@ -204,15 +211,8 @@
 	// "Yours" pip: viewer-scoped set of block heights the current user has a tx in
 	// (computed server-side in load, zero chain calls). O(1) per row.
 	const yoursSet = $derived(new Set(data.yoursHeights ?? []));
-	// "~N BTC moved" from total_out (sats). Compact: whole numbers for big blocks,
-	// a little precision for small ones; null total_out renders nothing.
-	function movedBtc(totalOut: number | null): string | null {
-		if (totalOut === null) return null;
-		const btc = totalOut / 1e8;
-		if (btc >= 100) return `~${formatNumber(Math.round(btc))} BTC`;
-		if (btc >= 1) return `~${btc.toFixed(1)} BTC`;
-		return `~${btc.toFixed(3)} BTC`;
-	}
+	// "~N BTC moved" from total_out (sats) — extracted to $lib/format as
+	// formatMovedBtc so its render-guard hardening (cairn-6efi.11) is unit-tested.
 	function feeRangeLabel(range: [number, number] | null): string | null {
 		if (!range) return null;
 		return `${range[0]}–${range[1]} sat/vB`;
@@ -669,14 +669,14 @@
 						<span class="row-meta">
 							{timeAgo(block.time)}{#if poolLabel(block)} ·
 								<span class="row-pool">{poolLabel(block)}</span>{/if}{#if feeRangeLabel(block.feeRange)}
-								· <span class="row-detail">{feeRangeLabel(block.feeRange)}</span>{/if}{#if movedBtc(block.total_out)}
-								· <span class="row-detail">{movedBtc(block.total_out)}</span>{/if}
+								· <span class="row-detail">{feeRangeLabel(block.feeRange)}</span>{/if}{#if formatMovedBtc(block.total_out)}
+								· <span class="row-detail">{formatMovedBtc(block.total_out)}</span>{/if}
 						</span>
 						<span class="row-txs tabular">
-							{block.txCount === null ? '—' : `${formatNumber(block.txCount)} tx`}
+							{block.txCount ? `${formatNumber(block.txCount)} tx` : '—'}
 						</span>
 						<span class="row-size tabular">
-							{block.size === null ? '—' : formatBytes(block.size)}
+							{block.size ? formatBytes(block.size) : '—'}
 						</span>
 					</a>
 				{/each}

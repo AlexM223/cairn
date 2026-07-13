@@ -324,3 +324,20 @@ export function viewerPendingTxs(userId: number | undefined, limit = 12): Pendin
 	if (!userId) return [];
 	return getIndex(userId).pending.slice(0, Math.max(0, limit));
 }
+
+/**
+ * Which of the given txids belong to the viewing user's own wallets, for a
+ * per-row "Yours" pip on the block-detail transaction list (cairn-6efi.12) —
+ * the same viewer-scoped badge language the explorer index already applies to
+ * whole blocks via {@link ownedBlockHeights}. Reuses the same memoized txid
+ * index `txOwnership`/`ownedTxsInBlock` already build from, so this adds no
+ * new lookup shape and zero extra chain calls. Returns an empty set (never a
+ * guess) for a logged-out viewer or an empty txid list.
+ */
+export function ownedTxids(userId: number | undefined, txids: string[]): Set<string> {
+	if (!userId || txids.length === 0) return new Set();
+	const idx = getIndex(userId);
+	const out = new Set<string>();
+	for (const t of txids) if (idx.txid.has(t)) out.add(t);
+	return out;
+}

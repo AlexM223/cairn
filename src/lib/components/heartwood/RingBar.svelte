@@ -9,6 +9,8 @@
 	 * Renders nothing when fullness is unknown (Cardinal rule: absence reads as
 	 * absence, never a false empty bar).
 	 */
+	import { ringBarVisible, ringBarPct } from './ringBarGuard';
+
 	let {
 		fullness,
 		medianFee = null,
@@ -22,13 +24,13 @@
 		width?: number;
 	} = $props();
 
-	const pct = $derived(fullness === null ? 0 : Math.round(Math.min(1, Math.max(0, fullness)) * 100));
+	const pct = $derived(ringBarPct(fullness));
 	// Warm factor: 0 at ~0 sat/vB → 1 at ~100 sat/vB (saturating). color-mix blends
 	// sage→copper so the tint is a single continuous scale, tokenized both ends.
 	const warm = $derived(medianFee === null ? 0 : Math.min(1, Math.max(0, medianFee / 100)));
 </script>
 
-{#if fullness !== null}
+{#if ringBarVisible(fullness)}
 	<span
 		class="ringbar"
 		style:width="{width}px"

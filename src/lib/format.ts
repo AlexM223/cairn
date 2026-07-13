@@ -118,6 +118,21 @@ export function formatFeeRate(satPerVb: number | null | undefined): string {
 	return `${satPerVb < 10 ? satPerVb.toFixed(1).replace(/\.0$/, '') : Math.round(satPerVb)} sat/vB`;
 }
 
+/** "~N BTC moved" from a block's total_out (sats): compact whole numbers for
+ *  big blocks, a little more precision for small ones. Renders nothing for
+ *  null/non-finite/<=0 (Cardinal rule: a missing snapshot key or a 0 placeholder
+ *  means "unknown", never a real answer -- a real block always moves >0 value,
+ *  so 0 here can only be a bug, not a fact). Hardened against `undefined`
+ *  (missing key on an imperfect snapshot) and non-finite values, not just a
+ *  strict `=== null` check (cairn-6efi.11). */
+export function formatMovedBtc(totalOut: number | null | undefined): string | null {
+	if (totalOut == null || !Number.isFinite(totalOut) || totalOut <= 0) return null;
+	const btc = totalOut / SATS_PER_BTC;
+	if (btc >= 100) return `~${formatNumber(Math.round(btc))} BTC`;
+	if (btc >= 1) return `~${btc.toFixed(1)} BTC`;
+	return `~${btc.toFixed(3)} BTC`;
+}
+
 /** "a1b2c3…d4e5f6" */
 export function truncateMiddle(s: string, head = 8, tail = 8): string {
 	if (s.length <= head + tail + 1) return s;
