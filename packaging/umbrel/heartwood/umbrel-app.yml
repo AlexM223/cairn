@@ -2,7 +2,7 @@ manifestVersion: 1
 id: heartwood
 category: bitcoin
 name: Heartwood
-version: "0.2.16"
+version: "0.2.17"
 tagline: Your self-hosted Bitcoin command center
 description: >-
   Heartwood is a self-hosted Bitcoin command center: a block explorer,
@@ -26,14 +26,20 @@ description: >-
   RPC. Configure this under Settings → Chain Backend after logging in; no
   external services are contacted.
 releaseNotes: >-
-  Heartwood now finds your own node automatically: if you're running a local
-  Electrum-compatible server (like electrs) on your Umbrel, Heartwood
-  connects to it right away with no manual setup step, and safely falls back
-  to the public-server default if nothing local is found. This release also
-  ships a full security hardening pass: stricter transaction-signing checks,
-  a locked-down backup-restore process, tighter admin-access rules, a much
-  larger send-flow test suite, and correct handling of transactions that get
-  replaced with a higher fee or double-spent.
+  This release adds risk warnings and dollar amounts to make wallets easier
+  to read at a glance: multisig wallets now show a plain-language risk panel
+  when a signing threshold is unusually tight, and send/receive/activity/
+  explorer screens display dollar equivalents alongside sats. The Umbrel
+  auto-connect probe from the last release now goes further — Heartwood can
+  detect a local Bitcoin Core node and offer an assisted connect with a
+  provenance card explaining what was found, instead of a manual-only setup.
+  Several confusing or duplicated banners across the sign-in, wallet-creation,
+  and explorer pages were consolidated into one consistent style. This
+  release also hardens transaction correctness: stricter SIGHASH_ALL
+  enforcement, validated cosigner finalization, and corrected handling of
+  transactions that get replaced or double-spent, backed by a substantially
+  larger automated test suite. Full changelog:
+  https://github.com/AlexM223/cairn/releases/tag/v0.2.17
 developer: Alex Martinez
 website: https://github.com/AlexM223/cairn
 dependencies: []
