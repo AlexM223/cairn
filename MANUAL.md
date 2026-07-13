@@ -671,6 +671,19 @@ data" (dashboard/explorer), per-wallet balances, and per-tx decoded data.
   20_000` SWR pattern, but per-transaction, populating the `tx_snapshots`
   table (§6) with decoded-tx data so repeat lookups of the same txid (e.g.
   from the explorer tx page or a notification) don't re-hit Electrum/Core.
+- **Snapshot-honesty render rule (cairn-6efi.11).** `BlockSummary` (`$lib/
+  types.ts`) types `txCount`/`size`/`weight`/`fullness`/`total_out` as
+  `number | null` — `null` means "the configured backend doesn't provide
+  this field," never a real zero (a real block always has ≥1 tx and >0
+  bytes). Every renderer of these fields must treat **both** `null`/
+  `undefined` (an absent key on an imperfect or synthetic snapshot) **and**
+  a literal `0` as "unknown, show `—`" — a strict `=== null` check alone
+  lets `undefined` and false-zero slip through as `NaN` or a bogus 0%/0-tx
+  row. See `$lib/format.ts` `formatMovedBtc()` and
+  `src/lib/components/heartwood/ringBarGuard.ts` (`ringBarVisible`/
+  `ringBarPct`) for the canonical hardened-guard pattern; reuse it (or the
+  `value == null || !Number.isFinite(value) || value <= 0` shape) for any
+  new chain-snapshot-derived render.
 
 ### Supporting modules
 
@@ -2133,7 +2146,7 @@ Pages under `(app)`:
 | `wallets/multisig/[id]/send/+page.svelte` | multisig send/co-sign flow |
 | `wallets/multisig/stateless/+page.svelte` | stateless (no-account) multisig PSBT signer |
 | `explorer/+page.svelte` | block explorer home — includes an "Up next" strip (up to 4 projected-block chips, fed by the same server-loaded `mempoolBlocks` snapshot, linking through to the full mempool treemap viz; hidden gracefully rather than erroring when the chain backend has no projection data) |
-| `explorer/address/[address]`, `explorer/block/[id]`, `explorer/tx/[txid]` | detail pages |
+| `explorer/address/[address]`, `explorer/block/[id]`, `explorer/tx/[txid]` | detail pages — `explorer/block/[id]` shows a block-level "Yours in this ring" callout AND (cairn-6efi.12) a per-row sage "Yours" pip on any transaction in the paginated tx list that touches the viewer's own wallets, via `ownership.server.ts`'s memoized, viewer-scoped `ownedTxids()`/`ownedTxsInBlock()` — zero extra chain calls, same privacy boundary (viewer's own wallets only) as the index's `ownedBlockHeights()` pip |
 | `explorer/mempool/+page.svelte`, `explorer/mempool/blocks/+page.svelte` | mempool visualizer |
 | `explorer/difficulty` | difficulty chart |
 | `recovery-setup/+page.svelte` | post-signup recovery/backup setup flow |
@@ -3240,6 +3253,16 @@ actually biting someone.
     Wave 2 already shipped Core RPC + zero third-party calls on Umbrel, but
     `EsploraApi` removal/admin-settings cleanup/RBF-lineage-on-Core-RPC
     children are still open).
+15. **v0.2.19 was a consolidation wave, not a single feature** — it merges
+    the QA test wave, the banner-consolidation branch, the dollar-based
+    multisig threshold entry, and the phone-testing UX fixes wave onto
+    `single-sig-full-wallet`. 3,085+ tests passing as of this merge (grown
+    further since by the explorer render-guard hardening in this same
+    entry's neighbor, cairn-6efi.11/.12 — see the snapshot-honesty rule
+    above and the explorer routes table). `.beads/.br_recovery/` is
+    `.gitignore`d (crash-recovery backups can balloon to hundreds of MB) —
+    if a `.beads/` merge ever looks huge, check that guard is still in
+    place before assuming the repo itself grew.
 
 **Additional gotchas surfaced per-layer (not contradictions, but load-
 bearing surprises worth remembering while working in each area):**
