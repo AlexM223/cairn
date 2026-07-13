@@ -11,7 +11,7 @@
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
 	import ChainStrip from '$lib/components/heartwood/ChainStrip.svelte';
 	import RingStub from '$lib/components/heartwood/RingStub.svelte';
-	import { formatNumber, formatBytes, timeAgo, truncateMiddle } from '$lib/format';
+	import { formatNumber, formatBytes, formatFeeRate, timeAgo, truncateMiddle } from '$lib/format';
 	import type { SearchResult } from '$lib/types';
 
 	let { data } = $props();
@@ -159,6 +159,20 @@
 			};
 		}
 		return null;
+	});
+
+	// Compact "Up next" strip (cairn-pw3u): the next few projected blocks,
+	// mempool.space's signature forward-looking view — previously buried two
+	// clicks deep at /explorer/mempool -> Visualize. Reuses the same
+	// mempoolBlocks snapshot field the mempool page's "Projected next rings"
+	// section and the /explorer/mempool/blocks treemap already read; no new
+	// data pipeline. Hidden (not an error) when the backend has no projection
+	// or on the paged history view.
+	const upcoming = $derived.by(() => {
+		if (data.before !== null) return null;
+		const mb = chain?.mempoolBlocks;
+		if (!mb || mb.length === 0) return null;
+		return mb.slice(0, 4);
 	});
 
 	// ---- search-as-you-type: debounced live classification of the query ----
@@ -476,6 +490,29 @@
 				{/if}
 			</div>
 		</header>
+
+		<!-- =================================================== up next strip -->
+		{#if upcoming}
+			<section class="upcoming fade-in" aria-label="Upcoming blocks">
+				<div class="upcoming-head">
+					<span class="upcoming-title">Up next</span>
+					<a href="/explorer/mempool/blocks" class="upcoming-link">
+						Full view <Icon name="arrow-right" size={13} />
+					</a>
+				</div>
+				<div class="upcoming-row">
+					{#each upcoming as block, i (i)}
+						<div class="upcoming-chip" class:next={i === 0} style:--depth={i}>
+							<span class="chip-eta">{i === 0 ? 'next ring' : `~${(i + 1) * 10} min`}</span>
+							<span class="chip-fee tabular">{formatFeeRate(block.medianFee)}</span>
+							<span class="chip-range tabular">
+								{block.feeRange[0]}–{block.feeRange[1]} sat/vB
+							</span>
+						</div>
+					{/each}
+				</div>
+			</section>
+		{/if}
 
 		<!-- ================================================== the chain strip -->
 		{#if strip}
@@ -906,6 +943,82 @@
 		color: var(--accent);
 	}
 
+	/* --- up next strip --- */
+	.upcoming {
+		margin-top: 28px;
+	}
+
+	.upcoming-head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 12px;
+		margin-bottom: 10px;
+	}
+
+	.upcoming-title {
+		font-size: 13px;
+		font-weight: 600;
+		letter-spacing: 0.03em;
+		color: var(--text-secondary);
+	}
+
+	.upcoming-link {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		font-size: 12px;
+		font-weight: 500;
+		color: var(--accent);
+		white-space: nowrap;
+	}
+
+	.upcoming-row {
+		display: flex;
+		gap: 10px;
+		overflow-x: auto;
+		padding-bottom: 2px;
+	}
+
+	.upcoming-chip {
+		flex: 0 0 118px;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		padding: 10px 12px;
+		border-radius: var(--radius-strip);
+		background: linear-gradient(
+			160deg,
+			rgba(232, 147, 90, calc(0.18 - var(--depth) * 0.03)),
+			rgba(232, 147, 90, 0.04)
+		);
+		border: 1px solid rgba(232, 147, 90, calc(0.3 - var(--depth) * 0.05));
+	}
+
+	.upcoming-chip.next {
+		border-color: var(--accent);
+	}
+
+	.chip-eta {
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: var(--accent);
+	}
+
+	.chip-fee {
+		font-family: var(--font-serif);
+		font-size: 17px;
+		font-weight: 600;
+		color: var(--text);
+	}
+
+	.chip-range {
+		font-size: 10.5px;
+		color: var(--text-muted);
+	}
+
 	/* --- chain strip --- */
 	.strip-zone {
 		margin-top: 40px;
@@ -1101,6 +1214,23 @@
 		   network footer per 8f. */
 		.live-line .desk {
 			display: none;
+		}
+
+		.upcoming {
+			margin-top: 18px;
+		}
+
+		.upcoming-title {
+			font-size: 11.5px;
+		}
+
+		.upcoming-chip {
+			flex: 0 0 96px;
+			padding: 8px 10px;
+		}
+
+		.chip-fee {
+			font-size: 15px;
 		}
 
 		.strip-zone {

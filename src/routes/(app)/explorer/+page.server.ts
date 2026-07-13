@@ -26,6 +26,12 @@ export interface ExplorerChainData {
 	difficulty: DifficultyInfo | null;
 	/** The projected next block, for the dashed pending row. */
 	nextBlock: MempoolBlockProjection | null;
+	/** The next few projected blocks (cairn-pw3u), for the index's compact
+	 *  "Up next" strip — same snapshot field the mempool page's "Projected
+	 *  next rings" section and /explorer/mempool/blocks treemap already read,
+	 *  just condensed for the index. Null when the backend doesn't provide
+	 *  projections (plain esplora) or the snapshot hasn't landed yet. */
+	mempoolBlocks: MempoolBlockProjection[] | null;
 }
 
 /** Shape the tip-view explorer data from the persisted snapshot (no chain call). */
@@ -37,7 +43,8 @@ function shapeFromSnapshot(d: PersistedChainData): ExplorerChainData {
 		chainError: null,
 		fees: d.fees,
 		difficulty: d.difficultyInfo,
-		nextBlock: d.mempoolBlocks?.[0] ?? null
+		nextBlock: d.mempoolBlocks?.[0] ?? null,
+		mempoolBlocks: d.mempoolBlocks ?? null
 	};
 }
 
@@ -55,7 +62,8 @@ async function loadOlderBlocks(before: number): Promise<ExplorerChainData> {
 		tipHeight: snap?.tipHeight ?? null,
 		fees: snap?.fees ?? null,
 		difficulty: snap?.difficultyInfo ?? null,
-		nextBlock: snap?.mempoolBlocks?.[0] ?? null
+		nextBlock: snap?.mempoolBlocks?.[0] ?? null,
+		mempoolBlocks: snap?.mempoolBlocks ?? null
 	};
 	try {
 		const blocks = await getChain().getRecentBlocks(PAGE_SIZE, Math.max(0, before - 1));
