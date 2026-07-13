@@ -7,6 +7,7 @@
 	import Term from '$lib/components/Term.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
+	import ExplorerSearch from '$lib/components/heartwood/ExplorerSearch.svelte';
 	import ChainStrip from '$lib/components/heartwood/ChainStrip.svelte';
 	import NodeTrustChip from '$lib/components/heartwood/NodeTrustChip.svelte';
 	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
@@ -167,6 +168,7 @@
 			>
 				<Icon name="chevron-left" size={15} /> Explorer
 			</a>
+			<div class="top-search"><ExplorerSearch variant="compact" /></div>
 			{#if block}
 				<div class="nav-btns">
 					{#if hasPrev}
@@ -539,6 +541,13 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: 12px;
+		flex-wrap: wrap;
+	}
+
+	.top-search {
+		width: 300px;
+		max-width: 100%;
+		flex: 0 1 300px;
 	}
 
 	.back {
@@ -1036,6 +1045,12 @@
 			margin: -20px -18px -48px;
 			padding: 20px 18px 48px;
 			min-height: 0;
+		}
+
+		.top-search {
+			order: 3;
+			width: 100%;
+			flex-basis: 100%;
 		}
 
 		.hero {

@@ -8,6 +8,7 @@
 	import CoreRpcRequiredNotice from '$lib/components/CoreRpcRequiredNotice.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
+	import ExplorerSearch from '$lib/components/heartwood/ExplorerSearch.svelte';
 	import NodeTrustChip from '$lib/components/heartwood/NodeTrustChip.svelte';
 	import CairnChart from '$lib/components/heartwood/CairnChart.svelte';
 	import FeeWeather from '$lib/components/heartwood/FeeWeather.svelte';
@@ -132,6 +133,7 @@
 			>
 				<Icon name="chevron-left" size={15} /> Explorer
 			</a>
+			<div class="top-search"><ExplorerSearch variant="compact" /></div>
 		</div>
 
 		<header class="head fade-in">
@@ -373,7 +375,16 @@
 	.top-row {
 		display: flex;
 		align-items: center;
+		justify-content: space-between;
+		gap: 16px;
+		flex-wrap: wrap;
 		margin-bottom: 26px;
+	}
+
+	.top-search {
+		width: 320px;
+		max-width: 100%;
+		flex-shrink: 1;
 	}
 
 	.back {
@@ -632,6 +643,10 @@
 
 		.top-row {
 			margin-bottom: 18px;
+		}
+
+		.top-search {
+			width: 100%;
 		}
 
 		.head {

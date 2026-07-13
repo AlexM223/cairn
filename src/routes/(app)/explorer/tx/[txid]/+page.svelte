@@ -7,6 +7,7 @@
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
+	import ExplorerSearch from '$lib/components/heartwood/ExplorerSearch.svelte';
 	import NodeTrustChip from '$lib/components/heartwood/NodeTrustChip.svelte';
 	import TxFlowDiagram from '$lib/components/heartwood/TxFlowDiagram.svelte';
 	import { computeTxFlow, computeFeePosition } from '$lib/components/heartwood/txFlow';
@@ -177,6 +178,7 @@
 			>
 				<Icon name="chevron-left" size={15} /> Explorer
 			</a>
+			<div class="top-search"><ExplorerSearch variant="compact" /></div>
 		</div>
 
 		{#if data.loading}
@@ -679,7 +681,16 @@
 	.top-row {
 		display: flex;
 		align-items: center;
+		justify-content: space-between;
+		gap: 16px;
+		flex-wrap: wrap;
 		margin-bottom: 26px;
+	}
+
+	.top-search {
+		width: 320px;
+		max-width: 100%;
+		flex-shrink: 1;
 	}
 
 	.back {
@@ -1175,6 +1186,10 @@
 
 		.top-row {
 			margin-bottom: 18px;
+		}
+
+		.top-search {
+			width: 100%;
 		}
 
 		.txid {

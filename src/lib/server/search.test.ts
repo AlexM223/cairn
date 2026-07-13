@@ -116,3 +116,39 @@ describe('classifySearch — addresses and garbage', () => {
 		expect(await classifySearch('   ')).toEqual({ type: 'unknown', redirect: null, query: '' });
 	});
 });
+
+// The persistent search pill (cairn-6efi.9) lives on every explorer page —
+// including on testnet/regtest dev + QA instances — so its routing must resolve
+// the same non-mainnet and taproot addresses the address page itself accepts
+// (regression guard for cairn-i8vr, where the pill returned "unknown" for a
+// valid testnet address that /explorer/address/<addr> rendered fine).
+describe('classifySearch — persistent pill routing across networks', () => {
+	it('routes a testnet (tb1) v0 address to the address page', async () => {
+		const addr = 'tb1qqypqxpq9qcrsszg2pvxq6rs0zqg3yyc5r7fxez';
+		const res = await classifySearch(addr);
+		expect(res).toEqual({ type: 'address', redirect: `/explorer/address/${addr}`, query: addr });
+	});
+
+	it('routes a regtest (bcrt1) v0 address to the address page', async () => {
+		const addr = 'bcrt1qqypqxpq9qcrsszg2pvxq6rs0zqg3yyc5phstwt';
+		const res = await classifySearch(addr);
+		expect(res.type).toBe('address');
+		expect(res.redirect).toBe(`/explorer/address/${addr}`);
+	});
+
+	it('routes a taproot (bech32m v1) address to the address page', async () => {
+		const addr = 'bc1pqypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7rusqwk0jyn';
+		const res = await classifySearch(addr);
+		expect(res.type).toBe('address');
+		expect(res.redirect).toBe(`/explorer/address/${addr}`);
+	});
+
+	it('resolves address classification without any chain round-trip', async () => {
+		// The pill must never block first paint on chain calls for a plainly-valid
+		// address — routing is purely syntactic (no getTip/getTx/getBlock).
+		await classifySearch('bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4');
+		expect(mockChain.getTip).not.toHaveBeenCalled();
+		expect(mockChain.getTx).not.toHaveBeenCalled();
+		expect(mockChain.getBlock).not.toHaveBeenCalled();
+	});
+});
