@@ -3,6 +3,7 @@ import { getChain } from '$lib/server/chain';
 import { coreRpcConfigured } from '$lib/server/settings';
 import { isNotFoundError, chainErrorMessage } from '$lib/server/search';
 import { readTxSnapshot, writeTxSnapshot, refreshTxSnapshot } from '$lib/server/txSnapshot';
+import { readChainSnapshot } from '$lib/server/chainSnapshot';
 import { gatherNodeTrust } from '$lib/server/chain/nodeTrust';
 import { txOwnership } from '../../ownership.server';
 import type { PageServerLoad } from './$types';
@@ -96,7 +97,13 @@ export const load: PageServerLoad = async ({ params, url, depends, locals }) => 
 		coreRpcConfigured: coreRpcConfigured(),
 		isAdmin: locals?.user?.isAdmin ?? false,
 		// NodeTrust provenance chip (cairn-6efi.3): cached-only, no chain call.
-		nodeTrust: gatherNodeTrust()
+		nodeTrust: gatherNodeTrust(),
+		// Mempool fee histogram from the persisted chain snapshot — a synchronous
+		// SQLite read, ZERO chain calls (Cardinal rule 3) — powers the Wave-3 tx
+		// "fee rate vs. the mempool" sliver (cairn-6efi.8). Null when no snapshot
+		// exists yet or the backend never provided a histogram; the sliver then
+		// simply isn't drawn (degrade to nothing, never fake a position).
+		feeHistogram: readChainSnapshot()?.data.feeHistogram ?? null
 	};
 
 	// Explains the hop when the visitor arrived via a replaced-tx redirect.
