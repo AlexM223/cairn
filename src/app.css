@@ -88,6 +88,13 @@
 	--error-border: rgba(224, 96, 76, 0.3);
 	--danger: var(--error);
 	--danger-muted: var(--error-muted);
+	/* Caution — burnt-orange/salmon, sits chromatically between --attention
+	   (tan) and --error (red) for the quorum risk panel's salmon tier
+	   (cairn-do6p): more alarming than yellow, less than red, and visually
+	   distinct from both. */
+	--caution: #dd7a52;
+	--caution-muted: rgba(221, 122, 82, 0.12);
+	--caution-border: rgba(221, 122, 82, 0.3);
 
 	/* Typography */
 	--font-ui: 'Inter', system-ui, -apple-system, sans-serif;

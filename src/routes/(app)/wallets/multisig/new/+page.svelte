@@ -3212,9 +3212,9 @@
 	}
 
 	.risk-salmon {
-		background: var(--error-muted);
-		border-color: var(--error-border);
-		color: var(--error);
+		background: var(--caution-muted);
+		border-color: var(--caution-border);
+		color: var(--caution);
 	}
 
 	.risk-yellow {
