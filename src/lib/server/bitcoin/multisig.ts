@@ -103,6 +103,7 @@ export class MultisigError extends Error {
 			| 'invalid_descriptor'
 			| 'unsupported_descriptor'
 			| 'derivation_failed'
+			| 'duplicate_name'
 	) {
 		super(message);
 		this.name = 'MultisigError';

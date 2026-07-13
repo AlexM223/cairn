@@ -262,6 +262,19 @@ export function createMultisig(
 	if (name.length === 0 || name.length > 60) {
 		throw new MultisigError('Multisig name must be 1-60 characters.', 'invalid_config');
 	}
+	// Double-submit guard (cairn-50ng): two concurrent identical creates both
+	// reached the INSERT below because nothing existed to stop them. This
+	// check and the INSERT further down are separated by zero `await`s —
+	// createMultisig runs start-to-finish synchronously — so on Node's
+	// single-threaded event loop no second request's JS can interleave
+	// between this SELECT and that INSERT; whichever request's synchronous
+	// run reaches here first "wins" and the other sees the row it just made.
+	const existing = db
+		.prepare('SELECT id FROM multisigs WHERE user_id = ? AND name = ?')
+		.get(userId, name) as { id: number } | undefined;
+	if (existing) {
+		throw new MultisigError(`You already have a multisig named “${name}”.`, 'duplicate_name');
+	}
 	const scriptType = params.scriptType ?? 'p2wsh';
 	if (!MULTISIG_SCRIPT_TYPES.includes(scriptType)) {
 		throw new MultisigError('Unknown multisig script type.', 'invalid_config');
