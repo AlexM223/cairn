@@ -1,87 +1,81 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { onNewBlock } from '$lib/liveBlocks';
+	import { triggerChainRefresh } from '$lib/chainRefresh';
 	import Icon from '$lib/components/Icon.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
-	import CoreRpcRequiredNotice from '$lib/components/CoreRpcRequiredNotice.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
 	import ExplorerSearch from '$lib/components/heartwood/ExplorerSearch.svelte';
-	import { synthesizeBlocks, synthKey, feeColor, type VizRect } from '$lib/mempoolViz';
-	import { formatNumber, formatBtc, formatBytes, formatSats, formatFeeRate } from '$lib/format';
-	import type { FeeHistogram, MempoolBlockProjection } from '$lib/types';
+	import { synthesizeBlocks, feeColor, type VizRect } from '$lib/mempoolViz';
+	import { formatNumber, formatBtc, formatBytes, formatSats, formatFeeRate, timeAgo } from '$lib/format';
 
 	let { data } = $props();
 
-	// Live feed — seeded by the STREAMED server load (cairn-2zxt.3), then owned by
-	// polling. The seed starts null so the page chrome + explainer paint instantly
-	// with a skeleton; the projection fills in when the first stream resolves.
-	let projected = $state<MempoolBlockProjection[] | null>(null);
-	let histogram = $state<FeeHistogram | null>(null);
-	let tipHeight = $state<number | null>(null);
-	let error = $state<string | null>(null);
-	let seeded = $state(false);
-	let lastUpdated = $state(Date.now());
-	let stale = $state(false);
-	// Fingerprint of the last inputs handed to synthesizeBlocks — when a poll
-	// returns the same picture, we skip reassigning state entirely so the DOM
-	// (and its 500+ CSS-transitioned rects) doesn't churn for nothing.
-	let lastKey = $state('');
+	// Stale-while-revalidate: instant paint from the persisted chain snapshot
+	// (data.mempool, a synchronous SQLite read — zero chain calls, cairn-6efi.5).
+	// This used to be the ONE live-fetch explorer page: four Electrum round-trips
+	// per navigation, then a 10s client poll of /api/mempool/projected repeating
+	// them forever. The client now refreshes the shared snapshot in the
+	// background exactly like every other explorer page, and invalidate()s this
+	// load to pick up the fresh data.
+	let snap = $derived(data.mempool);
+	const projected = $derived(snap?.projected ?? null);
+	const histogram = $derived(snap?.histogram ?? null);
+	const fees = $derived(snap?.fees ?? null);
+	const tipHeight = $derived(snap?.tipHeight ?? null);
+
+	let syncing = $state(false);
+	let syncFailed = $state(false);
+	async function refresh(force = false) {
+		if (syncing) return;
+		syncing = true;
+		const ok = await triggerChainRefresh(force);
+		syncing = false;
+		syncFailed = !ok;
+	}
+	onMount(() => {
+		void refresh();
+	});
+
+	const syncLabel = $derived(
+		syncing
+			? 'updating…'
+			: data.lastSyncedAt
+				? `synced ${timeAgo(Math.floor(data.lastSyncedAt / 1000))}`
+				: ''
+	);
+
+	const loading = $derived(snap === null && !syncFailed);
+	const showError = $derived(snap === null && syncFailed);
+
 	// Screen-reader announcement — only set on meaningful changes (new tip block).
 	let announcement = $state('');
-
-	// Seed from the streamed load. Runs once (the promise identity is stable for
-	// this route); a full reload hands a fresh promise and re-seeds correctly.
+	let lastAnnouncedHeight: number | null = null;
 	$effect(() => {
-		const promise = data.mempool;
-		let stale_ = false;
-		void promise.then((m) => {
-			if (stale_) return;
-			projected = m.projected;
-			histogram = m.histogram;
-			tipHeight = m.tipHeight;
-			error = m.error;
-			lastKey = synthKey(m.histogram, m.projected);
-			seeded = true;
-		});
-		return () => {
-			stale_ = true;
-		};
+		const h = tipHeight;
+		if (h === null) return;
+		if (lastAnnouncedHeight !== null && h !== lastAnnouncedHeight) {
+			announcement = `New block ${formatNumber(h)} — projections updated`;
+		}
+		lastAnnouncedHeight = h;
 	});
 
-	const POLL_MS = 10_000;
-
-	onMount(() => {
-		const timer = setInterval(async () => {
-			if (document.hidden) return;
-			try {
-				const res = await fetch('/api/mempool/projected');
-				if (!res.ok) throw new Error(String(res.status));
-				const next = await res.json();
-				if (
-					typeof next.tipHeight === 'number' &&
-					tipHeight !== null &&
-					next.tipHeight !== tipHeight
-				) {
-					announcement = `New block ${formatNumber(next.tipHeight)} — projections updated`;
-				}
-				tipHeight = next.tipHeight;
-				const key = synthKey(next.histogram, next.projected);
-				if (key !== lastKey) {
-					lastKey = key;
-					projected = next.projected;
-					histogram = next.histogram;
-				}
-				lastUpdated = Date.now();
-				stale = false;
-			} catch {
-				stale = true; // keep showing the last good picture
-			}
-		}, POLL_MS);
-		return () => clearInterval(timer);
-	});
+	// Live new-block updates, same pattern as the mempool overview page: the
+	// initial SSE event forces one harmless refresh shortly after mount.
+	let lastSeenHeight: number | null = null;
+	onMount(() =>
+		onNewBlock((height) => {
+			if (lastSeenHeight !== null && height === lastSeenHeight) return;
+			lastSeenHeight = height;
+			void refresh(true);
+		})
+	);
 
 	const blocks = $derived(synthesizeBlocks(histogram, projected, 6));
+
+	void fees; // reserved for a future "what should I pay" cross-link; keeps the prop wired through
 
 	// Shared tooltip that follows the pointer (or, for keyboard users, sits
 	// below-right of the focused rectangle).
@@ -186,11 +180,17 @@
 		<EyebrowBreadcrumb path={['Explorer', 'Mempool']} current="Next rings" />
 		<h1 class="page-title">Next rings</h1>
 	</div>
-	<span class="live" class:stale title={stale ? 'Last refresh failed — retrying' : 'Refreshes every 10 seconds'}>
+	<span
+		class="live"
+		class:stale={syncFailed}
+		title={syncFailed ? 'Not connected — showing the last data received' : syncLabel}
+	>
 		<span class="live-dot"></span>
-		{stale ? 'reconnecting…' : 'live'}
+		{syncFailed ? 'paused — not connected' : syncing ? 'updating…' : 'live'}
 		{#if tipHeight}
-			<span class="tip-height tabular">· tip {formatNumber(tipHeight)}</span>
+			{#key tipHeight}
+				<span class="tip-height tabular breathe">· tip {formatNumber(tipHeight)}</span>
+			{/key}
 		{/if}
 	</span>
 </div>
@@ -210,23 +210,13 @@
 	</p>
 </HowItWorks>
 
-<!--
-	DEMONSTRATION wiring for the shared CoreRpcRequiredNotice (cairn-zoz8.9).
-	Mempool-blocks projection is one of the RICH features that will move to
-	Bitcoin Core RPC (cairn-zoz8.14). Right now the projection still comes from
-	Esplora, so this is gated only on config-presence to prove the component
-	renders end to end; the real migration bead replaces the projection panel
-	below with this notice when the feature is genuinely RPC-sourced and absent.
--->
-{#if !data.coreRpcConfigured}
-	<CoreRpcRequiredNotice feature="Mempool projections" isAdmin={data.isAdmin} />
-{:else if error}
+{#if showError}
 	<div class="form-error" role="alert">
-		Can't reach chain data sources — {error}.
-		<a href="/explorer/mempool/blocks">Retry</a>
+		Can't reach chain data sources.
+		<button type="button" class="retry-link" onclick={() => refresh(true)}>Retry</button>
 	</div>
-{:else if !seeded}
-	<!-- Streamed placeholder: block-card scaffold while the projection lands. -->
+{:else if loading}
+	<!-- Genuinely-empty snapshot (first boot): block-card scaffold while it lands. -->
 	<div class="blocks-row fade-in" aria-busy="true" aria-label="Loading projection">
 		{#each [0, 1, 2, 3] as i (i)}
 			<div class="block-card" style:--depth={i}>
@@ -388,6 +378,16 @@
 		color: var(--accent);
 	}
 
+	.retry-link {
+		background: none;
+		border: none;
+		padding: 0;
+		font: inherit;
+		color: inherit;
+		text-decoration: underline;
+		cursor: pointer;
+	}
+
 	.head {
 		display: flex;
 		justify-content: space-between;
@@ -435,6 +435,22 @@
 
 	.tip-height {
 		color: var(--text-muted);
+	}
+
+	/* Breathing counters (cairn-6efi.5): a soft pulse on value change rather
+	   than a snap, honored down to ~0 by the global prefers-reduced-motion
+	   rule in app.css. */
+	@keyframes breathe-in {
+		from {
+			opacity: 0.4;
+		}
+		to {
+			opacity: 1;
+		}
+	}
+
+	.breathe {
+		animation: breathe-in 500ms var(--ease);
 	}
 
 	.blocks-row {
