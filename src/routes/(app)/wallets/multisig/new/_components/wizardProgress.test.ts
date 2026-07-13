@@ -252,3 +252,74 @@ describe('hasMeaningfulMultisigProgress', () => {
 		expect(hasMeaningfulMultisigProgress(progress({ multisigName: '   ' }))).toBe(false);
 	});
 });
+
+// cairn-pwo1 regression. The live bug ("wizard reload restarts at Learn, keys
+// lost") was NOT in this decision logic — a valid Keys-step snapshot always
+// parses and always reads as meaningful, exactly as asserted below. The defect
+// lived in +page.svelte's effect wiring: the persistence $effect was registered
+// (source order) BEFORE onMount, so on mount Svelte ran it first, while state
+// was still the pristine initial 'learn'/no-keys, and it wrote that pristine
+// snapshot over the saved one in sessionStorage. A re-initialization that then
+// read storage (a second hydration instance, or a follow-up reload) saw only
+// the pristine 'learn' and dropped every collected cosigner key. The fix gates
+// that effect on a `hydrated` flag flipped true at the END of onMount, so the
+// saved snapshot can never be overwritten before it has been read and applied.
+// These assertions lock the invariant the wiring must preserve: the snapshot
+// the effect used to destroy is a resumable one.
+describe('cairn-pwo1: a mid-Keys-step snapshot is resumable (wiring invariant)', () => {
+	// The exact shape reported in the bead: a 2-of-3 personal vault with one
+	// real cosigner key collected, paused on the Keys step.
+	const beadSnapshot = JSON.stringify({
+		step: 'keys',
+		preset: '2of3',
+		customM: 2,
+		customN: 3,
+		scriptType: 'p2wsh',
+		keys: [
+			key({ name: 'WIZ Key A', deviceType: 'file', fingerprint: '79c30c58', xpub: 'xpub6EKLS…UAP' })
+		],
+		vaultMode: 'personal',
+		configImported: false,
+		importedStartIndex: 0,
+		multisigName: 'WIZ-2of3-mainnet',
+		savedAt: NOW - 60_000
+	});
+
+	it('parses the bead snapshot back to the Keys step with its key intact', () => {
+		const p = parseSavedMultisigProgress(beadSnapshot, NOW);
+		expect(p).not.toBeNull();
+		expect(p!.step).toBe('keys');
+		expect(p!.keys).toHaveLength(1);
+		expect(p!.keys[0].name).toBe('WIZ Key A');
+		expect(p!.multisigName).toBe('WIZ-2of3-mainnet');
+	});
+
+	it('reports the bead snapshot as meaningful, so onMount must offer the resume', () => {
+		const p = parseSavedMultisigProgress(beadSnapshot, NOW);
+		expect(p).not.toBeNull();
+		expect(hasMeaningfulMultisigProgress(p!)).toBe(true);
+	});
+
+	it('a pristine Learn snapshot — what the ungated effect wrote over it — is NOT meaningful', () => {
+		// This is precisely the value the clobbering effect used to persist; the
+		// gate now prevents it from ever replacing the snapshot above.
+		const pristine = parseSavedMultisigProgress(
+			JSON.stringify({
+				step: 'learn',
+				preset: '2of3',
+				customM: 2,
+				customN: 3,
+				scriptType: 'p2wsh',
+				keys: [],
+				vaultMode: null,
+				configImported: false,
+				importedStartIndex: 0,
+				multisigName: '',
+				savedAt: NOW
+			}),
+			NOW
+		);
+		expect(pristine).not.toBeNull();
+		expect(hasMeaningfulMultisigProgress(pristine!)).toBe(false);
+	});
+});

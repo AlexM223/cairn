@@ -814,6 +814,21 @@
 	// True after a resume: shows the "picked up where you left off" note.
 	let resumed = $state(false);
 
+	// Gate the persistence effect until onMount has run (cairn-pwo1). Svelte
+	// runs user effects in source order, and the persistence $effect below is
+	// declared BEFORE onMount — so on mount it would fire FIRST, while state is
+	// still the pristine initial 'learn'/no-keys, and write that pristine
+	// snapshot straight over the valid saved one in sessionStorage. The resume
+	// only survived at all because `savedProgress` is captured into a const up
+	// here before the clobber; but any re-initialization that reads storage
+	// after the clobber (e.g. a second component instance during hydration, or a
+	// second reload from Umbrel's app_proxy) then sees only the pristine 'learn'
+	// and drops every collected cosigner key. Holding the first write until
+	// after onMount restores (this flag flips true at the end of onMount) closes
+	// that window entirely — the saved snapshot is never overwritten before it
+	// has been read and applied.
+	let hydrated = $state(false);
+
 	function safeReadProgress(): string | null {
 		try {
 			return sessionStorage.getItem(WIZARD_PROGRESS_KEY);
@@ -828,6 +843,11 @@
 	// effects on a microtask after the mutation, well within the window before any
 	// reload could plausibly interrupt the NEXT key's ceremony.
 	$effect(() => {
+		// Do not persist until onMount has restored any saved snapshot — see the
+		// `hydrated` comment above. Reading `hydrated` first keeps this effect
+		// subscribed to it, so the moment onMount flips it true the effect re-runs
+		// and begins persisting the (restored or genuinely fresh) state.
+		if (!hydrated) return;
 		const snapshot = JSON.stringify({
 			step,
 			preset,
@@ -977,6 +997,11 @@
 			if (vaultMode !== null) void refreshKnownKeys(vaultMode);
 			if (step === 'review') void loadPreview();
 		}
+		// Any saved snapshot has now been read and applied — open the gate so the
+		// persistence effect starts saving from here on (cairn-pwo1). Runs in
+		// every branch (pending import, resume, or a genuinely fresh start) so
+		// ongoing progress is always persisted.
+		hydrated = true;
 	});
 
 	// Every step change — button, back, or programmatic — moves focus to the
