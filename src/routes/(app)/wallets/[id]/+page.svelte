@@ -134,6 +134,13 @@
 	let rotateSlow = $state(false);
 	let rotateSlowTimer: ReturnType<typeof setTimeout> | null = null;
 	const ROTATE_SLOW_MS = 6000;
+	// Client-side error surface for a Rotate that fails at the transport layer
+	// (network unreachable, 500, thrown action) — those come back as
+	// result.type === 'error', which update() applies nothing for, so without
+	// this the button just spins back to "Rotate" with no explanation
+	// (cairn-sz1q). The server's own fail(502,{receiveError}) still surfaces via
+	// form.receiveError.
+	let rotateError = $state<string | null>(null);
 	let tab = $state<'transactions' | 'addresses' | 'saved'>('transactions');
 	let addrFilter = $state<'used' | 'unused' | 'change'>('used');
 
@@ -687,8 +694,8 @@
 							<div class="hw-addr-row">
 								<span class="mono hw-addr">{receive.address}</span>
 							</div>
-							{#if form?.receiveError}
-								<div class="form-error" role="alert">{form.receiveError}</div>
+							{#if rotateError || form?.receiveError}
+								<div class="form-error" role="alert">{rotateError ?? form?.receiveError}</div>
 							{/if}
 							<div class="hw-receive-actions">
 								<button type="button" class="btn btn-secondary hw-pill" onclick={copyAddress}>
@@ -701,13 +708,22 @@
 									use:enhance={() => {
 										generating = true;
 										rotateSlow = false;
+										rotateError = null;
 										if (rotateSlowTimer) clearTimeout(rotateSlowTimer);
 										rotateSlowTimer = setTimeout(() => (rotateSlow = true), ROTATE_SLOW_MS);
-										return async ({ update }) => {
+										return async ({ result, update }) => {
 											if (rotateSlowTimer) clearTimeout(rotateSlowTimer);
 											rotateSlowTimer = null;
 											generating = false;
 											rotateSlow = false;
+											// A transport-level failure (network unreachable, 500, thrown
+											// action) arrives as 'error' and carries no form data, so
+											// update() would leave the UI silent. Surface it ourselves.
+											if (result.type === 'error') {
+												rotateError =
+													"Couldn't get a fresh address — check your connection and try again.";
+												return;
+											}
 											await update({ reset: false });
 										};
 									}}
