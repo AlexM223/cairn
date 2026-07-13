@@ -26,6 +26,16 @@
 	// (cairn-6uff) — the probe only succeeds once they've accepted the cert,
 	// so first-timers keep the plain-HTTP login untouched.
 	onMount(() => {
+		// pointerdown fires at the very START of a click gesture — before
+		// focus/click/submit — so a pointer-driven submit can never be orphaned
+		// by a probe that resolves in the gap between focusing a control and the
+		// submit landing (cairn-hmi4). Registered on window (capture) rather than
+		// the auth-col div so it doesn't turn a layout wrapper into an ARIA
+		// interactive element; the div's focusin/input already cover keyboard and
+		// autofill. Cleaned up on unmount.
+		const onPointerDown = () => markInteracted();
+		window.addEventListener('pointerdown', onPointerDown, { capture: true });
+
 		const guardedLocation = {
 			get hostname() {
 				return window.location.hostname;
@@ -50,6 +60,8 @@
 			isSecureContext: window.isSecureContext,
 			sessionStorage: window.sessionStorage
 		});
+
+		return () => window.removeEventListener('pointerdown', onPointerDown, { capture: true });
 	});
 </script>
 
