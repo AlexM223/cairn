@@ -119,16 +119,42 @@ export const actions: Actions = {
 			if (esplora && !/^https?:\/\//.test(esplora))
 				return fail(400, { error: 'Esplora URL must start with http:// or https://.' });
 			setSetting('esplora_url', esplora.replace(/\/+$/, ''));
+		}
 
+		// Bitcoin Core RPC is a separate concern from connectionMode/Electrum
+		// (Wave B design doc section 4 -- getChainConfig() returns coreRpc* in
+		// BOTH 'public' and 'custom' modes; there is no public-mode Core
+		// fallback, so Core is "configured" purely by whether core_rpc_url is
+		// set). These three writes used to live inside the
+		// `connectionMode === 'custom'` block above, which meant (a) a
+		// 'public'-mode admin's Core RPC submission -- e.g. the Umbrel
+		// assisted-connect flow -- was silently dropped, never persisted at
+		// all, and (b) the JSON endpoint (api/admin/settings/+server.ts)
+		// already wrote these fields unconditionally, so the two save paths
+		// disagreed (cairn-6uok).
+		//
+		// They now run for every submission, but each key is only touched
+		// when its field is actually PRESENT in the payload (form.has, not
+		// `?? ''`). A non-custom-mode render (or any future submission, like
+		// an assisted-connect mini-form, that doesn't include these inputs)
+		// must leave the stored values untouched -- absent-from-payload means
+		// "leave unchanged," never "clear." An explicit clear is still
+		// possible: submit the field present-but-empty, or (for the
+		// password) the clearCoreRpcPass marker.
+		if (form.has('coreRpcUrl')) {
 			setSetting('core_rpc_url', String(form.get('coreRpcUrl') ?? '').trim());
+		}
+		if (form.has('coreRpcUser')) {
 			setSetting('core_rpc_user', String(form.get('coreRpcUser') ?? '').trim());
-			// Blank means "keep the stored password" — the secret is never echoed
-			// back to the form, so an untouched field must not clear it. Stored
-			// encrypted at rest (cairn-e9mz.3).
+		}
+		if (form.has('coreRpcPass')) {
+			// Blank means "keep the stored password" -- the secret is never
+			// echoed back to the form, so an untouched-but-present field must
+			// not clear it either. Stored encrypted at rest (cairn-e9mz.3).
 			const rpcPass = String(form.get('coreRpcPass') ?? '');
 			if (rpcPass !== '') setSecretSetting('core_rpc_pass', rpcPass);
-			if (form.get('clearCoreRpcPass') === 'on') setSecretSetting('core_rpc_pass', '');
 		}
+		if (form.get('clearCoreRpcPass') === 'on') setSecretSetting('core_rpc_pass', '');
 
 		// Apply the new connection immediately — no restart needed.
 		reconfigureChain();

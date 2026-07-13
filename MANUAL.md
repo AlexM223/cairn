@@ -2539,6 +2539,24 @@ this instance (`'umbrel-env'` / `'umbrel-probe'` / `null`) — informational
 only, drives the settings-page card, never changes which connection is
 active.
 
+**Bitcoin Core RPC settings are saved independently of `connection_mode`.**
+`core_rpc_url`/`core_rpc_user`/`core_rpc_pass` have no relationship to the
+Electrum `connection_mode` toggle — `getChainConfig()` returns `coreRpc*` in
+both `'public'` and `'custom'` modes, since Core is "configured" purely by
+whether `core_rpc_url` is set. The `/admin/settings` `save` form action
+(`src/routes/(app)/admin/settings/+page.server.ts`) and the JSON endpoint
+(`src/routes/api/admin/settings/+server.ts`) both write these three keys
+whenever the submitted payload includes them, regardless of `connection_mode`
+— a field **absent** from the payload always means "leave the stored value
+unchanged," never "clear it" (a field present-but-empty is a deliberate
+clear; a blank-but-present `coreRpcPass` is the existing "keep the stored
+secret" convention, since the secret is never echoed back to the form). Prior
+to cairn-6uok this was only true of the JSON endpoint — the form action wrote
+`core_rpc_*` solely inside the `connectionMode === 'custom'` block, so a
+`'public'`-mode submission that included Core RPC fields (e.g. the Umbrel
+Wave B assisted-connect flow, `docs/UMBREL-AUTOCONNECT-WAVE-B-DESIGN.md`) was
+silently dropped, never persisted.
+
 ### Test-only env vars
 
 `src/tests/setup.ts` always points `CAIRN_DB` at a fresh temp-file DB per

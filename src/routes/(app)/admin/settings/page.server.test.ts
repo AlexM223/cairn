@@ -218,3 +218,131 @@ describe('admin/settings actions — a real admin still reaches the mutation', (
 		expect(invalidateWalletCache).toHaveBeenCalledTimes(1);
 	});
 });
+
+// Regression tests for cairn-6uok: core_rpc_url/core_rpc_user/core_rpc_pass
+// used to be written ONLY inside the `connectionMode === 'custom'` block, so
+// (a) a 'public'-mode submission that included Core RPC fields (e.g. the
+// Umbrel Wave B assisted-connect flow) silently dropped them — never
+// persisted — and (b) within that block, a field simply absent from the
+// FormData (`form.get(...) ?? ''`) was written as an empty string, clearing
+// whatever was already stored. The fix moves the three writes outside the
+// custom-only block and gates each on `form.has(...)`, so "absent from the
+// payload" now always means "leave unchanged," in every connectionMode.
+describe('admin/settings save action — core_rpc_* persistence (cairn-6uok)', () => {
+	it('preserves existing core_rpc_* settings when the payload omits them entirely (public mode)', async () => {
+		const res = await actions.save(
+			makeEvent(ADMIN, { connectionMode: 'public', electrumPoolSize: '2' })
+		);
+		expect(res).toEqual({ saved: true });
+		expect(setSetting).not.toHaveBeenCalledWith('core_rpc_url', expect.anything());
+		expect(setSetting).not.toHaveBeenCalledWith('core_rpc_user', expect.anything());
+		expect(setSecretSetting).not.toHaveBeenCalledWith('core_rpc_pass', expect.anything());
+	});
+
+	it('preserves existing core_rpc_* settings when the payload omits them entirely (custom mode)', async () => {
+		const res = await actions.save(
+			makeEvent(ADMIN, {
+				connectionMode: 'custom',
+				electrumHost: '10.0.0.5',
+				electrumPort: '50001',
+				electrumPoolSize: '2'
+			})
+		);
+		expect(res).toEqual({ saved: true });
+		expect(setSetting).not.toHaveBeenCalledWith('core_rpc_url', expect.anything());
+		expect(setSetting).not.toHaveBeenCalledWith('core_rpc_user', expect.anything());
+		expect(setSecretSetting).not.toHaveBeenCalledWith('core_rpc_pass', expect.anything());
+	});
+
+	it('persists core_rpc_* fields present in the payload while connectionMode is custom', async () => {
+		const res = await actions.save(
+			makeEvent(ADMIN, {
+				connectionMode: 'custom',
+				electrumHost: '10.0.0.5',
+				electrumPort: '50001',
+				electrumPoolSize: '2',
+				coreRpcUrl: 'http://10.21.21.8:8332',
+				coreRpcUser: 'umbrel',
+				coreRpcPass: 'hunter2'
+			})
+		);
+		expect(res).toEqual({ saved: true });
+		expect(setSetting).toHaveBeenCalledWith('core_rpc_url', 'http://10.21.21.8:8332');
+		expect(setSetting).toHaveBeenCalledWith('core_rpc_user', 'umbrel');
+		expect(setSecretSetting).toHaveBeenCalledWith('core_rpc_pass', 'hunter2');
+	});
+
+	it('persists core_rpc_* fields present in the payload even while connectionMode is public (assisted-connect), and never mutates connection_mode away from public', async () => {
+		const res = await actions.save(
+			makeEvent(ADMIN, {
+				connectionMode: 'public',
+				electrumPoolSize: '2',
+				coreRpcUrl: 'http://10.21.21.8:8332',
+				coreRpcUser: 'umbrel',
+				coreRpcPass: 'hunter2'
+			})
+		);
+		expect(res).toEqual({ saved: true });
+		expect(setSetting).toHaveBeenCalledWith('core_rpc_url', 'http://10.21.21.8:8332');
+		expect(setSetting).toHaveBeenCalledWith('core_rpc_user', 'umbrel');
+		expect(setSecretSetting).toHaveBeenCalledWith('core_rpc_pass', 'hunter2');
+		expect(setSetting).toHaveBeenCalledWith('connection_mode', 'public');
+		expect(setSetting).not.toHaveBeenCalledWith('connection_mode', 'custom');
+	});
+
+	it('an explicit present-but-empty coreRpcUrl/coreRpcUser still clears them (distinct from "absent")', async () => {
+		const res = await actions.save(
+			makeEvent(ADMIN, {
+				connectionMode: 'public',
+				electrumPoolSize: '2',
+				coreRpcUrl: '',
+				coreRpcUser: ''
+			})
+		);
+		expect(res).toEqual({ saved: true });
+		expect(setSetting).toHaveBeenCalledWith('core_rpc_url', '');
+		expect(setSetting).toHaveBeenCalledWith('core_rpc_user', '');
+	});
+
+	it('a blank-but-present coreRpcPass does not overwrite the stored secret (existing "blank means keep" convention)', async () => {
+		const res = await actions.save(
+			makeEvent(ADMIN, {
+				connectionMode: 'public',
+				electrumPoolSize: '2',
+				coreRpcUrl: 'http://10.21.21.8:8332',
+				coreRpcPass: ''
+			})
+		);
+		expect(res).toEqual({ saved: true });
+		expect(setSetting).toHaveBeenCalledWith('core_rpc_url', 'http://10.21.21.8:8332');
+		expect(setSecretSetting).not.toHaveBeenCalledWith('core_rpc_pass', expect.anything());
+	});
+
+	it('clearCoreRpcPass="on" clears the stored secret regardless of connectionMode', async () => {
+		const res = await actions.save(
+			makeEvent(ADMIN, {
+				connectionMode: 'public',
+				electrumPoolSize: '2',
+				clearCoreRpcPass: 'on'
+			})
+		);
+		expect(res).toEqual({ saved: true });
+		expect(setSecretSetting).toHaveBeenCalledWith('core_rpc_pass', '');
+	});
+
+	it('does not regress existing custom-mode Electrum/Esplora behavior', async () => {
+		const res = await actions.save(
+			makeEvent(ADMIN, {
+				connectionMode: 'custom',
+				electrumHost: '10.0.0.5',
+				electrumPort: '50001',
+				electrumPoolSize: '2',
+				esploraUrl: 'http://esplora.example'
+			})
+		);
+		expect(res).toEqual({ saved: true });
+		expect(setSetting).toHaveBeenCalledWith('electrum_host', '10.0.0.5');
+		expect(setSetting).toHaveBeenCalledWith('electrum_port', '50001');
+		expect(setSetting).toHaveBeenCalledWith('esplora_url', 'http://esplora.example');
+	});
+});
