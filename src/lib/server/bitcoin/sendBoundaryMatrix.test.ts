@@ -86,6 +86,7 @@ const RECIPIENT_P2WPKH = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4';
 const RECIPIENT_P2PKH = '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2';
 const RECIPIENT_P2SH = '3P14159f73E4gFr7JterCCQh9QjiTjiZrG';
 const RECIPIENT_P2WSH = 'bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3';
+const RECIPIENT_P2TR = 'bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr'; // BIP-86 vector
 
 const COMMON = {
 	xpub: ZPUB,
@@ -293,6 +294,119 @@ describe('boundary: dust threshold (RBF replacement change output)', () => {
 		});
 		expect(ok.change).not.toBeNull();
 		expect(ok.change!.value).toBe(546);
+	});
+});
+
+// ═══════════ 2b. DUST (plain recipient amount, pre-flight) — cairn-ykk6
+//
+// Previously a plain (non-sweep) recipient amount had NO pre-flight dust
+// check at all — see git history for the "KNOWN GAP" block this replaces.
+// validateRecipientsAndFeeRate (psbt.ts) now rejects any non-'max' amount
+// below that destination's per-script-type dust floor, computed the same way
+// Bitcoin Core's GetDustThreshold() does (outputVsize + assumed spend cost,
+// witness-discounted for segwit destinations, at the 3 sat/vB dust-relay
+// rate): P2PKH 546, P2SH 540, P2WPKH 294, P2WSH 330, P2TR 330.
+
+describe('boundary: dust threshold (plain recipient amount, pre-flight) — cairn-ykk6', () => {
+	const CASES: { label: string; address: string; threshold: number }[] = [
+		{ label: 'p2pkh', address: RECIPIENT_P2PKH, threshold: 546 },
+		{ label: 'p2sh', address: RECIPIENT_P2SH, threshold: 540 },
+		{ label: 'p2wpkh', address: RECIPIENT_P2WPKH, threshold: 294 },
+		{ label: 'p2wsh', address: RECIPIENT_P2WSH, threshold: 330 },
+		{ label: 'p2tr', address: RECIPIENT_P2TR, threshold: 330 }
+	];
+
+	for (const { label, address, threshold } of CASES) {
+		it(`single-sig: ${label} destination — exactly ${threshold} sats is allowed, ${threshold - 1} is rejected pre-flight`, async () => {
+			const ok = await constructPsbt({
+				...COMMON,
+				utxos: [utxo(60_000)],
+				recipients: [{ address, amount: threshold }],
+				feeRate: 5
+			});
+			expect(ok.amount).toBe(threshold);
+
+			const err = await expectPlainRejection(
+				constructPsbt({
+					...COMMON,
+					utxos: [utxo(60_000)],
+					recipients: [{ address, amount: threshold - 1 }],
+					feeRate: 5
+				}),
+				'invalid_amount'
+			);
+			expect(err.message.toLowerCase()).toContain('too small to send');
+			// Plain language per Cairn UX philosophy: no raw jargon like "dust" or
+			// "vB"/"vsize" leaking into the user-facing message.
+			expect(err.message.toLowerCase()).not.toContain('dust');
+			expect(err.message.toLowerCase()).not.toMatch(/vsize|sat\/vb/);
+		});
+	}
+
+	it('multisig: p2wpkh destination — exactly 294 sats is allowed, 293 is rejected pre-flight', async () => {
+		const ok = await msBuild({
+			utxos: [msUtxo(MS_P2WSH, 60_000)],
+			recipients: [{ address: RECIPIENT_P2WPKH, amount: 294 }],
+			feeRate: 5
+		});
+		expect(ok.amount).toBe(294);
+
+		const err = await expectPlainRejection(
+			msBuild({
+				utxos: [msUtxo(MS_P2WSH, 60_000)],
+				recipients: [{ address: RECIPIENT_P2WPKH, amount: 293 }],
+				feeRate: 5
+			}),
+			'invalid_amount'
+		);
+		expect(err.message.toLowerCase()).toContain('too small to send');
+	});
+
+	it('multisig: p2tr destination — exactly 330 sats is allowed, 329 is rejected pre-flight', async () => {
+		const ok = await msBuild({
+			utxos: [msUtxo(MS_P2WSH, 60_000)],
+			recipients: [{ address: RECIPIENT_P2TR, amount: 330 }],
+			feeRate: 5
+		});
+		expect(ok.amount).toBe(330);
+
+		await expectPlainRejection(
+			msBuild({
+				utxos: [msUtxo(MS_P2WSH, 60_000)],
+				recipients: [{ address: RECIPIENT_P2TR, amount: 329 }],
+				feeRate: 5
+			}),
+			'invalid_amount'
+		);
+	});
+
+	it('single-sig: multi-recipient dust rejection names the offending address, not a generic message', async () => {
+		const err = await expectPlainRejection(
+			constructPsbt({
+				...COMMON,
+				utxos: [utxo(60_000)],
+				recipients: [
+					{ address: RECIPIENT_P2WPKH, amount: 10_000 },
+					{ address: RECIPIENT_P2PKH, amount: 100 } // well under the 546 p2pkh floor
+				],
+				feeRate: 5
+			}),
+			'invalid_amount'
+		);
+		expect(err.message).toContain(RECIPIENT_P2PKH);
+	});
+
+	it('send-max amounts are exempt from the plain-amount dust loop (its own post-selection sweep-result check runs instead)', async () => {
+		// A sweep of a small-but-fee-covering UTXO must not be evaluated against
+		// dustThreshold as if 'max' were a literal sat amount.
+		const draft = await constructPsbt({
+			...COMMON,
+			utxos: [utxo(2_000)],
+			recipients: [{ address: RECIPIENT_P2WPKH, amount: 'max' }],
+			feeRate: 1
+		});
+		expect(draft.change).toBeNull();
+		expect(draft.amount).toBeGreaterThan(0);
 	});
 });
 
@@ -556,48 +670,54 @@ describe('boundary: fee-rate floor (min-relay-fee) and ceiling', () => {
 	});
 });
 
-// ═══════════════════════════════════════════ KNOWN GAP — reported, not fixed
+// ═══════════════════════════════════ FORMERLY A KNOWN GAP — fixed, cairn-ykk6
 //
-// See the final report for cairn-9v9g: DUST_SATS (546, a single flat constant
-// — never per-script-type despite outputVsize() already knowing each
-// destination's real byte size) is enforced ONLY on the send-max sweep result
-// and the RBF-replacement change output (both above). A PLAIN (non-sweep)
-// recipient amount has NO pre-flight dust check at all: constructPsbt happily
-// builds and buildDraft happily PERSISTS a draft paying a sub-dust amount to a
-// normal recipient. The transaction would be rejected by the node at
-// broadcast time (friendlyBroadcastRejection already has a "dust" hint for
-// that), but the user pays the full review/sign round-trip first. This test
-// pins CURRENT behavior for visibility — it does not assert this is correct,
-// and is intentionally excluded from the pass/fail matrix above.
-describe('KNOWN GAP (not fixed here — see final report): plain recipient dust is unchecked pre-flight', () => {
-	it('single-sig: a 100-sat plain recipient amount (well under any real dust threshold) builds without error', async () => {
-		const draft = await constructPsbt({
-			...COMMON,
-			utxos: [utxo(60_000)],
-			recipients: [{ address: RECIPIENT_P2WPKH, amount: 100 }],
-			feeRate: 5
-		});
-		expect(draft.amount).toBe(100); // pinned current behavior, not endorsed
-	});
-
-	it('multisig: same gap — a 100-sat plain recipient amount builds without error', async () => {
-		const draft = await msBuild({
-			utxos: [msUtxo(MS_P2WSH, 60_000)],
-			recipients: [{ address: RECIPIENT_P2WPKH, amount: 100 }],
-			feeRate: 5
-		});
-		expect(draft.amount).toBe(100); // pinned current behavior, not endorsed
-	});
-
-	it('single-sig: a 1-sat plain recipient amount to a p2pkh/p2sh/p2wsh destination also builds unchecked', async () => {
-		for (const address of [RECIPIENT_P2PKH, RECIPIENT_P2SH, RECIPIENT_P2WSH]) {
-			const draft = await constructPsbt({
+// This block used to pin the UNFIXED behavior: DUST_SATS (546, a flat
+// constant) was enforced ONLY on the send-max sweep result and the
+// RBF-replacement change output — a PLAIN (non-sweep) recipient amount had
+// no pre-flight dust check at all, so constructPsbt/buildDraft would build
+// and persist a draft paying a sub-dust amount, failing only much later at
+// broadcast via mempool relay policy. validateRecipientsAndFeeRate (psbt.ts)
+// now rejects these up front (see the "dust threshold (plain recipient
+// amount, pre-flight)" block above for the full per-script-type matrix) — the
+// gap is closed, so these now assert REJECTION instead of silent success.
+describe('formerly KNOWN GAP, now fixed: plain recipient dust is rejected pre-flight', () => {
+	it('single-sig: a 100-sat plain recipient amount (well under any real dust threshold) is rejected', async () => {
+		const err = await expectPlainRejection(
+			constructPsbt({
 				...COMMON,
 				utxos: [utxo(60_000)],
-				recipients: [{ address, amount: 1 }],
+				recipients: [{ address: RECIPIENT_P2WPKH, amount: 100 }],
 				feeRate: 5
-			});
-			expect(draft.amount).toBe(1);
+			}),
+			'invalid_amount'
+		);
+		expect(err.message.toLowerCase()).toContain('too small to send');
+	});
+
+	it('multisig: same case — a 100-sat plain recipient amount is rejected', async () => {
+		const err = await expectPlainRejection(
+			msBuild({
+				utxos: [msUtxo(MS_P2WSH, 60_000)],
+				recipients: [{ address: RECIPIENT_P2WPKH, amount: 100 }],
+				feeRate: 5
+			}),
+			'invalid_amount'
+		);
+		expect(err.message.toLowerCase()).toContain('too small to send');
+	});
+
+	it('single-sig: a 1-sat plain recipient amount to a p2pkh/p2sh/p2wsh destination is also rejected', async () => {
+		for (const address of [RECIPIENT_P2PKH, RECIPIENT_P2SH, RECIPIENT_P2WSH]) {
+			await expectPlainRejection(
+				constructPsbt({
+					...COMMON,
+					utxos: [utxo(60_000)],
+					recipients: [{ address, amount: 1 }],
+					feeRate: 5
+				}),
+				'invalid_amount'
+			);
 		}
 	});
 });

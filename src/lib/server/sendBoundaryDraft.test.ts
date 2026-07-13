@@ -384,17 +384,55 @@ describe('buildDraft / buildMultisigDraft: sweep result at the dust boundary', (
 	});
 });
 
-// ═══════════════════════════════════════════ KNOWN GAP — reported, not fixed
-describe('KNOWN GAP (not fixed here — see final report): plain recipient dust reaches persistence unchecked', () => {
-	it('single-sig: buildDraft PERSISTS a draft for a 100-sat plain recipient amount', async () => {
+// ═══════════════════════════════ FORMERLY A KNOWN GAP — fixed, cairn-ykk6
+//
+// Previously buildDraft/buildMultisigDraft would silently PERSIST a draft
+// paying a sub-dust amount to a plain recipient (only rejected much later at
+// broadcast). validateRecipientsAndFeeRate (psbt.ts) now rejects it
+// pre-flight, and buildDraft/buildMultisigDraft propagate that rejection
+// before ever writing a row — confirmed here at the integration layer (DB +
+// draft persistence), matching the pure-construction coverage in
+// bitcoin/sendBoundaryMatrix.test.ts.
+describe('formerly KNOWN GAP, now fixed: plain recipient dust is rejected before persistence', () => {
+	it('single-sig: buildDraft rejects a 100-sat plain recipient amount and persists nothing', async () => {
 		const { userId, walletId } = await seedWallet('gap@example.com');
 		wireSingleCoinWallet(60_000);
 
+		const err = await expectPlainRejection(
+			buildDraft(userId, walletId, {
+				recipients: [{ address: RECIPIENT, amount: 100 }],
+				feeRate: 5
+			}),
+			'invalid_amount'
+		);
+		expect(err.message.toLowerCase()).toContain('too small to send');
+		expect(listTransactions(userId, walletId)).toEqual([]);
+	});
+
+	it('single-sig: buildDraft accepts the amount at the exact dust floor (294 sats, p2wpkh) and persists it', async () => {
+		const { userId, walletId } = await seedWallet('gap-ok@example.com');
+		wireSingleCoinWallet(60_000);
+
 		const { draft } = await buildDraft(userId, walletId, {
-			recipients: [{ address: RECIPIENT, amount: 100 }],
+			recipients: [{ address: RECIPIENT, amount: 294 }],
 			feeRate: 5
 		});
-		expect(draft.amount).toBe(100); // pinned current behavior, not endorsed
+		expect(draft.amount).toBe(294);
 		expect(listTransactions(userId, walletId)).toHaveLength(1);
+	});
+
+	it('multisig: buildMultisigDraft rejects a 100-sat plain recipient amount and persists nothing', async () => {
+		const { userId, multisigId } = await seedMultisig('gap@example.com');
+		wireSingleCoinMultisig(userId, multisigId, 200_000);
+
+		const err = await expectPlainRejection(
+			buildMultisigDraft(userId, multisigId, {
+				recipients: [{ address: RECIPIENT, amount: 100 }],
+				feeRate: 5
+			}),
+			'invalid_amount'
+		);
+		expect(err.message.toLowerCase()).toContain('too small to send');
+		expect(listMultisigTransactions(userId, multisigId)).toEqual([]);
 	});
 });

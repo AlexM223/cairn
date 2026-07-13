@@ -203,6 +203,37 @@ function outputVsize(address: string): number {
 }
 
 /**
+ * Bitcoin Core's default dust-relay fee rate (sat/vB) — the price used to
+ * decide whether an output is even worth relaying/mining. Matches Core's
+ * `-dustrelayfee` default and `@scure/btc-signer`'s own dust default (see
+ * utxo.js: `dustFee = 3n`); this is deliberately NOT reused from that
+ * library (its `dust` selector option prices a fixed generic input+output
+ * pair, not a specific destination's script — see the NOTE on btc-signer's
+ * `dust` option below) but the rate itself is the same well-known constant.
+ */
+const DUST_RELAY_FEE_RATE = 3;
+
+/**
+ * Per-destination-script-type dust threshold, computed the same way Bitcoin
+ * Core's `GetDustThreshold()` does: the exact output byte cost (outputVsize)
+ * plus an assumed cost to later SPEND that output, priced at
+ * DUST_RELAY_FEE_RATE. The spend-side cost gets the standard witness
+ * discount for segwit v0/v1+ destinations (P2WPKH/P2WSH/P2TR) — legacy
+ * destinations (P2PKH/P2SH) do not — which is why segwit dust floors are
+ * lower than legacy ones. Reproduces Core's well-known constants exactly:
+ * P2PKH 546, P2SH 540, P2WPKH 294, P2WSH/P2TR 330 sats.
+ */
+function dustThreshold(address: string): number {
+	const script = addressToScriptPubKey(address);
+	// Witness programs start with OP_0 (segwit v0) or OP_1..OP_16 (v1+,
+	// including taproot's OP_1); every other leading opcode (OP_DUP for
+	// P2PKH, OP_HASH160 for P2SH, ...) is a legacy, non-witness output.
+	const isWitness = script.length >= 4 && (script[0] === 0x00 || (script[0] >= 0x51 && script[0] <= 0x60));
+	const assumedSpendVsize = isWitness ? 67 : 148;
+	return (outputVsize(address) + assumedSpendVsize) * DUST_RELAY_FEE_RATE;
+}
+
+/**
  * Estimated vsize of a transaction with `numInputs` inputs of the given
  * single-sig script type and outputs paying `outputAddresses`. Uses the exact
  * same per-input/overhead/output tables the coin selector prices fees with, so a
@@ -278,6 +309,24 @@ export function validateRecipientsAndFeeRate(
 				recipients.length === 1
 					? 'Amount must be a positive number of sats.'
 					: `The amount for ${r.address} must be a positive number of sats.`,
+				'invalid_amount'
+			);
+		}
+	}
+	// Dust pre-flight (cairn-ykk6): a plain (non-max) recipient amount below
+	// that destination's dust threshold would build and even persist a draft
+	// silently, only to fail much later at broadcast via mempool relay policy
+	// — a late, confusing failure. Reject it up front, in plain language, with
+	// the correct per-script-type floor (see dustThreshold). Send-max is
+	// exempt here: its own dust/insufficient-funds check runs after coin
+	// selection, once the actual sweep amount is known.
+	for (const r of recipients) {
+		if (r.amount === 'max') continue;
+		if ((r.amount as number) < dustThreshold(r.address)) {
+			throw new PsbtError(
+				recipients.length === 1
+					? 'This amount is too small to send.'
+					: `The amount for ${r.address} is too small to send.`,
 				'invalid_amount'
 			);
 		}
