@@ -8,6 +8,8 @@
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
 	import NodeTrustChip from '$lib/components/heartwood/NodeTrustChip.svelte';
+	import TxFlowDiagram from '$lib/components/heartwood/TxFlowDiagram.svelte';
+	import { computeTxFlow, computeFeePosition } from '$lib/components/heartwood/txFlow';
 	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
 	import CoreRpcRequiredNotice from '$lib/components/CoreRpcRequiredNotice.svelte';
 	import { feeOutlook } from '$lib/bitcoin';
@@ -67,6 +69,21 @@
 
 	const outlook = $derived(
 		tx && !tx.confirmed && tx.feeRate !== null && fees ? feeOutlook(tx.feeRate, fees) : null
+	);
+
+	// CSS-only Sankey-lite value flow (cairn-6efi.8): inputs → outputs + fee, band
+	// widths proportional to value. Pure geometry (txFlow.ts) built ONLY from the
+	// already-loaded tx — zero extra chain calls. null when it can't be drawn
+	// honestly (unknown input values / non-positive total): the textual i/o list
+	// below then stands alone. "Yours" tint reuses the viewer-scoped ownership map.
+	const yoursAddrs = $derived(
+		ownership ? new Set(Object.keys(ownership.addressOwners)) : null
+	);
+	const txFlow = $derived(tx ? computeTxFlow(tx, { yours: yoursAddrs }) : null);
+	// Fee sliver: only meaningful while the tx is still competing in the mempool,
+	// and only when the snapshot carried a histogram. Confirmed / absent → omitted.
+	const feePosition = $derived(
+		tx && !tx.confirmed ? computeFeePosition(tx.feeRate, data.feeHistogram) : null
 	);
 
 	// Replace-by-fee timeline (oldest → newest). The newest entry is the only
@@ -390,6 +407,9 @@
 
 		<!-- Inputs / outputs -->
 		<section class="flows fade-in">
+			{#if txFlow}
+				<TxFlowDiagram flow={txFlow} {feePosition} />
+			{/if}
 			<div class="io">
 				<div class="io-col">
 					<span class="section-eyebrow io-title">
