@@ -631,6 +631,42 @@ export class ElectrumClient extends EventEmitter {
 		return status;
 	}
 
+	/**
+	 * Stop watching a scripthash (cairn-gakd Phase 2). Two effects, in order:
+	 *
+	 *   1. Drop it from `scripthashSubs` — the set `resubscribe()` replays on every
+	 *      reconnect. This is the leak fix: without it, that set only ever grew
+	 *      with cumulative wallet churn, so reconnect cost climbed with the total
+	 *      number of wallets ever watched rather than the number watched *now*
+	 *      (the ARM/Umbrel reconnect-storm pain point). Pruning here bounds the
+	 *      replay set to the current watch set.
+	 *   2. Best-effort `blockchain.scripthash.unsubscribe` on the wire so the
+	 *      server stops pushing status changes for it on THIS still-open socket.
+	 *
+	 * Deliberately does NOT connect: if there's no live socket there is nothing to
+	 * tell the server (a subscription never survives a socket cycle anyway), and
+	 * step 1 has already stopped the leak. The RPC is also best-effort because not
+	 * every Electrum server implements `unsubscribe` — a rejection there is logged
+	 * at debug and swallowed, since the local prune is what actually matters.
+	 * Returns true only when the server acknowledged the unsubscribe.
+	 */
+	async unsubscribeScripthash(scripthash: string): Promise<boolean> {
+		const wasWatched = this.scripthashSubs.delete(scripthash);
+		if (!wasWatched) return false;
+		const socket = this.socket;
+		if (!socket || socket.destroyed) return false;
+		try {
+			await this.rawRequest('blockchain.scripthash.unsubscribe', [scripthash]);
+			return true;
+		} catch (e) {
+			log.debug(
+				{ err: e, server: this.server },
+				'scripthash unsubscribe RPC failed (server may not support it); local prune already applied'
+			);
+			return false;
+		}
+	}
+
 	async banner(): Promise<string> {
 		return (await this.request('server.banner', [])) as string;
 	}

@@ -213,6 +213,13 @@ export class ElectrumPool extends EventEmitter {
 		return this.primary.subscribeScripthash(scripthash);
 	}
 
+	/** Release a scripthash subscription on the primary — the only socket it was
+	 *  ever placed on (cairn-gakd Phase 2). Prunes the primary's resubscribe set
+	 *  and best-effort unsubscribes on the wire. */
+	unsubscribeScripthash(scripthash: string): Promise<boolean> {
+		return this.primary.unsubscribeScripthash(scripthash);
+	}
+
 	banner(): Promise<string> {
 		return this.primary.banner();
 	}

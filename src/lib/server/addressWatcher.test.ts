@@ -26,6 +26,7 @@ import type { TxDetail } from '$lib/types';
 const historyByScripthash = new Map<string, { tx_hash: string; height: number }[]>();
 class FakePool extends EventEmitter {
 	subscribeScripthash = vi.fn(async () => 'status0');
+	unsubscribeScripthash = vi.fn(async () => true);
 	getHistory = vi.fn(async (sh: string) => historyByScripthash.get(sh) ?? []);
 	getMerkleProof = vi.fn(async () => ({ merkle: [], pos: 0 }));
 	getBlockHeader = vi.fn(async () => '00'.repeat(80));
@@ -259,6 +260,9 @@ describe('cairn-uzgu / cairn-gakd Phase 1: stale single-sig watch cleanup on del
 		for (const w of _internals.state.byScripthash.values()) {
 			expect(w.kind === 'wallet' && w.walletId === walletId).toBe(false);
 		}
+		// cairn-gakd Phase 2: the delete also RELEASES the Electrum-side
+		// subscription for the watched scripthash, not just the local bookkeeping.
+		expect(pool.unsubscribeScripthash).toHaveBeenCalledWith(watchedScripthash);
 	});
 
 	it('handleScripthashChange ignores a lingering subscription for a deleted wallet, and self-prunes it', async () => {

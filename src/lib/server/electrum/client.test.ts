@@ -623,6 +623,79 @@ describe('ElectrumClient', () => {
 		expect(subscribes).toBeGreaterThanOrEqual(2); // and re-subscribed the scripthash
 	}, 8000);
 
+	it('unsubscribeScripthash sends the unsubscribe RPC and stops replaying it on reconnect (cairn-gakd)', async () => {
+		const kept = 'aa'.repeat(32);
+		const dropped = 'bb'.repeat(32);
+		let unsubscribes = 0;
+		const resubscribedAfterReconnect: string[] = [];
+		let handshakes = 0;
+		let firstConnectionSocket: net.Socket | null = null;
+		const server = await withServer((req, socket) => {
+			if (req.method === 'server.version') {
+				handshakes++;
+				return;
+			}
+			if (req.method === 'blockchain.scripthash.subscribe') {
+				// Any subscribe arriving on the SECOND (reconnected) socket is a
+				// resubscribe replay — record which scripthashes get replayed.
+				if (handshakes >= 2) resubscribedAfterReconnect.push(req.params[0] as string);
+				reply(socket, req.id, null);
+				return true;
+			}
+			if (req.method === 'blockchain.scripthash.unsubscribe') {
+				unsubscribes++;
+				reply(socket, req.id, true);
+				return true;
+			}
+			return;
+		});
+
+		const client = makeClient(server.port, 2000);
+		await client.subscribeScripthash(kept);
+		await client.subscribeScripthash(dropped);
+		firstConnectionSocket = [...server.sockets][0];
+
+		// Release one subscription: the RPC must go out on the live socket...
+		await expect(client.unsubscribeScripthash(dropped)).resolves.toBe(true);
+		expect(unsubscribes).toBe(1);
+		// ...and unsubscribing something never subscribed is a no-op (no RPC).
+		await expect(client.unsubscribeScripthash('cc'.repeat(32))).resolves.toBe(false);
+		expect(unsubscribes).toBe(1);
+
+		// Force a reconnect: only the still-subscribed scripthash is replayed.
+		const reconnected = new Promise<void>((resolve) => {
+			let n = 0;
+			client.on('connect', () => {
+				if (++n === 1) resolve();
+			});
+		});
+		firstConnectionSocket!.destroy();
+		await reconnected;
+		// Give resubscribe() a moment to replay on the fresh socket.
+		await new Promise((resolve) => setTimeout(resolve, 100));
+
+		expect(resubscribedAfterReconnect).toContain(kept);
+		expect(resubscribedAfterReconnect).not.toContain(dropped);
+	}, 8000);
+
+	it('unsubscribeScripthash prunes local state without a socket when disconnected (cairn-gakd)', async () => {
+		const sh = 'dd'.repeat(32);
+		const server = await withServer((req, socket) => {
+			if (req.method === 'blockchain.scripthash.subscribe') {
+				reply(socket, req.id, null);
+				return true;
+			}
+			return;
+		});
+		const client = makeClient(server.port, 2000);
+		await client.subscribeScripthash(sh);
+		// Kill the socket so there's nothing to send an unsubscribe on. The prune of
+		// the resubscribe set must still happen; returns false (no wire ack).
+		for (const s of server.sockets) s.destroy();
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		await expect(client.unsubscribeScripthash(sh)).resolves.toBe(false);
+	}, 8000);
+
 	it('does not eagerly reconnect after a drop when nothing is subscribed', async () => {
 		let handshakes = 0;
 		const server = await withServer((req, socket) => {

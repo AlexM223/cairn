@@ -660,6 +660,7 @@ async function handleScripthashChange(scripthash: string): Promise<void> {
 		state.byScripthash.delete(scripthash);
 		state.baselinedScripthashes.delete(scripthash);
 		state.inFlight.delete(scripthash);
+		releaseSubscription(scripthash);
 		return;
 	}
 	if (state.inFlight.has(scripthash)) return;
@@ -1071,10 +1072,29 @@ function forgetWatchesFor(kind: WalletKind, walletId: number): number {
 			state.byScripthash.delete(scripthash);
 			state.baselinedScripthashes.delete(scripthash);
 			state.inFlight.delete(scripthash);
+			releaseSubscription(scripthash);
 			removed++;
 		}
 	}
 	return removed;
+}
+
+/**
+ * Release the Electrum-side subscription for a scripthash we've stopped watching
+ * (cairn-gakd Phase 2). Fire-and-forget: the local-state removal the callers
+ * just did is what actually stops notifications, so this only needs to drop the
+ * upstream sub off the primary's resubscribe replay set (and best-effort tell
+ * the server), which is what keeps reconnect cost proportional to the CURRENT
+ * watch set instead of cumulative wallet churn. Never throws into the caller;
+ * unsubscribeScripthash already swallows wire errors, and the catch is belt-and-
+ * braces for the no-client / mid-swap window.
+ */
+function releaseSubscription(scripthash: string): void {
+	const electrum = state.electrum;
+	if (!electrum) return;
+	void electrum
+		.unsubscribeScripthash(scripthash)
+		.catch((e) => log.debug({ err: e }, 'scripthash unsubscribe failed'));
 }
 
 /**
@@ -1144,6 +1164,7 @@ export async function refreshWatches(): Promise<void> {
 			state.byScripthash.delete(scripthash);
 			state.baselinedScripthashes.delete(scripthash);
 			state.inFlight.delete(scripthash);
+			releaseSubscription(scripthash);
 			pruned++;
 		}
 	}
