@@ -2,6 +2,7 @@
 	import { enhance } from '$app/forms';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import HeartwoodMark from '$lib/components/heartwood/HeartwoodMark.svelte';
+	import Banner from '$lib/components/Banner.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 
 	let { data, form } = $props();
@@ -71,7 +72,7 @@
 			};
 		}}>
 			{#if form?.error}
-				<div class="form-error" role="alert">{form.error}</div>
+				<Banner variant="error">{form.error}</Banner>
 			{/if}
 
 			<label class="accept">

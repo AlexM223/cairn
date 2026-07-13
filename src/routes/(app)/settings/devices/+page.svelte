@@ -2,6 +2,7 @@
 	import { enhance } from '$app/forms';
 	import { goto } from '$app/navigation';
 	import { timeAgo, expiresIn } from '$lib/format';
+	import Banner from '$lib/components/Banner.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
@@ -56,7 +57,7 @@
 	</p>
 
 	{#if form?.error}
-		<div class="form-error" role="alert">{form.error}</div>
+		<Banner variant="error">{form.error}</Banner>
 	{/if}
 
 	<section class="hw-section">
@@ -180,10 +181,6 @@
 		color: var(--text-secondary);
 		margin-top: 8px;
 		max-width: 560px;
-	}
-
-	.form-error {
-		margin-top: 14px;
 	}
 
 	.hw-section {

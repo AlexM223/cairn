@@ -2,6 +2,7 @@
 	import { goto, invalidateAll } from '$app/navigation';
 	import { timeAgo } from '$lib/format';
 	import type { ContactList, ContactSummary } from '$lib/server/contacts';
+	import Banner from '$lib/components/Banner.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
@@ -138,7 +139,7 @@
 		email — this is how you recognise each other, so only add people you know.
 	</p>
 
-	{#if error}<div class="form-error" role="alert">{error}</div>{/if}
+	{#if error}<Banner variant="error">{error}</Banner>{/if}
 
 	<section class="hw-section">
 		<h2 class="section-title">Add a contact</h2>
@@ -309,10 +310,6 @@
 		color: var(--text-secondary);
 		margin-top: 8px;
 		max-width: 560px;
-	}
-
-	.form-error {
-		margin-top: 14px;
 	}
 
 	.hw-section {
