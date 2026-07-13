@@ -2277,7 +2277,14 @@ from a backup file; both "Add a wallet" and "Restore from a backup" entry
 points land here. On viewports ≤900px the **Paste public key** method-cell
 is reordered first (CSS `order: -1`, scoped to the app's existing mobile
 breakpoint) since a keyless beginner on a phone can't plug in USB hardware;
-desktop keeps the original device-first card order unchanged. Uses `DevicePicker` for the flag-gated device grid,
+desktop keeps the original device-first card order unchanged. The Key step
+renders its own method cards from `./deviceMethods.ts` (`METHOD_CARDS` +
+`visibleMethodCards`), which gate each hardware tile on its `hw_*` flag (QR on
+`qr_scan`, paste never gated) exactly like `DevicePicker` — turning off e.g.
+`hw_trezor` in `/admin/feature-flags` hides Trezor here too (cairn-cl13); the
+`create` action also `requireFeature`-guards the submitted `deviceType` so a
+hand-crafted POST can't bypass a disabled flag. `DevicePicker` itself is used on
+the Finish step's "change signing device" sub-flow. Also uses
 `_components/deviceRead.ts` for the actual WebUSB/WebHID reads,
 `_components/coldcardImport.ts` for ColdCard file parsing,
 `_components/multisigDetect.ts` to catch a multisig config uploaded here and
