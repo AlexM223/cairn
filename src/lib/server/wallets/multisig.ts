@@ -561,6 +561,14 @@ export interface MultisigKeyComparison {
 	fingerprintMatch: boolean;
 	/** Extended keys agree after canonicalization (SLIP-132 aliases equal). */
 	xpubMatch: boolean;
+	/**
+	 * True when the STORED key never had a real fingerprint on record (the
+	 * '00000000' placeholder — a bare-xpub add with no [fingerprint/path]
+	 * origin) and the xpub still matched. Callers should treat this as a pass
+	 * (there was nothing real for the supplied fingerprint to disagree with),
+	 * distinct from a genuine fingerprintMatch.
+	 */
+	matchedWithoutFingerprint: boolean;
 }
 
 /**
@@ -569,6 +577,11 @@ export interface MultisigKeyComparison {
  * ("this device holds a different key"), while fingerprint-match with
  * xpub-mismatch usually means the right device read at a different account
  * path than the key was created with.
+ *
+ * A stored fingerprint still sitting at the '00000000' placeholder (never
+ * captured because the key was added as a bare xpub) never disagreed with
+ * anything real, so a differing supplied fingerprint doesn't fail the check
+ * on its own — see `matchedWithoutFingerprint`.
  */
 export function compareMultisigKey(
 	stored: Pick<MultisigKeyRow, 'xpub' | 'fingerprint'>,
@@ -576,8 +589,13 @@ export function compareMultisigKey(
 ): MultisigKeyComparison {
 	const canonStored = canonicalXpub(stored.xpub);
 	const canonReading = canonicalXpub(reading.xpub);
+	const fingerprintMatch =
+		stored.fingerprint.toLowerCase() === reading.fingerprint.trim().toLowerCase();
+	const xpubMatch = canonStored !== null && canonStored === canonReading;
+	const noStoredFingerprint = stored.fingerprint.toLowerCase() === '00000000';
 	return {
-		fingerprintMatch: stored.fingerprint.toLowerCase() === reading.fingerprint.trim().toLowerCase(),
-		xpubMatch: canonStored !== null && canonStored === canonReading
+		fingerprintMatch,
+		xpubMatch,
+		matchedWithoutFingerprint: noStoredFingerprint && xpubMatch && !fingerprintMatch
 	};
 }

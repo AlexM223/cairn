@@ -168,7 +168,7 @@ describe('compareMultisigKey (device re-read vs stored row)', () => {
 
 	it('matches when the device returns the stored key', () => {
 		expect(compareMultisigKey(stored, { xpub: stored.xpub, fingerprint: stored.fingerprint }))
-			.toEqual({ fingerprintMatch: true, xpubMatch: true });
+			.toEqual({ fingerprintMatch: true, xpubMatch: true, matchedWithoutFingerprint: false });
 	});
 
 	it('is case-insensitive on fingerprints and tolerant of whitespace', () => {
@@ -177,7 +177,7 @@ describe('compareMultisigKey (device re-read vs stored row)', () => {
 				xpub: ` ${stored.xpub} `,
 				fingerprint: ` ${stored.fingerprint.toUpperCase()} `
 			})
-		).toEqual({ fingerprintMatch: true, xpubMatch: true });
+		).toEqual({ fingerprintMatch: true, xpubMatch: true, matchedWithoutFingerprint: false });
 	});
 
 	it('a SLIP-132 Zpub alias of the stored xpub still matches (either side)', () => {
@@ -197,13 +197,13 @@ describe('compareMultisigKey (device re-read vs stored row)', () => {
 	it('a different seed fails both checks; same-fingerprint-different-account fails only xpub', () => {
 		const otherSeed = fixtureKey(2);
 		expect(compareMultisigKey(stored, { xpub: otherSeed.xpub, fingerprint: otherSeed.fingerprint }))
-			.toEqual({ fingerprintMatch: false, xpubMatch: false });
+			.toEqual({ fingerprintMatch: false, xpubMatch: false, matchedWithoutFingerprint: false });
 
 		// Same master (fingerprint matches), different account xpub.
 		const master = HDKey.fromMasterSeed(new Uint8Array(32).fill(1));
 		const otherAccount = master.derive("m/48'/0'/1'/2'").publicExtendedKey;
 		expect(compareMultisigKey(stored, { xpub: otherAccount, fingerprint: stored.fingerprint }))
-			.toEqual({ fingerprintMatch: true, xpubMatch: false });
+			.toEqual({ fingerprintMatch: true, xpubMatch: false, matchedWithoutFingerprint: false });
 	});
 
 	it('garbage xpubs never match (and never throw)', () => {
@@ -216,6 +216,36 @@ describe('compareMultisigKey (device re-read vs stored row)', () => {
 				{ xpub: 'not-a-key', fingerprint: stored.fingerprint }
 			).xpubMatch
 		).toBe(false);
+	});
+
+	// cairn-9p6z: a key added as a bare xpub (no [fingerprint/path] origin) is
+	// stored with the '00000000' placeholder fingerprint — there was never a
+	// real fingerprint to disagree with, so a differing supplied fingerprint
+	// must not fail the check on its own when the xpub genuinely matches.
+	describe('stored placeholder fingerprint (00000000) — bare-xpub add (cairn-9p6z)', () => {
+		const storedNoFp = { xpub: stored.xpub, fingerprint: '00000000' };
+
+		it('matching xpub verifies via matchedWithoutFingerprint, not a false fingerprint mismatch', () => {
+			expect(
+				compareMultisigKey(storedNoFp, { xpub: stored.xpub, fingerprint: stored.fingerprint })
+			).toEqual({ fingerprintMatch: false, xpubMatch: true, matchedWithoutFingerprint: true });
+		});
+
+		it('non-matching xpub is still a mismatch as before (no free pass on xpub)', () => {
+			const otherSeed = fixtureKey(2);
+			expect(
+				compareMultisigKey(storedNoFp, { xpub: otherSeed.xpub, fingerprint: otherSeed.fingerprint })
+			).toEqual({ fingerprintMatch: false, xpubMatch: false, matchedWithoutFingerprint: false });
+		});
+
+		it('is case-insensitive on the stored placeholder itself', () => {
+			expect(
+				compareMultisigKey(
+					{ xpub: stored.xpub, fingerprint: '00000000'.toUpperCase() },
+					{ xpub: stored.xpub, fingerprint: stored.fingerprint }
+				).matchedWithoutFingerprint
+			).toBe(true);
+		});
 	});
 });
 

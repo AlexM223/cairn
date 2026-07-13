@@ -41,7 +41,12 @@ const STORED = {
 describe('compareWizardKey (wizard client-side key-check compare)', () => {
 	it('matches when xpub and fingerprint are identical', () => {
 		const result = compareWizardKey(STORED, { xpub: STORED.xpub, fingerprint: STORED.fingerprint });
-		expect(result).toEqual({ fingerprintMatch: true, xpubMatch: true, verified: true });
+		expect(result).toEqual({
+			fingerprintMatch: true,
+			xpubMatch: true,
+			verified: true,
+			matchedWithoutFingerprint: false
+		});
 	});
 
 	it('fingerprint compare is case-insensitive and whitespace-tolerant', () => {
@@ -55,7 +60,12 @@ describe('compareWizardKey (wizard client-side key-check compare)', () => {
 
 	it('flags a fingerprint mismatch (wrong seed / passphrase signal)', () => {
 		const result = compareWizardKey(STORED, { xpub: STORED.xpub, fingerprint: 'deadbeef' });
-		expect(result).toEqual({ fingerprintMatch: false, xpubMatch: true, verified: false });
+		expect(result).toEqual({
+			fingerprintMatch: false,
+			xpubMatch: true,
+			verified: false,
+			matchedWithoutFingerprint: false
+		});
 	});
 
 	it('flags an xpub mismatch even when the fingerprint matches (non-standard-account case)', () => {
@@ -78,7 +88,58 @@ describe('compareWizardKey (wizard client-side key-check compare)', () => {
 		// differently should still be recognized as the very same key.
 		const zpubReading = encodeExtendedKey(ZPUB_MULTISIG_VERSION);
 		const result = compareWizardKey(STORED, { xpub: zpubReading, fingerprint: STORED.fingerprint });
-		expect(result).toEqual({ fingerprintMatch: true, xpubMatch: true, verified: true });
+		expect(result).toEqual({
+			fingerprintMatch: true,
+			xpubMatch: true,
+			verified: true,
+			matchedWithoutFingerprint: false
+		});
+	});
+
+	// cairn-9p6z: a key added as a bare xpub (no [fingerprint/path] origin) is
+	// stored with the '00000000' placeholder fingerprint (see normalizeKey in
+	// +page.server.ts). There was never a real fingerprint on record, so a
+	// differing supplied fingerprint must not raise the false "wrong seed" /
+	// passphrase-loss alarm when the xpub itself genuinely matches.
+	describe('stored placeholder fingerprint (00000000) — bare-xpub add', () => {
+		const STORED_NO_FP = { xpub: STORED.xpub, fingerprint: '00000000' };
+
+		it('a matching xpub with a real supplied fingerprint verifies (no false wrong-seed alarm)', () => {
+			const result = compareWizardKey(STORED_NO_FP, {
+				xpub: STORED.xpub,
+				fingerprint: 'a1b2c3d4'
+			});
+			expect(result).toEqual({
+				fingerprintMatch: false,
+				xpubMatch: true,
+				verified: true,
+				matchedWithoutFingerprint: true
+			});
+		});
+
+		it('a non-matching xpub is still reported as a mismatch (placeholder does not waive the xpub check)', () => {
+			const differentBody = new Uint8Array(78);
+			differentBody.set(encodeRaw(XPUB_VERSION, 4));
+			const result = compareWizardKey(STORED_NO_FP, {
+				xpub: b58check.encode(differentBody),
+				fingerprint: 'a1b2c3d4'
+			});
+			expect(result).toEqual({
+				fingerprintMatch: false,
+				xpubMatch: false,
+				verified: false,
+				matchedWithoutFingerprint: false
+			});
+		});
+
+		it('a normal stored fingerprint (not the placeholder) keeps prior mismatch behavior unchanged', () => {
+			// Regression guard: STORED (fingerprint 'A1B2C3D4', not '00000000')
+			// must still raise a genuine mismatch when a different fingerprint
+			// is supplied — the placeholder skip must not apply generally.
+			const result = compareWizardKey(STORED, { xpub: STORED.xpub, fingerprint: 'deadbeef' });
+			expect(result.verified).toBe(false);
+			expect(result.matchedWithoutFingerprint).toBe(false);
+		});
 	});
 });
 

@@ -12,7 +12,8 @@ import {
 	PASSPHRASE_CAUSE_BODY,
 	PASSPHRASE_LOSS_WARNING,
 	PASSPHRASE_NOT_RECOMMENDED,
-	PROACTIVE_PASSPHRASE_NOTE
+	PROACTIVE_PASSPHRASE_NOTE,
+	NO_FINGERPRINT_ON_RECORD_NOTE
 } from './keyCheckCopy';
 
 describe('key-check copy (MULTISIG-KEY-AUDIT-DESIGN §2)', () => {
@@ -44,6 +45,16 @@ describe('key-check copy (MULTISIG-KEY-AUDIT-DESIGN §2)', () => {
 		expect(PROACTIVE_PASSPHRASE_NOTE.toLowerCase()).toContain('lock yourself out');
 	});
 
+	// cairn-9p6z: the neutral note shown alongside a MATCH when the stored key
+	// had no fingerprint on record — must stay neutral (no "wrong"/"mismatch"/
+	// alarm language) and must not overlap the wrong-seed/passphrase copy.
+	it('the no-fingerprint-on-record note is neutral, not alarming, and mentions the missing fingerprint', () => {
+		expect(NO_FINGERPRINT_ON_RECORD_NOTE.toLowerCase()).toContain('fingerprint');
+		expect(NO_FINGERPRINT_ON_RECORD_NOTE.toLowerCase()).not.toContain('wrong');
+		expect(NO_FINGERPRINT_ON_RECORD_NOTE.toLowerCase()).not.toContain('mismatch');
+		expect(NO_FINGERPRINT_ON_RECORD_NOTE.toLowerCase()).not.toContain('lose access');
+	});
+
 	it('none of the copy strings are empty (a hollow constant would still "pass" a truthy check elsewhere)', () => {
 		for (const s of [
 			KEY_MATCH_HEADLINE,
@@ -53,7 +64,8 @@ describe('key-check copy (MULTISIG-KEY-AUDIT-DESIGN §2)', () => {
 			PASSPHRASE_CAUSE_BODY,
 			PASSPHRASE_LOSS_WARNING,
 			PASSPHRASE_NOT_RECOMMENDED,
-			PROACTIVE_PASSPHRASE_NOTE
+			PROACTIVE_PASSPHRASE_NOTE,
+			NO_FINGERPRINT_ON_RECORD_NOTE
 		]) {
 			expect(s.length).toBeGreaterThan(0);
 		}

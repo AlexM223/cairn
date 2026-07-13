@@ -13,6 +13,12 @@
 
 import { normalizeXpub } from '$lib/hw/common';
 
+/** Placeholder stored when a key was added as a bare xpub with no
+ *  [fingerprint/path] origin — there was never a real fingerprint to compare
+ *  against (see normalizeKey in ../+page.server.ts, and keyOrigin.ts's
+ *  normalizeFingerprint, which maps this same string to `null`). */
+const PLACEHOLDER_FINGERPRINT = '00000000';
+
 export interface WizardKeyCompareResult {
 	/** Master fingerprints agree (case-insensitive, whitespace-trimmed). */
 	fingerprintMatch: boolean;
@@ -20,6 +26,14 @@ export interface WizardKeyCompareResult {
 	xpubMatch: boolean;
 	/** Both agree — the re-derived/re-pasted key is the one this wizard slot holds. */
 	verified: boolean;
+	/**
+	 * True when `verified` only holds because the STORED key never had a real
+	 * fingerprint on record (the '00000000' placeholder) — the xpub matched,
+	 * but the fingerprint comparison was skipped rather than genuinely passed.
+	 * Lets the UI show a neutral "no fingerprint on record" note instead of
+	 * either a false "wrong seed" alarm or a full unqualified match.
+	 */
+	matchedWithoutFingerprint: boolean;
 }
 
 /**
@@ -27,6 +41,11 @@ export interface WizardKeyCompareResult {
  * already sitting in a wizard key slot. Mirrors compareMultisigKey's
  * fingerprint/xpub semantics (multisig.ts, server-side) exactly, so a key
  * verified here and again after creation behaves identically.
+ *
+ * When the stored key's fingerprint is still the '00000000' placeholder (a
+ * bare-xpub add that never captured an origin), a differing supplied
+ * fingerprint is NOT treated as a mismatch — there was nothing real to
+ * disagree with. The xpub match alone decides verification in that case.
  */
 export function compareWizardKey(
 	stored: { xpub: string; fingerprint: string },
@@ -35,5 +54,8 @@ export function compareWizardKey(
 	const fingerprintMatch =
 		stored.fingerprint.trim().toLowerCase() === reading.fingerprint.trim().toLowerCase();
 	const xpubMatch = normalizeXpub(stored.xpub.trim()) === normalizeXpub(reading.xpub.trim());
-	return { fingerprintMatch, xpubMatch, verified: fingerprintMatch && xpubMatch };
+	const noStoredFingerprint = stored.fingerprint.trim().toLowerCase() === PLACEHOLDER_FINGERPRINT;
+	const matchedWithoutFingerprint = noStoredFingerprint && xpubMatch && !fingerprintMatch;
+	const verified = xpubMatch && (fingerprintMatch || noStoredFingerprint);
+	return { fingerprintMatch, xpubMatch, verified, matchedWithoutFingerprint };
 }
