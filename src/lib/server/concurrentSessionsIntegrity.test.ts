@@ -96,7 +96,9 @@ describe('concurrent logins across MULTIPLE users at once — no cross-user cont
 		] as const;
 
 		const results = await Promise.all(
-			jobs.map(([userId, tag]) => Promise.resolve({ tag, userId, ...createSession(userId, { userAgent: tag }) }))
+			jobs.map(([userId, tag]) =>
+				Promise.resolve({ tag, userId, ...createSession(userId, { userAgent: tag, ip: '127.0.0.1' }) })
+			)
 		);
 
 		for (const r of results) {
@@ -126,8 +128,8 @@ describe('concurrent logins across MULTIPLE users at once — no cross-user cont
 
 	it('destroySession for one of user A\'s sessions racing a read of another of user A\'s sessions never corrupts or drops the untouched one', async () => {
 		const user = await makeUser('owner@example.com');
-		const keep = createSession(user.id, { userAgent: 'keep-me' });
-		const kill = createSession(user.id, { userAgent: 'kill-me' });
+		const keep = createSession(user.id, { userAgent: 'keep-me', ip: '127.0.0.1' });
+		const kill = createSession(user.id, { userAgent: 'kill-me', ip: '127.0.0.1' });
 
 		const [, keptUser] = await Promise.all([
 			Promise.resolve(destroySession(kill.token)),
@@ -149,7 +151,9 @@ describe('logout-one-leaves-others-valid, at higher fan-out than sessionEdges.te
 	it('destroying ONE of 10 concurrent sessions leaves the other 9 fully valid and independently destroyable', async () => {
 		const user = await makeUser('owner@example.com');
 		const sessions = await Promise.all(
-			Array.from({ length: 10 }, (_, i) => Promise.resolve(createSession(user.id, { userAgent: `c${i}` })))
+			Array.from({ length: 10 }, (_, i) =>
+				Promise.resolve(createSession(user.id, { userAgent: `c${i}`, ip: '127.0.0.1' }))
+			)
 		);
 
 		destroySession(sessions[3].token);

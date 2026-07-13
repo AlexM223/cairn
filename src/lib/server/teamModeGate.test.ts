@@ -17,13 +17,13 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { isHttpError } from '@sveltejs/kit';
-import type { RequestEvent } from '@sveltejs/kit';
 import { db } from './db';
 import { registerUser } from './auth';
 import { setSetting } from './settings';
 import { assertTeamMode, requireTeamMode } from './api';
 import { getViewableMultisig, getSignableMultisig } from './wallets/multisig';
 import { GET as sharesGET, POST as sharesPOST } from '../../routes/api/wallets/multisig/[id]/shares/+server';
+import type { RequestEvent as SharesRequestEvent } from '../../routes/api/wallets/multisig/[id]/shares/$types';
 
 function wipe(): void {
 	db.exec(
@@ -84,7 +84,7 @@ async function expectThrown(fn: () => unknown): Promise<unknown> {
 	return undefined;
 }
 
-function sharesEvent(user: { id: number } | null, msId: number, body?: unknown): RequestEvent {
+function sharesEvent(user: { id: number } | null, msId: number, body?: unknown): SharesRequestEvent {
 	const init: RequestInit = body === undefined ? {} : { method: 'POST', body: JSON.stringify(body) };
 	return {
 		request: new Request(`http://localhost/api/wallets/multisig/${msId}/shares`, init),
@@ -92,7 +92,7 @@ function sharesEvent(user: { id: number } | null, msId: number, body?: unknown):
 		params: { id: String(msId) },
 		locals: { user, flags: {} },
 		getClientAddress: () => '127.0.0.1'
-	} as unknown as RequestEvent;
+	} as unknown as SharesRequestEvent;
 }
 
 describe('assertTeamMode / requireTeamMode — boundary in isolation (cairn-8nk5)', () => {
