@@ -659,8 +659,12 @@
 			/>
 
 			<!-- ------------------------------------------- receive (spec 5c/8d) -->
-			{#if receive}
-				<section class="hw-section hw-receive" id="receive">
+			<!-- Always rendered (cairn-zke0) so the #receive anchor always has
+			     something to scroll to. When the wallet has never synced (or the
+			     node is unreachable on first load), `receive` is null — show a
+			     plain-language waiting state instead of leaving the panel blank. -->
+			<section class="hw-section hw-receive" id="receive">
+				{#if receive}
 					<div class="hw-receive-grid">
 						<div class="hw-qr-wrap">
 							<img
@@ -724,8 +728,16 @@
 							</p>
 						</div>
 					</div>
-				</section>
-			{/if}
+				{:else}
+					<div class="hw-receive-empty">
+						<h2 class="hw-receive-headline">Still connecting to your node</h2>
+						<p class="hw-caption">
+							We can't show your receive address until we reach your node. This usually clears up
+							in a few seconds — check back shortly, or use the refresh button above.
+						</p>
+					</div>
+				{/if}
+			</section>
 
 			<!-- ------------------------------------------- mining rewards -->
 			<!-- Coinbase (mining reward) UTXOs only — empty for a normal wallet, so
@@ -1740,6 +1752,17 @@
 		font-size: 12px;
 		line-height: 1.5;
 		color: var(--text-faint);
+	}
+
+	.hw-receive-empty {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		padding: 8px 0;
+	}
+
+	.hw-receive-empty .hw-receive-headline {
+		font-size: 18px;
 	}
 
 	@media (max-width: 860px) {
