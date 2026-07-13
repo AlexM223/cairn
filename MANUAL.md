@@ -1853,7 +1853,11 @@ compiler guarantee. 25 flags today: `send`, `multisig_create`,
 `wallet_config_export/import`, `explorer` (defaults on, but fresh installs
 get it toggled off as a newcomer-declutter default via
 `explorerDefaultMigration.ts` — NOT an admin restriction, hence its
-differently-worded `userMessage`); `hw_trezor/ledger/coldcard/bitbox02/jade`;
+differently-worded `userMessage`; every `/explorer/**` link app-wide —
+multisig detail, send-sent pages, activity feed, wallet detail — degrades to
+plain non-interactive text via `svelte:element` when the flag is off rather
+than a dead link; `cairn-o90e` closed the last two pages (activity, wallet
+detail) that still skipped this); `hw_trezor/ledger/coldcard/bitbox02/jade`;
 `notify_email/telegram/ntfy/nostr/webhook`; `announcement_banners`,
 `referral_links`; `batch_transactions`, `fee_bumping`, `tx_review`
 (upcoming/unbuilt features shipped flagged from day one).
@@ -2025,7 +2029,9 @@ routes.
 
 **`(app)` — main authenticated shell.** Layout: `src/routes/(app)/+layout.svelte`.
 Wraps every authenticated page with:
-- `HWRail` (desktop left rail nav) / `MobileTopBar` + `MobileTabRow` (mobile),
+- `HWRail` (desktop left rail nav — 92px wide, each icon carries a persistent
+  always-on text label underneath it, no hover-to-reveal) / `MobileTopBar` +
+  `MobileTabRow` (mobile),
   switching on `isTabRoute()` — tab pages are `/`, `/wallets`, `/vaults`,
   `/activity`, `/explorer/**`; everything else is a "flow" page and gets a
   `BackCircle` header instead (wallet/vault detail, send/sign wizards,
@@ -2062,7 +2068,7 @@ Pages under `(app)`:
 | `wallets/multisig/[id]/+page.svelte` | multisig vault detail |
 | `wallets/multisig/[id]/send/+page.svelte` | multisig send/co-sign flow |
 | `wallets/multisig/stateless/+page.svelte` | stateless (no-account) multisig PSBT signer |
-| `explorer/+page.svelte` | block explorer home |
+| `explorer/+page.svelte` | block explorer home — includes an "Up next" strip (up to 4 projected-block chips, fed by the same server-loaded `mempoolBlocks` snapshot, linking through to the full mempool treemap viz; hidden gracefully rather than erroring when the chain backend has no projection data) |
 | `explorer/address/[address]`, `explorer/block/[id]`, `explorer/tx/[txid]` | detail pages |
 | `explorer/mempool/+page.svelte`, `explorer/mempool/blocks/+page.svelte` | mempool visualizer |
 | `explorer/difficulty` | difficulty chart |
@@ -2092,7 +2098,13 @@ polling/fetch (e.g. `ChainHealthBanner` polls `/api/chain-health`,
 
 ### Svelte components (`src/lib/components`)
 
-Flat top-level components: `AnnouncementBanner`, `Banner` (persistent inline
+Flat top-level components: `Amount` (renders a BTC/sats value plus its live
+fiat equivalent from `$lib/price` wherever a price is available; used
+app-wide including the stateless multisig flow, single-sig send, explorer
+address history, and the wallet unconfirmed-incoming line — PSBT
+"verify against your device" panels, fee/change/input breakdown line items,
+and `BalanceChart` axis labels stay BTC/sats-only by design),
+`AnnouncementBanner`, `Banner` (persistent inline
 error/status banner — contrast with toasts below), `CopyText`,
 `CoreRpcRequiredNotice`, `DevicePicker` (grid of signing-device tiles, gated
 per-tile by feature flag, `file` is the ungated universal fallback — §9.7),
@@ -2185,7 +2197,10 @@ above (toast queue, and `page.data.flags`/`page.data.httpsPort` from
 Three steps: **Key → Verify → Finish** (collapsed from six). Key step: pick
 a source (Trezor/Ledger/ColdCard/BitBox02/Jade/Jade-QR/QR/paste) or restore
 from a backup file; both "Add a wallet" and "Restore from a backup" entry
-points land here. Uses `DevicePicker` for the flag-gated device grid,
+points land here. On viewports ≤900px the **Paste public key** method-cell
+is reordered first (CSS `order: -1`, scoped to the app's existing mobile
+breakpoint) since a keyless beginner on a phone can't plug in USB hardware;
+desktop keeps the original device-first card order unchanged. Uses `DevicePicker` for the flag-gated device grid,
 `_components/deviceRead.ts` for the actual WebUSB/WebHID reads,
 `_components/coldcardImport.ts` for ColdCard file parsing,
 `_components/multisigDetect.ts` to catch a multisig config uploaded here and
@@ -2210,7 +2225,12 @@ whether to even offer a resume prompt.
 **Multisig wizard** — `src/routes/(app)/wallets/multisig/new/+page.svelte`.
 Four resumable steps: **why → keys → review → confirm** (+ terminal `done`,
 never saved). Presets `2of3`/`3of5`/`custom`; vault mode
-`collaborative`/`personal`. Resume seam mirrors the single-sig one:
+`collaborative`/`personal`. The keys step's derivation-path caption (e.g.
+`m/45'` / personal path) is editable in place via an inline
+**Personal/Shared** toggle rather than the old "Change" link, which reset
+`vaultMode` to null and dropped the user all the way back to the
+personal-vs-collaborative onboarding question — reading as a wizard restart
+for what should be a one-field edit (`cairn-8nmr`). Resume seam mirrors the single-sig one:
 `_components/wizardProgress.ts`, storage key `cairn.multisig-wizard.v1`,
 same 1-hour max age and null-on-malformed contract — **but this is a
 genuinely different file with the same exported names** (see §15). Higher
@@ -2258,6 +2278,15 @@ import path resolves to the route-local one). Multisig send flow
 (`wallets/multisig/[id]/send/+page.svelte`) is the structural counterpart,
 using `MultisigFileSigner` instead of the per-hardware-device components
 since multisig co-signing here is file/PSBT-based.
+
+The Create step's amount field (`AmountEntry.svelte`, shared by both the
+single-sig and multisig send flows) is a labelled pill that cycles
+BTC → sats → USD → BTC via a swap-horizontal glyph on `Icon` — deliberately
+not the circular refresh-arrow glyph it replaced, which phone testing showed
+users read as "reload" rather than "switch currency" (`cairn-id5o`). Sats
+display as an integer with thousands separators. Cycling only re-renders the
+input text from the existing canonical value; the amount is always stored in
+sats, so switching the displayed unit never recomputes it and can't drift.
 
 ### `safeAction` in the client (§8 has the full server-facing contract)
 
@@ -2308,7 +2337,15 @@ the secure origin (session cookies ignore port, so auth carries over);
 failure ⇒ stay put, `SecureContextHelp` keeps guiding the first-time flow.
 Escape hatch: `?insecure=1` sets `cairn.secure-redirect.off` in
 sessionStorage to suppress the auto-hop for the rest of the tab's session.
-Called from the `(app)` layout's `onMount`, never during SSR.
+Called from both the `(app)` and `(auth)` layouts' `onMount`, never during
+SSR. The `(auth)` layout wraps the `location` it passes in with a local
+interaction veto: the probe can take up to 2.5s, long enough for someone to
+have already started filling in login/signup by the time it resolves, so a
+window-level capture-phase `pointerdown` listener (registered at mount,
+alongside the existing focusin/input tracking on the auth column) marks the
+page "interacted" and the wrapped `replace()` becomes a no-op — preventing
+the hop from tearing the page down mid-signup and silently orphaning an
+in-flight submit, a "dead button" with no visible cause (`cairn-hmi4`).
 
 ### UX philosophy in practice
 
@@ -2362,7 +2399,7 @@ Theming is CSS custom properties on `:root`, **dark-only**
 | Text | `--text`, `--text-hero`, `--text-rows`, `--text-secondary`, `--text-muted`, `--text-faint` | `--text-faint` is **explicitly documented as failing AA contrast by design** — decorative/disabled only, never informative copy |
 | Breadcrumb | `--eyebrow`/`--eyebrow-path` | used by `EyebrowBreadcrumb` |
 | Accent | `--accent` (#e8935a family: hover/pressed/bright/glow/glow-strong/core), `--accent-dim`/`--accent-dim-2`, `--accent-muted`, `--accent-border`/`--accent-border-strong`, `--on-accent`/`--on-accent-ghost` | copper |
-| Status | `--sage` (success/received/connected/valid), `--attention` (warm tan — nudges AND form validation), `--error`/`--danger` (red, #e0604c) | "never red for routine states"; red is reserved for irrecoverable failures only — an explicitly-called-out "off-spec extension: Heartwood has no red" otherwise |
+| Status | `--sage` (success/received/connected/valid), `--attention` (warm tan — nudges AND form validation), `--caution`/`--caution-muted`/`--caution-border` (burnt-orange, #dd7a52 — sits between `--attention` and `--error`; backs the multisig quorum-risk panel's salmon "Loose" tier so it reads as its own tier distinct from the red "Risky" one, not just a bolder border on the same red), `--error`/`--danger` (red, #e0604c) | "never red for routine states"; red is reserved for irrecoverable failures only — an explicitly-called-out "off-spec extension: Heartwood has no red" otherwise |
 | Typography | `--font-ui` (Inter), `--font-serif` (Source Serif 4, used for `.hero-number`), `--font-mono` | the "serif numerals" branding element |
 | Radii | `--radius-pill` (26px), `--radius-toggle`, `--radius-status-pill`, `--radius-icon-btn`, `--radius-badge`, `--radius-strip` | pill-first; legacy `--radius-card`/`--radius-control`/`--radius-chip` kept as literal fallbacks for unreskinned components |
 | Motion | `hwPulse`, `hwBlink`, `hwSweepOnce`, `hwGrow`, `hwShimmer`, `hwSpin`, `hwBreathe` | raw `@keyframes` primitives; components set their own duration/timing at the call site; all neutralized under `@media (prefers-reduced-motion: reduce)` |
@@ -4048,6 +4085,9 @@ backups, clear house-standard errors, **never red for routine states**, working 
 5. On the wallet detail page, get a receive address (`POST /api/wallets/{id}/receive`).
    - ✅ Plain-language receive UI; the address is copyable (`CopyText`).
    - ✅ No exposed internals beyond the address/QR the user actually needs.
+   - ✅ The receive section always renders, even before first sync or while the node is
+     unreachable — it shows a plain-language "Still connecting to your node" waiting state
+     instead of going blank (the `#receive` anchor is never missing).
 6. Send funds in (real sats on mainnet, or 16.5 on regtest).
    - ✅ A `tx_received` then `tx_confirmed` notification arrives with a **working deep link**
      to the wallet/tx (broken deep links were a prior P1 — verify the link navigates
