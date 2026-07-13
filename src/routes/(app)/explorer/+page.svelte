@@ -11,6 +11,7 @@
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
 	import ChainStrip from '$lib/components/heartwood/ChainStrip.svelte';
 	import RingStub from '$lib/components/heartwood/RingStub.svelte';
+	import NodeTrustChip from '$lib/components/heartwood/NodeTrustChip.svelte';
 	import { formatNumber, formatBytes, formatFeeRate, timeAgo, truncateMiddle } from '$lib/format';
 	import type { SearchResult } from '$lib/types';
 
@@ -444,6 +445,7 @@
 
 		<!-- ============================================================ hero -->
 		<header class="hero fade-in">
+			<NodeTrustChip trust={data.nodeTrust} />
 			<div class="hero-row">
 				{#if tipHeight !== null}
 					<span class="hero-number hero-height">{formatNumber(tipHeight)}</span>

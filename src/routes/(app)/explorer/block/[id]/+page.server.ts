@@ -3,6 +3,7 @@ import { getChain } from '$lib/server/chain';
 import { coreRpcConfigured } from '$lib/server/settings';
 import { isNotFoundError, chainErrorMessage } from '$lib/server/search';
 import { getEpochStrip } from '$lib/server/chainEpochs';
+import { gatherNodeTrust } from '$lib/server/chain/nodeTrust';
 import type { PageServerLoad } from './$types';
 import type { BlockDetail, TxDetail } from '$lib/types';
 
@@ -88,6 +89,8 @@ export const load: PageServerLoad = async ({ params, url, locals }) => {
 		// honest CoreRpcRequiredNotice instead of a bare error (cairn-zoz8.10).
 		coreRpcConfigured: coreRpcConfigured(),
 		isAdmin: locals?.user?.isAdmin ?? false,
+		// NodeTrust provenance chip (cairn-6efi.3): cached-only, no chain call.
+		nodeTrust: gatherNodeTrust(),
 		// Streamed, not awaited (cairn-2zxt.3).
 		chain: loadBlockData(id, isHeight, txPage),
 		// Locator-strip dataset (cairn-koy4.7): streamed, cached hard after the

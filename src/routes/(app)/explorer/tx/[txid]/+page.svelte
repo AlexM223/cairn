@@ -7,6 +7,7 @@
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
+	import NodeTrustChip from '$lib/components/heartwood/NodeTrustChip.svelte';
 	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
 	import CoreRpcRequiredNotice from '$lib/components/CoreRpcRequiredNotice.svelte';
 	import { feeOutlook } from '$lib/bitcoin';
@@ -170,6 +171,7 @@
 		{:else if tx}
 		<header class="head fade-in">
 			<EyebrowBreadcrumb path={['Explorer']} current="Transaction" />
+			<NodeTrustChip trust={data.nodeTrust} />
 			<h1 class="txid mono"><CopyText value={tx.txid} truncate={18} /></h1>
 		</header>
 

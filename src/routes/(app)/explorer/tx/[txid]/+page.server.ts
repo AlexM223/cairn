@@ -3,6 +3,7 @@ import { getChain } from '$lib/server/chain';
 import { coreRpcConfigured } from '$lib/server/settings';
 import { isNotFoundError, chainErrorMessage } from '$lib/server/search';
 import { readTxSnapshot, writeTxSnapshot, refreshTxSnapshot } from '$lib/server/txSnapshot';
+import { gatherNodeTrust } from '$lib/server/chain/nodeTrust';
 import { txOwnership } from '../../ownership.server';
 import type { PageServerLoad } from './$types';
 import type { CpfpInfo, FeeEstimates, RbfInfo, TxDetail } from '$lib/types';
@@ -91,7 +92,12 @@ export const load: PageServerLoad = async ({ params, url, depends, locals }) => 
 	// Full tx detail comes from the operator's own Bitcoin Core node; when it isn't
 	// configured the page renders the honest CoreRpcRequiredNotice instead of a bare
 	// 502/not-found (cairn-zoz8.11). Threaded onto every return via `base`.
-	const base = { coreRpcConfigured: coreRpcConfigured(), isAdmin: locals?.user?.isAdmin ?? false };
+	const base = {
+		coreRpcConfigured: coreRpcConfigured(),
+		isAdmin: locals?.user?.isAdmin ?? false,
+		// NodeTrust provenance chip (cairn-6efi.3): cached-only, no chain call.
+		nodeTrust: gatherNodeTrust()
+	};
 
 	// Explains the hop when the visitor arrived via a replaced-tx redirect.
 	const replacedFromRaw = url.searchParams.get('replaced');
