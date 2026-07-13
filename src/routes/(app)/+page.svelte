@@ -433,7 +433,7 @@
 						{#if data.flags?.explorer !== false}
 							<div class="next-block">
 								<div class="nb-head">
-									<span class="nb-label">Next block</span>
+									<span class="nb-label">Latest block</span>
 									{#if chain !== null && chain.tipHeight !== null}
 										<a href="/explorer/block/{chain.tipHeight}" class="nb-tip tabular">
 											{formatNumber(chain.tipHeight)} · {timeAgo(chain.tipTime)}
