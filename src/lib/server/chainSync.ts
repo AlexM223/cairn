@@ -81,6 +81,12 @@ async function doRefresh(current: ChainSnapshotRow | null): Promise<ChainSnapsho
 		const histPromise = chain.getFeeHistogram().catch(() => null);
 		const [blocks, mempoolSummary, fees, tip, mempoolBlocks, feeHistogram, mempoolTrend] =
 			await Promise.all([
+				// Core-enriched when Core RPC is configured (getblockstats per block).
+				// Those aggregates are immutable-cached by hash (chain/cache.ts), so
+				// steady-state refreshes only fetch stats for the newly-arrived tip
+				// block — the other ~14 rows are cache hits. The enriched rows persist
+				// verbatim in the snapshot's JSON blob below; the widened number|null
+				// fields need no DB schema change (cairn-6efi.1, U4).
 				chain.getRecentBlocks(SNAPSHOT_BLOCKS),
 				chain.getMempoolSummary().catch(() => null),
 				chain.getFeeEstimates().catch(() => null),

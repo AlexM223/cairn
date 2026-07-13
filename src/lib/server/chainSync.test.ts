@@ -43,11 +43,15 @@ const BLOCKS = [
 		height: 800_000,
 		hash: 'b'.repeat(64),
 		time: 1_700_000_000,
-		txCount: 2,
-		size: 1000,
-		weight: 4000,
-		medianFee: null,
-		feeRange: null
+		// Core-enriched widened shape (cairn-6efi.1): stats present, plus the new
+		// total_out + fullness row-model fields.
+		txCount: 2_500,
+		size: 1_312_000,
+		weight: 3_993_000,
+		medianFee: 12,
+		feeRange: [1, 220],
+		total_out: 1_234_567_890,
+		fullness: 3_993_000 / 4_000_000
 	}
 ];
 
@@ -201,5 +205,48 @@ describe('refreshChainSnapshot — fee histogram fetched once (cairn-6efi.1, U3)
 		expect(h.chain.getMempoolBlocks).toHaveBeenCalledWith(HIST);
 		// …and persisted as the snapshot's own histogram field.
 		expect(readChainSnapshot()!.data.feeHistogram).toEqual(HIST);
+	});
+});
+
+describe('refreshChainSnapshot — enriched blocks persist verbatim (cairn-6efi.1, U4)', () => {
+	it('round-trips Core-enriched block rows (incl. total_out + fullness) through the JSON blob', async () => {
+		await refreshChainSnapshot();
+		const row = readChainSnapshot()!;
+		expect(row.data.blocks).toHaveLength(1);
+		// The widened number|null fields survive the JSON blob with no schema change.
+		expect(row.data.blocks[0]).toMatchObject({
+			txCount: 2_500,
+			size: 1_312_000,
+			weight: 3_993_000,
+			medianFee: 12,
+			feeRange: [1, 220],
+			total_out: 1_234_567_890,
+			fullness: 3_993_000 / 4_000_000
+		});
+	});
+
+	it('persists a null baseline (Electrum-only) without coercing to 0', async () => {
+		h.state.recent = async () => [
+			{
+				height: 800_001,
+				hash: 'c'.repeat(64),
+				time: 1_700_000_100,
+				txCount: null,
+				size: null,
+				weight: null,
+				medianFee: null,
+				feeRange: null,
+				total_out: null,
+				fullness: null
+			}
+		];
+		await refreshChainSnapshot({ force: true });
+		expect(readChainSnapshot()!.data.blocks[0]).toMatchObject({
+			txCount: null,
+			size: null,
+			weight: null,
+			total_out: null,
+			fullness: null
+		});
 	});
 });
