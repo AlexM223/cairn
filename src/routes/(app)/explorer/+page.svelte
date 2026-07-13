@@ -547,7 +547,7 @@
 		<section class="rings">
 			<div class="rings-head fade-in">
 				<span class="rings-title">
-					{data.before !== null ? `Rings below ${formatNumber(data.before)}` : 'Latest rings'}
+					{data.before !== null ? `Blocks below ${formatNumber(data.before)}` : 'Latest blocks'}
 				</span>
 				<a href="/explorer/mempool" class="mempool-link">Mempool →</a>
 			</div>
@@ -566,7 +566,7 @@
 				</div>
 			{:else if blocks.length === 0}
 				<div class="empty-state">
-					<span class="empty-title">No rings to show</span>
+					<span class="empty-title">No blocks to show</span>
 					<span>
 						<!-- showError already covers both this (tip-view, never-synced)
 						     and the paged-history live-fetch failure — reusing it here
@@ -625,7 +625,7 @@
 					{/if}
 					{#if olderUrl && blocks.length > 0}
 						<a href={olderUrl} class="btn btn-secondary btn-sm">
-							Older rings <Icon name="chevron-right" size={14} />
+							Load older blocks <Icon name="chevron-right" size={14} />
 						</a>
 					{/if}
 				</div>
@@ -653,14 +653,21 @@
 		<div class="explain">
 			<HowItWorks id="explorer">
 				<p>
-					<strong>The blockchain is a public ledger anyone can inspect</strong> — this explorer is
-					your window into it. Every ~10 minutes a new block of transactions is added; the list
-					above shows the newest ones. Click anything: blocks contain transactions, transactions
-					move coins between addresses, and every hop is a link.
+					<strong>The blockchain is a public ledger anyone can inspect</strong>, and this explorer
+					is your window into it. Every ~10 minutes miners seal a new block of transactions onto the
+					end of the chain — like a tree adding a growth ring, each one is permanent and never
+					removed. The list above shows the newest blocks first, fading back into the deep history
+					below.
 				</p>
 				<p>
-					The search box understands block heights (800000), block hashes, transaction IDs, and
-					addresses — paste anything and Heartwood works out what it is.
+					Heartwood reads all of this from a Bitcoin node rather than a third-party website. When it
+					runs on <strong>your own node, that node keeps a full copy</strong> of the entire chain, so
+					every figure here is checked locally instead of taken on trust. Click anything — blocks
+					hold transactions, transactions move coins between addresses, and every hop is a link.
+				</p>
+				<p>
+					The search box understands block heights (like 800000), block hashes, transaction IDs, and
+					addresses — paste any of them and Heartwood works out what it is.
 				</p>
 			</HowItWorks>
 		</div>
