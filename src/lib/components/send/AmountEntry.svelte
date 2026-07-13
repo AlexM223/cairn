@@ -36,31 +36,50 @@
 	// which also hides the swap and makes the secondary line show sats.
 	const price = $derived(compact ? null : $btcUsd);
 
-	let entryUnit = $state<'fiat' | 'btc'>('btc');
+	// Three-way denomination cycle: BTC -> sats -> USD -> BTC. `sats` (the
+	// bound prop) is always the canonical amount; entryUnit only changes how
+	// `text` is rendered/parsed. Cycling never recomputes `sats` from `text` —
+	// it re-renders `text` FROM the existing `sats`, so no precision drift.
+	let entryUnit = $state<'btc' | 'sats' | 'fiat'>('btc');
 	let text = $state('');
 	// The sats value the current `text` represents — lets the reseed effect tell
 	// an external sats change apart from our own keystroke-driven write.
 	let lastSats = -1;
 	let userTouched = false;
 
-	function textToSats(t: string, unit: 'fiat' | 'btc', p: number | null): number {
-		const n = Number(t);
+	function textToSats(t: string, unit: 'btc' | 'sats' | 'fiat', p: number | null): number {
+		const n = Number(t.replace(/,/g, ''));
 		if (!Number.isFinite(n) || n <= 0) return 0;
 		if (unit === 'fiat') {
 			if (p == null || p <= 0) return 0;
 			return Math.round((n / p) * SATS_PER_BTC);
 		}
+		if (unit === 'sats') return Math.round(n);
 		return Math.round(n * SATS_PER_BTC);
 	}
 
-	function satsToText(s: number, unit: 'fiat' | 'btc', p: number | null): string {
+	function satsToText(s: number, unit: 'btc' | 'sats' | 'fiat', p: number | null): string {
 		if (s <= 0) return '';
 		if (unit === 'fiat') {
 			if (p == null || p <= 0) return '';
 			return ((s / SATS_PER_BTC) * p).toFixed(2);
 		}
+		if (unit === 'sats') return formatSats(s);
 		return formatBtc(s, { trim: true });
 	}
+
+	// Cycle order skips fiat entirely when no price is known (nothing to
+	// convert against), so BTC<->sats keeps working offline.
+	function nextUnit(u: 'btc' | 'sats' | 'fiat', hasPrice: boolean): 'btc' | 'sats' | 'fiat' {
+		const cycle: Array<'btc' | 'sats' | 'fiat'> = hasPrice
+			? ['btc', 'sats', 'fiat']
+			: ['btc', 'sats'];
+		const i = cycle.indexOf(u);
+		return cycle[(i + 1) % cycle.length];
+	}
+
+	const unitLabel = (u: 'btc' | 'sats' | 'fiat') =>
+		u === 'btc' ? 'BTC' : u === 'sats' ? 'sats' : 'USD';
 
 	// Reseed the text from an EXTERNAL sats change (resume seed, scanned amount,
 	// consolidation clears it to 0). Our own keystrokes set lastSats first, so
@@ -93,27 +112,43 @@
 
 	function handleInput() {
 		userTouched = true;
+		if (entryUnit === 'sats') {
+			// Integers only, live thousands-separator formatting (e.g. "1,860").
+			const digits = text.replace(/[^\d]/g, '');
+			const n = digits === '' ? 0 : parseInt(digits, 10);
+			text = n > 0 ? formatSats(n) : '';
+			lastSats = n;
+			sats = n;
+			return;
+		}
 		const s = textToSats(text, entryUnit, price);
 		lastSats = s;
 		sats = s;
 	}
 
-	function swap() {
-		if (price == null) return;
+	// Cycles the DISPLAY denomination only — re-renders `text` from the
+	// existing canonical `sats`, never recomputes `sats` itself, so cycling
+	// through BTC -> sats -> USD -> BTC never drifts the amount.
+	function cycleUnit() {
 		userTouched = true;
-		entryUnit = entryUnit === 'fiat' ? 'btc' : 'fiat';
+		entryUnit = nextUnit(entryUnit, price != null);
 		text = satsToText(sats, entryUnit, price);
 		lastSats = sats;
 	}
 
 	const overBalance = $derived(spendableSats != null && sats > spendableSats);
 
-	// The live secondary line under the number: the OTHER currency when a price
-	// is known, else the sats value (as the pre-fiat page showed).
+	// The live secondary line under the number always keeps a fiat (and, in
+	// sats mode, a BTC) equivalent visible so the other denominations never
+	// disappear just because you're typing in one of them.
 	const secondaryLine = $derived.by(() => {
-		if (price == null) return `${formatSats(sats)} sats`;
+		if (price == null) {
+			return entryUnit === 'sats' ? `${formatBtc(sats)} BTC` : `${formatSats(sats)} sats`;
+		}
+		const fiatText = formatFiat((sats / SATS_PER_BTC) * price);
+		if (entryUnit === 'sats') return `≈ ${formatBtc(sats)} BTC · ${fiatText}`;
 		if (entryUnit === 'fiat') return `≈ ${formatBtc(sats)} BTC`;
-		return `≈ ${formatFiat((sats / SATS_PER_BTC) * price)}`;
+		return `≈ ${fiatText}`;
 	});
 </script>
 
@@ -142,27 +177,28 @@
 			<!-- svelte-ignore a11y_autofocus -->
 			<input
 				class="hero-input"
-				inputmode="decimal"
-				placeholder={entryUnit === 'fiat' ? '0.00' : '0.00000000'}
+				inputmode={entryUnit === 'sats' ? 'numeric' : 'decimal'}
+				placeholder={entryUnit === 'fiat' ? '0.00' : entryUnit === 'sats' ? '0' : '0.00000000'}
 				bind:value={text}
 				oninput={handleInput}
 				{autofocus}
-				aria-label={ariaLabel ?? `Amount in ${entryUnit === 'fiat' ? 'dollars' : 'BTC'}`}
+				aria-label={ariaLabel ??
+					`Amount in ${entryUnit === 'fiat' ? 'dollars' : entryUnit === 'sats' ? 'satoshis' : 'BTC'}`}
 				aria-invalid={overBalance}
 				style:width="{Math.max(4, (text || '0.00').length + 0.5)}ch"
 			/>
 			{#if entryUnit === 'btc'}<span class="hero-unit">BTC</span>{/if}
-			{#if price != null}
-				<button
-					type="button"
-					class="unit-swap"
-					onclick={swap}
-					aria-label="Switch entry currency"
-					title="Switch entry currency"
-				>
-					<Icon name="refresh" size={14} />
-				</button>
-			{/if}
+			{#if entryUnit === 'sats'}<span class="hero-unit">sats</span>{/if}
+			<button
+				type="button"
+				class="unit-cycle"
+				onclick={cycleUnit}
+				aria-label="Change amount unit"
+				title="Change amount unit"
+			>
+				<Icon name="swap-horizontal" size={13} />
+				<span class="unit-cycle-label">{unitLabel(nextUnit(entryUnit, price != null))}</span>
+			</button>
 		</div>
 
 		{#if overBalance}
@@ -231,27 +267,35 @@
 		margin-right: -6px;
 	}
 
-	.unit-swap {
+	.unit-cycle {
 		align-self: center;
 		display: flex;
 		align-items: center;
-		justify-content: center;
-		width: 34px;
-		height: 34px;
+		gap: 5px;
 		flex-shrink: 0;
+		height: 30px;
+		padding: 0 10px 0 8px;
 		border: 1px solid var(--border-control);
-		border-radius: 50%;
+		border-radius: 15px;
 		background: transparent;
 		color: var(--text-secondary);
+		font-family: var(--font-ui);
+		font-size: 12px;
+		font-weight: 600;
+		letter-spacing: 0.02em;
 		cursor: pointer;
 		transition:
 			color 120ms var(--ease),
 			border-color 120ms var(--ease);
 	}
 
-	.unit-swap:hover {
+	.unit-cycle:hover {
 		color: var(--accent);
 		border-color: var(--border-ghost);
+	}
+
+	.unit-cycle-label {
+		white-space: nowrap;
 	}
 
 	.hero-sub {

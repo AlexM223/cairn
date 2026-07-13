@@ -24,6 +24,7 @@
 		'arrow-down-left': 'M17 7 7 17m0 0h8m-8 0V9',
 		'arrow-up-right': 'M7 17 17 7m0 0H9m8 0v8',
 		refresh: 'M21 12a9 9 0 1 1-2.6-6.3L21 8m0-5v5h-5',
+		'swap-horizontal': 'M8 3 4 7l4 4M4 7h16m0 10-4 4M4 17h16',
 		clock: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zm0-14v6l4 2',
 		zap: 'M13 2 3 14h7l-1 8 12-14h-8l0-6z',
 		users:
