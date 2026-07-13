@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
-	import { tick } from 'svelte';
 	import { formatNumber } from '$lib/format';
 
 	let { data, form } = $props();
@@ -20,10 +19,10 @@
 	const UMBREL_CORE_RPC_URL = 'http://10.21.21.8:8332';
 	const UMBREL_CORE_RPC_USER = 'umbrel';
 
-	// The Core RPC url/user inputs need to be programmatically pre-fillable (the
-	// "Connect it" button below), so — unlike the other custom-fields inputs —
-	// they're bound to local state seeded from the load, instead of a plain
-	// value={...} read.
+	// The manual Core RPC url/user inputs (custom-mode subgroup, further down)
+	// are bound to local state seeded from the load rather than a plain
+	// value={...} read, purely so they can be re-populated after a submission
+	// without a full reload.
 	// svelte-ignore state_referenced_locally
 	let coreRpcUrlField = $state(data.settings.coreRpcUrl ?? '');
 	// svelte-ignore state_referenced_locally
@@ -36,33 +35,16 @@
 	// mode-independent (design §4).
 	const coreRpcIsConfigured = $derived(!!data.settings.coreRpcUrl);
 
-	/**
-	 * Pre-fill the existing Core RPC fields with the hardcoded Umbrel constants
-	 * and reveal them (switching the mode radio to Custom, since the Core RPC
-	 * subgroup only renders inside the `connectionMode === 'custom'` block).
-	 * Does NOT submit anything — the admin still pastes the password and clicks
-	 * the existing Test connection / Save settings buttons.
-	 *
-	 * KNOWN LIMITATION (documented here, not user-facing): saving core_rpc_* in
-	 * `public` connection mode is currently broken — the admin-settings save
-	 * action only persists core_rpc_url/user/pass inside the
-	 * `connectionMode === 'custom'` block (+page.server.ts, outside this
-	 * session's edit boundary), even though Core RPC is mode-independent. Filed
-	 * as cairn-6uok (Unit B2, not yet built). Switching the radio to 'custom'
-	 * here works around it for the common Umbrel path: Wave A's Electrum probe
-	 * has typically already flipped connection_mode to 'custom' by the time
-	 * Core is also detected, so the save actually persists. If an operator
-	 * somehow reaches this card while still on 'public' mode with Wave A not
-	 * having flipped it, the save will silently no-op the Core fields until
-	 * cairn-6uok lands — that's the one gap this card can't close from the
-	 * client side alone.
-	 */
-	function useDetectedCoreNode() {
-		connectionMode = 'custom';
-		coreRpcUrlField = UMBREL_CORE_RPC_URL;
-		coreRpcUserField = UMBREL_CORE_RPC_USER;
-		tick().then(() => coreRpcPassEl?.focus());
-	}
+	// Umbrel Wave B assisted-connect (cairn-6uok follow-up cairn-3p9z). The
+	// card below posts straight to `?/save` (guarded by the shared `saving`
+	// state, same as the main "Save settings" button) with a
+	// `coreRpcAssisted=umbrel` hidden marker — the server validates with
+	// testCoreRpc() before persisting and never touches connection_mode, so
+	// (unlike the old useDetectedCoreNode() workaround this replaces) it works
+	// correctly regardless of which mode the operator is currently on and
+	// never force-flips the radio. Local field for the password only — the
+	// URL/user are the hardcoded constants above, never user-edited here.
+	let assistedCoreRpcPass = $state('');
 
 	type TestResult = { ok: boolean; tipHeight?: number; error?: string } | null;
 	type CoreRpcTestResult = { ok: boolean; blockHeight?: number; chain?: string; error?: string } | null;
@@ -117,6 +99,7 @@
 </svelte:head>
 
 <form
+	id="settings-form"
 	method="POST"
 	action="?/save"
 	class="stack settings-form fade-in"
@@ -242,8 +225,8 @@
 		{/if}
 
 		<!-- Core RPC provenance, once an assisted or env connect has actually
-		     completed (Unit B2, not yet built — core_rpc_provisioned_by is never
-		     written today, but this renders correctly the moment it lands). -->
+		     completed (cairn-6uok: core_rpc_provisioned_by is now stamped
+		     'umbrel-detect' by the assisted-connect card's submit below). -->
 		{#if coreRpcIsConfigured && (data.settings.coreRpcProvisionedBy === 'umbrel-env' || data.settings.coreRpcProvisionedBy === 'umbrel-detect')}
 			<div class="provenance-card fade-in" role="status">
 				<span class="provenance-dot"></span>
@@ -258,26 +241,71 @@
 			</div>
 		{/if}
 
-		<!-- Core RPC assisted-connect (cairn-ylz5 Unit B3): Bitcoin Core was found
-		     on the Umbrel network but isn't wired up yet. Pre-fills the existing
-		     Core RPC fields; never auto-submits. -->
+		<!-- Core RPC assisted-connect (cairn-ylz5 Unit B3, cairn-6uok follow-up
+		     cairn-3p9z): Bitcoin Core was found on the Umbrel network but isn't
+		     wired up yet. Posts directly to `?/save` with the coreRpcAssisted
+		     marker — mode-independent (works whether connectionMode is public or
+		     custom, and never flips it), validated server-side with testCoreRpc()
+		     before anything is persisted (design doc §9 state 3). Dismiss posts
+		     to `?/dismissCoreDetection`, which writes core_rpc_detected='dismissed'
+		     (design doc §8's stale-marker mitigation) so the card stops rendering
+		     without connecting anything. -->
 		{#if data.settings.coreRpcDetected === 'umbrel' && !coreRpcIsConfigured}
 			<div class="provenance-card core-detect fade-in" role="status">
 				<span class="provenance-dot detect"></span>
 				<div class="provenance-text">
 					<span class="provenance-title">Bitcoin Core detected on your Umbrel</span>
 					<span class="provenance-sub">
-						Connect it for full block and transaction details in the explorer.
-						{#if connectionMode === 'custom'}
-							The RPC address and username below are already filled in — paste the RPC
-							password (copy it from your Umbrel Bitcoin app's Connect screen), then use
-							Test connection or Save settings below.
-						{/if}
+						Connect it for full block and transaction details in the explorer. Paste the
+						RPC password (copy it from your Umbrel Bitcoin app's Connect screen) below —
+						the address and username are already filled in.
 					</span>
+					<input type="hidden" name="coreRpcAssisted" value="umbrel" form="settings-form" />
+					<input
+						type="hidden"
+						name="coreRpcUrl"
+						value={UMBREL_CORE_RPC_URL}
+						form="settings-form"
+					/>
+					<input
+						type="hidden"
+						name="coreRpcUser"
+						value={UMBREL_CORE_RPC_USER}
+						form="settings-form"
+					/>
+					<input
+						class="input mono assisted-pass"
+						type="password"
+						autocomplete="off"
+						placeholder="RPC password"
+						bind:value={assistedCoreRpcPass}
+						name="coreRpcPass"
+						form="settings-form"
+					/>
+					{#if form?.coreRpcTest && !form.coreRpcTest.ok}
+						<span class="badge badge-error">{form.coreRpcTest.error ?? 'Failed'}</span>
+					{/if}
 				</div>
-				<button type="button" class="btn btn-secondary btn-sm" onclick={useDetectedCoreNode}>
-					{connectionMode === 'custom' ? 'Re-fill detected values' : 'Connect it'}
-				</button>
+				<div class="assisted-connect-actions">
+					<button
+						type="submit"
+						form="settings-form"
+						formaction="?/save"
+						class="btn btn-secondary btn-sm"
+						disabled={testing !== null || saving}
+					>
+						{saving ? 'Connecting…' : 'Connect'}
+					</button>
+					<button
+						type="submit"
+						form="settings-form"
+						formaction="?/dismissCoreDetection"
+						class="btn btn-ghost btn-sm"
+						disabled={testing !== null || saving}
+					>
+						Dismiss
+					</button>
+				</div>
 			</div>
 		{/if}
 
@@ -844,6 +872,17 @@
 		border-color: var(--border-ghost);
 		align-items: center;
 		flex-wrap: wrap;
+	}
+
+	.assisted-pass {
+		margin-top: 6px;
+		max-width: 220px;
+	}
+
+	.assisted-connect-actions {
+		display: flex;
+		gap: 8px;
+		flex-shrink: 0;
 	}
 
 	.custom-fields {
