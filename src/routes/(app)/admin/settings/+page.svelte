@@ -416,89 +416,98 @@
 						{/if}
 					</div>
 				</div>
-
-				<!-- Bitcoin Core RPC (cairn-zoz8.8). This coexists with the Esplora
-				     subgroup above ON PURPOSE for now: Core RPC is the eventual
-				     replacement for the third-party Esplora HTTP API, but the Esplora
-				     section stays until nothing depends on it any more — its removal is
-				     tracked separately as cairn-zoz8.16. -->
-				<div class="subgroup">
-					<span class="subgroup-title">
-						Bitcoin Core RPC <span class="badge badge-neutral">self-hosted</span>
-					</span>
-					<p class="hint">
-						Point Heartwood at your own Bitcoin Core node's RPC interface for rich block and
-						mempool data without relying on any third-party explorer API. Fully self-hosted —
-						works on an Umbrel or other node with no public internet access.
-					</p>
-					<div class="field">
-						<label class="label" for="coreRpcUrl">RPC URL</label>
-						<input
-							class="input mono"
-							id="coreRpcUrl"
-							name="coreRpcUrl"
-							placeholder="http://127.0.0.1:8332"
-							bind:value={coreRpcUrlField}
-						/>
-					</div>
-					<div class="row-fields">
-						<div class="field grow">
-							<label class="label" for="coreRpcUser">RPC username</label>
-							<input
-								class="input mono"
-								id="coreRpcUser"
-								name="coreRpcUser"
-								autocomplete="off"
-								placeholder="rpcuser"
-								bind:value={coreRpcUserField}
-							/>
-						</div>
-						<div class="field grow">
-							<label class="label" for="coreRpcPass">RPC password</label>
-							<input
-								class="input mono"
-								id="coreRpcPass"
-								name="coreRpcPass"
-								type="password"
-								autocomplete="off"
-								placeholder={data.settings.hasCoreRpcPass
-									? '•••••••• saved — leave blank to keep'
-									: 'RPC password'}
-								bind:this={coreRpcPassEl}
-							/>
-						</div>
-					</div>
-					{#if data.settings.hasCoreRpcPass}
-						<label class="tls-check">
-							<input type="checkbox" name="clearCoreRpcPass" />
-							<span>Clear the saved RPC password</span>
-						</label>
-					{/if}
-					<div class="test-row">
-						<button
-							type="submit"
-							class="btn btn-secondary btn-sm"
-							formaction="?/testCoreRpc"
-							disabled={testing !== null || saving}
-						>
-							{#if testing === 'coreRpc'}<span class="spinner"></span>{/if}
-							Test connection
-						</button>
-						{#if coreRpcResult}
-							{#if coreRpcResult.ok}
-								<span class="badge badge-success">
-									OK{coreRpcResult.chain ? ` — chain ${coreRpcResult.chain}` : ''}{coreRpcResult.blockHeight
-										? `, tip ${formatNumber(coreRpcResult.blockHeight)}`
-										: ''}
-								</span>
-							{:else}
-								<span class="badge badge-error">{coreRpcResult.error ?? 'Failed'}</span>
-							{/if}
-						{/if}
-					</div>
-				</div>
 			</div>
 		{/if}
+
+		<!-- Bitcoin Core RPC (cairn-zoz8.8, cairn-6uok follow-up cairn-3p9z). Core
+		     RPC is mode-independent (getChainConfig() returns coreRpc* in both
+		     'public' and 'custom' connection modes — there is no public-mode Core
+		     fallback, Core is "on" iff core_rpc_url is set) and the save action has
+		     persisted it mode-independently since cairn-6uok, so this subgroup must
+		     render regardless of connectionMode too — it used to be nested inside
+		     the connectionMode==='custom' block above, which meant a public-mode
+		     admin who wanted to hand-enter a non-Umbrel Core RPC endpoint had no way
+		     to reach these inputs without first flipping to custom mode. It also
+		     coexists with the Esplora subgroup above ON PURPOSE for now: Core RPC is
+		     the eventual replacement for the third-party Esplora HTTP API, but the
+		     Esplora section stays until nothing depends on it any more — its removal
+		     is tracked separately as cairn-zoz8.16. -->
+		<div class="subgroup proxy-group">
+			<span class="subgroup-title">
+				Bitcoin Core RPC <span class="badge badge-neutral">self-hosted</span>
+			</span>
+			<p class="hint">
+				Point Heartwood at your own Bitcoin Core node's RPC interface for rich block and
+				mempool data without relying on any third-party explorer API. Fully self-hosted —
+				works on an Umbrel or other node with no public internet access, and works whether
+				you're on public servers or a custom Electrum server above.
+			</p>
+			<div class="field">
+				<label class="label" for="coreRpcUrl">RPC URL</label>
+				<input
+					class="input mono"
+					id="coreRpcUrl"
+					name="coreRpcUrl"
+					placeholder="http://127.0.0.1:8332"
+					bind:value={coreRpcUrlField}
+				/>
+			</div>
+			<div class="row-fields">
+				<div class="field grow">
+					<label class="label" for="coreRpcUser">RPC username</label>
+					<input
+						class="input mono"
+						id="coreRpcUser"
+						name="coreRpcUser"
+						autocomplete="off"
+						placeholder="rpcuser"
+						bind:value={coreRpcUserField}
+					/>
+				</div>
+				<div class="field grow">
+					<label class="label" for="coreRpcPass">RPC password</label>
+					<input
+						class="input mono"
+						id="coreRpcPass"
+						name="coreRpcPass"
+						type="password"
+						autocomplete="off"
+						placeholder={data.settings.hasCoreRpcPass
+							? '•••••••• saved — leave blank to keep'
+							: 'RPC password'}
+						bind:this={coreRpcPassEl}
+					/>
+				</div>
+			</div>
+			{#if data.settings.hasCoreRpcPass}
+				<label class="tls-check">
+					<input type="checkbox" name="clearCoreRpcPass" />
+					<span>Clear the saved RPC password</span>
+				</label>
+			{/if}
+			<div class="test-row">
+				<button
+					type="submit"
+					class="btn btn-secondary btn-sm"
+					formaction="?/testCoreRpc"
+					disabled={testing !== null || saving}
+				>
+					{#if testing === 'coreRpc'}<span class="spinner"></span>{/if}
+					Test connection
+				</button>
+				{#if coreRpcResult}
+					{#if coreRpcResult.ok}
+						<span class="badge badge-success">
+							OK{coreRpcResult.chain ? ` — chain ${coreRpcResult.chain}` : ''}{coreRpcResult.blockHeight
+								? `, tip ${formatNumber(coreRpcResult.blockHeight)}`
+								: ''}
+						</span>
+					{:else}
+						<span class="badge badge-error">{coreRpcResult.error ?? 'Failed'}</span>
+					{/if}
+				{/if}
+			</div>
+		</div>
 
 		<div class="subgroup proxy-group">
 			<span class="subgroup-title">Connection performance</span>

@@ -25,8 +25,10 @@ const h = vi.hoisted(() => {
 		getTip: vi.fn(async () => ({ height: 800_000, hash: 'a'.repeat(64) })),
 		getDifficultyInfo: vi.fn(async () => ({ currentDifficulty: 1, tipHeight: 800_000 })),
 		getDifficultyHistory: vi.fn(async () => null),
-		getMempoolBlocks: vi.fn(async () => null),
-		getFeeHistogram: vi.fn(async () => null),
+		// Return types annotated wider than the null default so tests can
+		// mockResolvedValue a real histogram / projection (cairn-6efi.1, U3).
+		getMempoolBlocks: vi.fn(async (_hist?: unknown): Promise<unknown[] | null> => null),
+		getFeeHistogram: vi.fn(async (): Promise<[number, number][] | null> => null),
 		getMempoolTrend: vi.fn(async () => null)
 	};
 	return { state, chain };
