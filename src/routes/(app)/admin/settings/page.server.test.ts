@@ -148,6 +148,14 @@ describe('admin/settings actions — anon and non-admin are denied a 403 fail(),
 			expect(invalidateWalletCache).not.toHaveBeenCalled();
 		}
 	});
+
+	it('dismissCoreDetection', async () => {
+		for (const user of [undefined, NON_ADMIN]) {
+			const res = await actions.dismissCoreDetection(makeEvent(user));
+			expect(res).toMatchObject({ status: 403 });
+			expect(setSetting).not.toHaveBeenCalled();
+		}
+	});
 });
 
 describe('admin/settings actions — a real admin still reaches the mutation', () => {
@@ -216,6 +224,12 @@ describe('admin/settings actions — a real admin still reaches the mutation', (
 		).rejects.toMatchObject({ status: 303, location: '/signup' });
 		expect(resetInstance).toHaveBeenCalledTimes(1);
 		expect(invalidateWalletCache).toHaveBeenCalledTimes(1);
+	});
+
+	it('dismissCoreDetection writes the dismissed marker', async () => {
+		const res = await actions.dismissCoreDetection(makeEvent(ADMIN));
+		expect(res).toEqual({ coreRpcDismissed: true });
+		expect(setSetting).toHaveBeenCalledWith('core_rpc_detected', 'dismissed');
 	});
 });
 
@@ -344,5 +358,86 @@ describe('admin/settings save action — core_rpc_* persistence (cairn-6uok)', (
 		expect(setSetting).toHaveBeenCalledWith('electrum_host', '10.0.0.5');
 		expect(setSetting).toHaveBeenCalledWith('electrum_port', '50001');
 		expect(setSetting).toHaveBeenCalledWith('esplora_url', 'http://esplora.example');
+	});
+});
+
+// Regression tests for the Umbrel Wave B assisted-connect follow-up
+// (cairn-6uok's own scope note; filed as cairn-3p9z): the `save` action's
+// `coreRpcAssisted=umbrel` branch is a distinct, minimal submission from the
+// detected-Core-on-Umbrel card. Unlike the general save path above, it (a)
+// validates with testCoreRpc() BEFORE persisting anything, (b) stamps
+// core_rpc_provisioned_by='umbrel-detect' on success, and (c) returns before
+// touching registration_mode/connection_mode/electrum_*/etc, so it can never
+// mutate the operator's connection_mode as a side effect of connecting Core.
+describe('admin/settings save action — Umbrel Wave B assisted-connect (cairn-6uok follow-up cairn-3p9z)', () => {
+	it('validates with testCoreRpc() before persisting, then persists core_rpc_* and stamps provenance', async () => {
+		const res = await actions.save(
+			makeEvent(ADMIN, {
+				coreRpcAssisted: 'umbrel',
+				coreRpcUrl: 'http://10.21.21.8:8332',
+				coreRpcUser: 'umbrel',
+				coreRpcPass: 'hunter2'
+			})
+		);
+		expect(testCoreRpc).toHaveBeenCalledTimes(1);
+		expect(testCoreRpc).toHaveBeenCalledWith({
+			url: 'http://10.21.21.8:8332',
+			user: 'umbrel',
+			pass: 'hunter2'
+		});
+		expect(res).toMatchObject({ saved: true });
+		expect(setSetting).toHaveBeenCalledWith('core_rpc_url', 'http://10.21.21.8:8332');
+		expect(setSetting).toHaveBeenCalledWith('core_rpc_user', 'umbrel');
+		expect(setSecretSetting).toHaveBeenCalledWith('core_rpc_pass', 'hunter2');
+		expect(setSetting).toHaveBeenCalledWith('core_rpc_provisioned_by', 'umbrel-detect');
+		expect(reconfigureChain).toHaveBeenCalledTimes(1);
+		// Never touches connection_mode/registration_mode — the assisted branch
+		// returns before the general save logic runs.
+		expect(setSetting).not.toHaveBeenCalledWith('connection_mode', expect.anything());
+		expect(setSetting).not.toHaveBeenCalledWith('registration_mode', expect.anything());
+	});
+
+	it('persists core_rpc_* mode-independently even while connectionMode would be public', async () => {
+		const res = await actions.save(
+			makeEvent(ADMIN, {
+				coreRpcAssisted: 'umbrel',
+				connectionMode: 'public',
+				coreRpcUrl: 'http://10.21.21.8:8332',
+				coreRpcUser: 'umbrel',
+				coreRpcPass: 'hunter2'
+			})
+		);
+		expect(res).toMatchObject({ saved: true });
+		expect(setSetting).toHaveBeenCalledWith('core_rpc_url', 'http://10.21.21.8:8332');
+		expect(setSetting).not.toHaveBeenCalledWith('connection_mode', expect.anything());
+	});
+
+	it('a testCoreRpc() failure persists nothing and returns the error', async () => {
+		vi.mocked(testCoreRpc).mockResolvedValueOnce({ ok: false, error: 'Unauthorized' });
+		const res = await actions.save(
+			makeEvent(ADMIN, {
+				coreRpcAssisted: 'umbrel',
+				coreRpcUrl: 'http://10.21.21.8:8332',
+				coreRpcUser: 'umbrel',
+				coreRpcPass: 'wrong'
+			})
+		);
+		expect(res).toMatchObject({
+			status: 400,
+			data: { coreRpcTest: { ok: false, error: 'Unauthorized' } }
+		});
+		expect(setSetting).not.toHaveBeenCalledWith('core_rpc_url', expect.anything());
+		expect(setSetting).not.toHaveBeenCalledWith('core_rpc_provisioned_by', expect.anything());
+		expect(setSecretSetting).not.toHaveBeenCalled();
+		expect(reconfigureChain).not.toHaveBeenCalled();
+	});
+
+	it('rejects a missing URL or password before calling testCoreRpc()', async () => {
+		const res = await actions.save(
+			makeEvent(ADMIN, { coreRpcAssisted: 'umbrel', coreRpcUrl: 'http://10.21.21.8:8332' })
+		);
+		expect(res).toMatchObject({ status: 400 });
+		expect(testCoreRpc).not.toHaveBeenCalled();
+		expect(setSetting).not.toHaveBeenCalledWith('core_rpc_url', expect.anything());
 	});
 });

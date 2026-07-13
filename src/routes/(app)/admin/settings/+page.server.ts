@@ -51,6 +51,41 @@ export const actions: Actions = {
 		if (!locals.user?.isAdmin) return fail(403, { error: 'Admin access required.' });
 		const form = await request.formData();
 
+		// Umbrel Wave B assisted-connect (cairn-ylz5 B2/B3, cairn-6uok follow-up
+		// cairn-3p9z; docs/UMBREL-AUTOCONNECT-WAVE-B-DESIGN.md §6/§9): the
+		// assisted-connect card posts to this same `save` action but is
+		// distinguished by this hidden marker, so it doesn't need to carry every
+		// other settings field (registrationMode/connectionMode/electrumPoolSize/
+		// etc) the main form does -- it returns early, before any of those are
+		// read or validated, and it is the only save path that validates with
+		// testCoreRpc() before persisting (matching the design doc's "run
+		// testCoreRpc() before persisting" requirement). Because it returns here,
+		// connection_mode is never touched, satisfying "must not force-flip the
+		// operator's Electrum connection_mode to custom as a side effect of
+		// connecting Core."
+		if (form.get('coreRpcAssisted') === 'umbrel') {
+			const url = String(form.get('coreRpcUrl') ?? '').trim();
+			const user = String(form.get('coreRpcUser') ?? '').trim() || null;
+			const pass = String(form.get('coreRpcPass') ?? '');
+			if (!url || !pass)
+				return fail(400, {
+					coreRpcTest: { ok: false, error: 'Enter the Bitcoin Core RPC URL and password.' }
+				});
+
+			const result = await testCoreRpc({ url, user, pass });
+			if (!result.ok) return fail(400, { coreRpcTest: result });
+
+			setSetting('core_rpc_url', url);
+			setSetting('core_rpc_user', user ?? '');
+			setSecretSetting('core_rpc_pass', pass);
+			// Post-connect provenance (design doc §6), separate from Electrum's
+			// chain_provisioned_by -- lets the card distinguish "detected but not
+			// yet connected" from "assisted-connected."
+			setSetting('core_rpc_provisioned_by', 'umbrel-detect');
+			reconfigureChain();
+			return { saved: true, coreRpcTest: result };
+		}
+
 		const registrationMode = String(form.get('registrationMode') ?? 'invite');
 		if (!['open', 'invite', 'closed'].includes(registrationMode))
 			return fail(400, { error: 'Invalid registration mode.' });
@@ -208,6 +243,20 @@ export const actions: Actions = {
 
 		const result = await testCoreRpc({ url, user, pass });
 		return { coreRpcTest: result };
+	},
+
+	/**
+	 * Umbrel Wave B assisted-connect "Dismiss" (cairn-ylz5 B3, cairn-3p9z;
+	 * design doc §8 "Core uninstalled later" mitigation): writes the seed-once
+	 * respecting `'dismissed'` value over the advisory `core_rpc_detected`
+	 * marker so the assisted-connect card stops rendering. Purely cosmetic —
+	 * `core_rpc_detected` is never consulted by getChainConfig() / the live
+	 * connection, so this can never break anything already connected.
+	 */
+	dismissCoreDetection: async ({ locals }) => {
+		if (!locals.user?.isAdmin) return fail(403, { error: 'Admin access required.' });
+		setSetting('core_rpc_detected', 'dismissed');
+		return { coreRpcDismissed: true };
 	},
 
 	unlockTeamMode: async ({ locals }) => {

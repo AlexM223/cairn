@@ -2589,6 +2589,28 @@ to cairn-6uok this was only true of the JSON endpoint — the form action wrote
 Wave B assisted-connect flow, `docs/UMBREL-AUTOCONNECT-WAVE-B-DESIGN.md`) was
 silently dropped, never persisted.
 
+**The assisted-connect card has its own validated, non-mode-mutating save
+path (cairn-6uok follow-up cairn-3p9z).** When `!coreRpcConfigured() &&
+coreRpcDetected === 'umbrel'`, `+page.svelte` renders a card (design doc §9
+state 3) that posts to the same `save` action with a hidden
+`coreRpcAssisted=umbrel` marker. That marker sends the action down a
+dedicated early-return branch, *before* `registrationMode`/`connectionMode`/
+`electrumPoolSize`/etc are even read — so this path can never mutate
+`connection_mode` as a side effect of connecting Core, unlike the old
+`useDetectedCoreNode()` client workaround it replaces (which force-flipped
+the mode radio to `'custom'` purely so the manual Core RPC inputs would
+render). It also runs `testCoreRpc()` and persists nothing if the test fails
+(`fail(400, { coreRpcTest })`), unlike the general `save` path, which never
+pre-validates. On success it stamps the post-connect provenance marker
+`core_rpc_provisioned_by = 'umbrel-detect'` (distinct from Electrum's
+`chain_provisioned_by`; see the table in the design doc §6) so the card can
+render "Connected to your Umbrel's Bitcoin Core" afterward. A **Dismiss**
+button on the same card posts to the separate `dismissCoreDetection` action,
+which writes `core_rpc_detected = 'dismissed'` — a purely cosmetic marker
+(never consulted by `getChainConfig()`) that just stops the card from
+rendering, covering the design doc §8 "Core uninstalled later" stale-banner
+case.
+
 ### Test-only env vars
 
 `src/tests/setup.ts` always points `CAIRN_DB` at a fresh temp-file DB per
