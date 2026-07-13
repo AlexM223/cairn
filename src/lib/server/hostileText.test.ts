@@ -1,0 +1,470 @@
+// cairn-nohi — hostile-input sweep across user-writable, wallet-scoped and
+// contact-scoped free-text fields, feeding the REAL service functions (not
+// mocked): createWallet/setLabel (wallets.ts), createMultisig
+// (wallets/multisig.ts), setAddressLabel (addressLabels.ts), saveAddress
+// (addressBook.ts), and registerUser's displayName (auth.ts), which surfaces
+// through contacts.ts's ContactSummary.
+//
+// The admin-surface half of cairn-nohi (announcements, operator name) was
+// already swept live against a real Umbrel instance — see the bead comment
+// dated 2026-07-12 — and came back CLEAN (Svelte auto-escaping holds,
+// node:sqlite is parameterized). This file is the wallet/contact-scoped half
+// the bead's coverage note flagged as still open, run against the same
+// hostile payload set, at the service-function layer.
+//
+// Convention for a real defect/gap found here: pin it under a
+// "KNOWN GAP (candidate bead)" describe block with an expected-vs-actual
+// comment, per src/lib/server/bitcoin/sendBoundaryMatrix.test.ts.
+
+import { describe, it, expect, beforeEach } from 'vitest';
+import { HDKey } from '@scure/bip32';
+import { db } from './db';
+import { registerUser } from './auth';
+import { setSetting } from './settings';
+import { createWallet, setLabel, TX_LABEL_MAX } from './wallets';
+import { createMultisig } from './wallets/multisig';
+import { MultisigError } from './bitcoin/multisig';
+import { setAddressLabel, getAddressLabels, ADDRESS_LABEL_MAX as WALLET_LABEL_MAX } from './addressLabels';
+import { saveAddress, AddressBookError, ADDRESS_LABEL_MAX as BOOK_LABEL_MAX } from './addressBook';
+import { requestContact, respondToContact, listContacts } from './contacts';
+
+// A real BIP84 doc-vector zpub (same fixture bitcoin/sendBoundaryMatrix.test.ts
+// uses) — createWallet round-trips through the REAL parseXpub, so a syntactic
+// placeholder string is rejected before the hostile name is ever exercised.
+const ZPUB =
+	'zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs';
+
+// Real BIP-48 signer keys for createMultisig — it derives a real test address
+// (multisigTestAddress) during creation, so fake/placeholder xpub strings
+// throw before the hostile NAME is ever reached. Mirrors makeSigner() in
+// bitcoin/sendBoundaryMatrix.test.ts.
+const BIP48_PATH = "m/48'/0'/0'/2'";
+function makeSigner(seedByte: number) {
+	const master = HDKey.fromMasterSeed(new Uint8Array(32).fill(seedByte));
+	const account = master.derive(BIP48_PATH);
+	const fingerprint = (master.fingerprint >>> 0).toString(16).padStart(8, '0');
+	return { xpub: account.publicExtendedKey, fingerprint, path: BIP48_PATH };
+}
+function makeMultisigKeys() {
+	return [1, 2, 3].map((seed, i) => ({
+		name: `Key ${i + 1}`,
+		category: 'hardware' as const,
+		...makeSigner(seed)
+	}));
+}
+
+function wipe(): void {
+	db.exec(
+		'DELETE FROM address_labels; DELETE FROM tx_labels; DELETE FROM saved_addresses; ' +
+			'DELETE FROM multisig_shares; DELETE FROM multisig_keys; DELETE FROM multisigs; ' +
+			'DELETE FROM contacts; DELETE FROM wallets; DELETE FROM events; DELETE FROM sessions; ' +
+			'DELETE FROM users; DELETE FROM settings;'
+	);
+}
+
+beforeEach(() => {
+	wipe();
+	setSetting('registration_mode', 'open');
+});
+
+function makeUser(email: string) {
+	return registerUser({ email, password: 'correct horse battery', displayName: email.split('@')[0] });
+}
+
+// ── hostile payload set ─────────────────────────────────────────────────────
+
+const EMOJI_ZWJ = '👨‍👩‍👧‍👦'; // family emoji, a ZWJ sequence of 4 codepoints/7 code units
+const RTL_OVERRIDE = '‮evil‬.txt'; // U+202E RIGHT-TO-LEFT OVERRIDE ... U+202C POP
+const ZERO_WIDTH = 'a​b‌c‍d'; // ZWSP, ZWNJ, ZWJ interleaved with ascii
+const ZALGO = 'Z̸̧̡̛̯̜̫̈́̀͑͘a̷̡̢̛̛̜̯̘͊̊͌́l̶̰̊̌͝g̸̜͐̈ǒ̷̳̼'; // heavy combining marks
+const TEN_K = 'x'.repeat(10_000);
+const NULL_BYTE = 'abc\x00def';
+const CRLF = 'line one\r\nline two\nline three';
+const XSS_SCRIPT = "<script>alert('XSSbody')</script>";
+const XSS_IMG = '<img src=x onerror=alert(1)>';
+const SQLI_DROP = "'; DROP TABLE wallets;--";
+const SQLI_OR = '" OR 1=1--';
+const CJK = '你好世界';
+const ACCENTED = 'café Übermensch';
+
+// NUL is deliberately EXCLUDED from the byte-identical round-trip set: as
+// found below, every text field truncates at an embedded NUL (a node:sqlite /
+// C-string binding behavior, not per-field logic) — see the dedicated
+// "KNOWN GAP: embedded NUL truncates stored text" section instead.
+const HOSTILE_SHORT = [
+	EMOJI_ZWJ,
+	RTL_OVERRIDE,
+	ZERO_WIDTH,
+	ZALGO,
+	CRLF,
+	XSS_SCRIPT,
+	XSS_IMG,
+	SQLI_DROP,
+	SQLI_OR,
+	CJK,
+	ACCENTED
+];
+
+/** Row counts for tables an injection attempt must never disturb. */
+function tableCounts() {
+	const n = (t: string) => (db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n;
+	return { users: n('users'), wallets: n('wallets'), sessions: n('sessions'), settings: n('settings') };
+}
+
+// ── wallet name (createWallet, wallets.ts — trims + slice(0, 64), never rejects) ─
+
+describe('hostile input: wallet name (createWallet)', () => {
+	it.each(HOSTILE_SHORT)('accepts %j without crashing and round-trips it verbatim (under the 64 cap)', async (payload) => {
+		const user = await makeUser('owner@example.com');
+		const before = tableCounts();
+		const summary = createWallet(user.id, { name: payload, xpub: ZPUB });
+		expect(summary.name).toBe(payload);
+		// Other tables untouched by an injection attempt disguised as a name.
+		const after = tableCounts();
+		expect(after.users).toBe(before.users);
+		expect(after.sessions).toBe(before.sessions);
+		expect(after.settings).toBe(before.settings);
+	});
+
+	it('SQLi payload as a wallet name is stored as inert data — wallets/users tables both survive', async () => {
+		const user = await makeUser('owner@example.com');
+		createWallet(user.id, { name: SQLI_DROP, xpub: ZPUB });
+		// The DROP TABLE never executed: both tables are still queryable and intact.
+		const wallets = db.prepare('SELECT name FROM wallets WHERE user_id = ?').all(user.id) as {
+			name: string;
+		}[];
+		expect(wallets).toEqual([{ name: SQLI_DROP }]);
+		expect((db.prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number }).n).toBe(1);
+	});
+
+	it('10,000-char name is silently truncated to 64 chars (KNOWN current behavior, not an error)', async () => {
+		const user = await makeUser('owner@example.com');
+		const summary = createWallet(user.id, { name: TEN_K, xpub: ZPUB });
+		expect(summary.name).toBe('x'.repeat(64));
+		expect(summary.name.length).toBe(64);
+	});
+
+	it('leading/trailing whitespace is trimmed, but zero-width/RTL marks are not whitespace and survive', async () => {
+		const user = await makeUser('owner@example.com');
+		const summary = createWallet(user.id, { name: `  ${ZERO_WIDTH}  `, xpub: ZPUB });
+		expect(summary.name).toBe(ZERO_WIDTH);
+	});
+});
+
+describe('KNOWN GAP (candidate bead): wallet-name truncation can mangle a surrogate pair', () => {
+	// Expected: a 64-char cap on a string containing astral-plane emoji (2 UTF-16
+	// code units each) should never cut inside a code unit pair — at minimum it
+	// shouldn't silently corrupt the last character into something else.
+	// Actual: createWallet's `name.slice(0, 64)` is a raw UTF-16 code-unit slice
+	// with no grapheme/surrogate awareness, so a name landing exactly on a pair
+	// boundary is truncated mid-emoji, leaving a lone (unpaired) high surrogate
+	// in the JS string. That invalid UTF-16 is then round-tripped through
+	// node:sqlite's TEXT storage (UTF-8 at rest), which cannot represent an
+	// unpaired surrogate — it comes back as U+FFFD, the Unicode replacement
+	// character. So the stored/returned name doesn't just lose the emoji, its
+	// last character becomes a visible "�" with no error raised anywhere.
+	it('a name with 👍👍 straddling the 64-char cutoff comes back with a U+FFFD replacement character', async () => {
+		const user = await makeUser('owner@example.com');
+		const hostileName = 'a'.repeat(63) + '👍👍'; // 63 + 4 UTF-16 units = length 67
+		const summary = createWallet(user.id, { name: hostileName, xpub: ZPUB });
+		expect(summary.name.length).toBe(64);
+		expect(summary.name.charCodeAt(63)).toBe(0xfffd); // U+FFFD REPLACEMENT CHARACTER
+	});
+});
+
+// ── multisig name (createMultisig — trims, REJECTS >60 rather than truncating) ──
+
+describe('hostile input: multisig name (createMultisig)', () => {
+	it.each(HOSTILE_SHORT)('accepts %j verbatim as a multisig name (under the 60 cap)', async (payload) => {
+		const user = await makeUser('owner@example.com');
+		const ms = createMultisig(user.id, { name: payload, threshold: 2, keys: makeMultisigKeys() });
+		expect(ms.name).toBe(payload);
+	});
+
+	it('rejects (does not truncate) a name over 60 characters, with a clean MultisigError — no crash', async () => {
+		const user = await makeUser('owner@example.com');
+		expect(() =>
+			createMultisig(user.id, { name: TEN_K, threshold: 2, keys: makeMultisigKeys() })
+		).toThrow(MultisigError);
+		// Nothing was inserted on the rejected attempt.
+		const { n } = db.prepare('SELECT COUNT(*) AS n FROM multisigs WHERE user_id = ?').get(user.id) as {
+			n: number;
+		};
+		expect(n).toBe(0);
+	});
+
+	it('SQLi payload at exactly the 60-char cap is stored as inert data, multisigs table intact', async () => {
+		const user = await makeUser('owner@example.com');
+		const payload = (SQLI_DROP + 'x'.repeat(60)).slice(0, 60);
+		const ms = createMultisig(user.id, { name: payload, threshold: 2, keys: makeMultisigKeys() });
+		expect(ms.name).toBe(payload);
+		const row = db.prepare('SELECT name FROM multisigs WHERE id = ?').get(ms.id) as { name: string };
+		expect(row.name).toBe(payload);
+	});
+});
+
+describe('KNOWN GAP (candidate bead): multisig name length cap counts UTF-16 units, not human characters', () => {
+	// Expected (arguable UX bar, not a security bug): a "60-character" limit
+	// ideally tracks what a user perceives as 60 characters typed/pasted.
+	// Actual: createMultisig checks `name.length > 60` — plain JS UTF-16 length.
+	// An emoji-heavy name of just 16 visible family-emoji glyphs (7 code units
+	// each = 112) already exceeds the cap and is REJECTED, while an ASCII name
+	// of 60 plain letters is accepted — same "character count" to a user, wildly
+	// different code-unit count. Pinned as current behavior, not a crash risk.
+	it('16 repeated family-emoji glyphs (112 UTF-16 units, 16 visible glyphs) is rejected as "too long"', async () => {
+		const user = await makeUser('owner@example.com');
+		const name = EMOJI_ZWJ.repeat(16);
+		expect(name.length).toBeGreaterThan(60);
+		expect(() =>
+			createMultisig(user.id, { name, threshold: 2, keys: makeMultisigKeys() })
+		).toThrow(MultisigError);
+	});
+});
+
+// ── wallet-scoped address label (setAddressLabel — trims + caps at 120) ─────
+
+describe('hostile input: wallet address label (setAddressLabel)', () => {
+	function makeWallet(userId: number): number {
+		return Number(
+			db
+				.prepare("INSERT INTO wallets (user_id, name, xpub, script_type) VALUES (?, 'w', ?, 'p2wpkh')")
+				.run(userId, `xpub-label-${Math.random()}`).lastInsertRowid
+		);
+	}
+
+	it.each(HOSTILE_SHORT)('stores and reads back %j byte-identical (under the 120 cap)', async (payload) => {
+		const user = await makeUser('owner@example.com');
+		const walletId = makeWallet(user.id);
+		setAddressLabel(user.id, 'wallet', walletId, 'bc1qhostile', payload);
+		expect(getAddressLabels(user.id, 'wallet', walletId)).toEqual({ bc1qhostile: payload });
+	});
+
+	it('trims and caps a 10,000-char label at ADDRESS_LABEL_MAX (120), no crash', async () => {
+		const user = await makeUser('owner@example.com');
+		const walletId = makeWallet(user.id);
+		const r = setAddressLabel(user.id, 'wallet', walletId, 'bc1qhostile', `  ${TEN_K}  `);
+		expect(r.label.length).toBe(WALLET_LABEL_MAX);
+		expect(r.label).toBe('x'.repeat(WALLET_LABEL_MAX));
+	});
+
+	it('SQLi payload as a label is inert data — address_labels and wallets tables both intact', async () => {
+		const user = await makeUser('owner@example.com');
+		const walletId = makeWallet(user.id);
+		setAddressLabel(user.id, 'wallet', walletId, 'bc1qhostile', SQLI_OR);
+		expect(getAddressLabels(user.id, 'wallet', walletId)).toEqual({ bc1qhostile: SQLI_OR });
+		expect((db.prepare('SELECT COUNT(*) AS n FROM wallets').get() as { n: number }).n).toBe(1);
+	});
+});
+
+// ── address book label (saveAddress — trims, REJECTS >60 rather than truncating) ─
+
+describe('hostile input: address book label (saveAddress)', () => {
+	// A known-valid mainnet address (same fixture addressBook.test.ts uses).
+	const ADDR = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4';
+
+	it.each(HOSTILE_SHORT)('stores and reads back %j byte-identical (under the 60 cap)', async (payload) => {
+		const user = await makeUser('owner@example.com');
+		const { entry } = saveAddress(user.id, { address: ADDR, label: payload });
+		expect(entry.label).toBe(payload);
+	});
+
+	it('rejects (does not truncate) a label over 60 characters, with a clean AddressBookError', async () => {
+		const user = await makeUser('owner@example.com');
+		expect(() => saveAddress(user.id, { address: ADDR, label: TEN_K })).toThrow(AddressBookError);
+		expect(
+			(db.prepare('SELECT COUNT(*) AS n FROM saved_addresses WHERE user_id = ?').get(user.id) as {
+				n: number;
+			}).n
+		).toBe(0);
+	});
+
+	// Embedded-NUL behavior for this field is pinned in the consolidated
+	// "KNOWN GAP: embedded NUL truncates stored text" section below.
+});
+
+// ── tx label (setLabel, wallets.ts — trims + caps at TX_LABEL_MAX 120) ──────
+
+describe('hostile input: transaction label (setLabel)', () => {
+	function makeWallet(userId: number): number {
+		return Number(
+			db
+				.prepare("INSERT INTO wallets (user_id, name, xpub, script_type) VALUES (?, 'w', ?, 'p2wpkh')")
+				.run(userId, `xpub-txlabel-${Math.random()}`).lastInsertRowid
+		);
+	}
+
+	it.each(HOSTILE_SHORT)('stores and reads back %j byte-identical (under the 120 cap)', async (payload) => {
+		const user = await makeUser('owner@example.com');
+		const walletId = makeWallet(user.id);
+		const txid = '11'.repeat(32);
+		const r = setLabel(user.id, walletId, txid, payload);
+		expect(r).toEqual({ txid, label: payload });
+		expect(getLabelsRoundtrip(user.id, walletId, txid)).toBe(payload);
+	});
+
+	function getLabelsRoundtrip(userId: number, walletId: number, txid: string): string | undefined {
+		const row = db
+			.prepare('SELECT label FROM tx_labels WHERE wallet_id = ? AND txid = ?')
+			.get(walletId, txid) as { label: string } | undefined;
+		return row?.label;
+	}
+
+	it('caps a 10,000-char tx label at TX_LABEL_MAX (120)', async () => {
+		const user = await makeUser('owner@example.com');
+		const walletId = makeWallet(user.id);
+		const r = setLabel(user.id, walletId, '22'.repeat(32), TEN_K);
+		expect(r?.label.length).toBe(TX_LABEL_MAX);
+	});
+});
+
+// ── contact display name (registerUser -> ContactSummary, contacts.ts) ─────
+
+describe('hostile input: contact display name (registerUser -> listContacts)', () => {
+	async function befriend(a: { id: number }, b: { id: number; email: string }) {
+		requestContact(a.id, b.email);
+		const row = db
+			.prepare('SELECT id FROM contacts WHERE user_id = ? AND contact_user_id = ?')
+			.get(a.id, b.id) as { id: number };
+		respondToContact(b.id, row.id, true);
+	}
+
+	it.each(HOSTILE_SHORT)('a hostile display name (%j) round-trips verbatim into a contact listing', async (payload) => {
+		const alice = await makeUser('alice@example.com');
+		const bob = await registerUser({
+			email: 'bob@example.com',
+			password: 'correct horse battery',
+			displayName: payload
+		});
+		await befriend(alice, bob);
+		const friends = listContacts(alice.id).friends;
+		expect(friends).toHaveLength(1);
+		expect(friends[0].displayName).toBe(payload);
+	});
+
+	it('SQLi payload as a display name is inert — users table intact, exact row count', async () => {
+		const alice = await makeUser('alice@example.com');
+		await registerUser({
+			email: 'bob@example.com',
+			password: 'correct horse battery',
+			displayName: SQLI_DROP
+		});
+		expect((db.prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number }).n).toBe(2);
+		const row = db.prepare('SELECT display_name FROM users WHERE email = ?').get('bob@example.com') as {
+			display_name: string;
+		};
+		expect(row.display_name).toBe(SQLI_DROP);
+	});
+});
+
+describe('KNOWN GAP (candidate bead): registration displayName has NO upper length bound', () => {
+	// Expected: some enforced cap, matching every other free-text field in this
+	// file (wallet name 64, multisig name 60, address labels 60/120, tx label
+	// 120) — a display name is the single most widely-fanned-out free-text
+	// field in the app (contacts list, admin user list, "New account created"
+	// notification body, activity feed).
+	// Actual: auth.ts's assertCanRegister only checks `!displayName` (empty)
+	// after trim — there is no length ceiling at all. A 10,000-char display
+	// name is accepted, stored verbatim, and would be echoed into every one of
+	// those surfaces at full length.
+	it('a 10,000-char display name registers successfully with no truncation', async () => {
+		const user = await registerUser({
+			email: 'huge-name@example.com',
+			password: 'correct horse battery',
+			displayName: TEN_K
+		});
+		expect(user.displayName.length).toBe(10_000);
+		const row = db.prepare('SELECT display_name FROM users WHERE id = ?').get(user.id) as {
+			display_name: string;
+		};
+		expect(row.display_name.length).toBe(10_000);
+	});
+});
+
+// ── consolidated: embedded NUL byte behavior, all fields ────────────────────
+
+describe('KNOWN GAP (candidate bead): embedded NUL bytes truncate the stored string', () => {
+	// Expected: "abc\0def" stored and read back through a TEXT column should
+	// either round-trip byte-identical, or be explicitly rejected — silent data
+	// loss is the one outcome that should never happen for free-text input.
+	// Actual: every free-text field tested here — wallet name, multisig name,
+	// wallet-scoped address label, address-book label, tx label, and
+	// registration display name — silently truncates at the first NUL byte and
+	// drops everything after it ("abc\0def" is stored/returned as "abc"), with
+	// no error raised anywhere in the call chain. This is consistent across
+	// unrelated modules, so it's very likely a single underlying cause (the
+	// node:sqlite binding or v8's string-to-C-string marshaling treating the
+	// value as NUL-terminated) rather than a per-field bug — but every one of
+	// these call sites currently has zero validation guarding against it, so a
+	// user who pastes a NUL byte (e.g. from a botched copy-paste, a QR
+	// mis-scan, or a deliberate attempt to truncate what a cosigner/admin sees)
+	// gets no error and an unexpectedly shortened value with no indication
+	// anything was dropped.
+	const TRUNCATED = 'abc'; // "abc\0def" observed to come back as exactly this
+
+	it('wallet name (createWallet)', async () => {
+		const user = await makeUser('owner@example.com');
+		const summary = createWallet(user.id, { name: NULL_BYTE, xpub: ZPUB });
+		expect(summary.name).toBe(TRUNCATED);
+	});
+
+	it('multisig name (createMultisig)', async () => {
+		const user = await makeUser('owner@example.com');
+		const ms = createMultisig(user.id, { name: NULL_BYTE, threshold: 2, keys: makeMultisigKeys() });
+		expect(ms.name).toBe(TRUNCATED);
+	});
+
+	it('wallet-scoped address label (setAddressLabel)', async () => {
+		const user = await makeUser('owner@example.com');
+		const walletId = Number(
+			db
+				.prepare("INSERT INTO wallets (user_id, name, xpub, script_type) VALUES (?, 'w', ?, 'p2wpkh')")
+				.run(user.id, `xpub-nul-${Math.random()}`).lastInsertRowid
+		);
+		setAddressLabel(user.id, 'wallet', walletId, 'bc1qhostile', NULL_BYTE);
+		expect(getAddressLabels(user.id, 'wallet', walletId)).toEqual({ bc1qhostile: TRUNCATED });
+	});
+
+	it('address book label (saveAddress)', async () => {
+		const user = await makeUser('owner@example.com');
+		const { entry } = saveAddress(user.id, {
+			address: 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4',
+			label: NULL_BYTE
+		});
+		expect(entry.label).toBe(TRUNCATED);
+	});
+
+	it('transaction label (setLabel) — DB-persisted value, not the JS-computed return value', async () => {
+		// setLabel's *return value* is the in-memory trimmed JS string, computed
+		// before the INSERT — it never re-reads the row, so it does NOT show this
+		// truncation (r.label is the full, untruncated "abc\0def"). The gap only
+		// shows up in what's actually PERSISTED, which is what every real caller
+		// (a page reload, another session) ultimately reads back.
+		const user = await makeUser('owner@example.com');
+		const walletId = Number(
+			db
+				.prepare("INSERT INTO wallets (user_id, name, xpub, script_type) VALUES (?, 'w', ?, 'p2wpkh')")
+				.run(user.id, `xpub-nul-tx-${Math.random()}`).lastInsertRowid
+		);
+		const txid = '33'.repeat(32);
+		setLabel(user.id, walletId, txid, NULL_BYTE);
+		const row = db
+			.prepare('SELECT label FROM tx_labels WHERE wallet_id = ? AND txid = ?')
+			.get(walletId, txid) as { label: string };
+		expect(row.label).toBe(TRUNCATED);
+	});
+
+	it('registration display name (registerUser) — DB-persisted value, not the JS-computed return value', async () => {
+		// Same caveat as setLabel above: registerUser's returned SessionUser
+		// carries the in-memory trimmed displayName, not a re-read row, so
+		// user.displayName alone would NOT show this. The persisted row does.
+		const user = await registerUser({
+			email: 'nul-name@example.com',
+			password: 'correct horse battery',
+			displayName: NULL_BYTE
+		});
+		const row = db.prepare('SELECT display_name FROM users WHERE id = ?').get(user.id) as {
+			display_name: string;
+		};
+		expect(row.display_name).toBe(TRUNCATED);
+	});
+});
