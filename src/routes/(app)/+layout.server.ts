@@ -6,6 +6,7 @@ import { cachedNavBundle } from '$lib/server/navBundleCache';
 import { getInstanceMode } from '$lib/server/settings';
 import { httpsExternalPort } from '$lib/server/httpsPort';
 import { isFirstSyncComplete } from '$lib/server/syncStatus';
+import { readChainSnapshot } from '$lib/server/chainSnapshot';
 import type { LayoutServerLoad } from './$types';
 
 // cairn-v84z — this load intentionally reads ONLY `locals` (no `url`,
@@ -81,6 +82,15 @@ export const load: LayoutServerLoad = async ({ locals }) => {
 		// chain call. The client renders SyncBanner (which polls /api/sync for the
 		// live detail) only while this is false, so a completed sync costs nothing.
 		firstSyncComplete: isFirstSyncComplete(),
+		// Whether a persisted chain snapshot exists yet (cairn-6efi QA P1-a/P2-a,
+		// ported from explorer/heartwood-wave2): a plain synchronous SQLite read,
+		// same cost profile as isFirstSyncComplete() just above — no chain call.
+		// Drives two honesty fixes: SyncBanner hides itself once real data is
+		// already on screen (a "0% first sync" banner stacked above genuinely-
+		// populated pages reads as a contradiction), and ChainHealthBanner's
+		// "never configured" copy stops claiming data "will appear" once
+		// connected when a snapshot is already showing it.
+		hasChainSnapshot: readChainSnapshot() !== null,
 		// Resolved feature flags for this user, read on the client as data.flags.send
 		// (etc). Server-side enforcement (requireFeature) is the real gate; this is
 		// what lets the UI hide/grey features the user can't use.

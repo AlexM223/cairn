@@ -34,7 +34,14 @@
 	import type { ChainHealth } from '$lib/server/chainHealth';
 
 	// Whether the viewer can act on this — only admins get the settings link.
-	let { isAdmin = false }: { isAdmin?: boolean } = $props();
+	// hasSnapshot (cairn-6efi QA P1-a, ported from explorer/heartwood-wave2):
+	// whether a persisted chain snapshot exists, so the "never configured" copy
+	// below can say what's actually true — visible data already exists (from
+	// before the connection was lost, or a default public backend) — instead of
+	// always claiming data "will appear once connected" wherever the banner
+	// renders, which is false the instant there's a snapshot on screen under it.
+	let { isAdmin = false, hasSnapshot = false }: { isAdmin?: boolean; hasSnapshot?: boolean } =
+		$props();
 
 	// A background health signal, not a progress bar — poll slowly.
 	const POLL_MS = 15_000;
@@ -62,6 +69,11 @@
 
 	function subline(h: ChainHealth): string {
 		if (h.neverConfigured) {
+			if (hasSnapshot) {
+				return isAdmin
+					? "You're viewing your last saved snapshot — it'll refresh once a node or server is connected."
+					: "You're viewing your last saved snapshot — it'll refresh once your instance operator connects it.";
+			}
 			return isAdmin
 				? 'Balances and history will appear once a node or server is connected.'
 				: 'Balances and history will appear once your instance operator connects it. Ask your instance operator.';

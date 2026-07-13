@@ -16,6 +16,7 @@ import { registerUser } from '$lib/server/auth';
 import { setSetting } from '$lib/server/settings';
 import { createAnnouncement, dismissAnnouncement } from '$lib/server/announcements';
 import { resetFirstSyncStateForTests } from '$lib/server/syncStatus';
+import { writeChainSnapshot, type PersistedChainData } from '$lib/server/chainSnapshot';
 import { load } from './+layout.server';
 
 function wipe(): void {
@@ -173,5 +174,43 @@ describe('(app) layout first-sync is non-blocking (cairn-2zxt.1)', () => {
 		resetFirstSyncStateForTests();
 		const data = (await load(makeEvent(member))) as Record<string, unknown>;
 		expect(data.firstSyncComplete).toBe(true);
+	});
+});
+
+// Snapshot provenance (cairn-6efi QA P1-a/P2-a, ported from
+// explorer/heartwood-wave2): hasChainSnapshot drives both ChainHealthBanner's
+// honest "you're viewing a saved snapshot" copy and SyncBanner's suppression
+// once real data already exists on screen — pin the plain read here.
+describe('(app) layout hasChainSnapshot (cairn-6efi QA P1-a/P2-a)', () => {
+	function emptySnapshot(over: Partial<PersistedChainData> = {}): PersistedChainData {
+		return {
+			blocks: [],
+			tipHeight: null,
+			tipTime: null,
+			hashrate: null,
+			mempoolSummary: null,
+			fees: null,
+			difficultyInfo: null,
+			difficultyHistory: null,
+			mempoolBlocks: null,
+			feeHistogram: null,
+			mempoolTrend: null,
+			...over
+		};
+	}
+
+	beforeEach(() => {
+		db.exec('DELETE FROM chain_snapshot;');
+	});
+
+	it('is false when no snapshot has ever been persisted', async () => {
+		const data = (await load(makeEvent(member))) as Record<string, unknown>;
+		expect(data.hasChainSnapshot).toBe(false);
+	});
+
+	it('is true once a snapshot has been persisted', async () => {
+		writeChainSnapshot(emptySnapshot({ tipHeight: 800_000 }), Date.now());
+		const data = (await load(makeEvent(member))) as Record<string, unknown>;
+		expect(data.hasChainSnapshot).toBe(true);
 	});
 });
