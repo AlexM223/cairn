@@ -56,6 +56,10 @@
 
 	async function signInPassword(e: SubmitEvent) {
 		e.preventDefault();
+		// Synchronous re-entry guard: a same-tick second submit (rapid double
+		// click, or Enter + click) must be a no-op so it can't fire a second
+		// POST /api/auth/login/password (cairn-x4up).
+		if (submitting) return;
 		error = null;
 		if (!email.trim() || !password) {
 			error = 'Enter your email and password.';
@@ -80,6 +84,9 @@
 	}
 
 	async function signInPasskey() {
+		// Same re-entry guard as the password path (cairn-x4up): block a
+		// second in-flight passkey ceremony from a rapid double click.
+		if (submitting) return;
 		error = null;
 		if (!email.trim()) {
 			error = 'Enter your email, then use your passkey.';
