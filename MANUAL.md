@@ -2135,7 +2135,7 @@ Pages under `(app)`:
 
 | Route | Purpose |
 |---|---|
-| `+page.svelte` | Home/portfolio dashboard |
+| `+page.svelte` | Home/portfolio dashboard — the next-block footer's tip row shows the **confirmed** chain tip (`chain.tipHeight`/`tipTime`) and is labelled "Latest block" (not "Next block" — that name implied the not-yet-mined block; fixed `cairn-dtmi`); the adjacent fee line's "next ring ≈ N sat/vB" is a genuine next-block estimate and keeps its wording |
 | `activity/+page.svelte` | user activity feed |
 | `wallets/+page.svelte` | wallet list |
 | `wallets/new/+page.svelte` | single-sig add-wallet wizard (§9.4) |
@@ -2327,7 +2327,15 @@ would look like resumable progress that isn't. Phase 1 explicitly scoped as
 sessionStorage-only, no server-side draft persistence. `vaultIntent.server.ts`
 handles server-side intent/state for the wizard. Also uses its own
 `_components/coldcardImport.ts`, `_components/deviceRead.ts` (device read
-reused per-wizard, not shared with single-sig's copy).
+reused per-wizard, not shared with single-sig's copy). A `custom` quorum
+where "keys required" is set above "total keys" (e.g. 3-of-2) is invalid —
+the risk panel hides and Continue disables — and a derived `quorumHint`
+explains why instead of leaving a silent dead-end: the M>N case gets its own
+line, "Keys required can't be more than the total number of keys — lower it,
+or add more keys.", while every other invalid range keeps the generic "The
+required number must be between 1 and the total, and the total at most 15."
+(`cairn-t3za`). `classifyQuorum` itself is untouched — this is messaging
+only.
 
 **Send flow** — `src/routes/(app)/wallets/[id]/send/+page.svelte`
 (single-sig). Five steps: **Create → Review → Sign → Confirm → Sent**
@@ -2363,6 +2371,18 @@ import path resolves to the route-local one). Multisig send flow
 using `MultisigFileSigner` instead of the per-hardware-device components
 since multisig co-signing here is file/PSBT-based.
 
+The recipient field's invalid-address messaging distinguishes a **shape**
+that's simply garbage from one that's a real address on the wrong network:
+`addressShape.ts`'s `classifyRecipientAddress()` (`'empty' | 'mainnet' |
+'testnet' | 'unknown'`) backs both the single- and batch-recipient message
+sites, and a `testnet` classification (tb1…/bcrt1… bech32, or a plausible-
+length base58 string starting m/n/2) renders "That looks like a test-network
+address — this wallet uses regular Bitcoin (mainnet)." instead of the
+generic "That doesn't look like a Bitcoin address yet." for `unknown`
+(`cairn-a8n7`). `looksLikeAddress` (used for the combobox's invalid styling
+and `canBuild` gating) is unchanged — mainnet-only, `true` iff
+`classifyRecipientAddress() === 'mainnet'`.
+
 The Create step's amount field (`AmountEntry.svelte`, shared by both the
 single-sig and multisig send flows) is a labelled pill that cycles
 BTC → sats → USD → BTC via a swap-horizontal glyph on `Icon` — deliberately
@@ -2371,6 +2391,12 @@ users read as "reload" rather than "switch currency" (`cairn-id5o`). Sats
 display as an integer with thousands separators. Cycling only re-renders the
 input text from the existing canonical value; the amount is always stored in
 sats, so switching the displayed unit never recomputes it and can't drift.
+Every keystroke is sanitized to numeric-only, in every unit: the sats mode
+already stripped to digits, and the BTC/fiat modes now do too, via
+`amountInput.ts`'s pure `sanitizeDecimal()` (digits + at most one decimal
+point — drops letters, commas, extra dots) and `textToSats()` (parse to
+canonical sats, `0` on non-numeric/non-positive input) — previously a paste
+like `"0.001hello"` left the letters visible in the field (`cairn-wi8a`).
 
 ### `safeAction` in the client (§8 has the full server-facing contract)
 
@@ -3481,6 +3507,44 @@ scanner attribute inbound value by **scriptPubKey membership, not address string
   live DB setting; change it through `/admin/settings` so `reconfigureChain()` resets the
   in-memory caches/health counters too.
 
+### 16.8 QA automation practice — hard-won rules
+
+Lessons from the v0.2.20 QA wave, kept here because they'll otherwise be relearned the
+expensive way (one bead was closed NOT-A-BUG, one was nearly false-filed):
+
+- **Authenticated QA without touching real passwords** — two supported paths:
+  1. **Session-row seeding** — write a valid session row directly into SQLite, then set
+     `document.cookie` to match, rather than driving the login form (`scripts/qa/
+     seed-flagmatrix.mjs` is the reference pattern). Fastest, and sidesteps the login
+     form's async/guard behavior entirely.
+  2. **`scripts/qa/reset-qa-admin-password.mjs`** — if driving the actual login UI is the
+     point of the test, run this first so the documented runbook creds
+     (`qa-wave-admin@test.local` / `QaWave2026!Admin`) actually match the DB's
+     `password_hash` (reproduces `auth.ts`'s exact `scrypt:16384:8:1:salt:hash` format;
+     overridable via `QA_DB`/`QA_ADMIN_EMAIL`/`QA_ADMIN_PASSWORD`). Without this, prior
+     waves hit login failures against stale/mismatched hashes and mistook it for a product
+     bug (`cairn-wymc`).
+- **Synthetic clicks/Enter do NOT reliably trigger native form submission in this stack.**
+  Browser-automation tools dispatch synthetic click/keyboard events, and in at least one
+  observed case (`cairn-m06l`, signup all-empty-submit) the synthetic event never fired the
+  browser's default form-submit action, so `onsubmit`/`use:enhance` never ran and the page
+  looked like it silently ate the click — while a real click (via `requestSubmit()` in
+  devtools, or an actual human) submitted correctly and showed the validation Banner. This
+  is an **automation artifact, not a product bug**. Before filing a "silent form" or
+  "nothing happens on submit" finding: reproduce with `form.requestSubmit()` or a genuinely
+  trusted event in the same session, and only file if that also fails. This one rule
+  prevented at least one false P1 this wave and nearly missed a second.
+- **`br` labels reject dots.** Use underscores in place of dots for version-style labels
+  (`qa-v0_2_20`, not `qa-v0.2.20`) — a label with a literal `.` is rejected at creation time,
+  not sanitized.
+- **The screenshot pipeline can die environment-wide**, not just for one agent/tab — if
+  screenshots start failing, don't retry in a loop. Fall back to `read_page` (accessibility
+  tree, catches missing/duplicate/mislabeled elements) plus a JS layout probe for anything
+  screenshots would normally catch visually — `document.documentElement.scrollWidth` vs
+  `innerWidth` for horizontal-overflow checks, `getBoundingClientRect()` height/width for
+  tap-target sizing (this is how `cairn-amyl`'s 44px touch targets were verified at 375px
+  without a working screenshot pipeline).
+
 ---
 
 ## 17. Multi-user collaborative multisig scenarios
@@ -4229,6 +4293,13 @@ backups, clear house-standard errors, **never red for routine states**, working 
    - ✅ The receive section always renders, even before first sync or while the node is
      unreachable — it shows a plain-language "Still connecting to your node" waiting state
      instead of going blank (the `#receive` anchor is never missing).
+   - ✅ **Rotate** (issue a fresh address) surfaces an explanation when it fails, on both
+     failure paths: the server-side `fail(502, {receiveError})` case (unchanged), and a
+     transport-level failure (network unreachable, thrown action) that the `use:enhance`
+     callback's `result.type === 'error'` branch now catches and renders locally as
+     `rotateError` — "Couldn't get a fresh address — check your connection and try again."
+     Previously that second path just spun the button back to "Rotate" with no explanation
+     (`cairn-sz1q`).
 6. Send funds in (real sats on mainnet, or 16.5 on regtest).
    - ✅ A `tx_received` then `tx_confirmed` notification arrives with a **working deep link**
      to the wallet/tx (broken deep links were a prior P1 — verify the link navigates
@@ -4269,6 +4340,14 @@ backups, clear house-standard errors, **never red for routine states**, working 
      reserved for a genuinely unreachable, previously-configured instance.
    - ✅ Toasts are transient action feedback; persistent/recoverable conditions use an inline
      `<Banner>` instead — the two are not confused.
+   - ✅ Mobile (375×812) tap targets are ≥44px effective height, even where the visual
+     control is smaller: global nav tabs (`MobileTabRow`), the settings BTC/sats unit
+     toggle, the account-deletion danger button, the send-flow unit-cycle pill (invisible
+     `::before` overlay, `inset: -7px 0`, visual pill unchanged at 30px), and the Explorer
+     search icon in `MobileTopBar` (invisible `::after`, `inset: -6px`, matching the
+     avatar's existing treatment) — conservative hit-area expansion, no visual redesign
+     (`cairn-amyl`). **Not yet covered:** `/admin/*` pages — deferred to a dedicated design
+     pass, not a regression to flag.
 - **PASS (journey):** every ✅ above holds through one uninterrupted new-user pass. Any raw
   internal leaked without explanation, any red used for a routine state, any broken
   notification deep link, any silent wizard failure, or a missing/weak backup nudge is a ❌.
