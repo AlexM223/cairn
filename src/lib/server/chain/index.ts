@@ -187,6 +187,90 @@ function round2(n: number): number {
 	return Math.round(n * 100) / 100;
 }
 
+/** Max Bitcoin block weight (weight units). Fullness = weight ÷ this, clamped 0..1. */
+const MAX_BLOCK_WEIGHT = 4_000_000;
+
+/** Block fullness 0..1 from weight; null when weight is unknown (Cardinal rule). */
+function fullnessFromWeight(weight: number | null): number | null {
+	return typeof weight === 'number' ? Math.min(1, weight / MAX_BLOCK_WEIGHT) : null;
+}
+
+/** Concurrency cap for the recent-blocks getblockstats fan-out (Wave 1, U1). */
+const RECENT_BLOCK_STATS_CONCURRENCY = 12;
+
+/** getblockstats fields the recent-blocks enrichment requests (fee amounts already
+ *  in sats). Kept minimal so Core returns only what the row model consumes. */
+const RECENT_BLOCK_STATS_FIELDS = [
+	'txs',
+	'total_size',
+	'total_weight',
+	'total_out',
+	'totalfee',
+	'subsidy',
+	'feerate_percentiles'
+];
+
+/**
+ * Normalized subset of `getblockstats` the block-list row model consumes. Sits
+ * between the raw Core shape and the immutable blockStatsCache (chain/cache.ts) so
+ * the cache never stores a Core-specific object. Amounts are in sats.
+ */
+export interface BlockStats {
+	txCount: number | null;
+	size: number | null; // bytes
+	weight: number | null; // weight units
+	total_out: number | null; // sats
+	medianFee: number | null; // sat/vB
+	feeRange: [number, number] | null; // sat/vB
+}
+
+/** Map a raw `getblockstats` result to the normalized {@link BlockStats}; null when absent. */
+function normalizeBlockStats(s: CoreBlockStats | null | undefined): BlockStats | null {
+	if (!s) return null;
+	const pct = s.feerate_percentiles;
+	const medianFee = Array.isArray(pct) && pct.length >= 3 ? round2(pct[2]) : null;
+	const feeRange: [number, number] | null =
+		Array.isArray(pct) && pct.length >= 5 ? [round2(pct[0]), round2(pct[4])] : null;
+	return {
+		txCount: typeof s.txs === 'number' ? s.txs : null,
+		size: typeof s.total_size === 'number' ? s.total_size : null,
+		weight: typeof s.total_weight === 'number' ? s.total_weight : null,
+		total_out: typeof s.total_out === 'number' ? s.total_out : null,
+		medianFee,
+		feeRange
+	};
+}
+
+/** Overlay enrichment stats onto a baseline block row (in place). */
+function applyBlockStats(row: BlockSummary, s: BlockStats): void {
+	row.txCount = s.txCount;
+	row.size = s.size;
+	row.weight = s.weight;
+	row.total_out = s.total_out;
+	row.medianFee = s.medianFee;
+	row.feeRange = s.feeRange;
+	row.fullness = fullnessFromWeight(s.weight);
+}
+
+/**
+ * Run `fn` over every item with at most `limit` in flight at once. `fn` handles
+ * its own errors (a per-item catch), so one failure never aborts the batch.
+ */
+async function mapWithConcurrency<T>(
+	items: T[],
+	limit: number,
+	fn: (item: T) => Promise<void>
+): Promise<void> {
+	let cursor = 0;
+	const worker = async () => {
+		while (cursor < items.length) {
+			await fn(items[cursor++]);
+		}
+	};
+	const n = Math.min(Math.max(1, limit), items.length);
+	await Promise.all(Array.from({ length: n }, () => worker()));
+}
+
 function toBlockSummary(b: EsploraBlock): BlockSummary {
 	const fr = b.extras?.feeRange;
 	return {
@@ -199,6 +283,10 @@ function toBlockSummary(b: EsploraBlock): BlockSummary {
 		medianFee: typeof b.extras?.medianFee === 'number' ? round2(b.extras.medianFee) : null,
 		feeRange:
 			Array.isArray(fr) && fr.length >= 2 ? [round2(fr[0]), round2(fr[fr.length - 1])] : null,
+		// Esplora block summaries don't carry a total-output aggregate; leave it
+		// null (Cardinal rule) — fullness is still derivable from the weight.
+		total_out: null,
+		fullness: fullnessFromWeight(typeof b.weight === 'number' ? b.weight : null),
 		miner: b.extras?.pool?.name
 	};
 }
@@ -338,6 +426,10 @@ interface CoreBlock {
 
 /** Subset of `getblockstats` fields we consume (fee amounts already in sats). */
 interface CoreBlockStats {
+	txs?: number; // transaction count
+	total_size?: number; // bytes
+	total_weight?: number; // weight units
+	total_out?: number; // sats — sum of all output values
 	feerate_percentiles?: number[]; // [10,25,50,75,90] sat/vB
 	totalfee?: number; // sats
 	subsidy?: number; // sats
@@ -614,12 +706,17 @@ export class ChainService {
 	}
 
 	/**
-	 * Recent blocks, newest first, from the operator's own Electrum server
-	 * (`blockchain.block.header` per height, fetched concurrently) instead of a
-	 * third-party esplora HTTP API (cairn-zoz8.5). A raw 80-byte header carries only
-	 * version/prevhash/merkleroot/time/bits/nonce — NOT tx_count/size/weight or fee
-	 * stats — so those fields are 0/null in this Electrum-only baseline; a later bead
-	 * (cairn-zoz8.10) enriches them via Bitcoin Core RPC when configured.
+	 * Recent blocks, newest first. The baseline comes from the operator's own
+	 * Electrum server (`blockchain.block.header` per height, fetched concurrently)
+	 * instead of a third-party esplora HTTP API (cairn-zoz8.5). A raw 80-byte header
+	 * carries only version/prevhash/merkleroot/time/bits/nonce — NOT tx_count / size
+	 * / weight or fee stats — so those stay **null** in the Electrum-only baseline
+	 * (Cardinal rule: unknown reads as unknown, never a false 0).
+	 *
+	 * When Bitcoin Core RPC is configured, each row is enriched with `getblockstats`
+	 * aggregates, fanned out at a concurrency cap. A per-block stats failure (e.g. a
+	 * pruned node missing an old block) degrades THAT row back to the null baseline
+	 * — it never throws and never fails the whole list (cairn-6efi.1, U1).
 	 */
 	async getRecentBlocks(limit = 10, fromHeight?: number): Promise<BlockSummary[]> {
 		const top = fromHeight ?? (await this.getTip()).height;
@@ -627,21 +724,42 @@ export class ChainService {
 		const count = Math.min(limit, top + 1);
 		const heights = Array.from({ length: count }, (_, i) => top - i);
 		const headers = await Promise.all(heights.map((h) => this.electrum.getBlockHeader(h)));
-		return headers.map((hex, i) => {
+		const rows: BlockSummary[] = headers.map((hex, i) => {
 			const d = decodeBlockHeader(hex);
 			return {
 				height: heights[i],
 				hash: d.hash,
 				time: d.time,
-				// Not derivable from an Electrum block header alone (see JSDoc) — a
-				// Core-RPC enrichment bead (cairn-zoz8.10) fills these when configured.
-				txCount: 0,
-				size: 0,
-				weight: 0,
+				txCount: null,
+				size: null,
+				weight: null,
 				medianFee: null,
-				feeRange: null
+				feeRange: null,
+				total_out: null,
+				fullness: null
 			};
 		});
+
+		const core = this.core;
+		if (core) {
+			await mapWithConcurrency(rows, RECENT_BLOCK_STATS_CONCURRENCY, async (row) => {
+				try {
+					const stats = await this.getRecentBlockStats(core, row.hash);
+					if (stats) applyBlockStats(row, stats);
+				} catch (e) {
+					// Pruned node / disabled getblockstats / transient RPC error: leave
+					// this row at its null baseline rather than failing the whole list.
+					log.debug({ err: e, height: row.height }, 'getblockstats enrichment failed; row stays null');
+				}
+			});
+		}
+		return rows;
+	}
+
+	/** Fetch + normalize one block's `getblockstats` aggregates (cairn-6efi.1, U1). */
+	private async getRecentBlockStats(core: CoreRpcClient, hash: string): Promise<BlockStats | null> {
+		const raw = (await core.getBlockStats(hash, RECENT_BLOCK_STATS_FIELDS)) as CoreBlockStats;
+		return normalizeBlockStats(raw);
 	}
 
 	/**
@@ -685,6 +803,7 @@ export class ChainService {
 		let stats: CoreBlockStats | null = null;
 		try {
 			stats = (await core.getBlockStats(hash, [
+				'total_out',
 				'feerate_percentiles',
 				'totalfee',
 				'subsidy'
@@ -709,6 +828,8 @@ export class ChainService {
 			weight: b.weight,
 			medianFee,
 			feeRange,
+			total_out: typeof stats?.total_out === 'number' ? stats.total_out : null,
+			fullness: fullnessFromWeight(typeof b.weight === 'number' ? b.weight : null),
 			// Miner attribution needs a maintained coinbase-tag database Cairn doesn't
 			// ship (cairn-zoz8.10) — omit rather than guess.
 			miner: undefined,

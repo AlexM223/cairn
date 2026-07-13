@@ -53,7 +53,7 @@ async function loadBlockData(
 			(res) => ({ txs: res.txs, total: res.total, error: null as string | null }),
 			(e) => ({
 				txs: [] as TxDetail[],
-				total: block.txCount,
+				total: block.txCount ?? 0,
 				error: isNotFoundError(e) ? 'No transactions at this page.' : chainErrorMessage(e)
 			})
 		)

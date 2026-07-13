@@ -289,14 +289,17 @@ describe('getRecentBlocks', () => {
 		expect(getBlockHeader).toHaveBeenCalledTimes(3);
 		expect(blocks[0].hash).toBe(headerHash(headersByHeight.get(805)!));
 		expect(blocks[0].time).toBe(1_700_000_000 + 805);
-		// tx_count/size/weight/fee stats aren't derivable from a bare header alone
-		// (cairn-zoz8.10 enriches these via Bitcoin Core RPC when configured).
+		// tx_count/size/weight/fee stats aren't derivable from a bare header alone,
+		// and with no Core RPC configured they stay NULL — never a false 0 (Cardinal
+		// rule). Core enrichment fills them when configured (cairn-6efi.1, U1).
 		expect(blocks[0]).toMatchObject({
-			txCount: 0,
-			size: 0,
-			weight: 0,
+			txCount: null,
+			size: null,
+			weight: null,
 			medianFee: null,
-			feeRange: null
+			feeRange: null,
+			total_out: null,
+			fullness: null
 		});
 	});
 
@@ -320,6 +323,77 @@ describe('getRecentBlocks', () => {
 		const blocks = await svc.getRecentBlocks(10, 1);
 		expect(blocks.map((b) => b.height)).toEqual([1, 0]);
 		expect(getBlockHeader).toHaveBeenCalledTimes(2);
+	});
+
+	// ---- Core-RPC enrichment (cairn-6efi.1, U1) --------------------------------
+	it('enriches every row via getblockstats when Bitcoin Core is configured', async () => {
+		const core = makeCoreStub();
+		const svc = makeCoreService(core);
+		const hex = buildHeader({ time: 1_700_000_000, bits: GENESIS_BITS });
+		withElectrum(svc, { getBlockHeader: vi.fn(async () => hex) });
+		core.getBlockStats.mockResolvedValue({
+			txs: 2_500,
+			total_size: 1_312_000,
+			total_weight: 3_993_000,
+			total_out: 1_234_567_890,
+			totalfee: 5_000_000,
+			subsidy: 312_500_000,
+			feerate_percentiles: [1, 5, 12, 40, 220]
+		});
+
+		const blocks = await svc.getRecentBlocks(2, 805);
+
+		// One getblockstats per block, requested by HASH with the row-model field list.
+		expect(core.getBlockStats).toHaveBeenCalledTimes(2);
+		expect(core.getBlockStats).toHaveBeenCalledWith(
+			headerHash(hex),
+			expect.arrayContaining(['txs', 'total_size', 'total_weight', 'total_out', 'feerate_percentiles'])
+		);
+		expect(blocks[0]).toMatchObject({
+			txCount: 2_500,
+			size: 1_312_000,
+			weight: 3_993_000,
+			total_out: 1_234_567_890,
+			medianFee: 12, // feerate_percentiles[2]
+			feeRange: [1, 220], // [p0, p4]
+			fullness: 3_993_000 / 4_000_000
+		});
+	});
+
+	it('degrades a single failed block to the null baseline instead of throwing (pruned node)', async () => {
+		const core = makeCoreStub();
+		const svc = makeCoreService(core);
+		const headersByHeight = new Map<number, string>();
+		for (let h = 804; h <= 805; h++) {
+			headersByHeight.set(h, buildHeader({ time: 1_700_000_000 + h, bits: GENESIS_BITS, nonce: h }));
+		}
+		withElectrum(svc, { getBlockHeader: vi.fn(async (h: number) => headersByHeight.get(h)!) });
+		const prunedHash = headerHash(headersByHeight.get(804)!);
+		core.getBlockStats.mockImplementation(async (hash: string) => {
+			if (hash === prunedHash) throw new Error('getblockstats: Block not available (pruned data)');
+			return {
+				txs: 10,
+				total_size: 2_000,
+				total_weight: 8_000,
+				total_out: 99,
+				feerate_percentiles: [1, 2, 3, 4, 5]
+			};
+		});
+
+		// Must not throw even though one block's stats fail.
+		const blocks = await svc.getRecentBlocks(2, 805); // [805, 804]
+
+		expect(blocks.map((b) => b.height)).toEqual([805, 804]);
+		expect(blocks[0].txCount).toBe(10); // enriched
+		expect(blocks[1]).toMatchObject({
+			txCount: null,
+			size: null,
+			weight: null,
+			total_out: null,
+			medianFee: null,
+			feeRange: null,
+			fullness: null
+		});
 	});
 });
 

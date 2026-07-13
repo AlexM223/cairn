@@ -595,8 +595,12 @@
 						<span class="row-meta">
 							{timeAgo(block.time)}{block.miner ? ` · ${block.miner}` : ''}
 						</span>
-						<span class="row-txs tabular">{formatNumber(block.txCount)} tx</span>
-						<span class="row-size tabular">{formatBytes(block.size)}</span>
+						<span class="row-txs tabular">
+							{block.txCount === null ? '—' : `${formatNumber(block.txCount)} tx`}
+						</span>
+						<span class="row-size tabular">
+							{block.size === null ? '—' : formatBytes(block.size)}
+						</span>
 					</a>
 				{/each}
 				{#if pending}

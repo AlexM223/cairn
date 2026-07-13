@@ -203,10 +203,10 @@
 				<!-- inline serif stats -->
 				<div class="stat-line">
 					<span class="stat">
-						<span class="stat-num tabular">{formatNumber(block.txCount)}</span> transactions
+						<span class="stat-num tabular">{block.txCount === null ? '—' : formatNumber(block.txCount)}</span> transactions
 					</span>
 					<span class="sep" aria-hidden="true">·</span>
-					<span class="stat"><span class="stat-num tabular">{formatBytes(block.size)}</span></span>
+					<span class="stat"><span class="stat-num tabular">{block.size === null ? '—' : formatBytes(block.size)}</span></span>
 					{#if block.totalFees !== null}
 						<span class="sep" aria-hidden="true">·</span>
 						<span class="stat">
@@ -268,7 +268,7 @@
 								>Weight</Term
 							>
 						</span>
-						<span class="kv-value tabular">{formatNumber(block.weight)} WU</span>
+						<span class="kv-value tabular">{block.weight === null ? '—' : `${formatNumber(block.weight)} WU`}</span>
 					</div>
 					{#if block.medianFee !== null}
 						<div class="kv-row">

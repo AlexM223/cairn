@@ -76,11 +76,20 @@ export interface BlockSummary {
 	height: number;
 	hash: string;
 	time: number;
-	txCount: number;
-	size: number; // bytes
-	weight: number;
+	/** Transactions in the block, or null when unknown (Electrum-only baseline,
+	 *  no Core RPC). Cardinal rule: unknown reads as unknown, never a false 0. */
+	txCount: number | null;
+	/** Serialized size in bytes, or null when unknown (Electrum-only baseline). */
+	size: number | null; // bytes
+	/** Block weight in weight units, or null when unknown. */
+	weight: number | null;
 	medianFee: number | null; // sat/vB
 	feeRange: [number, number] | null; // sat/vB
+	/** Sum of all output values in sats, or null when unknown. Filled from
+	 *  getblockstats `total_out` when Core RPC is configured. */
+	total_out: number | null;
+	/** Block fullness 0..1 (weight ÷ 4,000,000 WU), or null when weight unknown. */
+	fullness: number | null;
 	miner?: string;
 }
 
