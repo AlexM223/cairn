@@ -35,6 +35,7 @@ COPY --from=build /app/package.json ./package.json
 # HTTPS listener (cairn-wgr8 — secure context for hardware signing on Umbrel).
 COPY --from=build /app/server.mjs ./server.mjs
 COPY --from=build /app/scripts/tls-cert.mjs ./scripts/tls-cert.mjs
+COPY --from=build /app/scripts/serverProto.mjs ./scripts/serverProto.mjs
 
 # SQLite database lives on the /data volume — mount it or lose it.
 # Rebrand note (Cairn → Heartwood): these CAIRN_* env vars and the /data paths
@@ -72,6 +73,15 @@ ENV BODY_SIZE_LIMIT=200K
 # login for direct (unproxied) deployments. Deployments that sit behind a
 # reverse proxy which sets X-Forwarded-For (e.g. Umbrel's app_proxy) should
 # set ADDRESS_HEADER=x-forwarded-for themselves.
+# NOTE (cairn-wrph, cairn-9njl): direct/unproxied deployments (no ORIGIN set)
+# now get correct per-listener protocol resolution by default — server.mjs
+# sets PROTOCOL_HEADER=x-forwarded-proto and fills that header per listener
+# (scripts/serverProto.mjs) whenever a request arrives without one, so plain
+# HTTP logins keep a non-Secure session cookie instead of getting one the
+# browser silently drops. A TLS-terminating reverse proxy sitting in front of
+# the HTTP port MUST set X-Forwarded-Proto itself (this fill is
+# fill-when-absent — it never overwrites an inbound value), or set
+# ORIGIN/CAIRN_ORIGIN to your externally-visible https URL instead.
 ENV NODE_ENV=production
 
 RUN mkdir -p /data && chown cairn:cairn /data

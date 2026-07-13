@@ -27,16 +27,24 @@
  *                            port mapping); read by the app, not by this file.
  *
  * adapter-node handles ADDRESS_HEADER / PROTOCOL_HEADER / BODY_SIZE_LIMIT etc.
- * inside the imported handler. Requests on the HTTPS listener arrive without
- * an x-forwarded-proto header and adapter-node's get_origin falls back to
- * "https" — exactly right for a direct TLS listener, so cookies and the CSRF
- * origin check behave on both ports.
+ * inside the imported handler. For unconfigured (bare-node, no ORIGIN, no
+ * PROTOCOL_HEADER) deployments this file defaults PROTOCOL_HEADER to
+ * x-forwarded-proto and, per listener, fills that header with its own
+ * protocol whenever a request arrives without one (scripts/serverProto.mjs,
+ * fill-when-absent) — otherwise adapter-node's get_origin falls back to
+ * "https" for EVERY request regardless of which listener it hit, which used
+ * to stamp the session cookie Secure on the plain-HTTP port too and get it
+ * silently dropped by the browser (cairn-wrph, cairn-9njl). A reverse proxy
+ * or TLS terminator in front of the HTTP port that sets its own
+ * X-Forwarded-Proto (or an operator-set ORIGIN/PROTOCOL_HEADER) is honored
+ * as-is and never overwritten.
  */
 import http from 'node:http';
 import https from 'node:https';
 import path from 'node:path';
 import process from 'node:process';
 import { ensureCert } from './scripts/tls-cert.mjs';
+import { fillForwardedProto } from './scripts/serverProto.mjs';
 
 /**
  * Process-level crash guard (cairn-ldvt-adjacent), boot-phase fallback.
@@ -194,7 +202,12 @@ let handle = (req, res) => {
 
 const servers = [];
 
-const httpServer = http.createServer(withAccessLog('http', (req, res) => handle(req, res)));
+const httpServer = http.createServer(
+	withAccessLog('http', (req, res) => {
+		fillForwardedProto(req.headers, 'http');
+		handle(req, res);
+	})
+);
 httpServer.listen(httpPort, host, () => {
 	console.log(`cairn: http listening on ${host}:${httpPort}`);
 });
@@ -210,7 +223,10 @@ if (httpsPort) {
 		const { key, cert } = await ensureCert(tlsDir);
 		const httpsServer = https.createServer(
 			{ key, cert },
-			withAccessLog('https', (req, res) => handle(req, res))
+			withAccessLog('https', (req, res) => {
+				fillForwardedProto(req.headers, 'https');
+				handle(req, res);
+			})
 		);
 		httpsServer.listen(httpsPort, host, () => {
 			console.log(`cairn: https listening on ${host}:${httpsPort} (self-signed, ${tlsDir})`);
@@ -239,6 +255,13 @@ if (httpsPort) {
 // placeholder up forever, which would hide a permanently-broken boot behind
 // a "still starting" page that never resolves). Rollback: delete this
 // try/catch and restore the bare `const { handler } = await import(...)`.
+// Default per-listener protocol resolution for unconfigured (bare-node) deployments.
+// If ORIGIN is set, adapter-node ignores protocol headers entirely (honored).
+// If the operator set PROTOCOL_HEADER, honor theirs.
+if (!process.env.ORIGIN && !process.env.PROTOCOL_HEADER) {
+	process.env.PROTOCOL_HEADER = 'x-forwarded-proto';
+}
+
 let handler;
 try {
 	({ handler } = await import('./build/handler.js'));
