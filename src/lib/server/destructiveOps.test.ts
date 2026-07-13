@@ -28,7 +28,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { db } from './db';
-import { registerUser, AuthError } from './auth';
+import { registerUser } from './auth';
 import { setSetting, setSecretSetting, readSecretSetting } from './settings';
 import { deleteOwnAccount } from './accountDeletion';
 import { deleteUser, resetInstance } from './admin';
