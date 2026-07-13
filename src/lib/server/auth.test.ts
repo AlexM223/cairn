@@ -380,6 +380,79 @@ describe('sessions', () => {
 		expect(getSessionUser(a.token)).toBeNull();
 		expect(getSessionUser(b.token)).toBeNull();
 	});
+
+	// Concurrent logins (e.g. phone + laptop) must not stomp on each other: both
+	// tokens stay independently valid, and destroying one must not touch the
+	// other — only destroyUserSessions (tested above) is the "kill everything"
+	// operation.
+	it('two concurrent sessions for one user are both valid, and destroySession only kills its own', async () => {
+		const admin = await registerAdmin();
+		const a = createSession(admin.id);
+		const b = createSession(admin.id);
+		expect(a.token).not.toBe(b.token);
+
+		// Both simultaneously valid.
+		expect(getSessionUser(a.token)?.id).toBe(admin.id);
+		expect(getSessionUser(b.token)?.id).toBe(admin.id);
+
+		destroySession(a.token);
+		expect(getSessionUser(a.token)).toBeNull();
+		// b is untouched.
+		expect(getSessionUser(b.token)?.id).toBe(admin.id);
+
+		destroyUserSessions(admin.id);
+		expect(getSessionUser(b.token)).toBeNull();
+	});
+
+	// Contrast with the expired-session case above: an EXPIRED session's row is
+	// actively deleted by getSessionUser on the read that discovers it (see the
+	// "expired session ... is deleted from the table" test). A DISABLED user's
+	// session row gets no such cleanup here — getSessionUser just refuses to
+	// resolve it, every time, forever. Proactively revoking a disabled user's
+	// sessions is a decision made one layer up, by admin.ts's setUserDisabled()
+	// (see admin.test.ts "disabling an admin ... kills their sessions"), not by
+	// auth.ts itself. Pinning this distinction so a future "optimization" that
+	// merges the two cleanup paths doesn't silently change either contract.
+	it('a disabled user\'s session row is left in the table (unlike an expired one) — getSessionUser just refuses it on every read', async () => {
+		const admin = await registerAdmin();
+		const { token } = createSession(admin.id);
+		const tokenHash = createHash('sha256').update(token).digest('hex');
+		db.prepare('UPDATE users SET disabled = 1 WHERE id = ?').run(admin.id);
+
+		expect(getSessionUser(token)).toBeNull();
+		const row = db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE token_hash = ?').get(tokenHash) as {
+			n: number;
+		};
+		expect(row.n).toBe(1); // still there — no auto-cleanup, just perpetual rejection
+		// Re-enabling the user makes the still-live row usable again, proving it
+		// was never invalidated at the row level.
+		db.prepare('UPDATE users SET disabled = 0 WHERE id = ?').run(admin.id);
+		expect(getSessionUser(token)?.id).toBe(admin.id);
+	});
+
+	// Tampered/garbage tokens must resolve to null and never throw — getSessionUser
+	// hashes whatever it's given and does a plain lookup, so malformed input has
+	// no special code path to fail on. 'bogus-token' above already covers the
+	// generic case; these are the shapes worth naming explicitly.
+	it('tampered/garbage tokens resolve to null without throwing', async () => {
+		const admin = await registerAdmin();
+		const { token: real } = createSession(admin.id);
+
+		expect(() => getSessionUser('')).not.toThrow();
+		expect(getSessionUser('')).toBeNull();
+
+		// A real token with one character flipped — same shape, wrong secret.
+		const tampered = real.slice(0, -1) + (real.at(-1) === 'A' ? 'B' : 'A');
+		expect(() => getSessionUser(tampered)).not.toThrow();
+		expect(getSessionUser(tampered)).toBeNull();
+
+		// SQL-injection-shaped garbage — hashToken/prepared statements must not care.
+		expect(() => getSessionUser("' OR '1'='1")).not.toThrow();
+		expect(getSessionUser("' OR '1'='1")).toBeNull();
+
+		// The real token still works — none of the above touched it.
+		expect(getSessionUser(real)?.id).toBe(admin.id);
+	});
 });
 
 // cairn-jtfa — pins the fix for cairn-gy4: the session cookie's `secure` flag
@@ -636,6 +709,36 @@ describe('bootstrapAdminFromEnv + forced credential reset', () => {
 		await bootstrapAdminFromEnv();
 		expect(mustResetPassword(admin.id)).toBe(false);
 		expect((await loginWithPassword('real@example.com', 'chosen-by-human')).id).toBe(admin.id);
+	});
+
+	// Session-fixation hygiene check. completeForcedCredentialReset's own
+	// docstring (auth.ts:352-353) is explicit that it does NOT rotate sessions
+	// itself — "the caller is responsible for rotating sessions afterwards"
+	// (the generated install password was visible on the platform's setup
+	// screen, so any session opened with it must die too). The actual rotation
+	// happens one layer up, in the /setup-admin route action, which calls
+	// destroyUserSessions() + createSession() right after this function returns
+	// (src/routes/setup-admin/+page.server.ts:66-67, covered end-to-end by
+	// setup-admin/server.test.ts "clears the flag, replaces email + password,
+	// rotates sessions, and redirects home"). This test pins the function-level
+	// half of that contract: called on its own, completeForcedCredentialReset
+	// leaves a pre-existing session alone. If a future refactor moved rotation
+	// into this function, that would be a behavior change worth a deliberate
+	// decision, not a silent side effect — this test would need to change with
+	// it, which is the point.
+	it('completeForcedCredentialReset does NOT itself revoke existing sessions (that is the caller\'s job)', async () => {
+		process.env.CAIRN_ADMIN_PASSWORD = 'generated-install-pw';
+		await bootstrapAdminFromEnv();
+		const admin = getUserByEmail(BOOTSTRAP_PLACEHOLDER_EMAIL)!;
+		const { token } = createSession(admin.id);
+
+		await completeForcedCredentialReset(admin.id, {
+			email: 'real@example.com',
+			password: 'chosen-by-human'
+		});
+
+		// Still valid immediately after the reset call, in isolation.
+		expect(getSessionUser(token)?.id).toBe(admin.id);
 	});
 
 	describe('completeForcedCredentialReset validation', () => {
