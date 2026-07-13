@@ -20,8 +20,8 @@
 //   2. Last-admin guard edge cases: a disabled second admin doesn't count
 //      towards the quorum, and a disabled SOLE admin can slip past the guard
 //      entirely (it only checks disabled=0 accounts).
-//   3. Factory reset coverage of instance_secrets/feature_flags survival that
-//      admin.test.ts's resetInstance suite doesn't touch.
+//   3. Factory reset coverage of instance_secrets/feature_flags wipe (cairn-rksw)
+//      that admin.test.ts's resetInstance suite doesn't touch.
 //   4. Shared-multisig destruction: what happens to a collaborator's data
 //      (and their notifications) when the OWNER leaves vs. when a mere
 //      COSIGNER leaves.
@@ -404,7 +404,7 @@ describe('last-admin guard — edge cases beyond accountDeletion.test.ts / admin
 // ═══════════════════════════════════════════════════════ GROUP 3 — factory reset
 
 describe('factory reset — additional coverage beyond admin.test.ts (cairn-rksw)', () => {
-	it('wipes every discovered user-FK table too, but leaves instance_secrets and feature_flags rows behind', async () => {
+	it('wipes every discovered user-FK table too, plus instance_secrets and feature_flags (cairn-rksw fixed)', async () => {
 		const admin = await makeUser('admin@example.com', { admin: true });
 		const w = Number(
 			db
@@ -453,15 +453,17 @@ describe('factory reset — additional coverage beyond admin.test.ts (cairn-rksw
 			expect(count(fk.table, `${fk.from} = ?`, admin), `${fk.table}.${fk.from}`).toBe(0);
 		}
 
-		// KNOWN GAP (cairn-rksw): resetInstance never touches instance_secrets —
-		// a factory reset does not clear the stored SMTP/Core-RPC/Telegram secrets.
-		expect(readSecretSetting('smtp_pass')).toBe('s3cr3t'); // pinned current behavior, not endorsed
-		expect(tableCount('instance_secrets')).toBeGreaterThanOrEqual(1); // pinned current behavior, not endorsed
-		// feature_flags rows themselves survive — only updated_by is nulled (the
-		// same NO-ACTION pre-cleanup resetInstance already does for cairn-hl87);
-		// the flag/override configuration is instance state that a factory reset
-		// does not clear.
-		expect(tableCount('feature_flags')).toBeGreaterThanOrEqual(1); // pinned current behavior, not endorsed
+		// FIXED (cairn-rksw): resetInstance now clears instance_secrets outright —
+		// the stored SMTP/Core-RPC/Telegram/Nostr secrets no longer survive a
+		// factory reset, closing the credential-reuse trap on device handover.
+		expect(readSecretSetting('smtp_pass')).toBeNull();
+		expect(readSecretSetting('core_rpc_pass')).toBeNull();
+		expect(readSecretSetting('telegram_bot_token')).toBeNull();
+		expect(tableCount('instance_secrets')).toBe(0);
+		// feature_flags rows are now deleted outright (not just updated_by
+		// nulled) — a reset instance no longer inherits the prior operator's
+		// flag/override configuration.
+		expect(tableCount('feature_flags')).toBe(0);
 
 		// Logged, not pinned as correct or incorrect either way — the plan only
 		// asks for visibility into whether these pure caches survive a reset.
@@ -472,6 +474,75 @@ describe('factory reset — additional coverage beyond admin.test.ts (cairn-rksw
 			mempool_samples: tableCount('mempool_samples'),
 			tx_snapshots: tableCount('tx_snapshots')
 		});
+	});
+
+	// Table-driven so a FUTURE secret key/store added to the codebase without
+	// wiring into resetInstance's cleanup fails this test loudly, instead of
+	// silently repeating cairn-rksw. Two kinds of store are covered:
+	//   1. instance-wide secrets in `instance_secrets` (settings.ts
+	//      setSecretSetting/readSecretSetting) — no user_id, so resetInstance
+	//      MUST delete them explicitly.
+	//   2. the per-user personal-SMTP password embedded (secretKey.ts
+	//      encryptSecret envelope) inside notification_channel_config.config —
+	//      this one has a user_id FK with ON DELETE CASCADE, so it is expected
+	//      to disappear as a side effect of `DELETE FROM users`, not an
+	//      explicit resetInstance step. Both are asserted here so a regression
+	//      in either mechanism is caught in one place.
+	const INSTANCE_SECRET_KEYS = [
+		'smtp_pass',
+		'core_rpc_pass',
+		'telegram_bot_token',
+		'nostr_sender_privkey',
+		'scheduled_backup_pass'
+	];
+
+	it('table-driven: every known secret store is empty after a factory reset (cairn-rksw)', async () => {
+		const admin = await makeUser('admin@example.com', { admin: true });
+
+		// 1. Instance-wide secrets (instance_secrets table).
+		for (const key of INSTANCE_SECRET_KEYS) {
+			setSecretSetting(key, `secret-value-for-${key}`);
+		}
+		for (const key of INSTANCE_SECRET_KEYS) {
+			expect(readSecretSetting(key), `${key} before reset`).toBe(`secret-value-for-${key}`);
+		}
+		expect(tableCount('instance_secrets')).toBe(INSTANCE_SECRET_KEYS.length);
+
+		// 2. Per-user personal SMTP password, encrypted via secretKey.ts and
+		// embedded in notification_channel_config.config (email.ts's PersonalSmtp
+		// shape) — a different storage mechanism from instance_secrets entirely.
+		const { encryptSecret, decryptSecret } = await import('./secretKey');
+		const personalSmtpEnvelope = encryptSecret('personal-smtp-secret');
+		const config = JSON.stringify({
+			address: 'admin@example.com',
+			smtp: {
+				host: 'smtp.personal.example',
+				port: 587,
+				user: 'admin',
+				from: 'admin@example.com',
+				tls: 'starttls',
+				passEnc: personalSmtpEnvelope
+			}
+		});
+		db.prepare(
+			`INSERT INTO notification_channel_config (user_id, channel, config) VALUES (?, 'email', ?)`
+		).run(admin, config);
+		// Sanity: the envelope really does decrypt before the reset.
+		expect(decryptSecret(personalSmtpEnvelope)).toBe('personal-smtp-secret');
+		expect(tableCount('notification_channel_config')).toBe(1);
+
+		resetInstance();
+
+		// Every instance_secrets key is gone — both via readSecretSetting (the
+		// production read path) and via a direct row count.
+		for (const key of INSTANCE_SECRET_KEYS) {
+			expect(readSecretSetting(key), `${key} after reset`).toBeNull();
+		}
+		expect(tableCount('instance_secrets')).toBe(0);
+
+		// The per-user encrypted SMTP secret is gone too (cascaded away with the
+		// user row, not a resetInstance-specific step).
+		expect(tableCount('notification_channel_config')).toBe(0);
 	});
 });
 

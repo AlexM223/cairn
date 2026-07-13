@@ -107,18 +107,26 @@ export function deleteUser(id: number): void {
 }
 
 /**
- * Factory-reset the instance: delete every user, session, wallet, invite and
- * setting in one transaction. The next visit to /signup is the first-run flow
- * again (the first account created becomes admin). The caller's own session is
- * wiped along with everything else — that is intentional.
+ * Factory-reset the instance: delete every user, session, wallet, invite,
+ * setting, encrypted instance secret (SMTP/Core-RPC/Telegram/Nostr
+ * credentials, scheduled-backup passphrase) and feature-flag override in one
+ * transaction. The next visit to /signup is the first-run flow again (the
+ * first account created becomes admin). The caller's own session is wiped
+ * along with everything else — that is intentional.
  */
 export function resetInstance(): void {
 	db.prepare('BEGIN').run();
 	try {
 		// feature_flags/user_feature_flags.updated_by have no ON DELETE action —
-		// a plain `DELETE FROM users` would violate the FK (cairn-hl87). Clear
-		// them before the user rows go, same idiom as deleteOwnAccount.
-		db.prepare('UPDATE feature_flags SET updated_by = NULL').run();
+		// a plain `DELETE FROM users` would violate the FK (cairn-hl87).
+		// feature_flags itself is instance-wide config with no user_id to cascade
+		// from, so it is deleted outright below (not just nulled) — a "reset"
+		// instance must not inherit the prior operator's flag overrides. It MUST
+		// run before `DELETE FROM users` in the block below: deleting the row
+		// satisfies the same NO-ACTION FK concern the null-first idiom existed
+		// for, but only if it happens first (cairn-rksw regression: doing this
+		// delete alongside the others, after `DELETE FROM users`, still throws).
+		db.prepare('DELETE FROM feature_flags').run();
 		db.prepare('UPDATE user_feature_flags SET updated_by = NULL').run();
 
 		db.exec(`
@@ -127,6 +135,14 @@ export function resetInstance(): void {
 			DELETE FROM sessions;
 			DELETE FROM users;
 			DELETE FROM settings;
+			-- instance_secrets holds the encrypted SMTP/Core-RPC/Telegram-bot-token/
+			-- Nostr-privkey credentials (settings.ts setSecretSetting, secretKey.ts
+			-- envelopes — cairn-e9mz.4) plus the scheduled-backup passphrase
+			-- (backup.ts K_SCHED_PASS). None of these rows have a user_id to cascade
+			-- from, so a factory reset silently left every one of them behind for
+			-- the next operator to inherit — a confidentiality leak on device
+			-- handover/resale (cairn-rksw).
+			DELETE FROM instance_secrets;
 			-- Instance-wide activity (events.user_id IS NULL) and the notified-txid
 			-- ledger have no FK target to cascade from, so they must be cleared
 			-- explicitly. Otherwise a new operator sees the prior instance's activity
