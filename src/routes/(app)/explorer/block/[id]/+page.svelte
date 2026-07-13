@@ -10,8 +10,11 @@
 	import ChainStrip from '$lib/components/heartwood/ChainStrip.svelte';
 	import NodeTrustChip from '$lib/components/heartwood/NodeTrustChip.svelte';
 	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
+	import RingBar from '$lib/components/heartwood/RingBar.svelte';
+	import ValueFlowBar from '$lib/components/heartwood/ValueFlowBar.svelte';
 	import CoreRpcRequiredNotice from '$lib/components/CoreRpcRequiredNotice.svelte';
 	import { blockSubsidy } from '$lib/bitcoin';
+	import { computeValueFlow, largestPassages, type PassageTag } from './blockDepth';
 	import {
 		formatNumber,
 		formatBtc,
@@ -51,6 +54,9 @@
 	const txTotal = $derived(chain?.txTotal ?? 0);
 	const txPage = $derived(chain?.txPage ?? 0);
 	const txError = $derived(chain?.txError ?? null);
+	// The viewing user's own confirmed txs in this block (viewer-scoped, chain-free
+	// lookup done server-side keyed by block height). Empty for anonymous viewers.
+	const yours = $derived(chain?.yours ?? []);
 
 	const confirmations = $derived(
 		block !== null && tipHeight !== null ? Math.max(1, tipHeight - block.height + 1) : null
@@ -59,6 +65,39 @@
 	const hasPrev = $derived(block !== null && block.height > 0);
 	const hasNext = $derived(block !== null && tipHeight !== null && block.height < tipHeight);
 	const subsidy = $derived(block !== null ? blockSubsidy(block.height) : 0);
+
+	// Value-flow bar (Wave 3, cairn-6efi.7): value moved vs new coins vs fees, all
+	// from getblockstats aggregates already on the block. Null (bar omitted) when
+	// Core isn't the source — never a false zero bar.
+	const valueFlow = $derived(
+		block !== null ? computeValueFlow(block.total_out, block.totalFees, subsidy) : null
+	);
+
+	// Largest passages: the biggest value transfers WITHIN the fetched tx page
+	// (Cardinal rule 4 — no whole-block fan-out). Coinbase excluded (it's the
+	// reward, already shown in the value-flow bar), so this is user-to-user value.
+	const passages = $derived(
+		largestPassages(
+			txs.filter((t) => !t.vin.some((v) => v.coinbase)),
+			5
+		)
+	);
+	// Honest scope label: only the whole block when everything fits on page one.
+	const passagesWholeBlock = $derived(totalTxPages === 1);
+
+	const PASSAGE_TAGS: Record<PassageTag, { label: string; tip: string }> = {
+		whale: { label: 'Whale', tip: 'A single very large transfer (100+ BTC).' },
+		consolidation: {
+			label: 'Consolidation',
+			tip: 'Many inputs swept into one or two outputs — a wallet tidying up its coins.'
+		},
+		batch: {
+			label: 'Batch payout',
+			tip: 'One or a few inputs paying many outputs at once — an exchange or payroll run.'
+		},
+		payment: { label: 'Payment', tip: 'An ordinary transfer.' },
+		coinbase: { label: 'Coinbase', tip: 'The block reward.' }
+	};
 
 	// Locator strip data streams in after first paint (cached hard after the
 	// pipeline's first-ever run).
@@ -240,7 +279,48 @@
 						nonce <span class="stat-num tabular">{formatNumber(block.nonce)}</span>
 					</span>
 				</div>
+
+				<!-- in-hero fullness sliver (RingBar) — a value, not decoration; omitted
+				     entirely when weight is unknown (Electrum-only). -->
+				{#if block.fullness !== null}
+					<div class="fullness" title="Block weight ÷ 4,000,000 WU limit">
+						<RingBar fullness={block.fullness} medianFee={block.medianFee} width={120} />
+						<span class="fullness-label tabular">{Math.round(block.fullness * 100)}% full</span>
+					</div>
+				{/if}
 			</header>
+
+			<!-- ================================================ value-flow bar -->
+			<!-- Renders nothing when its getblockstats aggregates are absent. -->
+			<ValueFlowBar flow={valueFlow} />
+
+			<!-- ============================================ yours in this ring -->
+			{#if yours.length > 0}
+				<section class="yours fade-in" aria-label="Your transactions in this block">
+					<div class="yours-head">
+						<span class="yours-pip" aria-hidden="true"></span>
+						<span class="yours-title"
+							>Yours in this ring{yours.length > 1 ? ` · ${yours.length}` : ''}</span
+						>
+					</div>
+					<div class="yours-list">
+						{#each yours as y (y.txid)}
+							<div class="yours-row">
+								<a href="/explorer/tx/{y.txid}" class="yours-tx mono">{truncateMiddle(y.txid, 6, 4)}</a>
+								<a href={y.wallet.href} class="yours-wallet">{y.wallet.name}</a>
+								<span
+									class="yours-delta tabular"
+									class:incoming={y.delta >= 0}
+									title="{formatSats(Math.abs(y.delta))} sats"
+								>
+									{y.delta >= 0 ? '+' : '−'}{formatBtc(Math.abs(y.delta))} BTC
+								</span>
+							</div>
+						{/each}
+					</div>
+					<p class="yours-note">Matched against your own wallets on this instance — private to you.</p>
+				</section>
+			{/if}
 
 			<!-- ================================================ locator strip -->
 			{#if strip}
@@ -330,6 +410,34 @@
 				</div>
 			{/if}
 		</section>
+
+		<!-- ============================================= largest passages -->
+		{#if passages.length > 0}
+			<section class="passages fade-in">
+				<div class="passages-head">
+					<span class="passages-title">Largest passages</span>
+					<span class="passages-scope"
+						>biggest transfers {passagesWholeBlock ? 'in this block' : 'on this page'}</span
+					>
+				</div>
+				<div class="passages-list">
+					{#each passages as p (p.txid)}
+						<a href="/explorer/tx/{p.txid}" class="passage-row">
+							<span class="passage-id mono">{truncateMiddle(p.txid, 6, 4)}</span>
+							<span class="passage-tag tag-{p.tag}" title={PASSAGE_TAGS[p.tag].tip}>
+								{PASSAGE_TAGS[p.tag].label}
+							</span>
+							<span class="passage-io">
+								{p.vinCount} in → {p.voutCount} out
+							</span>
+							<span class="passage-value tabular" title="{formatSats(p.value)} sats">
+								{formatBtc(p.value)} BTC
+							</span>
+						</a>
+					{/each}
+				</div>
+			</section>
+		{/if}
 
 		<!-- =================================================== tx rows -->
 		<section class="txs">
@@ -535,6 +643,218 @@
 
 	.stat-num.fees {
 		color: var(--accent-bright);
+	}
+
+	/* --- in-hero fullness sliver --- */
+	.fullness {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		margin-top: 20px;
+	}
+
+	.fullness-label {
+		font-size: 12px;
+		color: var(--text-muted);
+	}
+
+	/* --- yours in this ring --- */
+	.yours {
+		margin-top: 28px;
+		padding: 16px 18px;
+		background: var(--sage-muted);
+		border: 1px solid var(--success-border);
+		border-radius: var(--radius-badge);
+	}
+
+	.yours-head {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.yours-pip {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: var(--sage);
+		flex-shrink: 0;
+	}
+
+	.yours-title {
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--sage);
+		letter-spacing: 0.01em;
+	}
+
+	.yours-list {
+		margin-top: 12px;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.yours-row {
+		display: flex;
+		align-items: center;
+		gap: 14px;
+		padding: 9px 0;
+		border-bottom: 1px solid var(--hairline);
+	}
+
+	.yours-row:last-child {
+		border-bottom: none;
+	}
+
+	.yours-tx {
+		width: 130px;
+		flex-shrink: 0;
+		font-size: 12.5px;
+		font-weight: 500;
+		color: var(--on-accent-ghost);
+	}
+
+	.yours-tx:hover {
+		color: var(--accent-bright);
+	}
+
+	.yours-wallet {
+		flex: 1;
+		min-width: 0;
+		font-size: 12.5px;
+		color: var(--text-secondary);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.yours-wallet:hover {
+		color: var(--sage);
+	}
+
+	.yours-delta {
+		font-family: var(--font-serif);
+		font-weight: 600;
+		font-size: 14.5px;
+		color: var(--text-muted);
+		white-space: nowrap;
+	}
+
+	.yours-delta.incoming {
+		color: var(--sage);
+	}
+
+	.yours-note {
+		margin-top: 11px;
+		font-size: 11.5px;
+		color: var(--text-faint);
+	}
+
+	/* --- largest passages --- */
+	.passages {
+		margin-top: 34px;
+	}
+
+	.passages-head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 12px;
+	}
+
+	.passages-title {
+		font-size: 17px;
+		font-weight: 600;
+		color: var(--text);
+		letter-spacing: -0.01em;
+	}
+
+	.passages-scope {
+		font-size: 12.5px;
+		color: var(--text-faint);
+	}
+
+	.passages-list {
+		margin-top: 10px;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.passage-row {
+		display: flex;
+		align-items: center;
+		gap: 14px;
+		padding: 13px 0;
+		border-bottom: 1px solid var(--hairline);
+	}
+
+	.passage-row:last-child {
+		border-bottom: none;
+	}
+
+	.passage-id {
+		width: 130px;
+		flex-shrink: 0;
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--on-accent-ghost);
+	}
+
+	.passage-row:hover .passage-id {
+		color: var(--accent-bright);
+	}
+
+	.passage-tag {
+		flex-shrink: 0;
+		font-size: 10.5px;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+		padding: 3px 8px;
+		border-radius: var(--radius-badge);
+		white-space: nowrap;
+	}
+
+	.tag-whale {
+		color: var(--accent-bright);
+		background: var(--accent-muted);
+	}
+
+	.tag-consolidation {
+		color: var(--sage);
+		background: var(--sage-muted);
+	}
+
+	.tag-batch {
+		color: var(--attention);
+		background: var(--attention-muted);
+	}
+
+	.tag-payment {
+		color: var(--text-muted);
+		background: var(--accent-dim-2);
+	}
+
+	.tag-coinbase {
+		color: var(--accent);
+		background: var(--accent-muted);
+	}
+
+	.passage-io {
+		flex: 1;
+		min-width: 0;
+		font-size: 12.5px;
+		color: var(--text-faint);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.passage-value {
+		font-family: var(--font-serif);
+		font-weight: 600;
+		font-size: 15px;
+		color: var(--text-rows);
+		white-space: nowrap;
 	}
 
 	/* --- locator strip --- */
@@ -750,6 +1070,25 @@
 
 		.tx-fee {
 			display: none;
+		}
+
+		.fullness {
+			margin-top: 16px;
+		}
+
+		.yours-tx,
+		.passage-id {
+			width: 92px;
+			font-size: 11.5px;
+		}
+
+		.passage-io {
+			display: none;
+		}
+
+		.yours-delta,
+		.passage-value {
+			font-size: 13px;
 		}
 	}
 </style>
