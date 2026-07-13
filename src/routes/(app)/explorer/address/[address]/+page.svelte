@@ -9,6 +9,7 @@
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
+	import ExplorerSearch from '$lib/components/heartwood/ExplorerSearch.svelte';
 	import { addressTypeInfo } from '$lib/bitcoin';
 	import {
 		formatNumber,
@@ -118,6 +119,51 @@
 
 	const showLoadMore = $derived(hasMore && !haveFullHistory && allTxs.length > 0);
 
+	// Balance-over-time sparkline (cairn-6efi.9). Built ENTIRELY from data the page
+	// has already loaded — the `rows` cumulative balance series above — so it adds
+	// zero chain calls. `balanceAfter` is the address balance settled after each tx;
+	// walking oldest→newest gives a genuine cumulative balance-over-time curve. We
+	// chart confirmed txs only (mempool txs have no settled point on the timeline)
+	// and honestly omit the chart when there aren't at least two points to connect.
+	const SPARK_W = 320;
+	const SPARK_H = 48;
+	const spark = $derived.by(() => {
+		if (!info) return null;
+		const series = rows
+			.filter((r) => r.height !== 0)
+			.map((r) => r.balanceAfter)
+			.reverse(); // oldest → newest
+		if (series.length < 2) return null;
+		const min = Math.min(...series);
+		const max = Math.max(...series);
+		const span = max - min || 1;
+		const n = series.length;
+		// Small vertical inset so the stroke isn't clipped at the extremes.
+		const padY = 3;
+		const usableH = SPARK_H - padY * 2;
+		const pts = series.map((v, i) => {
+			const x = (i / (n - 1)) * SPARK_W;
+			const y = padY + (usableH - ((v - min) / span) * usableH);
+			return [x, y] as const;
+		});
+		const line = pts.map(([x, y]) => `${x.toFixed(2)},${y.toFixed(2)}`).join(' ');
+		const area = `0,${SPARK_H} ${line} ${SPARK_W},${SPARK_H}`;
+		return {
+			line,
+			area,
+			count: n,
+			high: max,
+			low: min,
+			// `partial` = we only have the most recent pages, so the curve is the
+			// tail of history, not the whole life of the address.
+			partial: !haveFullHistory
+		};
+	});
+
+	// The address is on-chain but doesn't yet have two confirmed points to plot —
+	// an honest "not enough to chart" state rather than a flat or fake line.
+	const sparkEmpty = $derived(!!info && info.used && spark === null);
+
 	async function loadMore(): Promise<void> {
 		if (loadingMore) return;
 		// Oldest loaded tx; confirmed txs sort after mempool ones, so this is a
@@ -167,6 +213,7 @@
 			>
 				<Icon name="chevron-left" size={15} /> Explorer
 			</a>
+			<div class="top-search"><ExplorerSearch variant="compact" /></div>
 		</div>
 
 		<div class="head-wrap fade-in">
@@ -256,6 +303,50 @@
 				</div>
 			{/if}
 		</div>
+
+		<!-- balance-over-time sparkline (zero extra chain calls; from loaded rows) -->
+		{#if spark}
+			<section class="spark fade-in" aria-label="Balance over time">
+				<div class="spark-head">
+					<span class="spark-title">Balance over time</span>
+					<span class="spark-sub">
+						{#if spark.partial}
+							latest {spark.count} transactions
+						{:else}
+							{spark.count} transactions
+						{/if}
+					</span>
+				</div>
+				<svg
+					class="spark-svg"
+					viewBox="0 0 {SPARK_W} {SPARK_H}"
+					preserveAspectRatio="none"
+					role="img"
+					aria-label="Line chart of this address's balance across its {spark.count} confirmed transactions"
+				>
+					<polygon class="spark-area" points={spark.area} />
+					<polyline class="spark-line" points={spark.line} />
+				</svg>
+				<div class="spark-foot">
+					<span class="spark-mark" title="lowest balance across the charted range">
+						low <Amount sats={spark.low} size="inline" />
+					</span>
+					<span class="spark-mark" title="highest balance across the charted range">
+						high <Amount sats={spark.high} size="inline" />
+					</span>
+				</div>
+			</section>
+		{:else if sparkEmpty}
+			<section class="spark spark-empty fade-in" aria-label="Balance over time">
+				<div class="spark-head">
+					<span class="spark-title">Balance over time</span>
+				</div>
+				<p class="spark-empty-note">
+					Not enough history to chart yet — a balance line appears once this address has at least two
+					settled transactions.
+				</p>
+			</section>
+		{/if}
 
 		<!-- inline serif stats -->
 		{#if info}
@@ -454,7 +545,15 @@
 	.top-row {
 		display: flex;
 		align-items: center;
+		justify-content: space-between;
+		gap: 16px;
 		margin-bottom: 26px;
+	}
+
+	.top-search {
+		width: 340px;
+		max-width: 100%;
+		flex-shrink: 1;
 	}
 
 	.back {
@@ -587,6 +686,76 @@
 		border-radius: 6px;
 	}
 
+	/* --- balance-over-time sparkline --- */
+	.spark {
+		margin-top: 30px;
+	}
+
+	.spark-head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 12px;
+		margin-bottom: 8px;
+	}
+
+	.spark-title {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--text-muted);
+	}
+
+	.spark-sub {
+		font-size: 12px;
+		color: var(--text-faint);
+	}
+
+	.spark-svg {
+		display: block;
+		width: 100%;
+		height: 48px;
+		overflow: visible;
+	}
+
+	.spark-line {
+		fill: none;
+		stroke: var(--sage);
+		stroke-width: 1.5;
+		stroke-linejoin: round;
+		stroke-linecap: round;
+		vector-effect: non-scaling-stroke;
+	}
+
+	.spark-area {
+		fill: var(--sage-muted);
+		stroke: none;
+	}
+
+	.spark-foot {
+		display: flex;
+		justify-content: space-between;
+		gap: 12px;
+		margin-top: 6px;
+		font-size: 12px;
+		color: var(--text-muted);
+	}
+
+	.spark-mark {
+		display: inline-flex;
+		align-items: baseline;
+		gap: 5px;
+	}
+
+	.spark-empty-note {
+		margin: 0;
+		font-size: 13px;
+		line-height: 1.55;
+		color: var(--text-secondary);
+		max-width: 48ch;
+	}
+
 	/* --- inline serif stats --- */
 	.stat-line {
 		display: flex;
@@ -690,6 +859,10 @@
 
 		.top-row {
 			margin-bottom: 18px;
+		}
+
+		.top-search {
+			width: 100%;
 		}
 
 		.hero-bal {

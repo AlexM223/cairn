@@ -387,7 +387,7 @@
 					type="search"
 					name="q"
 					value={data.q}
-					placeholder="Block, transaction, or address"
+					placeholder="Paste a block, transaction, or address — your node will find it"
 					autocomplete="off"
 					spellcheck="false"
 					aria-label="Search the blockchain"
@@ -781,25 +781,25 @@
 		position: relative;
 		display: flex;
 		align-items: center;
-		width: 400px;
+		width: 480px;
 		max-width: 100%;
-		height: 44px;
-		background: rgba(255, 255, 255, 0.02);
+		height: 48px;
+		background: var(--search-fill);
 		border: 1px solid var(--hairline);
-		border-radius: 22px;
-		padding: 0 20px;
+		border-radius: 24px;
+		padding: 0 22px;
 		gap: 12px;
 		transition: border-color 120ms var(--ease), box-shadow 120ms var(--ease);
 	}
 
 	.search:focus-within {
 		border-color: var(--accent);
-		box-shadow: 0 0 0 3px rgba(232, 147, 90, 0.12);
+		box-shadow: 0 0 0 3px var(--accent-muted);
 	}
 
 	.search-icon {
 		display: flex;
-		color: var(--text-faint);
+		color: var(--accent);
 		flex-shrink: 0;
 	}
 
@@ -828,7 +828,7 @@
 		top: calc(100% + 6px);
 		left: 0;
 		right: 0;
-		background: #17120f;
+		background: var(--surface);
 		border: 1px solid var(--border-control);
 		border-radius: var(--radius-status-pill);
 		box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
@@ -1223,8 +1223,7 @@
 		font-family: var(--font-serif);
 		font-weight: 600;
 		font-size: 16px;
-		/* Spec "text/value" tone #CBBFB3 — no token exists for it. */
-		color: #cbbfb3;
+		color: var(--text-value);
 		transition: color 120ms var(--ease);
 	}
 
@@ -1280,7 +1279,7 @@
 
 	.row-txs {
 		font-size: 13px;
-		color: #cbbfb3;
+		color: var(--text-value);
 		white-space: nowrap;
 	}
 

@@ -117,7 +117,87 @@
 	/* Motion */
 	--ease: cubic-bezier(0.25, 0.1, 0.25, 1);
 
+	/* Explorer surface tokens (cairn-6efi.9). --text-value is the warm
+	   "text/value" tone the explorer block rows use for heights/tx-counts
+	   (formerly the stray literal #cbbfb3); --search-fill is the barely-there
+	   wash inside the search pill. Both get remapped by the Daylight grove
+	   light theme below. */
+	--text-value: #cbbfb3;
+	--search-fill: rgba(255, 255, 255, 0.02);
+
 	color-scheme: dark;
+}
+
+/* ============================================================
+   "Daylight grove" — light theme for EXPLORER surfaces only
+   (cairn-6efi.9). The app has no theme toggle, so this rides
+   the OS-level prefers-color-scheme and is deliberately scoped
+   to the explorer page roots: redefining these inherited custom
+   properties on the explorer container cascades warm-parchment
+   values to every explorer descendant WITHOUT touching the rest
+   of the app (wallet/admin/etc. stay dark). App-wide light mode
+   is a separate, larger effort — deferred as follow-up.
+
+   Palette: warm parchment base, umber text, copper + sage both
+   darkened to clear AA contrast on the light ground.
+   ============================================================ */
+@media (prefers-color-scheme: light) {
+	.explorer,
+	.addr-page,
+	.block-page,
+	.tx-page,
+	.mempool-page,
+	.diff-page,
+	.blocks-page {
+		color-scheme: light;
+
+		/* Surfaces — warm parchment */
+		--bg: #f4efe6;
+		--bg-deep: #ece4d6;
+		--bg-input: #fbf8f2;
+		--bg-strip: #efe8db;
+		--surface: #fbf8f2;
+		--surface-elevated: #f1e9db;
+		--border: #d9cdbb;
+		--border-subtle: #e4dacb;
+		--hairline: #e6ddce;
+		--border-control: #d3c7b4;
+		--border-ghost: #d9cdbb;
+
+		/* Text — umber, AA on parchment (--text-faint stays decorative). */
+		--text: #2c2119;
+		--text-hero: #241a12;
+		--text-rows: #3a2d22;
+		--text-secondary: #6a5c4d;
+		--text-muted: #7c6e5e;
+		--text-faint: #a2957f;
+		--eyebrow: #7c6e5e;
+		--eyebrow-path: #a2957f;
+		--text-value: #4a3c2d;
+
+		/* Accent — copper darkened for contrast on parchment. */
+		--accent: #b0551f;
+		--accent-hover: #c2622a;
+		--accent-pressed: #9a4a1a;
+		--accent-bright: #a54e1b;
+		--accent-glow: #c26a34;
+		--accent-muted: rgba(176, 85, 31, 0.12);
+		--accent-border: rgba(176, 85, 31, 0.32);
+		--accent-border-strong: rgba(176, 85, 31, 0.48);
+		--on-accent: #fdf6ee;
+		--on-accent-ghost: #7a4420;
+
+		/* Status — sage/attention darkened to read on light. */
+		--sage: #566e39;
+		--sage-muted: rgba(86, 110, 57, 0.14);
+		--attention: #9a6f28;
+		--attention-muted: rgba(154, 111, 40, 0.12);
+		--warning-border: rgba(154, 111, 40, 0.32);
+
+		/* Search pill wash — a faint umber tint (the white-alpha wash is
+		   invisible on a light ground). */
+		--search-fill: rgba(44, 33, 25, 0.03);
+	}
 }
 
 /* ---------- Base ---------- */

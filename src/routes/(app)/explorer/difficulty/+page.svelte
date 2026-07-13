@@ -8,6 +8,7 @@
 	import Term from '$lib/components/Term.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
+	import ExplorerSearch from '$lib/components/heartwood/ExplorerSearch.svelte';
 	import CairnChart, { type ChartBar } from '$lib/components/heartwood/CairnChart.svelte';
 	import { formatNumber, formatBtc, formatDuration, formatDateTime, timeAgo } from '$lib/format';
 	import { blockSubsidy } from '$lib/bitcoin';
@@ -172,6 +173,7 @@
 	>
 		<Icon name="chevron-left" size={15} /> Explorer
 	</a>
+	<div class="top-search"><ExplorerSearch variant="compact" /></div>
 </div>
 
 <div class="head fade-in">
@@ -399,7 +401,16 @@
 	.top-row {
 		display: flex;
 		align-items: center;
+		justify-content: space-between;
+		gap: 16px;
+		flex-wrap: wrap;
 		margin-bottom: 26px;
+	}
+
+	.top-search {
+		width: 320px;
+		max-width: 100%;
+		flex-shrink: 1;
 	}
 
 	.back {
@@ -582,6 +593,10 @@
 
 		.top-row {
 			margin-bottom: 18px;
+		}
+
+		.top-search {
+			width: 100%;
 		}
 	}
 
