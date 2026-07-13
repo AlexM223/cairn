@@ -54,6 +54,21 @@ export interface PendingTx {
 	time: number | null;
 }
 
+/** One of the viewing user's own CONFIRMED transactions in a specific block, for
+ *  the block-detail "Yours in this ring" callout (Wave 3, cairn-6efi.7). Like
+ *  {@link PendingTx} it is derived purely from persisted wallet snapshots — no
+ *  chain call — and keyed by the block's height, so it is bounded by the
+ *  viewer's own confirmed-tx count, never by block size. */
+export interface OwnedBlockTx {
+	txid: string;
+	/** The viewing user's wallet this tx belongs to (first wallet wins on dedupe). */
+	wallet: OwnedWalletRef;
+	/** Net effect on that wallet in sats (positive = incoming). */
+	delta: number;
+	/** Fee paid, sats, or null when the snapshot doesn't record it. */
+	fee: number | null;
+}
+
 interface UserWalletIndex {
 	/** address -> the user's wallet that owns it (first match wins). */
 	addr: Map<string, AddrEntry>;
@@ -64,6 +79,12 @@ interface UserWalletIndex {
 	 *  viewer's own (small) tx set, so marking a block is O(1) lookup and needs
 	 *  ZERO per-block chain calls / no fan-out over block size. */
 	heights: Set<number>;
+	/** Confirmed block height -> the viewing user's tx(s) at that height, deduped
+	 *  by txid — the "Yours in this ring" block-detail callout (cairn-6efi.7).
+	 *  Same viewer-scoped, chain-free provenance as {@link heights}; the extra map
+	 *  just retains which txs (amount + owning wallet) land in each block so the
+	 *  callout can list them without any block-tx fan-out. */
+	byHeight: Map<number, OwnedBlockTx[]>;
 	/** The viewing user's unconfirmed txs (height ≤ 0), newest first, deduped by
 	 *  txid. Bounded by the user's own wallet history, not instance size. */
 	pending: PendingTx[];
@@ -84,11 +105,28 @@ function buildIndex(userId: number): UserWalletIndex {
 	const addr = new Map<string, AddrEntry>();
 	const txid = new Map<string, OwnedWalletRef[]>();
 	const heights = new Set<number>();
+	const byHeight = new Map<number, OwnedBlockTx[]>();
 
 	// Confirmed txs carry a positive block height (0 / -1 = unconfirmed); an
-	// unconfirmed tx isn't in any listed block yet, so skip it.
-	const addHeight = (h: number) => {
-		if (h > 0) heights.add(h);
+	// unconfirmed tx isn't in any listed block yet, so skip it. Records both the
+	// height (for the "Yours" pip) and the tx itself keyed by height (for the
+	// "Yours in this ring" callout), deduped by txid within each block so a tx
+	// touching two of the viewer's wallets is listed once (first wallet wins).
+	const addHeight = (
+		row: { txid: string; height: number; delta: number; fee: number | null },
+		ref: OwnedWalletRef
+	) => {
+		const h = row.height;
+		if (h <= 0) return;
+		heights.add(h);
+		let arr = byHeight.get(h);
+		if (!arr) {
+			arr = [];
+			byHeight.set(h, arr);
+		}
+		if (!arr.some((t) => t.txid === row.txid)) {
+			arr.push({ txid: row.txid, wallet: ref, delta: row.delta, fee: row.fee });
+		}
 	};
 
 	// Pending (unconfirmed) txs, deduped by txid — a tx that touches two of the
@@ -137,7 +175,7 @@ function buildIndex(userId: number): UserWalletIndex {
 		}
 		for (const t of snap.scan.txs) {
 			addTx(t.txid, ref);
-			addHeight(t.height);
+			addHeight(t, ref);
 			addPending(t, ref);
 		}
 	}
@@ -158,7 +196,7 @@ function buildIndex(userId: number): UserWalletIndex {
 		}
 		for (const t of snap.detail.history) {
 			addTx(t.txid, ref);
-			addHeight(t.height);
+			addHeight(t, ref);
 			addPending(t, ref);
 		}
 	}
@@ -166,7 +204,7 @@ function buildIndex(userId: number): UserWalletIndex {
 	// Newest first (nulls last), so the band leads with the freshest broadcast.
 	const pending = [...pendingByTxid.values()].sort((a, b) => (b.time ?? 0) - (a.time ?? 0));
 
-	return { addr, txid, heights, pending };
+	return { addr, txid, heights, byHeight, pending };
 }
 
 // Per-process memo, keyed by userId. Snapshots only change on the background
@@ -216,6 +254,22 @@ export function addressOwnership(
 export function ownedBlockHeights(userId: number | undefined): Set<number> {
 	if (!userId) return new Set();
 	return getIndex(userId).heights;
+}
+
+/**
+ * The viewing user's own confirmed transactions in the block at `height`, for
+ * the block-detail "Yours in this ring" callout (cairn-6efi.7). Viewer-scoped
+ * and bounded by the viewer's own confirmed-tx count — NOT by block size — and
+ * reuses the same per-process memo as the address/tx/pip lookups, so it adds
+ * ZERO chain calls to the block-detail load(). Returns [] for a logged-out
+ * viewer or a block the viewer has nothing in.
+ */
+export function ownedTxsInBlock(
+	userId: number | undefined,
+	height: number | null | undefined
+): OwnedBlockTx[] {
+	if (!userId || height === null || height === undefined) return [];
+	return getIndex(userId).byHeight.get(height) ?? [];
 }
 
 /** Badge data for an explorer tx page. */

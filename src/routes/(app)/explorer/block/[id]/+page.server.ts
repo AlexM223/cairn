@@ -4,6 +4,7 @@ import { coreRpcConfigured } from '$lib/server/settings';
 import { isNotFoundError, chainErrorMessage } from '$lib/server/search';
 import { getEpochStrip } from '$lib/server/chainEpochs';
 import { gatherNodeTrust } from '$lib/server/chain/nodeTrust';
+import { ownedTxsInBlock, type OwnedBlockTx } from '../../ownership.server';
 import type { PageServerLoad } from './$types';
 import type { BlockDetail, TxDetail } from '$lib/types';
 
@@ -14,6 +15,11 @@ interface BlockPageData {
 	txPage: number;
 	txError: string | null;
 	tipHeight: number | null;
+	/** The viewing user's own confirmed txs in this block, for the "Yours in this
+	 *  ring" callout (cairn-6efi.7). Viewer-scoped, chain-free local lookup keyed
+	 *  by the block height — bounded by the viewer's own tx count, adds no chain
+	 *  round-trip. Empty for anonymous viewers / blocks they have nothing in. */
+	yours: OwnedBlockTx[];
 	/** The block hash/height parsed but no matching block exists on the backend. */
 	notFound: boolean;
 	/** The backend was unreachable or errored (distinct from a genuine 404). */
@@ -29,7 +35,8 @@ interface BlockPageData {
 async function loadBlockData(
 	id: string,
 	isHeight: boolean,
-	txPage: number
+	txPage: number,
+	userId: number | undefined
 ): Promise<BlockPageData> {
 	const chain = getChain();
 	let block: BlockDetail;
@@ -43,6 +50,7 @@ async function loadBlockData(
 			txPage,
 			txError: null,
 			tipHeight: null,
+			yours: [],
 			notFound: isNotFoundError(e),
 			error: isNotFoundError(e) ? null : chainErrorMessage(e)
 		};
@@ -67,6 +75,9 @@ async function loadBlockData(
 		txPage,
 		txError: txsRes.error,
 		tipHeight: tip?.height ?? null,
+		// Viewer-scoped, chain-free: keyed by the now-known block height. No extra
+		// round-trip — a pure lookup into the memoized ownership index.
+		yours: ownedTxsInBlock(userId, block.height),
 		notFound: false,
 		error: null
 	};
@@ -91,8 +102,10 @@ export const load: PageServerLoad = async ({ params, url, locals }) => {
 		isAdmin: locals?.user?.isAdmin ?? false,
 		// NodeTrust provenance chip (cairn-6efi.3): cached-only, no chain call.
 		nodeTrust: gatherNodeTrust(),
-		// Streamed, not awaited (cairn-2zxt.3).
-		chain: loadBlockData(id, isHeight, txPage),
+		// Streamed, not awaited (cairn-2zxt.3). The viewer's "Yours in this ring"
+		// txs are computed inside — a chain-free local lookup keyed by the block
+		// height, which is only known once the block resolves.
+		chain: loadBlockData(id, isHeight, txPage, locals?.user?.id),
 		// Locator-strip dataset (cairn-koy4.7): streamed, cached hard after the
 		// first computation; resolves to null (strip hidden) rather than rejecting.
 		strip: getEpochStrip().catch(() => null)
