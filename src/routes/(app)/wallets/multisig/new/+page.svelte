@@ -108,6 +108,20 @@
 			totalKeys <= 15
 	);
 
+	// Plain-language reason a custom quorum is invalid, so an M>N choice isn't a
+	// dead-end with a greyed-out Continue and no message (cairn-t3za). The common
+	// case — "keys required" edited above "total keys" — gets its own explainer;
+	// everything else keeps the generic range hint.
+	const quorumHint = $derived(
+		Number.isInteger(threshold) &&
+			Number.isInteger(totalKeys) &&
+			threshold >= 1 &&
+			totalKeys >= 1 &&
+			threshold > totalKeys
+			? "Keys required can't be more than the total number of keys — lower it, or add more keys."
+			: 'The required number must be between 1 and the total, and the total at most 15.'
+	);
+
 	// --------------------------------- dynamic quorum risk panel (cairn-a1y8)
 	//
 	// Replaces the old "you can afford to lose N keys" line with tier-based
@@ -1452,9 +1466,7 @@
 						</label>
 					</div>
 					{#if !quorumValid}
-						<Banner variant="error">
-							The required number must be between 1 and the total, and the total at most 15.
-						</Banner>
+						<Banner variant="error">{quorumHint}</Banner>
 					{/if}
 				</div>
 			{/if}
