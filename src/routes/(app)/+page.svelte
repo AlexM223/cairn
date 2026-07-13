@@ -639,6 +639,7 @@
 	}
 
 	.eye-btn {
+		position: relative;
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -692,6 +693,7 @@
 	}
 
 	.fiat-toggle {
+		position: relative;
 		background: none;
 		border: none;
 		padding: 0;
@@ -930,6 +932,16 @@
 			margin: -20px -18px -48px;
 			padding: 20px 18px 48px;
 			min-height: 0;
+		}
+
+		/* Touch-target batch (cairn-uxdev batch 2, item 3): both toggles keep
+		   their visual size, but get an invisible ::after that extends the
+		   actual hit area to the ~44px guideline. */
+		.eye-btn::after,
+		.fiat-toggle::after {
+			content: '';
+			position: absolute;
+			inset: -9px;
 		}
 
 		.hero {

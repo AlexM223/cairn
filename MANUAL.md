@@ -2401,6 +2401,12 @@ the secure origin (session cookies ignore port, so auth carries over);
 failure ⇒ stay put, `SecureContextHelp` keeps guiding the first-time flow.
 Escape hatch: `?insecure=1` sets `cairn.secure-redirect.off` in
 sessionStorage to suppress the auto-hop for the rest of the tab's session.
+Wizard exception: the hop is also skipped whenever the current path is under
+`/wallets/new` or `/wallets/multisig/new`, regardless of cert-acceptance
+state — those wizards keep their resume state in origin-scoped
+`sessionStorage`, and a cross-origin `replace()` mid-wizard silently wiped it
+(`cairn-01gq`); their own device-signing steps already surface
+`SecureContextHelp` inline, so the auto-hop had nothing to add there.
 Called from both the `(app)` and `(auth)` layouts' `onMount`, never during
 SSR. The `(auth)` layout wraps the `location` it passes in with a local
 interaction veto: the probe can take up to 2.5s, long enough for someone to
@@ -3891,9 +3897,13 @@ Umbrel's default. Verify:
    `CAIRN_HTTPS_EXTERNAL_PORT`. Click through once.
 3. **Auto-hop for returning users:** on a later visit, `secureRedirect.ts` silently hops to
    the HTTPS origin (a `no-cors` probe that only resolves if the cert was already accepted).
-   Escape hatch: append `?insecure=1` to suppress the hop for the tab session.
+   Escape hatch: append `?insecure=1` to suppress the hop for the tab session. Exception:
+   the hop never fires while the path is under `/wallets/new` or `/wallets/multisig/new` —
+   those wizards keep resume state in origin-scoped `sessionStorage`, which a cross-origin
+   hop would silently discard (`cairn-01gq`).
 - **PASS:** insecure context shows the helper + link; after accepting the cert, USB tiles
-  become `available:true`; returning-user auto-hop works; `?insecure=1` suppresses it.
+  become `available:true`; returning-user auto-hop works outside the wizards and stays
+  suppressed inside them; `?insecure=1` suppresses it everywhere.
 
 ### 19.7 Master-fingerprint presence check `[emulator or real-hw]`
 Regression guard for cairn-alw8 (HW signing was always broken when no master fingerprint

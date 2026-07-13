@@ -17,9 +17,24 @@
 // Escape hatch: ?insecure=1 suppresses the hop for the rest of the tab's
 // session (sessionStorage), for anyone who deliberately wants the plain-HTTP
 // origin back.
+//
+// Wizard exception: the wallet-creation wizards (/wallets/new,
+// /wallets/multisig/new) persist their resume state in sessionStorage, which
+// is origin-scoped — a mid-wizard hop to the HTTPS origin silently discards
+// that progress (cairn-01gq). Those pages already surface SecureContextHelp
+// inline for the device-signing steps that actually need the secure
+// context, so the auto-hop buys nothing there and just costs progress.
 
 /** sessionStorage flag: "don't auto-open the secure address in this tab". */
 export const SECURE_REDIRECT_SUPPRESS_KEY = 'cairn.secure-redirect.off';
+
+/** Route prefixes where wizard resume state would be lost on a cross-origin hop. */
+const WIZARD_PATH_PREFIXES = ['/wallets/new', '/wallets/multisig/new'];
+
+/** True when the given pathname is inside a wizard that keeps origin-scoped resume state. */
+function isWizardPath(pathname: string): boolean {
+	return WIZARD_PATH_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+}
 
 /** Query param that sets the suppress flag (an operator/debugging back door). */
 export const SECURE_REDIRECT_OPT_OUT_PARAM = 'insecure';
@@ -46,8 +61,9 @@ export function shouldAttemptSecureRedirect(opts: {
 	httpsPort: number | null;
 	searchParams: URLSearchParams;
 	storage: StorageLike | null;
+	pathname?: string;
 }): boolean {
-	const { isSecureContext, httpsPort, searchParams, storage } = opts;
+	const { isSecureContext, httpsPort, searchParams, storage, pathname } = opts;
 
 	// The explicit opt-out wins over everything, and persists for the tab —
 	// otherwise the hop would fight a user who deliberately came back to HTTP.
@@ -64,6 +80,11 @@ export function shouldAttemptSecureRedirect(opts: {
 	} catch {
 		// Unreadable storage — treat as unset.
 	}
+
+	// Mid-wizard: a cross-origin hop would wipe the wizard's sessionStorage
+	// resume state (cairn-01gq). The wizard's own device-signing steps
+	// already handle the secure-context gap inline.
+	if (pathname && isWizardPath(pathname)) return false;
 
 	// Secure already (which includes localhost) or no listener advertised.
 	if (isSecureContext || !httpsPort) return false;
@@ -90,7 +111,8 @@ export async function maybeRedirectToSecure(
 			isSecureContext: win.isSecureContext,
 			httpsPort,
 			searchParams: new URLSearchParams(win.location.search),
-			storage
+			storage,
+			pathname: win.location.pathname
 		})
 	) {
 		return false;

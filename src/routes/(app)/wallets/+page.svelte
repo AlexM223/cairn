@@ -809,6 +809,12 @@
 			margin-top: 10px;
 		}
 
+		/* Touch-target batch (cairn-uxdev batch 2, item 3): 40px is under the
+		   ~44px guideline on mobile; desktop keeps the original height. */
+		.multisig-card-cta {
+			height: 44px;
+		}
+
 		.head-hero {
 			margin-top: 14px;
 			gap: 8px;

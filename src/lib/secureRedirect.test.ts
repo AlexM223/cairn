@@ -88,4 +88,47 @@ describe('shouldAttemptSecureRedirect', () => {
 	it('works with no storage at all', () => {
 		expect(shouldAttemptSecureRedirect({ ...base, storage: null })).toBe(true);
 	});
+
+	it('suppresses the hop mid single-sig wizard (would wipe sessionStorage resume state)', () => {
+		expect(
+			shouldAttemptSecureRedirect({ ...base, storage: fakeStorage(), pathname: '/wallets/new' })
+		).toBe(false);
+		expect(
+			shouldAttemptSecureRedirect({
+				...base,
+				storage: fakeStorage(),
+				pathname: '/wallets/new/hardware'
+			})
+		).toBe(false);
+	});
+
+	it('suppresses the hop mid multisig wizard', () => {
+		expect(
+			shouldAttemptSecureRedirect({
+				...base,
+				storage: fakeStorage(),
+				pathname: '/wallets/multisig/new'
+			})
+		).toBe(false);
+		expect(
+			shouldAttemptSecureRedirect({
+				...base,
+				storage: fakeStorage(),
+				pathname: '/wallets/multisig/new/quorum'
+			})
+		).toBe(false);
+	});
+
+	it('still attempts the hop on non-wizard wallet routes', () => {
+		expect(
+			shouldAttemptSecureRedirect({ ...base, storage: fakeStorage(), pathname: '/wallets' })
+		).toBe(true);
+		expect(
+			shouldAttemptSecureRedirect({ ...base, storage: fakeStorage(), pathname: '/wallets/3/send' })
+		).toBe(true);
+	});
+
+	it('still attempts the hop when no pathname is provided (legacy callers)', () => {
+		expect(shouldAttemptSecureRedirect({ ...base, storage: fakeStorage() })).toBe(true);
+	});
 });

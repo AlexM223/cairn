@@ -45,6 +45,9 @@
 	// Advanced expander on the receive panel: derivation path is power-user
 	// detail, collapsed by default (never persisted — always resets closed).
 	let showReceiveAdvanced = $state(false);
+	// Same disclosure convention for the export-config explanatory copy (cairn-uxdev
+	// batch 2, item 2) — collapsed by default, header + status badge stay visible.
+	let showExportDetails = $state(false);
 
 	let syncing = $state(false);
 	// A refresh failure with nothing cached surfaces as the scan-error state; with
@@ -1039,70 +1042,90 @@
 							</span>
 						{/if}
 					</div>
-					<p class="backup-copy">
-						The backup describes the wallet — quorum and public keys — so any descriptor wallet can
-						find your money again. It <strong>can't spend</strong>; spending always needs
-						{data.multisig.threshold} of your keys. Store it with your seed backups.
-					</p>
-					<div class="row" style="gap: 8px; flex-wrap: wrap">
-						<a
-							href="/api/wallets/multisig/{data.multisig.id}/caravan"
-							class="btn btn-secondary btn-sm"
-							download
-							onclick={markBackupDownloaded}
+					<div class="disclosure hw-export-advanced">
+						<button
+							type="button"
+							class="disclosure-toggle"
+							onclick={() => (showExportDetails = !showExportDetails)}
+							aria-expanded={showExportDetails}
 						>
-							Wallet config (JSON)
-						</a>
-						<a
-							href="/api/wallets/multisig/{data.multisig.id}/coldcard"
-							class="btn btn-secondary btn-sm"
-							download
-							onclick={markBackupDownloaded}
-						>
-							ColdCard file
-						</a>
-						<a
-							href="/api/wallets/multisig/{data.multisig.id}/descriptor?download=1"
-							class="btn btn-ghost btn-sm"
-							download
-							onclick={markBackupDownloaded}
-						>
-							Descriptor (.txt)
-						</a>
-						{#if data.role === 'owner'}
-							<a
-								href="/api/wallets/multisig/{data.multisig.id}/backup-pdf"
-								class="btn btn-ghost btn-sm"
-								download
-								onclick={markBackupDownloaded}
+							<Icon name="settings" size={14} />
+							{showExportDetails ? 'Hide' : 'Show'} export options
+							<span class="chev" class:open={showExportDetails}
+								><Icon name="chevron-down" size={14} /></span
 							>
-								<Icon name="shield" size={13} /> Printable backup (PDF)
-							</a>
-						{/if}
-						{#if data.flags?.csv_export !== false}
-							<a
-								href="/api/wallets/multisig/{data.multisig.id}/history.csv"
-								class="btn btn-ghost btn-sm"
-								download
-								title="Download this wallet's transaction history as a CSV file"
-							>
-								History (CSV)
-							</a>
-						{:else}
-							<FeatureDisabled message="CSV export has been disabled by your administrator." />
-						{/if}
-					</div>
-					<div class="backup-notes">
-						<p class="hw-caption">
-							<strong>Wallet config</strong> — opens directly in Sparrow, Caravan and Unchained.
-							· <strong>ColdCard file</strong> — put it on the microSD so the ColdCard (or
-							Passport/Keystone/SeedSigner) recognizes the wallet before co-signing.
-							· <strong>Descriptor</strong> — the raw text form, for Bitcoin Core and power users.
-						</p>
-						{#if data.descriptor}
-							<div class="descriptor-line">
-								<span class="hint">Descriptor:</span>
-								<CopyText value={data.descriptor} truncate={18} />
+						</button>
+						{#if showExportDetails}
+							<div class="disclosure-body fade-in">
+								<p class="backup-copy">
+									The backup describes the wallet — quorum and public keys — so any descriptor
+									wallet can find your money again. It <strong>can't spend</strong>; spending
+									always needs {data.multisig.threshold} of your keys. Store it with your seed
+									backups.
+								</p>
+								<div class="row" style="gap: 8px; flex-wrap: wrap">
+									<a
+										href="/api/wallets/multisig/{data.multisig.id}/caravan"
+										class="btn btn-secondary btn-sm"
+										download
+										onclick={markBackupDownloaded}
+									>
+										Wallet config (JSON)
+									</a>
+									<a
+										href="/api/wallets/multisig/{data.multisig.id}/coldcard"
+										class="btn btn-secondary btn-sm"
+										download
+										onclick={markBackupDownloaded}
+									>
+										ColdCard file
+									</a>
+									<a
+										href="/api/wallets/multisig/{data.multisig.id}/descriptor?download=1"
+										class="btn btn-ghost btn-sm"
+										download
+										onclick={markBackupDownloaded}
+									>
+										Descriptor (.txt)
+									</a>
+									{#if data.role === 'owner'}
+										<a
+											href="/api/wallets/multisig/{data.multisig.id}/backup-pdf"
+											class="btn btn-ghost btn-sm"
+											download
+											onclick={markBackupDownloaded}
+										>
+											<Icon name="shield" size={13} /> Printable backup (PDF)
+										</a>
+									{/if}
+									{#if data.flags?.csv_export !== false}
+										<a
+											href="/api/wallets/multisig/{data.multisig.id}/history.csv"
+											class="btn btn-ghost btn-sm"
+											download
+											title="Download this wallet's transaction history as a CSV file"
+										>
+											History (CSV)
+										</a>
+									{:else}
+										<FeatureDisabled message="CSV export has been disabled by your administrator." />
+									{/if}
+								</div>
+								<div class="backup-notes">
+									<p class="hw-caption">
+										<strong>Wallet config</strong> — opens directly in Sparrow, Caravan and
+										Unchained. · <strong>ColdCard file</strong> — put it on the microSD so the
+										ColdCard (or Passport/Keystone/SeedSigner) recognizes the wallet before
+										co-signing. · <strong>Descriptor</strong> — the raw text form, for Bitcoin Core
+										and power users.
+									</p>
+									{#if data.descriptor}
+										<div class="descriptor-line">
+											<span class="hint">Descriptor:</span>
+											<CopyText value={data.descriptor} truncate={18} />
+										</div>
+									{/if}
+								</div>
 							</div>
 						{/if}
 					</div>
@@ -1460,6 +1483,10 @@
 	/* Advanced disclosure (matches the multisig-new wizard's convention). */
 	.hw-receive-advanced {
 		margin-top: 4px;
+	}
+
+	.hw-export-advanced {
+		margin-top: 10px;
 	}
 
 	.disclosure {
