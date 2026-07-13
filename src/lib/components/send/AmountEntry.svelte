@@ -15,6 +15,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import { btcUsd } from '$lib/price';
 	import { formatBtc, formatSats, formatFiat } from '$lib/format';
+	import { SATS_PER_BTC, sanitizeDecimal, textToSats } from './amountInput';
 
 	let {
 		sats = $bindable(0),
@@ -30,8 +31,6 @@
 		ariaLabel?: string;
 	} = $props();
 
-	const SATS_PER_BTC = 100_000_000;
-
 	// Price feed. Compact rows never use fiat, so the price is forced null there,
 	// which also hides the swap and makes the secondary line show sats.
 	const price = $derived(compact ? null : $btcUsd);
@@ -46,17 +45,6 @@
 	// an external sats change apart from our own keystroke-driven write.
 	let lastSats = -1;
 	let userTouched = false;
-
-	function textToSats(t: string, unit: 'btc' | 'sats' | 'fiat', p: number | null): number {
-		const n = Number(t.replace(/,/g, ''));
-		if (!Number.isFinite(n) || n <= 0) return 0;
-		if (unit === 'fiat') {
-			if (p == null || p <= 0) return 0;
-			return Math.round((n / p) * SATS_PER_BTC);
-		}
-		if (unit === 'sats') return Math.round(n);
-		return Math.round(n * SATS_PER_BTC);
-	}
 
 	function satsToText(s: number, unit: 'btc' | 'sats' | 'fiat', p: number | null): string {
 		if (s <= 0) return '';
@@ -121,7 +109,12 @@
 			sats = n;
 			return;
 		}
-		const s = textToSats(text, entryUnit, price);
+		// BTC/fiat: keep the field numeric (digits + one decimal point) so letters
+		// and stray separators can't be typed or pasted in (cairn-wi8a). The sats
+		// branch above already strips to digits.
+		const cleaned = sanitizeDecimal(text);
+		if (cleaned !== text) text = cleaned;
+		const s = textToSats(cleaned, entryUnit, price);
 		lastSats = s;
 		sats = s;
 	}
