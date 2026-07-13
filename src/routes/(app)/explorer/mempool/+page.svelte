@@ -5,9 +5,13 @@
 	import { triggerChainRefresh } from '$lib/chainRefresh';
 	import Icon from '$lib/components/Icon.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
+	import CoreRpcRequiredNotice from '$lib/components/CoreRpcRequiredNotice.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
-	import CairnChart, { type ChartBar } from '$lib/components/heartwood/CairnChart.svelte';
+	import CairnChart from '$lib/components/heartwood/CairnChart.svelte';
+	import FeeWeather from '$lib/components/heartwood/FeeWeather.svelte';
+	import BreathingCounter from '$lib/components/heartwood/BreathingCounter.svelte';
+	import PendingBand from '$lib/components/heartwood/PendingBand.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import { formatNumber, formatBtc, formatBytes, formatFeeRate, timeAgo } from '$lib/format';
 
@@ -16,7 +20,8 @@
 	// Stale-while-revalidate: the mempool view renders instantly from the persisted
 	// SQLite snapshot load() read (data.mempool); the client refreshes it in the
 	// background (on mount + on every new block) and invalidate('cairn:chain')
-	// re-runs load() to pick up the fresh snapshot.
+	// re-runs load() to pick up the fresh snapshot. Each panel below reads its own
+	// slice and degrades on its own — a missing source never blanks the page.
 	let snap = $derived(data.mempool);
 
 	// Background-refresh state driving the "last synced …" indicator.
@@ -41,20 +46,22 @@
 				: ''
 	);
 
-	const loading = $derived(snap === null && !syncFailed);
+	// `snap === null` means NOTHING has ever been persisted — the only time a
+	// skeleton is honest. Once a snapshot exists, an individual null slice is a
+	// real "this backend doesn't provide it" degrade, shown as plain copy.
+	const firstLoad = $derived(snap === null && !syncFailed);
+	const neverSynced = $derived(snap === null);
 	const summary = $derived(snap?.summary ?? null);
 	const fees = $derived(snap?.fees ?? null);
 	const histogram = $derived(snap?.histogram ?? null);
 	const projected = $derived(snap?.projected ?? null);
 	const trend = $derived(snap?.trend ?? null);
 	const chainError = $derived(snap?.error ?? null);
-	// Error banner: a stored error, or the first snapshot refresh failing before
-	// anything was ever persisted.
+	// Hard error: a stored error, or the first refresh failing before anything was
+	// ever persisted. A partial snapshot is NOT an error — its panels degrade.
 	const showError = $derived(chainError !== null || (snap === null && syncFailed));
 
 	// Live new-block updates: refresh the mempool stats when the chain advances.
-	// This page exposes no tip height, so the initial SSE event triggers one
-	// harmless forced refresh shortly after mount.
 	let lastSeenHeight: number | null = null;
 	onMount(() =>
 		onNewBlock((height) => {
@@ -67,43 +74,11 @@
 	// A full block holds ~1M vB; how many block-fulls are waiting right now.
 	const blocksWorth = $derived(summary ? summary.vsize / 1_000_000 : 0);
 
-	// Group the raw [rate, vsize] histogram into readable fee bands.
-	const BANDS = [
-		{ min: 0, max: 2, label: '1–2' },
-		{ min: 2, max: 5, label: '2–5' },
-		{ min: 5, max: 10, label: '5–10' },
-		{ min: 10, max: 20, label: '10–20' },
-		{ min: 20, max: 50, label: '20–50' },
-		{ min: 50, max: 100, label: '50–100' },
-		{ min: 100, max: Infinity, label: '100+' }
-	];
+	// The fee rate that makes the next block — for the FeeWeather marker. Prefer
+	// the projection's own next-block median, fall back to the fastest estimate.
+	const nextBlockFee = $derived(projected?.[0]?.medianFee ?? fees?.fastest ?? null);
 
-	const feeBands = $derived.by(() => {
-		if (!histogram) return null;
-		const bands = BANDS.map((b) => ({ ...b, vsize: 0 }));
-		for (const [rate, vsize] of histogram) {
-			const band = bands.find((b) => rate >= b.min && rate < b.max) ?? bands[bands.length - 1];
-			band.vsize += vsize;
-		}
-		const max = Math.max(...bands.map((b) => b.vsize), 1);
-		return bands.map((b) => ({ ...b, share: b.vsize / max }));
-	});
-
-	// Fee distribution as horizontal proportional bars for CairnChart: one bar
-	// per sat/vB band, length = waiting virtual bytes in that band. Keeps the
-	// copper accent (default fill); the value axis now shows the byte scale a
-	// bare CSS-width bar couldn't.
-	const feeBandBars = $derived.by((): ChartBar[] | null => {
-		if (!feeBands) return null;
-		return feeBands.map((b) => ({
-			label: b.label,
-			value: b.vsize,
-			valueLabel: b.vsize > 0 ? formatBytes(b.vsize) : '—'
-		}));
-	});
-
-	// Trend chart series for the 2-hour backlog history (cairn-49wy: now
-	// rendered by the shared CairnChart rather than a hand-rolled SVG path).
+	// Trend chart series for the 2-hour backlog history.
 	const trendSeries = $derived.by(() => {
 		if (!trend || trend.length < 2) return null;
 		return [
@@ -165,7 +140,9 @@
 			{/if}
 			{#if summary}
 				<div class="hero-row">
-					<span class="hero-number hero-count">{formatNumber(summary.txCount)}</span>
+					<span class="hero-number hero-count">
+						<BreathingCounter value={summary.txCount} display={formatNumber(summary.txCount)} />
+					</span>
 					<span class="hero-sub">transactions waiting · no rings yet</span>
 				</div>
 				<div class="stat-line tabular">
@@ -173,7 +150,12 @@
 						<Term
 							tip="The combined virtual size of everything waiting. A ring segment fits about 1 million virtual bytes, so this backlog is roughly {blocksWorth.toFixed(1)} rings deep."
 						>
-							<span class="stat-num">{formatBytes(summary.vsize)}</span>
+							<span class="stat-num">
+								<BreathingCounter
+									value={summary.vsize}
+									display={formatBytes(summary.vsize)}
+								/>
+							</span>
 						</Term>
 						backlog
 					</span>
@@ -184,13 +166,27 @@
 						<span class="stat-num fees">{formatBtc(summary.totalFees)}</span> BTC in waiting fees
 					</span>
 				</div>
-			{:else if loading}
+			{:else if firstLoad}
 				<div class="hero-row" aria-busy="true" aria-label="Loading mempool">
 					<span class="hero-number hero-count skeleton">00,000</span>
 					<span class="hero-sub">transactions waiting · no rings yet</span>
 				</div>
 				<div class="stat-line tabular">
 					<span class="stat-num skeleton">000 MB backlog · 0.0 rings · 0.000 BTC</span>
+				</div>
+			{:else if !showError}
+				<!-- Snapshot exists but carries no mempool summary: honest degrade, not a
+				     false zero (Cardinal rule 1). The Core RPC notice is the honest reason
+				     only when no node is configured; otherwise it's an unreachable backend. -->
+				<div class="summary-degrade">
+					{#if !data.coreRpcConfigured}
+						<CoreRpcRequiredNotice feature="Live mempool totals" isAdmin={data.isAdmin} />
+					{:else}
+						<p class="hint">
+							Mempool totals are momentarily unavailable from your node — the counts will fill in
+							on the next refresh.
+						</p>
+					{/if}
 				</div>
 			{/if}
 		</header>
@@ -200,25 +196,12 @@
 				Can't reach chain data sources{#if chainError} — {chainError}{/if}.
 				<button type="button" class="retry-link" onclick={() => refresh(true)}>Retry</button>
 			</div>
-		{:else if loading}
-			<!-- Streamed placeholder: section scaffold while the snapshot lands. -->
-			<section class="section fade-in" aria-busy="true">
-				<div class="section-head">
-					<span class="section-title skeleton">Projected next rings</span>
-				</div>
-				<div class="proj-row">
-					{#each [0, 1, 2, 3, 4, 5] as i (i)}
-						<div class="proj-block skeleton" style:--depth={i}>
-							<span class="proj-eta">&nbsp;</span>
-							<span class="proj-fee tabular">&nbsp;</span>
-							<span class="proj-range tabular">&nbsp;</span>
-							<span class="proj-meta">&nbsp;</span>
-						</div>
-					{/each}
-				</div>
-			</section>
-		{:else if summary}
-			<!-- Projected next blocks -->
+		{:else}
+			<!-- Your own pending txs (viewer-scoped, from wallet snapshots). Renders
+			     nothing when you have none. -->
+			<PendingBand pending={data.pending} />
+
+			<!-- Projected next rings — independent panel. -->
 			{#if projected && projected.length > 0}
 				<section class="section fade-in">
 					<div class="section-head">
@@ -247,10 +230,26 @@
 						{/each}
 					</div>
 				</section>
+			{:else if neverSynced}
+				<section class="section fade-in" aria-busy="true">
+					<div class="section-head">
+						<span class="section-title skeleton">Projected next rings</span>
+					</div>
+					<div class="proj-row">
+						{#each [0, 1, 2, 3, 4, 5] as i (i)}
+							<div class="proj-block skeleton" style:--depth={i}>
+								<span class="proj-eta">&nbsp;</span>
+								<span class="proj-fee tabular">&nbsp;</span>
+								<span class="proj-range tabular">&nbsp;</span>
+								<span class="proj-meta">&nbsp;</span>
+							</div>
+						{/each}
+					</div>
+				</section>
 			{/if}
 
 			<div class="columns">
-				<!-- Recommended fees with context -->
+				<!-- What should I pay? — independent panel (fee estimates). -->
 				{#if tiers.length}
 					<section class="section">
 						<div class="section-head">
@@ -270,33 +269,52 @@
 							day pushes the next ring past 100.
 						</p>
 					</section>
-				{/if}
-
-				<!-- Fee distribution -->
-				{#if feeBands}
+				{:else if neverSynced}
+					<section class="section" aria-busy="true">
+						<div class="section-head">
+							<span class="section-title skeleton">What should I pay?</span>
+						</div>
+						<div class="tier-list">
+							{#each [0, 1, 2, 3] as i (i)}
+								<div class="tier skeleton"><span class="tier-rate">00</span></div>
+							{/each}
+						</div>
+					</section>
+				{:else}
 					<section class="section">
 						<div class="section-head">
-							<span class="section-title">Fee distribution</span>
-							<Term
-								tip="How the waiting transactions are spread across fee rates, by virtual size. Tall bands near the bottom mean cheap transactions dominate; weight near the top means a bidding war."
-							>
-								<span class="hint">what am I seeing?</span>
-							</Term>
+							<span class="section-title">What should I pay?</span>
 						</div>
-						<CairnChart
-							kind="bar"
-							orientation="horizontal"
-							bars={feeBandBars ?? []}
-							height={200}
-							ariaLabel="Fee distribution by virtual size"
-							valueFormat={(v) => formatBytes(Math.max(v, 0))}
-						/>
-						<span class="hint">sat/vB bands · bar length = waiting virtual bytes</span>
+						<p class="hint">
+							Fee estimates aren't available from the configured backend right now.
+						</p>
 					</section>
 				{/if}
+
+				<!-- Fee distribution — FeeWeather ridge, own panel. -->
+				<section class="section">
+					<div class="section-head">
+						<span class="section-title">Fee distribution</span>
+						<Term
+							tip="How the waiting transactions are spread across fee rates, by virtual size. A tall ridge near the left means cheap transactions dominate; weight to the right means a bidding war. The dashed marker is roughly what the next ring is paying."
+						>
+							<span class="hint">what am I seeing?</span>
+						</Term>
+					</div>
+					{#if histogram}
+						<FeeWeather {histogram} {nextBlockFee} />
+					{:else if neverSynced}
+						<div class="ridge-skeleton skeleton" aria-busy="true" aria-label="Loading fee distribution"></div>
+					{:else}
+						<p class="hint">
+							A fee-rate breakdown needs a mempool.space-compatible backend — the configured server
+							provides basic totals only.
+						</p>
+					{/if}
+				</section>
 			</div>
 
-			<!-- Trend -->
+			<!-- Backlog trend — own panel. -->
 			{#if trendSeries}
 				<section class="section fade-in">
 					<div class="section-head">
@@ -309,7 +327,7 @@
 						yFormat={(v) => formatBytes(Math.max(v, 0))}
 					/>
 				</section>
-			{:else if projected === null}
+			{:else if projected === null && !neverSynced}
 				<p class="hint degrade-note">
 					Projected rings and history need a mempool.space-compatible backend — the configured
 					Esplora server provides basic mempool totals only.
@@ -346,6 +364,8 @@
 	.body {
 		position: relative;
 		z-index: 1;
+		display: flex;
+		flex-direction: column;
 	}
 
 	.top-row {
@@ -391,7 +411,7 @@
 	.head {
 		display: flex;
 		flex-direction: column;
-		margin-bottom: 36px;
+		margin-bottom: 28px;
 	}
 
 	.hero-row {
@@ -436,6 +456,15 @@
 
 	.stat-num.fees {
 		color: var(--accent-bright);
+	}
+
+	.summary-degrade {
+		margin-top: 20px;
+	}
+
+	/* PendingBand sits between the hero and the panels with breathing room. */
+	.body :global(.pending-band) {
+		margin-bottom: 8px;
 	}
 
 	.section {
@@ -517,6 +546,11 @@
 		font-size: 11px;
 		color: var(--text-muted);
 		margin-top: 6px;
+	}
+
+	.ridge-skeleton {
+		height: 132px;
+		border-radius: var(--radius-control);
 	}
 
 	.columns {

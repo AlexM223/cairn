@@ -39,11 +39,29 @@ interface AddrEntry {
 	change: boolean;
 }
 
+/** One of the viewing user's own unconfirmed transactions, for the explorer
+ *  mempool "your pending txs" band. Derived purely from persisted wallet
+ *  snapshots — no chain call — so it stays viewer-scoped and load()-safe. */
+export interface PendingTx {
+	txid: string;
+	/** The viewing user's wallet this pending tx belongs to. */
+	wallet: OwnedWalletRef;
+	/** Net effect on that wallet in sats (positive = incoming). */
+	delta: number;
+	/** Fee paid, sats, or null when the snapshot doesn't record it. */
+	fee: number | null;
+	/** Unix seconds first seen, or null when the snapshot doesn't record it. */
+	time: number | null;
+}
+
 interface UserWalletIndex {
 	/** address -> the user's wallet that owns it (first match wins). */
 	addr: Map<string, AddrEntry>;
 	/** txid -> the user's wallet(s) whose stored history contains it. */
 	txid: Map<string, OwnedWalletRef[]>;
+	/** The viewing user's unconfirmed txs (height ≤ 0), newest first, deduped by
+	 *  txid. Bounded by the user's own wallet history, not instance size. */
+	pending: PendingTx[];
 }
 
 // Owner OR any accepted share (viewer/cosigner). Same access predicate as
@@ -60,6 +78,9 @@ const viewableMultisigsStmt = db.prepare(
 function buildIndex(userId: number): UserWalletIndex {
 	const addr = new Map<string, AddrEntry>();
 	const txid = new Map<string, OwnedWalletRef[]>();
+	// Pending (unconfirmed) txs, deduped by txid — a tx that touches two of the
+	// user's wallets is one waiting transaction, listed once (first wallet wins).
+	const pendingByTxid = new Map<string, PendingTx>();
 
 	const addTx = (t: string, ref: OwnedWalletRef) => {
 		const arr = txid.get(t);
@@ -68,6 +89,23 @@ function buildIndex(userId: number): UserWalletIndex {
 		} else if (!arr.some((w) => w.kind === ref.kind && w.id === ref.id)) {
 			arr.push(ref);
 		}
+	};
+
+	// A wallet history row is "pending" when it isn't yet in a block. Both
+	// WalletTx and MultisigTx encode that as height 0 or -1 (mempool).
+	const addPending = (
+		row: { txid: string; height: number; time: number | null; delta: number; fee: number | null },
+		ref: OwnedWalletRef
+	) => {
+		if (row.height > 0) return; // confirmed
+		if (pendingByTxid.has(row.txid)) return; // first wallet wins
+		pendingByTxid.set(row.txid, {
+			txid: row.txid,
+			wallet: ref,
+			delta: row.delta,
+			fee: row.fee,
+			time: row.time
+		});
 	};
 
 	// Single-sig wallets the user owns. listWalletRows is a synchronous, indexed
@@ -84,7 +122,10 @@ function buildIndex(userId: number): UserWalletIndex {
 		for (const a of snap.scan.addresses) {
 			if (!addr.has(a.address)) addr.set(a.address, { wallet: ref, change: a.change });
 		}
-		for (const t of snap.scan.txs) addTx(t.txid, ref);
+		for (const t of snap.scan.txs) {
+			addTx(t.txid, ref);
+			addPending(t, ref);
+		}
 	}
 
 	// Multisigs the user owns OR has an accepted share in.
@@ -101,10 +142,16 @@ function buildIndex(userId: number): UserWalletIndex {
 			// MultisigScanAddress.chain: 0 = receive, 1 = change.
 			if (!addr.has(a.address)) addr.set(a.address, { wallet: ref, change: a.chain === 1 });
 		}
-		for (const t of snap.detail.history) addTx(t.txid, ref);
+		for (const t of snap.detail.history) {
+			addTx(t.txid, ref);
+			addPending(t, ref);
+		}
 	}
 
-	return { addr, txid };
+	// Newest first (nulls last), so the band leads with the freshest broadcast.
+	const pending = [...pendingByTxid.values()].sort((a, b) => (b.time ?? 0) - (a.time ?? 0));
+
+	return { addr, txid, pending };
 }
 
 // Per-process memo, keyed by userId. Snapshots only change on the background
@@ -180,4 +227,19 @@ export function txOwnership(userId: number | undefined, tx: TxDetail): TxOwnersh
 
 	if (walletsByKey.size === 0) return null;
 	return { wallets: [...walletsByKey.values()], addressOwners };
+}
+
+/**
+ * The viewing user's own unconfirmed transactions for the explorer mempool
+ * "your pending txs" band — newest first, capped at `limit`. Purely a read over
+ * persisted wallet snapshots (memoized index, no chain call), scoped to wallets
+ * the user owns or has an accepted share in, so it is safe to call from an
+ * explorer load(). Returns [] for anonymous viewers.
+ *
+ * It deliberately reports only what the wallet already knows (amount, fee, first
+ * seen) — never a claimed position inside the anonymized mempool histogram.
+ */
+export function viewerPendingTxs(userId: number | undefined, limit = 12): PendingTx[] {
+	if (!userId) return [];
+	return getIndex(userId).pending.slice(0, Math.max(0, limit));
 }

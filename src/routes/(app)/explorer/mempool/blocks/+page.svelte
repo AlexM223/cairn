@@ -629,6 +629,20 @@
 		color: var(--text-secondary);
 	}
 
+	/* Calm motion (Cardinal rule 5): no rectangle morphing, entrance fades, or
+	   pulsing live-dot for viewers who prefer reduced motion — the treemap still
+	   updates, just without the animated transitions. */
+	@media (prefers-reduced-motion: reduce) {
+		.tx-rect {
+			transition: none;
+			animation: none;
+		}
+
+		.live-dot {
+			animation: none;
+		}
+	}
+
 	@media (max-width: 900px) {
 		.blocks-page {
 			margin: -20px -18px -48px;
