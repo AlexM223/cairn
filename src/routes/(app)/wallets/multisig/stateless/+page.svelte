@@ -9,6 +9,7 @@
 	import QuorumArc from '$lib/components/heartwood/QuorumArc.svelte';
 	import BurialRings from '$lib/components/heartwood/BurialRings.svelte';
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
+	import Amount from '$lib/components/Amount.svelte';
 	import { formatBtc, formatSats, formatFeeRate, truncateMiddle } from '$lib/format';
 	import type { ConstructedMultisigPsbt, MultisigSigningProgress } from '$lib/server/bitcoin/multisigPsbt';
 	import type { SigningMass } from '$lib/server/bitcoin/signingMass';
@@ -537,14 +538,15 @@
 						</div>
 
 						<div class="balance-block">
-							<span class="hero-amount sm tabular" title="{formatSats(scan.balance.confirmed)} sats">
-								{formatBtc(scan.balance.confirmed)}
-							</span>
-							<span class="hero-unit">BTC</span>
+							<Amount sats={scan.balance.confirmed} size="hero" />
 							{#if scan.balance.unconfirmed !== 0}
 								<span class="badge badge-warning">
-									{scan.balance.unconfirmed > 0 ? '+' : ''}{formatSats(scan.balance.unconfirmed)} sats
-									pending
+									<Amount
+										sats={scan.balance.unconfirmed}
+										size="inline"
+										sign
+										direction={scan.balance.unconfirmed > 0 ? 'in' : 'out'}
+									/> pending
 								</span>
 							{/if}
 						</div>
@@ -591,7 +593,7 @@
 			</div>
 		{:else if scan && config}
 			<p class="phase-summary hint">
-				“{multisigLabel}” — {quorum} · {formatBtc(scan.balance.confirmed)} BTC ·
+				“{multisigLabel}” — {quorum} · <Amount sats={scan.balance.confirmed} size="inline" /> ·
 				{scan.utxos.length}
 				{scan.utxos.length === 1 ? 'coin' : 'coins'}
 			</p>
@@ -770,11 +772,7 @@
 						<div class="detail-list fade-in">
 							<div class="detail-row">
 								<span class="text-secondary">Sending</span>
-								<span class="detail-val tabular"
-									>{formatBtc(details.amount)} BTC <span class="text-muted"
-										>· {formatSats(details.amount)} sats</span
-									></span
-								>
+								<span class="detail-val"><Amount sats={details.amount} size="row" /></span>
 							</div>
 							<div class="detail-row">
 								<span class="text-secondary">To</span>
@@ -835,7 +833,11 @@
 				</div>
 			{:else if details && phase === 'sign'}
 				<p class="phase-summary hint tabular">
-					{formatBtc(details.amount)} BTC → {truncateMiddle(details.recipient, 12, 10)} ·
+					<Amount sats={details.amount} size="inline" /> → {truncateMiddle(
+						details.recipient,
+						12,
+						10
+					)} ·
 					{formatSats(details.fee)} sats fee
 				</p>
 			{/if}
@@ -861,7 +863,7 @@
 							<BurialRings confirmations={0} direction="out" size={64} />
 						</div>
 						{#if details}
-							<h2 class="sent-title">{formatBtc(details.amount)} BTC is on its way</h2>
+							<h2 class="sent-title"><Amount sats={details.amount} size="hero" /> is on its way</h2>
 						{:else}
 							<h2 class="sent-title">Your bitcoin is on its way</h2>
 						{/if}
@@ -1067,7 +1069,8 @@
 							<div>
 								<strong>You are about to broadcast this transaction.</strong>
 								Broadcasting is <em>irreversible</em> — once the network accepts it, the coins are
-								gone. Verify one last time: {formatBtc(details.amount)} BTC to
+								gone. Verify one last time:
+								<Amount sats={details.amount} size="inline" /> to
 								<span class="mono">{truncateMiddle(details.recipient, 12, 10)}</span>, fee
 								{formatSats(details.fee)} sats.
 							</div>
@@ -1293,26 +1296,6 @@
 		flex-wrap: wrap;
 	}
 
-	.hero-amount {
-		font-family: var(--font-serif);
-		font-weight: 600;
-		font-size: 44px;
-		line-height: 0.96;
-		letter-spacing: -0.015em;
-		font-variant-numeric: tabular-nums;
-		color: var(--text-hero);
-	}
-
-	.hero-amount.sm {
-		font-size: 36px;
-	}
-
-	.hero-unit {
-		font-family: var(--font-serif);
-		font-weight: 400;
-		font-size: 20px;
-		color: var(--eyebrow);
-	}
 
 	.test-address {
 		display: flex;

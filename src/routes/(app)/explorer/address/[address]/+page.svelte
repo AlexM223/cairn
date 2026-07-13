@@ -370,21 +370,21 @@
 									</td>
 									<td class="num tabular">
 										{#if tx.delta !== null}
-											<span
-												class={tx.delta >= 0 ? 'pos' : 'neg'}
-												title="{formatSats(tx.delta)} sats"
-											>
-												{tx.delta >= 0 ? '+' : '−'}{formatBtc(Math.abs(tx.delta))} BTC
-											</span>
+											<Amount
+												sats={tx.delta}
+												size="row"
+												sign
+												direction={tx.delta >= 0 ? 'in' : 'out'}
+											/>
 										{:else}
 											—
 										{/if}
 									</td>
 									<td
 										class="num tabular text-secondary"
-										title="{formatSats(tx.balanceAfter)} sats — the address balance once this transaction settled"
+										title="the address balance once this transaction settled"
 									>
-										{formatBtc(tx.balanceAfter)} BTC
+										<Amount sats={tx.balanceAfter} size="inline" />
 									</td>
 									<td class="num text-muted">
 										{tx.fee !== null ? `${formatSats(tx.fee)} sats` : '—'}
@@ -617,15 +617,6 @@
 		font-size: 20px;
 		font-weight: 600;
 		color: var(--text-rows);
-	}
-
-	.pos {
-		color: var(--sage);
-	}
-
-	/* Outgoing is a neutral value tone — never red (spec). */
-	.neg {
-		color: var(--text-secondary);
 	}
 
 	/* --- history --- */

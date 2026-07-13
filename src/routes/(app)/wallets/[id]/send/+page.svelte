@@ -18,6 +18,7 @@
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
 	import AtTipPill from '$lib/components/heartwood/AtTipPill.svelte';
 	import { formatBtc, formatSats, formatFeeRate, truncateMiddle } from '$lib/format';
+	import Amount from '$lib/components/Amount.svelte';
 	import AmountEntry from '$lib/components/send/AmountEntry.svelte';
 	import FeeSpeedPicker from '$lib/components/send/FeeSpeedPicker.svelte';
 	import SendReviewCard from '$lib/components/send/SendReviewCard.svelte';
@@ -983,8 +984,8 @@
 						<Icon name="plus" size={14} /> Add another recipient
 					</button>
 					{#if rows.length > 1 && createTotalSats > 0}
-						<span class="field-line tabular muted batch-total">
-							Total: {formatBtc(createTotalSats)} BTC · {formatSats(createTotalSats)} sats
+						<span class="field-line muted batch-total">
+							Total: <Amount sats={createTotalSats} size="row" />
 						</span>
 					{/if}
 				</div>
@@ -1143,7 +1144,7 @@
 			<section class="step-body sign-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
 				{#if review}
 					<div class="sign-hero">
-						<span class="hero-amount">{formatBtc(review.amount)} <em>BTC</em></span>
+						<Amount sats={review.amount} size="hero" />
 						<p class="sign-sub">
 							to
 							{#if review.recipients.length === 1}
@@ -1477,7 +1478,7 @@
 				</div>
 
 				{#if review}
-					<h2 class="sent-title">{formatBtc(review.amount)} BTC is on its way</h2>
+					<h2 class="sent-title"><Amount sats={review.amount} size="hero" /> is on its way</h2>
 				{:else}
 					<h2 class="sent-title">Your bitcoin is on its way</h2>
 				{/if}
@@ -2004,20 +2005,6 @@
 		gap: 8px;
 	}
 
-	.hero-amount {
-		font-family: var(--font-serif);
-		font-weight: 600;
-		font-size: 64px;
-		line-height: 0.96;
-		letter-spacing: -0.015em;
-		font-variant-numeric: tabular-nums;
-		color: var(--text-hero);
-	}
-
-	.hero-amount.sm {
-		font-size: 44px;
-	}
-
 	/* 5b sub-line: "to bc1q… · fee 12 sat/vB · draft saved on your node". */
 	.sign-sub {
 		margin-top: 14px;
@@ -2028,13 +2015,6 @@
 	.sub-addr {
 		font-size: 13.5px;
 		color: var(--on-accent-ghost);
-	}
-
-	.hero-amount em {
-		font-style: normal;
-		font-size: 0.42em;
-		color: var(--text-secondary);
-		font-weight: 500;
 	}
 
 	.review-recipients {
@@ -2718,14 +2698,6 @@
 
 		.mode-toggles {
 			justify-content: center;
-		}
-
-		.hero-amount {
-			font-size: 38px;
-		}
-
-		.hero-amount.sm {
-			font-size: 32px;
 		}
 
 		.review-hero {

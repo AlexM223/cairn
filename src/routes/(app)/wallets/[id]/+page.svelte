@@ -528,7 +528,7 @@
 					<span class="tabular">{formatSats(scan.confirmed)} sats</span>
 					{#if scan.unconfirmed !== 0}
 						<span class="hw-pending">
-							· {scan.unconfirmed > 0 ? '+' : ''}{formatBtc(scan.unconfirmed)} BTC on its way
+							· <Amount sats={scan.unconfirmed} size="inline" sign direction="in" /> on its way
 						</span>
 					{/if}
 				</p>

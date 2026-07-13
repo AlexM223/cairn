@@ -1,7 +1,11 @@
 <script lang="ts">
-	import { formatBtc } from '$lib/format';
+	import { formatBtc, btcToFiat, formatFiat } from '$lib/format';
 	import Icon from '$lib/components/Icon.svelte';
 	import Amount from '$lib/components/Amount.svelte';
+	// Segment tooltips are plain title-attribute strings (no markup), so Amount
+	// can't render there directly — reuse the same auto-refreshing price store
+	// Amount subscribes to, and append an approximate fiat figure by hand.
+	import { btcUsd } from '$lib/price';
 
 	type Slice = {
 		key: string;
@@ -27,6 +31,15 @@
 	);
 
 	const pct = (balance: number) => (total > 0 ? (balance / total) * 100 : 0);
+
+	// Approximate fiat suffix for the plain-string segment tooltip, e.g.
+	// " (≈$1,234.56)". Empty when the price feed is unset/unavailable, so
+	// the tooltip degrades to BTC-only rather than showing a broken figure.
+	const fiatFor = (balanceSats: number) => {
+		const price = $btcUsd;
+		if (price == null) return '';
+		return ` (≈${formatFiat(btcToFiat(balanceSats / 1e8, price))})`;
+	};
 </script>
 
 {#if slices.length === 0}
@@ -39,9 +52,9 @@
 					<span
 						class="segment"
 						style="width: {pct(slice.balance)}%; background: {colorFor(index)};"
-						title="{slice.name} — {formatBtc(slice.balance)} BTC ({pct(slice.balance).toFixed(
-							1
-						)}%)"
+						title="{slice.name} — {formatBtc(slice.balance)} BTC{fiatFor(
+							slice.balance
+						)} ({pct(slice.balance).toFixed(1)}%)"
 					></span>
 				{/each}
 			</div>
