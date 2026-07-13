@@ -99,6 +99,7 @@
 				{:else}
 					<Icon name={item.icon} size={19} strokeWidth={1.6} />
 				{/if}
+				<span class="icon-label">{item.label}</span>
 			</a>
 		{/each}
 	</nav>
@@ -174,7 +175,7 @@
 
 <style>
 	.rail {
-		width: 68px;
+		width: 92px;
 		flex-shrink: 0;
 		display: flex;
 		flex-direction: column;
@@ -196,18 +197,21 @@
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-		gap: 6px;
+		gap: 4px;
 	}
 
 	.icon-btn {
-		width: 40px;
-		height: 40px;
+		width: 68px;
+		height: 52px;
 		border-radius: 11px;
 		display: flex;
+		flex-direction: column;
 		align-items: center;
 		justify-content: center;
+		gap: 4px;
 		/* Spec rail-inactive tone — between --text-faint and --eyebrow-path;
-		   decorative-weight by design, the title/aria-label carries meaning. */
+		   decorative-weight by design, the icon-label span makes the meaning
+		   visible too (cairn-vtpu — icon-only was illegible to first-timers). */
 		color: #7a6e63;
 		background: transparent;
 		transition:
@@ -222,6 +226,15 @@
 	.icon-btn.active {
 		color: var(--accent-bright);
 		background: rgba(232, 147, 90, 0.1);
+	}
+
+	.icon-label {
+		font-family: var(--font-ui);
+		font-size: 10px;
+		font-weight: 500;
+		line-height: 1;
+		letter-spacing: 0.01em;
+		white-space: nowrap;
 	}
 
 	.spacer {
