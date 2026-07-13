@@ -137,6 +137,13 @@
 	let tab = $state<'transactions' | 'addresses' | 'saved'>('transactions');
 	let addrFilter = $state<'used' | 'unused' | 'change'>('used');
 
+	// Progressive disclosure (cairn-uxdev batch 2, item 2): derivation path and
+	// the export-config explanatory copy are power-user detail, collapsed by
+	// default — matches the multisig detail page's existing showReceiveAdvanced
+	// convention (never persisted, always resets closed on load).
+	let showReceiveAdvanced = $state(false);
+	let showExportDetails = $state(false);
+
 	// --- saved transactions (draft → awaiting-signature → broadcast) ---
 	// Rows removed optimistically on delete; a failed DELETE restores the id.
 	let deletedTxIds = $state<number[]>([]);
@@ -679,7 +686,6 @@
 							<h2 class="hw-receive-headline">A fresh address, every time.</h2>
 							<div class="hw-addr-row">
 								<span class="mono hw-addr">{receive.address}</span>
-								<span class="hw-addr-path mono">{receive.path}</span>
 							</div>
 							{#if form?.receiveError}
 								<div class="form-error" role="alert">{form.receiveError}</div>
@@ -726,6 +732,25 @@
 								A new address for every payment keeps your history private. Old addresses keep
 								working forever — rotating never breaks anything.
 							</p>
+							<div class="disclosure hw-receive-advanced">
+								<button
+									type="button"
+									class="disclosure-toggle"
+									onclick={() => (showReceiveAdvanced = !showReceiveAdvanced)}
+									aria-expanded={showReceiveAdvanced}
+								>
+									<Icon name="settings" size={14} />
+									Advanced
+									<span class="chev" class:open={showReceiveAdvanced}
+										><Icon name="chevron-down" size={14} /></span
+									>
+								</button>
+								{#if showReceiveAdvanced}
+									<div class="disclosure-body fade-in">
+										<span class="hw-addr-path mono">Derivation path: {receive.path}</span>
+									</div>
+								{/if}
+							</div>
 						</div>
 					</div>
 				{:else}
@@ -1287,46 +1312,64 @@
 						</span>
 					{/if}
 				</div>
-				<p class="backup-copy">
-					You don't need to back this up — a single-key wallet always rebuilds from your
-					hardware device (just re-import its key). If you'd like a copy anyway, the config
-					describes the wallet (public key and settings) for importing into Sparrow, Electrum,
-					or back into Heartwood. It <strong>can't spend</strong>.
-				</p>
-				<div class="row" style="gap: 8px; flex-wrap: wrap">
-					<a
-						href="/api/wallets/{data.wallet.id}/config"
-						class="btn btn-secondary btn-sm"
-						download
-						onclick={markBackupDownloaded}
+				<div class="disclosure hw-export-advanced">
+					<button
+						type="button"
+						class="disclosure-toggle"
+						onclick={() => (showExportDetails = !showExportDetails)}
+						aria-expanded={showExportDetails}
 					>
-						Wallet config (JSON)
-					</a>
-					<a
-						href="/api/wallets/{data.wallet.id}/descriptor"
-						class="btn btn-ghost btn-sm"
-						download
-						onclick={markBackupDownloaded}
-					>
-						Descriptor (.txt)
-					</a>
-					{#if data.flags?.csv_export !== false}
-						<a
-							href="/api/wallets/{data.wallet.id}/history.csv"
-							class="btn btn-ghost btn-sm"
-							download
-							title="Download this wallet's transaction history as a CSV file"
+						<Icon name="settings" size={14} />
+						{showExportDetails ? 'Hide' : 'Show'} export options
+						<span class="chev" class:open={showExportDetails}
+							><Icon name="chevron-down" size={14} /></span
 						>
-							History (CSV)
-						</a>
-					{:else}
-						<FeatureDisabled message="CSV export has been disabled by your administrator." />
+					</button>
+					{#if showExportDetails}
+						<div class="disclosure-body fade-in">
+							<p class="backup-copy">
+								You don't need to back this up — a single-key wallet always rebuilds from your
+								hardware device (just re-import its key). If you'd like a copy anyway, the config
+								describes the wallet (public key and settings) for importing into Sparrow, Electrum,
+								or back into Heartwood. It <strong>can't spend</strong>.
+							</p>
+							<div class="row" style="gap: 8px; flex-wrap: wrap">
+								<a
+									href="/api/wallets/{data.wallet.id}/config"
+									class="btn btn-secondary btn-sm"
+									download
+									onclick={markBackupDownloaded}
+								>
+									Wallet config (JSON)
+								</a>
+								<a
+									href="/api/wallets/{data.wallet.id}/descriptor"
+									class="btn btn-ghost btn-sm"
+									download
+									onclick={markBackupDownloaded}
+								>
+									Descriptor (.txt)
+								</a>
+								{#if data.flags?.csv_export !== false}
+									<a
+										href="/api/wallets/{data.wallet.id}/history.csv"
+										class="btn btn-ghost btn-sm"
+										download
+										title="Download this wallet's transaction history as a CSV file"
+									>
+										History (CSV)
+									</a>
+								{:else}
+									<FeatureDisabled message="CSV export has been disabled by your administrator." />
+								{/if}
+							</div>
+							<p class="hw-caption">
+								Wallet config — re-import the key into Heartwood, Sparrow or Electrum. Descriptor —
+								the raw text form, for Bitcoin Core and power users.
+							</p>
+						</div>
 					{/if}
 				</div>
-				<p class="hw-caption">
-					Wallet config — re-import the key into Heartwood, Sparrow or Electrum. Descriptor — the
-					raw text form, for Bitcoin Core and power users.
-				</p>
 			</section>
 		{:else if loading}
 			<!-- ------------------------------------------- streaming skeleton -->
@@ -1739,6 +1782,55 @@
 	.hw-addr-path {
 		font-size: 11px;
 		color: var(--text-faint);
+	}
+
+	/* Advanced disclosure (matches the multisig detail page's convention). */
+	.hw-receive-advanced {
+		margin-top: 4px;
+	}
+
+	.disclosure {
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-control);
+		overflow: hidden;
+	}
+
+	.disclosure-toggle {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		width: 100%;
+		padding: 10px 12px;
+		background: transparent;
+		border: none;
+		color: var(--text-secondary);
+		font: inherit;
+		font-size: 12.5px;
+		font-weight: 500;
+		cursor: pointer;
+		text-align: left;
+	}
+
+	.disclosure-toggle:hover {
+		color: var(--text);
+	}
+
+	.chev {
+		margin-left: auto;
+		display: inline-flex;
+		transition: transform 140ms var(--ease);
+	}
+
+	.chev.open {
+		transform: rotate(180deg);
+	}
+
+	.disclosure-body {
+		padding: 2px 12px 12px;
+	}
+
+	.hw-export-advanced {
+		margin-top: 10px;
 	}
 
 	.hw-receive-actions {
