@@ -25,7 +25,15 @@ import { childLogger } from '../logger';
 import { EsploraApi } from './esplora';
 import { CoreRpcClient, CoreRpcError } from '../bitcoinCore/client';
 import { readMempoolTrend } from '../mempoolSamples';
-import { cachedTip, cachedFeeEstimates, resetChainCaches, getCachedRawTx, cacheRawTx } from './cache';
+import {
+	cachedTip,
+	cachedFeeEstimates,
+	resetChainCaches,
+	getCachedRawTx,
+	cacheRawTx,
+	getCachedBlockStats,
+	cacheBlockStats
+} from './cache';
 import type { EsploraBlock, EsploraTx } from './esplora';
 import type {
 	AddressInfo,
@@ -756,10 +764,19 @@ export class ChainService {
 		return rows;
 	}
 
-	/** Fetch + normalize one block's `getblockstats` aggregates (cairn-6efi.1, U1). */
+	/**
+	 * Fetch + normalize one block's `getblockstats` aggregates, served from the
+	 * immutable blockStatsCache when present (cairn-6efi.1, U1+U2). A confirmed
+	 * block's stats never change, so a cache hit is always correct — this is what
+	 * keeps the steady-state SWR refresh to a single new-tip stats fetch (U4).
+	 */
 	private async getRecentBlockStats(core: CoreRpcClient, hash: string): Promise<BlockStats | null> {
+		const cached = getCachedBlockStats(hash);
+		if (cached) return cached;
 		const raw = (await core.getBlockStats(hash, RECENT_BLOCK_STATS_FIELDS)) as CoreBlockStats;
-		return normalizeBlockStats(raw);
+		const stats = normalizeBlockStats(raw);
+		if (stats) cacheBlockStats(hash, stats);
+		return stats;
 	}
 
 	/**

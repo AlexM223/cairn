@@ -19,6 +19,7 @@
 //          reasoning as PEERS_TTL_MS in ../syncStatus.ts.
 
 import type { FeeEstimates } from '$lib/types';
+import type { BlockStats } from './index';
 
 /** Safety ceiling only — the tip is normally invalidated on the 'header' event
  *  the instant a block lands, long before this elapses. */
@@ -127,4 +128,48 @@ export function rawTxCacheSize(): number {
 /** Test hook: drop every cached raw tx. */
 export function clearRawTxCache(): void {
 	rawTxCache.clear();
+}
+
+// ---------------------------------------------------- block-stats LRU (cairn-6efi.1, U2)
+//
+// getblockstats aggregates for a confirmed block (tx count / size / weight /
+// total out / fee percentiles) NEVER change once the block is buried — a reorg
+// mints a NEW hash, so keying by block hash makes stale data structurally
+// impossible. Exactly the "cache forever, bounded by count" model as rawTxCache
+// above (NOT the tip/fee TTL model). This lets the SWR refresh (chainSync.ts)
+// re-fetch stats only for the newly-arrived tip block on each pass; the other
+// ~14 blocks in the list are cache hits (U4).
+
+const BLOCK_STATS_CACHE_MAX = 300;
+const blockStatsCache = new Map<string, BlockStats>();
+
+/** Cached block stats for a block hash, or undefined. Refreshes LRU recency. */
+export function getCachedBlockStats(hash: string): BlockStats | undefined {
+	const hit = blockStatsCache.get(hash);
+	if (hit !== undefined) {
+		// Re-insert to mark as recently used (Map iterates in insertion order).
+		blockStatsCache.delete(hash);
+		blockStatsCache.set(hash, hit);
+	}
+	return hit;
+}
+
+/** Cache a block's stats under its hash, evicting the least-recently-used past the cap. */
+export function cacheBlockStats(hash: string, stats: BlockStats): void {
+	blockStatsCache.delete(hash);
+	blockStatsCache.set(hash, stats);
+	while (blockStatsCache.size > BLOCK_STATS_CACHE_MAX) {
+		const oldest = blockStatsCache.keys().next().value;
+		if (oldest === undefined) break;
+		blockStatsCache.delete(oldest);
+	}
+}
+
+export function blockStatsCacheSize(): number {
+	return blockStatsCache.size;
+}
+
+/** Test hook: drop every cached block stats entry. */
+export function clearBlockStatsCache(): void {
+	blockStatsCache.clear();
 }

@@ -33,7 +33,17 @@ vi.mock('../activity', () => ({ recordActivity: vi.fn() }));
 
 import { ChainService, testCoreRpc } from './index';
 import { CoreRpcError } from '../bitcoinCore/client';
-import { resetChainCaches, invalidateTipCache, clearRawTxCache, rawTxCacheSize } from './cache';
+import {
+	resetChainCaches,
+	invalidateTipCache,
+	clearRawTxCache,
+	rawTxCacheSize,
+	getCachedBlockStats,
+	cacheBlockStats,
+	blockStatsCacheSize,
+	clearBlockStatsCache
+} from './cache';
+import type { BlockStats } from './index';
 
 // ---- fixtures -----------------------------------------------------------------
 
@@ -222,6 +232,9 @@ afterEach(() => {
 	// Same for the raw-tx LRU (cairn perf: send-flow prev-tx fetch) — otherwise
 	// a txid reused across tests would silently short-circuit on a stale entry.
 	clearRawTxCache();
+	// And the immutable block-stats LRU (cairn-6efi.1, U2), so a hash reused
+	// across cases doesn't short-circuit a fresh enrichment fetch.
+	clearBlockStatsCache();
 });
 
 // ---- tip (electrum-backed, cairn-zoz8.5) -----------------------------------------
@@ -394,6 +407,67 @@ describe('getRecentBlocks', () => {
 			feeRange: null,
 			fullness: null
 		});
+	});
+
+	it('serves already-seen block stats from the immutable cache on the next refresh (cairn-6efi.1, U2)', async () => {
+		const core = makeCoreStub();
+		const svc = makeCoreService(core);
+		const hex = buildHeader({ time: 1_700_000_000, bits: GENESIS_BITS });
+		withElectrum(svc, { getBlockHeader: vi.fn(async () => hex) });
+		core.getBlockStats.mockResolvedValue({
+			txs: 42,
+			total_size: 1000,
+			total_weight: 4000,
+			total_out: 7,
+			feerate_percentiles: [1, 2, 3, 4, 5]
+		});
+
+		// First pass fetches getblockstats once (one block).
+		await svc.getRecentBlocks(1, 805);
+		expect(core.getBlockStats).toHaveBeenCalledTimes(1);
+
+		// Second pass over the SAME block hash is a pure cache hit — no new RPC.
+		const again = await svc.getRecentBlocks(1, 805);
+		expect(core.getBlockStats).toHaveBeenCalledTimes(1);
+		expect(again[0].txCount).toBe(42);
+	});
+});
+
+describe('blockStatsCache (immutable LRU, cairn-6efi.1 U2)', () => {
+	const mk = (txCount: number): BlockStats => ({
+		txCount,
+		size: 1000,
+		weight: 4000,
+		total_out: 7,
+		medianFee: 3,
+		feeRange: [1, 5]
+	});
+
+	it('returns cached stats unchanged (buried-block immutability)', () => {
+		cacheBlockStats('h1', mk(11));
+		expect(getCachedBlockStats('h1')).toMatchObject({ txCount: 11 });
+		// A confirmed block's stats never change; a re-cache under a fresh hash is a
+		// different block, and the original entry is untouched.
+		cacheBlockStats('h2', mk(22));
+		expect(getCachedBlockStats('h1')).toMatchObject({ txCount: 11 });
+		expect(getCachedBlockStats('h2')).toMatchObject({ txCount: 22 });
+	});
+
+	it('evicts the least-recently-used entry past the count bound', () => {
+		// Fill well past the 300 cap; the earliest inserted keys must be evicted.
+		for (let i = 0; i < 350; i++) cacheBlockStats(`blk-${i}`, mk(i));
+		expect(blockStatsCacheSize()).toBe(300);
+		expect(getCachedBlockStats('blk-0')).toBeUndefined(); // evicted
+		expect(getCachedBlockStats('blk-349')).toMatchObject({ txCount: 349 }); // newest kept
+	});
+
+	it('a read refreshes recency so a hot entry survives eviction', () => {
+		for (let i = 0; i < 300; i++) cacheBlockStats(`k-${i}`, mk(i));
+		// Touch the oldest so it is no longer the LRU victim.
+		expect(getCachedBlockStats('k-0')).toBeDefined();
+		cacheBlockStats('k-new', mk(999)); // forces one eviction
+		expect(getCachedBlockStats('k-0')).toBeDefined(); // survived
+		expect(getCachedBlockStats('k-1')).toBeUndefined(); // evicted instead
 	});
 });
 
