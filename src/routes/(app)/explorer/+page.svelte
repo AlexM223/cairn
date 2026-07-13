@@ -13,6 +13,7 @@
 	import RingStub from '$lib/components/heartwood/RingStub.svelte';
 	import FormingRing from '$lib/components/heartwood/FormingRing.svelte';
 	import RingBar from '$lib/components/heartwood/RingBar.svelte';
+	import NodeTrustChip from '$lib/components/heartwood/NodeTrustChip.svelte';
 	import { formatNumber, formatBytes, formatFeeRate, timeAgo, truncateMiddle } from '$lib/format';
 	import type { BlockSummary, SearchResult } from '$lib/types';
 
@@ -494,6 +495,7 @@
 
 		<!-- ============================================================ hero -->
 		<header class="hero fade-in">
+			<NodeTrustChip trust={data.nodeTrust} />
 			<div class="hero-row">
 				{#if tipHeight !== null}
 					<!-- Tip counter rolls once when a new block seals (cairn-6efi.2);

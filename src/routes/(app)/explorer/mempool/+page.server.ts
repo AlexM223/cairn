@@ -1,4 +1,5 @@
 import { readChainSnapshot } from '$lib/server/chainSnapshot';
+import { gatherNodeTrust } from '$lib/server/chain/nodeTrust';
 import type { PageServerLoad } from './$types';
 import type {
 	MempoolSummary,
@@ -36,5 +37,6 @@ export const load: PageServerLoad = async ({ depends }) => {
 				error: null
 			}
 		: null;
-	return { mempool, lastSyncedAt: snap?.lastSyncedAt ?? null };
+	// NodeTrust provenance chip (cairn-6efi.3): cached-only, no chain call.
+	return { mempool, lastSyncedAt: snap?.lastSyncedAt ?? null, nodeTrust: gatherNodeTrust() };
 };

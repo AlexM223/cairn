@@ -268,6 +268,69 @@ export interface NodeInfo {
 	error?: string;
 }
 
+// ------------------------------------------------------------------ NodeTrust
+//
+// The "Verified by your node" provenance indicator for the Explorer heroes
+// (cairn-6efi.3, Wave 2 track T-B). The trust CLAIM the UI is allowed to make
+// is derived exclusively from server config + a cached (never freshly probed)
+// connection signal, and it lives in exactly ONE constant lookup table
+// (nodeTrust.ts's TRUST_SPECS) so the honesty matrix (Explorer-redesign
+// Cardinal rule 2) is structurally impossible to violate: no code path
+// interpolates a trust string, and only the `core-verified` cell — reachable
+// only when Core RPC is genuinely configured AND connected — may say
+// "Verified by your Bitcoin Core node".
+
+/** The coarse, honestly-observable phase of the chain connection (mirrors
+ *  syncStatus.ts's SyncPhase; redeclared here so this client-safe type file
+ *  never imports a $lib/server module). */
+export type NodeSyncPhase = 'connecting' | 'history' | 'scanning' | 'synced' | 'unreachable';
+
+/** The exhaustive set of trust states — one cell of the honesty matrix each.
+ *  Every kind maps to exactly one row of TRUST_SPECS. */
+export type NodeTrustKind =
+	| 'core-verified'
+	| 'core-unreachable'
+	| 'electrum-custom'
+	| 'electrum-custom-unreachable'
+	| 'public'
+	| 'public-unreachable'
+	| 'unconfigured';
+
+/** Which backend the shown data provably came from. `none` = never configured. */
+export type NodeTrustSource = 'core' | 'electrum' | 'public' | 'none';
+
+/** Visual/semantic tone — drives the chip colour, not the claim. */
+export type NodeTrustTone = 'verified' | 'own' | 'public' | 'warning' | 'idle';
+
+export interface NodeTrust {
+	kind: NodeTrustKind;
+	source: NodeTrustSource;
+	/** The single canonical trust claim on the chip. From TRUST_SPECS — NEVER interpolated. */
+	label: string;
+	/** The one-sentence popover headline. Also from TRUST_SPECS. */
+	headline: string;
+	tone: NodeTrustTone;
+	/** True only when the shown data provably came from the operator's own
+	 *  infrastructure (Core or a custom Electrum server) — gates the popover's
+	 *  "Nothing here came from a third party" line. */
+	ownInfrastructure: boolean;
+	/** True ONLY for `core-verified`. Gates the literal word "Verified". */
+	verified: boolean;
+	/** Whether the chain transport is reachable right now, from a cached
+	 *  in-memory signal (chainHealth) — never a fresh blocking probe. */
+	connected: boolean;
+	/** host:port / URL host of the active source, credentials stripped. null when unconfigured. */
+	server: string | null;
+	/** Latest known chain tip height from the persisted snapshot; null if none. */
+	tipHeight: number | null;
+	/** Coarse sync phase from cached signals; null when unknown/unconfigured. */
+	syncPhase: NodeSyncPhase | null;
+	/** How the chain connection was provisioned (umbrel-env, umbrel-probe, …) — display context only, never affects the claim. */
+	provisionedBy: string | null;
+	/** Epoch ms of the last successful background sync, for "last block seen …". null if never. */
+	lastSyncedAt: number | null;
+}
+
 export interface SearchResult {
 	type: 'block-height' | 'block-hash' | 'tx' | 'address' | 'unknown';
 	redirect: string | null;

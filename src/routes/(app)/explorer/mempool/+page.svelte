@@ -7,6 +7,7 @@
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
+	import NodeTrustChip from '$lib/components/heartwood/NodeTrustChip.svelte';
 	import CairnChart, { type ChartBar } from '$lib/components/heartwood/CairnChart.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import { formatNumber, formatBtc, formatBytes, formatFeeRate, timeAgo } from '$lib/format';
@@ -160,6 +161,7 @@
 
 		<header class="head fade-in">
 			<EyebrowBreadcrumb path={['Explorer']} current="Mempool" />
+			<NodeTrustChip trust={data.nodeTrust} />
 			{#if syncLabel}
 				<span class="sync-status" class:updating={syncing}>{syncLabel}</span>
 			{/if}

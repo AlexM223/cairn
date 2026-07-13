@@ -8,6 +8,7 @@
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import ChainStrip from '$lib/components/heartwood/ChainStrip.svelte';
+	import NodeTrustChip from '$lib/components/heartwood/NodeTrustChip.svelte';
 	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
 	import CoreRpcRequiredNotice from '$lib/components/CoreRpcRequiredNotice.svelte';
 	import { blockSubsidy } from '$lib/bitcoin';
@@ -178,6 +179,7 @@
 		{:else if block}
 			<!-- ========================================================= hero -->
 			<header class="hero fade-in">
+				<NodeTrustChip trust={data.nodeTrust} />
 				<div class="hero-row">
 					<h1 class="hero-number hero-title">Block {formatNumber(block.height)}</h1>
 					{#if confirmations !== null}

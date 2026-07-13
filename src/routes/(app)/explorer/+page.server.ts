@@ -3,6 +3,7 @@ import { classifySearch, chainErrorMessage } from '$lib/server/search';
 import { getEpochStrip } from '$lib/server/chainEpochs';
 import { ownedBlockHeights } from './ownership.server';
 import { readChainSnapshot } from '$lib/server/chainSnapshot';
+import { gatherNodeTrust } from '$lib/server/chain/nodeTrust';
 import type { PersistedChainData } from '$lib/server/chainSnapshot';
 import type { PageServerLoad } from './$types';
 import type {
@@ -119,6 +120,10 @@ export const load: PageServerLoad = async ({ url, depends, locals }) => {
 		chain,
 		yoursHeights,
 		lastSyncedAt: snap?.lastSyncedAt ?? null,
+		// NodeTrust provenance chip (cairn-6efi.3). Synchronous + cached-only —
+		// no chain call — so it rides the instant-paint snapshot read above and
+		// never blocks the load (Explorer-redesign Cardinal rule 3).
+		nodeTrust: gatherNodeTrust(),
 		// Admins get a direct link to connection settings on the no-chain-backend
 		// banner below (cairn-obg6); non-admins keep the calm retry-only copy since
 		// they can't act on it.
