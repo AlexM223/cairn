@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
 	import { page } from '$app/state';
+	import Banner from '$lib/components/Banner.svelte';
 	import { timeAgo } from '$lib/format';
 
 	let { data, form } = $props();
@@ -53,10 +54,10 @@
 </svelte:head>
 
 {#if form?.error}
-	<div class="form-error" role="alert" style="margin-bottom: 14px">{form.error}</div>
+	<div style="margin-bottom: 14px"><Banner variant="error">{form.error}</Banner></div>
 {/if}
 {#if mintError}
-	<div class="form-error" role="alert" style="margin-bottom: 14px">{mintError}</div>
+	<div style="margin-bottom: 14px"><Banner variant="error">{mintError}</Banner></div>
 {/if}
 
 <div class="hw-section fade-in">

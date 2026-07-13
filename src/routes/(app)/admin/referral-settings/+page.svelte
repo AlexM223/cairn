@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import Banner from '$lib/components/Banner.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import {
 		OFFICIAL_STORE_URLS,
@@ -74,7 +75,7 @@
 		{/each}
 
 		{#if form?.deviceUrlError}
-			<div class="form-error" role="alert">{form.deviceUrlError}</div>
+			<Banner variant="error">{form.deviceUrlError}</Banner>
 		{:else if form?.deviceUrlsSaved}
 			<p class="saved-note" role="status"><Icon name="check" size={14} /> Saved.</p>
 		{/if}
@@ -98,7 +99,7 @@
 	</p>
 
 	{#if form?.serviceError}
-		<div class="form-error" role="alert">{form.serviceError}</div>
+		<Banner variant="error">{form.serviceError}</Banner>
 	{/if}
 
 	<!-- Add a service -->

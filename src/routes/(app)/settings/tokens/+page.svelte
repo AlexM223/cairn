@@ -2,6 +2,7 @@
 	import { enhance } from '$app/forms';
 	import { goto } from '$app/navigation';
 	import { timeAgo, formatDateTime } from '$lib/format';
+	import Banner from '$lib/components/Banner.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
@@ -62,7 +63,7 @@
 	</p>
 
 	{#if form?.error}
-		<div class="form-error" role="alert">{form.error}</div>
+		<Banner variant="error">{form.error}</Banner>
 	{/if}
 
 	{#if form?.created}
@@ -228,10 +229,6 @@
 		font-family: var(--font-mono);
 		font-size: 0.92em;
 		color: var(--text);
-	}
-
-	.form-error {
-		margin-top: 14px;
 	}
 
 	/* One-time token reveal — sage confirmation, input-filled value. */

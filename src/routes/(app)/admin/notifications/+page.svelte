@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Banner from '$lib/components/Banner.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import { timeAgo } from '$lib/format';
@@ -161,8 +162,8 @@
 </svelte:head>
 
 <div class="stack settings-form fade-in">
-	{#if saveError}<div class="form-error" role="alert">{saveError}</div>{/if}
-	{#if saved}<div class="saved-note" role="status">Settings saved.</div>{/if}
+	{#if saveError}<Banner variant="error">{saveError}</Banner>{/if}
+	{#if saved}<Banner variant="success">Settings saved.</Banner>{/if}
 
 	<!-- SMTP -->
 	<section class="hw-section section">
@@ -446,15 +447,6 @@
 		color: var(--accent);
 		cursor: pointer;
 		text-decoration: underline;
-	}
-
-	.saved-note {
-		font-size: 13px;
-		color: var(--sage);
-		background: var(--sage-muted);
-		border: 1px solid rgba(138, 160, 110, 0.3);
-		border-radius: var(--radius-control);
-		padding: 9px 12px;
 	}
 
 	.warn-note {

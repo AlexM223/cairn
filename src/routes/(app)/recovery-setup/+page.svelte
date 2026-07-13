@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { copyToClipboard } from '$lib/clipboard';
 	import { scrollToTop } from '$lib/scrollToTop';
+	import Banner from '$lib/components/Banner.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import Stepper from '$lib/components/Stepper.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
@@ -177,7 +178,7 @@
 	</div>
 
 	{#if error}
-		<div class="form-error" role="alert">{error}</div>
+		<Banner variant="error">{error}</Banner>
 	{/if}
 
 	{#if step === 'phrase'}

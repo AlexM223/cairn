@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import Banner from '$lib/components/Banner.svelte';
 	import { formatNumber } from '$lib/format';
 
 	let { data, form } = $props();
@@ -141,10 +142,10 @@
 	}}
 >
 	{#if form?.error}
-		<div class="form-error" role="alert">{form.error}</div>
+		<Banner variant="error">{form.error}</Banner>
 	{/if}
 	{#if form?.saved}
-		<div class="saved-note" role="status">Settings saved — connection updated.</div>
+		<Banner variant="success">Settings saved — connection updated.</Banner>
 	{/if}
 
 	<section class="hw-section section">
@@ -979,15 +980,6 @@
 
 	.health-dot.bad {
 		background: var(--error);
-	}
-
-	.saved-note {
-		font-size: 13px;
-		color: var(--sage);
-		background: var(--sage-muted);
-		border: 1px solid rgba(138, 160, 110, 0.3);
-		border-radius: var(--radius-control);
-		padding: 9px 12px;
 	}
 
 	.save-row {
