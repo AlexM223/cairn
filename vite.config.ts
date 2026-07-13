@@ -4,6 +4,13 @@ import { defineConfig } from 'vite';
 import wasm from 'vite-plugin-wasm';
 
 export default defineConfig({
+	// Concurrent dev-server instances on one checkout (e.g. parallel QA workers)
+	// share node_modules/.vite by default; one instance's re-optimize can
+	// invalidate/clobber the cache mid-request for its siblings, surfacing as
+	// dead-buttons/stuck-hydration symptoms that look like product bugs
+	// (cairn-sx6f hazard; false-alarmed cairn-vktb). Set CAIRN_VITE_CACHE to
+	// give an instance its own cache dir; unset preserves Vite's default.
+	cacheDir: process.env.CAIRN_VITE_CACHE || undefined,
 	server: {
 		port: Number(process.env.PORT) || 5173
 	},
