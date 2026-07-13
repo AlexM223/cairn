@@ -18,6 +18,7 @@
 	import { bitbox02SupportsScriptType } from '$lib/hw/bitbox02';
 	import { scrollToTop } from '$lib/scrollToTop';
 	import { referralDeviceId, type ReferralBuyUrls } from '$lib/referrals';
+	import { visibleMethodCards, type WizardKeyMethod } from './deviceMethods';
 	import {
 		readKeyFromTrezor,
 		readKeyFromLedger,
@@ -240,7 +241,7 @@
 	// multisig wizard's Keys step, scoped to reading exactly one key. Unlike the
 	// multisig wizard, "paste" is not a fallback-after-failure here: it is simply
 	// one more method, so its card sits alongside the rest with no special framing.
-	type Method = 'trezor' | 'ledger' | 'coldcard' | 'bitbox02' | 'jade' | 'qr' | 'paste';
+	type Method = WizardKeyMethod;
 	let method = $state<Method | null>(null);
 	// Which method actually produced the validated key. Set on a successful read
 	// so Step 4 can confirm the device instead of re-asking. null until validated.
@@ -255,15 +256,10 @@
 	// URLs are resolved server-side (admin override or official store).
 	const buyUrls = $derived<ReferralBuyUrls | null>(page.data.referralBuyUrls ?? null);
 
-	const METHOD_CARDS: { key: Method; title: string; desc: string }[] = [
-		{ key: 'trezor', title: 'Trezor', desc: 'Plug it in and connect with one click.' },
-		{ key: 'ledger', title: 'Ledger', desc: 'Plug it in and connect with one click.' },
-		{ key: 'coldcard', title: 'ColdCard', desc: 'Import the file from its microSD card.' },
-		{ key: 'bitbox02', title: 'BitBox02', desc: 'Plug it in and confirm on the device.' },
-		{ key: 'jade', title: 'Jade', desc: 'Plug it in and unlock it (Chrome/Edge).' },
-		{ key: 'qr', title: 'Air-gapped QR', desc: "Scan the key's QR code off the device screen." },
-		{ key: 'paste', title: 'Paste public key', desc: 'From any wallet app, or a key someone sent you.' }
-	];
+	// Cards actually offered on the Key step, after dropping any whose flag an
+	// admin disabled. Gating lives in ./deviceMethods so it is unit-testable
+	// without a component renderer (cairn-cl13).
+	const methodCards = $derived(visibleMethodCards(page.data.flags));
 
 	// Device reads need a derivation path, which is chosen by address type BEFORE
 	// the read (the account xpub's prefix then tells the server the type back).
@@ -789,7 +785,7 @@
 				{/if}
 
 				<div class="method-grid">
-					{#each METHOD_CARDS as m (m.key)}
+					{#each methodCards as m (m.key)}
 						{@const buyDevice = referralDeviceId(m.key)}
 						{@const buyUrl = buyDevice && buyUrls ? buyUrls[buyDevice] : null}
 						<!-- data-method drives the mobile reorder below (cairn-sahi): phones

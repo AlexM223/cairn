@@ -5,7 +5,22 @@ import { createWallet, friendlyXpubError } from '$lib/server/wallets';
 import { getReferralBuyUrls } from '$lib/server/referrals';
 import { parseKeyOriginInput, normalizeFingerprint } from '$lib/hw/keyOrigin';
 import { rememberPrefetchedSharedKey, DeviceKeyError } from '$lib/server/deviceKeys';
+import { requireFeature } from '$lib/server/api';
 import type { Actions, PageServerLoad } from './$types';
+
+// Server-side mirror of the wizard's device-card gating (cairn-cl13): a
+// device-sourced wallet may only be created while its driver's flag is on, so a
+// hand-crafted POST can't bypass a disabled hw_* flag the way the client picker
+// is filtered. 'file'/paste (empty deviceType) is the universal fallback and
+// stays ungated; unknown values fall through ungated rather than throwing.
+const DEVICE_TYPE_FLAG: Record<string, string> = {
+	trezor: 'hw_trezor',
+	ledger: 'hw_ledger',
+	coldcard: 'hw_coldcard',
+	bitbox02: 'hw_bitbox02',
+	jade: 'hw_jade',
+	qr: 'qr_scan'
+};
 
 export const load: PageServerLoad = async ({ locals }) => {
 	return {
@@ -64,12 +79,18 @@ export const actions: Actions = {
 	 * Create the wallet, then hand the id back so the wizard can require a config
 	 * backup download before finishing (cairn-dcp) — no redirect here.
 	 */
-	create: async ({ request, locals }) => {
+	create: async (event) => {
+		const { request, locals } = event;
 		const form = await request.formData();
 		const xpub = String(form.get('xpub') ?? '').trim();
 		const name = String(form.get('name') ?? '').trim();
 		// Empty string = the user skipped it; createWallet normalizes to null.
 		const deviceType = String(form.get('deviceType') ?? '').trim();
+		// Defense-in-depth: reject a device-sourced wallet whose driver flag an
+		// admin disabled, even if the request bypassed the filtered client picker
+		// (cairn-cl13). requireFeature throws a 403 with the flag's userMessage.
+		const deviceFlag = DEVICE_TYPE_FLAG[deviceType];
+		if (deviceFlag) requireFeature(event, deviceFlag);
 		// Key origin captured on the Key step (device read, ColdCard export, or
 		// parsed out of a pasted descriptor). Empty = unknown; the wallet then
 		// signs only via the file/PSBT passthrough (cairn-alw8).
