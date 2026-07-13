@@ -74,7 +74,7 @@ async function makeAdmin() {
  *  dispatches to the given route handler — so handle() drives the FULL
  *  per-request pipeline (session resolution -> gates -> the route handler)
  *  exactly as SvelteKit would for a live request. */
-function requestThrough(
+async function requestThrough(
 	handler: (event: RequestEvent) => Response | Promise<Response>,
 	opts: { pathname: string; routeId: string; method?: string; cookie?: string }
 ): Promise<Response> {
@@ -93,18 +93,26 @@ function requestThrough(
 		locals
 	} as unknown as RequestEvent;
 
-	return handle({
+	return await handle({
 		event,
 		resolve: async (ev) => handler(ev as RequestEvent)
 	});
 }
+
+// The generated +server.ts handlers are typed as RequestHandler<Params, RouteId>
+// for their own specific route (a narrower RequestEvent than the generic one
+// requestThrough() deals in), so they're cast once here to the shape
+// requestThrough() expects — the same "as unknown as" pattern already used
+// for getStatus below — rather than repeating the cast at every call site.
+const phraseHandler = postPhrase as unknown as (event: RequestEvent) => Response | Promise<Response>;
+const codesHandler = postCodes as unknown as (event: RequestEvent) => Response | Promise<Response>;
 
 describe('mandatory recovery-setup wizard end-to-end (cairn-qlxs)', () => {
 	it('POST phrase (200) followed immediately by POST codes (200) in the same session — the exact reported repro sequence', async () => {
 		const admin = await makeAdmin();
 		const { token } = createSession(admin.id);
 
-		const phraseRes = await requestThrough(postPhrase, {
+		const phraseRes = await requestThrough(phraseHandler, {
 			pathname: '/api/auth/recovery/phrase',
 			routeId: '/api/auth/recovery/phrase',
 			cookie: token
@@ -119,7 +127,7 @@ describe('mandatory recovery-setup wizard end-to-end (cairn-qlxs)', () => {
 		// would be), re-resolving locals.user from the SAME session cookie via
 		// handle() -> getSessionUser(), exactly like two consecutive requests
 		// from one browser tab.
-		const codesRes = await requestThrough(postCodes, {
+		const codesRes = await requestThrough(codesHandler, {
 			pathname: '/api/auth/recovery/codes',
 			routeId: '/api/auth/recovery/codes',
 			cookie: token
@@ -133,7 +141,7 @@ describe('mandatory recovery-setup wizard end-to-end (cairn-qlxs)', () => {
 		const admin = await makeAdmin();
 		const { token } = createSession(admin.id);
 
-		await requestThrough(postPhrase, {
+		await requestThrough(phraseHandler, {
 			pathname: '/api/auth/recovery/phrase',
 			routeId: '/api/auth/recovery/phrase',
 			cookie: token
@@ -159,14 +167,14 @@ describe('mandatory recovery-setup wizard end-to-end (cairn-qlxs)', () => {
 		// top-level request handling converts it to a JSON 401 response), so
 		// assert on the thrown HttpError the same way hooks.server.test.ts does
 		// for its own 401/403 gate assertions.
-		const phraseThrown = await requestThrough(postPhrase, {
+		const phraseThrown = await requestThrough(phraseHandler, {
 			pathname: '/api/auth/recovery/phrase',
 			routeId: '/api/auth/recovery/phrase',
 			cookie: undefined
 		}).catch((e) => e);
 		expect(phraseThrown).toMatchObject({ status: 401 });
 
-		const codesThrown = await requestThrough(postCodes, {
+		const codesThrown = await requestThrough(codesHandler, {
 			pathname: '/api/auth/recovery/codes',
 			routeId: '/api/auth/recovery/codes',
 			cookie: 'not-a-real-token'
