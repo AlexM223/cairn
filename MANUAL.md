@@ -2000,7 +2000,22 @@ differently-worded `userMessage`; every `/explorer/**` link app-wide —
 multisig detail, send-sent pages, activity feed, wallet detail — degrades to
 plain non-interactive text via `svelte:element` when the flag is off rather
 than a dead link; `cairn-o90e` closed the last two pages (activity, wallet
-detail) that still skipped this); `hw_trezor/ledger/coldcard/bitbox02/jade`;
+detail) that still skipped this). **Exception (`cairn-5yz3.3`):**
+`/explorer/tx/[txid]` itself is exempt from this flag — the server gate in
+`src/routes/(app)/explorer/+layout.server.ts` special-cases that one
+route id (`requireUser` only, no `requireFeature`), because it's the app's
+**only** tx-detail surface: every txid link app-wide (dashboard
+`RecentActivity`, `/activity`, wallet-detail rows, post-broadcast "Watch it
+get buried", notifications) points there, and with the flag off there would
+otherwise be no way to open a transaction at all. Every one of those
+call-sites now renders a plain, unconditional `<a href="/explorer/tx/…">` —
+the old `explorerEnabled ? 'a' : 'div'`/`'span'` conditional is gone for
+tx links specifically. Non-tx explorer links (block/address/mempool/search)
+are UNCHANGED and still degrade to plain text when the flag is off — the
+exemption is narrowly for tx detail, not a general explorer-flag bypass, and
+does not reopen any chain-*browsing* surface. Covered by
+`src/routes/(app)/explorer/layout.server.test.ts`.
+`hw_trezor/ledger/coldcard/bitbox02/jade`;
 `notify_email/telegram/ntfy/nostr/webhook`; `announcement_banners`,
 `referral_links`; `batch_transactions`, `fee_bumping`, `tx_review`
 (upcoming/unbuilt features shipped flagged from day one).
@@ -2388,7 +2403,18 @@ from a backup file; both "Add a wallet" and "Restore from a backup" entry
 points land here. On viewports ≤900px the **Paste public key** method-cell
 is reordered first (CSS `order: -1`, scoped to the app's existing mobile
 breakpoint) since a keyless beginner on a phone can't plug in USB hardware;
-desktop keeps the original device-first card order unchanged. The Key step
+desktop keeps the original device-first card order unchanged (a deliberate
+decision, not revisited by the fix below). At common desktop sizes
+(1280×800) the seven-card grid still runs past the fold — **Paste public
+key**, the one no-hardware-required option and the one the page's own copy
+recommends, sits below the viewport with no scroll affordance
+(`cairn-coza`). Rather than reorder desktop (against the above decision) or
+reflow the grid, the fix is a quiet `.scroll-cue` line ("7 ways to add a key
+below, including **Paste public key** — no hardware device needed for that
+one.") placed above the method grid, always rendered (not gated behind the
+referral `buyUrls` flag the way the old below-grid hint was) — so every
+first-time user sees, without scrolling, that a no-hardware path exists
+further down. The Key step
 renders its own method cards from `./deviceMethods.ts` (`METHOD_CARDS` +
 `visibleMethodCards`), which gate each hardware tile on its `hw_*` flag (QR on
 `qr_scan`, paste never gated) exactly like `DevicePicker` — turning off e.g.
@@ -2454,10 +2480,20 @@ only.
 sessionStorage) — `?tx=` query param round-trips the draft id
 (`syncTxParam`), and `initialStep()` derives which step to land on from the
 saved row's lifecycle (`completed`→Sent, `awaiting_signature`→Confirm if
-fully signed else Sign, else Review/`draft`). Composes: `CoinControl`,
-`RecipientCombobox`, `GroveField`/`EyebrowBreadcrumb`/`QuorumArc`/
-`BurialRings`/`Modal`/`BackCircle`/`AtTipPill` (Heartwood chrome), `Term`/
-`HowItWorks` (plain-language scaffolding), per-device signer components
+fully signed else Sign, else Review/`draft`). The Confirm step's primary
+button broadcasts directly (`cairn-5yz3.1`) — it used to open a follow-up
+`Modal` ("Broadcast this transaction? Once it's broadcast, there is no
+undo.") on top of the step's own full `SendReviewCard` summary
+(amount/recipients/fee already visible), which was a genuine double-confirm
+with no new information in the second dialog. The `Modal` import and
+`confirmOpen` state are gone from this page; the full review stays exactly
+as visible as before, only the redundant second click is gone. (Same fix
+mirrored in the multisig send page below — the stateless multisig send flow
+never had this pattern, just a single inline warning + direct broadcast, so
+it needed no change.) Composes: `CoinControl`, `RecipientCombobox`,
+`GroveField`/`EyebrowBreadcrumb`/`QuorumArc`/`BurialRings`/`BackCircle`/
+`AtTipPill` (Heartwood chrome), `Term`/`HowItWorks` (plain-language
+scaffolding), per-device signer components
 (`ColdCardSigner`, `LedgerSigner`, `TrezorSigner`, `BitboxSigner`,
 `JadeUsbSigner`, `QrSigner`, `JadeQrSigner`) selected via
 `_components/signMethods.ts` (`deviceSignMethods`). `QrSigner` (generic
@@ -4133,6 +4169,14 @@ was ever stored).
    - **Expected:** list/detail render from `wallet_snapshots` (SWR) synchronously; a real
      cached balance is never replaced by a fake zero (`portfolioViewState`: `lastSyncedAt`
      wins over `refreshFailed` → `'ready'`/`'unreachable'`/`'first-sync'`).
+   - **Dashboard Send/Receive with 2+ wallets (`cairn-5yz3.2`):** the hero pills no longer
+     dump straight to `/wallets`. With exactly one wallet they still deep-link straight to
+     it (unchanged). With 2+, clicking either pill opens a lightweight inline chooser
+     (`src/routes/(app)/+page.svelte`, `.wallet-picker`) anchored under the pills, listing
+     every wallet by name + balance — Send rows link to that wallet's `/send` page, Receive
+     rows to its detail page. Closes on Escape, an outside click, or picking a row. The
+     `/wallets` full-list fallback still exists (no-JS/direct-link safety net) but is no
+     longer the everyday path for multi-wallet accounts.
 - **PASS:** all wallets show; no wallet flips to a false 0 balance on a transient refresh
   failure. **Caveat (`cairn-kxhv`, open):** this PASS bar assumes the wallet's real activity
   fits inside `gapLimitScanner`'s `HARD_CAP = 400` (per chain — receive/change). A wallet
@@ -4456,11 +4500,13 @@ backups, clear house-standard errors, **never red for routine states**, working 
    - ✅ Mobile (375×812) tap targets are ≥44px effective height, even where the visual
      control is smaller: global nav tabs (`MobileTabRow`), the settings BTC/sats unit
      toggle, the account-deletion danger button, the send-flow unit-cycle pill (invisible
-     `::before` overlay, `inset: -7px 0`, visual pill unchanged at 30px), and the Explorer
+     `::before` overlay, `inset: -7px 0`, visual pill unchanged at 30px), the Explorer
      search icon in `MobileTopBar` (invisible `::after`, `inset: -6px`, matching the
-     avatar's existing treatment) — conservative hit-area expansion, no visual redesign
-     (`cairn-amyl`). **Not yet covered:** `/admin/*` pages — deferred to a dedicated design
-     pass, not a regression to flag.
+     avatar's existing treatment), and the backup-banner "Dismiss for now" icon button in
+     `src/routes/(app)/+layout.svelte` (`.backup-banner-dismiss`, invisible `::after`,
+     `inset: -13px` — visual icon stays 18×18, same pattern) — conservative hit-area
+     expansion, no visual redesign (`cairn-amyl`). **Not yet covered:** `/admin/*` pages —
+     deferred to a dedicated design pass, not a regression to flag.
 - **PASS (journey):** every ✅ above holds through one uninterrupted new-user pass. Any raw
   internal leaked without explanation, any red used for a routine state, any broken
   notification deep link, any silent wizard failure, or a missing/weak backup nudge is a ❌.
