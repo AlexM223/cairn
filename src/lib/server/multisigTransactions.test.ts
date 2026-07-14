@@ -29,23 +29,35 @@ import { isRosterMember } from './multisigRoster';
 // (whose UTXOs would otherwise come from Electrum). Everything else — multisig
 // rows, PSBT construction, signature merging, quorum math, the broadcast
 // claim — runs the real code path.
-const { broadcastMock, getTxHexMock, getTxMock, utxosMock, changeIndexMock, broadcastPackageMock } = vi.hoisted(
-	() => ({
-		broadcastMock: vi.fn(),
-		getTxHexMock: vi.fn(),
-		getTxMock: vi.fn(),
-		utxosMock: vi.fn(),
-		changeIndexMock: vi.fn(),
-		broadcastPackageMock: vi.fn()
-	})
-);
+const {
+	broadcastMock,
+	getTxHexMock,
+	getTxMock,
+	utxosMock,
+	changeIndexMock,
+	broadcastPackageMock,
+	getRelayFeeFloorMock
+} = vi.hoisted(() => ({
+	broadcastMock: vi.fn(),
+	getTxHexMock: vi.fn(),
+	getTxMock: vi.fn(),
+	utxosMock: vi.fn(),
+	changeIndexMock: vi.fn(),
+	broadcastPackageMock: vi.fn(),
+	getRelayFeeFloorMock: vi.fn()
+}));
 vi.mock('./chain', () => ({
 	getChain: () => ({
 		electrum: { broadcast: broadcastMock, broadcastPackage: broadcastPackageMock },
 		getTxHex: getTxHexMock,
 		getTx: getTxMock,
 		// buildMultisigDraft reads the tip for the coinbase-maturity guard.
-		getTip: async () => ({ height: 900_000, hash: '00'.repeat(32) })
+		getTip: async () => ({ height: 900_000, hash: '00'.repeat(32) }),
+		// executeCpfpDraft (feeBump.ts, shared by single-sig and multisig) reads
+		// the node's relay floor (cairn-eacw.3/.7); default to the network-wide
+		// 1 sat/vB fallback so tests that don't care about sub-1 floors keep
+		// their pre-cairn-eacw.7 behavior.
+		getRelayFeeFloor: getRelayFeeFloorMock
 	})
 }));
 vi.mock('./multisigScan', () => ({
@@ -67,6 +79,7 @@ beforeEach(() => {
 	utxosMock.mockReset();
 	changeIndexMock.mockReset();
 	broadcastPackageMock.mockReset();
+	getRelayFeeFloorMock.mockReset().mockResolvedValue(1);
 	changeIndexMock.mockResolvedValue(0);
 	setSetting('registration_mode', 'open');
 });

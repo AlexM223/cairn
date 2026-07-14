@@ -491,7 +491,13 @@ Constructed from `getChainConfig()` (`settings.ts`). Notable methods:
 - `getFeeEstimates()` — 30s TTL-cached; 4 Electrum `estimatefee` targets
   (1/3/6/144 blocks) converted BTC/kvB → sat/vB, with a "carry forward from
   the next-longer target" repair pass for targets the server can't estimate
-  (`-1`), floored at 1 sat/vB.
+  (`-1`), floored at `getRelayFeeFloor()` rather than a hardcoded 1 sat/vB —
+  the connected node's own effective minimum relay rate (Core
+  `max(mempoolminfee, minrelaytxfee)`, or Electrum `blockchain.relayfee` when
+  no Core RPC is configured; falls back to 1 sat/vB when neither answers).
+  A genuine sub-1 sat/vB estimate now displays honestly when the node will
+  actually relay it (`cairn-eacw.4`); estimates above the floor pass through
+  untouched — nothing is rounded up to the floor when the floor is lower.
 - `getDifficultyInfo()` / `getDifficultyHistory()` / `getHashrate()` — all
   derived from Electrum block headers, no Core dependency at all.
 - `getBtcUsdPrice()` — the one remaining external call (public mempool.space
@@ -1151,14 +1157,22 @@ two prior parallel implementations during the dedup refactor.
   UNIQUE-violation catch (`isUniqueViolation()`) is what actually prevents
   two concurrent bumps from both succeeding.
 - `executeCpfpDraft()` — `cpfpChildFee(targetRate, parentVsize, parentFee,
-  childVsize) = ceil(targetRate*(parentVsize+childVsize)) - parentFee`,
-  floored to the child's own 1 sat/vB relay minimum. Qualifying inputs are
-  the wallet's own unconfirmed outputs ON the stuck parent txid,
-  coin-controlled and swept (send-max) to a fresh change address. Caps the
-  target rate at the same `MAX_FEE_RATE` the PSBT builder enforces (a
-  caller of it, not a bypass). Errors are typed (`CpfpError`) with specific
-  codes: `no_unconfirmed_output`, `already_confirmed`, `parent_fee_unknown`,
-  `not_needed` (parent already meets target), `coin_too_small`.
+  childVsize, floorRate) = ceil(targetRate*(parentVsize+childVsize)) -
+  parentFee`, floored to the child's own relay minimum — `floorRate` sat/vB
+  over its own size. `executeCpfpDraft` threads in the connected node's own
+  relay floor (`getRelayFeeFloor()`, `cairn-eacw.3`) here instead of a
+  hardcoded 1 sat/vB, and rejects a `targetFeeRate` below that same floor
+  (`cairn-eacw.7`) — so a sub-1 CPFP target builds a genuinely sub-1 child on
+  a node that will actually relay it, while still refusing an unrelayable
+  target on a node whose capability is unknown (fallback floor of 1).
+  `cpfpChildFee`'s `floorRate` parameter defaults to 1 for any other caller.
+  Qualifying inputs are the wallet's own unconfirmed outputs ON the stuck
+  parent txid, coin-controlled and swept (send-max) to a fresh change
+  address. Caps the target rate at the same `MAX_FEE_RATE` the PSBT builder
+  enforces (a caller of it, not a bypass). Errors are typed (`CpfpError`)
+  with specific codes: `no_unconfirmed_output`, `already_confirmed`,
+  `parent_fee_unknown`, `not_needed` (parent already meets target or target
+  below the node's relay floor), `coin_too_small`.
 - `BumpError`/`CpfpError` are typed error classes with closed `code` unions
   the UI branches on.
 
@@ -4016,10 +4030,14 @@ Precondition: a **stuck** tx that paid change back to the wallet (the wallet own
 unconfirmed output on it).
 1. Trigger CPFP on the stuck parent. `executeCpfpDraft` sweeps the wallet's own unconfirmed
    output(s) **on that parent txid** (coin-controlled, send-max) to a fresh change address;
-   child fee = `ceil(target*(parentVsize+childVsize)) - parentFee`, floored to 1 sat/vB.
+   child fee = `ceil(target*(parentVsize+childVsize)) - parentFee`, floored to the connected
+   node's own relay floor (`getRelayFeeFloor()`, `cairn-eacw.3`) rather than a hardcoded 1
+   sat/vB — a sub-1 target is accepted and prices a genuinely sub-1 child when the node will
+   relay it (`cairn-eacw.7`); on a node whose relay capability is unknown the floor falls back
+   to 1, so behavior is unchanged there.
 2. Verify typed error codes on the unhappy paths: `no_unconfirmed_output`,
-   `already_confirmed`, `parent_fee_unknown`, `not_needed` (parent already meets target),
-   `coin_too_small`.
+   `already_confirmed`, `parent_fee_unknown`, `not_needed` (parent already meets target, or the
+   target is below the node's relay floor), `coin_too_small`.
 - **PASS:** a legitimate CPFP builds+broadcasts a child spending only the parent's own
   unconfirmed output; each unhappy path returns its specific code, not a generic error.
 - **Defense-in-depth (`cairn-oae1.5`):** CPFP only ever qualifies a coin with `height <= 0`

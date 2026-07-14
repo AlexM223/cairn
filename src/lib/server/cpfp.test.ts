@@ -7,19 +7,31 @@ import { db } from './db';
 import { registerUser } from './auth';
 import { setSetting } from './settings';
 
-const { getTxMock, getTxHexMock, listUnspentMock, scanWalletMock, findNextUnusedIndexMock } =
-	vi.hoisted(() => ({
-		getTxMock: vi.fn(),
-		getTxHexMock: vi.fn(),
-		listUnspentMock: vi.fn(),
-		scanWalletMock: vi.fn(),
-		findNextUnusedIndexMock: vi.fn()
-	}));
+const {
+	getTxMock,
+	getTxHexMock,
+	listUnspentMock,
+	scanWalletMock,
+	findNextUnusedIndexMock,
+	getRelayFeeFloorMock
+} = vi.hoisted(() => ({
+	getTxMock: vi.fn(),
+	getTxHexMock: vi.fn(),
+	listUnspentMock: vi.fn(),
+	scanWalletMock: vi.fn(),
+	findNextUnusedIndexMock: vi.fn(),
+	getRelayFeeFloorMock: vi.fn()
+}));
 
 vi.mock('./chain', () => ({
 	getChain: () => ({
 		getTx: getTxMock,
 		getTxHex: getTxHexMock,
+		// Defaults to the network-wide 1 sat/vB floor (getRelayFeeFloor never
+		// throws and falls back to 1 when the node's capability is unknown,
+		// cairn-eacw.3) so existing tests that don't care about the node relay
+		// floor keep their pre-cairn-eacw.7 behavior.
+		getRelayFeeFloor: getRelayFeeFloorMock,
 		electrum: {
 			listUnspent: listUnspentMock,
 			// getWalletUtxos now batches listunspent through batchRequest (task 4);
@@ -104,6 +116,7 @@ beforeEach(() => {
 	listUnspentMock.mockReset();
 	scanWalletMock.mockReset();
 	findNextUnusedIndexMock.mockReset();
+	getRelayFeeFloorMock.mockReset().mockResolvedValue(1);
 });
 
 describe('cpfpChildFee (fee math §3)', () => {
@@ -122,6 +135,17 @@ describe('cpfpChildFee (fee math §3)', () => {
 		expect(cpfpChildFee(2, 200, 380, 110)).toBe(240); // 620-380, above the 110 floor
 		expect(cpfpChildFee(2, 200, 500, 110)).toBe(120); // 620-500, still above floor
 		expect(cpfpChildFee(2, 200, 700, 110)).toBe(110); // 620-700=-80 → floored to 110
+	});
+
+	// cairn-eacw.7: the child's own relay minimum is the NODE's floor, not a
+	// hardcoded 1 sat/vB, so a capable node can relay a genuinely sub-1 child.
+	it('floors the child to a node-provided sub-1 relay floor instead of 1 sat/vB', () => {
+		// raw = ceil(0.05*(200+110)) - 700 = 16-700 = -684 → floored.
+		expect(cpfpChildFee(0.05, 200, 700, 110, 0.1)).toBe(11); // ceil(0.1*110)=11, not 110
+	});
+
+	it('still floors at 1 sat/vB by default when no floor is passed', () => {
+		expect(cpfpChildFee(2, 200, 700, 110)).toBe(110);
 	});
 });
 
@@ -299,5 +323,48 @@ describe('buildCpfpDraft', () => {
 		await expect(buildCpfpDraft(userId, walletId, PARENT.txid, 10)).rejects.toThrow(
 			/internal invariant violated/i
 		);
+	});
+
+	// cairn-eacw.7: sub-1 CPFP targets on a node that will actually relay them.
+	describe('sub-1 target rate against the node relay floor', () => {
+		it('accepts a sub-1 target when the node floor allows it', async () => {
+			const { userId, walletId } = await seedWallet();
+			const PARENT = fundingTx(100_000);
+			stubUnconfirmedOutputOn(PARENT, 100_000);
+			getRelayFeeFloorMock.mockResolvedValue(0.1);
+			// Parent pays 20 sats over 200 vB = 0.1 sat/vB; target 0.5 sat/vB.
+			getTxMock.mockResolvedValue({ vin: [{}], confirmed: false, vsize: 200, fee: 20 });
+
+			const { cpfp, details } = await buildCpfpDraft(userId, walletId, PARENT.txid, 0.5);
+
+			// child_fee = ceil(0.5*(200+110)) - 20 = 155-20 = 135, well above the
+			// 0.1 sat/vB * 110 vB = 11 sat node floor for the child's own size.
+			expect(cpfp.childFee).toBe(135);
+			expect(details.fee).toBe(135);
+		});
+
+		it('rejects a target below the node relay floor', async () => {
+			const { userId, walletId } = await seedWallet();
+			const PARENT = fundingTx(100_000);
+			stubUnconfirmedOutputOn(PARENT, 100_000);
+			getRelayFeeFloorMock.mockResolvedValue(0.2);
+			getTxMock.mockResolvedValue({ vin: [{}], confirmed: false, vsize: 200, fee: 20 });
+
+			await expect(buildCpfpDraft(userId, walletId, PARENT.txid, 0.1)).rejects.toMatchObject({
+				code: 'not_needed'
+			});
+		});
+
+		it('still rejects sub-1 targets when the node floor is unknown (falls back to 1)', async () => {
+			const { userId, walletId } = await seedWallet();
+			const PARENT = fundingTx(100_000);
+			stubUnconfirmedOutputOn(PARENT, 100_000);
+			getRelayFeeFloorMock.mockResolvedValue(1); // fallback value from getRelayFeeFloor
+			getTxMock.mockResolvedValue({ vin: [{}], confirmed: false, vsize: 200, fee: 20 });
+
+			await expect(buildCpfpDraft(userId, walletId, PARENT.txid, 0.5)).rejects.toMatchObject({
+				code: 'not_needed'
+			});
+		});
 	});
 });

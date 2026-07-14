@@ -65,21 +65,26 @@ export const RBF_SIGNAL_MAX_SEQUENCE = 0xfffffffe;
  *   child_fee = ceil(targetRate * (parent_vsize + child_vsize)) - parent_fee
  *
  * Returns the child fee in sats, floored to the child's own minimum-relay
- * requirement (1 sat/vB over its own size). A result <= 0 means the parent
- * already meets the target on its own — the caller surfaces "not needed".
+ * requirement — `floorRate` sat/vB over its own size, the node's actual relay
+ * floor (cairn-eacw.3/.7) rather than a hardcoded 1, so a sub-1 target can
+ * price a genuinely sub-1 child on a node that will relay it. Defaults to 1
+ * for callers that haven't threaded a probed floor through. A result <= 0
+ * means the parent already meets the target on its own — the caller surfaces
+ * "not needed".
  */
 export function cpfpChildFee(
 	targetRate: number,
 	parentVsize: number,
 	parentFee: number,
-	childVsize: number
+	childVsize: number,
+	floorRate = 1
 ): number {
 	const packageFee = Math.ceil(targetRate * (parentVsize + childVsize));
 	const childFee = packageFee - parentFee;
-	// The child must independently clear the 1 sat/vB relay floor even if the
+	// The child must independently clear the node's relay floor even if the
 	// formula returns something tiny (rare, but possible when the parent already
 	// paid most of the way there).
-	return Math.max(childFee, childVsize);
+	return Math.max(childFee, Math.ceil(floorRate * childVsize));
 }
 
 /**
@@ -355,14 +360,23 @@ export async function executeCpfpDraft<TDraft, TDetails extends ConstructedSpend
 }> {
 	const { parentTxid } = args;
 
+	// The connected node's own relay floor (cairn-eacw.3) — replaces the
+	// hardcoded 1 sat/vB assumption so a sub-1 target is allowed down to
+	// whatever this node will actually relay (cairn-eacw.7). Never throws;
+	// falls back to 1 when the node's capability is unknown.
+	const floor = await getChain().getRelayFeeFloor();
+
 	// Cap the target at the same ceiling the PSBT builders enforce — this
 	// builder is a caller of them, not a bypass of their validation.
 	const targetRate = Math.min(
 		Number.isFinite(args.targetFeeRate) ? args.targetFeeRate : 0,
 		MAX_FEE_RATE
 	);
-	if (targetRate < 1) {
-		throw new CpfpError('The target fee rate must be at least 1 sat/vB.', 'not_needed');
+	if (targetRate < floor) {
+		throw new CpfpError(
+			`The target fee rate must be at least ${floor} sat/vB.`,
+			'not_needed'
+		);
 	}
 
 	// The qualifying coins: this wallet's own UNCONFIRMED outputs on the parent.
@@ -416,7 +430,7 @@ export async function executeCpfpDraft<TDraft, TDetails extends ConstructedSpend
 	// Child = the qualifying coins swept to the wallet's own change address.
 	const { changeAddress, changeIndex, childVsize } = await args.prepareChild(qualifying);
 
-	const childFee = cpfpChildFee(targetRate, parentVsize, parentFee, childVsize);
+	const childFee = cpfpChildFee(targetRate, parentVsize, parentFee, childVsize, floor);
 	// A non-positive raw child fee means the parent already meets the target.
 	if (Math.ceil(targetRate * (parentVsize + childVsize)) - parentFee <= 0) {
 		throw new CpfpError(
@@ -426,10 +440,12 @@ export async function executeCpfpDraft<TDraft, TDetails extends ConstructedSpend
 	}
 
 	// The child's OWN rate (fee over its own size) is what the PSBT builder
-	// prices with; clamp to [1, MAX_FEE_RATE]. Because the caller's vsize
-	// estimator uses the same tables its builder does, the swept tx's vsize
-	// matches childVsize, so the fee it computes lands on childFee.
-	const childRate = Math.min(Math.max(childFee / childVsize, 1), MAX_FEE_RATE);
+	// prices with; clamp to [floor, MAX_FEE_RATE] — the node's own relay floor
+	// rather than a hardcoded 1, so a capable node can relay a genuinely sub-1
+	// child. Because the caller's vsize estimator uses the same tables its
+	// builder does, the swept tx's vsize matches childVsize, so the fee it
+	// computes lands on childFee.
+	const childRate = Math.min(Math.max(childFee / childVsize, floor), MAX_FEE_RATE);
 
 	let details: TDetails;
 	try {
