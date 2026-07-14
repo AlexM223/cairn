@@ -49,6 +49,7 @@ vi.mock('./chain', () => ({
 		},
 		getTxHex: mocks.getTxHex,
 		getTip: mocks.getTip,
+		getMinFeeRate: async () => 1,
 		getCpfpInfo: mocks.getCpfpInfo
 	})
 }));

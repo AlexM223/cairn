@@ -154,7 +154,11 @@ export async function executeRbfBump<TDraft, TDetails extends ConstructedSpendDe
 	ownerId: number;
 	tx: BumpableTxRow;
 	newFeeRate: number;
-	buildReplacement: (stored: Transaction, changeIndex: number) => Promise<TDetails>;
+	/** Build the replacement PSBT. `minFeeRate` is the node's relay floor, threaded
+	 *  through to the builder's validation (cairn-eacw.2) so a replacement whose
+	 *  requested rate is sub-1 (bumping an already-sub-1 original) isn't rejected by
+	 *  the default 1 sat/vB floor before BIP-125 rule 4 gets its say below. */
+	buildReplacement: (stored: Transaction, changeIndex: number, minFeeRate: number) => Promise<TDetails>;
 	reloadDraft: (rowId: number) => TDraft | null;
 	/** Error to throw when the inserted draft row can't be read back. */
 	draftSaveError: () => Error;
@@ -258,7 +262,11 @@ export async function executeRbfBump<TDraft, TDetails extends ConstructedSpendDe
 		);
 	}
 
-	const details = await args.buildReplacement(stored, tx.changeIndex);
+	// The node's own relay floor (cairn-eacw.2/.3) — threaded into the builder so a
+	// sub-1 requested replacement rate isn't refused by the default 1 sat/vB floor.
+	// Never throws; falls back to 1 sat/vB.
+	const floor = await getChain().getMinFeeRate();
+	const details = await args.buildReplacement(stored, tx.changeIndex, floor);
 
 	// BIP-125 rule 4: the replacement must pay for its own relay — at least the
 	// original's fee plus (replacement vsize × 1 sat/vB), 1 sat/vB being the
@@ -339,12 +347,16 @@ export async function executeCpfpDraft<TDraft, TDetails extends ConstructedSpend
 		qualifying: SpendableUtxo[]
 	) => Promise<{ changeAddress: string; changeIndex: number; childVsize: number }>;
 	/** Build the sweep PSBT. Thrown PsbtError insufficient_funds / no_utxos is
-	 *  mapped to CpfpError coin_too_small by this skeleton — don't map it inside. */
+	 *  mapped to CpfpError coin_too_small by this skeleton — don't map it inside.
+	 *  `floor` is the node's relay floor (== the childRate's own lower clamp) —
+	 *  pass it as the builder's minFeeRate so a genuinely sub-1 child isn't
+	 *  re-rejected by validateRecipientsAndFeeRate's default 1 (cairn-eacw.2). */
 	buildChild: (input: {
 		qualifying: SpendableUtxo[];
 		changeAddress: string;
 		changeIndex: number;
 		childRate: number;
+		floor: number;
 	}) => Promise<TDetails>;
 	/** Should the thrown builder error be mapped to coin_too_small? (Both
 	 *  services map PsbtError insufficient_funds/no_utxos.) */
@@ -449,7 +461,7 @@ export async function executeCpfpDraft<TDraft, TDetails extends ConstructedSpend
 
 	let details: TDetails;
 	try {
-		details = await args.buildChild({ qualifying, changeAddress, changeIndex, childRate });
+		details = await args.buildChild({ qualifying, changeAddress, changeIndex, childRate, floor });
 	} catch (e) {
 		// The commonest failure: the qualifying coin can't cover the CPFP fee plus
 		// a non-dust output — the plan's "this coin isn't big enough" outcome.

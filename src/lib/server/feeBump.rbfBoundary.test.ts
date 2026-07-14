@@ -42,7 +42,7 @@ const { getTxMock, getTxHexMock } = vi.hoisted(() => ({
 	getTxHexMock: vi.fn()
 }));
 vi.mock('./chain', () => ({
-	getChain: () => ({ getTx: getTxMock, getTxHex: getTxHexMock })
+	getChain: () => ({ getTx: getTxMock, getTxHex: getTxHexMock, getMinFeeRate: async () => 1 })
 }));
 
 function wipe(): void {

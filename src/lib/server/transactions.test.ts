@@ -34,7 +34,8 @@ vi.mock('./chain', () => ({
 	getChain: () => ({
 		electrum: { broadcast: broadcastMock, broadcastPackage: broadcastPackageMock },
 		getTx: getTxMock,
-		getTxHex: getTxHexMock
+		getTxHex: getTxHexMock,
+		getMinFeeRate: async () => 1
 	})
 }));
 

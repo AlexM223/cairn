@@ -37,7 +37,8 @@ vi.mock('./chain', () => ({
 			broadcast: broadcastMock
 		},
 		getTx: getTxMock,
-		getTxHex: getTxHexMock
+		getTxHex: getTxHexMock,
+		getMinFeeRate: async () => 1
 	})
 }));
 vi.mock('./chain/index', () => ({
@@ -48,7 +49,8 @@ vi.mock('./chain/index', () => ({
 			broadcast: broadcastMock
 		},
 		getTx: getTxMock,
-		getTxHex: getTxHexMock
+		getTxHex: getTxHexMock,
+		getMinFeeRate: async () => 1
 	})
 }));
 

@@ -76,6 +76,14 @@ export interface ConstructParams {
 	 */
 	recipients: RecipientSpec[];
 	feeRate: number; // sat/vB
+	/**
+	 * The connected node's own relay floor (sat/vB) — the minimum fee this node
+	 * will actually relay, resolved by the service layer from
+	 * ChainService.getMinFeeRate() (cairn-eacw.2). Passed through to
+	 * validateRecipientsAndFeeRate so a sub-1 fee builds on a node that relays
+	 * below 1 sat/vB. Omitted (undefined) → the historical 1 sat/vB default.
+	 */
+	minFeeRate?: number;
 	changeAddress: string;
 	changeIndex: number;
 	/** When present, BIP32 derivation info is embedded so signers can match keys. */
@@ -269,14 +277,40 @@ export function estimateTxVsize(
 // multisigPsbt.ts used to carry a verbatim copy of each block.
 
 /**
+ * Render a sat/vB rate for an error message the same honest way the UI's
+ * formatFeeRate does — whole numbers at/above 10, otherwise the fewest decimals
+ * that keep the first significant digit visible — WITHOUT importing the client
+ * format helper (this module stays chain- and UI-independent). A raw relay
+ * floor like 0.09999999999999999 renders as "0.1", never as leaked float noise.
+ */
+function feeRateLabel(rate: number): string {
+	if (rate >= 10) return String(Math.round(rate));
+	for (const decimals of [1, 2, 3, 4]) {
+		const fixed = rate.toFixed(decimals);
+		if (Number(fixed) > 0) return fixed.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+	}
+	return rate.toFixed(4);
+}
+
+/**
  * Recipient / fee-rate validation shared by single-sig and multisig PSBT
  * construction. Returns whether this spend is a send-max sweep: 'max' sweeps
  * the whole (candidate) balance — meaningless alongside other recipients, so
  * it is only accepted as the sole output.
+ *
+ * `minFeeRate` is the connected node's own relay floor (sat/vB) — the honest
+ * minimum a broadcast can clear (cairn-eacw.2/.3). The service layer resolves it
+ * from ChainService.getMinFeeRate() and passes it through; when a node relays
+ * below 1 sat/vB this lets a genuinely sub-1 fee build, and when the node's
+ * capability is unknown it falls back to 1 (the historical default). Kept as a
+ * parameter — never fetched here — so this module stays pure/chain-independent
+ * and unit-testable. A fee of 0, negative, or NaN is ALWAYS rejected regardless
+ * of the floor (an absolute sanity bound), before the floor comparison.
  */
 export function validateRecipientsAndFeeRate(
 	recipients: RecipientSpec[],
-	feeRate: number
+	feeRate: number,
+	minFeeRate = 1
 ): { sendMax: boolean } {
 	if (!Array.isArray(recipients) || recipients.length === 0) {
 		throw new PsbtError('At least one recipient is required.', 'invalid_recipient');
@@ -291,8 +325,21 @@ export function validateRecipientsAndFeeRate(
 			);
 		}
 	}
-	if (!Number.isFinite(feeRate) || feeRate < 1) {
-		throw new PsbtError('Fee rate must be at least 1 sat/vB.', 'invalid_amount');
+	// Absolute sanity bound first: a zero, negative, or non-finite rate can never
+	// build a valid transaction and is refused independent of the node floor.
+	if (!Number.isFinite(feeRate) || feeRate <= 0) {
+		throw new PsbtError('Enter a fee rate greater than zero.', 'invalid_amount');
+	}
+	// Node-relay floor: below whatever this node will actually relay, a broadcast
+	// is guaranteed to be rejected — refuse up front, in plain language, quoting
+	// the resolved floor (never a hardcoded 1). A node that relays sub-1 admits a
+	// sub-1 fee; a node whose capability is unknown keeps the 1 sat/vB minimum.
+	const floor = Number.isFinite(minFeeRate) && minFeeRate > 0 ? minFeeRate : 1;
+	if (feeRate < floor) {
+		throw new PsbtError(
+			`This fee is below what your node will relay right now — the minimum is ${feeRateLabel(floor)} sat/vB.`,
+			'invalid_amount'
+		);
 	}
 	if (feeRate > MAX_FEE_RATE) {
 		throw new PsbtError(
@@ -458,7 +505,7 @@ export function selectSpendCandidates(
 export async function constructPsbt(params: ConstructParams): Promise<ConstructedPsbt> {
 	const { feeRate } = params;
 
-	const { sendMax } = validateRecipientsAndFeeRate(params.recipients, feeRate);
+	const { sendMax } = validateRecipientsAndFeeRate(params.recipients, feeRate, params.minFeeRate);
 
 	const parsed = parseXpub(params.xpub);
 	const scriptType = parsed.scriptType;

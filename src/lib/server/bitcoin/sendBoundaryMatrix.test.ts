@@ -612,19 +612,61 @@ describe('boundary: fee-rate floor (min-relay-fee) and ceiling', () => {
 		expect(draft.feeRate).toBeGreaterThanOrEqual(1);
 	});
 
-	it('single-sig: feeRate below 1 (0.99, and 0) is rejected with a plain floor message', async () => {
-		for (const rate of [0.99, 0]) {
-			const err = await expectPlainRejection(
-				constructPsbt({
-					...COMMON,
-					utxos: [utxo(60_000)],
-					recipients: [{ address: RECIPIENT_P2WPKH, amount: 10_000 }],
-					feeRate: rate
-				}),
-				'invalid_amount'
-			);
-			expect(err.message).toBe('Fee rate must be at least 1 sat/vB.');
-		}
+	it('single-sig: feeRate below the node floor is rejected with a plain floor message', async () => {
+		// No minFeeRate passed → the historical 1 sat/vB default floor, so 0.99 is
+		// below it and is refused quoting that floor (cairn-eacw.2).
+		const belowFloor = await expectPlainRejection(
+			constructPsbt({
+				...COMMON,
+				utxos: [utxo(60_000)],
+				recipients: [{ address: RECIPIENT_P2WPKH, amount: 10_000 }],
+				feeRate: 0.99
+			}),
+			'invalid_amount'
+		);
+		expect(belowFloor.message).toContain('below what your node will relay');
+		expect(belowFloor.message).toContain('1 sat/vB');
+		// Zero is refused by the absolute sanity bound (independent of the floor),
+		// with its own greater-than-zero message.
+		const zero = await expectPlainRejection(
+			constructPsbt({
+				...COMMON,
+				utxos: [utxo(60_000)],
+				recipients: [{ address: RECIPIENT_P2WPKH, amount: 10_000 }],
+				feeRate: 0
+			}),
+			'invalid_amount'
+		);
+		expect(zero.message).toBe('Enter a fee rate greater than zero.');
+	});
+
+	it('single-sig: a sub-1 fee builds when the node floor is below it (cairn-eacw.2)', async () => {
+		const draft = await constructPsbt({
+			...COMMON,
+			utxos: [utxo(60_000)],
+			recipients: [{ address: RECIPIENT_P2WPKH, amount: 10_000 }],
+			feeRate: 0.5,
+			minFeeRate: 0.1
+		});
+		expect(draft.amount).toBe(10_000);
+		// The paid rate reflects the sub-1 request (fee is ceil(vsize * 0.5)).
+		expect(draft.feeRate).toBeLessThan(1);
+		expect(draft.feeRate).toBeGreaterThan(0);
+	});
+
+	it('single-sig: 0.5 is rejected when the node floor is 1 (incapable node), floor-aware copy', async () => {
+		const err = await expectPlainRejection(
+			constructPsbt({
+				...COMMON,
+				utxos: [utxo(60_000)],
+				recipients: [{ address: RECIPIENT_P2WPKH, amount: 10_000 }],
+				feeRate: 0.5,
+				minFeeRate: 1
+			}),
+			'invalid_amount'
+		);
+		expect(err.message).toContain('below what your node will relay');
+		expect(err.message).toContain('1 sat/vB');
 	});
 
 	it('single-sig: a negative fee rate is rejected the same way as zero', async () => {
@@ -665,8 +707,18 @@ describe('boundary: fee-rate floor (min-relay-fee) and ceiling', () => {
 			msBuild({ feeRate: 1, utxos: [msUtxo(MS_P2WSH, 200_000)] })
 		).resolves.toBeDefined();
 		const err = await expectPlainRejection(msBuild({ feeRate: 0 }), 'invalid_amount');
-		expect(err.message).toBe('Fee rate must be at least 1 sat/vB.');
+		expect(err.message).toBe('Enter a fee rate greater than zero.');
+		// Sub-1 below the default floor quotes the floor (parity with single-sig).
+		const belowFloor = await expectPlainRejection(msBuild({ feeRate: 0.99 }), 'invalid_amount');
+		expect(belowFloor.message).toContain('below what your node will relay');
 		await expectPlainRejection(msBuild({ feeRate: 1001 }), 'invalid_amount');
+	});
+
+	it('multisig: a sub-1 fee builds when the node floor allows it (cairn-eacw.2 parity)', async () => {
+		const draft = await msBuild({ feeRate: 0.5, minFeeRate: 0.1 });
+		expect(draft.amount).toBe(50_000);
+		expect(draft.feeRate).toBeLessThan(1);
+		expect(draft.feeRate).toBeGreaterThan(0);
 	});
 });
 

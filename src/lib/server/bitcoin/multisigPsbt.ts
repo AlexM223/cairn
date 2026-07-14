@@ -174,6 +174,13 @@ export interface MultisigConstructParams {
 	 */
 	recipients: RecipientSpec[];
 	feeRate: number; // sat/vB
+	/**
+	 * The connected node's own relay floor (sat/vB) — resolved by the service
+	 * layer from ChainService.getMinFeeRate() and threaded through to
+	 * validateRecipientsAndFeeRate (cairn-eacw.2), so a multisig spend can price a
+	 * sub-1 fee on a node that relays below 1 sat/vB. Omitted → 1 sat/vB default.
+	 */
+	minFeeRate?: number;
 	/** Change-chain index the change output derives at (chain 1). */
 	changeIndex: number;
 	/** Raw prev-tx fetch — REQUIRED for legacy p2sh multisigs (nonWitnessUtxo);
@@ -259,7 +266,7 @@ export async function constructMultisigPsbt(params: MultisigConstructParams): Pr
 	// shared spend rules in psbt.ts (validateRecipientsAndFeeRate /
 	// selectSpendCandidates) — one source for both wallet types. Confirmed coins
 	// are still preferred first (the sort below).
-	const { sendMax } = validateRecipientsAndFeeRate(params.recipients, feeRate);
+	const { sendMax } = validateRecipientsAndFeeRate(params.recipients, feeRate, params.minFeeRate);
 	const { spendable, coinControl } = selectSpendCandidates(params, 'multisig');
 
 	// ---- per-address derivation cache (several UTXOs can share an address) --

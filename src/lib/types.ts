@@ -300,6 +300,18 @@ export interface FeeEstimates {
 	halfHour: number;
 	hour: number;
 	economy: number;
+	/**
+	 * The node's own minimum relay fee rate (sat/vB), rounded the same way the
+	 * tier estimates are — the honest floor beneath which a broadcast would be
+	 * rejected (cairn-eacw.3/.5). The fee picker uses this to allow decimals down
+	 * to whatever this node relays (sub-1 on a capable node), and to clamp/explain
+	 * when it can't. Optional: absent on payloads built before this field existed
+	 * (and on any FeeEstimates a test fabricates) — treat a missing value as 1
+	 * sat/vB, the historical network-wide default. Server-side validation compares
+	 * against this exact value (ChainService.getMinFeeRate) so client and server
+	 * can never disagree at the rounding boundary.
+	 */
+	minFeeRate?: number;
 }
 
 export interface NodeInfo {

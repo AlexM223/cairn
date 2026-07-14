@@ -43,7 +43,8 @@ vi.mock('./chain', () => ({
 		electrum: { broadcast: broadcastMock },
 		getTxHex: getTxHexMock,
 		getTx: getTxMock,
-		getTip: async () => ({ height: 900_000, hash: '00'.repeat(32) })
+		getTip: async () => ({ height: 900_000, hash: '00'.repeat(32) }),
+		getMinFeeRate: async () => 1
 	})
 }));
 vi.mock('./multisigScan', () => ({

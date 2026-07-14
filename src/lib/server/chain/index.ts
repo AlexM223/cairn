@@ -1664,6 +1664,12 @@ export class ChainService {
 			}
 			const out = {} as FeeEstimates;
 			for (const s of slots) out[s.key] = Math.max(floor, round2(s.v as number));
+			// Carry the node's own relay floor to the client so the fee picker can
+			// allow decimals down to it and explain the clamp when it can't (sub-1
+			// support, cairn-eacw.5). Identical to getMinFeeRate()'s value — both are
+			// round2(getRelayFeeFloor()) — so the picker's gate and the server's
+			// validation compare against the exact same number.
+			out.minFeeRate = floor;
 			return out;
 		});
 	}
@@ -1707,6 +1713,21 @@ export class ChainService {
 			}
 			return 1;
 		});
+	}
+
+	/**
+	 * The relay floor (getRelayFeeFloor) rounded to the same 2 decimals every
+	 * displayed fee rate uses — the single value BOTH server-side validation
+	 * (validateRecipientsAndFeeRate's minFeeRate, cairn-eacw.2) and the client fee
+	 * picker (FeeEstimates.minFeeRate, cairn-eacw.5) compare against, so the two
+	 * can never disagree at the rounding boundary: a raw 0.104 floor shown to the
+	 * client as 0.10 would otherwise be re-rejected by a raw-0.104 server check,
+	 * failing a fee the UI just said was fine. Equals getFeeEstimates().minFeeRate
+	 * by construction (both round2(getRelayFeeFloor())). Never throws; inherits
+	 * getRelayFeeFloor's 1 sat/vB fallback.
+	 */
+	async getMinFeeRate(): Promise<number> {
+		return round2(await this.getRelayFeeFloor());
 	}
 
 	/**

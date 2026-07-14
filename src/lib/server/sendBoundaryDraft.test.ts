@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
 	getTx: vi.fn(),
 	getTxHex: vi.fn(),
 	getTip: vi.fn(),
+	getMinFeeRate: vi.fn(),
 	getCpfpInfo: vi.fn(),
 	broadcast: vi.fn(),
 	msUtxos: vi.fn(),
@@ -47,6 +48,7 @@ vi.mock('./chain', () => ({
 		getTx: mocks.getTx,
 		getTxHex: mocks.getTxHex,
 		getTip: mocks.getTip,
+		getMinFeeRate: mocks.getMinFeeRate,
 		getCpfpInfo: mocks.getCpfpInfo
 	})
 }));
@@ -113,6 +115,9 @@ beforeEach(() => {
 	setSetting('registration_mode', 'open');
 	vi.clearAllMocks();
 	mocks.getTip.mockResolvedValue({ height: 900_000 });
+	// Default node relay floor = 1 sat/vB (the historical/incapable-node fallback);
+	// individual sub-1 tests override this to a lower value (cairn-eacw.2).
+	mocks.getMinFeeRate.mockResolvedValue(1);
 	mocks.getTx.mockResolvedValue({ vin: [{}], confirmed: false, rbf: true });
 	mocks.getCpfpInfo.mockResolvedValue(null);
 	mocks.msChangeIndex.mockResolvedValue(0);
@@ -230,7 +235,7 @@ describe('buildDraft / buildMultisigDraft: zero balance', () => {
 // ═══════════════════════════════════════════════════ 2. MIN-RELAY-FEE BOUNDARY
 
 describe('buildDraft / buildMultisigDraft: fee-rate floor', () => {
-	it('single-sig: feeRate 0 rejects with the plain floor message and persists nothing', async () => {
+	it('single-sig: feeRate 0 rejects with the greater-than-zero message and persists nothing', async () => {
 		const { userId, walletId } = await seedWallet('rate@example.com');
 		wireSingleCoinWallet(60_000);
 
@@ -238,7 +243,7 @@ describe('buildDraft / buildMultisigDraft: fee-rate floor', () => {
 			buildDraft(userId, walletId, { recipients: [{ address: RECIPIENT, amount: 10_000 }], feeRate: 0 }),
 			'invalid_amount'
 		);
-		expect(err.message).toBe('Fee rate must be at least 1 sat/vB.');
+		expect(err.message).toBe('Enter a fee rate greater than zero.');
 		expect(listTransactions(userId, walletId)).toEqual([]);
 	});
 
@@ -254,7 +259,39 @@ describe('buildDraft / buildMultisigDraft: fee-rate floor', () => {
 		expect(listTransactions(userId, walletId)).toHaveLength(1);
 	});
 
-	it('multisig: feeRate 0 rejects with the plain floor message and persists nothing', async () => {
+	it('single-sig: 0.5 is rejected when the node floor is 1 with floor-aware copy (cairn-eacw.2)', async () => {
+		mocks.getMinFeeRate.mockResolvedValue(1);
+		const { userId, walletId } = await seedWallet('rate-incapable@example.com');
+		wireSingleCoinWallet(60_000);
+
+		const err = await expectPlainRejection(
+			buildDraft(userId, walletId, { recipients: [{ address: RECIPIENT, amount: 10_000 }], feeRate: 0.5 }),
+			'invalid_amount'
+		);
+		expect(err.message).toContain('below what your node will relay');
+		expect(err.message).toContain('1 sat/vB');
+		expect(listTransactions(userId, walletId)).toEqual([]);
+	});
+
+	it('single-sig: 0.5 builds and persists when the node floor is 0.1 (cairn-eacw.2)', async () => {
+		mocks.getMinFeeRate.mockResolvedValue(0.1);
+		const { userId, walletId } = await seedWallet('rate-capable@example.com');
+		wireSingleCoinWallet(60_000);
+
+		const { draft } = await buildDraft(userId, walletId, {
+			recipients: [{ address: RECIPIENT, amount: 10_000 }],
+			feeRate: 0.5
+		});
+		expect(draft.status).toBe('draft');
+		expect(listTransactions(userId, walletId)).toHaveLength(1);
+		// The float fee_rate survives the DB round-trip (fee_rate is a float column):
+		// buildDraft returns the row RELOADED from the DB (getTransaction), so its
+		// feeRate is the persisted value, and it reads back sub-1.
+		expect(draft.feeRate).toBeLessThan(1);
+		expect(draft.feeRate).toBeGreaterThan(0);
+	});
+
+	it('multisig: feeRate 0 rejects with the greater-than-zero message and persists nothing', async () => {
 		const { userId, multisigId } = await seedMultisig('rate@example.com');
 		wireSingleCoinMultisig(userId, multisigId, 200_000);
 
@@ -262,8 +299,33 @@ describe('buildDraft / buildMultisigDraft: fee-rate floor', () => {
 			buildMultisigDraft(userId, multisigId, { recipients: [{ address: RECIPIENT, amount: 10_000 }], feeRate: 0 }),
 			'invalid_amount'
 		);
-		expect(err.message).toBe('Fee rate must be at least 1 sat/vB.');
+		expect(err.message).toBe('Enter a fee rate greater than zero.');
 		expect(listMultisigTransactions(userId, multisigId)).toEqual([]);
+	});
+
+	it('multisig: 0.5 builds when the node floor is 0.1, rejects when floor is 1 (cairn-eacw.2 parity)', async () => {
+		const { userId, multisigId } = await seedMultisig('rate-ms@example.com');
+		wireSingleCoinMultisig(userId, multisigId, 200_000);
+
+		mocks.getMinFeeRate.mockResolvedValue(1);
+		const err = await expectPlainRejection(
+			buildMultisigDraft(userId, multisigId, { recipients: [{ address: RECIPIENT, amount: 10_000 }], feeRate: 0.5 }),
+			'invalid_amount'
+		);
+		expect(err.message).toContain('below what your node will relay');
+		expect(listMultisigTransactions(userId, multisigId)).toEqual([]);
+
+		mocks.getMinFeeRate.mockResolvedValue(0.1);
+		const { draft } = await buildMultisigDraft(userId, multisigId, {
+			recipients: [{ address: RECIPIENT, amount: 10_000 }],
+			feeRate: 0.5
+		});
+		expect(draft.status).toBe('draft');
+		expect(listMultisigTransactions(userId, multisigId)).toHaveLength(1);
+		// draft is the DB-reloaded row (getMultisigTransaction), so its float
+		// fee_rate is the persisted, round-tripped value and reads back sub-1.
+		expect(draft.feeRate).toBeLessThan(1);
+		expect(draft.feeRate).toBeGreaterThan(0);
 	});
 });
 

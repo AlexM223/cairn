@@ -57,7 +57,11 @@ vi.mock('./chain', () => ({
 		// the node's relay floor (cairn-eacw.3/.7); default to the network-wide
 		// 1 sat/vB fallback so tests that don't care about sub-1 floors keep
 		// their pre-cairn-eacw.7 behavior.
-		getRelayFeeFloor: getRelayFeeFloorMock
+		getRelayFeeFloor: getRelayFeeFloorMock,
+		// buildMultisigDraft / RBF validate against getMinFeeRate (== round2 of the
+		// relay floor, cairn-eacw.2); alias to the same mock so a sub-1 floor set in
+		// a test applies to both the CPFP target and the build validation.
+		getMinFeeRate: getRelayFeeFloorMock
 	})
 }));
 vi.mock('./multisigScan', () => ({

@@ -316,6 +316,9 @@ export async function buildMultisigDraft(
 				utxos: candidateUtxos,
 				recipients: input.recipients,
 				feeRate: input.feeRate,
+				// Node relay floor gates the fee (cairn-eacw.2) — same as the single-sig
+				// buildDraft path; a sub-1 fee builds on a node that relays below 1.
+				minFeeRate: await getChain().getMinFeeRate(),
 				changeIndex,
 				fetchRawTx: (txid) => getChain().getTxHex(txid),
 				onlyUtxos: input.onlyUtxos,
@@ -772,7 +775,7 @@ export async function bumpMultisigTransaction(
 		ownerId: multisigId,
 		tx,
 		newFeeRate,
-		buildReplacement: async (stored, changeIndex) => {
+		buildReplacement: async (stored, changeIndex, minFeeRate) => {
 			const config = toMultisigConfig(multisig);
 			const utxos = recoverMultisigPsbtInputs(stored, config);
 
@@ -785,6 +788,9 @@ export async function bumpMultisigTransaction(
 					utxos,
 					recipients: tx.recipients,
 					feeRate: newFeeRate,
+					// Node relay floor (cairn-eacw.2): don't reject a sub-1 bump before
+					// BIP-125 rule 4 runs (which forces the effective rate up anyway).
+					minFeeRate,
 					changeIndex,
 					fetchRawTx: (txid) => getChain().getTxHex(txid),
 					exactInputs: true
@@ -879,13 +885,16 @@ export async function buildMultisigCpfpDraft(
 				)
 			};
 		},
-		buildChild: ({ qualifying, changeAddress, changeIndex, childRate }) =>
+		buildChild: ({ qualifying, changeAddress, changeIndex, childRate, floor }) =>
 			constructMultisigPsbt({
 				config,
 				utxos: qualifying,
 				// Send-max sweeps exactly the coin-controlled set back to our own change.
 				recipients: [{ address: changeAddress, amount: 'max' }],
 				feeRate: childRate,
+				// childRate is already clamped to this floor; pass it so a sub-1 child
+				// isn't re-rejected by the default 1 sat/vB validation (cairn-eacw.2).
+				minFeeRate: floor,
 				changeIndex,
 				fetchRawTx: (txid) => getChain().getTxHex(txid),
 				onlyUtxos: qualifying.map((u) => ({ txid: u.txid, vout: u.vout }))

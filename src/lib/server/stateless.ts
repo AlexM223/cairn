@@ -246,6 +246,9 @@ export async function buildStatelessPsbt(
 		utxos,
 		recipients: input.recipients,
 		feeRate: input.feeRate,
+		// Node relay floor gates the fee (cairn-eacw.2), same as the stateful send
+		// paths — a sub-1 fee builds on a node that relays below 1 sat/vB.
+		minFeeRate: await getChain().getMinFeeRate(),
 		changeIndex,
 		fetchRawTx: (txid) => getChain().getTxHex(txid),
 		onlyUtxos: input.onlyUtxos,

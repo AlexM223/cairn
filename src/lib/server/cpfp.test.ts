@@ -32,6 +32,9 @@ vi.mock('./chain', () => ({
 		// cairn-eacw.3) so existing tests that don't care about the node relay
 		// floor keep their pre-cairn-eacw.7 behavior.
 		getRelayFeeFloor: getRelayFeeFloorMock,
+		// getMinFeeRate == round2(getRelayFeeFloor); the mock returns clean values,
+		// so aliasing keeps the RBF/build validation floor consistent with CPFP's.
+		getMinFeeRate: getRelayFeeFloorMock,
 		electrum: {
 			listUnspent: listUnspentMock,
 			// getWalletUtxos now batches listunspent through batchRequest (task 4);

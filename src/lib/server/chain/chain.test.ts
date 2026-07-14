@@ -622,7 +622,10 @@ describe('getFeeEstimates', () => {
 			fastest: 30, // 0.0003 BTC/kvB * 1e5 = 30 sat/vB
 			halfHour: 20,
 			hour: 10,
-			economy: 5
+			economy: 5,
+			// No Core / relayFee stub → getRelayFeeFloor falls back to 1 sat/vB, so the
+			// client-facing floor is carried through as minFeeRate (cairn-eacw.5).
+			minFeeRate: 1
 		});
 		expect(estimateFee).toHaveBeenCalledWith(1);
 		expect(estimateFee).toHaveBeenCalledWith(3);
@@ -641,7 +644,8 @@ describe('getFeeEstimates', () => {
 			fastest: 30,
 			halfHour: 10, // inherited from hour
 			hour: 10,
-			economy: 1
+			economy: 1,
+			minFeeRate: 1 // relay-floor fallback (no Core / relayFee stub)
 		});
 	});
 
@@ -689,7 +693,9 @@ describe('getFeeEstimates', () => {
 			fastest: 0.05,
 			halfHour: 0.05,
 			hour: 0.05,
-			economy: 0.05
+			economy: 0.05,
+			// 0.05 sat/vB relay floor is carried to the client as minFeeRate.
+			minFeeRate: 0.05
 		});
 	});
 

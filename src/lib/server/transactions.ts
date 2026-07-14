@@ -474,6 +474,10 @@ export async function buildDraft(
 				utxos: candidateUtxos,
 				recipients: input.recipients,
 				feeRate: input.feeRate,
+				// The node's own relay floor gates the fee (cairn-eacw.2): a sub-1 fee
+				// builds on a node that relays below 1 sat/vB, and the rejection message
+				// quotes the real floor. Never throws — falls back to 1 sat/vB.
+				minFeeRate: await getChain().getMinFeeRate(),
 				changeAddress,
 				changeIndex,
 				origin,
@@ -1034,7 +1038,7 @@ export async function buildCpfpDraft(
 				childVsize: estimateTxVsize(scriptType, qualifying.length, [changeAddress])
 			};
 		},
-		buildChild: ({ qualifying, changeAddress, changeIndex, childRate }) => {
+		buildChild: ({ qualifying, changeAddress, changeIndex, childRate, floor }) => {
 			const origin = wallet.master_fingerprint
 				? {
 						fingerprint: wallet.master_fingerprint,
@@ -1048,6 +1052,9 @@ export async function buildCpfpDraft(
 				// back to our own address, minus the CPFP fee.
 				recipients: [{ address: changeAddress, amount: 'max' }],
 				feeRate: childRate,
+				// childRate is already clamped to this floor; pass it so a sub-1 child
+				// isn't re-rejected by the default 1 sat/vB validation (cairn-eacw.2).
+				minFeeRate: floor,
 				changeAddress,
 				changeIndex,
 				origin,
@@ -1159,7 +1166,7 @@ export async function bumpTransaction(
 		ownerId: walletId,
 		tx,
 		newFeeRate,
-		buildReplacement: (stored, changeIndex) => {
+		buildReplacement: (stored, changeIndex, minFeeRate) => {
 			const { utxos, derivationKnown } = recoverPsbtInputs(stored);
 
 			const scriptType = wallet.script_type as ScriptType;
@@ -1195,6 +1202,10 @@ export async function bumpTransaction(
 				utxos,
 				recipients: tx.recipients,
 				feeRate: newFeeRate,
+				// Node relay floor (cairn-eacw.2): a replacement bumping a sub-1 original
+				// isn't rejected before BIP-125 rule 4 runs. Rule 4 still forces the
+				// effective rate up by ~1 sat/vB, so this rarely stays sub-1 in practice.
+				minFeeRate,
 				changeAddress,
 				changeIndex,
 				origin,

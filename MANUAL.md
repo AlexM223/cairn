@@ -497,7 +497,15 @@ Constructed from `getChainConfig()` (`settings.ts`). Notable methods:
   no Core RPC is configured; falls back to 1 sat/vB when neither answers).
   A genuine sub-1 sat/vB estimate now displays honestly when the node will
   actually relay it (`cairn-eacw.4`); estimates above the floor pass through
-  untouched — nothing is rounded up to the floor when the floor is lower.
+  untouched — nothing is rounded up to the floor when the floor is lower. The
+  response also carries the floor itself as `minFeeRate` (`cairn-eacw.5`) — the
+  same value `getMinFeeRate()` returns — so the send page's **FeeSpeedPicker**
+  can allow custom decimals down to it and gate `canBuild` on it. On a node that
+  relays sub-1 the picker honors a typed 0.x fee; when the floor is 1
+  (unknown/incapable node) a sub-1 entry is clamped to 1 with plain-language copy
+  ("Your Bitcoin node doesn't relay fees below 1 sat/vB"). The clamp + copy live
+  in the pure `feeChoice.ts` helpers (`resolveFeeRate` / `belowFloorMessage`),
+  unit-tested in `feeChoice.test.ts`.
 - `getDifficultyInfo()` / `getDifficultyHistory()` / `getHashrate()` — all
   derived from Electrum block headers, no Core dependency at all.
 - `getBtcUsdPrice()` — the one remaining external call (public mempool.space
@@ -1042,8 +1050,20 @@ can't be a wallet's own derived address (§11 has the full detail).
 `psbt.ts` explicitly hosts logic used by **both** `constructPsbt`
 (single-sig) and `constructMultisigPsbt` (multisig, in `multisigPsbt.ts`) —
 see the "shared spend rules" section header at `psbt.ts:229`:
-- `validateRecipientsAndFeeRate()` — recipient/fee-rate validation, identical
-  user-facing messages for both wallet types.
+- `validateRecipientsAndFeeRate(recipients, feeRate, minFeeRate = 1)` —
+  recipient/fee-rate validation, identical user-facing messages for both wallet
+  types. The fee-rate floor is **node-derived, not a hardcoded 1 sat/vB**
+  (`cairn-eacw.2`): the service layer resolves `ChainService.getMinFeeRate()`
+  (`round2(getRelayFeeFloor())`) and passes it as `minFeeRate`, so a node that
+  relays below 1 sat/vB accepts a genuinely sub-1 fee, while an
+  unknown/incapable node keeps the historical 1 sat/vB minimum. A rate **below
+  the floor** is refused with a floor-quoting message ("This fee is below what
+  your node will relay right now — the minimum is _N_ sat/vB"); a **zero,
+  negative, or NaN** rate is always refused independently, with "Enter a fee
+  rate greater than zero." The `MAX_FEE_RATE = 1000` sat/vB fat-finger ceiling
+  is unchanged. Both `constructPsbt`/`constructMultisigPsbt` take an optional
+  `minFeeRate` param (default 1) that flows straight into this validator; the
+  RBF/CPFP paths thread the same floor through `feeBump.ts`.
 - `selectSpendCandidates()` — coin eligibility + coinbase-maturity
   filtering.
 

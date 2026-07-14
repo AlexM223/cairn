@@ -115,7 +115,10 @@ describe('single-sig POST /api/wallets/[id]/psbt — boundary rejections surface
 		},
 		{
 			name: 'fee rate below the min-relay floor',
-			err: new PsbtError('Fee rate must be at least 1 sat/vB.', 'invalid_amount')
+			err: new PsbtError(
+				'This fee is below what your node will relay right now — the minimum is 1 sat/vB.',
+				'invalid_amount'
+			)
 		},
 		{
 			name: 'fee rate above the fat-finger ceiling',
@@ -182,7 +185,10 @@ describe('multisig POST /api/wallets/multisig/[id]/psbt — boundary rejections 
 		},
 		{
 			name: 'fee rate below the min-relay floor',
-			err: new PsbtError('Fee rate must be at least 1 sat/vB.', 'invalid_amount')
+			err: new PsbtError(
+				'This fee is below what your node will relay right now — the minimum is 1 sat/vB.',
+				'invalid_amount'
+			)
 		}
 	];
 
