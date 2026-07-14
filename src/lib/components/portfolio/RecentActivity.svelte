@@ -14,7 +14,17 @@
 		confirmations: number;
 	};
 
-	let { items }: { items: ActivityItem[] } = $props();
+	let {
+		items,
+		price
+	}: {
+		items: ActivityItem[];
+		/** Forwarded straight to each row's Amount (cairn-r7si). Home passes its
+		 *  hero privacy-gated price here so the feed never shows fiat the hero
+		 *  toggle has hidden; omit to fall back to Amount's default auto-refreshing
+		 *  $lib/price store (e.g. for a future non-Home call site). */
+		price?: number | null;
+	} = $props();
 	// /explorer/tx/[txid] is exempt from the `explorer` feature flag
 	// (cairn-5yz3.3) — it's tx *detail*, not chain browsing, and it's the only
 	// tx-detail surface in the app. So every row always links there, flag on
@@ -49,7 +59,7 @@
 						</span>
 					</span>
 
-					<Amount sats={item.sats} size="row" direction={item.direction} sign />
+					<Amount sats={item.sats} size="row" direction={item.direction} sign {price} />
 				</a>
 			</li>
 		{/each}

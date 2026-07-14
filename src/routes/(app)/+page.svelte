@@ -12,7 +12,14 @@
 	import Sparkline from '$lib/components/portfolio/Sparkline.svelte';
 	import SyncIndicator from '$lib/components/heartwood/SyncIndicator.svelte';
 	import Amount from '$lib/components/Amount.svelte';
-	import { formatNumber, formatBtc, formatBytes, formatSats, timeAgo } from '$lib/format';
+	import {
+		formatNumber,
+		formatBtc,
+		formatBytes,
+		formatSats,
+		timeAgo,
+		gatedFiatPrice
+	} from '$lib/format';
 	import type { PortfolioDetail } from '$lib/types';
 
 	let { data } = $props();
@@ -161,7 +168,9 @@
 	$effect(() => {
 		if (showFiat && !priceTried) void fetchPrice();
 	});
-	const heroPrice = $derived(showFiat ? usdPrice : null);
+	// cairn-r7si: same gate feeds the hero AND the recent-activity feed below it,
+	// so the privacy toggle covers the whole Home page, not just the hero.
+	const heroPrice = $derived(gatedFiatPrice(showFiat, usdPrice));
 
 	// Today's change (sage ▲ chip in the hero sub-line, 7a). Down is calm
 	// amber, never red.
@@ -481,7 +490,7 @@
 								All activity <Icon name="arrow-right" size={13} />
 							</a>
 						</div>
-						<RecentActivity items={portfolio.recentActivity} />
+						<RecentActivity items={portfolio.recentActivity} price={heroPrice} />
 					</section>
 
 					<section class="col">

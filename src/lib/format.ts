@@ -94,6 +94,19 @@ export function btcToFiat(btcAmount: number, usdPrice: number): number {
 	return btcAmount * usdPrice;
 }
 
+/**
+ * Single source of truth for "what price should a Home-page Amount show" given
+ * the hero's privacy-gated fiat toggle (cairn-r7si). The hero's `showFiat` flag
+ * is opt-in and OFF by default; every Amount on Home — the hero balance *and*
+ * the recent-activity feed directly below it — must resolve through this so the
+ * privacy gate the hero establishes actually covers the whole page instead of
+ * stopping at the hero component. Returns `null` (BTC-only) when fiat is off or
+ * the price hasn't loaded yet, otherwise the loaded USD price.
+ */
+export function gatedFiatPrice(showFiat: boolean, usdPrice: number | null): number | null {
+	return showFiat ? usdPrice : null;
+}
+
 /** 1234.5 -> "$1,234.50"; large amounts compact to "$1.2M" etc. */
 export function formatFiat(usd: number): string {
 	const abs = Math.abs(usd);

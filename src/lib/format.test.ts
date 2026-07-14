@@ -11,7 +11,8 @@ import {
 	truncateMiddle,
 	formatDuration,
 	btcToFiat,
-	formatFiat
+	formatFiat,
+	gatedFiatPrice
 } from './format';
 
 describe('formatBtc', () => {
@@ -210,6 +211,23 @@ describe('btcToFiat', () => {
 		expect(btcToFiat(1, 65_000)).toBe(65_000);
 		expect(btcToFiat(0.5, 65_000)).toBe(32_500);
 		expect(btcToFiat(0, 65_000)).toBe(0);
+	});
+});
+
+describe('gatedFiatPrice', () => {
+	// cairn-r7si: Home's hero privacy toggle must gate every fiat readout on
+	// the page (hero balance + recent-activity feed), not just the hero.
+	it('hides the price (BTC-only) when the toggle is off, even if a price loaded', () => {
+		expect(gatedFiatPrice(false, 65_000)).toBeNull();
+		expect(gatedFiatPrice(false, null)).toBeNull();
+	});
+
+	it('passes the loaded price through once the toggle is on', () => {
+		expect(gatedFiatPrice(true, 65_000)).toBe(65_000);
+	});
+
+	it('stays null (not a fake $0) while the toggle is on but the price has not loaded yet', () => {
+		expect(gatedFiatPrice(true, null)).toBeNull();
 	});
 });
 
