@@ -1447,23 +1447,49 @@ append-only sequence:
    the old `UNIQUE` constraint shape is detected (SQLite can't `ALTER` a
    constraint, so it renames-old/creates-new/copies/drops).
 
-**Cross-table cleanup via triggers, not app code.** Five "polymorphic child"
+**Cross-table cleanup via triggers, not app code.** Six "polymorphic child"
 tables (`balance_snapshots`, `wallet_backups`, `address_labels`,
-`backup_missing_notified`, `notified_txids`) key off a `(wallet_kind,
-wallet_id)` pair rather than a real FK (SQLite has no polymorphic FK). Two
-triggers, `trg_wallets_delete_children` and `trg_multisigs_delete_children`
-(`db.ts:833-853`), sweep all five whenever a `wallets`/`multisigs` row is
-deleted — covering both direct `DELETE`s and cascaded user deletion. They're
-defined with `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER` (not `IF NOT
-EXISTS`) specifically so edits to the trigger body actually redeploy to
-existing DBs. `deleteCascade.test.ts` introspects the DB and fails loudly if
-a new `(wallet_kind, wallet_id)` table is ever added without wiring it into
-both triggers — **if you add such a table, wire the trigger first or this
-test will catch you.** One exception: `multisig_shares` also has a
-`wallet_kind` column but is deliberately excluded — its parent link is a
-real `multisig_id` FK with `ON DELETE CASCADE`. There's also a plain "sweep
-now, unconditionally, every boot" orphan purge (`db.ts:864-877`) for rows
-left behind before the triggers existed.
+`backup_missing_notified`, `notified_txids`, `wallet_snapshots`) key off a
+`(wallet_kind, wallet_id)` pair rather than a real FK (SQLite has no
+polymorphic FK). Two triggers, `trg_wallets_delete_children` and
+`trg_multisigs_delete_children` (`db.ts:833-853`), sweep all six whenever a
+`wallets`/`multisigs` row is deleted — covering both direct `DELETE`s and
+cascaded user deletion. They're defined with `DROP TRIGGER IF EXISTS` +
+`CREATE TRIGGER` (not `IF NOT EXISTS`) specifically so edits to the trigger
+body actually redeploy to existing DBs. `deleteCascade.test.ts` introspects
+the DB and fails loudly if a new `(wallet_kind, wallet_id)` table is ever
+added without wiring it into both triggers — **if you add such a table, wire
+the trigger first or this test will catch you.** One exception:
+`multisig_shares` also has a `wallet_kind` column but is deliberately
+excluded — its parent link is a real `multisig_id` FK with `ON DELETE
+CASCADE`. There's also a plain "sweep now, unconditionally, every boot"
+orphan purge (`db.ts:864-877`) for rows left behind before the triggers
+existed.
+
+**Collision safety (`wallets.id`/`multisigs.id` are disjoint AUTOINCREMENT
+spaces that both start at 1, so `wallet_id=N` existing in both tables is the
+steady state, not an edge case — cairn-n4az).** Every read/write against the
+six tables above pairs `wallet_kind` with `wallet_id` in its `WHERE`/`INSERT`
+— audited by grepping every call site (`addressLabels.ts`, `backups.ts`,
+`backupHealth.ts`, `portfolio.ts`, `addressWatcher.ts`, `walletSync.ts`,
+`dataRetention.ts`); none found scoping by `wallet_id` alone. `transactions`/
+`tx_labels` look similar but are **not** part of this pattern — they carry a
+real `wallet_id INTEGER REFERENCES wallets(id)` FK and are single-sig-only
+(multisig transactions live in the separate `multisig_transactions` table
+with its own `multisig_id` FK), so an un-paired `wallet_id = ?` there is
+correct, not a gap. `walletMultisigIdCollision.test.ts` proves this two ways:
+service-layer reads (address labels, backup status, balance snapshots) stay
+scoped to their own kind when a wallet and a multisig share the same numeric
+id, and a generic introspective sweep (same discovery idiom as
+`deleteCascade.test.ts`) seeds every discovered polymorphic table at a
+colliding id and asserts deleting one kind's parent never touches the other
+kind's row. The bead's larger structural ask — a `wallet_entities(kind,
+ref_id)` mapping table with a real composite FK from every child, replacing
+the trigger-sweep pattern entirely, plus adopting `PRAGMA user_version` for
+ordered migrations instead of the probe-`table_info`-and-patch style used
+throughout this file — remains open and deliberately deferred (per the
+bead's own note: bundle it with the next schema-touching change, not as a
+standalone migration on a live funds DB).
 
 ### Main tables (~40, grouped by purpose)
 
