@@ -478,10 +478,10 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 	// what it's given, and send-max spends every candidate anyway): stable
 	// re-sort by CACHED parent mass so equal-value ties resolve toward coins
 	// with light parents. Best-effort by construction — it never fetches a
-	// parent (no added latency) and, because selectUTXO's 'default' strategy
-	// re-sorts by value internally, it can never change fees or amounts; see
-	// preferLowMassOrder. Verified by test: cached mass data reorders which of
-	// two equal-value coins is selected.
+	// parent (no added latency) and, because the normal path's own selection
+	// sort below is value-descending and stable, this only reorders ties — it
+	// can never change fees or amounts; see preferLowMassOrder. Verified by
+	// test: cached mass data reorders which of two equal-value coins is selected.
 	if (!params.exactInputs && !sendMax) {
 		spendable = preferLowMassOrder(spendable);
 	}
@@ -491,7 +491,7 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		? parseInt(params.origin.fingerprint, 16) >>> 0
 		: null;
 
-	// Assemble selectUTXO-shaped inputs, attributing derivation info when the
+	// Assemble btc-signer-shaped inputs, attributing derivation info when the
 	// wallet's key origin is known (hardware signers need it to find keys).
 	const prevTxCache = new Map<string, Uint8Array>();
 	async function rawPrevTx(txid: string): Promise<Uint8Array> {
@@ -536,8 +536,8 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 	// previous transaction for every CANDIDATE here — most of which never end
 	// up spent — paid for one serial Electrum round-trip per candidate before a
 	// single input was even chosen (cairn perf: send-flow prev-tx fetch fixed
-	// upstream of coin selection). p2pkh carries no witnessUtxo at all —
-	// selectUTXO can only learn a legacy input's value from its full previous
+	// upstream of coin selection). p2pkh carries no witnessUtxo at all — a
+	// legacy input can only be built and signed from its full previous
 	// transaction — so that fetch cannot be deferred and stays eager below.
 	const deferredNonWitness = scriptType !== 'p2pkh' && scriptType !== 'p2tr' && !!params.fetchRawTx;
 
@@ -565,9 +565,9 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		};
 
 		if (scriptType === 'p2pkh') {
-			// Legacy inputs carry no witnessUtxo — selectUTXO can only learn their
-			// value from the full previous transaction, so this fetch cannot wait
-			// for selection to run.
+			// Legacy inputs carry no witnessUtxo — they can only be built and
+			// signed from the full previous transaction, so this fetch is kept
+			// eager rather than deferred with the segwit ones below.
 			input.nonWitnessUtxo = await rawPrevTx(utxo.txid);
 		} else {
 			input.witnessUtxo = {
