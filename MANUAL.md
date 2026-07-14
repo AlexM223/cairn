@@ -1074,6 +1074,22 @@ implements only p2pkh/p2sh-p2wpkh/p2wpkh (throws on anything else).
 encoding generically, so a p2tr address is a valid **recipient** — it just
 can't be a wallet's own derived address (§11 has the full detail).
 
+**Derivation is memoized (cairn-8ubd)** — a CPU profile of the mixed-load
+harness put ~70% of non-idle server CPU inside secp256k1 point math, re-run
+on every gap-limit scan and watcher pass. `xpub.ts` now holds three caches,
+all keyed to one exact key so nothing leaks across wallets and no derived
+value changes (derivation is a deterministic pure function): a bounded
+`parseXpub` LRU (input string → `ParsedXpub`; also stabilizes the `HDKey`
+identity), a change-node `WeakMap<HDKey,[receive,change]>` (the `m/<change>`
+node is derived once per chain, not once per index), and a bounded address
+LRU keyed on `<scriptType>|<xpub>|<change>|<index>` (scriptType is in the key
+so a ypub and zpub over the same bytes can't collide). Multisig has the
+parallel `createMultisigDeriver(config)` factory in `multisig.ts` — resolve +
+validate once, hoist each cosigner's per-chain node — used only by the two
+hot loops (`multisigScan` gap scan, `addressWatcher` subscriptions); one-off
+callers keep the per-call-validating `deriveMultisigAddress` (a bad config
+costs real money). Warm scans then do zero EC work.
+
 **PSBT utilities** (bottom of `psbt.ts`):
 - `summarizePsbt(psbtBase64, threshold = 1)` — review-friendly summary
   (inputs/outputs/change/signedInputs/`complete`). The `threshold` param
