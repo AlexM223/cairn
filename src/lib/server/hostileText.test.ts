@@ -214,18 +214,25 @@ describe('hostile input: multisig name (createMultisig)', () => {
 	});
 });
 
-describe('KNOWN GAP (candidate bead): multisig name length cap counts UTF-16 units, not human characters', () => {
-	// Expected (arguable UX bar, not a security bug): a "60-character" limit
-	// ideally tracks what a user perceives as 60 characters typed/pasted.
-	// Actual: createMultisig checks `name.length > 60` — plain JS UTF-16 length.
-	// An emoji-heavy name of just 16 visible family-emoji glyphs (7 code units
-	// each = 112) already exceeds the cap and is REJECTED, while an ASCII name
-	// of 60 plain letters is accepted — same "character count" to a user, wildly
-	// different code-unit count. Pinned as current behavior, not a crash risk.
-	it('16 repeated family-emoji glyphs (112 UTF-16 units, 16 visible glyphs) is rejected as "too long"', async () => {
+describe('FIXED (cairn-vgbv): multisig name length cap counts human characters, not UTF-16 units', () => {
+	// createMultisig's `name.length > 60` check used to be plain JS UTF-16
+	// length. An emoji-heavy name of just 16 visible family-emoji glyphs (7
+	// code units each = 112) already exceeded the cap and was REJECTED, while
+	// an ASCII name of 60 plain letters was accepted — same "character count"
+	// to a user, wildly different code-unit count. graphemeLength()
+	// (textGuard.ts, Intl.Segmenter-based) now counts user-perceived
+	// characters instead, so this is accepted like any other 16-character name.
+	it('16 repeated family-emoji glyphs (112 UTF-16 units, 16 visible glyphs) is accepted, not rejected as "too long"', async () => {
 		const user = await makeUser('owner@example.com');
 		const name = EMOJI_ZWJ.repeat(16);
-		expect(name.length).toBeGreaterThan(60);
+		expect(name.length).toBeGreaterThan(60); // still true in raw UTF-16 units…
+		const ms = createMultisig(user.id, { name, threshold: 2, keys: makeMultisigKeys() }); // …but no longer rejected
+		expect(ms.name).toBe(name);
+	});
+
+	it('61 visible family-emoji glyphs (well over 60) is still rejected', async () => {
+		const user = await makeUser('owner@example.com');
+		const name = EMOJI_ZWJ.repeat(61);
 		expect(() =>
 			createMultisig(user.id, { name, threshold: 2, keys: makeMultisigKeys() })
 		).toThrow(MultisigError);

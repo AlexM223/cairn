@@ -66,3 +66,19 @@ export function truncateUtf16Safe(value: string, maxLen: number): string {
 	if (lastCode >= 0xd800 && lastCode <= 0xdbff) return sliced.slice(0, -1);
 	return sliced;
 }
+
+/**
+ * Count `value` in user-perceived characters ("grapheme clusters") rather
+ * than raw UTF-16 code units (cairn-vgbv). A plain `string.length` counts
+ * code UNITS: an astral-plane character (most emoji) is 2, and a ZWJ
+ * sequence like a "family" emoji — several codepoints joined by U+200D into
+ * one visible glyph — is 7+. A "60-character" cap built on `.length` rejects
+ * a name of just a handful of visible emoji as "too long" while accepting 60
+ * plain ASCII letters, the same perceived length to whoever typed it.
+ * Intl.Segmenter's grapheme granularity is exactly "how many things a user
+ * would count by pointing at the string," so it tracks the human-visible
+ * length regardless of script or how many UTF-16 units a glyph costs.
+ */
+export function graphemeLength(value: string): number {
+	return Array.from(new Intl.Segmenter().segment(value)).length;
+}

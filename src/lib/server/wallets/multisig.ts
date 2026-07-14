@@ -24,7 +24,7 @@ import {
 	type MultisigKeyDescriptor,
 	MAX_MULTISIG_KEYS
 } from '../bitcoin/multisig';
-import { containsNulByte } from '../textGuard';
+import { containsNulByte, graphemeLength } from '../textGuard';
 import { detectXpubReuse } from '../cosignerDetection';
 import { parseXpub } from '../bitcoin/xpub';
 // Cyclic with ../multisigScan (it imports several things from this module),
@@ -262,7 +262,12 @@ export function createMultisig(
 	}
 ): MultisigRow {
 	const name = params.name.trim();
-	if (name.length === 0 || name.length > 60) {
+	// cairn-vgbv: count user-perceived characters (grapheme clusters), not raw
+	// UTF-16 code units — otherwise a name of just a handful of emoji already
+	// exceeds "60 characters" while 60 plain ASCII letters do not, the same
+	// length to whoever typed it.
+	const nameLength = graphemeLength(name);
+	if (nameLength === 0 || nameLength > 60) {
 		throw new MultisigError('Multisig name must be 1-60 characters.', 'invalid_config');
 	}
 	// Reject an embedded NUL rather than let node:sqlite silently truncate the
