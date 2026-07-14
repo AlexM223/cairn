@@ -12,6 +12,7 @@
 	import TxFlowDiagram from '$lib/components/heartwood/TxFlowDiagram.svelte';
 	import { computeTxFlow, computeFeePosition } from '$lib/components/heartwood/txFlow';
 	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
+	import BlockContext from '$lib/components/heartwood/BlockContext.svelte';
 	import CoreRpcRequiredNotice from '$lib/components/CoreRpcRequiredNotice.svelte';
 	import { txPageTitle } from './txTitle';
 	import { feeOutlook } from '$lib/bitcoin';
@@ -105,6 +106,21 @@
 			tx.feeRate > 0 &&
 			Math.abs(cpfp.effectiveFeeRate - tx.feeRate) / tx.feeRate > 0.05
 	);
+
+	// Streamed block context (null while loading → the section shows its skeleton).
+	// The server populates block/position/richness but leaves the tx-level fee facts
+	// null (its Electrum decode has no prevout); overlay the authoritative values from
+	// the already-loaded `tx` so the summary's size/fee-rate/fee clauses are exact.
+	const blockCtx = $derived.by(() => {
+		const raw = details?.blockContext ?? null;
+		if (!raw || !tx) return raw;
+		return {
+			...raw,
+			vsize: tx.vsize ?? raw.vsize,
+			fee: tx.fee ?? raw.fee,
+			feeRate: tx.feeRate ?? raw.feeRate
+		};
+	});
 
 	// Per-row script disclosures and the raw-hex viewer; reset on navigation
 	// since the component instance is reused across tx pages.
@@ -292,6 +308,10 @@
 				{/if}
 			</span>
 		</section>
+
+		<!-- Block context: where this tx sits in the chain (BlueWallet-style). Streamed
+		     like the other supplementary details; null ctx renders the skeleton. -->
+		<BlockContext ctx={blockCtx} isAdmin={data.isAdmin} />
 
 		<!-- Replacement history -->
 		{#if rbf}

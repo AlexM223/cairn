@@ -402,10 +402,30 @@ Constructed from `getChainConfig()` (`settings.ts`). Notable methods:
   `'header'` event) via `electrum.headersSubscribe()`.
 - `getRecentBlocks(limit, fromHeight)` — Electrum headers only; txCount/
   size/weight/fees are 0/null unless later enriched by Core.
-- `getBlock` / `getBlockTxs` / `getTx` — Core only; catch `CoreRpcError` codes
-  -5/-8 as "not found" (Core's -5/-8 covers both "genuinely missing" and "no
-  txindex to find an arbitrary confirmed tx" — either way it surfaces as
-  not-found), else throw the "needs Core RPC" error. No third-party fallback.
+- `getBlock` / `getBlockTxs` — Core only; catch `CoreRpcError` codes -5/-8 as
+  "not found", else throw the "needs Core RPC" error. No third-party fallback.
+- `getTx` — Core first (`getrawtransaction` verbosity 2, exact fee + prevout);
+  on a -5/-8 it surfaces as not-found. **When Core is _not_ configured it now
+  falls back to `getTxViaElectrum` (docs/TX-BLOCK-CONTEXT-DESIGN.md §2)** — a
+  full-indexing Electrum server (electrs/Fulcrum) decodes any confirmed/mempool
+  tx via `blockchain.transaction.get(txid, verbose=true)`, whose result is
+  Core's `getrawtransaction verbose` shape exactly and maps through the same
+  `toTxDetailFromCore`. No prevout at that verbosity ⇒ `fee`/`feeRate` and input
+  addresses/values degrade to `null`, but the tx renders. So the tx-detail page
+  **no longer requires Core RPC** — an Electrum-only Umbrel gets the page at the
+  block-context "basic" tier. An unknown txid ("No such … transaction") maps to
+  the same not-found signal Core uses.
+- `getTxBlockContext(txid)` — assembles the tx-detail block-context section
+  (BlueWallet-style; docs/TX-BLOCK-CONTEXT-DESIGN.md). **Never throws** — resolves
+  to `richness:'none'` on total failure so the UI shows an honest "connecting"
+  state. Tiers: tip-unreachable → `none`; Electrum decodes the tx → `basic`
+  (neighbour dates + exact merkle position + summary); Core also answers
+  `getblockstats` → `full` (+ per-block tx-count/size/fullness, exact position
+  denominator). Position always comes from Electrum's merkle proof (cheap, exact)
+  in every tier — Core is used only for the immutable-cached `getblockstats`
+  aggregate; no `getblock` v1 whole-block fan-out. Neighbour headers are cached by
+  height with a reorg-windowed TTL and the merkle `pos` by (txid, height), both in
+  `chain/cache.ts`.
 - `getTxHex()` — Electrum `blockchain.transaction.get(verbose=false)`, LRU-
   cached cross-build by txid (`RAW_TX_CACHE_MAX = 200`) since confirmed tx
   bytes never change.
@@ -1769,7 +1789,7 @@ password reset. Uses `@simplewebauthn/server`'s `WebAuthnCredential` type.
 | Auth | `auth/login/{options,password,verify}`, `auth/me`, `auth/passkeys[/:id][/options]`, `auth/recover/{password,register/options,register/verify,verify}`, `auth/recovery/{codes,phrase,status}`, `auth/register/{options,password,verify}` |
 | Wallets (single-sig) | `wallets`, `wallets/[id]`, and under `wallets/[id]/`: `address-labels`, `addresses`, `config`, `descriptor`, `history.csv`, `labels`, `psbt`, `receive`, `refresh`, `transactions[/:txId][/broadcast\|/bump\|/file]`, `transactions/cpfp`, `transactions/saved`, `utxo-mass` |
 | Wallets (multisig) | `wallets/multisig`, `wallets/multisig/import`, `wallets/multisig/[id]` and under it: `address-detail`, `address-labels`, `backup-pdf`, `caravan`, `coldcard`, `descriptor`, `history.csv`, `keys/[keyId]/verified`, `ledger-registration`, `psbt`, `receive`, `refresh`, `shares[/:shareId]`, `transactions[/:txId][/broadcast\|/bump\|/file]`, `transactions/cpfp`, `utxo-mass` |
-| Chain / market data | `blocks`, `blocks/[id]`, `chain/refresh`, `chain-health`, `mempool/{fees,projected,summary}`, `price`, `search`, `sync`, `tx/[txid]`, `address/[address]`, `signing-time-preview` |
+| Chain / market data | `blocks`, `blocks/[id]`, `chain/refresh`, `chain-health`, `mempool/{fees,projected,summary}`, `price`, `search`, `sync`, `tx/[txid]`, `tx/[txid]/block-context`, `address/[address]`, `signing-time-preview` |
 | Admin | `admin/activity`, `admin/backup`, `admin/invites`, `admin/logs`, `admin/nostr-identity`, `admin/notifications[/test-smtp]`, `admin/restore`, `admin/settings`, `admin/users` |
 | Notifications | `notifications`, `notifications/channels/[channel][/test]`, `notifications/channels/email/test-smtp`, `notifications/pgp`, `notifications/preferences`, `notifications/quiet-hours`, `notifications/stream` (SSE) |
 | Collaborative custody | `contacts`, `contacts/[id]` (shares live under `wallets/multisig/[id]/shares`) |
@@ -2127,7 +2147,7 @@ Pages under `(app)`:
 | `wallets/multisig/[id]/send/+page.svelte` | multisig send/co-sign flow |
 | `wallets/multisig/stateless/+page.svelte` | stateless (no-account) multisig PSBT signer |
 | `explorer/+page.svelte` | block explorer home — includes an "Up next" strip (up to 4 projected-block chips, fed by the same server-loaded `mempoolBlocks` snapshot, linking through to the full mempool treemap viz; hidden gracefully rather than erroring when the chain backend has no projection data) |
-| `explorer/address/[address]`, `explorer/block/[id]`, `explorer/tx/[txid]` | detail pages — `explorer/block/[id]` shows a block-level "Yours in this ring" callout AND (cairn-6efi.12) a per-row sage "Yours" pip on any transaction in the paginated tx list that touches the viewer's own wallets, via `ownership.server.ts`'s memoized, viewer-scoped `ownedTxids()`/`ownedTxsInBlock()` — zero extra chain calls, same privacy boundary (viewer's own wallets only) as the index's `ownedBlockHeights()` pip |
+| `explorer/address/[address]`, `explorer/block/[id]`, `explorer/tx/[txid]` | detail pages — `explorer/block/[id]` shows a block-level "Yours in this ring" callout AND (cairn-6efi.12) a per-row sage "Yours" pip on any transaction in the paginated tx list that touches the viewer's own wallets, via `ownership.server.ts`'s memoized, viewer-scoped `ownedTxids()`/`ownedTxsInBlock()` — zero extra chain calls, same privacy boundary (viewer's own wallets only) as the index's `ownedBlockHeights()` pip. **`explorer/tx/[txid]` also renders a BlueWallet-style block-context section** (`BlockContext.svelte` under the status row): a confirmation badge ("6+ confirmations" green at ≥6, paired with the burial-rings glyph), a tappable 1–3 block row (prev/confirmed/next with dates, the tx's position marker inside the confirmed block, each block linking to `explorer/block/[height]`), and a plain-language confirmation summary. Streamed via `loadTxDetails` as `blockContext` (never blocks first paint) from `ChainService.getTxBlockContext` and progressive-enhancement aware — `none` (connecting), `basic` (Electrum-only: dates + position + summary, no Core nag; a quiet admin-only hint offers Core for block sizes), `full` (Core adds block tx-count/size/fullness). Pure copy/badge logic in `blockContext.ts` (`summaryLine`/`confirmationBadge`); one block glyph is `MiniBlock.svelte`. Also exposed standalone at `GET /api/tx/[txid]/block-context`. Because `getTx` now falls back to Electrum (above), this page works on a pure-Electrum Umbrel with no Core RPC. See docs/TX-BLOCK-CONTEXT-DESIGN.md |
 | `explorer/mempool/+page.svelte`, `explorer/mempool/blocks/+page.svelte` | mempool visualizer |
 | `explorer/difficulty` | difficulty chart |
 | `recovery-setup/+page.svelte` | post-signup recovery/backup setup flow |
@@ -4351,7 +4371,12 @@ backups, clear house-standard errors, **never red for routine states**, working 
   wizards, not app-wide — other forms still use `use:enhance`.
 - **Esplora fully removed (cairn-zoz8.16):** the explorer runs purely on Electrum + Core RPC
   with no third-party HTTP explorer API; README and this manual describe that. A public-Electrum-only
-  install has `core === null` and the rich Explorer sections show the "needs Core RPC" notice.
+  install has `core === null` and the Core-only Explorer sections (block detail, block tx list,
+  mempool summary) show the "needs Core RPC" notice. **Exception (tx-block-context feature):** the
+  **tx-detail page now works Electrum-only** — `getTx` falls back to `getTxViaElectrum`, so an
+  Electrum-only install renders the transaction plus a "basic"-tier block-context section (neighbour
+  dates + merkle position + summary) with no Core nag. Tapping a neighbour block still lands on the
+  Core-gated block-detail page, which shows its own notice — documented and accepted.
 - **Regtest addresses are mainnet-derived:** you fund via the scriptPubKey/descriptor bridge
   (16.5), not by pasting Cairn's `bc1…` into regtest tooling.
 - **BIP21 paste (§20.11) — expected-fail by design, not yet a bug to fix:** `parseBip21()`

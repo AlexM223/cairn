@@ -116,6 +116,12 @@ export function resetChainCaches(): void {
 	feeCache = null;
 	mempoolSummaryCache = null;
 	feeHistogramCache = null;
+	// The header cache is keyed by HEIGHT (not a globally-unique hash), so a switch
+	// to a different chain must drop it or height 800000 on the new chain could serve
+	// the old chain's header. The merkle-pos cache is keyed by txid (globally unique)
+	// but is cleared too for a clean slate on reconfigure.
+	headerCache.clear();
+	merklePosCache.clear();
 }
 
 // -------------------------------------------------------- raw prev-tx LRU
@@ -255,4 +261,123 @@ export function poolCacheSize(): number {
 /** Test hook: drop every cached pool entry. */
 export function clearPoolCache(): void {
 	poolCache.clear();
+}
+
+// ---------------------------------------------------- block-header + merkle-pos caches
+//   (tx block context — docs/TX-BLOCK-CONTEXT-DESIGN.md §3 "Caching")
+//
+// The tx-detail block-context section needs two small buried-immutable lookups per
+// cold view: each neighbour block's (hash, time) header and the tx's position
+// (merkle `pos`) within its block. Both follow the "immutable once buried" model —
+// with one wrinkle the block-stats/pool caches don't have: a header is keyed by
+// HEIGHT, not hash, and a height within the reorg window (~6 of tip) can be
+// re-pointed at a new block. So headers get a SHORT TTL near the tip and are cached
+// (near-)forever once buried; the merkle pos is keyed by (txid, height) — a reorg
+// changes the tx's height, so the new key misses and refetches, making stale data
+// structurally impossible without any explicit invalidation.
+
+/** A header stays "near the tip" (reorg-eligible) within this many blocks; a cached
+ *  entry for such a height is only trusted for HEADER_TIP_TTL_MS. Beyond it a
+ *  block is treated as buried and its header is cached until evicted by size. */
+const HEADER_REORG_WINDOW = 6;
+/** Short TTL for a still-reorg-eligible (near-tip) cached header. */
+const HEADER_TIP_TTL_MS = 60_000;
+const HEADER_CACHE_MAX = 300;
+
+interface HeaderEntry {
+	value: { hash: string; time: number };
+	at: number;
+}
+const headerCache = new Map<number, HeaderEntry>();
+
+/**
+ * Cached (hash, time) for a block height, honouring the reorg window: a near-tip
+ * entry expires after {@link HEADER_TIP_TTL_MS}; a buried entry never expires (only
+ * LRU-evicted). `distanceFromTip` is `tipHeight − height` at read time — pass it so
+ * a block that has since buried is trusted even if it was cached while near-tip.
+ * Returns undefined on a miss or an expired near-tip entry.
+ */
+export function getCachedHeader(
+	height: number,
+	distanceFromTip: number
+): { hash: string; time: number } | undefined {
+	const hit = headerCache.get(height);
+	if (!hit) return undefined;
+	const nowBuried = distanceFromTip >= HEADER_REORG_WINDOW;
+	// A near-tip height (still reorg-eligible now) is only trusted within the TTL.
+	if (!nowBuried && Date.now() - hit.at >= HEADER_TIP_TTL_MS) {
+		headerCache.delete(height);
+		return undefined;
+	}
+	// Refresh LRU recency.
+	headerCache.delete(height);
+	headerCache.set(height, hit);
+	return hit.value;
+}
+
+/** Cache a block's (hash, time) under its height. Whether the entry is trusted past
+ *  the near-tip TTL is decided at READ time (see {@link getCachedHeader}) from the
+ *  then-current distance from tip, so no burial flag is stored here. */
+export function cacheHeader(height: number, value: { hash: string; time: number }): void {
+	headerCache.delete(height);
+	headerCache.set(height, { value, at: Date.now() });
+	while (headerCache.size > HEADER_CACHE_MAX) {
+		const oldest = headerCache.keys().next().value;
+		if (oldest === undefined) break;
+		headerCache.delete(oldest);
+	}
+}
+
+export function headerCacheSize(): number {
+	return headerCache.size;
+}
+
+/** Test hook: drop every cached header entry. */
+export function clearHeaderCache(): void {
+	headerCache.clear();
+}
+
+// Merkle position, keyed by `${txid}:${height}` — immutable for that pair (a reorg
+// mints a new height ⇒ new key ⇒ refetch). `{ pos, merkleDepth }` so the basic-tier
+// denominator estimate (2 ** depth) survives the round-trip without re-deriving.
+const MERKLE_POS_CACHE_MAX = 300;
+const merklePosCache = new Map<string, { pos: number; merkleDepth: number }>();
+
+/** Cached merkle position for (txid, height), or undefined. Refreshes LRU recency. */
+export function getCachedMerklePos(
+	txid: string,
+	height: number
+): { pos: number; merkleDepth: number } | undefined {
+	const key = `${txid}:${height}`;
+	const hit = merklePosCache.get(key);
+	if (hit !== undefined) {
+		merklePosCache.delete(key);
+		merklePosCache.set(key, hit);
+	}
+	return hit;
+}
+
+/** Cache the merkle position for (txid, height), evicting the LRU entry past the cap. */
+export function cacheMerklePos(
+	txid: string,
+	height: number,
+	value: { pos: number; merkleDepth: number }
+): void {
+	const key = `${txid}:${height}`;
+	merklePosCache.delete(key);
+	merklePosCache.set(key, value);
+	while (merklePosCache.size > MERKLE_POS_CACHE_MAX) {
+		const oldest = merklePosCache.keys().next().value;
+		if (oldest === undefined) break;
+		merklePosCache.delete(oldest);
+	}
+}
+
+export function merklePosCacheSize(): number {
+	return merklePosCache.size;
+}
+
+/** Test hook: drop every cached merkle position. */
+export function clearMerklePosCache(): void {
+	merklePosCache.clear();
 }

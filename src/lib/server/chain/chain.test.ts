@@ -38,7 +38,9 @@ import {
 	getCachedBlockStats,
 	cacheBlockStats,
 	blockStatsCacheSize,
-	clearBlockStatsCache
+	clearBlockStatsCache,
+	clearHeaderCache,
+	clearMerklePosCache
 } from './cache';
 import type { BlockStats } from './index';
 
@@ -117,6 +119,7 @@ interface ElectrumStub {
 	getBalance: ReturnType<typeof vi.fn>;
 	getHistory: ReturnType<typeof vi.fn>;
 	getTransaction: ReturnType<typeof vi.fn>;
+	getMerkleProof: ReturnType<typeof vi.fn>;
 }
 
 /** Install stubbed Electrum methods onto a ChainService's pooled facade
@@ -143,6 +146,9 @@ afterEach(() => {
 	// And the immutable block-stats LRU (cairn-6efi.1, U2), so a hash reused
 	// across cases doesn't short-circuit a fresh enrichment fetch.
 	clearBlockStatsCache();
+	// The block-context header + merkle-pos caches (tx block context), same reason.
+	clearHeaderCache();
+	clearMerklePosCache();
 });
 
 // ---- tip (electrum-backed, cairn-zoz8.5) -----------------------------------------
@@ -1260,7 +1266,12 @@ describe('getMempoolBlocks projection from the Electrum fee histogram', () => {
 // (the whole point of the removal). getTxRbfInfo is now unconditionally null.
 
 describe('no Core RPC configured (Esplora removed)', () => {
-	it('getBlock/getTx/getMempoolSummary throw a clear "needs Core RPC" error without any fetch', async () => {
+	// getBlock / getBlockTxs / getMempoolSummary stay Core-only (a bare Electrum header
+	// carries none of that detail). getTx is the exception: it now degrades to the
+	// full-indexing Electrum fallback (docs/TX-BLOCK-CONTEXT-DESIGN.md §2, covered by
+	// the "getTx via Electrum fallback" describe) instead of throwing, so it is
+	// deliberately not asserted here.
+	it('getBlock/getMempoolSummary throw a clear "needs Core RPC" error without any fetch', async () => {
 		const fetchSpy = vi.fn(async () => {
 			throw new Error('no external fetch should ever happen here');
 		});
@@ -1268,7 +1279,6 @@ describe('no Core RPC configured (Esplora removed)', () => {
 		const svc = makeService(); // CFG has no coreRpcUrl → core is null
 
 		await expect(svc.getBlock('a'.repeat(64))).rejects.toThrow(/Bitcoin Core RPC/);
-		await expect(svc.getTx('b'.repeat(64))).rejects.toThrow(/Bitcoin Core RPC/);
 		await expect(svc.getMempoolSummary()).rejects.toThrow(/Bitcoin Core RPC/);
 		// No chain method dialed any host — there is no Esplora fallback to leak to.
 		expect(fetchSpy).not.toHaveBeenCalled();
@@ -1348,5 +1358,255 @@ describe('testCoreRpc', () => {
 		expect(res.ok).toBe(false);
 		expect(res.error).toMatch(/^Couldn't connect to Bitcoin Core:/);
 		expect(res.error).toContain('401 Unauthorized');
+	});
+});
+
+// ---- getTx Electrum-only fallback (docs/TX-BLOCK-CONTEXT-DESIGN.md §2) --------------
+//
+// With Esplora removed and NO Core RPC configured, getTx falls back to the operator's
+// own full-indexing Electrum server (electrs / Fulcrum), whose verbose tx is Core's
+// getrawtransaction-verbose shape exactly — no prevout, so fee/input values degrade to
+// null, but the tx renders (unlocking the tx page + its block-context section).
+
+/** A confirmed 1-in/2-out segwit tx as Electrum verbose (=Core getrawtransaction
+ *  verbose, verbosity 1): decoded, but NO prevout on the input. */
+const ELECTRUM_VERBOSE_TX = {
+	txid: 'f'.repeat(64),
+	version: 2,
+	size: 222,
+	vsize: 141,
+	weight: 561,
+	locktime: 0,
+	vin: [
+		{
+			txid: 'e'.repeat(64),
+			vout: 1,
+			scriptSig: { hex: '' },
+			sequence: 0xfffffffd,
+			txinwitness: ['02abcd']
+			// no prevout at this verbosity
+		}
+	],
+	vout: [
+		{ value: 0.0015, n: 0, scriptPubKey: { hex: WATCHED_SCRIPT, address: 'bc1qreceiver', type: 'witness_v0_keyhash' } },
+		{ value: 0.0004859, n: 1, scriptPubKey: { hex: '0014' + 'cc'.repeat(20), address: 'bc1qchange', type: 'witness_v0_keyhash' } }
+	],
+	confirmations: 98,
+	blockhash: 'd'.repeat(64),
+	blocktime: 1_750_000_000,
+	time: 1_750_000_000
+};
+
+describe('getTx via Electrum fallback (no Core)', () => {
+	it('decodes a verbose Electrum tx to a TxDetail with null fee (no prevout) and confirmations→height', async () => {
+		const svc = makeService();
+		const tipHex = buildHeader({ time: 1_750_000_000, bits: GENESIS_BITS });
+		const getTransaction = vi.fn(async () => ELECTRUM_VERBOSE_TX);
+		withElectrum(svc, {
+			getTransaction,
+			headersSubscribe: vi.fn(async () => ({ height: TIP_HEIGHT, hex: tipHex }))
+		});
+
+		const tx = await svc.getTx(ELECTRUM_VERBOSE_TX.txid);
+
+		// verbose=true requested from Electrum.
+		expect(getTransaction).toHaveBeenCalledWith(ELECTRUM_VERBOSE_TX.txid, true);
+		expect(tx.confirmed).toBe(true);
+		expect(tx.confirmations).toBe(98);
+		expect(tx.blockHeight).toBe(TIP_HEIGHT - 97); // tip − 98 + 1
+		expect(tx.blockHash).toBe('d'.repeat(64));
+		// No prevout ⇒ fee + input value/address are null (degraded, not fabricated).
+		expect(tx.fee).toBeNull();
+		expect(tx.feeRate).toBeNull();
+		expect(tx.vin[0].value).toBeNull();
+		expect(tx.vin[0].address).toBeNull();
+		// Outputs still decode fully (BTC→sats).
+		expect(tx.vout[0].value).toBe(150_000);
+		expect(tx.vout[0].address).toBe('bc1qreceiver');
+		// vsize present ⇒ block-context summary can still name the size.
+		expect(tx.vsize).toBe(141);
+	});
+
+	it('maps an electrs "No such … transaction" to a not-found error', async () => {
+		const svc = makeService();
+		withElectrum(svc, {
+			getTransaction: vi.fn(async () => {
+				throw new Error('No such mempool or blockchain transaction. Use gettransaction for wallet transactions.');
+			})
+		});
+
+		await expect(svc.getTx(ELECTRUM_VERBOSE_TX.txid)).rejects.toThrow(/not found/i);
+	});
+
+	it('propagates a non-not-found Electrum error unchanged (real outage ≠ not-found)', async () => {
+		const svc = makeService();
+		withElectrum(svc, {
+			getTransaction: vi.fn(async () => {
+				throw new Error('read ECONNRESET');
+			})
+		});
+
+		await expect(svc.getTx(ELECTRUM_VERBOSE_TX.txid)).rejects.toThrow(/ECONNRESET/);
+	});
+});
+
+// ---- getTxBlockContext tiering (docs/TX-BLOCK-CONTEXT-DESIGN.md §3, §9) -------------
+
+const BLOCK_CTX_TIP = 948_294; // tip so a 98-conf tx lands on height 948,197
+
+/** Wire an Electrum-only service for block-context: tip, per-height headers (each a
+ *  distinct timestamp so neighbour dates differ), the verbose tx, and a merkle proof. */
+function makeBlockCtxElectrum(opts: {
+	svc: ChainService;
+	tip?: number;
+	tx?: unknown;
+	merkle?: { pos: number; merkle: string[] } | null;
+	headerFor?: (h: number) => string | null;
+}): void {
+	const tip = opts.tip ?? BLOCK_CTX_TIP;
+	const tipHex = buildHeader({ time: 1_750_000_000, bits: GENESIS_BITS });
+	const getBlockHeader = vi.fn(async (h: number) => {
+		const hex = opts.headerFor
+			? opts.headerFor(h)
+			: buildHeader({ time: 1_750_000_000 + h, bits: GENESIS_BITS, nonce: h });
+		if (hex === null) throw new Error(`no header for height ${h}`);
+		return hex;
+	});
+	withElectrum(opts.svc, {
+		headersSubscribe: vi.fn(async () => ({ height: tip, hex: tipHex })),
+		getTransaction: vi.fn(async () => opts.tx ?? ELECTRUM_VERBOSE_TX),
+		getBlockHeader,
+		getMerkleProof:
+			opts.merkle === null
+				? vi.fn(async () => {
+						throw new Error('get_merkle not supported');
+					})
+				: vi.fn(async () => opts.merkle ?? { pos: 42, merkle: ['a', 'b', 'c'] })
+	});
+}
+
+describe('getTxBlockContext', () => {
+	it('basic tier (Electrum only): 3 neighbours with dates, exact position, null block stats', async () => {
+		const svc = makeService();
+		makeBlockCtxElectrum({ svc, merkle: { pos: 42, merkle: ['a', 'b', 'c', 'd'] } });
+
+		const ctx = await svc.getTxBlockContext(ELECTRUM_VERBOSE_TX.txid);
+
+		expect(ctx.richness).toBe('basic');
+		expect(ctx.confirmed).toBe(true);
+		expect(ctx.height).toBe(948_197);
+		expect(ctx.confirmations).toBe(98);
+		expect(ctx.tipHeight).toBe(BLOCK_CTX_TIP);
+		// neighbours ascending, current flagged, each with a real date.
+		expect(ctx.neighbors.map((n) => n.height)).toEqual([948_196, 948_197, 948_198]);
+		expect(ctx.neighbors.find((n) => n.isCurrent)?.height).toBe(948_197);
+		expect(ctx.neighbors.every((n) => n.time !== null && n.hash !== null)).toBe(true);
+		// exact position from the merkle proof; denominator is the depth estimate.
+		expect(ctx.position).toBe(42);
+		expect(ctx.positionEstimated).toBe(true);
+		expect(ctx.positionTotal).toBe(2 ** 4); // 2 ** merkle.length
+		// no Core ⇒ per-block stats stay null.
+		expect(ctx.neighbors.every((n) => n.txCount === null && n.size === null && n.fullness === null)).toBe(true);
+	});
+
+	it('full tier (+Core): per-block txCount/size/fullness and the exact position denominator', async () => {
+		const core = makeCoreStub();
+		const svc = makeCoreService(core);
+		makeBlockCtxElectrum({ svc, merkle: { pos: 42, merkle: ['a', 'b', 'c'] } });
+		core.getBlockStats.mockResolvedValue({
+			txs: 2_500,
+			total_size: 1_312_000,
+			total_weight: 3_600_000,
+			feerate_percentiles: [1, 2, 3, 4, 5]
+		});
+
+		const ctx = await svc.getTxBlockContext(ELECTRUM_VERBOSE_TX.txid);
+
+		expect(ctx.richness).toBe('full');
+		const current = ctx.neighbors.find((n) => n.isCurrent)!;
+		expect(current.txCount).toBe(2_500);
+		expect(current.size).toBe(1_312_000);
+		expect(current.fullness).toBeCloseTo(3_600_000 / 4_000_000, 6);
+		// exact denominator from Core replaces the merkle-depth estimate.
+		expect(ctx.positionTotal).toBe(2_500);
+		expect(ctx.positionEstimated).toBe(false);
+	});
+
+	it('tip failure ⇒ richness "none" (honest connecting state, no fake data)', async () => {
+		const svc = makeService();
+		withElectrum(svc, {
+			headersSubscribe: vi.fn(async () => {
+				throw new Error('electrum unreachable');
+			})
+		});
+
+		const ctx = await svc.getTxBlockContext(ELECTRUM_VERBOSE_TX.txid);
+		expect(ctx.richness).toBe('none');
+		expect(ctx.height).toBeNull();
+		expect(ctx.neighbors).toEqual([]);
+	});
+
+	it('a single neighbour header failure degrades only that entry (time/hash null)', async () => {
+		const svc = makeService();
+		makeBlockCtxElectrum({
+			svc,
+			// the previous block's header fails; the others resolve.
+			headerFor: (h) => (h === 948_196 ? null : buildHeader({ time: 1_750_000_000 + h, bits: GENESIS_BITS, nonce: h }))
+		});
+
+		const ctx = await svc.getTxBlockContext(ELECTRUM_VERBOSE_TX.txid);
+		const prev = ctx.neighbors.find((n) => n.height === 948_196)!;
+		expect(prev.time).toBeNull();
+		expect(prev.hash).toBeNull();
+		// the rest are intact.
+		expect(ctx.neighbors.find((n) => n.isCurrent)?.time).not.toBeNull();
+	});
+
+	it('unconfirmed (mempool) tx ⇒ confirmed:false, no neighbours, basic tier', async () => {
+		const svc = makeService();
+		const { confirmations: _c, blockhash: _b, blocktime: _t, ...mempoolTx } = ELECTRUM_VERBOSE_TX;
+		makeBlockCtxElectrum({ svc, tx: mempoolTx });
+
+		const ctx = await svc.getTxBlockContext(ELECTRUM_VERBOSE_TX.txid);
+		expect(ctx.richness).toBe('basic');
+		expect(ctx.confirmed).toBe(false);
+		expect(ctx.confirmations).toBe(0);
+		expect(ctx.height).toBeNull();
+		expect(ctx.neighbors).toEqual([]);
+	});
+
+	it('tx at the tip ⇒ 2-block row (no next block)', async () => {
+		const svc = makeService();
+		// 1 confirmation ⇒ height == tip == 948,294.
+		const atTipTx = { ...ELECTRUM_VERBOSE_TX, confirmations: 1 };
+		makeBlockCtxElectrum({ svc, tx: atTipTx });
+
+		const ctx = await svc.getTxBlockContext(ELECTRUM_VERBOSE_TX.txid);
+		expect(ctx.height).toBe(BLOCK_CTX_TIP);
+		expect(ctx.neighbors.map((n) => n.height)).toEqual([BLOCK_CTX_TIP - 1, BLOCK_CTX_TIP]);
+		expect(ctx.confirmations).toBe(1);
+	});
+
+	it('genesis tx ⇒ no previous block (row starts at height 0)', async () => {
+		const svc = makeService();
+		// confirmations == tip + 1 ⇒ height 0.
+		const genesisTx = { ...ELECTRUM_VERBOSE_TX, confirmations: BLOCK_CTX_TIP + 1 };
+		makeBlockCtxElectrum({ svc, tx: genesisTx });
+
+		const ctx = await svc.getTxBlockContext(ELECTRUM_VERBOSE_TX.txid);
+		expect(ctx.height).toBe(0);
+		expect(ctx.neighbors.map((n) => n.height)).toEqual([0, 1]);
+	});
+
+	it('merkle proof unsupported ⇒ position null, block row still renders', async () => {
+		const svc = makeService();
+		makeBlockCtxElectrum({ svc, merkle: null });
+
+		const ctx = await svc.getTxBlockContext(ELECTRUM_VERBOSE_TX.txid);
+		expect(ctx.position).toBeNull();
+		expect(ctx.positionTotal).toBeNull();
+		// the three-block row is unaffected.
+		expect(ctx.neighbors.map((n) => n.height)).toEqual([948_196, 948_197, 948_198]);
+		expect(ctx.richness).toBe('basic');
 	});
 });
