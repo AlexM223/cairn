@@ -161,6 +161,13 @@
 	// svelte-ignore state_referenced_locally — intentional per-load seed
 	let savedAddresses = $state<SavedAddress[]>(data.savedAddresses);
 
+	// address_book flag (cairn-de7e): +page.server.ts already withholds
+	// savedAddresses (so the combobox has nothing to autocomplete from) when
+	// this is off; this additionally hides the post-broadcast "save this
+	// address" offer, which otherwise still posts to /api/address-book (403s
+	// server-side, but shows a dead-end error instead of not offering at all).
+	const addressBookEnabled = $derived(data.flags?.address_book !== false);
+
 	async function deleteSavedAddress(entry: SavedAddress) {
 		savedAddresses = savedAddresses.filter((a) => a.id !== entry.id);
 		try {
@@ -631,7 +638,8 @@
 
 	const sentRecipient = $derived(review?.recipient ?? null);
 	const showSaveOffer = $derived(
-		step === 'sent' &&
+		addressBookEnabled &&
+			step === 'sent' &&
 			!saveDismissed &&
 			!addressJustSaved &&
 			sentRecipient !== null &&

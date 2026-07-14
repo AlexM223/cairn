@@ -163,8 +163,14 @@ export const load: PageServerLoad = async (event) => {
 		},
 		resume,
 		// The user's address book seeds the recipient autocomplete. User-scoped,
-		// small, and cheap to load alongside the page.
-		savedAddresses: listSavedAddresses(locals.user!.id),
+		// small, and cheap to load alongside the page. Gated on the address_book
+		// flag (cairn-de7e): GET /api/address-book already 403s when it's off,
+		// but this load() handed the saved list to the client regardless, so the
+		// RecipientCombobox kept showing autocomplete even with the flag off.
+		// Withholding the data here (rather than only hiding it client-side)
+		// means the off state can't leak via a devtools/API-adjacent read of the
+		// page data either.
+		savedAddresses: locals.flags?.address_book === false ? [] : listSavedAddresses(locals.user!.id),
 		// Buy-a-device links for the signer cards' unavailable states; null when
 		// the referral_links flag is off (the cards then render no referral UI).
 		referralBuyUrls: getReferralBuyUrls(locals.flags),
