@@ -4,10 +4,15 @@
 // route.
 //
 // Under /admin, so the admin layout's isAdmin gate protects the page; the
-// mutating actions re-check requireAdmin for defense in depth.
+// mutating actions re-check requireAdmin for defense in depth. Also gated on
+// assertTeamMode() (cairn-7xlf): this is part of the same Users/Invites
+// multi-user MANAGEMENT surface as the list page (../+page.server.ts), which
+// already 404s in solo mode — the detail route must match or the admin
+// layout's own doc comment ("the routes themselves 404 via assertTeamMode()
+// regardless of this list") is false.
 
 import { error, fail } from '@sveltejs/kit';
-import { requireAdmin } from '$lib/server/api';
+import { assertTeamMode, requireAdmin } from '$lib/server/api';
 import { recordActivity } from '$lib/server/activity';
 import { getUser } from '$lib/server/admin';
 import { FEATURE_FLAGS, FEATURE_FLAGS_BY_KEY } from '$lib/server/featureFlags/registry';
@@ -27,6 +32,7 @@ function parseUserId(param: string): number {
 }
 
 export const load: PageServerLoad = async ({ params }) => {
+	assertTeamMode();
 	const userId = parseUserId(params.id);
 	const user = getUser(userId);
 	if (!user) error(404, 'User not found');
@@ -60,6 +66,7 @@ export const actions: Actions = {
 	// (state = 'inherit') for this user.
 	setOverride: async (event) => {
 		const admin = requireAdmin(event);
+		assertTeamMode();
 		const userId = parseUserId(event.params.id!);
 		const target = getUser(userId);
 		if (!target) return fail(404, { error: 'User not found.' });
