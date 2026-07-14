@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
+	import { collapseRepeats } from './collapseRepeats';
 
 	type LogEntry = {
 		time: number | null;
@@ -35,13 +36,16 @@
 		// stable unique key even when two lines are textually identical — keying
 		// by the line itself throws Svelte's each_key_duplicate and crashes the
 		// whole app shell. Filtering never reorders `entries`, so the id is stable.
-		const out: { e: LogEntry; id: number }[] = [];
+		const filtered: { e: LogEntry; id: number }[] = [];
 		entries.forEach((e, id) => {
 			if (e.level >= min && (q === '' || e.raw.toLowerCase().includes(q))) {
-				out.push({ e, id });
+				filtered.push({ e, id });
 			}
 		});
-		return out;
+		// cairn-fgbx: collapse runs of consecutive identical lines (e.g. dozens of
+		// back-to-back "gate: (app) redirect" INFO lines) into one row with a
+		// repeat count, instead of drowning distinct signal in noise.
+		return collapseRepeats(filtered);
 	});
 
 	async function refresh() {
@@ -140,7 +144,7 @@
 		</div>
 	{:else}
 		<ul class="log">
-			{#each shown as { e, id } (id)}
+			{#each shown as { e, id, count, oldestTime } (id)}
 				{@const open = expanded.has(id)}
 				<li class="line lvl-{e.levelName}">
 					<button
@@ -149,10 +153,19 @@
 						onclick={() => e.fields && toggle(id)}
 						type="button"
 					>
-						<time class="t" title={fullTs(e.time)}>{ts(e.time)}</time>
+						<time
+							class="t"
+							title={count > 1 ? `${fullTs(oldestTime)} – ${fullTs(e.time)}` : fullTs(e.time)}
+							>{ts(e.time)}</time
+						>
 						<span class="lv">{e.levelName}</span>
 						{#if e.tag}<span class="tag">{e.tag}</span>{/if}
 						<span class="msg">{e.msg}</span>
+						{#if count > 1}
+							<span class="repeat" title="{count} identical lines collapsed, from {fullTs(oldestTime)} to {fullTs(e.time)}"
+								>×{count}</span
+							>
+						{/if}
 						{#if e.fields}
 							<Icon name={open ? 'chevron-down' : 'chevron-right'} size={13} />
 						{/if}
@@ -279,6 +292,17 @@
 		color: var(--text-rows);
 		white-space: pre-wrap;
 		word-break: break-word;
+	}
+	/* cairn-fgbx: repeat-count badge for a run of collapsed identical lines. */
+	.repeat {
+		flex-shrink: 0;
+		padding: 1px 6px;
+		border-radius: var(--radius-badge);
+		background: var(--bg-input);
+		color: var(--text-muted);
+		font-size: 10.5px;
+		font-weight: 600;
+		font-variant-numeric: tabular-nums;
 	}
 	/* Warnings read amber; genuine errors keep --error (an operational log's
 	   failures are failures, not nudges). */
