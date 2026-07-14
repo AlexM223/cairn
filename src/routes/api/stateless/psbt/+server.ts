@@ -1,5 +1,6 @@
 import { json, requireFeature, readJson } from '$lib/server/api';
 import { buildStatelessPsbt, statelessErrorInfo } from '$lib/server/stateless';
+import { coerceSpendAmount } from '$lib/server/walletApi';
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
 
@@ -34,7 +35,7 @@ export const POST: RequestHandler = async (event) => {
 		onlyUtxos?: CoinBody[];
 	}>(event);
 
-	const toAmount = (a: unknown): number | 'max' => (a === 'max' ? 'max' : Number(a));
+	const toAmount = coerceSpendAmount;
 
 	const recipients: { address: string; amount: number | 'max' }[] =
 		Array.isArray(body.recipients) && body.recipients.length > 0

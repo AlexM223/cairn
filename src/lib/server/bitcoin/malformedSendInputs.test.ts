@@ -1,9 +1,10 @@
 // Malformed-input coverage for the send/draft validation layer:
 // validateRecipientsAndFeeRate (exercised through constructPsbt /
 // constructMultisigPsbt) PLUS the request-body coercion function
-// readSpendRequest/toAmount in walletApi.ts (~line 50-59), which performs NO
-// bounds-checking — it just does `Number(a)` — so anything genuinely unsafe
-// has to be caught downstream by validateRecipientsAndFeeRate.
+// readSpendRequest/toAmount in walletApi.ts (~line 50-65). toAmount() rejects
+// hex strings and array shapes outright (cairn-ozc5); anything else it
+// coerces via Number() still has to be caught downstream by
+// validateRecipientsAndFeeRate (bounds/positivity/dust checks).
 //
 // Same pure construction-layer style as sendBoundaryMatrix.test.ts (no DB, no
 // chain); fixtures and the plain-language guard are copied verbatim from
@@ -319,49 +320,46 @@ describe('readSpendRequest / toAmount(): body coercion of a malformed amount fie
 		});
 	}
 
-	// BUG: a hex-formatted string amount ("0x2710") is silently coerced by
-	// JavaScript's Number() to its decimal value (10,000) and sails through
-	// validateRecipientsAndFeeRate with no complaint — readSpendRequest performs
-	// no format/type check beyond Number(a), so a client sending a hex string
-	// (malformed input, wrong field type from a buggy integration, etc.) gets
-	// silently treated as a normal, valid sat amount instead of being rejected.
-	// Not a funds-safety bug (the resulting number is still bounds-checked
-	// normally downstream), but a genuine type-confusion surprise worth fixing:
-	// walletApi.ts's toAmount (~line 59) should require the coerced value to
-	// round-trip through a plain decimal string, or reject non-numeric-looking
-	// input outright.
-	it('BUG: hex string amount "0x2710" is silently coerced to 10,000 sats and accepted, not rejected as malformed input', async () => {
+	// FIXED (cairn-ozc5): a hex-formatted string amount ("0x2710") used to be
+	// silently coerced by JavaScript's Number() to its decimal value (10,000)
+	// and sail through validateRecipientsAndFeeRate with no complaint.
+	// toAmount() now rejects any string that isn't a plain decimal literal, so
+	// this is caught as invalid_amount instead of accepted as 10,000 sats.
+	it('hex string amount "0x2710" is rejected as invalid_amount, not silently coerced to 10,000 sats', async () => {
 		const req = await readSpendRequest(
 			fakeSpendEvent({ recipient: RECIPIENT_P2WPKH, amount: '0x2710', feeRate: 5 })
 		);
-		expect(req.recipients[0].amount).toBe(10_000); // Number('0x2710') === 10000
-		const draft = await constructPsbt({
-			...COMMON,
-			utxos: [utxo(1_000_000_000)],
-			recipients: req.recipients,
-			feeRate: req.feeRate
-		});
-		expect(draft.amount).toBe(10_000);
+		expect(req.recipients[0].amount).toBeNaN();
+		await expectPlainRejection(
+			constructPsbt({
+				...COMMON,
+				utxos: [utxo(1_000_000_000)],
+				recipients: req.recipients,
+				feeRate: req.feeRate
+			}),
+			'invalid_amount'
+		);
 	});
 
-	// BUG: a single-element JSON array ([10000]) is silently coerced by
-	// Number() to its lone element (Number([10000]) === 10000, because a
-	// single-element array's default toString() is just that element's own
-	// string form) and sails through validation exactly like a plain number
-	// would. A malformed/wrong-shaped JSON payload (array instead of number)
-	// should be rejected as a type error, not silently treated as valid.
-	it('BUG: single-element array amount [10000] is silently coerced to 10,000 sats and accepted, not rejected as malformed input', async () => {
+	// FIXED (cairn-ozc5): a single-element JSON array ([10000]) used to be
+	// silently coerced by Number() to its lone element (Number([10000]) ===
+	// 10000, because a single-element array's default toString() is just that
+	// element's own string form) and sail through validation exactly like a
+	// plain number would. toAmount() now rejects any array outright.
+	it('single-element array amount [10000] is rejected as invalid_amount, not silently coerced to 10,000 sats', async () => {
 		const req = await readSpendRequest(
 			fakeSpendEvent({ recipient: RECIPIENT_P2WPKH, amount: [10_000], feeRate: 5 })
 		);
-		expect(req.recipients[0].amount).toBe(10_000); // Number([10000]) === 10000
-		const draft = await constructPsbt({
-			...COMMON,
-			utxos: [utxo(1_000_000_000)],
-			recipients: req.recipients,
-			feeRate: req.feeRate
-		});
-		expect(draft.amount).toBe(10_000);
+		expect(req.recipients[0].amount).toBeNaN();
+		await expectPlainRejection(
+			constructPsbt({
+				...COMMON,
+				utxos: [utxo(1_000_000_000)],
+				recipients: req.recipients,
+				feeRate: req.feeRate
+			}),
+			'invalid_amount'
+		);
 	});
 
 	// Not marked BUG: scientific notation is standard decimal-number syntax

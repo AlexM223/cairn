@@ -47,6 +47,29 @@ export interface SpendRequest {
  * only reject when the request actually exercises coin control or batching,
  * so an ordinary single-recipient auto-coin-select spend is unaffected.
  */
+// Plain decimal literal (optionally signed, with a fractional part and/or
+// exponent) — deliberately excludes hex/octal/binary prefixes ("0x2710") and
+// anything else Number()'s permissive grammar would otherwise accept.
+const DECIMAL_LITERAL = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i;
+
+/**
+ * Coerce a request-body amount field to a sat count (or the literal 'max'),
+ * rejecting shapes that would otherwise slip past a bare Number() coercion —
+ * hex/octal strings ("0x2710") and array payloads ([10000]) — as NaN instead
+ * of silently accepting them as valid amounts (cairn-ozc5). Anything else
+ * (including out-of-range/non-positive results) is still bounds-checked
+ * downstream by validateRecipientsAndFeeRate.
+ */
+export function coerceSpendAmount(a: unknown): number | 'max' {
+	if (a === 'max') return 'max';
+	if (Array.isArray(a)) return NaN; // e.g. [10000] — Number() reads a 1-element array as its lone element
+	if (typeof a === 'string') {
+		const trimmed = a.trim();
+		if (trimmed !== '' && !DECIMAL_LITERAL.test(trimmed)) return NaN; // e.g. "0x2710"
+	}
+	return Number(a);
+}
+
 export async function readSpendRequest(event: RequestEvent): Promise<SpendRequest> {
 	const body = await readJson<{
 		recipients?: { address?: unknown; amount?: unknown }[];
@@ -56,7 +79,7 @@ export async function readSpendRequest(event: RequestEvent): Promise<SpendReques
 		onlyUtxos?: { txid?: unknown; vout?: unknown }[];
 	}>(event);
 
-	const toAmount = (a: unknown): number | 'max' => (a === 'max' ? 'max' : Number(a));
+	const toAmount = coerceSpendAmount;
 
 	const recipients: { address: string; amount: number | 'max' }[] =
 		Array.isArray(body.recipients) && body.recipients.length > 0
