@@ -298,7 +298,12 @@ option doesn't cover the TLS handshake that happens *after* the tunnel is
 established (**cairn-ocs9**). On successful dial: sends the `server.version`
 handshake, resets backoff, calls `recordChainOk()` (feeds `chainHealth.ts`),
 re-subscribes any active header/scripthash subscriptions, starts the
-keepalive timer.
+keepalive timer. **Resubscription fans every watched scripthash out
+concurrently** over the pipelined socket (`Promise.allSettled`, `cairn-afdy`)
+rather than one serial round-trip at a time — a multi-wallet instance no
+longer pays reconnect latency proportional to the number of watched
+scripthashes (the ARM/Umbrel reconnect-storm pain point). One failed
+resubscribe no longer abandons the rest.
 
 **Keepalive**: every 45s, if connected and idle (`pending.size === 0`), sends
 `server.ping` via `rawRequest` (not `request` — so a failed ping never
@@ -312,17 +317,27 @@ requests. Reconnects **eagerly only if there are active subscriptions**
 (headers or scripthash); otherwise the next `request()` call reconnects
 lazily. Backoff doubles each attempt, 1s → 30s ceiling. Every reconnect
 failure is logged at `warn` (previously invisible at `debug` in prod logs).
-**Caveat (`cairn-sp74`, open):** that ceiling only bounds the *scheduled*
-eager-reconnect timer path. `ensureConnected()` itself never checks
-`reconnectTimer` — any ordinary `request()`/`batchRequest()` call during an
-outage triggers its own fresh connect attempt regardless of backoff state,
-so ambient request traffic (not just the subscription-driven reconnect
-loop) can still hammer a dead server faster than the nominal 1s→30s
-schedule implies.
+The backoff timer is armed **before** `onDisconnect` emits `'disconnect'`, so
+by the time any listener (or ambient request) runs, the reconnect state is
+already established. **`ensureConnected()` respects that backoff
+(`cairn-sp74`, fixed):** if a reconnect timer is already scheduled it
+**fails fast** (`"…is backing off; try again shortly"`) instead of dialing a
+fresh connection. Before this, any ordinary `request()`/`batchRequest()`
+during an outage triggered its own connect attempt regardless of backoff
+state, so ambient request traffic (not just the subscription-driven reconnect
+loop) hammered a dead server far faster than the 1s→30s schedule implied. The
+scheduled attempt now solely owns reconnection; requests flow again the moment
+it succeeds.
 
 **Message framing**: buffers by newline, JSON-parses each line, and
 defensively rejects non-object payloads (null/array/primitive) rather than
-crashing on a `TypeError` from a hostile or buggy server. Dispatch: numeric
+crashing on a `TypeError` from a hostile or buggy server. The unparsed
+receive buffer is **capped at `MAX_BUFFER_SIZE = 32 MiB`** (`cairn-32kh`):
+after draining complete lines, if the still-incomplete residual exceeds the
+cap the peer is streaming an unterminated payload (a memory-exhaustion DoS,
+and the eventual `JSON.parse` on a giant line would stall the event loop) —
+the socket is destroyed and the normal disconnect/backoff-reconnect path
+runs. `maxBufferBytes` overrides the cap (mainly for tests). Dispatch: numeric
 `id` resolves/rejects the matching pending-request map entry; no `id` plus a
 known method name (`blockchain.headers.subscribe` /
 `blockchain.scripthash.subscribe`) is emitted as a `'header'`/`'scripthash'`
@@ -1827,6 +1842,19 @@ This deliberately never gates the read path a cosigner already has
 (`getViewableMultisig`) — toggling back to solo must not silently revoke
 access already granted.
 
+`admin/users/[id]`'s `+page.server.ts` (the per-user feature-override
+detail page) now also calls `assertTeamMode()` in both `load()` and the
+`setOverride` action (`cairn-7xlf`, fixed) — it had been missing entirely,
+so `/admin/users` 404'd in solo mode while `/admin/users/2` kept rendering
+the full override UI and its action kept writing, contradicting the admin
+layout's own doc comment that every route under the Users/Invites tabs
+404s via `assertTeamMode()`. `admin/feature-flags`'s lead copy and its
+per-flag "N user overrides" badge now also check `data.instanceMode ===
+'team'` before linking to `/admin/users` (`cairn-369e`) — solo mode has no
+reachable Users page to link to, so the badge renders as plain text and the
+"set a per-user exception" sentence is omitted rather than dead-ending in a
+404.
+
 ### User & account deletion invariants (`userDeletion.ts`)
 
 Both deletion entry points — `admin.ts`'s `deleteUser(id, { force? })` (an admin
@@ -2104,6 +2132,24 @@ channel is flagged off, the page shows an explanatory line instead of an
 empty list. Server-side enforcement is unchanged — this is a UI-parity fix,
 not a new security boundary.
 
+**More flag/UI parity fixes (`cairn-de7e`, `cairn-puyb`, both fixed):** the
+send flow's `+page.server.ts` `load()` now withholds `savedAddresses`
+entirely (returns `[]` without calling `listSavedAddresses`) when
+`locals.flags.address_book === false`, instead of always handing the full
+list to the client while only the `/api/address-book` endpoint enforced the
+flag — the `RecipientCombobox` autocomplete and the post-broadcast
+"save this address" offer (`+page.svelte`'s `addressBookEnabled`) both
+follow from that. (Multisig send has no address book at all —
+`saved={[]}` unconditionally — so it was never affected.) Separately, the
+single-sig and multisig wallet-detail pages' "Wallet config (JSON)" /
+"Descriptor (.txt)" / "ColdCard file" / "Printable backup (PDF)" export
+links are now wrapped in `{#if data.flags?.wallet_config_export !== false}`
+(else a `FeatureDisabled` message), mirroring the `csv_export` gate already
+on the same pages — those endpoints (`caravan`/`coldcard`/`descriptor`/
+`backup-pdf`) all `requireFeature(event, 'wallet_config_export')`
+server-side already; the links previously stayed live and 403'd on click
+when the flag was off.
+
 **SMTP — global + per-user creds**: `channels/email.ts`'s
 `readSmtpConfig(userId)` resolves SMTP host/port/user/`smtp_pass`/from/tls
 per-user from `notification_channel_config`; `resolveSmtp(userId)` wraps
@@ -2266,8 +2312,16 @@ Wraps every authenticated page with:
   the same red error treatment, which read as "broken" rather than
   "not connected yet, please configure a node" on a healthy fresh install.
 - `SyncBanner` — shown until first chain-history sync completes (polls
-  `/api/sync`); self-suppresses (`{#if !hidden && !suppressed}`) when
-  `syncStatus.ts`'s `deriveSyncStatus` reports phase `'unreachable'`, since
+  `/api/sync` via `startBackoffPoll`, `src/lib/backoffPoll.ts`). Polling is
+  **capped-exponential-backoff, not a fixed interval** (`cairn-1f0a`): base
+  2.5s while progressing, backing off toward a 30s cap whenever `/api/sync`
+  reports the sustained `'unreachable'` phase (it still answers HTTP 200, so a
+  fixed loop would hammer it forever) or the fetch throws, and resetting to
+  base the moment progress resumes; it stops entirely once `'synced'`. The
+  `/sync` details page uses the same helper (base 1.2s). This keeps an
+  unreachable backend from producing a continuous request storm and lets the
+  page reach network-idle. It self-suppresses (`{#if !hidden && !suppressed}`)
+  when `syncStatus.ts`'s `deriveSyncStatus` reports phase `'unreachable'`, since
   that phase is only reached when `chainHealthy` is already false — i.e. the
   identical root cause `ChainHealthBanner` is already showing. Also fixed in
   `cairn-7zjo`: before this, a never-configured or unreachable instance
