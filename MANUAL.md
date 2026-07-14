@@ -399,9 +399,24 @@ non-wallet txids — errors propagate, not swallowed), `getTxOut`,
 Constructed from `getChainConfig()` (`settings.ts`). Notable methods:
 
 - `getTip()` — TTL-cached (10min ceiling, invalidated instantly on every
-  `'header'` event) via `electrum.headersSubscribe()`.
-- `getRecentBlocks(limit, fromHeight)` — Electrum headers only; txCount/
-  size/weight/fees are 0/null unless later enriched by Core.
+  `'header'` event) via `electrum.headersSubscribe()`. **When Electrum is
+  unreachable and Core RPC is configured, falls back to `getblockcount` +
+  `getblockhash` (cairn-i4pa)** — so the explorer landing page's tip (and
+  everything derived from it) doesn't dead-end on a Core-up/Electrum-down
+  deployment. The `'header'`-event invalidation is Electrum-only, so in this
+  fallback the tip only refreshes on the 10min TTL ceiling — an accepted
+  degrade. With no Core RPC configured either, the Electrum error propagates
+  unchanged (no fallback available).
+- `getRecentBlocks(limit, fromHeight)` — baseline is Electrum headers; txCount/
+  size/weight/fees are null unless later enriched by Core (see
+  `getBlockStats` below). **Each height's baseline (hash, time) now degrades
+  independently via the same `neighborHeader()` Electrum→Core fallback the tx
+  block-context uses (cairn-i4pa)** — before this, a single Electrum
+  `getBlockHeader` failure rejected the whole batch (`Promise.all`), so a
+  Core-up/Electrum-down deployment got an EMPTY landing-page block list even
+  though block/tx detail pages already worked Core-only. A height neither
+  backend can answer is omitted from the list (never a fabricated row) rather
+  than failing the whole page.
 - `getBlock` — Core first (`getblockhash` + `getblock` verbosity 1 +
   `getblockstats`); catches `CoreRpcError` codes -5/-8 as "not found". **When
   Core is _not_ configured and the lookup is by HEIGHT, it now falls back to
@@ -4478,6 +4493,14 @@ backups, clear house-standard errors, **never red for routine states**, working 
   not a whole-page gate. Tapping a neighbour block still resolves the same way (by height, from the
   block-context rail's own links). A block looked up by HASH (no known height) still shows the
   Core-gated notice — Electrum exposes no hash→height index — documented and accepted.
+- **Explorer landing page's tip + recent-block list, Core-only direction (cairn-i4pa):** the flip
+  side of the note above — a Core-up/Electrum-down (or Electrum-unreachable) deployment used to
+  show the landing page's "Verified by your Bitcoin Core node" provenance chip alongside an EMPTY
+  block list and a stuck tip, since `getTip()` and `getRecentBlocks()` were Electrum-only with no
+  Core fallback (unlike `getBlock`/`getTx`, which already had one). Fixed: `getTip()` falls back to
+  `getblockcount`+`getblockhash`; `getRecentBlocks()` degrades each height's baseline independently
+  via the same `neighborHeader()` Electrum→Core fallback the tx block-context uses, instead of one
+  failed Electrum header rejecting the whole batch. See the `ChainService` method docs above.
 - **Regtest addresses are mainnet-derived:** you fund via the scriptPubKey/descriptor bridge
   (16.5), not by pasting Cairn's `bc1…` into regtest tooling.
 - **BIP21 paste (§20.11) — expected-fail by design, not yet a bug to fix:** `parseBip21()`

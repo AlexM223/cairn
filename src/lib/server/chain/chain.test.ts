@@ -192,6 +192,34 @@ describe('getTip', () => {
 
 		expect(headersSubscribe).toHaveBeenCalledTimes(2);
 	});
+
+	// ---- Core fallback (cairn-i4pa): the explorer landing page's tip must not
+	// dead-end on a Core-up/Electrum-down (or Electrum-unreachable) deployment.
+	it('falls back to Core getblockcount/getblockhash when Electrum is unreachable', async () => {
+		const core = makeCoreStub();
+		const svc = makeCoreService(core);
+		withElectrum(svc, {
+			headersSubscribe: vi.fn(async () => {
+				throw new Error('electrum down');
+			})
+		});
+		core.getBlockCount.mockResolvedValue(900_123);
+		core.getBlockHash.mockResolvedValue('f'.repeat(64));
+
+		await expect(svc.getTip()).resolves.toEqual({ height: 900_123, hash: 'f'.repeat(64) });
+		expect(core.getBlockHash).toHaveBeenCalledWith(900_123);
+	});
+
+	it('propagates the Electrum error when no Core RPC is configured (no fallback available)', async () => {
+		const svc = makeService(); // no Core configured
+		withElectrum(svc, {
+			headersSubscribe: vi.fn(async () => {
+				throw new Error('electrum down');
+			})
+		});
+
+		await expect(svc.getTip()).rejects.toThrow(/electrum down/);
+	});
 });
 
 // ---- recent blocks (electrum-backed, cairn-zoz8.5) -------------------------------
@@ -344,6 +372,65 @@ describe('getRecentBlocks', () => {
 		const again = await svc.getRecentBlocks(1, 805);
 		expect(core.getBlockStats).toHaveBeenCalledTimes(1);
 		expect(again[0].txCount).toBe(42);
+	});
+
+	// ---- Core fallback for the baseline itself (cairn-i4pa) --------------------
+	//
+	// Before this fix, a single Electrum getBlockHeader failure rejected the whole
+	// Promise.all — so a Core-up/Electrum-down (or Electrum-unreachable) deployment
+	// got an EMPTY landing-page block list even though the block/tx detail pages
+	// already worked Core-only. Each height's baseline now degrades independently
+	// via the same neighborHeader() Electrum→Core fallback tx-block-context uses.
+
+	it('falls back to Core getblockhash+getblockheader per height when Electrum is fully down', async () => {
+		const core = makeCoreStub();
+		const svc = makeCoreService(core);
+		withElectrum(svc, {
+			getBlockHeader: vi.fn(async () => {
+				throw new Error('electrum down');
+			})
+		});
+		core.getBlockHash.mockImplementation(async (h: number) => `corehash-${h}`);
+		core.getBlockHeader.mockImplementation(async (hash: string) => {
+			const m = /^corehash-(\d+)$/.exec(String(hash));
+			if (!m) throw new Error(`unstubbed getBlockHeader ${hash}`);
+			const h = Number(m[1]);
+			return { hash, height: h, time: 1_700_000_000 + h };
+		});
+
+		const blocks = await svc.getRecentBlocks(3, 805);
+
+		expect(blocks.map((b) => b.height)).toEqual([805, 804, 803]);
+		expect(blocks[0].hash).toBe('corehash-805');
+		expect(blocks[0].time).toBe(1_700_000_000 + 805);
+		// Bare Core header alone still carries no tx-count/size/weight/fee stats —
+		// same null baseline as the Electrum path — but getblockstats enrichment
+		// (already exercised above) fills them in when it succeeds per row.
+		expect(blocks[0]).toMatchObject({ txCount: null, size: null, weight: null });
+	});
+
+	it('omits (never fabricates) a height neither Electrum nor Core can answer, while the rest of the list still renders', async () => {
+		const core = makeCoreStub();
+		const svc = makeCoreService(core);
+		const hex804 = buildHeader({ time: 1_700_804, bits: GENESIS_BITS, nonce: 804 });
+		withElectrum(svc, {
+			getBlockHeader: vi.fn(async (h: number) => {
+				if (h === 804) return hex804;
+				throw new Error('no header for this height'); // 805 fails on Electrum too
+			})
+		});
+		// Core can't answer height 805 either (e.g. a pruned/lagging node).
+		core.getBlockHash.mockImplementation(async (h: number) => {
+			if (h === 805) throw new Error('Block height out of range');
+			return `corehash-${h}`;
+		});
+
+		const blocks = await svc.getRecentBlocks(2, 805); // [805, 804]
+
+		// 805 is omitted entirely (never a fabricated hash/time); 804 still renders
+		// via the Electrum path.
+		expect(blocks.map((b) => b.height)).toEqual([804]);
+		expect(blocks[0].hash).toBe(headerHash(hex804));
 	});
 });
 
@@ -1737,6 +1824,14 @@ describe('getTxBlockContext', () => {
 			throw new Error(`unstubbed getBlockHeader ${hash}`);
 		});
 		core.getBlockHash.mockImplementation(async (h: number) => `nhash-${h}`);
+		// getTip() now has its own Core fallback (cairn-i4pa) — Electrum is down here
+		// (headersSubscribe throws above), so getTip() falls to
+		// getBlockCount()+getBlockHash(). Keep it self-consistent with this test's
+		// crafted chain state (tip = 470) rather than the makeCoreStub() default
+		// (TIP_HEIGHT), so getTip() itself resolves to the SAME tip this test's
+		// confirmations-based recovery used to derive on its own — the assertions
+		// below (height 460, tipHeight 470) still pin the same scenario either way.
+		core.getBlockCount.mockResolvedValue(470);
 		core.getBlockStats.mockResolvedValue({
 			txs: 1_200,
 			total_size: 900_000,

@@ -612,41 +612,72 @@ export class ChainService {
 	async getTip(): Promise<{ height: number; hash: string }> {
 		// TTL-cached (10min ceiling, invalidated on every 'header' event) so the
 		// several call sites that fire on one navigation — and concurrent tabs —
-		// share one Electrum round-trip instead of each paying for it.
+		// share one Electrum round-trip instead of each paying for it. In a
+		// Core-only deployment the 'header' invalidation never fires (it's wired to
+		// the Electrum pool), so the tip only refreshes on the TTL ceiling — an
+		// acceptable degrade, not a regression, matching how other Core-only reads
+		// already cache liberally.
 		return cachedTip(async () => {
 			// headersSubscribe returns the current tip {height, hex}; the hash is the
 			// double-sha256 of the header (blockHashFromHeader). Same source
 			// getNodeInfo already uses — no third-party HTTP explorer call (cairn-zoz8.5).
-			const header = await this.electrum.headersSubscribe();
-			return { height: header.height, hash: blockHashFromHeader(header.hex) };
+			try {
+				const header = await this.electrum.headersSubscribe();
+				return { height: header.height, hash: blockHashFromHeader(header.hex) };
+			} catch (e) {
+				// Electrum unreachable: fall back to the operator's own Core node
+				// (cairn-i4pa) so the explorer landing page's tip + recent-block list
+				// aren't Electrum-only dead ends on a Core-up/Electrum-down or
+				// Core-only-configured deployment — the same per-source degradation
+				// pattern as getTxBlockContext's tip recovery (cairn-zc4x).
+				const core = this.core;
+				if (!core) throw e;
+				const height = await core.getBlockCount();
+				const hash = await core.getBlockHash(height);
+				return { height, hash };
+			}
 		});
 	}
 
 	/**
 	 * Recent blocks, newest first. The baseline comes from the operator's own
-	 * Electrum server (`blockchain.block.header` per height, fetched concurrently)
-	 * instead of a third-party HTTP explorer API (cairn-zoz8.5). A raw 80-byte header
-	 * carries only version/prevhash/merkleroot/time/bits/nonce — NOT tx_count / size
-	 * / weight or fee stats — so those stay **null** in the Electrum-only baseline
+	 * Electrum server (`blockchain.block.header` per height) instead of a
+	 * third-party HTTP explorer API (cairn-zoz8.5). A raw 80-byte header carries
+	 * only version/prevhash/merkleroot/time/bits/nonce — NOT tx_count / size /
+	 * weight or fee stats — so those stay **null** in the Electrum-only baseline
 	 * (Cardinal rule: unknown reads as unknown, never a false 0).
 	 *
-	 * When Bitcoin Core RPC is configured, each row is enriched with `getblockstats`
-	 * aggregates, fanned out at a concurrency cap. A per-block stats failure (e.g. a
-	 * pruned node missing an old block) degrades THAT row back to the null baseline
-	 * — it never throws and never fails the whole list (cairn-6efi.1, U1).
+	 * Each height's baseline (hash, time) degrades independently via
+	 * {@link neighborHeader} — Electrum preferred, falling back to the operator's
+	 * own Core node (`getblockhash` + `getblockheader`) when Electrum can't answer
+	 * (cairn-i4pa) — so a Core-up/Electrum-down (or Electrum-unconfigured)
+	 * deployment still renders the landing page's block list instead of an empty
+	 * one, mirroring the tx block-context degradation (cairn-zc4x). Reuses the
+	 * same reorg-window header cache as the tx block-context neighbours. A height
+	 * NEITHER backend can answer is omitted from the list entirely (never a
+	 * fabricated row) — this is expected to be rare since it implies both backends
+	 * are down, which would fail earlier at `getTip()` too.
+	 *
+	 * When Bitcoin Core RPC is configured, each surviving row is further enriched
+	 * with `getblockstats` aggregates, fanned out at a concurrency cap. A per-block
+	 * stats failure (e.g. a pruned node missing an old block) degrades THAT row
+	 * back to the null baseline — it never throws and never fails the whole list
+	 * (cairn-6efi.1, U1).
 	 */
 	async getRecentBlocks(limit = 10, fromHeight?: number): Promise<BlockSummary[]> {
 		const top = fromHeight ?? (await this.getTip()).height;
 		if (!Number.isFinite(top) || top < 0) return [];
 		const count = Math.min(limit, top + 1);
 		const heights = Array.from({ length: count }, (_, i) => top - i);
-		const headers = await Promise.all(heights.map((h) => this.electrum.getBlockHeader(h)));
-		const rows: BlockSummary[] = headers.map((hex, i) => {
-			const d = decodeBlockHeader(hex);
-			return {
-				height: heights[i],
-				hash: d.hash,
-				time: d.time,
+		const headers = await Promise.all(heights.map((h) => this.neighborHeader(h, top)));
+		const rows: BlockSummary[] = [];
+		heights.forEach((h, i) => {
+			const header = headers[i];
+			if (!header) return; // neither backend could answer this height — omit, don't fabricate.
+			rows.push({
+				height: h,
+				hash: header.hash,
+				time: header.time,
 				txCount: null,
 				size: null,
 				weight: null,
@@ -654,7 +685,7 @@ export class ChainService {
 				feeRange: null,
 				total_out: null,
 				fullness: null
-			};
+			});
 		});
 
 		const core = this.core;
