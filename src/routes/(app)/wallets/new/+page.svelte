@@ -1296,7 +1296,6 @@
 				}}
 			>
 				<input type="hidden" name="xpub" value={validatedXpub} />
-				<input type="hidden" name="name" value={name} />
 				<input type="hidden" name="deviceType" value={deviceType ?? ''} />
 				<!-- Key origin captured on the Key step — stored on the wallet so its
 				     PSBTs carry bip32Derivation for hardware signing (cairn-alw8). -->
@@ -1305,9 +1304,19 @@
 
 				<div class="field">
 					<label class="label" for="name">What should we call it?</label>
+					<!-- cairn-darn: this visible field IS the name="name" submission —
+					     a redundant hidden name="name" input used to sit above (line
+					     removed), one-way bound to the SAME `name` state as this field's
+					     bind:value. Two same-named inputs in one <form> means
+					     FormData.get('name') resolves by DOM order, not by which one a
+					     user actually interacted with; harmless while Svelte's reactivity
+					     kept both in sync, but pure redundancy with no upside — deleting
+					     it removes the ambiguity entirely rather than relying on that
+					     always holding. -->
 					<input
 						class="input"
 						id="name"
+						name="name"
 						placeholder="e.g. Cold storage"
 						maxlength="64"
 						bind:value={name}
