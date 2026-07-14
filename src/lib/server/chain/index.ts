@@ -1624,13 +1624,24 @@ export class ChainService {
 			// Four confirmation targets mapped to the normalized fastest/halfHour/
 			// hour/economy shape, sourced from the operator's own Electrum server
 			// (`blockchain.estimatefee`) rather than a third-party HTTP explorer API
-			// (cairn-zoz8.1). The targets run concurrently.
-			const [b1, b3, b6, b144] = await Promise.all([
+			// (cairn-zoz8.1). The targets run concurrently. The node's own relay
+			// floor (cairn-eacw.3) is fetched alongside them so a genuine sub-1
+			// sat/vB economy estimate is displayed honestly instead of being
+			// rounded up to a hardcoded 1 (cairn-eacw.4) — getRelayFeeFloor never
+			// throws and falls back to 1 when the node's capability is unknown, so
+			// this is safe to await unconditionally.
+			const [b1, b3, b6, b144, rawFloor] = await Promise.all([
 				this.electrum.estimateFee(1),
 				this.electrum.estimateFee(3),
 				this.electrum.estimateFee(6),
-				this.electrum.estimateFee(144)
+				this.electrum.estimateFee(144),
+				this.getRelayFeeFloor()
 			]);
+			// round2 the floor the same way every displayed estimate is rounded —
+			// the raw BTC/kvB→sat/vB conversion (getRelayFeeFloor) can carry float
+			// noise (e.g. 0.000001*1e5 = 0.09999999999999999), which would otherwise
+			// leak into the clamp below and produce a dishonest-looking value.
+			const floor = round2(rawFloor);
 			// estimatefee returns BTC/kvB (or -1 when the server can't estimate that
 			// target). Convert to sat/vB: BTC/kvB × 1e8 sat/BTC ÷ 1000 vB/kvB = × 1e5.
 			const toSatVb = (btcPerKvb: number): number | null =>
@@ -1643,14 +1654,16 @@ export class ChainService {
 			];
 			// Repair a target the server couldn't estimate (-1) by inheriting the
 			// next-LONGER target's rate — walk longest→shortest carrying it forward —
-			// then floor everything at 1 sat/vB (the network minimum relay rate).
-			let carry = 1;
+			// then clamp everything up to the node's own relay floor (a node won't
+			// relay below it) instead of a hardcoded 1 sat/vB. Estimates above the
+			// floor pass through untouched — no rounding up when the floor is lower.
+			let carry = floor;
 			for (let i = slots.length - 1; i >= 0; i--) {
 				if (slots[i].v === null) slots[i].v = carry;
 				else carry = slots[i].v as number;
 			}
 			const out = {} as FeeEstimates;
-			for (const s of slots) out[s.key] = Math.max(1, round2(s.v as number));
+			for (const s of slots) out[s.key] = Math.max(floor, round2(s.v as number));
 			return out;
 		});
 	}

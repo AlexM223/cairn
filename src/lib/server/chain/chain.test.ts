@@ -632,7 +632,9 @@ describe('getFeeEstimates', () => {
 
 	it('carries a -1 ("no estimate") target forward from the next-longer target', async () => {
 		// target 3 has no estimate → inherits target 6's rate; target 144 has no
-		// estimate and nothing longer exists → floors at 1 sat/vB.
+		// estimate and nothing longer exists → floors at the node's relay floor
+		// (1 sat/vB here — no Core configured and relayFee isn't stubbed, so
+		// getRelayFeeFloor falls back to its default).
 		const { svc } = withFees({ 1: 0.0003, 3: -1, 6: 0.0001, 144: -1 });
 
 		await expect(svc.getFeeEstimates()).resolves.toEqual({
@@ -643,10 +645,52 @@ describe('getFeeEstimates', () => {
 		});
 	});
 
-	it('floors a real but sub-1-sat/vB estimate at 1 sat/vB', async () => {
+	// cairn-eacw.4: a genuine sub-1 estimate is now floored at the connected
+	// node's own relay floor (cairn-eacw.3), not a hardcoded 1 sat/vB — so it
+	// displays honestly when the node can actually relay it.
+	it('passes a sub-1 estimate through untouched when the node relay floor allows it', async () => {
+		const { svc, estimateFee } = withFees({ 1: 0.0003, 3: 0.0002, 6: 0.0001, 144: 0.000001 }); // 0.1 sat/vB
+		withElectrum(svc, { estimateFee, relayFee: vi.fn(async () => 0.0000005) }); // 0.05 sat/vB floor
+
+		await expect(svc.getFeeEstimates()).resolves.toMatchObject({ economy: 0.1 });
+	});
+
+	it('clamps a sub-1 estimate UP to the node relay floor when the estimate is below it', async () => {
+		const { svc, estimateFee } = withFees({ 1: 0.0003, 3: 0.0002, 6: 0.0001, 144: 0.0000005 }); // 0.05 sat/vB
+		withElectrum(svc, { estimateFee, relayFee: vi.fn(async () => 0.000001) }); // 0.1 sat/vB floor — above the estimate
+
+		await expect(svc.getFeeEstimates()).resolves.toMatchObject({ economy: 0.1 });
+	});
+
+	it('floors a sub-1-sat/vB estimate at 1 sat/vB when the node relay floor is unknown (unchanged behavior)', async () => {
 		const { svc } = withFees({ 1: 0.0003, 3: 0.0002, 6: 0.0001, 144: 0.000001 }); // 0.1 sat/vB
 
 		await expect(svc.getFeeEstimates()).resolves.toMatchObject({ economy: 1 });
+	});
+
+	it('does not round an estimate ABOVE the floor up to 1 when the floor is lower', async () => {
+		// fastest is a real 3 sat/vB estimate; the node floor is 0.1 — the
+		// estimate must pass through untouched, not get clamped to the floor.
+		const { svc, estimateFee } = withFees({ 1: 0.00003, 3: 0.0002, 6: 0.0001, 144: 0.00005 });
+		withElectrum(svc, { estimateFee, relayFee: vi.fn(async () => 0.000001) }); // 0.1 sat/vB floor
+
+		await expect(svc.getFeeEstimates()).resolves.toMatchObject({ fastest: 3 });
+	});
+
+	it('preserves the monotonic carry (faster tier >= slower tier) seeded from the floor', async () => {
+		// Nothing estimates → every tier carries the floor forward.
+		const { svc } = withFees({ 1: -1, 3: -1, 6: -1, 144: -1 });
+		withElectrum(svc, {
+			estimateFee: vi.fn(async () => -1),
+			relayFee: vi.fn(async () => 0.0000005) // 0.05 sat/vB floor
+		});
+
+		await expect(svc.getFeeEstimates()).resolves.toEqual({
+			fastest: 0.05,
+			halfHour: 0.05,
+			hour: 0.05,
+			economy: 0.05
+		});
 	});
 
 	it('TTL-caches so a second call does not re-hit the server', async () => {
