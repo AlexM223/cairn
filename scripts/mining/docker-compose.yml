@@ -1,0 +1,29 @@
+# Ephemeral regtest bitcoind for the mining forced-solve harness (cairn-vn43.2).
+#
+# Standalone from any other regtest stack in this repo (vault-e2e on 18543,
+# qa-sub1 on 18544, ...) — own project name, own port, own volume, always
+# started/stopped fresh by forcedSolveHarness.mjs so CI runs are deterministic
+# and never depend on state left over from a prior run or another agent's
+# stack.
+#
+#   docker compose -p cairn-mining-forcedsolve -f scripts/mining/docker-compose.yml up -d
+#   docker compose -p cairn-mining-forcedsolve -f scripts/mining/docker-compose.yml down -v
+#
+# Host port map:
+#   bitcoind RPC   127.0.0.1:18546   (user cairnminingharness / pass cairnminingharness)
+
+services:
+  bitcoind:
+    image: bitcoin/bitcoin:28.0
+    container_name: cairn-mining-forcedsolve-bitcoind
+    command:
+      - -regtest=1
+      - -server=1
+      - -rpcbind=0.0.0.0
+      - -rpcallowip=0.0.0.0/0
+      - -rpcport=18443
+      - -rpcuser=cairnminingharness
+      - -rpcpassword=cairnminingharness
+      - -fallbackfee=0.0001
+    ports:
+      - '18546:18443'

@@ -9,7 +9,9 @@ export default defineConfig({
 		}
 	},
 	test: {
-		include: ['src/**/*.test.ts'],
+		// scripts/**/*.test.mjs added for the mining forced-solve harness's
+		// pure-logic unit tests (cairn-vn43.2); no bitcoind/docker involved.
+		include: ['src/**/*.test.ts', 'scripts/**/*.test.mjs'],
 		setupFiles: ['src/tests/setup.ts']
 	}
 });

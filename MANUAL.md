@@ -3331,8 +3331,10 @@ directory. `npm run check` also runs `svelte-check` for type errors
 separately from Vitest.
 
 **CI**: `.github/workflows/ci.yml` — on every push/PR: checkout, Node 22,
-`npm ci`, `npm run check`, `npm test`. No Docker build step in CI today
-(flagged as a still-open improvement).
+`npm ci`, `npm run check`, `npm test` (the `test` job); a second,
+independent `mining-forced-solve` job runs the regtest harness described
+below (uses Docker to run a real `bitcoind`, but still no *image build* step
+for Cairn's own Docker image — that remains a still-open improvement).
 
 ### Standing security regression gate: admin-data leak audit (`cairn-f5gh`)
 
@@ -3413,6 +3415,62 @@ any future public repo:
 
 Both trees are currently ignored/untracked in the private working tree too
 — verify with `git status --ignored` before any publish cutover.
+
+### Mining forced-solve regtest harness (`cairn-vn43.2`, part of CI)
+
+Required gate for the (not-yet-built) solo-mining feature — see
+`docs/MINING-POOL-SCOPE.md` (epic `cairn-vn43`, "Tessera-solo sidecar", the
+extraction of the real engine is `cairn-vn43.1` and hasn't landed yet). The
+one code path that must be flawless is *template → job → solved share →
+`submitblock` → the block actually confirmed on-chain*, since it only fires
+for real once every ~15,000–35,000 years of home hashrate.
+
+- **`scripts/mining/soloBlockBuilder.mjs`** — pure, no-I/O solo coinbase/
+  block construction: BIP34 height push, BIP141 witness commitment, PoW
+  grinding via `bitcoinjs-lib`'s own `Block` class (`calculateMerkleRoot`,
+  `checkProofOfWork`, `checkTxRoots`). Deliberately a **fresh**
+  implementation, not a port of Tessera's `pool/src/job.ts`/`wire.ts`
+  (`C:\dev\raffle`): Tessera is GPL-3.0 and whether/how to vendor it into
+  this MIT repo is still open (scope doc § Open questions #5, pending Alex).
+  `bitcoinjs-lib` is MIT and already resolves via `node_modules` (pulled in
+  transitively — see `src/lib/hw/ledger.ts` — not yet a direct
+  `package.json` dependency).
+  Unit-tested in `scripts/mining/soloBlockBuilder.test.mjs` (19 tests, no
+  bitcoind/docker) — picked up by `npm test` via the
+  `scripts/**/*.test.mjs` entry added to `vitest.config.ts`'s `test.include`.
+- **`scripts/mining/regtestNode.mjs`** — ephemeral regtest `bitcoind`
+  lifecycle (own docker-compose project `cairn-mining-forcedsolve`, RPC on
+  `127.0.0.1:18546` — distinct from `vault-e2e` on 18543 and `qa-sub1` on
+  18544) plus a minimal JSON-RPC client (`fetch` + HTTP basic auth, no new
+  dependency). Always `down -v` both before and after, so every run starts
+  from a byte-identical empty chain.
+- **`scripts/mining/forcedSolveHarness.mjs`** — the harness itself: boots
+  the node, mines 101 warm-up blocks, force-solves 3 blocks directly against
+  real `getblocktemplate`/`submitblock` (no Stratum/network layer involved —
+  that's Tessera's `stratum.ts`, ported verbatim by `cairn-vn43.1` when it
+  lands, and out of scope here), matures them 100 blocks, then verifies each
+  one on-chain: still the main-chain block at its height (not orphaned),
+  coinbase output unspent with ≥100 confirmations, paid sats exactly equal
+  to that block's `getblocktemplate.coinbasevalue`, and paid to the expected
+  script. Run with:
+
+  ```
+  npm run mining:forced-solve-harness
+  ```
+
+  Deterministic, self-contained (own Docker container, always torn down in
+  a `finally`), and fast — a real run on this box: 3/3 blocks forced-solved,
+  PASS, ~14–19s wall-clock (excluding the one-time `bitcoin/bitcoin:28.0`
+  image pull). Needs Docker + Docker Compose v2 (`docker compose`, not the
+  standalone `docker-compose` binary) available on `PATH`.
+- **CI**: wired as its own `mining-forced-solve` job in
+  `.github/workflows/ci.yml`, independent of the `test` job (checkout, Node
+  22, `npm ci`, `npm run mining:forced-solve-harness`) — ubuntu-latest
+  runners ship Docker preinstalled, no extra setup step needed.
+- **Follow-up (not this bead):** once `cairn-vn43.1` extracts the real
+  engine and the Tessera-licensing question is resolved, point this harness
+  at the real job builder / stratum submit path instead of
+  `soloBlockBuilder.mjs`'s standalone reference implementation.
 
 ---
 

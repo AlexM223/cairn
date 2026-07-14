@@ -16,3 +16,21 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm test
+
+  mining-forced-solve:
+    # Required gate before mainnet enablement of the mining feature
+    # (cairn-vn43.2 / docs/MINING-POOL-SCOPE.md Key decisions #4, Risks #1):
+    # the one code path that must be flawless is
+    # template -> job -> submitblock -> block ACTUALLY CONFIRMED on-chain.
+    # Independent of the `test` job — brings up its own ephemeral regtest
+    # bitcoind via Docker (pre-installed on ubuntu-latest runners) and tears
+    # it down again, so it never touches/depends on anything `test` does.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run mining:forced-solve-harness
