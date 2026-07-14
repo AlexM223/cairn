@@ -1059,6 +1059,50 @@ describe('getRelayFeeFloor', () => {
 		await expect(svc.getRelayFeeFloor()).resolves.toBe(1);
 	});
 
+	// cairn-jqss: a relay floor comes from the (possibly untrusted) Electrum server —
+	// a malicious/buggy server answering blockchain.relayfee with a non-finite or
+	// absurdly-high value must NOT push the validation floor at/above the PSBT builder's
+	// MAX_FEE_RATE ceiling, which would make validateRecipientsAndFeeRate refuse every
+	// fee (below-floor AND above-max both rejected — an unsatisfiable band). Such answers
+	// degrade to the same 1 sat/vB "unknown" sentinel the probe uses everywhere else.
+	it('Electrum: an Infinity relayfee answer degrades to the 1 sat/vB sentinel (no non-finite floor)', async () => {
+		const svc = makeService();
+		withElectrum(svc, { relayFee: vi.fn(async () => Number.POSITIVE_INFINITY) });
+
+		await expect(svc.getRelayFeeFloor()).resolves.toBe(1);
+	});
+
+	it('Electrum: an absurdly-high relayfee (floor >= MAX_FEE_RATE) degrades to 1 rather than blocking all sends', async () => {
+		const svc = makeService();
+		// 1 BTC/kvB → 1e5 sat/vB, far above the builder's 1000 sat/vB ceiling.
+		withElectrum(svc, { relayFee: vi.fn(async () => 1) });
+
+		await expect(svc.getRelayFeeFloor()).resolves.toBe(1);
+	});
+
+	it('Electrum: a high-but-realistic relayfee below MAX_FEE_RATE passes through untouched', async () => {
+		const svc = makeService();
+		// 0.005 BTC/kvB → 500 sat/vB (extreme congestion, still under the 1000 ceiling).
+		withElectrum(svc, { relayFee: vi.fn(async () => 0.005) });
+
+		await expect(svc.getRelayFeeFloor()).resolves.toBeCloseTo(500, 6);
+	});
+
+	it('Core: an absurdly-high mempoolminfee (floor >= MAX_FEE_RATE) degrades to 1', async () => {
+		const core = makeCoreStub();
+		core.getMempoolInfo.mockResolvedValue({
+			size: 0,
+			bytes: 0,
+			usage: 0,
+			total_fee: 0,
+			mempoolminfee: 1, // 1 BTC/kvB → 1e5 sat/vB, absurd
+			minrelaytxfee: 0.00001
+		});
+		const svc = makeCoreService(core);
+
+		await expect(svc.getRelayFeeFloor()).resolves.toBe(1);
+	});
+
 	it('TTL-caches so a second call does not re-hit the backend', async () => {
 		const core = makeCoreStub();
 		core.getMempoolInfo.mockResolvedValue({

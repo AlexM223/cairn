@@ -16,6 +16,7 @@ import { ElectrumClient } from '../electrum/client';
 import { ElectrumPool } from '../electrum/pool';
 import type { ElectrumBalance, ElectrumHistoryItem } from '../electrum/client';
 import { addressToScripthash, scriptPubKeyHex } from '../bitcoin/xpub';
+import { MAX_FEE_RATE } from '../bitcoin/psbt';
 import { wireChainEvents, resetConnectionState } from '../chainEvents';
 import { noteProxyConfigured, resetChainHealth, resetCoreHealth, recordCoreOk, recordCoreError } from '../chainHealth';
 import { resetPackageRelaySupport } from '../packageRelay';
@@ -196,6 +197,27 @@ function detectAddressType(address: string): string | null {
 
 function round2(n: number): number {
 	return Math.round(n * 100) / 100;
+}
+
+/**
+ * Bound a computed relay-fee floor (sat/vB) to a usable value, else the same
+ * "unknown" sentinel (1 sat/vB) this probe falls back to everywhere else (cairn-jqss).
+ * A relay floor comes from the connected Electrum server (or Core node), which a user
+ * may not control: a malicious or buggy server can answer blockchain.relayfee with a
+ * non-finite (Infinity from a garbage/huge number), non-positive, or absurdly-high
+ * value. Left unbounded, a floor at/above the PSBT builder's own MAX_FEE_RATE "this is
+ * almost certainly a mistake" ceiling pushes validateRecipientsAndFeeRate's floor above
+ * that ceiling, at which point it refuses EVERY fee — below-floor and above-max are both
+ * rejected, an unsatisfiable band that silently blocks all sends with no fee the UI can
+ * pick to recover — or a non-finite value propagates into the fee math. Any such answer
+ * is treated as "no usable floor" and degrades to 1, keeping the send path functional
+ * (the actual broadcast remains the real backstop for a genuinely high-floor node).
+ * A real relay floor is orders of magnitude below MAX_FEE_RATE, so this never rejects a
+ * legitimate one.
+ */
+function clampRelayFloor(satPerVb: number): number {
+	if (!Number.isFinite(satPerVb) || satPerVb <= 0 || satPerVb >= MAX_FEE_RATE) return 1;
+	return satPerVb;
 }
 
 /** Max Bitcoin block weight (weight units). Fullness = weight ÷ this, clamped 0..1. */
@@ -1697,7 +1719,7 @@ export class ChainService {
 				try {
 					const m = await this.core.getMempoolInfo();
 					const floorBtcPerKvb = Math.max(m.mempoolminfee ?? 0, m.minrelaytxfee ?? 0);
-					if (floorBtcPerKvb > 0) return floorBtcPerKvb * 1e5;
+					if (floorBtcPerKvb > 0) return clampRelayFloor(floorBtcPerKvb * 1e5);
 				} catch (e) {
 					log.debug({ err: e }, 'core getmempoolinfo unavailable for relay-fee floor probe');
 				}
@@ -1706,7 +1728,7 @@ export class ChainService {
 			try {
 				const floorBtcPerKvb = await this.electrum.relayFee();
 				if (typeof floorBtcPerKvb === 'number' && floorBtcPerKvb > 0) {
-					return floorBtcPerKvb * 1e5;
+					return clampRelayFloor(floorBtcPerKvb * 1e5);
 				}
 			} catch (e) {
 				log.debug({ err: e }, 'electrum relayfee unavailable for relay-fee floor probe');
