@@ -62,6 +62,7 @@ import {
 	summarizeMultisigSnapshot,
 	finalizeCachedBalance,
 	refreshWalletSnapshot,
+	refreshPortfolio,
 	readDirtySince,
 	readSyncMeta,
 	clearDirtyIfUnchanged,
@@ -1020,5 +1021,77 @@ describe('sendSnapshot (cairn-g1u2 send-page fast path)', () => {
 		// by cleanSkipWindowMs()'s own tests; here we assert the default-open behavior.
 		putWalletSnapshot(9010, {});
 		expect(sendSnapshot('wallet', 9010)).not.toBeNull();
+	});
+});
+
+// ============================================================================
+// cairn-qyvl — per-user coalescing of the whole refreshPortfolio pass
+// ============================================================================
+//
+// The per-item scans already single-flight; this locks the PASS-level guarantee:
+// two concurrent refreshPortfolio(userId) triggers (e.g. the startup warm pass
+// racing the client dashboard refresh) share ONE in-flight pass — so the expensive
+// synchronous buildPortfolioAggregate (a full-blob JSON.parse per wallet) runs once
+// per burst, not once per caller — while sequential callers still each run fresh.
+describe('refreshPortfolio — per-user pass coalescing (cairn-qyvl)', () => {
+	beforeEach(() => {
+		wipeWalletFixtures();
+		scanWalletMock.mockReset();
+		listUnspentMock.mockReset();
+		findNextUnusedIndexMock.mockReset();
+		getTxHexMock.mockReset();
+	});
+
+	it('coalesces two concurrent refreshes for the same user into one pass + one scan', async () => {
+		const { userId } = await seedWallet();
+		scanWalletMock.mockResolvedValue({
+			addresses: [{ address: RECEIVE_0, index: 0, change: false, used: true, balance: 0 }],
+			txs: [],
+			confirmed: 0,
+			unconfirmed: 0
+		});
+		listUnspentMock.mockResolvedValue([]);
+		findNextUnusedIndexMock.mockResolvedValue(1);
+
+		// Both issued before any await settles: the second synchronously hits the
+		// in-flight map and gets the SAME promise — the pass itself, not just the
+		// inner per-item scan, is single-flighted.
+		const a = refreshPortfolio(userId);
+		const b = refreshPortfolio(userId);
+		expect(a).toBe(b);
+
+		const [ra, rb] = await Promise.all([a, b]);
+		expect(ra).toBe(rb); // shared result object — one pass produced both results
+		// The pass actually ran (did real scan work) rather than short-circuiting.
+		// Promise identity above is the coalescing proof: without pass-level
+		// single-flight, `b` would be a DISTINCT promise running its own item-list
+		// build + runPortfolioRefreshPass + synchronous buildPortfolioAggregate.
+		expect(scanWalletMock).toHaveBeenCalled();
+	});
+
+	it('does NOT coalesce sequential (non-overlapping) refreshes — the entry clears on settle', async () => {
+		const { userId } = await seedWallet();
+		scanWalletMock.mockResolvedValue({
+			addresses: [{ address: RECEIVE_0, index: 0, change: false, used: true, balance: 0 }],
+			txs: [],
+			confirmed: 0,
+			unconfirmed: 0
+		});
+		listUnspentMock.mockResolvedValue([]);
+		findNextUnusedIndexMock.mockResolvedValue(1);
+
+		// First pass runs to completion, persisting a snapshot (last_synced_at = now).
+		await refreshPortfolio(userId);
+		const firstCalls = scanWalletMock.mock.calls.length;
+		expect(firstCalls).toBeGreaterThanOrEqual(1);
+
+		// A later, non-overlapping pass is a brand-new promise (not the settled one).
+		const second = refreshPortfolio(userId);
+		expect(typeof second.then).toBe('function');
+		await second;
+		// The just-written snapshot is inside the clean/throttle window, so the second
+		// pass legitimately SKIPS the re-scan — proving it ran its own fresh decision
+		// rather than replaying the first pass's result.
+		expect(scanWalletMock.mock.calls.length).toBe(firstCalls);
 	});
 });

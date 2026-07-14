@@ -1191,7 +1191,42 @@ export function buildPortfolioAggregate(userId: number): void {
  * page's GET /api/portfolio is a synchronous cache read — the same single pass
  * feeds the wallets list AND the dashboard, never two competing scan paths.
  */
-export async function refreshPortfolio(userId: number): Promise<PortfolioRefreshSummary> {
+// Per-user single-flight for the WHOLE refresh pass (cairn-qyvl). The per-item
+// scans inside the pass already coalesce (singleFlightThrottled), but the PASS
+// ITSELF — building the item list, orchestrating runPortfolioRefreshPass, and the
+// synchronous buildPortfolioAggregate that JSON-parses every wallet's full
+// snapshot blob to rebuild the dashboard aggregate — used to run in full for each
+// concurrent trigger. Under multi-user load those triggers overlap routinely: the
+// startup warmAllSnapshots pass runs refreshPortfolio(u) for a user at the very
+// moment u's dashboard fires its own client refresh, and multi-tab / retry /
+// POST-/api/portfolio/refresh callers pile on. Each ran its OWN aggregate build —
+// N duplicate full-blob parses competing on the single event loop, the exact sync
+// serialization this bead tracks ("event-loop lag tracks p50/p99"). Collapsing the
+// pass to one in-flight promise per user makes concurrent callers share it (and
+// its result), so the expensive synchronous rebuild runs ONCE per burst. Keyed by
+// userId; the map get/set runs synchronously before any await (like
+// singleFlightThrottled) so two callers can never both start a pass. A wallet that
+// goes DIRTY mid-pass is unaffected: the address watcher scans it directly
+// (refreshWalletSnapshot force), and the next (post-settle) refreshPortfolio
+// rebuilds the aggregate from its now-fresh snapshot. Sequential (non-overlapping)
+// callers are NOT coalesced — the entry is cleared when the pass settles.
+const inFlightPortfolio = new Map<number, Promise<PortfolioRefreshSummary>>();
+
+export function refreshPortfolio(userId: number): Promise<PortfolioRefreshSummary> {
+	const inflight = inFlightPortfolio.get(userId);
+	if (inflight) return inflight;
+	const p = (async () => {
+		try {
+			return await doRefreshPortfolio(userId);
+		} finally {
+			inFlightPortfolio.delete(userId);
+		}
+	})();
+	inFlightPortfolio.set(userId, p);
+	return p;
+}
+
+async function doRefreshPortfolio(userId: number): Promise<PortfolioRefreshSummary> {
 	const items: PortfolioRefreshItem[] = [];
 
 	for (const row of listWalletRows(userId)) {
