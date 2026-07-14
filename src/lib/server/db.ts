@@ -345,7 +345,7 @@ db.exec(`
 	CREATE TABLE IF NOT EXISTS multisig_transactions (
 		id                   INTEGER PRIMARY KEY AUTOINCREMENT,
 		multisig_id             INTEGER NOT NULL REFERENCES multisigs(id) ON DELETE CASCADE,
-		status               TEXT NOT NULL DEFAULT 'draft', -- draft | awaiting_signature | completed
+		status               TEXT NOT NULL DEFAULT 'draft', -- draft | awaiting_signature | completed | superseded
 		psbt                 TEXT NOT NULL,                 -- base64, the working combined PSBT
 		txid                 TEXT,                          -- set once broadcast
 		recipient            TEXT NOT NULL,                 -- first recipient (display anchor)

@@ -5,7 +5,8 @@ import {
 	deletionOrphansAdmins,
 	ownedSharedMultisigs,
 	purgeUserRow,
-	notifyOwnerDeletionCosigners
+	notifyOwnerDeletionCosigners,
+	hasLiveBroadcastClaimForUser
 } from './userDeletion';
 import type { AdminUserInfo, InviteInfo } from '$lib/types';
 
@@ -122,6 +123,16 @@ export function deleteUser(id: number, opts: { force?: boolean } = {}): void {
 	if (!user) throw new AuthError('User not found.', 'not_found');
 	if (deletionOrphansAdmins(user))
 		throw new AuthError('Cannot delete the only administrator.', 'last_admin');
+
+	// cairn-vop2: same guard as deleteOwnAccount — an admin-initiated delete
+	// cascades the target's wallets/multisigs (and their transactions) the same
+	// way, bypassing deleteWallet()/deleteMultisig()'s per-object broadcast guard.
+	if (hasLiveBroadcastClaimForUser(id)) {
+		throw new AuthError(
+			'A transaction in one of this user’s wallets is being broadcast right now. Please try again in a minute.',
+			'broadcast_in_progress'
+		);
+	}
 
 	// Enumerate owned-and-shared multisigs before the cascade (cairn-8r0l).
 	const shared = ownedSharedMultisigs(id);

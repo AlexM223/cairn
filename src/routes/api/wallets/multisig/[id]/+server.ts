@@ -4,6 +4,7 @@ import { redactMultisigKeysForViewer, multisigAccessRole } from '$lib/server/mul
 import { getMultisigDetail, invalidateMultisigCache, toMultisigSummary } from '$lib/server/multisigScan';
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
+import { AuthError } from '$lib/server/auth';
 
 const log = childLogger('wallet');
 
@@ -50,7 +51,13 @@ export const DELETE: RequestHandler = async (event) => {
 	if (id === null) return notFound();
 
 	const multisig = getMultisig(user.id, id);
-	if (!multisig || !deleteMultisig(user.id, id)) return notFound();
+	if (!multisig) return notFound();
+	try {
+		if (!deleteMultisig(user.id, id)) return notFound();
+	} catch (e) {
+		if (e instanceof AuthError) return json({ error: e.message, code: e.code }, { status: 409 });
+		throw e;
+	}
 	invalidateMultisigCache(multisig);
 	return json({ ok: true });
 };

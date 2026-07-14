@@ -2,6 +2,7 @@ import { json, requireUser, readJson } from '$lib/server/api';
 import { getWalletDetail, deleteWallet, toWalletSummary, setWalletDevice } from '$lib/server/wallets';
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
+import { AuthError } from '$lib/server/auth';
 
 const log = childLogger('wallet');
 
@@ -57,6 +58,12 @@ export const PATCH: RequestHandler = async (event) => {
 export const DELETE: RequestHandler = async (event) => {
 	const user = requireUser(event);
 	const id = parseId(event.params.id);
-	if (id === null || !deleteWallet(user.id, id)) return notFound();
+	if (id === null) return notFound();
+	try {
+		if (!deleteWallet(user.id, id)) return notFound();
+	} catch (e) {
+		if (e instanceof AuthError) return json({ error: e.message, code: e.code }, { status: 409 });
+		throw e;
+	}
 	return json({ ok: true });
 };

@@ -3,7 +3,7 @@ import { HDKey } from '@scure/bip32';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { createBase58check } from '@scure/base';
 import { db } from './db';
-import { registerUser } from './auth';
+import { registerUser, AuthError } from './auth';
 import { setSetting } from './settings';
 import {
 	compareMultisigKey,
@@ -929,5 +929,67 @@ describe('deleteMultisig cache invalidation (cairn-ez9y)', () => {
 
 		expect(persistedRowExists(key)).toBe(true);
 		expect((await scanMultisig(ms)).confirmed).toBe(444);
+	});
+});
+
+// ---- cairn-vop2: deleteMultisig refuses while a live broadcast claim exists ----
+//
+// Mirrors the same guard added to deleteWallet: multisig_transactions.multisig_id
+// is ON DELETE CASCADE too, so a whole-multisig delete used to be able to erase a
+// transaction mid-broadcast with no guard at all. Blocks only while a claim is
+// still live (<60s, the same staleness window broadcastMultisigTransaction uses
+// to reclaim a crashed attempt) — completed/superseded rows or a stale claim
+// don't block a deliberate whole-multisig delete.
+
+function insertMultisigTx(multisigId: number, opts: { status?: string } = {}): number {
+	const res = db
+		.prepare(
+			`INSERT INTO multisig_transactions (multisig_id, status, psbt, recipient, amount, fee, fee_rate)
+			 VALUES (?, ?, 'cHNidA==', 'bc1qtest', 10000, 100, 5)`
+		)
+		.run(multisigId, opts.status ?? 'awaiting_signature');
+	return Number(res.lastInsertRowid);
+}
+
+describe('deleteMultisig broadcast-claim guard (cairn-vop2)', () => {
+	it('refuses while a transaction has a live (fresh) broadcast claim', async () => {
+		const user = await makeUser('ms-livebroadcast@example.com');
+		const ms = makeMultisig(user.id);
+		insertMultisigTx(ms.id);
+		db.prepare(
+			"UPDATE multisig_transactions SET broadcast_started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE multisig_id = ?"
+		).run(ms.id);
+
+		try {
+			deleteMultisig(user.id, ms.id);
+			expect.unreachable();
+		} catch (e) {
+			expect(e).toBeInstanceOf(AuthError);
+			expect((e as AuthError).code).toBe('broadcast_in_progress');
+		}
+		const { n } = db.prepare('SELECT COUNT(*) AS n FROM multisigs WHERE id = ?').get(ms.id) as {
+			n: number;
+		};
+		expect(n).toBe(1);
+	});
+
+	it('allows deletion once a crashed-broadcast claim goes stale (>60s)', async () => {
+		const user = await makeUser('ms-staleclaim@example.com');
+		const ms = makeMultisig(user.id);
+		insertMultisigTx(ms.id);
+		db.prepare(
+			"UPDATE multisig_transactions SET broadcast_started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-90 seconds') WHERE multisig_id = ?"
+		).run(ms.id);
+
+		expect(deleteMultisig(user.id, ms.id)).toBe(true);
+	});
+
+	it('allows deletion of a multisig whose transactions are completed/superseded (no live claim)', async () => {
+		const user = await makeUser('ms-completed@example.com');
+		const ms = makeMultisig(user.id);
+		insertMultisigTx(ms.id, { status: 'completed' });
+		insertMultisigTx(ms.id, { status: 'superseded' });
+
+		expect(deleteMultisig(user.id, ms.id)).toBe(true);
 	});
 });

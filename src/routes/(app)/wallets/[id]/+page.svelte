@@ -1453,6 +1453,9 @@
 							signing device — Heartwood can't recover it for you.
 						</span>
 					</p>
+					{#if form?.deleteError}
+						<div class="form-error" role="alert">{form.deleteError}</div>
+					{/if}
 					<div class="row" style="gap: 8px">
 						<span class="confirm-text">Really delete?</span>
 						<button class="btn btn-danger btn-sm" disabled={deleting}>

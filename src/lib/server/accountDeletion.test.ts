@@ -119,3 +119,67 @@ describe('deleteOwnAccount', () => {
 		expect(() => deleteOwnAccount(999_999)).toThrow(AuthError);
 	});
 });
+
+// ---- cairn-vop2: whole-account deletion refuses on a live broadcast claim ----
+//
+// deleteOwnAccount cascades every owned wallet/multisig via the users FK
+// (purgeUserRow's plain DELETE FROM users), which bypasses deleteWallet()'s /
+// deleteMultisig()'s own per-object broadcast guard entirely. This mirrors
+// that same guard at the account level via hasLiveBroadcastClaimForUser.
+describe('deleteOwnAccount broadcast-claim guard (cairn-vop2)', () => {
+	it('refuses while an owned wallet has a transaction with a live broadcast claim', async () => {
+		await makeUser('admin@example.com', { admin: true });
+		const uid = await makeUser('leaver@example.com');
+		const walletId = Number(
+			db
+				.prepare("INSERT INTO wallets (user_id, name, xpub, script_type) VALUES (?, 'W', 'xpub-w', 'p2wpkh')")
+				.run(uid).lastInsertRowid
+		);
+		db.prepare(
+			`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate, broadcast_started_at)
+			 VALUES (?, 'awaiting_signature', 'cHNidA==', 'bc1qtest', 10000, 100, 5, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`
+		).run(walletId);
+
+		expect(() => deleteOwnAccount(uid)).toThrow(AuthError);
+		try {
+			deleteOwnAccount(uid);
+			expect.unreachable();
+		} catch (e) {
+			expect((e as AuthError).code).toBe('broadcast_in_progress');
+		}
+		expect(count('users', 'id = ?', uid)).toBe(1); // nothing deleted
+	});
+
+	it('refuses while an owned multisig has a transaction with a live broadcast claim', async () => {
+		await makeUser('admin@example.com', { admin: true });
+		const uid = await makeUser('ms-leaver@example.com');
+		const msId = Number(
+			db.prepare("INSERT INTO multisigs (user_id, name, threshold) VALUES (?, 'MS', 2)").run(uid)
+				.lastInsertRowid
+		);
+		db.prepare(
+			`INSERT INTO multisig_transactions (multisig_id, status, psbt, recipient, amount, fee, fee_rate, broadcast_started_at)
+			 VALUES (?, 'awaiting_signature', 'cHNidA==', 'bc1qtest', 10000, 100, 5, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`
+		).run(msId);
+
+		expect(() => deleteOwnAccount(uid)).toThrow(AuthError);
+		expect(count('users', 'id = ?', uid)).toBe(1);
+	});
+
+	it('allows deletion once the broadcast claim goes stale (>60s)', async () => {
+		await makeUser('admin@example.com', { admin: true });
+		const uid = await makeUser('stale-leaver@example.com');
+		const walletId = Number(
+			db
+				.prepare("INSERT INTO wallets (user_id, name, xpub, script_type) VALUES (?, 'W', 'xpub-stale', 'p2wpkh')")
+				.run(uid).lastInsertRowid
+		);
+		db.prepare(
+			`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate, broadcast_started_at)
+			 VALUES (?, 'awaiting_signature', 'cHNidA==', 'bc1qtest', 10000, 100, 5, strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-90 seconds'))`
+		).run(walletId);
+
+		deleteOwnAccount(uid);
+		expect(count('users', 'id = ?', uid)).toBe(0);
+	});
+});

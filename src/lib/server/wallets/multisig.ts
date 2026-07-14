@@ -13,6 +13,7 @@ import { createBase58check } from '@scure/base';
 import { db } from '../db';
 import { recordActivity } from '../activity';
 import { childLogger } from '../logger';
+import { AuthError } from '../auth';
 import {
 	MultisigError,
 	multisigTestAddress,
@@ -511,11 +512,38 @@ export function createMultisig(
 	return getMultisig(userId, multisigId)!;
 }
 
+/**
+ * cairn-vop2 parity for multisig: mirrors deleteWallet's hasLiveBroadcastClaim
+ * guard so a whole-multisig delete can't cascade away a transaction while
+ * broadcastMultisigTransaction's atomic claim is still live. Completed/
+ * superseded rows are history and don't block a deliberate total-removal
+ * delete; only an unexpired claim (same 60s staleness window the broadcast
+ * path itself uses) does.
+ */
+function hasLiveMultisigBroadcastClaim(multisigId: number): boolean {
+	const row = db
+		.prepare(
+			`SELECT 1 FROM multisig_transactions
+			 WHERE multisig_id = ?
+			   AND broadcast_started_at IS NOT NULL
+			   AND broadcast_started_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-60 seconds')
+			 LIMIT 1`
+		)
+		.get(multisigId);
+	return row !== undefined;
+}
+
 export function deleteMultisig(userId: number, id: number): boolean {
 	// Fetch the full row (keys included) before it's gone — invalidateMultisigCache
 	// needs the key set/threshold/script type to compute the scan-cache key.
 	const row = getMultisig(userId, id);
 	if (!row) return false;
+	if (hasLiveMultisigBroadcastClaim(id)) {
+		throw new AuthError(
+			'A transaction in this multisig is being broadcast right now. Please try deleting it again in a minute.',
+			'broadcast_in_progress'
+		);
+	}
 	// The polymorphic (wallet_kind, wallet_id) child tables — notified_txids,
 	// address_labels, wallet_backups, backup_missing_notified, balance_snapshots —
 	// have no real FK to multisigs, but db.ts's trg_multisigs_delete_children

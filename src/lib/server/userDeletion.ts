@@ -54,6 +54,36 @@ function scalar(sql: string, ...params: (string | number)[]): number {
 }
 
 /**
+ * cairn-vop2: deleting a user cascades away every wallet/multisig they own
+ * (wallets.user_id / multisigs.user_id ON DELETE CASCADE), which in turn
+ * cascades their transactions — bypassing deleteWallet()/deleteMultisig()'s
+ * own hasLiveBroadcastClaim guard entirely, since this path deletes the user
+ * row directly. Mirrors that same guard (and its 60s staleness window, so a
+ * crashed broadcast can't wedge account deletion forever) across every
+ * wallet/multisig the user owns. MUST be called before purgeUserRow().
+ */
+export function hasLiveBroadcastClaimForUser(userId: number): boolean {
+	const liveTx = scalar(
+		`SELECT COUNT(*) AS n FROM transactions t
+		   JOIN wallets w ON w.id = t.wallet_id
+		  WHERE w.user_id = ?
+		    AND t.broadcast_started_at IS NOT NULL
+		    AND t.broadcast_started_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-60 seconds')`,
+		userId
+	);
+	if (liveTx > 0) return true;
+	const liveMsTx = scalar(
+		`SELECT COUNT(*) AS n FROM multisig_transactions mt
+		   JOIN multisigs m ON m.id = mt.multisig_id
+		  WHERE m.user_id = ?
+		    AND mt.broadcast_started_at IS NOT NULL
+		    AND mt.broadcast_started_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-60 seconds')`,
+		userId
+	);
+	return liveMsTx > 0;
+}
+
+/**
  * Would deleting this user leave the instance without a usable administrator?
  *
  * A non-admin never can, so returns false immediately. For an admin target it

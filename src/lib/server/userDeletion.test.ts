@@ -218,3 +218,51 @@ describe('cairn-8r0l: owner deletion guards + notifies cosigners of shared multi
 		expect(count('events', "type = 'multisig_removed'", )).toBe(0);
 	});
 });
+
+// ---------------------------------------------------------------- cairn-vop2
+//
+// admin deleteUser's cascade (users -> wallets/multisigs -> transactions) is
+// the same bare FK cascade deleteOwnAccount uses, bypassing deleteWallet()'s /
+// deleteMultisig()'s own broadcast guard. hasLiveBroadcastClaimForUser() closes
+// that gap for BOTH entry points; this exercises the admin one specifically.
+describe('cairn-vop2: admin deleteUser refuses on a live broadcast claim', () => {
+	it('refuses while the target owns a wallet with a transaction mid-broadcast', async () => {
+		await makeUser('admin@example.com', { admin: true });
+		const victim = await makeUser('victim@example.com');
+		const walletId = Number(
+			db
+				.prepare("INSERT INTO wallets (user_id, name, xpub, script_type) VALUES (?, 'W', 'xpub-v', 'p2wpkh')")
+				.run(victim).lastInsertRowid
+		);
+		db.prepare(
+			`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate, broadcast_started_at)
+			 VALUES (?, 'awaiting_signature', 'cHNidA==', 'bc1qtest', 10000, 100, 5, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`
+		).run(walletId);
+
+		try {
+			deleteUser(victim);
+			throw new Error('expected deleteUser to throw');
+		} catch (e) {
+			expect(e).toBeInstanceOf(AuthError);
+			expect((e as AuthError).code).toBe('broadcast_in_progress');
+		}
+		expect(count('users', 'id = ?', victim)).toBe(1);
+	});
+
+	it('proceeds once the claim goes stale (>60s)', async () => {
+		await makeUser('admin@example.com', { admin: true });
+		const victim = await makeUser('victim-stale@example.com');
+		const walletId = Number(
+			db
+				.prepare("INSERT INTO wallets (user_id, name, xpub, script_type) VALUES (?, 'W', 'xpub-vs', 'p2wpkh')")
+				.run(victim).lastInsertRowid
+		);
+		db.prepare(
+			`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate, broadcast_started_at)
+			 VALUES (?, 'awaiting_signature', 'cHNidA==', 'bc1qtest', 10000, 100, 5, strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-90 seconds'))`
+		).run(walletId);
+
+		expect(() => deleteUser(victim)).not.toThrow();
+		expect(count('users', 'id = ?', victim)).toBe(0);
+	});
+});

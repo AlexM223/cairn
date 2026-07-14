@@ -1,6 +1,7 @@
 import { error, fail, isHttpError, redirect } from '@sveltejs/kit';
 import QRCode from 'qrcode';
 import { getWallet, deleteWallet, getLabels, nextReceiveAddress } from '$lib/server/wallets';
+import { AuthError } from '$lib/server/auth';
 import { listTransactions } from '$lib/server/transactions';
 import { getAddressLabels } from '$lib/server/addressLabels';
 import { isBackedUp } from '$lib/server/backups';
@@ -106,7 +107,12 @@ export const actions: Actions = {
 		requireUser(event);
 		const { params, locals } = event;
 		const id = walletId(params.id);
-		if (!deleteWallet(locals.user!.id, id)) error(404, 'Wallet not found');
+		try {
+			if (!deleteWallet(locals.user!.id, id)) error(404, 'Wallet not found');
+		} catch (e) {
+			if (e instanceof AuthError) return fail(409, { deleteError: e.message });
+			throw e;
+		}
 		redirect(303, '/wallets');
 	}
 };

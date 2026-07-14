@@ -6,6 +6,7 @@
 import { db } from './db';
 import { parseXpub, deriveAddress } from './bitcoin/xpub';
 import { containsNulByte, TextInputError } from './textGuard';
+import { AuthError } from './auth';
 import {
 	scanWallet,
 	invalidateWalletCache,
@@ -406,9 +407,40 @@ export function setWalletDevice(
 	return toWalletSummary({ ...row, device_type: normalized });
 }
 
+/**
+ * cairn-vop2: deleteWallet's cascade (transactions.wallet_id ON DELETE CASCADE)
+ * doesn't share deleteTransaction's per-row broadcast guard (cairn-up0q), so a
+ * whole-wallet delete could otherwise erase a transaction mid-broadcast — the
+ * narrow race is a delete landing while broadcastTransaction's atomic claim
+ * (broadcast_started_at) is still live. A completed/superseded transaction is
+ * history and does NOT block deletion here (a whole-wallet delete is a
+ * deliberate total-removal action); only a claim that hasn't yet expired via
+ * the same 60s staleness window broadcastTransaction itself uses (cairn-ytnc
+ * parity) blocks it, so a crashed broadcast can't wedge the wallet undeletable
+ * forever.
+ */
+function hasLiveBroadcastClaim(walletId: number): boolean {
+	const row = db
+		.prepare(
+			`SELECT 1 FROM transactions
+			 WHERE wallet_id = ?
+			   AND broadcast_started_at IS NOT NULL
+			   AND broadcast_started_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-60 seconds')
+			 LIMIT 1`
+		)
+		.get(walletId);
+	return row !== undefined;
+}
+
 export function deleteWallet(userId: number, id: number): boolean {
 	const row = getWallet(userId, id);
 	if (!row) return false;
+	if (hasLiveBroadcastClaim(id)) {
+		throw new AuthError(
+			'A transaction in this wallet is being broadcast right now. Please try deleting the wallet again in a minute.',
+			'broadcast_in_progress'
+		);
+	}
 	// The polymorphic (wallet_kind, wallet_id) child tables — notified_txids,
 	// address_labels, wallet_backups, backup_missing_notified, balance_snapshots —
 	// have no real FK to wallets, but db.ts's trg_wallets_delete_children trigger

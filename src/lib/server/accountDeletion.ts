@@ -26,6 +26,7 @@ import {
 	ownedSharedMultisigs,
 	purgeUserRow,
 	notifyOwnerDeletionCosigners,
+	hasLiveBroadcastClaimForUser,
 	type UserDeletionRow
 } from './userDeletion';
 
@@ -53,6 +54,18 @@ export function deleteOwnAccount(userId: number): void {
 		throw new AuthError(
 			'You are the only administrator. Promote another admin (or reset the instance) before deleting this account.',
 			'last_admin'
+		);
+	}
+
+	// cairn-vop2: refuse while a transaction in any owned wallet/multisig has a
+	// live broadcast claim — this whole-account cascade bypasses
+	// deleteWallet()/deleteMultisig()'s own per-object guard. The claim expires
+	// in well under a minute, so this is a "try again shortly" block, not a
+	// permanent one.
+	if (hasLiveBroadcastClaimForUser(userId)) {
+		throw new AuthError(
+			'A transaction in one of your wallets is being broadcast right now. Please try deleting your account again in a minute.',
+			'broadcast_in_progress'
 		);
 	}
 

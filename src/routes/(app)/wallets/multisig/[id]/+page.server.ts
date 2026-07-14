@@ -6,6 +6,7 @@ import {
 	deleteMultisig,
 	toMultisigConfig
 } from '$lib/server/wallets/multisig';
+import { AuthError } from '$lib/server/auth';
 import {
 	multisigAccessRole,
 	redactMultisigKeysForViewer,
@@ -163,7 +164,13 @@ export const actions: Actions = {
 		const { params, locals } = event;
 		const id = multisigId(params.id);
 		const multisig = getMultisig(locals.user!.id, id);
-		if (!multisig || !deleteMultisig(locals.user!.id, id)) error(404, 'Multisig not found');
+		if (!multisig) error(404, 'Multisig not found');
+		try {
+			if (!deleteMultisig(locals.user!.id, id)) error(404, 'Multisig not found');
+		} catch (e) {
+			if (e instanceof AuthError) return fail(409, { deleteError: e.message });
+			throw e;
+		}
 		invalidateMultisigCache(multisig);
 		redirect(303, '/wallets');
 	}

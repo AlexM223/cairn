@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { db } from './db';
-import { registerUser } from './auth';
+import { registerUser, AuthError } from './auth';
 import { setSetting } from './settings';
 import { getLabels, setLabel, deleteWallet, TX_LABEL_MAX } from './wallets';
 
@@ -122,6 +122,73 @@ describe('tx labels', () => {
 			.prepare('SELECT COUNT(*) AS n FROM tx_labels WHERE wallet_id = ?')
 			.get(walletId) as { n: number };
 		expect(n).toBe(0);
+	});
+});
+
+// ---- cairn-vop2: deleteWallet refuses while a live broadcast claim exists ----
+//
+// deleteWallet's cascade (transactions.wallet_id ON DELETE CASCADE) used to have
+// no guard at all, unlike deleteTransaction's per-row broadcast check (cairn-up0q).
+// The fix mirrors that guard at the wallet level: refuse only while a claim is
+// still live (< 60s old, the same window broadcastTransaction itself uses to
+// reclaim a crashed attempt) — a completed/superseded transaction, or a STALE
+// claim, does not block a deliberate whole-wallet delete.
+
+function insertTx(
+	walletId: number,
+	opts: { status?: string; broadcastStartedAt?: string | null } = {}
+): number {
+	const res = db
+		.prepare(
+			`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate, broadcast_started_at)
+			 VALUES (?, ?, 'cHNidA==', 'bc1qtest', 10000, 100, 5, ?)`
+		)
+		.run(walletId, opts.status ?? 'awaiting_signature', opts.broadcastStartedAt ?? null);
+	return Number(res.lastInsertRowid);
+}
+
+describe('deleteWallet broadcast-claim guard (cairn-vop2)', () => {
+	it('refuses while a transaction has a live (fresh) broadcast claim', async () => {
+		const user = await makeUser('livebroadcast@example.com');
+		const walletId = makeWallet(user.id);
+		insertTx(walletId);
+		db.prepare(
+			"UPDATE transactions SET broadcast_started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE wallet_id = ?"
+		).run(walletId);
+
+		expect(() => deleteWallet(user.id, walletId)).toThrow(AuthError);
+		try {
+			deleteWallet(user.id, walletId);
+			expect.unreachable();
+		} catch (e) {
+			expect(e).toBeInstanceOf(AuthError);
+			expect((e as AuthError).code).toBe('broadcast_in_progress');
+		}
+		// The wallet must still exist — the guard blocked before the DELETE ran.
+		const { n } = db.prepare('SELECT COUNT(*) AS n FROM wallets WHERE id = ?').get(walletId) as {
+			n: number;
+		};
+		expect(n).toBe(1);
+	});
+
+	it('allows deletion once a crashed-broadcast claim goes stale (>60s)', async () => {
+		const user = await makeUser('staleclaim@example.com');
+		const walletId = makeWallet(user.id);
+		insertTx(walletId);
+		db.prepare(
+			"UPDATE transactions SET broadcast_started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-90 seconds') WHERE wallet_id = ?"
+		).run(walletId);
+
+		expect(deleteWallet(user.id, walletId)).toBe(true);
+	});
+
+	it('allows deletion of a wallet whose transactions are completed/superseded (no live claim)', async () => {
+		const user = await makeUser('completed@example.com');
+		const walletId = makeWallet(user.id);
+		insertTx(walletId, { status: 'completed' });
+		insertTx(walletId, { status: 'superseded' });
+
+		expect(deleteWallet(user.id, walletId)).toBe(true);
 	});
 });
 
