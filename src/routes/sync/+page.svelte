@@ -7,6 +7,7 @@
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import HeartwoodMark from '$lib/components/heartwood/HeartwoodMark.svelte';
 	import FirstSyncGrowth from '$lib/components/heartwood/FirstSyncGrowth.svelte';
+	import { startBackoffPoll } from '$lib/backoffPoll';
 	import type { SyncStatus } from '$lib/server/syncStatus';
 
 	let { data } = $props();
@@ -15,18 +16,26 @@
 	let status = $state<SyncStatus>(data.status);
 
 	const POLL_MS = 1200;
+	// When the node is unreachable /api/sync keeps answering 200 (phase:
+	// 'unreachable'); back off to this cap on that sustained-error condition rather
+	// than polling every 1.2s forever (cairn-1f0a).
+	const MAX_POLL_MS = 30_000;
 
 	onMount(() => {
-		const timer = setInterval(async () => {
-			if (status.phase === 'synced') return; // final state — stop asking
-			try {
+		return startBackoffPoll({
+			baseMs: POLL_MS,
+			maxMs: MAX_POLL_MS,
+			poll: async () => {
+				if (status.phase === 'synced') return 'stop'; // final state — stop asking
 				const res = await fetch('/api/sync', { cache: 'no-store' });
-				if (res.ok) status = (await res.json()) as SyncStatus;
-			} catch {
-				// A missed poll is fine; the next one catches up.
+				if (!res.ok) return 'backoff';
+				const s = (await res.json()) as SyncStatus;
+				status = s;
+				if (s.phase === 'synced') return 'stop';
+				// Sustained unreachable -> back off; any progressing phase -> base cadence.
+				return s.phase === 'unreachable' ? 'backoff' : 'reset';
 			}
-		}, POLL_MS);
-		return () => clearInterval(timer);
+		});
 	});
 
 	const synced = $derived(status.phase === 'synced');

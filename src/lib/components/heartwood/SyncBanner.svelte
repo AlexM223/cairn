@@ -25,10 +25,16 @@
 	 */
 	import { onMount } from 'svelte';
 	import EpochDial from './EpochDial.svelte';
+	import { startBackoffPoll } from '$lib/backoffPoll';
 	import type { SyncStatus } from '$lib/server/syncStatus';
 
 	// A background indicator, not the focused /sync screen — poll a little slower.
 	const POLL_MS = 2500;
+	// When the node is unreachable /api/sync keeps answering 200 (phase:
+	// 'unreachable'), so a fixed-cadence loop would hammer it forever (cairn-1f0a).
+	// Back off to this cap on that sustained-error condition, resetting to POLL_MS
+	// the moment progress resumes.
+	const MAX_POLL_MS = 30_000;
 
 	let status = $state<SyncStatus | null>(null);
 	let hidden = $state(false);
@@ -69,30 +75,27 @@
 	}
 
 	onMount(() => {
-		let done = false;
-		async function poll(): Promise<void> {
-			if (done) return;
-			try {
+		// Backoff-aware poll: base cadence while progressing, exponential backoff on
+		// a sustained-error (unreachable) result or a thrown fetch, and stop for good
+		// once synced (cairn-1f0a). Returns 'reset' | 'backoff' | 'stop' to drive it.
+		return startBackoffPoll({
+			baseMs: POLL_MS,
+			maxMs: MAX_POLL_MS,
+			poll: async () => {
 				const res = await fetch('/api/sync', { cache: 'no-store' });
-				if (res.ok) {
-					const s = (await res.json()) as SyncStatus;
-					status = s;
-					if (s.phase === 'synced') {
-						// The wood is fully counted — dismiss for good and stop asking.
-						hidden = true;
-						done = true;
-					}
+				if (!res.ok) return 'backoff'; // server error — don't hammer
+				const s = (await res.json()) as SyncStatus;
+				status = s;
+				if (s.phase === 'synced') {
+					// The wood is fully counted — dismiss for good and stop asking.
+					hidden = true;
+					return 'stop';
 				}
-			} catch {
-				// A missed poll is fine; the next tick catches up.
+				// 'unreachable' is a sustained error (banner defers to ChainHealthBanner
+				// anyway) — back off; every other phase is real progress, poll at base.
+				return s.phase === 'unreachable' ? 'backoff' : 'reset';
 			}
-		}
-		void poll(); // fill in live detail immediately, don't wait a full interval
-		const timer = setInterval(poll, POLL_MS);
-		return () => {
-			done = true;
-			clearInterval(timer);
-		};
+		});
 	});
 </script>
 
