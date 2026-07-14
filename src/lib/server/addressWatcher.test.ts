@@ -500,3 +500,56 @@ describe('cairn-mo36: TOCTOU race between existence check and write', () => {
 		expect(row.n).toBe(0);
 	});
 });
+
+// ---- cairn-1hb0: scripthash reassigned to a different (kind, walletId) ------
+//
+// state.byScripthash/baselinedScripthashes/inFlight are keyed purely by
+// scripthash string, with no per-entry generation/ownership tag. If the exact
+// same scripthash gets reassigned to a DIFFERENT wallet — a delete+recreate
+// reusing the same xpub/address, or an xpub shared across two wallets — the
+// prune pass in refreshWatches never drops the stale entry (the key is still
+// `desired`, just now pointing at a different owner), so without the fix the
+// new wallet's deposits would keep attributing to the wallet that used to own
+// this scripthash.
+
+describe('cairn-1hb0: refreshWatches re-owns a scripthash reassigned to a different wallet', () => {
+	it('a stale (wrong-owner) byScripthash/baselinedScripthashes/inFlight entry is replaced, not left pointing at the old owner', async () => {
+		const newOwnerId = (
+			await registerUser({
+				email: 'reowned@example.com',
+				password: 'correct horse battery',
+				displayName: 'Reowned'
+			})
+		).id;
+		const newXpub = HDKey.fromMasterSeed(new Uint8Array(32).fill(103)).publicExtendedKey;
+		const newWalletId = createWallet(newOwnerId, { name: 'New owner', xpub: newXpub }).id;
+		const address = deriveAddress(parseXpub(newXpub), 0, 0).address;
+		const scripthash = addressToScripthash(address);
+
+		// Simulate a stale entry left behind by a PRIOR wallet that used to own
+		// this exact scripthash (e.g. a delete+recreate reusing the same
+		// xpub/address) — still present, still baselined, still marked in-flight
+		// under the old ownership, exactly as a lingering stale entry would look.
+		const staleWatched = { kind: 'wallet' as const, walletId: 999_999, userId: 999_999, address };
+		_internals.state.byScripthash.set(scripthash, staleWatched);
+		_internals.state.baselinedScripthashes.add(scripthash);
+		_internals.state.inFlight.set(scripthash, staleWatched);
+
+		pool.getHistory.mockClear();
+		await refreshWatches();
+
+		const current = _internals.state.byScripthash.get(scripthash);
+		expect(current?.walletId).toBe(newWalletId);
+		expect(current?.kind).toBe('wallet');
+		// The new owner must not inherit the old owner's in-flight marker (that
+		// could clobber a legitimately new in-flight handler's own marker) — and
+		// refreshWatches' retry sweep (which runs at the end of this same call,
+		// since the module-level baseline pass has already completed by this
+		// point in the suite) must have taken a FRESH baseline pass for the new
+		// owner rather than trusting the old owner's "already baselined" status
+		// and silently skipping it — which would risk never recording the new
+		// owner's own pre-existing history correctly.
+		expect(_internals.state.inFlight.has(scripthash)).toBe(false);
+		expect(pool.getHistory).toHaveBeenCalledWith(scripthash, 'background');
+	});
+});

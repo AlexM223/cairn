@@ -107,8 +107,17 @@ interface WatchState {
 	 *  "transaction confirmed" (cairn-3bt1). */
 	baselinedScripthashes: Set<string>;
 	/** In-flight change handling per scripthash, so overlapping notifications for
-	 *  the same address don't double-process. */
-	inFlight: Set<string>;
+	 *  the same address don't double-process. Keyed to the specific `Watched`
+	 *  object reference the in-flight handler captured at entry (not just the
+	 *  scripthash string) — cairn-1hb0: when the SAME scripthash is reused
+	 *  across a delete+recreate (or an xpub shared by two wallets), a handler
+	 *  still winding down for the OLD owner must not clear a NEW handler's
+	 *  in-flight marker out from under it just because the map key matches. The
+	 *  object identity doubles as a lightweight per-ownership generation token —
+	 *  refreshWatches installs a fresh `Watched` object whenever ownership
+	 *  changes (see the subscribe loop below), so an old and new owner never
+	 *  share a reference even though their scripthash key does. */
+	inFlight: Map<string, Watched>;
 	/** Best known chain-tip height, updated on every 'header' event. Used as the
 	 *  upper bound for SPV proofs (reject a tx claiming a height above the tip). */
 	tipHeight: number;
@@ -131,7 +140,7 @@ const state: WatchState = {
 	started: false,
 	baselined: false,
 	baselinedScripthashes: new Set(),
-	inFlight: new Set(),
+	inFlight: new Map(),
 	tipHeight: 0,
 	tipCache: new Map()
 };
@@ -814,7 +823,7 @@ async function handleScripthashChange(scripthash: string): Promise<void> {
 		return;
 	}
 	if (state.inFlight.has(scripthash)) return;
-	state.inFlight.add(scripthash);
+	state.inFlight.set(scripthash, w);
 	try {
 		// Per-scripthash baseline gate (cairn-3bt1): if this address's pre-existing
 		// history was never successfully recorded (its startup baseline fetch
@@ -949,7 +958,13 @@ async function handleScripthashChange(scripthash: string): Promise<void> {
 			}
 		}
 	} finally {
-		state.inFlight.delete(scripthash);
+		// cairn-1hb0: only clear OUR OWN marker. If this scripthash was reassigned
+		// to a new owner (delete+recreate reusing the same xpub/address) while we
+		// were awaiting above, refreshWatches already installed a fresh `Watched`
+		// object and a NEW handler may already be in flight against it — deleting
+		// unconditionally here would clear that new handler's marker out from
+		// under it, not ours.
+		if (state.inFlight.get(scripthash) === w) state.inFlight.delete(scripthash);
 	}
 }
 
@@ -1324,7 +1339,31 @@ export async function refreshWatches(): Promise<void> {
 
 	let subscribed = 0;
 	for (const [scripthash, w] of desired) {
-		if (state.byScripthash.has(scripthash)) continue;
+		const existing = state.byScripthash.get(scripthash);
+		if (existing) {
+			// cairn-1hb0: byScripthash is keyed purely by scripthash string, with no
+			// per-entry generation/ownership tag. A scripthash can be reassigned to a
+			// DIFFERENT (kind, walletId) — a delete+recreate that reuses the same
+			// xpub/address, or an xpub shared across two wallets — while the prune
+			// pass above never drops it (the key is still `desired`, just now
+			// pointing at a different owner). Without this check the stale entry
+			// would live on forever: the new wallet's deposits would keep
+			// attributing to the wallet that used to own this scripthash until
+			// walletStillExists happens to self-prune it, silently dropping
+			// notifications in the meantime.
+			if (existing.kind === w.kind && existing.walletId === w.walletId) continue; // same owner — already watched
+			// Ownership changed. Reset per-scripthash state for it so the NEW owner
+			// gets its own fresh baseline pass (never inherit the old owner's
+			// "already baselined" status, which would silently swallow the new
+			// wallet's real deposit history) rather than a stale in-flight marker
+			// left over from the old owner (see handleScripthashChange's finally).
+			state.baselinedScripthashes.delete(scripthash);
+			state.inFlight.delete(scripthash);
+			log.info(
+				{ scripthash, from: { kind: existing.kind, walletId: existing.walletId }, to: { kind: w.kind, walletId: w.walletId } },
+				'scripthash reassigned to a different wallet — resetting its watcher state'
+			);
+		}
 		state.byScripthash.set(scripthash, w);
 		try {
 			// subscribeScripthash resolves with the current status. Subscribing arms
