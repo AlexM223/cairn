@@ -21,6 +21,12 @@ beforeEach(() => {
 	wipe();
 	// The 2nd+ user (a member) would otherwise need an invite code.
 	setSetting('registration_mode', 'open');
+	// admin/users/[id]'s setOverride action is gated on assertTeamMode() (cairn-7xlf,
+	// 2ee5f09) — it 404s in solo mode (the default) before ever touching the
+	// override read/write path. This suite exercises that action directly, so it
+	// needs team mode; the gate itself is covered by that route's own
+	// page.server.test.ts.
+	setSetting('instance_mode', 'team');
 });
 
 const PASSWORD = 'correct horse battery';
