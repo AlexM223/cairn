@@ -19,22 +19,22 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { Transaction, NETWORK } from '@scure/btc-signer';
 import { vi } from 'vitest';
 
-const { getTxHexMock, getBlockTimeAtHeightMock } = vi.hoisted(() => ({
+const { getTxMock, getTxHexMock, getBlockTimeAtHeightMock } = vi.hoisted(() => ({
+	getTxMock: vi.fn(),
 	getTxHexMock: vi.fn(),
 	getBlockTimeAtHeightMock: vi.fn()
 }));
 
 vi.mock('../chain/index', () => ({
-	// Deliberately NO getTx — mirrors an Electrum-only deployment where
-	// chain.getTx() unconditionally throws (no Core RPC configured).
 	getChain: () => ({
+		getTx: getTxMock,
 		getTxHex: getTxHexMock,
 		getBlockTimeAtHeight: getBlockTimeAtHeightMock
 	})
 }));
 
 import { collectScanTxs } from './gapLimitScanner';
-import { parseXpub, deriveAddress } from './xpub';
+import { parseXpub, deriveAddress, scriptPubKeyHex } from './xpub';
 import type { ElectrumHistoryItem } from '../electrum/client';
 
 const ZPUB =
@@ -77,6 +77,12 @@ function lastActivityOf(txs: { height: number; time: number | null }[]): number 
 
 describe('collectScanTxs — Electrum-only fallback (QA F4 regression)', () => {
 	beforeEach(() => {
+		// Default: no Core RPC configured, mirroring an Electrum-only deployment
+		// where chain.getTx() unconditionally throws — the existing tests below
+		// rely on this to exercise the raw-parse fallback. The cairn-uhg1 test
+		// further down overrides this to exercise the getTx()-succeeds-but-no-
+		// prevout path instead.
+		getTxMock.mockReset().mockRejectedValue(new Error('getTx() needs Core RPC'));
 		getTxHexMock.mockReset();
 		getBlockTimeAtHeightMock.mockReset();
 	});
@@ -155,5 +161,60 @@ describe('collectScanTxs — Electrum-only fallback (QA F4 regression)', () => {
 
 		const txs = await collectScanTxs(scanned);
 		expect(txs).toEqual([]);
+	});
+
+	// cairn-uhg1: chain.getTx() can also "succeed" without throwing while still
+	// carrying no prevout data — a full-indexing Electrum server's verbose
+	// transaction.get decode (chain/index.ts's getTxViaElectrum, cairn-zc4x) and
+	// an old pre-verbosity-2 Core node both do this. Before this fix, a
+	// successful-but-incomplete getTx() result was trusted at face value: every
+	// non-coinbase vin has prevScriptPubKey/value null, so the spent-wallet-
+	// input side of the delta was silently never subtracted — a spend would
+	// have reported a wrong (too-high) delta instead of falling back to
+	// raw-parse like the "getTx() throws" case already did.
+	it('falls back to raw-parse (not a wrong delta) when getTx() decodes the tx WITHOUT prevout data', async () => {
+		const deposit = buildDepositTx();
+		const spend = buildSpendTx(deposit.id);
+
+		// getTx() "succeeds" for the spend tx, Electrum-verbose-decode shaped:
+		// vout is fully known (no prevout needed there, matching buildSpendTx's
+		// EXTERNAL + CHANGE_0 outputs) but the one non-coinbase vin has null
+		// prevScriptPubKey/value, exactly like chain/index.ts's toTxDetailFromCore
+		// maps a Core/Electrum verbose (no verbosity-2) reply.
+		getTxMock.mockImplementation(async (txid: string) => {
+			if (txid !== spend.id) throw new Error(`unstubbed getTx ${txid}`);
+			return {
+				vout: [
+					{ scriptPubKey: scriptPubKeyHex(EXTERNAL), value: 1_000_000, address: null, spent: null },
+					{ scriptPubKey: scriptPubKeyHex(CHANGE_0), value: 499_000, address: null, spent: null }
+				],
+				vin: [{ coinbase: false, prevScriptPubKey: null, value: null, txid: deposit.id, vout: 0 }],
+				blockTime: 1_700_100_000,
+				fee: null
+			};
+		});
+		getTxHexMock.mockImplementation(async (txid: string) => {
+			if (txid === deposit.id) return deposit.hex;
+			if (txid === spend.id) return spend.hex;
+			throw new Error(`unknown txid in test fixture: ${txid}`);
+		});
+		getBlockTimeAtHeightMock.mockImplementation(async (height: number) => {
+			if (height === 200) return 1_700_100_000;
+			throw new Error(`unexpected height: ${height}`);
+		});
+
+		const scanned = [
+			{ address: RECEIVE_0, history: [{ tx_hash: spend.id, height: 200 }] as ElectrumHistoryItem[] },
+			{ address: CHANGE_0, history: [{ tx_hash: spend.id, height: 200 }] as ElectrumHistoryItem[] }
+		];
+
+		const txs = await collectScanTxs(scanned);
+		expect(txs).toHaveLength(1);
+
+		// The bug: trusting getTx()'s null-prevout vin would have reported delta
+		// = +499,000 (only the change output counted, spent 1,500,000 input never
+		// subtracted). The fix: fall through to raw-parse, which resolves the
+		// deposit as the spend's parent and gets the correct net delta.
+		expect(txs[0]).toMatchObject({ delta: 499_000 - 1_500_000, fee: 1_000 });
 	});
 });

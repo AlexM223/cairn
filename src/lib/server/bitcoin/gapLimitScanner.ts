@@ -122,13 +122,19 @@ function isCoinbaseInput(input: { txid?: Uint8Array; index?: number }): boolean 
 
 /**
  * Wallet-relevant delta + fee for one transaction, derived ENTIRELY from raw
- * transaction bytes (chain.getTxHex — plain Electrum, no Core RPC needed). This is collectScanTxs()'s fallback for when chain.getTx() is
- * unavailable: in an Electrum-only deployment getTx() unconditionally throws
- * (no backend can serve decoded/verbose tx detail — see chain/index.ts), which
- * used to make EVERY wallet transaction silently vanish from the activity
- * feed (QA F4) — balance and per-address txCount stayed correct (both come
- * straight from Electrum history/balance calls) but the aggregated tx list,
- * and therefore wallet.lastActivity, stayed permanently empty.
+ * transaction bytes (chain.getTxHex — plain Electrum, no Core RPC needed).
+ * This is collectScanTxs()'s fallback for when chain.getTx() is unavailable
+ * (no Core RPC configured) or its decode carries no prevout data — a
+ * full-indexing Electrum server's verbose transaction.get (electrs does not
+ * even support verbose=true; Fulcrum/ElectrumX do but still omit prevout) or
+ * an old pre-verbosity-2 Core node both decode a tx without any prevout, and
+ * used to make every such wallet transaction either vanish from the activity
+ * feed entirely (an outright getTx() throw, QA F4) or — worse — render with a
+ * silently wrong delta (a "successful" decode that never subtracted spent
+ * wallet inputs, cairn-uhg1). Balance and per-address txCount are never
+ * affected by either failure mode (both come straight from Electrum
+ * history/balance calls); only the aggregated tx list and wallet.lastActivity
+ * were at risk.
  *
  * Outputs are read straight off the parsed tx (script + amount, no further
  * fetch). Each non-coinbase INPUT additionally needs its spent output's
@@ -208,10 +214,13 @@ async function txDeltaFromRaw(
  * every output and report delta 0. See scriptPubKeyHex in xpub.ts.
  *
  * Newest TX_DETAIL_CAP transactions only, fetched with bounded concurrency.
- * chain.getTx() (Core RPC) is tried first; when it's unavailable —
- * always the case in an Electrum-only deployment — txDeltaFromRaw() derives
- * the same delta/fee purely from Electrum raw-tx data instead of dropping the
- * transaction (QA F4). Only a genuine failure of BOTH paths omits a tx.
+ * chain.getTx() is tried first (full Core prevout data when Core RPC is
+ * configured); when it's unavailable, or it decoded without prevout data (no
+ * Core configured, or an old Core/full-indexing-Electrum decode that carries
+ * no prevout — cairn-zc4x, cairn-uhg1), txDeltaFromRaw() derives the same
+ * delta/fee purely from raw tx bytes instead of dropping the transaction (QA
+ * F4) or silently under-counting it. Only a genuine failure of BOTH paths
+ * omits a tx.
  */
 export async function collectScanTxs(
 	scanned: { address: string; history: ElectrumHistoryItem[] }[]
@@ -263,6 +272,23 @@ export async function collectScanTxs(
 			chunk.map(async ([txid, height]): Promise<GapScanTx | null> => {
 				try {
 					const tx = await chain.getTx(txid);
+					// getTx() decodes via Bitcoin Core (verbosity 2, full prevout on
+					// every input) when Core RPC is configured, but degrades to an
+					// Electrum-only fallback otherwise (chain/index.ts's
+					// getTxViaElectrum, cairn-zc4x) — and a full-indexing Electrum
+					// server's verbose decode carries NO prevout at all, same as an
+					// old pre-verbosity-2 Core node. Either way every non-coinbase
+					// vin's prevScriptPubKey/value comes back null, which would
+					// silently under-count this tx's delta (spent wallet inputs never
+					// subtracted) instead of computing a wrong-but-plausible-looking
+					// balance change. Treat that shape as untrustworthy for the scan's
+					// purposes and fall through to the raw-parse path below, which
+					// resolves prevouts itself from each input's parent tx
+					// (cairn-uhg1) instead of silently misreporting.
+					const hasUnresolvedPrevout = tx.vin.some(
+						(vin) => !vin.coinbase && vin.prevScriptPubKey === null && vin.value === null
+					);
+					if (hasUnresolvedPrevout) throw new Error('getTx() result has no prevout data');
 					let delta = 0;
 					for (const out of tx.vout) {
 						if (out.scriptPubKey && walletScripts.has(out.scriptPubKey.toLowerCase())) {
@@ -280,10 +306,10 @@ export async function collectScanTxs(
 					}
 					return { txid, height, time: tx.blockTime, delta, fee: tx.fee };
 				} catch {
-					// getTx() needs Core RPC — always throws in an
-					// Electrum-only deployment (QA F4). Fall back to deriving the
-					// same delta/fee straight from Electrum raw-tx data before
-					// giving up on this transaction.
+					// No Core RPC, or Core/Electrum decoded the tx without prevout
+					// data (QA F4 and cairn-uhg1). Fall back to deriving the same
+					// delta/fee straight from raw tx bytes instead of giving up on
+					// this transaction (or trusting an incomplete decode).
 					try {
 						const { delta, fee } = await txDeltaFromRaw(chain, txid, walletScripts, rawCache);
 						return { txid, height, time: await blockTimeAt(height), delta, fee };
