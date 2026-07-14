@@ -1244,12 +1244,22 @@ export function deleteTransaction(userId: number, walletId: number, txId: number
 	// A single conditional DELETE closes that window: completed/superseded
 	// transactions are history, and anything with an in-flight broadcast
 	// claim is refused too — guard and delete are now one atomic statement.
+	//
+	// cairn-ytnc: a broadcast that crashes mid-flight leaves broadcast_started_at
+	// set forever unless something clears it. broadcastTransaction itself treats
+	// a claim older than 60s as reclaimable (a retry overwrites it), but this
+	// guard used to block on ANY non-null claim regardless of age, wedging a
+	// crashed draft undeletable until someone retried the exact same broadcast.
+	// Mirroring the same staleness predicate here closes that gap: a claim
+	// younger than 60s still blocks (an in-flight or just-failed broadcast must
+	// not be erased), a stale one no longer does.
 	const result = db
 		.prepare(
 			`DELETE FROM transactions
 			 WHERE id = ? AND wallet_id = ?
 			   AND status NOT IN ('completed', 'superseded')
-			   AND broadcast_started_at IS NULL`
+			   AND (broadcast_started_at IS NULL
+			        OR broadcast_started_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-60 seconds'))`
 		)
 		.run(txId, walletId);
 	return Number(result.changes) > 0;

@@ -248,6 +248,20 @@ describe('multisig transaction lifecycle', () => {
 		expect(getMultisigTransaction(userId, multisigId, txId)).not.toBeNull();
 	});
 
+	// cairn-ytnc: mirrors the single-sig fix — a claim older than 60s (crashed
+	// mid-broadcast) is reclaimable by a retry (broadcastMultisigTransaction),
+	// so the delete guard must not block on it forever either.
+	it('allows deleting a multisig transaction once its broadcast claim goes stale (>60s)', async () => {
+		const { userId, multisigId } = await seedMultisig('staleclaim@example.com');
+		const { txId } = await seedDraft(userId, multisigId);
+		db.prepare(
+			"UPDATE multisig_transactions SET broadcast_started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-90 seconds') WHERE id = ?"
+		).run(txId);
+
+		expect(deleteMultisigTransaction(userId, multisigId, txId)).toBe(true);
+		expect(getMultisigTransaction(userId, multisigId, txId)).toBeNull();
+	});
+
 	// cairn-up0q: deleteMultisigTransaction used to only exclude 'completed',
 	// unlike single-sig deleteTransaction which excludes 'completed' and
 	// 'superseded'. A superseded tx was broadcast too (its replacement is what

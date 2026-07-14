@@ -475,12 +475,18 @@ export function deleteMultisigTransaction(userId: number, multisigId: number, tx
 	// supersede step in broadcastMultisigTransaction / bumpMultisigTransaction)
 	// and deleting it would erase that record, same as single-sig. Guard and
 	// delete are now one atomic conditional statement.
+	//
+	// cairn-ytnc: mirrors the same fix as single-sig deleteTransaction — a
+	// crashed-mid-broadcast claim expires after 60s (broadcastMultisigTransaction
+	// lets a retry reclaim it), so the delete guard now shares that staleness
+	// window instead of blocking on any non-null claim forever.
 	const result = db
 		.prepare(
 			`DELETE FROM multisig_transactions
 			 WHERE id = ? AND multisig_id = ?
 			   AND status NOT IN ('completed', 'superseded')
-			   AND broadcast_started_at IS NULL`
+			   AND (broadcast_started_at IS NULL
+			        OR broadcast_started_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-60 seconds'))`
 		)
 		.run(txId, multisigId);
 	return Number(result.changes) > 0;

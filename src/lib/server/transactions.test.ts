@@ -199,6 +199,23 @@ describe('transaction lifecycle', () => {
 		expect(getTransaction(userId, walletId, txId)).not.toBeNull();
 	});
 
+	// cairn-ytnc: the up0q guard above blocked on ANY non-null claim, including
+	// one left by a broadcast that crashed mid-flight — broadcastTransaction
+	// itself treats a claim older than 60s as reclaimable (a retry overwrites
+	// it), but the delete guard didn't share that staleness window, wedging a
+	// crashed draft undeletable forever. A stale claim must now allow deletion;
+	// a fresh one (the test above) must still refuse it.
+	it('allows deleting a transaction once its broadcast claim goes stale (>60s)', async () => {
+		const { userId, walletId } = await seedWallet('a@example.com');
+		const txId = seedTx(walletId, 'awaiting_signature');
+		db.prepare(
+			"UPDATE transactions SET broadcast_started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-90 seconds') WHERE id = ?"
+		).run(txId);
+
+		expect(deleteTransaction(userId, walletId, txId)).toBe(true);
+		expect(getTransaction(userId, walletId, txId)).toBeNull();
+	});
+
 	it('refuses to broadcast an already-broadcast transaction before touching the network', async () => {
 		const { userId, walletId } = await seedWallet('a@example.com');
 		const done = seedTx(walletId, 'completed', 'ab'.repeat(32));
