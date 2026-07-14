@@ -179,13 +179,35 @@
 		return s.kind === 'multisig' ? `/wallets/multisig/${s.id}/send` : `/wallets/${s.id}/send`;
 	}
 
-	// Hero pills: with exactly one wallet they go straight to it; otherwise to
-	// the wallet list (there is no cross-wallet send/receive flow).
+	// Hero pills: with exactly one wallet they go straight to it. With more than
+	// one, a lightweight inline chooser lists every wallet so Send/Receive stop
+	// detouring through the full /wallets list on every click (cairn-5yz3.2) —
+	// the fallback href is kept as a no-JS/direct-link safety net.
 	const soloWallet = $derived(
 		portfolio && portfolio.allocation.length === 1 ? portfolio.allocation[0] : null
 	);
+	const multiWallet = $derived(portfolio && portfolio.allocation.length > 1);
 	const sendTarget = $derived(soloWallet ? sendHref(soloWallet) : '/wallets');
 	const receiveTarget = $derived(soloWallet ? soloWallet.href : '/wallets');
+
+	let openPicker = $state<'send' | 'receive' | null>(null);
+	let heroActionsEl = $state<HTMLDivElement | null>(null);
+	function togglePicker(kind: 'send' | 'receive') {
+		openPicker = openPicker === kind ? null : kind;
+	}
+	function closePicker() {
+		openPicker = null;
+	}
+	// Click-away: only wired while a picker is open, and only checks clicks
+	// outside the hero-actions row (pills + the panel both live inside it).
+	function onWindowClick(e: MouseEvent) {
+		if (openPicker && heroActionsEl && !heroActionsEl.contains(e.target as Node)) {
+			closePicker();
+		}
+	}
+	function onWindowKeydown(e: KeyboardEvent) {
+		if (openPicker && e.key === 'Escape') closePicker();
+	}
 
 	// One-time orientation for new users; dismissal remembered per account.
 	const tourKey = $derived(`cairn.tour.${page.data.user?.id ?? 'anon'}`);
@@ -221,6 +243,8 @@
 <svelte:head>
 	<title>Home — Heartwood</title>
 </svelte:head>
+
+<svelte:window onclick={onWindowClick} onkeydown={onWindowKeydown} />
 
 <div class="home">
 	<GroveField volume="present" />
@@ -366,13 +390,52 @@
 					{/if}
 				{/if}
 
-				<div class="hero-actions">
-					<a href={sendTarget} class="btn btn-primary pill-lg">
-						<Icon name="arrow-up-right" size={16} /> Send
-					</a>
-					<a href={receiveTarget} class="btn btn-secondary pill-lg">
-						<Icon name="arrow-down-left" size={16} /> Receive
-					</a>
+				<div class="hero-actions" bind:this={heroActionsEl}>
+					{#if multiWallet}
+						<button
+							type="button"
+							class="btn btn-primary pill-lg"
+							aria-haspopup="menu"
+							aria-expanded={openPicker === 'send'}
+							onclick={() => togglePicker('send')}
+						>
+							<Icon name="arrow-up-right" size={16} /> Send
+						</button>
+						<button
+							type="button"
+							class="btn btn-secondary pill-lg"
+							aria-haspopup="menu"
+							aria-expanded={openPicker === 'receive'}
+							onclick={() => togglePicker('receive')}
+						>
+							<Icon name="arrow-down-left" size={16} /> Receive
+						</button>
+					{:else}
+						<a href={sendTarget} class="btn btn-primary pill-lg">
+							<Icon name="arrow-up-right" size={16} /> Send
+						</a>
+						<a href={receiveTarget} class="btn btn-secondary pill-lg">
+							<Icon name="arrow-down-left" size={16} /> Receive
+						</a>
+					{/if}
+
+					{#if multiWallet && openPicker && portfolio}
+						<!-- Lightweight wallet chooser (cairn-5yz3.2) — replaces the old
+						     dumped-to-/wallets detour for 2+ wallet accounts. -->
+						<div class="wallet-picker fade-in" role="menu" aria-label="Choose a wallet">
+							{#each portfolio.allocation as w (w.key)}
+								<a
+									href={openPicker === 'send' ? sendHref(w) : w.href}
+									class="wallet-picker-row"
+									role="menuitem"
+									onclick={closePicker}
+								>
+									<span class="wallet-picker-name">{w.name}</span>
+									<span class="wallet-picker-balance mono">{formatBtc(w.balance)} BTC</span>
+								</a>
+							{/each}
+						</div>
+					{/if}
 				</div>
 
 				{#if portfolio || portfolioSyncing}
@@ -731,6 +794,7 @@
 
 	/* --- action pills (52px, radius 26) --- */
 	.hero-actions {
+		position: relative;
 		display: flex;
 		gap: 12px;
 		margin-top: 30px;
@@ -741,6 +805,54 @@
 		padding: 0 30px;
 		font-size: 15px;
 		font-weight: 600;
+	}
+
+	/* Multi-wallet Send/Receive chooser (cairn-5yz3.2) — a quiet inline panel
+	   anchored under the pills, not a full-screen modal (this isn't an
+	   irreversible action, just a shortcut past /wallets). */
+	.wallet-picker {
+		position: absolute;
+		top: calc(100% + 8px);
+		left: 0;
+		z-index: 20;
+		display: flex;
+		flex-direction: column;
+		min-width: 240px;
+		max-width: 320px;
+		padding: 6px;
+		background: var(--bg-input);
+		border: 1px solid var(--border-control);
+		border-radius: var(--radius-control);
+		box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+	}
+
+	.wallet-picker-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		padding: 9px 10px;
+		border-radius: calc(var(--radius-control) - 4px);
+		color: inherit;
+		font-size: 13px;
+	}
+
+	.wallet-picker-row:hover {
+		background: var(--surface);
+	}
+
+	.wallet-picker-name {
+		font-weight: 600;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.wallet-picker-balance {
+		flex-shrink: 0;
+		font-size: 12px;
+		color: var(--text-secondary);
 	}
 
 	/* SWR freshness for the portfolio aggregate — same quiet indicator the wallets
@@ -976,6 +1088,13 @@
 			flex: 1;
 			height: 48px;
 			font-size: 14.5px;
+		}
+
+		.wallet-picker {
+			left: 0;
+			right: 0;
+			min-width: 0;
+			max-width: none;
 		}
 
 		/* Edge-to-edge sparkline replaces the full chart. */
