@@ -721,6 +721,99 @@ describe('ElectrumClient', () => {
 		expect(handshakes).toBe(1);
 	}, 8000);
 
+	it('resubscribes all scripthashes concurrently after a reconnect (cairn-afdy)', async () => {
+		// Three watched scripthashes; on reconnect they must ALL be re-subscribed in
+		// parallel over the pipelined socket, not one-await-at-a-time. The proof is
+		// deterministic and timing-free: on the reconnected socket the server
+		// WITHHOLDS every subscribe reply until it has received all three requests.
+		// A parallel resubscribe fires all three before awaiting any reply, so they
+		// arrive and the server releases them; a serial loop would block on reply #1
+		// (never sent) and deadlock, failing the 8s test.
+		const shs = ['1a', '2b', '3c'].map((p) => p.repeat(32));
+		let handshakes = 0;
+		const withheld: { socket: net.Socket; id: number; sh: string }[] = [];
+		const server = await withServer((req, socket) => {
+			if (req.method === 'server.version') {
+				handshakes++;
+				return;
+			}
+			if (req.method === 'blockchain.scripthash.subscribe') {
+				const sh = req.params[0] as string;
+				if (handshakes === 1) {
+					// Initial subscribes on the first connection — answer immediately.
+					reply(socket, req.id, null);
+					return true;
+				}
+				// Reconnect replay: hold until all three have arrived, then release.
+				withheld.push({ socket, id: req.id, sh });
+				if (withheld.length === shs.length) {
+					for (const w of withheld) reply(w.socket, w.id, `st:${w.sh}`);
+				}
+				return true;
+			}
+		});
+
+		const client = makeClient(server.port, 2000);
+		for (const sh of shs) await client.subscribeScripthash(sh);
+
+		const resubDone = new Promise<void>((resolve) => {
+			const seen = new Set<string>();
+			client.on('scripthash', (hash: string, status: string | null) => {
+				if (typeof status === 'string' && status.startsWith('st:')) {
+					seen.add(hash);
+					if (seen.size === shs.length) resolve();
+				}
+			});
+		});
+
+		for (const s of server.sockets) s.destroy(); // force reconnect + resubscribe
+		await resubDone; // resolves only if all three were in flight at once
+		expect(handshakes).toBeGreaterThanOrEqual(2);
+	}, 8000);
+
+	it('respects the reconnect backoff timer — an ambient request fails fast instead of redialing (cairn-sp74)', async () => {
+		let handshakes = 0;
+		const server = await withServer((req, socket) => {
+			if (req.method === 'server.version') {
+				handshakes++;
+				return;
+			}
+			if (req.method === 'blockchain.headers.subscribe') {
+				reply(socket, req.id, { height: 1, hex: 'aa'.repeat(80) });
+				return true;
+			}
+			if (req.method === 'server.ping') {
+				reply(socket, req.id, null);
+				return true;
+			}
+		});
+
+		const client = makeClient(server.port, 2000);
+		await client.headersSubscribe(); // active subscription -> reconnect is eager
+		expect(handshakes).toBe(1);
+
+		// When the socket drops, onDisconnect arms a backoff reconnectTimer (~1s).
+		// A request issued in that window must reject fast WITHOUT starting its own
+		// dial — the scheduled reconnect owns reconnection. We drive the request
+		// synchronously from the 'disconnect' handler, i.e. inside the backoff window
+		// before the timer fires, so this is deterministic under real timers.
+		const outcome = new Promise<string>((resolve) => {
+			client.once('disconnect', () => {
+				resolve(
+					client
+						.request('server.ping')
+						.then(() => 'connected')
+						.catch((e: Error) => e.message)
+				);
+			});
+		});
+		for (const s of server.sockets) s.destroy();
+
+		await expect(outcome).resolves.toMatch(/backing off/i);
+		// The fail-fast request must not have triggered a fresh handshake/dial.
+		expect(handshakes).toBe(1);
+	}, 8000);
+
 	// ------------------------------------------------------- malformed messages
 
 	it('ignores a bare `null` (or other non-object) JSON-RPC line instead of crashing', async () => {
@@ -770,6 +863,58 @@ describe('ElectrumClient', () => {
 
 		// Still usable afterward proves the throw was contained.
 		await expect(client.request('echo', ['still alive'])).resolves.toBe('still alive');
+	});
+
+	// ------------------------------------------------------- receive-buffer cap
+
+	it('destroys the connection when an unterminated payload exceeds the buffer cap (cairn-32kh)', async () => {
+		// A server that streams bytes and never sends a newline would otherwise grow
+		// the client's receive buffer without bound (memory-exhaustion DoS). With a
+		// small cap the guard trips: the socket is destroyed and the in-flight
+		// request rejects via the normal connection-lost path.
+		const server = await withServer((req, socket) => {
+			if (req.method === 'flood') {
+				// Well over the 1 KiB cap set below, and crucially NO trailing newline,
+				// so onData() can never drain it as a complete line.
+				socket.write('x'.repeat(4096));
+				return true; // never send a real reply
+			}
+		});
+
+		const client = new ElectrumClient({
+			host: '127.0.0.1',
+			port: server.port,
+			tls: false,
+			timeoutMs: 5000,
+			maxBufferBytes: 1024
+		});
+		cleanups.push(() => client.close());
+
+		await expect(client.request('flood')).rejects.toThrow(/connection lost|closed/i);
+	});
+
+	it('does not destroy the connection for a large but newline-terminated response under the cap (cairn-32kh)', async () => {
+		// A legitimate response near the cap but properly terminated must drain
+		// cleanly — the guard checks the RESIDUAL after draining complete lines, so
+		// a finished message leaves an empty residual and never trips.
+		const big = 'y'.repeat(800);
+		const server = await withServer((req, socket) => {
+			if (req.method === 'echo') {
+				reply(socket, req.id, big); // JSON-encoded + '\n' terminated by reply()
+				return true;
+			}
+		});
+
+		const client = new ElectrumClient({
+			host: '127.0.0.1',
+			port: server.port,
+			tls: false,
+			timeoutMs: 5000,
+			maxBufferBytes: 1024
+		});
+		cleanups.push(() => client.close());
+
+		await expect(client.request('echo', [big])).resolves.toBe(big);
 	});
 
 	// --------------------------------------------------------------- keepalive

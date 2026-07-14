@@ -20,6 +20,16 @@ const RECONNECT_MAX_MS = 30_000;
 // every ~90-120s, causing endless reconnect churn (cairn-u7bw). 45s keeps us
 // comfortably under the common thresholds while staying negligible traffic.
 const KEEPALIVE_INTERVAL_MS = 45_000;
+// Hard cap on the unparsed receive buffer (cairn-32kh). The wire protocol is
+// newline-delimited: onData() accumulates bytes and drains complete lines, so a
+// server (buggy or hostile) that streams a payload and never sends a newline
+// grows `this.buffer` without bound — a memory-exhaustion DoS, and the eventual
+// JSON.parse on a giant line stalls the event loop synchronously. If the
+// *residual* (post-drain, still-incomplete) buffer ever exceeds this, the socket
+// is destroyed and the normal disconnect/backoff-reconnect path takes over.
+// 32 MiB is far above any legitimate single Electrum response (a verbose tx or a
+// large address history arrives well under this) while still being a firm bound.
+const MAX_BUFFER_SIZE = 32 * 1024 * 1024;
 
 export interface ElectrumClientOptions {
 	host: string;
@@ -50,6 +60,12 @@ export interface ElectrumClientOptions {
 	 * stale-connection liveness check (cairn-jhj6) without waiting 45s.
 	 */
 	keepaliveIntervalMs?: number;
+	/**
+	 * Max unparsed receive-buffer size in bytes before the connection is torn down
+	 * (default 32 MiB, see MAX_BUFFER_SIZE / cairn-32kh). Overridable mainly so
+	 * tests can trip the unterminated-payload guard without streaming 32 MiB.
+	 */
+	maxBufferBytes?: number;
 	/**
 	 * Whether this client's dial outcomes feed the instance-wide chain-health
 	 * signal (chainHealth.ts's recordChainOk/recordChainError — the "can't reach
@@ -132,6 +148,7 @@ export class ElectrumClient extends EventEmitter {
 	private readonly socks5Host: string | null;
 	private readonly socks5Port: number | null;
 	private readonly keepaliveIntervalMs: number;
+	private readonly maxBufferBytes: number;
 	private readonly reportsHealth: boolean;
 
 	private socket: net.Socket | null = null;
@@ -160,6 +177,7 @@ export class ElectrumClient extends EventEmitter {
 		this.socks5Host = opts.socks5Host || null;
 		this.socks5Port = opts.socks5Port || null;
 		this.keepaliveIntervalMs = opts.keepaliveIntervalMs ?? KEEPALIVE_INTERVAL_MS;
+		this.maxBufferBytes = opts.maxBufferBytes ?? MAX_BUFFER_SIZE;
 		this.reportsHealth = opts.reportsHealth ?? true;
 		// Consumers may not attach an 'error' listener; never let EventEmitter throw.
 		this.on('error', () => {});
@@ -185,6 +203,19 @@ export class ElectrumClient extends EventEmitter {
 		if (this.closed) return Promise.reject(new Error('Client is closed'));
 		if (this.socket && !this.socket.destroyed && !this.connecting) return Promise.resolve();
 		if (this.connecting) return this.connecting;
+		// A backoff reconnect is already scheduled (onDisconnect armed reconnectTimer
+		// after a drop). Respect it: fail fast instead of dialing a fresh connection
+		// on every ambient request (cairn-sp74). Before this, during an outage every
+		// user request called ensureConnected(), which ignored the scheduled delay and
+		// hammered the dead server — the exact request storm backoff exists to prevent.
+		// The scheduled attempt owns reconnection; when it succeeds, requests flow
+		// again. Only reached while a reconnect loop is active (i.e. a subscription is
+		// live); a purely lazy client schedules no timer and still reconnects on demand.
+		if (this.reconnectTimer) {
+			return Promise.reject(
+				new Error(`Electrum reconnect to ${this.server} is backing off; try again shortly`)
+			);
+		}
 
 		this.connecting = new Promise<void>((resolve, reject) => {
 			let settled = false;
@@ -418,10 +449,17 @@ export class ElectrumClient extends EventEmitter {
 		}
 		this.buffer = '';
 		this.rejectAllPending(new Error(`Electrum connection lost (${this.server})`));
-		this.emit('disconnect');
-		if (this.closed) return;
-		// Only reconnect eagerly when someone is depending on subscriptions;
-		// otherwise the next request() will reconnect lazily.
+		if (this.closed) {
+			this.emit('disconnect');
+			return;
+		}
+		// Arm the backoff reconnect BEFORE notifying listeners (cairn-sp74). Only
+		// reconnect eagerly when someone depends on subscriptions; otherwise the next
+		// request() reconnects lazily. Scheduling first means that by the time a
+		// 'disconnect' consumer (or any ambient request) runs, reconnectTimer is
+		// already set, so ensureConnected()'s fail-fast guard holds — closing the
+		// window where a request fired synchronously off 'disconnect' would still
+		// bypass the backoff and redial the dead server immediately.
 		if ((this.headersSubscribed || this.scripthashSubs.size > 0) && !this.reconnectTimer) {
 			const delay = this.reconnectDelay;
 			this.reconnectDelay = Math.min(this.reconnectDelay * 2, RECONNECT_MAX_MS);
@@ -444,6 +482,8 @@ export class ElectrumClient extends EventEmitter {
 			}, delay);
 			this.reconnectTimer.unref?.();
 		}
+		// Notify listeners last, with reconnect state already established (above).
+		this.emit('disconnect');
 	}
 
 	private rejectAllPending(err: Error): void {
@@ -455,22 +495,40 @@ export class ElectrumClient extends EventEmitter {
 	}
 
 	private async resubscribe(): Promise<void> {
-		try {
-			if (this.headersSubscribed) {
+		if (this.headersSubscribed) {
+			try {
 				const header = (await this.rawRequest('blockchain.headers.subscribe', [])) as ElectrumHeader;
 				this.emit('header', header);
+			} catch (e) {
+				log.warn(
+					{ err: e, server: this.server },
+					'headers resubscribe after reconnect failed; live tip updates paused until next reconnect'
+				);
 			}
-			for (const sh of this.scripthashSubs) {
+		}
+		// Replay every watched scripthash CONCURRENTLY over the pipelined socket
+		// (cairn-afdy). This used to be a serial for...await loop: a multi-wallet
+		// instance paid N sequential round-trips on every reconnect, so reconnect
+		// latency scaled with the number of watched scripthashes — the ARM/Umbrel
+		// reconnect-storm pain point. allSettled so one failed subscribe can't drop
+		// the rest (each still emits its own 'scripthash' on success); a lone
+		// Promise.all rejection would abandon the survivors' events.
+		const subs = [...this.scripthashSubs];
+		if (subs.length === 0) return;
+		const results = await Promise.allSettled(
+			subs.map(async (sh) => {
 				const status = await this.rawRequest('blockchain.scripthash.subscribe', [sh]);
 				this.emit('scripthash', sh, status as string | null);
-			}
-		} catch (e) {
-			// A failed resubscribe silently stops live header/scripthash updates until
-			// the next full disconnect/retry cycle — without this log there is no
-			// diagnostic trail for "balances stopped updating but we're connected".
+			})
+		);
+		const failed = results.filter((r) => r.status === 'rejected').length;
+		if (failed > 0) {
+			// A failed resubscribe silently stops live scripthash updates for those
+			// addresses until the next disconnect/retry cycle — without this log there
+			// is no diagnostic trail for "balances stopped updating but we're connected".
 			log.warn(
-				{ err: e, server: this.server, scripthashSubs: this.scripthashSubs.size },
-				'resubscribe after reconnect failed; live updates paused until next reconnect'
+				{ server: this.server, failed, total: subs.length },
+				'some scripthash resubscriptions after reconnect failed; live updates paused for those until next reconnect'
 			);
 		}
 	}
@@ -504,6 +562,21 @@ export class ElectrumClient extends EventEmitter {
 			} catch (e) {
 				log.warn({ err: e, server: this.server }, 'dispatch() threw for an Electrum message; ignoring');
 			}
+		}
+		// After draining every complete line, whatever's left is an incomplete tail.
+		// If that residual exceeds the cap the peer is streaming an unterminated
+		// payload (memory-exhaustion DoS, cairn-32kh) — because chunks accumulate
+		// here across onData() calls, even a single monstrous newline-terminated
+		// line trips this before its terminator ever arrives. Drop the socket and
+		// let onDisconnect's normal reject-pending + backoff-reconnect path run.
+		if (this.buffer.length > this.maxBufferBytes) {
+			log.warn(
+				{ server: this.server, bufferBytes: this.buffer.length, capBytes: this.maxBufferBytes },
+				'Electrum receive buffer exceeded cap without a message terminator; destroying connection'
+			);
+			this.buffer = '';
+			const sock = this.socket ?? this.connectingSocket;
+			sock?.destroy();
 		}
 	}
 
