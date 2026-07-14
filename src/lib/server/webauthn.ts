@@ -188,8 +188,20 @@ export function setAuthChallenge(event: RequestEvent, data: AuthChallenge): void
 	event.cookies.set(AUTH_COOKIE, JSON.stringify(data), cookieOpts(event));
 }
 
+/**
+ * Read the pending auth challenge and atomically consume it — the cookie is
+ * cleared as part of this call, not left for the caller to remember to clear
+ * separately (cairn-ixnv). Every real call site already cleared immediately
+ * after reading, but that was calling-convention discipline, not enforcement:
+ * a future route that read the challenge without clearing it would silently
+ * reopen a replay window. Callers may still call clearAuthChallenge()
+ * explicitly on early-exit paths; it is idempotent against an already-cleared
+ * cookie.
+ */
 export function readAuthChallenge(event: RequestEvent): AuthChallenge | null {
-	return parseCookie<AuthChallenge>(event.cookies.get(AUTH_COOKIE));
+	const value = parseCookie<AuthChallenge>(event.cookies.get(AUTH_COOKIE));
+	clearAuthChallenge(event);
+	return value;
 }
 
 export function clearAuthChallenge(event: RequestEvent): void {

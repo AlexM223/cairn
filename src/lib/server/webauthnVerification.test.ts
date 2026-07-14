@@ -198,19 +198,20 @@ describe('challenge-cookie lifecycle — set/read/clear round-trip and fail-clos
 		expect(readAuthChallenge(event)).toBeNull();
 	});
 
-	it('reading the SAME challenge cookie twice without clearing it in between still returns it both times — readAuthChallenge has no consume-once guard of its own; single-use is the calling route\'s responsibility (clearAuthChallenge), not webauthn.ts\'s', () => {
-		// This pins current behavior, not a bug: every real call site (e.g.
-		// login/verify/+server.ts) calls clearAuthChallenge() unconditionally
-		// before doing anything else with the pending challenge, specifically so
-		// a caller can never replay it. But webauthn.ts itself provides no
-		// enforcement — a future route that reads twice before clearing would
-		// silently allow a challenge-reuse window.
+	it('FIXED (cairn-ixnv): reading the challenge consumes it atomically — a second read before any explicit clearAuthChallenge() returns null, not the same challenge again', () => {
+		// readAuthChallenge() used to have no consume-once guard of its own;
+		// single-use was purely the calling route's discipline (every real call
+		// site happened to call clearAuthChallenge() immediately after reading).
+		// A future route that read the challenge without clearing it would have
+		// silently reopened a replay window. readAuthChallenge() now clears the
+		// cookie as part of the read itself, so that footgun is gone.
 		const cookies = makeCookieJar();
 		const event = { ...makeEvent(), cookies };
 		setAuthChallenge(event, { challenge: 'c-replay', userId: 7 });
 		const first = readAuthChallenge(event);
 		const second = readAuthChallenge(event);
-		expect(first).toEqual(second);
+		expect(first).toEqual({ challenge: 'c-replay', userId: 7 });
+		expect(second).toBeNull();
 	});
 
 	it('a malformed (non-JSON) cookie value fails closed to null rather than throwing', () => {
