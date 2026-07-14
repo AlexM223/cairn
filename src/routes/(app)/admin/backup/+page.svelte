@@ -321,7 +321,8 @@
 				Restored {summary.usersAdded} account{summary.usersAdded === 1 ? '' : 's'}
 				({summary.usersSkipped} already existed), {summary.wallets} wallet{summary.wallets === 1
 					? ''
-					: 's'}, {summary.multisigs} multisig{summary.multisigs === 1 ? '' : 's'}, {summary.addresses}
+					: 's'}, {summary.multisigs} multisig{summary.multisigs === 1 ? '' : 's'}, {summary.shares}
+					shared-wallet link{summary.shares === 1 ? '' : 's'}, {summary.addresses}
 				saved address{summary.addresses === 1 ? '' : 'es'}, {summary.labels} label{summary.labels === 1
 					? ''
 					: 's'}, and {summary.settings} setting{summary.settings === 1 ? '' : 's'}.

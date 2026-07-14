@@ -4,10 +4,12 @@
 // restore/skip-existing/admin-downgrade/settings-allowlist behavior, and the
 // per-row-skip logging contract). This file adds:
 //
-//   4. A full byte-for-byte round-trip across ALL EIGHT captured tables at
+//   4. A full byte-for-byte round-trip across ALL NINE captured tables at
 //      once (not just users, one at a time) plus confirmation that
-//      multisig_shares — collaborative-custody sharing — is never captured
-//      by buildBackup and so can never survive a restore.
+//      multisig_shares — collaborative-custody sharing — IS now captured by
+//      buildBackup and survives a restore, including the per-key
+//      collaborator assignment on multisig_keys.assigned_user_id (cairn-s6x3,
+//      fixed).
 //   5. Older/malformed backup shapes: a version-0 backup with a wallet row
 //      missing the `type` column, a wallet row with a renamed `xpub` column,
 //      and decryptBackup's asymmetric version check (rejects newer-than-
@@ -54,8 +56,8 @@ const PP = 'a-strong-passphrase';
 
 // ═══════════════════════════════════════════════════ GROUP 4 — full round-trip
 
-describe('full 8-table encrypt/decrypt round-trip (cairn-s6x3)', () => {
-	it('round-trips every captured table byte-for-byte, and never carries multisig_shares', async () => {
+describe('full 9-table encrypt/decrypt round-trip (cairn-s6x3)', () => {
+	it('round-trips every captured table byte-for-byte, including multisig_shares', async () => {
 		const admin = await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
 		const bob = await registerUser({ email: 'bob@example.com', displayName: 'Bob' });
 		makeWallet(bob.id, 'xpubBOB');
@@ -97,6 +99,7 @@ describe('full 8-table encrypt/decrypt round-trip (cairn-s6x3)', () => {
 		expect(data.multisigs.length).toBeGreaterThanOrEqual(1);
 		expect(data.multisig_keys.length).toBeGreaterThanOrEqual(1);
 		expect(data.ledger_multisig_registrations.length).toBeGreaterThanOrEqual(1);
+		expect(data.multisig_shares.length).toBeGreaterThanOrEqual(1);
 		expect(data.saved_addresses.length).toBeGreaterThanOrEqual(1);
 		expect(data.tx_labels.length).toBeGreaterThanOrEqual(1);
 		expect(data.settings.some((s) => s.key === 'electrum_host')).toBe(true);
@@ -109,17 +112,17 @@ describe('full 8-table encrypt/decrypt round-trip (cairn-s6x3)', () => {
 			BackupError
 		);
 
-		// KNOWN GAP (cairn-s6x3): multisig_shares is never selected by
-		// buildBackup — a restored instance loses every collaborative-custody
-		// sharing relationship, silently.
-		expect(data).not.toHaveProperty('multisig_shares'); // pinned current behavior, not endorsed
+		// cairn-s6x3 (FIXED): multisig_shares IS now selected by buildBackup, so
+		// the collaborative-custody sharing relationship survives the round-trip.
+		expect(data).toHaveProperty('multisig_shares');
+		expect(back.multisig_shares).toEqual(data.multisig_shares);
 	});
 });
 
 // ═══════════════════════════════════════════════════ GROUP 4 — restore round-trip
 
 describe('restore round-trip (cairn-s6x3)', () => {
-	it('restores users/wallets/multisigs/addresses/labels/allowlisted-settings, downgrades the admin flag, mints reclaim codes, and drops multisig_shares', async () => {
+	it('restores users/wallets/multisigs/addresses/labels/allowlisted-settings, downgrades the admin flag, mints reclaim codes, and recreates multisig_shares + key assignments (cairn-s6x3)', async () => {
 		const admin = await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
 		const bob = await registerUser({ email: 'bob@example.com', displayName: 'Bob' });
 		expect(admin.isAdmin).toBe(true); // first registration after wipe auto-admins
@@ -131,9 +134,12 @@ describe('restore round-trip (cairn-s6x3)', () => {
 				)
 				.run(bob.id).lastInsertRowid
 		);
+		// The key is assigned to admin (the cosigner) so the round-trip also proves
+		// multisig_keys.assigned_user_id is captured and remapped, not just the
+		// share row (cairn-s6x3).
 		db.prepare(
-			"INSERT INTO multisig_keys (multisig_id, position, name, category, xpub, fingerprint, path) VALUES (?, 0, 'K', 'hardware', 'xpub-k', '00000000', ?)"
-		).run(msId, "m/48'/0'/0'/2'");
+			"INSERT INTO multisig_keys (multisig_id, position, name, category, xpub, fingerprint, path, assigned_user_id) VALUES (?, 0, 'K', 'hardware', 'xpub-k', '00000000', ?, ?)"
+		).run(msId, "m/48'/0'/0'/2'", admin.id);
 		db.prepare("INSERT INTO saved_addresses (user_id, label, address) VALUES (?, 'Label', 'bc1qaddr')").run(
 			bob.id
 		);
@@ -150,7 +156,7 @@ describe('restore round-trip (cairn-s6x3)', () => {
 		// rather than just never having been backed up.
 		setSetting('registration_mode', 'invite');
 		db.prepare(
-			"INSERT INTO multisig_shares (multisig_id, owner_id, shared_with_id, role) VALUES (?, ?, ?, 'viewer')"
+			"INSERT INTO multisig_shares (multisig_id, owner_id, shared_with_id, role) VALUES (?, ?, ?, 'cosigner')"
 		).run(msId, bob.id, admin.id);
 
 		const data = buildBackup('t');
@@ -165,6 +171,7 @@ describe('restore round-trip (cairn-s6x3)', () => {
 		expect(summary.adminDowngraded).toBe(1); // only the admin account was flagged is_admin
 		expect(summary.wallets).toBe(1);
 		expect(summary.multisigs).toBe(1);
+		expect(summary.shares).toBe(1);
 		expect(summary.addresses).toBe(1);
 		expect(summary.labels).toBe(1);
 		expect(summary.settingsSkipped).toContain('registration_mode');
@@ -209,11 +216,31 @@ describe('restore round-trip (cairn-s6x3)', () => {
 			.all(restoredWalletId) as { txid: string; label: string }[];
 		expect(labels).toEqual([{ txid: 'a'.repeat(64), label: 'L' }]);
 
-		// KNOWN GAP (cairn-s6x3): multisig_shares was never captured, so the
-		// collaborative-sharing relationship between bob and admin cannot come
-		// back — silently, with no indication in the restore summary at all.
-		expect(tableCount('multisig_shares')).toBe(0); // pinned current behavior, not endorsed
-		expect(summary).not.toHaveProperty('shares'); // RestoreSummary has no shares field
+		// cairn-s6x3 (FIXED): multisig_shares is captured and the collaborative-
+		// sharing relationship between bob and admin comes back, with both
+		// endpoints and the multisig id remapped, and is surfaced on the summary.
+		expect(tableCount('multisig_shares')).toBe(1);
+		const share = db
+			.prepare(
+				'SELECT multisig_id, owner_id, shared_with_id, role FROM multisig_shares'
+			)
+			.get() as { multisig_id: number; owner_id: number; shared_with_id: number; role: string };
+		const restoredMsId = (
+			db.prepare('SELECT id FROM multisigs WHERE user_id = ?').get(restoredBob.id) as {
+				id: number;
+			}
+		).id;
+		expect(share).toEqual({
+			multisig_id: restoredMsId,
+			owner_id: restoredBob.id,
+			shared_with_id: restoredAdmin.id,
+			role: 'cosigner'
+		});
+		// The per-key collaborator assignment is remapped to the restored admin too.
+		const assignedKey = db
+			.prepare('SELECT assigned_user_id FROM multisig_keys WHERE multisig_id = ?')
+			.get(restoredMsId) as { assigned_user_id: number | null };
+		expect(assignedKey.assigned_user_id).toBe(restoredAdmin.id);
 
 		// KNOWN GAP (cairn-ldhm, secondary): notification prefs/channel config,
 		// contacts, address_labels, device_keys, and per-user feature-flag

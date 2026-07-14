@@ -38,7 +38,7 @@ import { consumeRecoveryCode } from './recovery';
 
 function wipe(): void {
 	db.exec(
-		'DELETE FROM sessions; DELETE FROM tx_labels; DELETE FROM saved_addresses; DELETE FROM wallets; DELETE FROM invites; DELETE FROM users; DELETE FROM settings; DELETE FROM instance_secrets;'
+		'DELETE FROM multisig_shares; DELETE FROM sessions; DELETE FROM tx_labels; DELETE FROM saved_addresses; DELETE FROM wallets; DELETE FROM invites; DELETE FROM users; DELETE FROM settings; DELETE FROM instance_secrets;'
 	);
 }
 

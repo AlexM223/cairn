@@ -43,6 +43,10 @@ export interface BackupData {
 	multisigs: Row[];
 	multisig_keys: Row[];
 	ledger_multisig_registrations: Row[];
+	// Collaborative-custody sharing: which cosigners/viewers each multisig is
+	// shared with (cairn-s6x3). Restored after users AND multisigs so both
+	// endpoints of a share row can be id-remapped.
+	multisig_shares: Row[];
 	saved_addresses: Row[];
 	tx_labels: Row[];
 	settings: Row[];
@@ -74,6 +78,11 @@ export function buildBackup(exportedAt: string): BackupData {
 		multisigs: all('SELECT * FROM multisigs'),
 		multisig_keys: all('SELECT * FROM multisig_keys'),
 		ledger_multisig_registrations: all('SELECT * FROM ledger_multisig_registrations'),
+		// cairn-s6x3: collaborative-custody share rows were previously omitted, so a
+		// restore silently severed every shared-wallet relationship. Captured here;
+		// key-to-collaborator assignment travels on multisig_keys.assigned_user_id
+		// (already covered by SELECT * above and re-applied on restore).
+		multisig_shares: all('SELECT * FROM multisig_shares'),
 		saved_addresses: all('SELECT * FROM saved_addresses'),
 		tx_labels: all('SELECT * FROM tx_labels'),
 		settings: all('SELECT key, value FROM settings').filter(
@@ -197,6 +206,11 @@ export interface RestoreSummary {
 	adminDowngraded: number;
 	wallets: number;
 	multisigs: number;
+	/** Collaborative-custody share rows recreated (cairn-s6x3). A share is only
+	 *  restorable when its multisig AND both endpoint accounts were also
+	 *  restored/matched by email; shares pointing at an account that already
+	 *  existed (and so was skipped) or at a dropped multisig are not recreated. */
+	shares: number;
 	addresses: number;
 	labels: number;
 	settings: number;
@@ -327,6 +341,7 @@ export async function restoreBackup(data: BackupData): Promise<RestoreSummary> {
 		adminDowngraded: 0,
 		wallets: 0,
 		multisigs: 0,
+		shares: 0,
 		addresses: 0,
 		labels: 0,
 		settings: 0,
@@ -420,12 +435,18 @@ export async function restoreBackup(data: BackupData): Promise<RestoreSummary> {
 		}
 
 		const insertKey = db.prepare(
-			`INSERT INTO multisig_keys (multisig_id, position, name, category, device_type, xpub, fingerprint, path, last_verified_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+			`INSERT INTO multisig_keys (multisig_id, position, name, category, device_type, xpub, fingerprint, path, last_verified_at, assigned_user_id)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		);
 		for (const k of data.multisig_keys) {
 			const msId = multisigIdMap.get(Number(k.multisig_id));
 			if (!msId) continue;
+			// cairn-s6x3: carry the key-to-collaborator assignment too, remapping
+			// the referenced account id. If that account was not itself restored
+			// (already existed and was skipped, or absent), the key comes back
+			// unassigned (NULL) rather than pointing at the wrong user.
+			const assignedUserId =
+				k.assigned_user_id == null ? null : userIdMap.get(Number(k.assigned_user_id)) ?? null;
 			try {
 				insertKey.run(
 					msId,
@@ -436,7 +457,8 @@ export async function restoreBackup(data: BackupData): Promise<RestoreSummary> {
 					str(k.xpub),
 					str(k.fingerprint),
 					str(k.path),
-					orNull(k.last_verified_at)
+					orNull(k.last_verified_at),
+					assignedUserId
 				);
 			} catch (eKey) {
 				log.warn(
@@ -466,6 +488,40 @@ export async function restoreBackup(data: BackupData): Promise<RestoreSummary> {
 				log.warn(
 					{ err: e, table: 'ledger_multisig_registrations', srcMultisigId: r.multisig_id },
 					'restore: skipped a Ledger registration row'
+				);
+			}
+		}
+
+		// cairn-s6x3: recreate collaborative-custody shares. Restored here, after
+		// BOTH the users and multisigs loops, so all three references on a share
+		// row (multisig_id, owner_id, shared_with_id) can be id-remapped. A share
+		// whose multisig or either account was not itself restored is silently not
+		// recreated — it has no valid endpoint to attach to (see the summary.shares
+		// doc comment), mirroring how a wallet/multisig for a skipped user is
+		// dropped rather than mis-attached.
+		const insertShare = db.prepare(
+			`INSERT INTO multisig_shares (multisig_id, wallet_kind, owner_id, shared_with_id, role, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?)`
+		);
+		for (const sh of data.multisig_shares ?? []) {
+			const msId = multisigIdMap.get(Number(sh.multisig_id));
+			const ownerId = userIdMap.get(Number(sh.owner_id));
+			const sharedWithId = userIdMap.get(Number(sh.shared_with_id));
+			if (!msId || !ownerId || !sharedWithId) continue;
+			try {
+				insertShare.run(
+					msId,
+					str(sh.wallet_kind) || 'multisig',
+					ownerId,
+					sharedWithId,
+					str(sh.role) || 'viewer',
+					str(sh.created_at) || new Date().toISOString()
+				);
+				summary.shares++;
+			} catch (e) {
+				log.warn(
+					{ err: e, table: 'multisig_shares', srcMultisigId: sh.multisig_id },
+					'restore: skipped a multisig share row'
 				);
 			}
 		}

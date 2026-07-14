@@ -48,6 +48,7 @@ export const POST: RequestHandler = async (event) => {
 				usersAdded: summary.usersAdded,
 				usersSkipped: summary.usersSkipped,
 				adminDowngraded: summary.adminDowngraded,
+				sharesRestored: summary.shares,
 				settingsSkipped: summary.settingsSkipped
 			},
 			link: '/admin/users'
