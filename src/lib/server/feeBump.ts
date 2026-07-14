@@ -375,6 +375,18 @@ export async function executeCpfpDraft<TDraft, TDetails extends ConstructedSpend
 			'no_unconfirmed_output'
 		);
 	}
+	// Defense-in-depth (cairn-oae1.5): CPFP is safe from immature-coinbase spends
+	// today only by an IMPLICIT invariant — a coinbase output is always mined at
+	// a confirmed height, so it can never satisfy the `height <= 0` filter above.
+	// Assert that invariant explicitly (shared by both single-sig and multisig,
+	// since both route through this function) so a future change to the
+	// qualifying filter can't silently regress into CPFP-ing an unverified or
+	// immature mining reward — this should be structurally unreachable.
+	if (qualifying.some((u) => u.coinbase === true || u.coinbase === 'unknown')) {
+		throw new Error(
+			'Internal invariant violated: a coinbase-flagged coin qualified as an unconfirmed CPFP input (coinbase outputs are always confirmed).'
+		);
+	}
 
 	// The parent's real vsize + fee. A confirmed parent has nothing left to
 	// accelerate.

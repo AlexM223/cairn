@@ -56,6 +56,20 @@ function fundingTx(value: number): { hex: string; txid: string } {
 	return { hex: tx.hex, txid: tx.id };
 }
 
+/**
+ * A coinbase-SHAPED funding tx: single input with the consensus synthetic
+ * prevout (32 zero bytes, index 0xffffffff) that annotateCoinbase (coinbaseScan.ts)
+ * detects from raw bytes alone, independent of confirmation height. Used only to
+ * drive the cairn-oae1.5 defensive CPFP guard — a real coinbase output is never
+ * actually unconfirmed, but the guard must still catch it structurally.
+ */
+function coinbaseFundingTx(value: number): { hex: string; txid: string } {
+	const tx = new Transaction({ allowUnknownInputs: true, disableScriptCheck: true });
+	tx.addInput({ txid: '00'.repeat(32), index: 0xffffffff });
+	tx.addOutputAddress(RECEIVE_0, BigInt(value), NETWORK);
+	return { hex: tx.hex, txid: tx.id };
+}
+
 function wipe(): void {
 	db.exec(
 		'DELETE FROM transactions; DELETE FROM sessions; DELETE FROM wallets; DELETE FROM users; DELETE FROM settings;'
@@ -269,5 +283,21 @@ describe('buildCpfpDraft', () => {
 		await expect(buildCpfpDraft(userId, walletId, PARENT.txid, 10)).rejects.toMatchObject({
 			code: 'already_confirmed'
 		});
+	});
+
+	// cairn-oae1.5: defense-in-depth — CPFP is safe today only because a
+	// coinbase output can never be unconfirmed (implicit invariant). Force that
+	// invariant to break (a coinbase-shaped parent reported unconfirmed by the
+	// scan) and confirm the explicit guard in executeCpfpDraft (feeBump.ts)
+	// catches it rather than silently sweeping an unverified mining reward.
+	it('never lets a coinbase-flagged coin qualify as a CPFP input, even if reported unconfirmed', async () => {
+		const { userId, walletId } = await seedWallet();
+		const PARENT = coinbaseFundingTx(100_000);
+		stubUnconfirmedOutputOn(PARENT, 100_000); // height 0 — should be structurally impossible for a real coinbase
+		getTxMock.mockResolvedValue({ vin: [{}], confirmed: false, vsize: 200, fee: 200 });
+
+		await expect(buildCpfpDraft(userId, walletId, PARENT.txid, 10)).rejects.toThrow(
+			/internal invariant violated/i
+		);
 	});
 });

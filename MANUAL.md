@@ -919,7 +919,18 @@ it spends exactly what it's given. Coinbase (mining-reward) UTXOs need 100
 confirmations; `selectSpendCandidates` drops immature ones from
 auto-selection and rejects an explicitly coin-controlled immature one with a
 clear error. A coin whose coinbase-ness is `'unknown'` (a failed chain
-fetch) is treated conservatively as possibly-immature. `preferLowMassOrder()`
+fetch) is treated conservatively as possibly-immature. **The guard also
+fails CLOSED when the chain TIP itself can't be resolved** (`tipHeight`
+undefined — a transient `getTip()` failure, `cairn-oae1.1`): every
+coinbase-flagged coin (definite or unverified) is treated as unverifiable
+maturity — excluded from automatic selection, and an explicit coin-control
+pick of one is rejected with *"Can't verify this mining reward is ready to
+spend right now — try again in a moment."* Ordinary (non-coinbase) coins are
+completely unaffected, so a transient tip-fetch failure never blocks a
+normal send; both `transactions.ts` and `multisigTransactions.ts` only fetch
+the tip at all when a coinbase coin is present, and leave `tipHeight`
+undefined (rather than throwing) on failure so this fail-closed path runs.
+`preferLowMassOrder()`
 (`signingMass.ts`) re-sorts equal-value candidates toward lighter-parent-tx
 coins before selection — this never changes fees or amounts, it's a
 tiebreak only. Candidate UTXOs already referenced by another in-flight draft
@@ -4003,6 +4014,12 @@ unconfirmed output on it).
    `coin_too_small`.
 - **PASS:** a legitimate CPFP builds+broadcasts a child spending only the parent's own
   unconfirmed output; each unhappy path returns its specific code, not a generic error.
+- **Defense-in-depth (`cairn-oae1.5`):** CPFP only ever qualifies a coin with `height <= 0`
+  (unconfirmed) — a coinbase output is always confirmed, so it's structurally impossible for
+  one to qualify. `executeCpfpDraft` (`feeBump.ts`, shared by both wallet types) also asserts
+  this explicitly and throws an internal-invariant error if it's ever violated, so a future
+  change to the qualifying filter can't silently regress into CPFP-ing an unverified or
+  immature mining reward. No behavior change for the normal unconfirmed-CPFP case.
 
 ### 18.5 Unconfirmed-spend rules `[emulator]`
 1. Receive an unconfirmed deposit from a **stranger** (external send, not yet mined). Build
@@ -4018,8 +4035,18 @@ unconfirmed output on it).
    auto-selection; explicitly coin-controlling an immature coinbase gives a **clear error**;
    an `'unknown'` coinbase status (failed chain fetch) is treated conservatively as
    possibly-immature.
+4. **Coinbase maturity, tip unknown (`cairn-oae1.1`, fail-closed):** with a coinbase coin
+   present, simulate a `getTip()` failure (e.g. point at a dead tip source). Build an
+   ordinary send.
+   - **Expected:** the coinbase coin is **excluded** from auto-selection (not silently
+     included just because the tip couldn't be checked); a send using only non-coinbase
+     coins is **not blocked**. Coin-controlling the coinbase coin explicitly is **rejected**
+     with *"Can't verify this mining reward is ready to spend right now — try again in a
+     moment."*
 - **PASS:** stranger-unconfirmed never auto-selected; own-change used only as confirmed
-  fallback; immature coinbase blocked with a clear message.
+  fallback; immature coinbase blocked with a clear message; a tip-fetch failure fails
+  CLOSED for coinbase coins specifically, never open, and never blocks an otherwise-ordinary
+  send.
 
 ### 18.5a Inbound double-spend / RBF'd-away reconciliation `[emulator]` — regression guard (`cairn-a2p1`)
 Precondition: an unconfirmed inbound deposit to a watched wallet has already fired

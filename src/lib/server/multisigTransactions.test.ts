@@ -754,6 +754,20 @@ describe('buildMultisigCpfpDraft (CPFP parity, cairn-u9ob.6)', () => {
 		expect(inflows[0].txid).toBe(parentTxid);
 		expect(inflows[0].action).toBe('rbf'); // ours + signals RBF
 	});
+
+	// cairn-oae1.5: defense-in-depth mirror of the single-sig CPFP guard — the
+	// shared executeCpfpDraft (feeBump.ts) must reject a coinbase-flagged coin
+	// even if it were ever (incorrectly) reported as this vault's unconfirmed
+	// output, since a real coinbase output can never actually be unconfirmed.
+	it('never lets a coinbase-flagged coin qualify as a CPFP input, even if reported unconfirmed', async () => {
+		const { userId, multisigId } = await seedMultisig('cpfp-coinbase@example.com');
+		const { parentTxid, utxos } = stubUnconfirmedParent(userId, multisigId);
+		utxosMock.mockResolvedValue(utxos.map((u) => ({ ...u, coinbase: true })));
+		getTxMock.mockResolvedValue({ confirmed: false, rbf: true, vsize: 200, fee: 200 });
+		await expect(buildMultisigCpfpDraft(userId, multisigId, parentTxid, 10)).rejects.toThrow(
+			/internal invariant violated/i
+		);
+	});
 });
 
 // ── cross-actor authorization (cairn-idgc) ───────────────────────────────────
