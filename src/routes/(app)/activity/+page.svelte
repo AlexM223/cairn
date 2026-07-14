@@ -22,7 +22,10 @@
 	let { data } = $props();
 
 	// With the explorer feature flag off, /explorer/** 403s server-side — so
-	// each link below degrades to a non-interactive summary instead of a dead link.
+	// block links below degrade to a non-interactive summary instead of a dead
+	// link. Tx links are the one exception (cairn-5yz3.3): /explorer/tx/[txid]
+	// is exempt from the flag (it's tx detail, not chain browsing, and the
+	// only tx-detail surface in the app), so those always stay live links.
 	const explorerEnabled = $derived(data.flags?.explorer !== false);
 
 	// Server load provides the first paint; a manual/auto refresh replaces it.
@@ -348,12 +351,9 @@
 								<div class="meta">
 									<span>{metaFor(e)}</span>
 									{#if txid(e)}
-										<svelte:element
-											this={explorerEnabled ? 'a' : 'span'}
-											class="mono link"
-											href={explorerEnabled ? `/explorer/tx/${txid(e)}` : undefined}
-											>{truncateMiddle(txid(e)!, 6, 6)}</svelte:element
-										>
+										<a class="mono link" href={`/explorer/tx/${txid(e)}`}>
+											{truncateMiddle(txid(e)!, 6, 6)}
+										</a>
 										<CopyText value={txid(e)!} display="copy" mono={false} />
 									{:else if height(e)}
 										<svelte:element

@@ -113,18 +113,20 @@
 	// A notification's deep link: an explicit detail.link wins (that's what
 	// notify(payload.link) stores), otherwise fall back to a txid → explorer link
 	// like the activity page does. Only same-origin relative paths are honoured.
-	// With the explorer feature flag off, /explorer/** 403s server-side, so any
-	// link that would land there is suppressed and the row renders as plain,
-	// non-interactive text instead (see the {#if href} branch below).
+	// With the explorer feature flag off, /explorer/** 403s server-side EXCEPT
+	// /explorer/tx/[txid] (cairn-5yz3.3 — tx detail is exempt from the flag, it's
+	// not chain browsing, and it's the only tx-detail surface in the app). So
+	// only non-tx explorer links (block/address/mempool) get suppressed here.
 	function linkFor(n: Notification): string | null {
 		const explorerEnabled = page.data.flags?.explorer !== false;
 		const raw = n.detail?.link;
 		if (typeof raw === 'string' && raw.startsWith('/')) {
-			if (!explorerEnabled && raw.startsWith('/explorer/')) return null;
+			const isTxLink = /^\/explorer\/tx\//.test(raw);
+			if (!explorerEnabled && raw.startsWith('/explorer/') && !isTxLink) return null;
 			return raw;
 		}
 		const txid = n.detail?.txid;
-		if (typeof txid === 'string') return explorerEnabled ? `/explorer/tx/${txid}` : null;
+		if (typeof txid === 'string') return `/explorer/tx/${txid}`;
 		return null;
 	}
 

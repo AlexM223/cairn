@@ -2,7 +2,6 @@
 	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
 	import Amount from '$lib/components/Amount.svelte';
 	import { timeAgo } from '$lib/format';
-	import { page } from '$app/state';
 
 	type ActivityItem = {
 		key: string;
@@ -16,9 +15,10 @@
 	};
 
 	let { items }: { items: ActivityItem[] } = $props();
-	// With the explorer feature flag off, /explorer/** 403s server-side — so
-	// each row degrades to a non-interactive summary instead of a dead link.
-	const explorerEnabled = $derived(page.data.flags?.explorer !== false);
+	// /explorer/tx/[txid] is exempt from the `explorer` feature flag
+	// (cairn-5yz3.3) — it's tx *detail*, not chain browsing, and it's the only
+	// tx-detail surface in the app. So every row always links there, flag on
+	// or off; there's no dead-end degrade to a plain div anymore.
 </script>
 
 {#if items.length === 0}
@@ -27,11 +27,7 @@
 	<ul class="list">
 		{#each items as item (item.key)}
 			<li>
-				<svelte:element
-					this={explorerEnabled ? 'a' : 'div'}
-					class="row"
-					href={explorerEnabled ? `/explorer/tx/${item.txid}` : undefined}
-				>
+				<a class="row" href={`/explorer/tx/${item.txid}`}>
 					<BurialRings
 						confirmations={item.time === null ? 0 : item.confirmations}
 						direction={item.direction}
@@ -54,7 +50,7 @@
 					</span>
 
 					<Amount sats={item.sats} size="row" direction={item.direction} sign />
-				</svelte:element>
+				</a>
 			</li>
 		{/each}
 	</ul>

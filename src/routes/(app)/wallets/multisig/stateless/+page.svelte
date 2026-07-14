@@ -879,11 +879,12 @@
 							<a href="/wallets/multisig/new">import the config as a multisig wallet</a>.
 						</p>
 						<div class="row step-actions" style="justify-content: center">
-							{#if data.flags?.explorer !== false}
-								<a class="btn btn-primary pill-lg" href={`/explorer/tx/${sentTxid}`}
-									>Watch it get buried</a
-								>
-							{/if}
+							<!-- /explorer/tx/[txid] is exempt from the explorer flag
+							     (cairn-5yz3.3 — tx detail, not chain browsing), so this
+							     link is always live. -->
+							<a class="btn btn-primary pill-lg" href={`/explorer/tx/${sentTxid}`}
+								>Watch it get buried</a
+							>
 							<button class="btn btn-secondary" onclick={startOver}>Start over</button>
 						</div>
 					</div>

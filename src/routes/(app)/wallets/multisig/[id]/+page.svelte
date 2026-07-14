@@ -771,13 +771,12 @@
 									<span class="hw-tx-meta">
 										{burialRingsLabel(conf)}
 										·
-										{#if data.flags?.explorer !== false}
-											<a href="/explorer/tx/{tx.txid}" class="mono hw-tx-link"
-												>{truncateMiddle(tx.txid, 8, 8)}</a
-											>
-										{:else}
-											<span class="mono hw-tx-link">{truncateMiddle(tx.txid, 8, 8)}</span>
-										{/if}
+										<!-- /explorer/tx/[txid] is exempt from the explorer flag
+										     (cairn-5yz3.3 — tx detail, not chain browsing), so this
+										     link is always live regardless of the flag. -->
+										<a href="/explorer/tx/{tx.txid}" class="mono hw-tx-link"
+											>{truncateMiddle(tx.txid, 8, 8)}</a
+										>
 										{#if tx.fee != null}
 											· network fee <Amount sats={tx.fee} size="inline" />
 										{/if}

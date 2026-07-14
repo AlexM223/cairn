@@ -30,8 +30,11 @@
 
 	let { data, form } = $props();
 
-	// With the explorer feature flag off, /explorer/** 403s server-side — so
-	// each link below degrades to a non-interactive summary instead of a dead link.
+	// With the explorer feature flag off, /explorer/** 403s server-side for
+	// chain-browsing routes (address/block/mempool) — those links below degrade
+	// to a non-interactive summary. Tx links are exempt from this flag
+	// (cairn-5yz3.3 — /explorer/tx/[txid] is tx detail, not browsing, and the
+	// only tx-detail surface in the app) so they're always live links now.
 	const explorerEnabled = $derived(data.flags?.explorer !== false);
 
 	// Stale-while-revalidate (cairn-2zxt): the scan/receive/tip/speed-up bundle now
@@ -874,10 +877,8 @@
 									</span>
 									<span class="hw-tx-meta">
 										{burialRingsLabel(conf)}
-										· <svelte:element
-											this={explorerEnabled ? 'a' : 'span'}
-											href={explorerEnabled ? `/explorer/tx/${tx.txid}` : undefined}
-											class="mono hw-tx-link">{truncateMiddle(tx.txid, 8, 8)}</svelte:element
+										· <a href={`/explorer/tx/${tx.txid}`} class="mono hw-tx-link"
+											>{truncateMiddle(tx.txid, 8, 8)}</a
 										>
 										{#if tx.fee != null}
 											· network fee <Amount sats={tx.fee} size="inline" />
@@ -1203,13 +1204,9 @@
 								{#if (tx.status === 'completed' || tx.status === 'superseded') && tx.txid}
 									<div class="saved-field">
 										<span class="saved-label">Transaction</span>
-										<svelte:element
-											this={explorerEnabled ? 'a' : 'span'}
-											href={explorerEnabled ? `/explorer/tx/${tx.txid}` : undefined}
-											class="mono"
-										>
+										<a href={`/explorer/tx/${tx.txid}`} class="mono">
 											{truncateMiddle(tx.txid, 10, 8)}
-										</svelte:element>
+										</a>
 									</div>
 									{#if tx.status === 'superseded'}
 										<span class="hint">Replaced by a fee-bumped transaction.</span>
