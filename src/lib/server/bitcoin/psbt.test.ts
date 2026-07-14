@@ -836,6 +836,103 @@ describe('fee-rate ceiling', () => {
 	});
 });
 
+describe('fractional sat/vB pricing (cairn-eacw.1)', () => {
+	// A single confirmed coin large enough that every build below picks exactly
+	// one input and keeps a change output — so the reported vsize is fixed at
+	// 11 (overhead) + 68 (1 p2wpkh input) + 31 (p2wpkh recipient) + 31 (p2wpkh
+	// change) = 141, making the expected fee purely a function of the rate.
+	const WHALE: SpendableUtxo[] = [
+		{ txid: 'cd'.repeat(32), vout: 0, value: 10_000_000, height: 800_000, address: RECEIVE_0, chain: 0, index: 0 }
+	];
+	const buildAt = (feeRate: number) =>
+		constructPsbt({ ...COMMON, utxos: WHALE, recipients: [{ address: RECIPIENT, amount: 30_000 }], feeRate });
+
+	it('prices 1.5 sat/vB at ceil(vsize*1.5), NOT the ceil-the-rate 2 sat/vB overpay', async () => {
+		// The pre-fix bug passed selectUTXO feePerByte: toBigInt(Math.ceil(1.5)) = 2,
+		// building at 2 sat/vB (282 sats) — overpaying vs both the request and the
+		// reported feeRate. The fix prices in fractional sat/vB via ceil(vsize*rate).
+		const draft = await buildAt(1.5);
+		expect(draft.vsize).toBe(141);
+		expect(draft.fee).toBe(Math.ceil(141 * 1.5)); // 212
+		expect(draft.fee).not.toBe(141 * 2); // 282 — the pre-fix ceil'd-rate overpay
+		// Reported rate round-trips to the request: round2(212/141) === 1.5.
+		expect(draft.feeRate).toBe(1.5);
+	});
+
+	it('pays exactly ceil(vsize*rate) for every fractional AND integer rate, always rounding UP', async () => {
+		// Rates >= 1 only — sub-1 rates are a separate, validation-gated concern
+		// (cairn-eacw.2, blocked on the node relay-floor probe).
+		for (const rate of [1, 1.1, 1.5, 2.7, 5, 20]) {
+			const draft = await buildAt(rate);
+			expect(draft.fee, `rate ${rate}`).toBe(Math.ceil(draft.vsize * rate));
+			// Round-up proven: effective sat/vB is never below the requested rate.
+			expect(draft.fee / draft.vsize, `rate ${rate} round-up`).toBeGreaterThanOrEqual(rate);
+		}
+	});
+
+	it('shares the multisig fee rule: single-sig now prices fee = ceil(vsize*rate)', async () => {
+		// multisigPsbt.ts always priced ceil(vsize*rate) (fraction-safe); this pins
+		// that the single-sig normal path now uses that identical rule. The
+		// multisig side is pinned in multisigPsbt.test.ts / sendBoundaryMatrix.test.ts.
+		for (const rate of [1.25, 3.33]) {
+			const draft = await buildAt(rate);
+			expect(draft.fee, `rate ${rate}`).toBe(Math.ceil(draft.vsize * rate));
+		}
+	});
+
+	it('leaves integer-rate pricing exactly where it was', async () => {
+		expect((await buildAt(1)).fee).toBe(141);
+		expect((await buildAt(5)).fee).toBe(705);
+		expect((await buildAt(20)).fee).toBe(2_820);
+	});
+
+	it('send-max prices a fractional rate correctly (regression pin — already fraction-safe)', async () => {
+		const draft = await constructPsbt({
+			...COMMON,
+			utxos: WHALE,
+			recipients: [{ address: RECIPIENT, amount: 'max' }],
+			feeRate: 1.5
+		});
+		// send-max vsize = 11 + 68 + 31 (single recipient, no change) = 110.
+		expect(draft.vsize).toBe(110);
+		expect(draft.fee).toBe(Math.ceil(110 * 1.5)); // 165
+		expect(draft.amount).toBe(10_000_000 - draft.fee);
+	});
+
+	it('exact-inputs (RBF) prices a fractional rate correctly (regression pin — already fraction-safe)', async () => {
+		const draft = await constructPsbt({
+			...COMMON,
+			utxos: WHALE,
+			recipients: [{ address: RECIPIENT, amount: 30_000 }],
+			feeRate: 1.5,
+			exactInputs: true
+		});
+		// exact-inputs always reserves a change slot: vsize = 141 as above.
+		expect(draft.vsize).toBe(141);
+		expect(draft.fee).toBe(Math.ceil(141 * 1.5)); // 212
+	});
+
+	it('folds a sub-dust remainder into the fee at a fractional rate (never mints a dust output)', async () => {
+		// Coin sized so the changeful build would leave a below-dust remainder:
+		// the path must go changeless and fold it into the fee. Fee then exceeds
+		// ceil(baseVsize*rate), so the effective rate only RISES — never under.
+		const feeRate = 1.5;
+		const amount = 30_000;
+		const baseVsize = 11 + 68 + 31; // 110, no change output
+		const changelessFee = Math.ceil(baseVsize * feeRate); // 165
+		const coin = amount + changelessFee + 200; // 200 < DUST(546) + change cost
+		const draft = await constructPsbt({
+			...COMMON,
+			utxos: [{ txid: 'ef'.repeat(32), vout: 0, value: coin, height: 800_000, address: RECEIVE_0, chain: 0, index: 0 }],
+			recipients: [{ address: RECIPIENT, amount }],
+			feeRate
+		});
+		expect(draft.change).toBeNull();
+		expect(draft.fee).toBe(coin - amount); // remainder folded into the fee
+		expect(draft.fee / draft.vsize).toBeGreaterThanOrEqual(feeRate); // still rounds UP
+	});
+});
+
 describe('segwit nonWitnessUtxo (fee-lying protection)', () => {
 	const WITH_RAW = { ...COMMON, utxos: REAL_UTXOS, fetchRawTx };
 

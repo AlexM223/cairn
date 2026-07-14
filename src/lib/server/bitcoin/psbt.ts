@@ -6,7 +6,7 @@
 // deliberately independent of Bitcoin Core's wallet RPCs, because the
 // default deployment has no Core node behind it.
 
-import { Transaction, selectUTXO, p2wpkh, Address, OutScript, Script, NETWORK } from '@scure/btc-signer';
+import { Transaction, p2wpkh, Address, OutScript, Script, NETWORK } from '@scure/btc-signer';
 import { base64 } from '@scure/base';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
 import { parseXpub, addressToScriptPubKey, isValidAddress } from './xpub';
@@ -672,7 +672,11 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 	const totalAmount = recipients.reduce((s, r) => s + r.amount, 0);
 
 	let tx: Transaction;
-	let fee: number;
+	// Absolute fee in whole sats. Every path assigns it before use (exactInputs
+	// unconditionally; the normal path via its funded-or-throw accumulation) —
+	// the 0 seed just satisfies definite-assignment across the selection loop,
+	// mirroring multisigPsbt.ts.
+	let fee = 0;
 	let chosen: SpendableUtxo[];
 	let changeExpected: boolean;
 
@@ -729,40 +733,69 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 		changeExpected = true;
 	} else {
 		// ----------------------------------------------- normal coin selection
-		// NOTE: btc-signer's `dust` option is NOT a sats threshold — passing 546
-		// there silently burns any change below ~18k sats into the fee. The
-		// library's default dust handling is correct; do not "tune" it.
-		const runSelection = (candidateInputs: typeof inputs) =>
-			selectUTXO(
-				candidateInputs as never,
-				recipients.map((r) => ({ address: r.address, amount: toBigInt(r.amount) })),
-				'default',
-				{
-					changeAddress: params.changeAddress,
-					feePerByte: toBigInt(Math.ceil(feeRate)),
-					bip69: true,
-					createTx: true,
-					network: NETWORK,
-					allowLegacyWitnessUtxo: true
-				}
-			);
+		// Largest-first accumulation priced in fractional sat/vB, mirroring
+		// multisigPsbt.ts's (already fraction-safe) normal path. Every absolute
+		// fee is Math.ceil(vsize * feeRate) whole sats, so a fractional requested
+		// rate (e.g. 1.5 sat/vB — accepted by the API today, walletApi.ts) prices
+		// correctly and always rounds UP (never under min-relay). This replaces
+		// @scure/btc-signer's selectUTXO, whose feePerByte is an integer-only
+		// bigint: it could only take Math.ceil(feeRate), silently rebuilding a
+		// 1.5 sat/vB send at 2 sat/vB and overpaying vs both the request and the
+		// reported ConstructedPsbt.feeRate (cairn-eacw.1). Selection reads
+		// witnessUtxo values (u.value) only, exactly as before — so it picks the
+		// same coins, just with correct fee arithmetic. (The old btc-signer
+		// `dust` caveat no longer applies: change/dust is handled explicitly
+		// below, folding a sub-dust remainder into the fee.)
+		const recipientsVsize = recipients.reduce((s, r) => s + outputVsize(r.address), 0);
+		const changeVsize = outputVsize(params.changeAddress);
+		const perInput = INPUT_VSIZE[scriptType];
 
-		// Prefer confirmed coins: try to fund the send from confirmed inputs alone
-		// first, and only reach for the wallet's own unconfirmed change (already
-		// the sole unconfirmed coins here — received-unconfirmed was excluded
-		// above) when confirmed coins can't cover the amount plus fee. `inputs` is
-		// 1:1 with `spendable`, so a positional filter yields the confirmed subset.
-		const hasUnconfirmed = spendable.some((u) => u.height <= 0);
-		const confirmedInputs = hasUnconfirmed
-			? inputs.filter((_, i) => spendable[i].height > 0)
-			: inputs;
-
-		let selection = confirmedInputs.length > 0 ? runSelection(confirmedInputs) : null;
-		if ((!selection || !selection.tx) && hasUnconfirmed) {
-			selection = runSelection(inputs);
+		// `inputs` is 1:1 with `spendable` (built in the loop above); after
+		// sorting, look each chosen coin's prepared input record back up by key.
+		const inputByKey = new Map<string, Record<string, unknown>>();
+		for (let i = 0; i < spendable.length; i++) {
+			inputByKey.set(`${spendable[i].txid}:${spendable[i].vout}`, inputs[i]);
 		}
 
-		if (!selection || !selection.tx) {
+		// Confirmed coins first (the wallet's own unconfirmed change — already the
+		// only unconfirmed coins here — is reached for only when confirmed can't
+		// cover the spend), then largest value first within each group. The sort
+		// is stable, so the low-mass tie-break order preferLowMassOrder applied to
+		// `spendable` above survives among equal-value coins.
+		const candidates = [...spendable].sort(
+			(a, b) => Number(b.height > 0) - Number(a.height > 0) || b.value - a.value
+		);
+
+		chosen = [];
+		let totalInSel = 0;
+		let funded = false;
+		let changeValueSel = 0;
+		let hasChangeSel = false;
+		for (const u of candidates) {
+			chosen.push(u);
+			totalInSel += u.value;
+			const baseVsize = TX_OVERHEAD_VSIZE + chosen.length * perInput + recipientsVsize;
+			const feeWithChange = Math.ceil((baseVsize + changeVsize) * feeRate);
+			// Keep the change output only when it clears the generic dust floor;
+			// the +1 guarantees a strictly-spendable remainder (matches the
+			// multisig path). Otherwise attempt a changeless spend and let a
+			// sub-dust remainder fall into the fee rather than mint an unspendable
+			// output.
+			if (totalInSel >= totalAmount + feeWithChange + DUST_SATS + 1) {
+				fee = feeWithChange;
+				changeValueSel = totalInSel - totalAmount - fee;
+				hasChangeSel = true;
+				funded = true;
+				break;
+			}
+			const feeWithout = Math.ceil(baseVsize * feeRate);
+			if (totalInSel >= totalAmount + feeWithout) {
+				fee = totalInSel - totalAmount;
+				funded = true;
+				break;
+			}
+		}
+		if (!funded) {
 			throw new PsbtError(
 				coinControl
 					? "The selected coins don't cover that amount plus the network fee — select more coins or lower the amount."
@@ -771,34 +804,38 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 			);
 		}
 
-		tx = selection.tx;
-		fee = Number(selection.fee);
-
-		// Recover which of our UTXOs the selector chose, by (txid, vout).
-		chosen = [];
-		for (let i = 0; i < tx.inputsLength; i++) {
-			const inp = tx.getInput(i);
-			const txidHex = inp.txid ? bytesToHex(inp.txid) : null;
-			const match = spendable.find((u) => u.txid === txidHex && u.vout === inp.index);
-			if (match) chosen.push(match);
-		}
-		changeExpected = selection.change === true;
-
-		// THE FIX: only now — knowing exactly which coins selectUTXO picked —
-		// fetch their previous transactions, concurrently. btc-signer already
-		// built `tx` from the witnessUtxo-only candidate inputs during
-		// selection, so wire nonWitnessUtxo in with updateInput now that the
-		// winners are known (mirrors how the change output's bip32Derivation is
-		// patched in below).
+		// Only now — knowing exactly which coins won — fetch their previous
+		// transactions concurrently (deferred segwit nonWitnessUtxo; see
+		// fetchChosenPrevTxs). Selection above never needed them.
 		await fetchChosenPrevTxs(chosen);
-		if (deferredNonWitness) {
-			for (let i = 0; i < tx.inputsLength; i++) {
-				const inp = tx.getInput(i);
-				const txidHex = inp.txid ? bytesToHex(inp.txid) : null;
-				const raw = txidHex ? prevTxCache.get(txidHex) : undefined;
-				if (raw) tx.updateInput(i, { nonWitnessUtxo: raw });
+
+		// Deterministic BIP-69 input order (txid asc, vout asc), matching the
+		// exact-inputs and multisig builders.
+		chosen.sort((a, b) => a.txid.localeCompare(b.txid) || a.vout - b.vout);
+
+		tx = new Transaction();
+		for (const u of chosen) {
+			const input = inputByKey.get(`${u.txid}:${u.vout}`)!;
+			if (deferredNonWitness) {
+				const raw = prevTxCache.get(u.txid);
+				if (raw) input.nonWitnessUtxo = raw;
 			}
+			tx.addInput(input);
 		}
+
+		// BIP-69 output order: value asc, scriptPubKey hex tiebreak.
+		const outs = [
+			...recipients.map((r) => ({ address: r.address, value: r.amount })),
+			...(hasChangeSel ? [{ address: params.changeAddress, value: changeValueSel }] : [])
+		].sort(
+			(a, b) =>
+				a.value - b.value ||
+				bytesToHex(addressToScriptPubKey(a.address)).localeCompare(
+					bytesToHex(addressToScriptPubKey(b.address))
+				)
+		);
+		for (const o of outs) tx.addOutputAddress(o.address, toBigInt(o.value), NETWORK);
+		changeExpected = hasChangeSel;
 	}
 
 	const totalIn = chosen.reduce((s, u) => s + u.value, 0);
