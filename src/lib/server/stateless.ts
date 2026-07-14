@@ -27,7 +27,13 @@
 // explicitly stateless tool; anyone who wants claim semantics wants a
 // persistent multisig.
 
-import { parseDescriptor, multisigTestAddress, multisigToDescriptor, MultisigError } from './bitcoin/multisig';
+import {
+	parseDescriptor,
+	multisigTestAddress,
+	multisigToDescriptor,
+	validateMultisigKeyPaths,
+	MultisigError
+} from './bitcoin/multisig';
 import {
 	containsPrivateKeyMaterial,
 	parseCaravanImport,
@@ -90,6 +96,17 @@ export function parseStatelessSource(source: string): { config: StatelessConfig;
 		parsed = parseCaravanImport(text);
 	} else {
 		const desc = parseDescriptor(text);
+		// Path hygiene gate (cairn-e8de): parseDescriptor/resolveMultisig only
+		// check threshold bounds, key-count and duplicate/parseable xpubs — the
+		// same acceptance-agnostic gate every descriptor gets. Cosigner path
+		// hygiene (hardened bits, purpose 45'/48', coin type, BIP-48 script-type
+		// suffix) is what catches a wrong-script-type or malformed cosigner path,
+		// and every other ingestion route (wizard create, Caravan-JSON import)
+		// already runs it. Import mode, matching parseCaravanImport: an unknown
+		// "1'" legacy-P2SH label warns instead of hard-stopping, since a bare
+		// descriptor pasted here is exactly the restore-an-existing-wallet case
+		// import mode exists for — not the create-a-new-wallet case.
+		const warnings = validateMultisigKeyPaths(desc, { mode: 'import' });
 		parsed = {
 			name: '',
 			scriptType: (desc.scriptType ?? 'p2wsh') as MultisigScriptType,
@@ -103,10 +120,7 @@ export function parseStatelessSource(source: string): { config: StatelessConfig;
 			})),
 			// A bare descriptor carries no receive cursor.
 			startingAddressIndex: 0,
-			// This branch never calls validateMultisigKeyPaths (pre-existing —
-			// stateless descriptor import has always been acceptance-agnostic here,
-			// unlike the persistent import routes), so there's nothing to collect.
-			warnings: []
+			warnings
 		};
 	}
 

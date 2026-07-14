@@ -1184,12 +1184,15 @@ actually **hardened** — the coin/account/script-type levels are no longer
 checked by numeric value alone, so `m/48'/0/0'/2'` (unhardened coin type) or
 `m/48'/0'/0'/2` (unhardened script-type) are rejected, not waved through
 (**`cairn-ryjc`, fixed** — was a value-only `unhardened()` check that every
-fully-hardened acceptance test happened to miss). One known gap in the gate
-itself remains open: **`cairn-e8de`** — `stateless.ts`'s descriptor-import
-escape hatch never calls `validateMultisigKeyPaths` at all, so a malformed or
-wrong-script-type cosigner path pasted through that path is not caught at
-ingestion the way the wizard and Caravan-JSON import paths are. Don't
-describe this gate as airtight when reviewing or extending it.
+fully-hardened acceptance test happened to miss). A former gap in the gate,
+**`cairn-e8de`** — `stateless.ts`'s descriptor-import escape hatch never
+called `validateMultisigKeyPaths` at all, so a malformed or wrong-script-type
+cosigner path pasted through that path wasn't caught at ingestion the way the
+wizard and Caravan-JSON import paths were — is now **fixed**:
+`parseStatelessSource`'s bare-descriptor branch runs
+`validateMultisigKeyPaths(desc, { mode: 'import' })` right after
+`parseDescriptor`, same import-mode rules as `parseCaravanImport` (a
+historical legacy-P2SH `1'`-suffix label warns instead of hard-stopping).
 
 Beyond the path gate, `createMultisig` (`wallets/multisig.ts`) applies two
 more create-time guards and one persistence guarantee: it rejects a

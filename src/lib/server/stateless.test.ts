@@ -191,6 +191,27 @@ describe('parseStatelessSource', () => {
 		);
 	});
 
+	it('rejects a descriptor cosigner key on a single-sig derivation path (cairn-e8de)', () => {
+		// The Caravan/wizard import paths run validateMultisigKeyPaths; the bare
+		// descriptor branch used to skip it entirely, so a wrong-purpose cosigner
+		// path (here BIP-84 native-segwit single-sig instead of BIP-48 multisig)
+		// slipped through ingestion unnoticed. It must now be caught up front,
+		// same as every other ingestion route.
+		const bad = `wsh(sortedmulti(2,${SIGNERS.map((s, i) => {
+			const path = i === 0 ? "84h/0h/0h" : "48h/0h/0h/2h";
+			return `[${s.fingerprint}/${path}]${s.xpub}/0/*`;
+		}).join(',')}))`;
+		expect(() => parseStatelessSource(bad)).toThrow(/multisig cosigner key must come from a multisig path/i);
+	});
+
+	it('accepts a legacy-P2SH descriptor cosigner labeled with the historical 1\' suffix, with a warning (import mode)', () => {
+		// parseCaravanImport treats this the same way (cairn-acft): import mode
+		// warns instead of hard-stopping on the historical label. The descriptor
+		// branch must apply the SAME import-mode rule, not create-mode's hard stop.
+		const good = `sh(sortedmulti(2,${SIGNERS.map((s) => `[${s.fingerprint}/48h/0h/0h/1h]${s.xpub}/0/*`).join(',')}))`;
+		expect(() => parseStatelessSource(good)).not.toThrow();
+	});
+
 	it('refuses private key material loudly, before any parsing', () => {
 		const xprv =
 			'xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi';
