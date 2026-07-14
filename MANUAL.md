@@ -32,7 +32,7 @@ Two things to know before you rely on it:
    any claim in this document about what's committed vs. in-flight.
 
 This document is **Part I** — architecture, code, and behavior as they exist
-in the tree today — followed by **Part II: QA Test Runbook** (§16–21), a set
+in the tree today — followed by **Part II: QA Test Runbook** (§16–22), a set
 of executable test scenarios built on top of this baseline for a human
 tester or an agent driving the GUI. Part II lives immediately after §15
 ("Gotchas, Contradictions & Stale Docs") below, and several of its scenarios
@@ -4627,6 +4627,51 @@ distinct unhealthy states must never be confused — do this alongside 16.6's DB
   `isChainNeverConfigured()`'s two independent conditions, not by whether the chain currently
   answers.
 
+### 20.16 Umbrel Bitcoin Core detect-and-connect card (Wave B) `[none]`
+Covers `umbrelCoreProbe.ts` (Wave B Unit B1) and the assisted-connect card in
+`/admin/settings` (Unit B3, `docs/UMBREL-AUTOCONNECT-WAVE-B-DESIGN.md`,
+`cairn-6uok`/`cairn-3p9z` fixed). Distinct from 20.14 — that scenario is the Electrum
+auto-*connect* probe; this one is Core RPC detect-and-*surface only* (bitcoind's RPC
+always needs a password Cairn is never handed automatically, so it can't silently
+auto-connect the way Electrum does).
+1. Boot with `CAIRN_PLATFORM=umbrel` and something answering at the well-known
+   Umbrel bitcoind address (`10.21.21.8:8332`) — the regtest stack's `bitcoind`
+   re-addressed/port-forwarded there works, or use a real Umbrel target (16.3).
+   With `core_rpc_url` still unset, load `/admin/settings`.
+   - **Expected:** a "Bitcoin Core detected on your Umbrel" card renders (`settings.
+     core_rpc_detected === 'umbrel' && !coreRpcConfigured()`), with the RPC address/
+     username already filled in (`UMBREL_CORE_RPC_URL`/`UMBREL_CORE_RPC_USER`,
+     hidden fields) and just a password field to fill in.
+2. Paste the correct RPC password and click **Connect**.
+   - **Expected:** posts to the same `save` action with a hidden
+     `coreRpcAssisted=umbrel` marker, which runs `testCoreRpc()` **before**
+     persisting anything (fails closed on a bad password — `form.coreRpcTest.ok
+     === false` renders inline, nothing is saved) and, on success, persists
+     `core_rpc_url/user/pass` and stamps `core_rpc_provisioned_by =
+     'umbrel-detect'`. The card is replaced by "Connected to your Umbrel's Bitcoin
+     Core". Verify `connection_mode` (the Electrum toggle) is unchanged by this —
+     the assisted-connect branch returns before reading it, unlike the old
+     `useDetectedCoreNode()` workaround it replaced.
+3. Reset (`core_rpc_url` unset again, `core_rpc_detected='umbrel'`) and this time
+   click **Dismiss** instead of connecting.
+   - **Expected:** posts to `?/dismissCoreDetection`, writes `core_rpc_detected =
+     'dismissed'` — a purely cosmetic marker never consulted by `getChainConfig()`
+     — and the card stops rendering. Nothing about Core RPC connectivity itself
+     changes; this only silences the nudge (covers the design doc's "Core
+     uninstalled later" stale-banner case).
+4. With `core_rpc_url` already configured (from step 2, or configured any other
+   way), reload `/admin/settings`.
+   - **Expected:** the Bitcoin Core RPC subgroup renders unconditionally
+     regardless of `connectionMode` (public or custom) — `cairn-3p9z` fixed the
+     prior bug where these fields were only reachable after flipping to custom
+     Electrum mode. Submitting the general Electrum-mode fields alongside
+     unrelated Core RPC fields still persists both correctly per the "field
+     absent = leave unchanged, present = write/clear" contract (`cairn-6uok`).
+- **PASS:** card appears only when genuinely detected-and-unconfigured; Connect
+  fails closed on a bad password and never half-persists; Dismiss is purely
+  cosmetic; Connect/Dismiss never mutate `connection_mode`; Core RPC fields are
+  reachable and function the same in both public and custom Electrum modes.
+
 ---
 
 ## 21. UX evaluation checklist — new-Umbrel-user journey
@@ -4741,6 +4786,400 @@ backups, clear house-standard errors, **never red for routine states**, working 
 
 ---
 
+## 22. Missing-scenario coverage: backup/restore, notifications, flags, auth, explorer, batch send, deletion
+
+Gaps identified by the 2026-07-12 beads audit (`cairn-tx1w`): Part II had no scenarios
+for these feature areas even though most of them have shipped security fixes worth
+regression-guarding. Several sub-scenarios below are deliberately **verify current
+behavior** checks tied to a still-**open** bead (`cairn-hla1`, `cairn-vop2`) — don't
+record the documented gap as a surprise finding, and re-check against `git log`/`br
+show` since, like the rest of Part II, this goes stale the moment a fix lands.
+
+### 22.1 Admin instance backup/restore round-trip `[none]`
+Preconditions: an admin account; at least one single-sig wallet and one multisig
+wallet shared with a cosigner (§17) so `multisig_shares` has a row to round-trip.
+1. `/admin/backup` → export: enter and confirm a passphrase (≥8 chars), click Export.
+   - **Expected:** an AES-256-GCM-encrypted file downloads; the envelope and inner
+     payload both stamp the current `VERSION`.
+2. Restore that file (same instance, or a fresh install for the disaster-recovery
+   case) via `/admin/backup`'s restore form with the same passphrase.
+   - **Expected:** an inline `RestoreSummary` panel shows users/wallets/multisigs
+     counts plus `sharesRestored` (recreated `multisig_shares` rows, remapped
+     `multisig_id`/`owner_id`/`shared_with_id`, plus `multisig_keys.assigned_user_id`
+     — `cairn-s6x3`). Any user row that didn't already exist gets exactly one
+     single-use recovery code shown **once** in the panel (`reclaimCodes`) — restored
+     accounts carry no credentials by design, so this code is genuinely their only
+     way back in short of re-registering.
+   - **PASS (round-trip):** every wallet/multisig/share present before export is
+     present after restore; each `reclaimCodes` entry logs the reclaimed account in.
+3. Include (or hand-craft) a backup whose settings contain
+   `registration_mode`/`webhook_allow_private_targets`/`instance_mode`/`auth_mode`/
+   `electrum_tls_insecure`, then restore it onto an instance with different values
+   for those keys.
+   - **Expected:** none of the five is adopted (`RESTORABLE_SETTING_KEYS`
+     default-deny allowlist, `cairn-0dg4`) — they're listed in
+     `RestoreSummary.settingsSkipped`, shown in the restore-summary panel, and bump
+     the `admin_restore` notification to `warn`.
+   - **PASS (posture withheld):** the instance's own security-posture settings are
+     byte-for-byte unchanged after restore; the panel names exactly what was
+     withheld.
+4. Restore a backup whose `version` field is not a number, or exceeds the current
+   `VERSION` constant.
+   - **Expected:** rejected up front — "This backup was made by a newer version of
+     Heartwood and cannot be restored here." (`cairn-lka5`) — no DB writes happen.
+5. Restore a backup containing a user row with `is_admin: 1` for an
+   otherwise-nonexistent email.
+   - **Expected:** the imported row is force-downgraded to `is_admin = 0`
+     unconditionally (`backup.ts`, `SECURITY (cairn-cpb5)` — every imported account
+     is forced non-admin, no exceptions), counted in `RestoreSummary.adminDowngraded`,
+     and surfaced in the `admin/restore` API response's message text ("N account(s)
+     marked admin in the backup were imported as normal accounts — re-promote them
+     yourself if that was intended.") A separate re-promotion by the admin (via
+     `/admin/users`) is required — restore itself never grants admin.
+- **Cleanup:** on a shared/multi-tester box, delete the imported test accounts and
+  re-run §16.6/§16.7 before the next tester uses it.
+
+### 22.2 Notification channels beyond tx-events `[none]`
+Covers `/settings/notifications` (all five external channels, quiet hours) and the
+`security_*`/`admin_*` event types, none of which had a scenario before this section
+— only tx-event notifications (§20.9) and channel-visibility parity (Part I §8) did.
+1. Configure and **Test** each channel in turn: email (personal SMTP or instance
+   fallback), Telegram (`chatId`), ntfy (`server`+`topic`+ optional access token),
+   Nostr (`recipientPubkey` + relay list), webhook (`url` + optional HMAC secret).
+   - **Expected:** each `Test` button is disabled until `configured` is true for that
+     channel; a successful test does not require saving first (it round-trips
+     current form values); a failing test (bad URL, unreachable relay, SSRF-guarded
+     private-target URL for webhook/ntfy — `ssrf.ts`) surfaces a specific reason
+     inline, not a generic failure.
+2. Reload the page after configuring a secret-bearing channel (webhook secret, ntfy
+   access token, personal SMTP password).
+   - **Expected:** the secret field renders blank (never echoed back), but
+     `hasSecret`/`hasAccessToken`/`smtp.hasPass` reflect that one is stored — same
+     redaction contract `notifyConfig.test.ts` proves for every `ConfigurableChannel`
+     (`cairn-sask`, closed) and that `getPublicInstanceNotificationSettings` proves
+     for the instance-level `smtp_pass`/`telegram_bot_token`.
+3. Enable **Quiet hours** with a start/end window and a timezone; leave "Still
+   deliver urgent security alerts during quiet hours" unchecked, then trigger a
+   routine notification (e.g. `tx_confirmed`) inside the window and a
+   `security_failed_login`/`security_new_device` event inside the same window.
+   - **Expected:** the routine notification is suppressed/deferred by quiet hours;
+     the security event's behavior should match the `urgentOverride` toggle state —
+     verify current behavior for exactly which event types the override treats as
+     "urgent" (the registry is `NOTIFICATION_EVENT_TYPES`'s `security_*` group plus
+     `admin_*`) since this manual has not previously verified that boundary
+     end-to-end.
+4. Trigger each of `security_failed_login` (a wrong password), `security_new_passkey`
+   (register a passkey), `security_password_changed`, and `security_new_device`
+   (sign in from an unrecognized fingerprint) as a non-admin user, and
+   `admin_new_signup`/`admin_invite_used`/`admin_restore`/`admin_server_health`/
+   `admin_user_disabled`/`admin_settings_changed`/`admin_recovery_code_minted` as an
+   admin action.
+   - **Expected:** each fires exactly once, routes per `notification_preferences`
+     (or `DEFAULT_PREFERENCES[eventType]` when unset), and reads in plain language —
+     no raw internals leaked (per the UX philosophy, §21.7).
+- **PASS:** all five channels configure/test/redact correctly; quiet hours suppress
+  routine notifications in-window; every event type in this scenario fires exactly
+  once with the correct channel routing.
+
+### 22.3 Feature-flag admin flow `[none]`
+Exercises the full admin flag lifecycle, not just server-side enforcement (already
+covered in Part I §8). All three UI-parity bugs found in the 2026-07-06 browser pass
+(`cairn-8dup`, `cairn-1x3w`, `cairn-jyh7`) are closed — this scenario is the
+regression guard for their fixes, run against current HEAD.
+1. As admin, `/admin/feature-flags` → toggle `csv_export` off globally.
+   - **Expected:** the row's switch flips server-authoritatively (no optimistic
+     flip — a re-render confirms the persisted state), and its "N user overrides"
+     badge (if any) only links to `/admin/users` when `instanceMode === 'team'`
+     (`cairn-369e`) — plain text in solo mode.
+2. As a non-admin user, open a wallet detail page and the multisig-create card on
+   `/wallets/new`.
+   - **Expected:** the CSV export control renders a greyed `FeatureDisabled` chip
+     ("disabled by your administrator"), not a silently vanished button
+     (`cairn-8dup`, `FeatureDisabled.svelte`).
+3. Disable `coin_control` globally, then open that user's `/wallets/{id}/send`.
+   - **Expected:** the manual UTXO-selection UI is gated behind
+     `data.flags.coin_control` with a `FeatureDisabled` note, selection stays empty
+     (falls back to automatic coin selection) — not still fully interactive
+     (`cairn-jyh7`, fixed).
+4. With `coin_control` still off, attempt to build a send anyway (bypassing the UI
+   gate via a direct API call, or by racing a flag flip mid-session).
+   - **Expected:** the server's `requireFeature()` 403s with the real reason
+     ("Coin control has been disabled by your administrator"), and the client
+     build-error handler shows that exact message — it reads `body.error ?? body.
+     message`, matching `requireFeature`'s `error(403, def.userMessage)` JSON shape
+     (`cairn-1x3w`, fixed; previously only `body.error` was read and the real
+     reason was swallowed by the generic fallback).
+5. Set a **per-user override** for one flag from `/admin/users/[id]` (opposite of
+   the global default), confirming solo-vs-team gating: with `instanceMode ===
+   'solo'`, `/admin/users` 404s but a direct per-user override set before the switch
+   to solo still resolves correctly for that user (§7's "toggling back to solo must
+   not silently revoke access already granted" — verify the *reverse* direction here:
+   an override survives the mode toggle either way).
+- **PASS:** every disabled flag with a UI surface shows an explanatory `FeatureDisabled`
+  chip, never a silent disappearance; server 403 reasons reach the user unmangled;
+  per-user overrides persist correctly across solo/team toggles.
+
+### 22.4 Auth beyond password happy-path `[none]`
+Extends §16.6 (which only covers signup/login happy-path) — passkeys, recovery,
+rate limiting, device/session revoke, and API tokens all lacked scenarios.
+1. **Passkey add + login.** From `/settings`, register a passkey (WebAuthn ceremony)
+   on an account that already has a password. Sign out, sign back in using only the
+   passkey.
+   - **Expected:** both credentials work independently; `security_new_passkey`
+     fires on registration. Attempt to delete the account's only *remaining*
+     passkey on a password-less account.
+   - **Expected:** refused — `deleteCredential()` throws `AuthError('last_passkey')`
+     (§7) since passkey-only recovery is by re-registering a new account, not
+     password reset.
+2. **Recovery phrase + codes.** As the forced-recovery admin (or any user who
+   navigates to `/recovery-setup`), generate the 12-word recovery phrase (write-it-
+   down gate before advancing) then the 8 one-time recovery codes (download +
+   copy-all).
+   - **Expected:** phrase/codes are generated **once** per page load (reload
+     discards and regenerates — the plaintext is never persisted, only a hashed
+     form); each redeemed code is single-use (`used_at` marks it spent) and the
+     phrase is reusable. Confirm the copy is explicit that this is a **login**
+     recovery mechanism, not a bitcoin-key backup (recovery.ts's core invariant).
+3. **Rate limiting.** Attempt 6 failed logins for one email inside 15 minutes.
+   - **Expected:** the 6th attempt (over `loginEmail = 5`) is throttled with a
+     `retryAfter` seconds figure, independent of the looser per-IP bucket
+     (`loginIp = 20`). Also attempt 11 invalid invite codes from one IP inside 15
+     minutes (`invitesIp = 10`).
+   - **Expected:** throttled past the 10th. All three buckets are in-process memory
+     (a server restart clears them — acceptable per `rateLimit.ts`'s own doc
+     comment).
+4. **Device/session revoke.** From `/settings/devices`, revoke a *different*
+   session (open the app in a second browser/profile first) and forget a
+   remembered device.
+   - **Expected:** the revoked session's cookie stops working on its next request;
+     attempting to revoke your **own current** session is refused client-side
+     ("This is your current session — use Sign out instead," not a silent self-
+     lockout). Forgetting a device doesn't sign it out — it just means the next
+     sign-in from that fingerprint re-triggers a `security_new_device` alert.
+5. **API tokens.** From `/settings/tokens`, create a token (optionally with an
+   expiry, 1–3650 days), copy the shown value once, then use it as
+   `Authorization: Bearer cairn_...` against a `GET` API route.
+   - **Expected:** the raw value is shown exactly once (`form.created`); the stored
+     row only ever holds `hashToken()`'s SHA-256 hex, mirroring session storage.
+     Revoke the token, then repeat the same authenticated request.
+   - **Expected:** the revoked token is rejected; hitting the token cap
+     (`MAX_TOKENS_PER_USER = 25`) refuses new-token creation with a clear message
+     rather than a raw DB constraint error. Also send several requests with a
+     **bad** Bearer token from one IP and confirm it throttles via the same
+     fixed-window scheme as login (`apiTokens.ts`'s bearer-throttle mirror of
+     `rateLimit.ts`).
+6. **Admin-minted recovery code.** As admin, for a user with zero credentials
+   (`needsRecoveryCode`, e.g. a restored account — see 22.1), mint a recovery code
+   from `/admin/users`.
+   - **Expected:** shown once, keyed by user id, not persisted client-side beyond
+     the page's lifetime; `admin_recovery_code_minted` fires.
+- **PASS:** every sub-scenario's *Expected* holds; no path silently locks a user out
+  or leaks a secret on reload.
+
+### 22.5 Explorer as a feature — general navigation `[none]`
+Complements the explorer *degradation* scenarios (§20.4, §15 appendix's Esplora-
+removal notes) with a plain happy-path navigation sweep — no prior scenario walks
+the explorer as an ordinary feature with a healthy Electrum+Core backend.
+1. From `/explorer`, follow the landing page's recent-block list into
+   `/explorer/block/[id]` (by height), then a transaction row into
+   `/explorer/tx/[txid]`, then a spent/received address into
+   `/explorer/address/[address]`.
+   - **Expected:** each page renders its hero details plus the reciprocal
+     cross-links (tx → its block via block-context rail, block → its tx list,
+     address → its tx history) without a full reload; back-navigation matches the
+     §20.10 back-button sweep (lands on `/explorer`, not a loop).
+2. Use the explorer search (`MobileTopBar` search icon / desktop search field) with
+   a txid, a block height, a block hash, and an address in turn.
+   - **Expected:** each resolves to the correct detail page; an invalid/garbage
+     query shows a friendly "not found," not a raw error or blank page.
+3. Visit `/explorer/mempool` and `/explorer/mempool/blocks`, and `/explorer/
+   difficulty`.
+   - **Expected:** mempool summary and projected-block view render (Core-gated per
+     §15 appendix when Core is down — verify the healthy-backend case here);
+     difficulty page shows current/historical difficulty without a Core
+     dependency.
+4. With the `explorer` feature flag off (fresh-install default per
+   `explorerDefaultMigration.ts`), check every non-tx explorer link app-wide
+   (dashboard `RecentActivity`, `/activity`, wallet-detail rows, post-broadcast
+   pages).
+   - **Expected:** those links degrade to plain non-interactive text (`svelte:
+     element`), **except** tx-detail links, which remain live `<a href="/explorer/
+     tx/…">` unconditionally — the app's only tx-detail surface (`cairn-5yz3.3`).
+     `/explorer/tx/[txid]` itself is reachable directly even with the flag off
+     (`requireUser` only, no `requireFeature` on that one route id); every other
+     `/explorer/**` route still requires the flag server-side.
+- **PASS:** happy-path navigation and search all resolve correctly with cross-links
+  intact; the tx-link exemption is the only flag bypass — no other explorer surface
+  is reachable with `explorer` off.
+
+### 22.6 Batch sending (multiple recipients, one transaction) `[emulator]`
+Covers `cairn-6s6` (closed/shipped) — no scenario existed for the shipped feature.
+1. On `/wallets/{id}/send` (Create step), click **Add another recipient** twice to
+   get 3 recipient rows; fill each with a distinct address and amount.
+   - **Expected:** each row validates its own address/amount independently; the
+     unit-cycle/amount entry works per-row.
+2. With 2+ rows present, try to select **Everything** (send-max).
+   - **Expected:** send-max is single-recipient-only — adding a second row while
+     `amountMode === 'max'` resets it back to `'btc'` (`amountMode = 'btc'` on
+     `addRow()`), and the max toggle itself has no effect with `rows.length > 1`.
+3. Advance to Review with 3 recipients.
+   - **Expected:** the review step lists all 3 recipients (not collapsed to one),
+     shows the correct total across recipients, change is still labelled as change
+     (not a 4th recipient), and the hardware-signing device-screen summary shows
+     the first recipient plus "+N more recipients" rather than truncating silently.
+4. Sign (any device/emulator) and broadcast.
+   - **Expected:** all N outputs land in the broadcast transaction with the
+     correct amounts, plus change reconciling exactly against inputs − fees.
+5. RBF-bump the resulting batch transaction (§18.3).
+   - **Expected:** the bump preserves all original recipients' amounts, only the
+     fee (and change) changes — per `cairn-6s6`'s "batch RBF bumps supported and
+     tested" closure note.
+- **PASS:** N-recipient send builds, reviews, signs, and broadcasts correctly, with
+  send-max correctly refused alongside multiple recipients, and RBF on a batch tx
+  preserves every recipient's amount.
+
+### 22.7 CSV export `[none]`
+Covers `cairn-b1rg`/`cairn-mf68` (closed, same defect — CSV formula injection) and
+the `csv_export` flag's UI parity (`cairn-8dup`, closed) — neither had a runbook
+scenario.
+1. Label a transaction (via the tx-labels UI or `PUT /api/wallets/[id]/labels`)
+   with a value starting with `=`, `+`, `-`, `@`, `|`, a tab, or a CR — e.g.
+   `=HYPERLINK("http://evil","x")`. Export the wallet's history as CSV
+   (`GET /api/wallets/[id]/history.csv`, or the multisig equivalent).
+   - **Expected:** the Label cell in the exported CSV is prefixed with a leading
+     `'` (`neutralizeFormula()`), so opening it in Excel/Sheets/LibreOffice renders
+     literal text, not an executed formula. A cell that's a genuine number (e.g.
+     a negative BTC amount) is left untouched — verify the numeric `Amount`
+     columns are never accidentally quote-prefixed.
+2. Export a wallet's history with a mix of confirmed and unconfirmed transactions,
+   and at least one transaction whose counterparty-address lookup fails
+   transiently.
+   - **Expected:** unconfirmed rows show `Pending` in the Date column (not a bad
+     date); a failed counterparty lookup leaves the Address cell blank but still
+     reports everything derivable from the row itself (txid/height/delta/fee) —
+     degrades gracefully rather than aborting the whole export.
+3. As admin, disable the `csv_export` flag globally, then reload a wallet detail
+   page as a non-admin user.
+   - **Expected:** the CSV export link/button renders as a `FeatureDisabled` chip
+     ("disabled by your administrator"), not a silently missing control
+     (`cairn-8dup`, fixed) — same pattern as `wallet_config_export`'s links on the
+     same page.
+- **PASS:** formula-leading labels are neutralized in the exported CSV without
+  corrupting numeric columns; export degrades gracefully on a partial lookup
+  failure; the flag-off state shows an explanatory chip, not a vanished control.
+
+### 22.8 Stateless multisig route (`/wallets/multisig/stateless`) `[none]`
+Covers the Caravan-compatible, nothing-persisted-server-side escape hatch — no
+scenario existed despite two related beads (`cairn-e8de` closed, `cairn-hla1` open).
+1. Confirm discoverability first: search the app for any inbound link to
+   `/wallets/multisig/stateless` (multisig hand-off page, footer, docs link).
+   - **Expected-fail / verify current behavior (`cairn-hla1`, open):** as of this
+     writing there is **no** inbound link anywhere in the app — the route is only
+     reachable by typing the URL directly. Don't record this as a new finding on
+     its own; it's the documented open gap. Re-check `cairn-hla1`'s status before
+     assuming it's still true.
+2. Paste a Caravan-format JSON wallet config (or a bare output descriptor) into the
+   Load phase.
+   - **Expected:** balance + addresses scan from the pasted config alone, nothing
+     server-side is created; a malformed/wrong-script-type cosigner path in a
+     **bare descriptor** is now rejected at ingestion — `parseStatelessSource`'s
+     descriptor branch calls `validateMultisigKeyPaths(desc, {mode:'import'})`
+     right after parsing (`cairn-e8de`, fixed), matching the rules
+     `parseCaravanImport` already applied (e.g. a legacy P2SH `1'`-suffix label
+     warns rather than hard-stopping; a single-sig BIP-84 path pasted in as a
+     cosigner path is rejected).
+3. Build a send (Load → Build → Sign phases), reload the page mid-Build.
+   - **Expected:** the config, scan, in-progress PSBT, and signing progress survive
+     the reload via `sessionStorage` (mirrors Caravan's own persistence model);
+     closing the tab entirely discards it — nothing here is DB-backed.
+4. Sign with each available stateless signer path (QR/BBQr, Trezor, Ledger's
+   on-device BIP-388 re-registration, File) and combine via `/api/stateless/
+   combine`.
+   - **Expected:** each signer works without any persisted multisig row; the
+     combine step produces the same finalized PSBT/broadcast result as the
+     persistent multisig flow (§17.3) for an equivalent quorum.
+- **PASS:** steps 2-4 all succeed with zero server-side persistence; step 1's
+  orphaned-route gap is recorded as the known open item, not a new bug.
+
+### 22.9 Labels & address book `[none]`
+No scenario previously exercised per-transaction labels or the saved-address book
+directly (only referenced in passing via the CSV-export and flag-parity notes).
+1. Label a transaction from a wallet-detail history row (`PUT /api/wallets/[id]/
+   labels` or the multisig equivalent `/api/wallets/multisig/[id]/address-labels`
+   family).
+   - **Expected:** the label persists (60-char cap, per `saveAddress`'s equivalent
+     bound on the address book — verify the actual per-field length caps in each
+     route) and appears consistently in the history list and CSV export (§22.7).
+2. On `/wallets/{id}/send`, type a previously-used address into the recipient
+   field.
+   - **Expected:** `RecipientCombobox` autocompletes from the saved address book
+     (`GET /api/address-book`); after a successful broadcast, the "save this
+     address" offer appears for a new, not-yet-saved recipient.
+3. As admin, disable the `address_book` flag for one user, then repeat step 2 as
+   that user.
+   - **Expected:** the send page's `load()` withholds `savedAddresses` entirely
+     (returns `[]`, doesn't call `listSavedAddresses`) rather than fetching the
+     full list and hiding it client-side — no autocomplete, no post-broadcast save
+     offer (`cairn-de7e`/`cairn-puyb`, fixed). Multisig send has no address book at
+     all regardless of the flag (`saved={[]}` unconditionally) — confirm this
+     reads as "feature not present here," not a broken flag.
+4. Save/rename an address entry, then re-save the same address with a new label.
+   - **Expected:** `saveAddress()`'s upsert semantics: an existing entry's
+     `last_used_at` bumps and it's renamed when a label is sent (`created: false`,
+     200), rather than a duplicate row (`created: true`, 201) for the same address.
+- **PASS:** tx labels and address-book entries persist and surface correctly across
+  history/CSV/send autocomplete; the `address_book` flag genuinely withholds data
+  server-side, not just client-side.
+
+### 22.10 Wallet/account deletion completeness `[none]`
+`userDeletion.ts`'s three shared invariants (FK pre-cleanup, last-admin guard,
+shared-multisig owner guard — Part I §7) already have scenario-adjacent coverage
+via §21's danger-zone checkpoint; this scenario targets the two things that don't:
+cascade completeness, and the one known open gap.
+1. As a user with a fully-populated account (wallets, multisig shares, saved
+   addresses, notification channel configs, known devices, API tokens, contacts),
+   delete your own account from `/settings`'s danger zone (type `DELETE` to
+   confirm).
+   - **Expected:** every table `buildAccountExport` reads is empty afterward — the
+     cascade-completeness regression this scenario guards
+     (`cairn-684u`/`destructiveOps.test.ts`, closed; walks `PRAGMA
+     foreign_key_list` over all user-FK tables). The danger-zone copy's warnings
+     match reality: wallets shared *to* you are untouched (owner keeps them); a
+     multisig you *own* and shared out is deleted for every cosigner/viewer
+     immediately, without warning them.
+2. As admin, attempt to delete (force admin-delete, `DELETE /api/admin/users` with
+   `{id}`) a user who owns a multisig shared with a cosigner, **without** `force`.
+   - **Expected:** refused with `AuthError` code `owns_shared_multisigs`, message
+     enumerating the affected wallets + pending-signature count. Re-submit with
+     `force: true`.
+   - **Expected:** proceeds; every affected participant gets an in-app-only
+     `multisig_removed` notification (`notifyOwnerDeletionCosigners`,
+     best-effort). Note for the tester: **this admin-delete action has no
+     discoverable button in `/admin/users` or `/admin/users/[id]` today** — those
+     pages only expose Enable/Disable; the DELETE endpoint is reachable via
+     devtools/API only. Record this as the current state, not an assumed bug.
+3. Attempt to delete the sole enabled admin account (self-delete or admin-delete).
+   - **Expected:** refused (`deletionOrphansAdmins`/`last_admin`) — counts the last
+     admin **row** of any kind, so a *disabled* sole admin also can't be
+     self-deleted into a zero-admin instance (`cairn-sclk`).
+4. **Expected-fail / verify current behavior (`cairn-vop2`, open):** delete a whole
+   wallet (not a single transaction) that has a transaction with a live
+   `broadcast_started_at` claim or a completed/superseded broadcast record.
+   - **Documented gap:** `deleteWallet` does an unconditional `DELETE FROM wallets`
+     and `transactions.wallet_id` is `ON DELETE CASCADE`, so the broadcast record
+     is erased along with everything else — unlike the hardened single-transaction
+     delete guard (`cairn-up0q`) that blocks erasing a mid/post-broadcast row.
+     Confirm this still reproduces (a whole-wallet delete is arguably legitimate
+     total-removal intent; the narrow concern is only a delete racing an in-flight
+     broadcast). Do not file this as a new bug — it's the tracked open item; note
+     whether current behavior still matches the bead's description.
+- **PASS:** step 1's cascade is complete; step 2's guard/force/notify sequence
+  works exactly as described (the missing UI button in step 2 is a recorded
+  observation, not a pass/fail criterion); step 3's last-admin guard holds; step 4
+  is a verify-current-behavior check against the open bead, not a fresh finding.
+
+---
+
 ### Appendix: known stale/uncommitted spots the tester will hit
 - **Multisig `complete` flag (§17.3) — RESOLVED:** the quorum-aware
   `summarizePsbt(threshold)` fix, previously an uncommitted working-tree diff, is now
@@ -4792,3 +5231,18 @@ backups, clear house-standard errors, **never red for routine states**, working 
 - **`/vaults*` is empty scaffolding, not a hidden route:** every directory under
   `src/routes/(app)/vaults` and `src/routes/api/vaults` has zero tracked files; any hit
   301-redirects to `/wallets`(`/wallets/multisig`) before reaching them (Part I §9).
+- **Stateless multisig route is orphaned, not hidden (§22.8, `cairn-hla1`, open):**
+  `/wallets/multisig/stateless` works fully once you're on it, but nothing in the app
+  links to it — only a typed URL reaches it. Don't record this as a fresh discoverability
+  finding; it's the tracked open item. Re-check `br show cairn-hla1` before assuming it's
+  still unlinked.
+- **Whole-wallet delete can erase a live broadcast record (§22.10, `cairn-vop2`, open):**
+  `deleteWallet`'s `ON DELETE CASCADE` on `transactions.wallet_id` doesn't share the
+  per-transaction delete guard (`cairn-up0q`) that blocks erasing a mid/post-broadcast row —
+  deleting the whole wallet takes its transaction history with it regardless of broadcast
+  state. Likely by design for a deliberate total-removal action; the narrow open concern is
+  only a delete racing an in-flight broadcast. Verify current behavior, don't assume fixed.
+- **Admin-initiated user deletion has no button in `/admin/users`/`/admin/users/[id]` (§22.10):**
+  those pages only expose Enable/Disable; `DELETE /api/admin/users` (with its `force` escape
+  hatch for `owns_shared_multisigs`) is reachable via devtools/API/scripting only as of this
+  writing. Not filed as a bug — noted so a tester doesn't go looking for a missing button.
