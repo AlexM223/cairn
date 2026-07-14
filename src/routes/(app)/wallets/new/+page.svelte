@@ -688,6 +688,18 @@
 					<strong>public</strong> key — nothing that can spend.
 				</p>
 
+				<!-- Above-the-fold scroll cue (cairn-coza): at common desktop sizes the
+				     method grid's "Paste public key" card — the one no-hardware-required
+				     option, and the one this copy itself points to — sits below the
+				     viewport with nothing here to say so. Telling the user up front,
+				     always (not just when referral buy-links are configured), means
+				     nobody mistakes the visible device cards for the whole list. -->
+				<p class="scroll-cue">
+					<Icon name="chevron-down" size={12} />
+					7 ways to add a key below, including <strong>Paste public key</strong> — no hardware
+					device needed for that one.
+				</p>
+
 				<!-- Restore from a backup file (cairn-lun6): prefills the paste method below. -->
 				<div class="restore-box">
 					<div class="restore-lead">
@@ -823,9 +835,8 @@
 
 				{#if buyUrls}
 					<p class="hint no-device-hint">
-						No hardware wallet yet? You can start with <strong>Paste public key</strong> from any
-						wallet app today — and when you're ready for a dedicated signing device, the
-						<em>Buy one</em> links above go straight to each maker's store.
+						Ready for a dedicated signing device? The <em>Buy one</em> links above go straight
+						to each maker's store.
 					</p>
 				{/if}
 			{:else}
@@ -1840,6 +1851,25 @@
 	}
 
 	.step-lead strong {
+		color: var(--text);
+	}
+
+	/* Above-the-fold scroll cue (cairn-coza) — quiet, single line, always
+	   above the method grid so it's visible without scrolling. */
+	.scroll-cue {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 12.5px;
+		color: var(--text-secondary);
+	}
+
+	.scroll-cue :global(svg) {
+		color: var(--accent);
+		flex-shrink: 0;
+	}
+
+	.scroll-cue strong {
 		color: var(--text);
 	}
 
