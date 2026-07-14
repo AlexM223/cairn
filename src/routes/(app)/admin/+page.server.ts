@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { instanceStats } from '$lib/server/admin';
 import { getInstanceSettings, getSetting } from '$lib/server/settings';
-import { getChain } from '$lib/server/chain';
+import { getNetworkHealth } from '$lib/server/chainHealth';
+import { readChainSnapshot } from '$lib/server/chainSnapshot';
 import { getUpdateNotice, CURRENT_VERSION } from '$lib/server/updateCheck';
 import { DB_PATH } from '$lib/server/db';
 import type { PageServerLoad } from './$types';
@@ -35,27 +36,46 @@ function storageInfo(): {
 	return { dbBytes, diskTotalBytes, diskFreeBytes };
 }
 
-/** getNodeInfo() is a LIVE, uncached Electrum headersSubscribe+banner round-trip
- *  (cairn-2zxt.3): awaiting it in `load` froze every /admin navigation until
- *  Electrum answered. Streamed instead, so the page paints its chrome + tabs
- *  immediately and the health pill/tip fill in. Never rejects — any failure
- *  resolves to a disconnected NodeInfo built from the configured settings. */
-async function loadNodeInfo(
-	settings: ReturnType<typeof getInstanceSettings>
-): Promise<NodeInfo> {
-	try {
-		return await getChain().getNodeInfo();
-	} catch (e) {
-		return {
-			connected: false,
-			mode: settings.connectionMode,
-			server: `${settings.electrumHost}:${settings.electrumPort}`,
-			tipHeight: null,
-			tipHash: null,
-			network: 'mainnet',
-			error: e instanceof Error ? e.message : 'Connection failed'
-		};
-	}
+/**
+ * Node overview data, sourced from the SAME cheap, already-fresh signals the
+ * rest of the app (Explorer/dashboard, the layout's "can't reach the Bitcoin
+ * network" banner) already renders correctly from:
+ *   - readChainSnapshot() — the background-refreshed chain snapshot
+ *     (chainSync.ts) that Explorer/dashboard read synchronously (SWR).
+ *   - getNetworkHealth() — the cheap in-memory transport-health signal fed by
+ *     every real Electrum/Core connection outcome (chainHealth.ts).
+ *
+ * cairn-j412: this used to be its own LIVE, uncached Electrum
+ * headersSubscribe+banner round-trip (cairn-2zxt.3), returned unawaited and
+ * streamed to the client so it didn't gate navigation. In practice that
+ * per-request round-trip could fail to ever resolve on the client (the
+ * streamed chunk never arriving), leaving the page frozen on its
+ * "Checking connection…" skeleton indefinitely even while Explorer/Home
+ * displayed correct, live data from the snapshot at the very same time.
+ * Reading the snapshot + health signal instead is synchronous (no network
+ * call, no promise to stream) and can never get stuck: it just reflects
+ * whatever Explorer/Home are already showing.
+ */
+function buildNodeInfo(settings: ReturnType<typeof getInstanceSettings>): NodeInfo {
+	const health = getNetworkHealth();
+	const snap = readChainSnapshot();
+	const tipHeight = snap?.data.tipHeight ?? null;
+	const connected = health.healthy && tipHeight !== null;
+	// A connection attempt has actually been made (success or failure) — lets
+	// us tell "genuinely still starting up, first sync hasn't landed yet"
+	// (no error, `error` left undefined so the UI keeps its transient
+	// "Checking connection…" state) apart from "tried and failed" (a real,
+	// user-facing error).
+	const attempted = health.lastOkAt !== null || health.lastErrorAt !== null;
+	return {
+		connected,
+		mode: settings.connectionMode,
+		server: `${settings.electrumHost}:${settings.electrumPort}`,
+		tipHeight,
+		tipHash: snap?.data.blocks[0]?.hash ?? null,
+		network: 'mainnet',
+		error: connected ? undefined : attempted ? (health.lastError ?? 'Connection failed') : undefined
+	};
 }
 
 export const load: PageServerLoad = async () => {
@@ -64,9 +84,8 @@ export const load: PageServerLoad = async () => {
 
 	return {
 		stats,
-		// Streamed, not awaited (cairn-2zxt.3): the node round-trip no longer gates
-		// the admin overview render.
-		node: loadNodeInfo(settings),
+		// Synchronous, cheap, never stuck (cairn-j412) — see buildNodeInfo above.
+		node: buildNodeInfo(settings),
 		registrationMode: settings.registrationMode,
 		// Newer-release notice (cairn-ivae.2). Answers from an in-process cache and
 		// never awaits the network — GitHub being down can't slow this page.

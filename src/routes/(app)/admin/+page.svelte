@@ -6,27 +6,22 @@
 
 	const notice = $derived(data.updateNotice ?? null);
 
-	// Node info is STREAMED (cairn-2zxt.3): the page chrome + every setting-derived
-	// row paint instantly; the health pill, tip height, and backend rows fill in
-	// when the Electrum round-trip resolves. loadNodeInfo never rejects.
-	type NodeData = Awaited<(typeof data)['node']>;
-	let node = $state<NodeData | null>(null);
-	$effect(() => {
-		const promise = data.node;
-		let stale = false;
-		void promise.then((n) => {
-			if (!stale) node = n;
-		});
-		return () => {
-			stale = true;
-		};
-	});
-	const nodeLoading = $derived(node === null);
-	const connected = $derived(node !== null && node.connected && node.tipHeight !== null);
+	// Node info is now synchronous (cairn-j412): `data.node` is built in load()
+	// from the same cheap, already-fresh signals Explorer/Home read (the
+	// background-synced chain snapshot + the in-memory transport-health
+	// signal) — no live per-request Electrum round-trip, so there is nothing
+	// that can leave this page stuck on a loading skeleton forever the way the
+	// old streamed-promise round-trip could. `nodeLoading` stays true only for
+	// the genuinely transient window right after a fresh install/boot, before
+	// the first background sync has landed and before any connection attempt
+	// (success or failure) has been recorded.
+	const node = $derived(data.node);
+	const nodeLoading = $derived(!node.connected && node.error === undefined);
+	const connected = $derived(node.connected);
 
 	// Forming-ring math (spec 5g): N = floor(h/2016); ring N+1 is forming;
 	// progress = laid/2016; close ETA = blocks left × 10 min.
-	const tip = $derived(node?.tipHeight ?? null);
+	const tip = $derived(node.tipHeight);
 	const ringNumber = $derived(tip !== null ? Math.floor(tip / 2016) + 1 : null);
 	const ringLaid = $derived(tip !== null ? tip % 2016 : 0);
 	const ringProgress = $derived(ringLaid / 2016);
@@ -113,7 +108,7 @@
 				<span class="hero-number hero-height dim">—</span>
 			</div>
 			<div class="hero-ring attention-text">
-				{node?.error ?? 'No connection to the configured chain sources.'}
+				{node.error ?? 'No connection to the configured chain sources.'}
 				<a href="/admin/settings">Check the connection →</a>
 			</div>
 		{/if}
@@ -132,19 +127,19 @@
 <div class="kv-grid fade-in">
 	<div class="kv">
 		<span class="k">Backend</span>
-		{#if node}
+		{#if nodeLoading}
+			<span class="v skeleton" aria-hidden="true">Electrum · public servers</span>
+		{:else}
 			<span class="v">Electrum · {node.mode === 'public' ? 'public servers' : 'yours'}</span>
 			<span class="dot-badge" class:sage={connected} class:amber={!connected}></span>
-		{:else}
-			<span class="v skeleton" aria-hidden="true">Electrum · public servers</span>
 		{/if}
 	</div>
 	<div class="kv">
 		<span class="k">Server</span>
-		{#if node}
-			<span class="v mono server">{node.server}</span>
-		{:else}
+		{#if nodeLoading}
 			<span class="v mono server skeleton" aria-hidden="true">host.example:50002</span>
+		{:else}
+			<span class="v mono server">{node.server}</span>
 		{/if}
 	</div>
 	<div class="kv">
