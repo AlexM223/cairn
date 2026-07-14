@@ -9,11 +9,16 @@ import {
 } from '$lib/server/multisigTransactions';
 import { getRoster, type RosterMember } from '$lib/server/multisigRoster';
 import { getMultisigUtxos } from '$lib/server/multisigScan';
-import { classifyUnconfirmedTrust } from '$lib/server/transactions';
-import { summarizePsbt, type PsbtSummary, type UnconfirmedTrust } from '$lib/server/bitcoin/psbt';
+import {
+	summarizePsbt,
+	type PsbtSummary,
+	type UnconfirmedTrust,
+	type CoinbaseStatus
+} from '$lib/server/bitcoin/psbt';
 import type { MultisigSigningProgress } from '$lib/server/bitcoin/multisigPsbt';
 import { getReferralBuyUrls } from '$lib/server/referrals';
 import { getChain } from '$lib/server/chain';
+import { sendSnapshot } from '$lib/server/walletSync';
 import type { FeeEstimates } from '$lib/types';
 import type { PageServerLoad } from './$types';
 
@@ -27,6 +32,43 @@ type SendUtxo = {
 	unconfirmedTrust: UnconfirmedTrust | null;
 };
 
+/** The lean spendable-coin shape both the live scan (getMultisigUtxos →
+ *  SpendableUtxo) and the clean-wallet snapshot (walletSync SnapshotUtxo) satisfy. */
+type RawSendUtxo = {
+	txid: string;
+	vout: number;
+	value: number;
+	height: number;
+	coinbase?: CoinbaseStatus;
+};
+
+/** Map raw coins to the coin-control picker shape — confirmed first (largest
+ *  value), then unconfirmed (largest value), each tagged own-change vs received.
+ *  The SINGLE mapping shared by the live-scan and the clean-snapshot fast path
+ *  (cairn-g1u2) so the two are byte-identical for the same state (mirrors
+ *  classifyUnconfirmedTrust's policy inline). */
+function mapCoinControlUtxos(raw: RawSendUtxo[], ownTxids: Set<string>): SendUtxo[] {
+	return raw
+		.map((u) => ({
+			txid: u.txid,
+			vout: u.vout,
+			value: u.value,
+			height: u.height,
+			coinbase: u.coinbase === true,
+			unconfirmedTrust: (u.height > 0
+				? null
+				: ownTxids.has(u.txid.toLowerCase())
+					? 'own-change'
+					: 'received') as UnconfirmedTrust | null
+		}))
+		.sort((a, b) => {
+			const ca = a.height > 0 ? 1 : 0;
+			const cb = b.height > 0 ? 1 : 0;
+			if (ca !== cb) return cb - ca;
+			return b.value - a.value;
+		});
+}
+
 /** The Electrum/Core RPC-dependent slice of this page: fee estimates, spendable
  *  coins, and the block tip. Streamed (not awaited) so navigation paints the
  *  send shell — and any resumed step — instantly while these round-trips settle
@@ -39,6 +81,22 @@ async function loadSendChain(
 	id: number
 ): Promise<{ fees: FeeEstimates | null; utxos: SendUtxo[]; tipHeight: number }> {
 	const chain = getChain();
+	const ownTxids = ownMultisigTxids(id);
+
+	// Fast path (cairn-g1u2): a PROVABLY-clean multisig serves its coins + tip from
+	// the snapshot the background sync maintains — no live getMultisigUtxos re-scan
+	// (the dominant per-send-GET cost). sendSnapshot returns non-null only when the
+	// wallet is watched, clean, within MAX_CLEAN_TTL, and has a persisted spendable
+	// set; on any doubt it returns null and we re-scan live below. buildMultisigDraft
+	// re-scans live regardless, so this only affects the DISPLAYED coin list.
+	const cached = sendSnapshot('multisig', id);
+	if (cached) {
+		// Fees stay live (30s-cached, cheap, genuinely time-varying); tip from the
+		// snapshot, kept fresh on the client by onNewBlock.
+		const fees = await chain.getFeeEstimates().catch(() => null);
+		return { fees, utxos: mapCoinControlUtxos(cached.utxos, ownTxids), tipHeight: cached.tipHeight };
+	}
+
 	const [fees, utxos, tipHeight] = await Promise.all([
 		// Fee estimates seed the fee selector; best-effort only.
 		chain.getFeeEstimates().catch(() => null),
@@ -47,27 +105,10 @@ async function loadSendChain(
 		// UTXO set the /psbt build endpoint selects from, so what a user picks is
 		// exactly what the server spends (cairn-zcui). Best-effort: a scan failure
 		// just means coin control isn't offered this load; the default automatic
-		// flow is unaffected.
+		// flow is unaffected. Include unconfirmed coins too (cairn-u9ob.6/.7).
 		(async (): Promise<SendUtxo[]> => {
 			try {
-				// Include unconfirmed coins too (cairn-u9ob.6/.7), each classified
-				// own-change vs received so coin control can badge them — confirmed
-				// coins auto-select, received unconfirmed only when explicitly picked.
-				return classifyUnconfirmedTrust(await getMultisigUtxos(multisig), ownMultisigTxids(id))
-					.map((u) => ({
-						txid: u.txid,
-						vout: u.vout,
-						value: u.value,
-						height: u.height,
-						coinbase: u.coinbase === true,
-						unconfirmedTrust: u.height > 0 ? null : u.unconfirmedTrust ?? 'received'
-					}))
-					.sort((a, b) => {
-						const ca = a.height > 0 ? 1 : 0;
-						const cb = b.height > 0 ? 1 : 0;
-						if (ca !== cb) return cb - ca;
-						return b.value - a.value;
-					});
+				return mapCoinControlUtxos(await getMultisigUtxos(multisig), ownTxids);
 			} catch {
 				return [];
 			}

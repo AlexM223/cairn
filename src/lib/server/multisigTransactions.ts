@@ -690,6 +690,18 @@ export async function broadcastMultisigTransaction(
 		}
 	}
 
+	// This multisig's coins just changed (we spent one), so mark it dirty BEFORE
+	// returning so the next send load re-scans live instead of serving the pre-spend
+	// snapshot from the clean-wallet fast path (cairn-g1u2) — the async watcher
+	// notification may not have landed yet. Dynamic import breaks the walletSync →
+	// multisigTransactions cycle; best-effort, never throws.
+	try {
+		const { markWalletDirty } = await import('./walletSync');
+		markWalletDirty('multisig', multisigId);
+	} catch {
+		/* best-effort: next load re-scans once the watcher notification or TTL fires */
+	}
+
 	return { txid: broadcastTxid, transaction: updated! };
 }
 

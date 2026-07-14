@@ -2731,13 +2731,36 @@ during SSR **and** the initial hydration render, so there is no hydration mismat
 and render a small `.skeleton` shell in the `{:else}`. `load()` (auth + wallet row
 + streamed `live` data) still runs server-side; only the interactive subtree moves
 to the client. Net effect measured with the load harness (`scripts/load-test`,
-scenario c): tier-200 throughput 46→70 rps, p50 10s→5.4s. NOTE this did **not**
-eliminate the mixed-load cliff — the dominant residual cost is the streamed
-`loadSendLiveData` live wallet re-scan (`+page.server.ts`), which every send GET
-performs (the send/PSBT flow deliberately re-scans live rather than reading the
-cached snapshot — see `walletScan.ts`) and which the harness driver waits for by
-draining the full streamed body. That residual is the sync/data lane
-(`cairn-qyvl`/`cairn-1q4b`), not the render.
+scenario c): tier-200 throughput 46→70 rps, p50 10s→5.4s. The render was only
+~1/3 of the send GET's cost; the dominant residual was the streamed
+`loadSendLiveData` live wallet re-scan, addressed next.
+
+**Clean-wallet snapshot fast path (`cairn-g1u2`).** `loadSendLiveData`
+(`+page.server.ts`) used to re-scan live on *every* send GET — `getWalletDetail`
++ `getWalletUtxos` → `scanWallet` + `listunspent` — the dominant per-request cost.
+It now first calls `sendSnapshot('wallet'|'multisig', id)` (`walletSync.ts`): a
+wallet that is **provably clean** serves its spendable coins + balance + tip
+straight from the persisted snapshot (`spendableUtxos`, now stored by
+`doWalletScan`/`doMultisigScan`), with **no** live scan. `sendSnapshot` returns
+non-null — and the fast path engages — **only** when ALL hold, else it falls
+through to the live scan exactly as before: the kill-switch
+`CAIRN_SYNC_DISABLE_DIRTY_SKIP` is off; the wallet is actively *watched*
+(`isWalletWatched`, so a scripthash change would flip it dirty); the snapshot is
+CLEAN (`dirty_since IS NULL`, `cairn-wcxw`); it is within `MAX_CLEAN_TTL` (30 min);
+and it carries a persisted `spendableUtxos` set (a pre-`cairn-g1u2` row lacks it →
+live scan). This is display-only: the build/broadcast path (`buildDraft` /
+`buildMultisigDraft`) *always* re-scans live, so a PSBT is never built from
+snapshot coins. A successful broadcast calls `markWalletDirty` so the very next
+send load re-scans live rather than serving pre-spend coins. `_assembleSendLiveData`
+is the single builder both paths share (byte-identical output for the same state).
+Measured against a real regtest electrs: a clean wallet's send GET is **2–3 ms**
+(snapshot-served) vs **~365 ms** for the same wallet marked dirty (live re-scan) —
+fees stay a live call (30 s-cached in the chain layer, cheap in production). NOTE
+the sync-SQLite / event-loop mixed-load cliff under high concurrency
+(`cairn-qyvl`/`cairn-y802`/`cairn-1q4b`) is a *separate* bottleneck this does not
+address; the dead-Electrum load harness (`scripts/load-test`) is dominated by that
+saturation (its send scan fails fast on the closed port), so it does not isolate
+this fix — the real-electrs latency above does.
 
 The recipient field's invalid-address messaging distinguishes a **shape**
 that's simply garbage from one that's a real address on the wrong network:

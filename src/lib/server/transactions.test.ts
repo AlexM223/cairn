@@ -8,6 +8,7 @@ import { NETWORK } from '@scure/btc-signer';
 import { db } from './db';
 import { registerUser } from './auth';
 import { setSetting } from './settings';
+import { readDirtySince } from './walletSync';
 import { constructPsbt, summarizePsbt, type SpendableUtxo } from './bitcoin/psbt';
 import {
 	listTransactions,
@@ -226,11 +227,24 @@ describe('transaction lifecycle', () => {
 		expectedTxid.finalize();
 		broadcastMock.mockResolvedValueOnce(expectedTxid.id);
 
+		// cairn-g1u2: a successful broadcast spends a coin, so the wallet must be
+		// marked dirty — the next send load then re-scans live rather than serving the
+		// pre-spend snapshot from the clean-wallet fast path (the async watcher
+		// notification for the status change may not have landed yet). Seed a CLEAN
+		// snapshot row so the mark has something to flip.
+		db.prepare(
+			`INSERT INTO wallet_snapshots (wallet_kind, wallet_id, snapshot, summary, last_synced_at, dirty_since)
+			 VALUES ('wallet', ?, '{}', NULL, ?, NULL)
+			 ON CONFLICT(wallet_kind, wallet_id) DO UPDATE SET dirty_since = NULL, last_synced_at = excluded.last_synced_at`
+		).run(walletId, Date.now());
+		expect(readDirtySince('wallet', walletId)).toBeNull(); // clean before
+
 		const { txid, transaction } = await broadcastTransaction(userId, walletId, txId);
 		expect(txid).toBe(expectedTxid.id);
 		expect(transaction.status).toBe('completed');
 		expect(transaction.txid).toBe(expectedTxid.id);
 		expect(broadcastMock).toHaveBeenCalledTimes(1);
+		expect(readDirtySince('wallet', walletId)).not.toBeNull(); // dirty after
 	});
 
 	it('refuses to record a broadcast whose server-reported txid differs from ours (cairn-ziwm)', async () => {

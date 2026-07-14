@@ -43,7 +43,8 @@ import {
 	ownBroadcastTxids,
 	type UnconfirmedInflow
 } from './transactions';
-import type { SpendableUtxo } from './bitcoin/psbt';
+import type { SpendableUtxo, CoinbaseStatus } from './bitcoin/psbt';
+import { isWalletWatched } from './addressWatcher';
 import { getChain } from './chain';
 import { getViewableMultisig, listMultisigs, type MultisigRow } from './wallets/multisig';
 import {
@@ -114,6 +115,38 @@ const QR_OPTS = {
 
 type CoinbaseUtxo = { txid: string; vout: number; value: number; height: number };
 
+/**
+ * A spendable coin persisted in the snapshot so the SEND page can render its
+ * coin-control list + spendable balance WITHOUT a live Electrum re-scan when the
+ * wallet is provably clean (cairn-g1u2). Raw fields only — `unconfirmedTrust` is
+ * NOT stored: it is re-derived at read time from the live transactions table
+ * (ownBroadcastTxids), so a coin's own-change/received badge is never frozen
+ * stale. `coinbase` carries the full tri-state (`true`/`false`/`'unknown'`) so the
+ * maturity subtraction the send page does is identical to the live path — an
+ * unverifiable coinbase stays conservatively immature, never silently spendable.
+ */
+export type SnapshotUtxo = {
+	txid: string;
+	vout: number;
+	value: number;
+	height: number;
+	coinbase: CoinbaseStatus;
+};
+
+/** Map live spendable coins to the lean shape persisted for the send fast path
+ *  (cairn-g1u2). `coinbase` defaults CONSERVATIVELY to `'unknown'` (never `false`)
+ *  if a scan ever left it undetermined, so a coin can never be mis-persisted as a
+ *  mature spendable when its coinbase-ness wasn't actually resolved. */
+function toSnapshotUtxos(utxos: SpendableUtxo[]): SnapshotUtxo[] {
+	return utxos.map((u) => ({
+		txid: u.txid,
+		vout: u.vout,
+		value: u.value,
+		height: u.height,
+		coinbase: u.coinbase ?? 'unknown'
+	}));
+}
+
 /** Sum of coinbase-UTXO value that is NOT yet mature at `tipHeight` (cairn-oae1.3).
  *  `confirmed`/`detail.balance.confirmed` below come straight from Electrum, which
  *  counts an immature coinbase output as confirmed — this is the piece callers
@@ -144,6 +177,12 @@ export interface WalletSnapshot {
 	} | null;
 	receive: { address: string; path: string; index: number; qr: string } | null;
 	coinbaseUtxos: CoinbaseUtxo[];
+	/** Full spendable coin set for the SEND page's clean-wallet fast path
+	 *  (cairn-g1u2). Optional: a snapshot written before this field existed parses
+	 *  with it `undefined`, which `sendSnapshot` treats as "can't serve from cache"
+	 *  ⇒ live re-scan, so the rollout is self-healing (the next background refresh
+	 *  backfills it). */
+	spendableUtxos?: SnapshotUtxo[];
 	tipHeight: number;
 	/** Sum of `coinbaseUtxos` value not yet mature at `tipHeight` — the slice of
 	 *  `scan.confirmed` a wallet doesn't actually hold spendable yet (cairn-oae1.3).
@@ -164,6 +203,9 @@ export interface MultisigSnapshot {
 	} | null;
 	receive: { address: string; index: number; qr: string } | null;
 	coinbaseUtxos: CoinbaseUtxo[];
+	/** Full spendable coin set for the SEND page's clean-wallet fast path — see the
+	 *  single-sig WalletSnapshot field of the same name (cairn-g1u2). */
+	spendableUtxos?: SnapshotUtxo[];
 	tipHeight: number;
 	/** Sum of `coinbaseUtxos` value not yet mature at `tipHeight` — see the
 	 *  single-sig WalletSnapshot field of the same name (cairn-oae1.3). */
@@ -398,6 +440,33 @@ export function clearDirtyIfUnchanged(
 	}
 }
 
+// A plain (non-CAS) dirty stamp: unconditionally sets dirty_since = now. Used by
+// the broadcast paths (cairn-g1u2) where the wallet's coins provably just changed
+// (we spent one), so the send fast path MUST re-scan on the next load rather than
+// serve the pre-spend snapshot. A no-op (0 rows) when no snapshot exists yet — a
+// never-synced wallet already scans by absence. Overwriting an existing
+// dirty_since with a newer value is harmless: the refresh gate reads it as a
+// boolean, and clearDirtyIfUnchanged's CAS still refuses to clear a value that
+// moved after a scan started.
+const stampDirtyStmt = db.prepare(
+	'UPDATE wallet_snapshots SET dirty_since = ? WHERE wallet_kind = ? AND wallet_id = ?'
+);
+
+/**
+ * Mark a wallet/multisig dirty as of now (cairn-g1u2). Called on a successful
+ * broadcast so the very next send load bypasses the clean-wallet snapshot fast
+ * path and re-scans live — we know a coin was just spent, and the async watcher
+ * notification for that status change may not have landed yet. Best-effort; never
+ * throws.
+ */
+export function markWalletDirty(kind: SnapshotKind, id: number): void {
+	try {
+		stampDirtyStmt.run(Date.now(), kind, id);
+	} catch (e) {
+		log.debug({ err: e, kind, id }, 'mark wallet dirty failed (ignored)');
+	}
+}
+
 /** The persisted single-sig snapshot for a wallet, or null when never synced. */
 export function readWalletSnapshot(walletId: number): StoredSnapshot<WalletSnapshot> | null {
 	return readSnapshot<WalletSnapshot>('wallet', walletId);
@@ -406,6 +475,71 @@ export function readWalletSnapshot(walletId: number): StoredSnapshot<WalletSnaps
 /** The persisted multisig snapshot, or null when never synced. */
 export function readMultisigSnapshot(multisigId: number): StoredSnapshot<MultisigSnapshot> | null {
 	return readSnapshot<MultisigSnapshot>('multisig', multisigId);
+}
+
+// ----------------------------------------------------- send-page snapshot fast path
+//
+// cairn-g1u2. Every send GET used to stream loadSendLiveData, which does a LIVE
+// Electrum re-scan (getWalletDetail + getWalletUtxos → scanWallet + listunspent +
+// coinbase annotation) on every request — the dominant per-request cost that
+// collapsed mixed load at tier 200. But a wallet whose subscribed scripthash
+// statuses are unchanged is PROVABLY unchanged on-chain (the Electrum protocol's
+// contract, wired into dirty-tracking by cairn-wcxw), so a CLEAN wallet's
+// snapshot coins are exactly as fresh as a live scan. sendSnapshot serves them
+// from cache when — and ONLY when — that provable-freshness holds, and returns
+// null (⇒ the caller re-scans live, exactly as before) on ANY doubt. The
+// build/broadcast path (buildDraft / buildMultisigDraft) re-scans live
+// regardless, so this only ever affects the DISPLAYED coin list + balance, never
+// what a PSBT actually spends.
+
+/** Confirmed balance + tip + spendable coins served from a clean snapshot. */
+export interface SendSnapshotData {
+	/** Raw confirmed balance from the scan (immature-coinbase subtraction is the
+	 *  caller's job — done identically to the live path). */
+	confirmed: number;
+	tipHeight: number;
+	utxos: SnapshotUtxo[];
+}
+
+/**
+ * The send-page fast path (cairn-g1u2): a CLEAN wallet's persisted spendable
+ * coins + confirmed balance + tip, or null when the send load must re-scan live.
+ * Returns null — failing toward the live scan — on ANY of:
+ *   • kill-switch set (CAIRN_SYNC_DISABLE_DIRTY_SKIP) — reverts to always-live;
+ *   • the wallet is not actively watched — nothing would flip its dirty flag, so a
+ *     clean flag can't be trusted (Electrum down, watcher not yet subscribed, …);
+ *   • no snapshot, or a scan-less / errored snapshot;
+ *   • DIRTY (dirty_since set) — a status change has landed since the last scan;
+ *   • older than MAX_CLEAN_TTL — the self-healing staleness bound (a missed signal
+ *     never strands the page on stale coins longer than this);
+ *   • a pre-cairn-g1u2 snapshot with no persisted spendable set.
+ */
+export function sendSnapshot(kind: SnapshotKind, id: number): SendSnapshotData | null {
+	// Kill-switch: collapse straight to the live path (the ops escape hatch shared
+	// with the refresh-gate clean-skip). CLEAN_SKIP_DISABLED already folds both env
+	// var spellings, read once at module load.
+	if (CLEAN_SKIP_DISABLED) return null;
+	// The dirty signal is only sound while a live subscription is watching this
+	// wallet's addresses to flip it. No watch ⇒ don't trust "clean".
+	if (!isWalletWatched(kind, id)) return null;
+
+	const stored = readSnapshot<WalletSnapshot | MultisigSnapshot>(kind, id);
+	if (!stored) return null;
+	if (stored.dirtySince != null) return null; // a change landed since the last scan
+	if (Date.now() - stored.lastSyncedAt >= MAX_CLEAN_TTL_MS) return null; // TTL guard
+
+	const snap = stored.snapshot;
+	if (snap.scanError !== null) return null; // never serve a degraded snapshot
+	// Pre-cairn-g1u2 row: no persisted spendable set ⇒ can't serve, re-scan live.
+	if (!Array.isArray(snap.spendableUtxos)) return null;
+
+	const confirmed =
+		kind === 'wallet'
+			? (snap as WalletSnapshot).scan?.confirmed
+			: (snap as MultisigSnapshot).detail?.balance.confirmed;
+	if (confirmed == null) return null; // scan-less snapshot ⇒ nothing to serve
+
+	return { confirmed, tipHeight: snap.tipHeight, utxos: snap.spendableUtxos };
 }
 
 const readSummaryStmt = db.prepare(
@@ -666,6 +800,12 @@ async function doWalletScan(userId: number, row: WalletRow): Promise<WalletSnaps
 		},
 		receive: { ...receive, qr },
 		coinbaseUtxos,
+		// Persist the FULL spendable set (not just the coinbase subset) so the send
+		// page renders coin control + spendable balance from cache when the wallet is
+		// clean (cairn-g1u2). Empty on a UTXO-fetch hiccup above — which also zeroes
+		// `coinbaseUtxos`/`tipHeight`, so the send fast path just serves an empty coin
+		// list against a still-correct `scan.confirmed`.
+		spendableUtxos: toSnapshotUtxos(utxos),
 		tipHeight,
 		maturingTotal: sumImmatureCoinbase(coinbaseUtxos, tipHeight),
 		speedUp,
@@ -754,6 +894,9 @@ async function doMultisigScan(userId: number, multisig: MultisigRow): Promise<Mu
 		},
 		receive: { ...receive, qr },
 		coinbaseUtxos,
+		// Full spendable set for the send fast path (cairn-g1u2) — getMultisigDetail
+		// already fetched detail.utxos, so this reuses it with no extra Electrum work.
+		spendableUtxos: toSnapshotUtxos(detail.utxos),
 		tipHeight,
 		maturingTotal: sumImmatureCoinbase(coinbaseUtxos, tipHeight),
 		speedUp,

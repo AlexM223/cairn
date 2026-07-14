@@ -36,6 +36,16 @@ vi.mock('./bitcoin/walletScan', async (orig) => {
 	return { ...actual, scanWallet: scanWalletMock, findNextUnusedIndex: findNextUnusedIndexMock };
 });
 
+// cairn-g1u2: sendSnapshot gates the send-page fast path on isWalletWatched.
+// Partial-mock addressWatcher (keep every real export the module graph needs —
+// unwatchWallet etc. — override ONLY isWalletWatched) so tests drive the
+// "watched vs not" branch deterministically. Defaults to watched.
+const { isWalletWatchedMock } = vi.hoisted(() => ({ isWalletWatchedMock: vi.fn(() => true) }));
+vi.mock('./addressWatcher', async (orig) => ({
+	...(await orig<typeof import('./addressWatcher')>()),
+	isWalletWatched: isWalletWatchedMock
+}));
+
 import { db } from './db';
 import { registerUser } from './auth';
 import { setSetting } from './settings';
@@ -55,11 +65,14 @@ import {
 	readDirtySince,
 	readSyncMeta,
 	clearDirtyIfUnchanged,
+	markWalletDirty,
+	sendSnapshot,
 	EMPTY_WALLET_SNAPSHOT,
 	EMPTY_MULTISIG_SNAPSHOT,
 	type PortfolioRefreshItem,
 	type WalletSnapshot,
-	type MultisigSnapshot
+	type MultisigSnapshot,
+	type SnapshotUtxo
 } from './walletSync';
 import {
 	DEFAULT_POOL_SIZE,
@@ -884,5 +897,128 @@ describe('refreshWalletSnapshot dirty gate — integration (cairn-wcxw)', () => 
 		expect(scanWalletMock).toHaveBeenCalled(); // dirty → rescanned
 		// Successful scan compare-and-swapped the flag back to clean.
 		expect(readDirtySince('wallet', walletId)).toBeNull();
+	});
+});
+
+// -------------------------------------------------- send-page snapshot fast path
+//
+// cairn-g1u2. sendSnapshot serves a PROVABLY-clean wallet's persisted coins +
+// balance so the send load skips the live re-scan; on ANY doubt it returns null
+// (⇒ caller re-scans live). markWalletDirty is the broadcast-time guard that
+// forces the next send load back onto the live scan.
+
+describe('sendSnapshot (cairn-g1u2 send-page fast path)', () => {
+	const coinbaseUtxos = [] as const;
+
+	function putWalletSnapshot(
+		id: number,
+		over: Partial<WalletSnapshot>,
+		meta: { lastSyncedAt?: number; dirtySince?: number | null } = {}
+	): void {
+		const snap: WalletSnapshot = {
+			scan: { addresses: [], txs: [], confirmed: 500_000, unconfirmed: 0 },
+			receive: null,
+			coinbaseUtxos: [...coinbaseUtxos],
+			spendableUtxos: [
+				{ txid: 'a'.repeat(64), vout: 0, value: 300_000, height: 800_000, coinbase: false },
+				{ txid: 'b'.repeat(64), vout: 1, value: 200_000, height: 800_010, coinbase: false }
+			],
+			tipHeight: 900_000,
+			maturingTotal: 0,
+			speedUp: [],
+			scanError: null,
+			...over
+		};
+		db.prepare(
+			`INSERT INTO wallet_snapshots (wallet_kind, wallet_id, snapshot, summary, last_synced_at, dirty_since)
+			 VALUES ('wallet', ?, ?, NULL, ?, ?)
+			 ON CONFLICT(wallet_kind, wallet_id) DO UPDATE SET
+			   snapshot = excluded.snapshot, last_synced_at = excluded.last_synced_at,
+			   dirty_since = excluded.dirty_since`
+		).run(id, JSON.stringify(snap), meta.lastSyncedAt ?? Date.now(), meta.dirtySince ?? null);
+	}
+
+	beforeEach(() => {
+		isWalletWatchedMock.mockReset();
+		isWalletWatchedMock.mockReturnValue(true);
+		db.prepare("DELETE FROM wallet_snapshots WHERE wallet_id >= 9000").run();
+	});
+
+	it('serves a CLEAN, watched, fresh, new-format wallet from the snapshot', () => {
+		putWalletSnapshot(9001, {});
+		const out = sendSnapshot('wallet', 9001);
+		expect(out).not.toBeNull();
+		expect(out!.confirmed).toBe(500_000);
+		expect(out!.tipHeight).toBe(900_000);
+		expect(out!.utxos).toHaveLength(2);
+		expect(out!.utxos[0].txid).toBe('a'.repeat(64));
+	});
+
+	it('returns null (⇒ live scan) when the wallet is DIRTY', () => {
+		putWalletSnapshot(9002, {}, { dirtySince: Date.now() });
+		expect(sendSnapshot('wallet', 9002)).toBeNull();
+	});
+
+	it('returns null when the wallet is not watched (no live subscription)', () => {
+		isWalletWatchedMock.mockReturnValue(false);
+		putWalletSnapshot(9003, {});
+		expect(sendSnapshot('wallet', 9003)).toBeNull();
+	});
+
+	it('returns null when there is no snapshot (first load)', () => {
+		expect(sendSnapshot('wallet', 9999)).toBeNull();
+	});
+
+	it('returns null past MAX_CLEAN_TTL (self-healing staleness bound)', () => {
+		putWalletSnapshot(9004, {}, { lastSyncedAt: Date.now() - MAX_CLEAN_TTL_MS - 1 });
+		expect(sendSnapshot('wallet', 9004)).toBeNull();
+	});
+
+	it('serves right up to (just under) MAX_CLEAN_TTL', () => {
+		putWalletSnapshot(9005, {}, { lastSyncedAt: Date.now() - (MAX_CLEAN_TTL_MS - 5_000) });
+		expect(sendSnapshot('wallet', 9005)).not.toBeNull();
+	});
+
+	it('returns null for a pre-cairn-g1u2 snapshot (no persisted spendable set)', () => {
+		// Simulate an old row: spendableUtxos absent from the JSON entirely.
+		putWalletSnapshot(9006, { spendableUtxos: undefined });
+		// putWalletSnapshot spreads `over` so undefined stays a key; force-strip it to
+		// mirror a genuinely old row that never had the field.
+		const row = db
+			.prepare("SELECT snapshot FROM wallet_snapshots WHERE wallet_id = 9006")
+			.get() as { snapshot: string };
+		const parsed = JSON.parse(row.snapshot);
+		delete parsed.spendableUtxos;
+		db.prepare("UPDATE wallet_snapshots SET snapshot = ? WHERE wallet_id = 9006").run(
+			JSON.stringify(parsed)
+		);
+		expect(sendSnapshot('wallet', 9006)).toBeNull();
+	});
+
+	it('returns null for a scan-less snapshot (never actually scanned)', () => {
+		putWalletSnapshot(9007, { scan: null });
+		expect(sendSnapshot('wallet', 9007)).toBeNull();
+	});
+
+	it('returns null for a degraded snapshot (scanError set)', () => {
+		putWalletSnapshot(9008, { scanError: 'node unreachable' });
+		expect(sendSnapshot('wallet', 9008)).toBeNull();
+	});
+
+	it('markWalletDirty flips a clean wallet so the next send load re-scans live', () => {
+		putWalletSnapshot(9009, {});
+		expect(sendSnapshot('wallet', 9009)).not.toBeNull(); // clean → served
+		markWalletDirty('wallet', 9009);
+		expect(readDirtySince('wallet', 9009)).not.toBeNull();
+		expect(sendSnapshot('wallet', 9009)).toBeNull(); // now dirty → live scan
+	});
+
+	it('honours the kill-switch: skips the whole fast path (covered by env at load)', () => {
+		// The kill-switch (CAIRN_SYNC_DISABLE_DIRTY_SKIP) is read once at module load
+		// into CLEAN_SKIP_DISABLED; when off (the default in this suite) a clean wallet
+		// is served, proving the gate is otherwise open. The env-set path is exercised
+		// by cleanSkipWindowMs()'s own tests; here we assert the default-open behavior.
+		putWalletSnapshot(9010, {});
+		expect(sendSnapshot('wallet', 9010)).not.toBeNull();
 	});
 });

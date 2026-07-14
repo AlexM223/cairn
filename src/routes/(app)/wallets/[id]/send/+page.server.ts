@@ -2,16 +2,12 @@ import { error } from '@sveltejs/kit';
 import { requireFeature } from '$lib/server/api';
 import { getWallet, getWalletDetail } from '$lib/server/wallets';
 import { listSavedAddresses } from '$lib/server/addressBook';
-import {
-	getTransaction,
-	getWalletUtxos,
-	ownBroadcastTxids,
-	classifyUnconfirmedTrust
-} from '$lib/server/transactions';
-import type { UnconfirmedTrust } from '$lib/server/bitcoin/psbt';
+import { getTransaction, getWalletUtxos, ownBroadcastTxids } from '$lib/server/transactions';
+import type { UnconfirmedTrust, CoinbaseStatus } from '$lib/server/bitcoin/psbt';
 import { summarizePsbt, type PsbtSummary } from '$lib/server/bitcoin/psbt';
 import { getReferralBuyUrls } from '$lib/server/referrals';
 import { getChain } from '$lib/server/chain';
+import { sendSnapshot } from '$lib/server/walletSync';
 import { coinbaseMaturity } from '$lib/shared/coinbase';
 import type { FeeEstimates } from '$lib/types';
 import type { PageServerLoad } from './$types';
@@ -52,6 +48,85 @@ export interface SendLiveData {
 	tipHeight: number;
 }
 
+/** The lean spendable-coin shape both the live scan (getWalletUtxos → SpendableUtxo)
+ *  and the clean-wallet snapshot (walletSync SnapshotUtxo) satisfy — the only
+ *  fields _assembleSendLiveData reads. */
+type RawSendUtxo = {
+	txid: string;
+	vout: number;
+	value: number;
+	height: number;
+	coinbase?: CoinbaseStatus;
+};
+
+/**
+ * Assemble the SendLiveData payload from raw coins + balance + tip + fees. The
+ * SINGLE source of truth shared by both the live-scan and the clean-snapshot fast
+ * path (cairn-g1u2), so the two are byte-for-byte identical for the same state —
+ * the coin-control list, the own-change/received badging, the confirmed-first
+ * sort, and the immature-coinbase subtraction (cairn-oae1.3) are computed here and
+ * nowhere else. Exported for the parity test. Pure; no IO.
+ */
+export function _assembleSendLiveData(args: {
+	/** Raw confirmed balance from the scan, or null when the scan was unreachable. */
+	confirmed: number | null;
+	rawUtxos: RawSendUtxo[];
+	tipHeight: number;
+	fees: FeeEstimates | null;
+	/** Txids this wallet broadcast itself — the own-change vs received signal. */
+	ownTxids: Set<string>;
+	scanError: string | null;
+}): SendLiveData {
+	// Include UNCONFIRMED coins too (cairn-u9ob.1/.7): the builder can spend our own
+	// unconfirmed change automatically and received unconfirmed coins when explicitly
+	// selected. Tag each own-change (neutral) vs received (risky) exactly as
+	// classifyUnconfirmedTrust does, so coin control badges them identically whether
+	// this came from a live scan or the snapshot.
+	const utxos = args.rawUtxos
+		.map((u) => ({
+			txid: u.txid,
+			vout: u.vout,
+			value: u.value,
+			height: u.height,
+			coinbase: u.coinbase === true,
+			unconfirmedTrust: (u.height > 0
+				? null
+				: args.ownTxids.has(u.txid.toLowerCase())
+					? 'own-change'
+					: 'received') as UnconfirmedTrust | null
+		}))
+		// Confirmed coins first (largest value), then unconfirmed (largest value).
+		.sort((a, b) => {
+			const ca = a.height > 0 ? 1 : 0;
+			const cb = b.height > 0 ? 1 : 0;
+			if (ca !== cb) return cb - ca;
+			return b.value - a.value;
+		});
+
+	// cairn-oae1.3: fold immature-coinbase value out of `confirmed` so the
+	// eyebrow/max-amount validation never advertises sats the build engine will
+	// refuse to spend (psbt.ts's selectSpendCandidates already excludes them).
+	let maturingTotal = 0;
+	let confirmed = args.confirmed;
+	if (confirmed !== null) {
+		for (const u of utxos) {
+			if (u.coinbase && u.height > 0 && !coinbaseMaturity(u.height, args.tipHeight).mature) {
+				maturingTotal += u.value;
+			}
+		}
+		confirmed -= maturingTotal;
+	}
+
+	return {
+		confirmed,
+		maturingTotal,
+		scanError: args.scanError,
+		utxos,
+		fees: args.fees,
+		tipHeight: args.tipHeight
+	};
+}
+
 /**
  * The Electrum/Core RPC-dependent half of the send load. Returned UNAWAITED from
  * load() so SvelteKit streams it in: the page shell (name, saved recipients, the
@@ -61,51 +136,60 @@ export interface SendLiveData {
  * the client (a "couldn't reach your node" state, never a broken page).
  */
 async function loadSendLiveData(userId: number, id: number, xpub: string): Promise<SendLiveData> {
-	// Confirmed balance for the Create step; a scan failure disables building
-	// (no UTXO set to spend from) but the page still renders with an explanation.
-	// The spendable-coin list feeds the manual coin-control picker — it comes
-	// from the same (60s-cached) wallet scan the balance does, plus the same
-	// listUnspent lookups the build endpoint will run, so what the user picks
-	// from is exactly what the server will select from.
+	const ownTxids = ownBroadcastTxids(id);
+
+	// Fast path (cairn-g1u2): a PROVABLY-clean wallet serves its coins + balance
+	// from the snapshot the background sync already maintains — no live re-scan,
+	// which is the dominant per-send-GET cost that collapsed mixed load at tier
+	// 200. sendSnapshot returns non-null ONLY when the wallet is watched, clean,
+	// within MAX_CLEAN_TTL, and has a persisted spendable set; on ANY doubt it
+	// returns null and we fall through to the live scan below. The build/broadcast
+	// path re-scans live regardless, so this only affects the DISPLAYED list.
+	const cached = sendSnapshot('wallet', id);
+	if (cached) {
+		// Fees stay live (30s-cached in the chain layer, cheap, and genuinely
+		// time-varying — not wallet state). Tip comes from the snapshot; the client
+		// keeps it fresh via onNewBlock.
+		let fees: FeeEstimates | null = null;
+		try {
+			fees = await getChain().getFeeEstimates();
+		} catch {
+			fees = null;
+		}
+		return _assembleSendLiveData({
+			confirmed: cached.confirmed,
+			rawUtxos: cached.utxos,
+			tipHeight: cached.tipHeight,
+			fees,
+			ownTxids,
+			scanError: null
+		});
+	}
+
+	// Live path (behavior unchanged): re-scan for fresh UTXOs. Confirmed balance
+	// for the Create step; a scan failure disables building (no UTXO set to spend
+	// from) but the page still renders with an explanation. The spendable-coin list
+	// feeds the manual coin-control picker — the same listUnspent lookups the build
+	// endpoint runs, so what the user picks from is what the server selects from.
 	let confirmed: number | null = null;
 	let scanError: string | null = null;
-	let utxos: SendLiveData['utxos'] = [];
+	let rawUtxos: RawSendUtxo[] = [];
 	try {
 		const detail = await getWalletDetail(userId, id);
-		// The wallet existence was already validated synchronously in load(); a
-		// null detail here is a scan inconsistency, degraded to an empty spendable
-		// set rather than a stream rejection (the shell has already rendered).
+		// The wallet existence was already validated synchronously in load(); a null
+		// detail here is a scan inconsistency, degraded to an empty spendable set
+		// rather than a stream rejection (the shell has already rendered).
 		if (detail) {
 			confirmed = detail.scan.confirmed;
-			// Include UNCONFIRMED coins too (cairn-u9ob.1/.7): the builder can spend our
-			// own unconfirmed change automatically and received unconfirmed coins when
-			// explicitly selected. classifyUnconfirmedTrust tags each so coin control can
-			// badge own-change (neutral) vs received (risky). height + coinbase ride along
-			// so coin control can maturity-check mining rewards live against the block tip.
-			utxos = classifyUnconfirmedTrust(await getWalletUtxos(xpub), ownBroadcastTxids(id))
-				.map((u) => ({
-					txid: u.txid,
-					vout: u.vout,
-					value: u.value,
-					height: u.height,
-					coinbase: u.coinbase === true,
-					unconfirmedTrust: u.height > 0 ? null : u.unconfirmedTrust ?? 'received'
-				}))
-				// Confirmed coins first (largest value), then unconfirmed (largest value).
-				.sort((a, b) => {
-					const ca = a.height > 0 ? 1 : 0;
-					const cb = b.height > 0 ? 1 : 0;
-					if (ca !== cb) return cb - ca;
-					return b.value - a.value;
-				});
+			rawUtxos = await getWalletUtxos(xpub);
 		}
 	} catch (e) {
 		if (e instanceof Error && e.cause === 'unreachable') {
 			scanError = e.message;
 		} else if (scanError === null && confirmed !== null) {
-			// The scan worked but the UTXO listing failed — coin control simply
-			// isn't offered this load; the default (automatic) flow is unaffected.
-			utxos = [];
+			// The scan worked but the UTXO listing failed — coin control simply isn't
+			// offered this load; the default (automatic) flow is unaffected.
+			rawUtxos = [];
 		} else {
 			throw e;
 		}
@@ -121,8 +205,8 @@ async function loadSendLiveData(userId: number, id: number, xpub: string): Promi
 
 	// Block tip seeds coin control's coinbase-maturity check. The client keeps it
 	// fresh live via onNewBlock; a failed lookup falls back to 0, which just means
-	// coinbase coins read as immature until the first live block arrives (safe:
-	// the server construction guard rejects immature coinbase regardless).
+	// coinbase coins read as immature until the first live block arrives (safe: the
+	// server construction guard rejects immature coinbase regardless).
 	let tipHeight = 0;
 	try {
 		tipHeight = (await getChain().getTip()).height;
@@ -130,24 +214,7 @@ async function loadSendLiveData(userId: number, id: number, xpub: string): Promi
 		tipHeight = 0;
 	}
 
-	// cairn-oae1.3: fold immature-coinbase value out of `confirmed` so the
-	// eyebrow/max-amount validation never advertises sats the build engine will
-	// refuse to spend (psbt.ts's selectSpendCandidates already excludes them).
-	// `utxos` and `tipHeight` are both in scope regardless of which of the two
-	// try/catch blocks above populated them — a hiccup in either just leaves
-	// this at 0 (no coinbase utxos / tip unresolved => nothing reads as mature
-	// enough to subtract, so `confirmed` is left as Electrum reported it).
-	let maturingTotal = 0;
-	if (confirmed !== null) {
-		for (const u of utxos) {
-			if (u.coinbase && u.height > 0 && !coinbaseMaturity(u.height, tipHeight).mature) {
-				maturingTotal += u.value;
-			}
-		}
-		confirmed -= maturingTotal;
-	}
-
-	return { confirmed, maturingTotal, scanError, utxos, fees, tipHeight };
+	return _assembleSendLiveData({ confirmed, rawUtxos, tipHeight, fees, ownTxids, scanError });
 }
 
 export const load: PageServerLoad = async (event) => {

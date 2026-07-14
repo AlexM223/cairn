@@ -150,6 +150,25 @@ export interface WatcherScanProgress {
 }
 
 /**
+ * True when the watcher currently holds a LIVE subscription for at least one
+ * address of this wallet/multisig — i.e. the dirty-tracking signal is active for
+ * it, so a CLEAN `dirty_since` can be trusted as "provably unchanged on-chain".
+ * Requires the watcher to be started, past its baseline pass, attached to an
+ * Electrum pool, and to have this (kind, walletId) in its scripthash map. Gates
+ * walletSync.sendSnapshot's send-page fast path (cairn-g1u2): if the wallet isn't
+ * being watched, nothing would flip it dirty, so the send load must re-scan live
+ * rather than trust a possibly-stale clean flag. O(watched addresses); called only
+ * before the (far more expensive) live-scan fallback it may avoid.
+ */
+export function isWalletWatched(kind: WalletKind, walletId: number): boolean {
+	if (!state.started || !state.baselined || !state.electrum) return false;
+	for (const w of state.byScripthash.values()) {
+		if (w.walletId === walletId && w.kind === kind) return true;
+	}
+	return false;
+}
+
+/**
  * Live view of the initial address-history scan, read by the first-sync
  * screen (cairn-koy4.11). Observation only. baselinedScripthashes can retain
  * entries for scripthashes dropped from the watch set (client swap), so the

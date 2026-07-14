@@ -104,6 +104,24 @@ function buildWalletSnapshotAndSummary(hdkey, { hot }) {
 		});
 	}
 
+	// cairn-g1u2: the full spendable coin set a real doWalletScan now persists so
+	// the send page can render coin control + spendable balance from the snapshot
+	// when the wallet is clean, instead of a live re-scan. One coin per used,
+	// funded address — for the hot wallet this is the ~660-UTXO set the send page's
+	// coin-control list serialises. All confirmed + mature so none is folded out.
+	const spendableUtxos = [];
+	for (const a of addresses) {
+		if (a.used && a.balance > 0) {
+			spendableUtxos.push({
+				txid: randHex(32),
+				vout: 0,
+				value: a.balance,
+				height: tipHeight - 10,
+				coinbase: false
+			});
+		}
+	}
+
 	const snapshot = {
 		scan: { addresses, txs, confirmed: confirmedSats, unconfirmed: unconfirmedSats },
 		receive: {
@@ -116,6 +134,7 @@ function buildWalletSnapshotAndSummary(hdkey, { hot }) {
 			qr: 'data:image/png;base64,loadtest'
 		},
 		coinbaseUtxos: [],
+		spendableUtxos,
 		tipHeight,
 		speedUp: [],
 		scanError: null

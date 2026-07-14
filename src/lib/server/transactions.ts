@@ -985,6 +985,22 @@ export async function broadcastTransaction(
 		).run(walletId, updated.replacesTxid);
 	}
 
+	// This wallet's coins just changed (we spent one), so mark it dirty BEFORE
+	// returning: the next send load must re-scan live rather than serve the
+	// pre-spend snapshot from the clean-wallet fast path (cairn-g1u2). The async
+	// watcher notification for the scripthash status change may not have landed
+	// yet, so don't rely on it — await the mark so it is guaranteed persisted by
+	// the time the broadcast response reaches the client (the import is cached and
+	// the write synchronous). Dynamic import breaks the walletSync → transactions
+	// cycle; best-effort, never throws into the broadcast result.
+	try {
+		const { markWalletDirty } = await import('./walletSync');
+		markWalletDirty('wallet', walletId);
+	} catch {
+		/* best-effort: a persist hiccup just means the next load re-scans anyway once
+		   the watcher notification or the TTL fires */
+	}
+
 	return { txid: broadcastTxid, transaction: updated! };
 }
 

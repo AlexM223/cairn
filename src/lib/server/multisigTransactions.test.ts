@@ -7,6 +7,7 @@ import { db } from './db';
 import { registerUser } from './auth';
 import { setSetting } from './settings';
 import { getMultisig, toMultisigConfig } from './wallets/multisig';
+import { readDirtySince } from './walletSync';
 import { deriveMultisigAddress } from './bitcoin/multisig';
 import { constructMultisigPsbt, MultisigPsbtError, finalizeMultisigPsbt } from './bitcoin/multisigPsbt';
 import type { SpendableUtxo } from './bitcoin/psbt';
@@ -441,11 +442,22 @@ describe('broadcastMultisigTransaction', () => {
 		const txId = await signedToQuorum(userId, multisigId);
 		honestBroadcastOnce();
 
+		// cairn-g1u2: seed a CLEAN snapshot so the post-broadcast dirty mark has a row
+		// to flip (the next send load then re-scans live instead of serving pre-spend
+		// coins from the multisig clean-wallet fast path).
+		db.prepare(
+			`INSERT INTO wallet_snapshots (wallet_kind, wallet_id, snapshot, summary, last_synced_at, dirty_since)
+			 VALUES ('multisig', ?, '{}', NULL, ?, NULL)
+			 ON CONFLICT(wallet_kind, wallet_id) DO UPDATE SET dirty_since = NULL, last_synced_at = excluded.last_synced_at`
+		).run(multisigId, Date.now());
+		expect(readDirtySince('multisig', multisigId)).toBeNull(); // clean before
+
 		const { txid, transaction } = await broadcastMultisigTransaction(userId, multisigId, txId);
 		expect(txid).toMatch(/^[0-9a-f]{64}$/);
 		expect(transaction.status).toBe('completed');
 		expect(transaction.txid).toBe(txid);
 		expect(broadcastMock).toHaveBeenCalledTimes(1);
+		expect(readDirtySince('multisig', multisigId)).not.toBeNull(); // dirty after
 	});
 
 	it('rejects a broadcast whose server-reported txid differs from ours (cairn-ziwm)', async () => {
