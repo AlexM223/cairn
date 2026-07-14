@@ -27,6 +27,7 @@ import { db } from './db';
 import { getChain } from './chain/index';
 import { parseXpub, deriveAddress, addressToScripthash, scriptPubKeyHex } from './bitcoin/xpub';
 import { deriveMultisigAddress } from './bitcoin/multisig';
+import { GAP_LIMIT } from './bitcoin/gapLimitScanner';
 import { toMultisigConfig, type MultisigRow, type MultisigKeyRow } from './wallets/multisig';
 import { notify } from './notifications';
 import { verifyTxInclusion, parseBlockHeader, blockHash, meetsTarget, bitsToTarget } from './bitcoin/spv';
@@ -38,10 +39,18 @@ import type { ElectrumPool } from './electrum/pool';
 
 const log = childLogger('notify:txwatch');
 
-// How far past the last-known cursor to watch. The scanners use a gap limit of
-// 20; we watch a fixed window from index 0 so a fresh deposit to any of the
-// first WATCH_WINDOW addresses on each chain is seen. Kept modest to bound the
-// number of live subscriptions (WATCH_WINDOW × 2 chains per wallet).
+// The FLOOR of how many addresses to watch per chain (receive/change). For a
+// never-scanned wallet we watch this fixed window from index 0. For a wallet that
+// HAS been scanned, watchDepthFor() raises the per-chain depth to cover the whole
+// scanned set (highest used index + GAP_LIMIT) — see the cairn-wcxw fix below.
+//
+// Before that fix this was a FIXED window from index 0, so a wallet with more than
+// WATCH_WINDOW used addresses on one chain had live addresses beyond index 30 that
+// were never subscribed: a deposit there fired no scripthash event (a live
+// notification miss) and — once dirty-tracking keys off scripthash events — would
+// never mark the wallet dirty (a false-clean stale-balance bug). Making the watch
+// set a strict function of the scan set is a PREREQUISITE for the dirty signal
+// being sound, not a bonus.
 const WATCH_WINDOW = 30;
 
 // Confirmation thresholds. tx_confirmed fires once a watched tx reaches the
@@ -168,6 +177,57 @@ interface WalletRow {
 	xpub: string;
 }
 
+/**
+ * Per-chain watch depth for a wallet/multisig (cairn-wcxw). Returns how many
+ * addresses to subscribe on [receive, change]. For a wallet that has a persisted
+ * snapshot, this is `highestUsedIndex + GAP_LIMIT + 1` per chain — exactly the
+ * scanner's own forward window (gapLimitScanner trims to `lastUsed + GAP_LIMIT`),
+ * so the watch set covers the scan set and no live address is left unsubscribed.
+ * Floored at WATCH_WINDOW so a brand-new / never-scanned wallet still watches the
+ * first 30. Reads the snapshot JSON directly (no walletSync import → no cycle);
+ * any parse/shape hiccup falls back to the floor, which is safe (the periodic
+ * refresh re-derives it once the next scan lands). Both snapshot shapes carry
+ * `{ index, used }` with a chain discriminator (`change` boolean for single-sig,
+ * `chain` 0|1 for multisig).
+ */
+function watchDepthFor(kind: WalletKind, walletId: number): [number, number] {
+	const maxUsed: [number, number] = [-1, -1];
+	try {
+		const row = db
+			.prepare('SELECT snapshot FROM wallet_snapshots WHERE wallet_kind = ? AND wallet_id = ?')
+			.get(kind, walletId) as { snapshot: string } | undefined;
+		if (row) {
+			const snap = JSON.parse(row.snapshot) as {
+				scan?: { addresses?: { index?: number; change?: boolean; used?: boolean }[] };
+				detail?: { addresses?: { index?: number; chain?: number; used?: boolean }[] };
+			};
+			const addrs =
+				kind === 'wallet'
+					? (snap.scan?.addresses ?? []).map((a) => ({
+							index: a.index,
+							chain: a.change ? 1 : 0,
+							used: a.used
+						}))
+					: (snap.detail?.addresses ?? []).map((a) => ({
+							index: a.index,
+							chain: a.chain === 1 ? 1 : 0,
+							used: a.used
+						}));
+			for (const a of addrs) {
+				if (a.used && typeof a.index === 'number' && a.index > maxUsed[a.chain]) {
+					maxUsed[a.chain] = a.index;
+				}
+			}
+		}
+	} catch (e) {
+		log.debug({ err: e, kind, walletId }, 'watch-depth read failed; using floor');
+	}
+	return [
+		Math.max(WATCH_WINDOW, maxUsed[0] + GAP_LIMIT + 1),
+		Math.max(WATCH_WINDOW, maxUsed[1] + GAP_LIMIT + 1)
+	];
+}
+
 /** Derive the watched addresses (receive + change) for one single-sig wallet. */
 function walletAddresses(row: WalletRow): Watched[] {
 	const out: Watched[] = [];
@@ -178,8 +238,9 @@ function walletAddresses(row: WalletRow): Watched[] {
 		log.warn({ err: e, walletId: row.id }, 'skip wallet: xpub parse failed');
 		return out;
 	}
+	const depth = watchDepthFor('wallet', row.id);
 	for (const change of [0, 1] as const) {
-		for (let i = 0; i < WATCH_WINDOW; i++) {
+		for (let i = 0; i < depth[change]; i++) {
 			try {
 				const { address } = deriveAddress(parsed, change, i);
 				out.push({ kind: 'wallet', walletId: row.id, userId: row.user_id, address });
@@ -201,8 +262,9 @@ function multisigAddresses(multisig: MultisigRow): Watched[] {
 		log.warn({ err: e, multisigId: multisig.id }, 'skip multisig: config build failed');
 		return out;
 	}
+	const depth = watchDepthFor('multisig', multisig.id);
 	for (const change of [0, 1] as const) {
-		for (let i = 0; i < WATCH_WINDOW; i++) {
+		for (let i = 0; i < depth[change]; i++) {
 			try {
 				const { address } = deriveMultisigAddress(config, change, i);
 				out.push({ kind: 'multisig', walletId: multisig.id, userId: multisig.userId, address });
@@ -633,6 +695,71 @@ async function spvVerifyConfirmed(txid: string, height: number): Promise<boolean
 	} catch (e) {
 		log.warn({ err: e, txid, height }, 'SPV proof could not be fetched — deferring notification');
 		return false;
+	}
+}
+
+// --------------------------------------------------------- dirty-tracking (wcxw)
+//
+// Sync engine Phase 1. Electrum's scripthash subscription hands us a STATUS HASH
+// that changes iff the address's history changes (new tx, confirmation, reorg,
+// RBF). We persist the last-seen status per (wallet, scripthash) and mark the
+// OWNING WALLET dirty whenever a fresh status differs from — or is absent versus —
+// that baseline, so walletSync can skip re-scanning a wallet whose every watched
+// address is unchanged. This runs on BOTH the live 'scripthash' event and the
+// subscribe/resubscribe return value (initial subscribe, client swap, and the
+// reconnect-after-outage replay), which is what makes reconnect a free
+// reconciliation checkpoint rather than a blind full rescan.
+//
+// Conservative by construction (a false-clean silently shows a stale balance):
+//   • ABSENT baseline ⇒ treated as changed ⇒ dirty. We only ever call a wallet
+//     clean once we have positively recorded a status we can compare against.
+//   • unchanged status ⇒ no-op (the efficiency win: an idle reconnect replay
+//     doesn't re-dirty anything).
+// Independent of the notification baseline gate (state.baselined): it must run
+// during the startup subscribe pass to seed baselines and mark existing wallets
+// dirty for their one cold-start scan, and it never notifies.
+
+/** SELECT/UPSERT the per-scripthash status baseline; module-level so the hot
+ *  event path doesn't re-prepare on every status change. */
+const readStatusStmt = db.prepare(
+	'SELECT status FROM scripthash_status WHERE wallet_kind = ? AND wallet_id = ? AND scripthash = ?'
+);
+const upsertStatusStmt = db.prepare(
+	`INSERT INTO scripthash_status (wallet_kind, wallet_id, scripthash, status, updated_at)
+	 VALUES (?, ?, ?, ?, ?)
+	 ON CONFLICT(wallet_kind, wallet_id, scripthash) DO UPDATE SET
+	   status = excluded.status, updated_at = excluded.updated_at`
+);
+const markDirtyStmt = db.prepare(
+	'UPDATE wallet_snapshots SET dirty_since = ? WHERE wallet_kind = ? AND wallet_id = ?'
+);
+
+/**
+ * Reconcile a freshly observed Electrum status for a watched scripthash against
+ * the persisted baseline; on a real change (or absent baseline) update the
+ * baseline and mark the owning wallet dirty. Synchronous, best-effort, never
+ * throws into the emitter. See the section header for the correctness contract.
+ */
+function reconcileStatus(scripthash: string, status: string | null): void {
+	const w = state.byScripthash.get(scripthash);
+	if (!w) return; // not (or no longer) watched — ignore
+	// Don't seed baseline/dirty rows for a wallet that's already been deleted: its
+	// snapshot + scripthash_status were swept by the delete trigger, and re-inserting
+	// here would orphan a row (walletStillExists fails closed, same as the notify path).
+	if (!walletStillExists(w)) return;
+	try {
+		const prior = readStatusStmt.get(w.kind, w.walletId, scripthash) as
+			| { status: string | null }
+			| undefined;
+		// Unchanged status against an EXISTING baseline ⇒ nothing changed on-chain.
+		if (prior !== undefined && prior.status === status) return;
+		const now = Date.now();
+		upsertStatusStmt.run(w.kind, w.walletId, scripthash, status, now);
+		// Mark the owning wallet dirty. A no-op (0 rows) for a never-synced wallet
+		// with no snapshot row yet — harmless, it already scans by absence.
+		markDirtyStmt.run(now, w.kind, w.walletId);
+	} catch (e) {
+		log.debug({ err: e, walletId: w.walletId, kind: w.kind }, 'status reconcile failed (ignored)');
 	}
 }
 
@@ -1177,11 +1304,15 @@ export async function refreshWatches(): Promise<void> {
 		if (state.byScripthash.has(scripthash)) continue;
 		state.byScripthash.set(scripthash, w);
 		try {
-			// subscribeScripthash resolves with the current status; we don't diff it
-			// here (initial history is the baseline — recorded lazily on first change
-			// only for NEW txids, which is what we want post-launch). Subscribing is
-			// what arms future 'scripthash' events.
-			await electrum.subscribeScripthash(scripthash);
+			// subscribeScripthash resolves with the current status. Subscribing arms
+			// future 'scripthash' events; the returned status is the dirty-tracking
+			// reconciliation checkpoint (cairn-wcxw) — on the initial subscribe it
+			// seeds the baseline (and marks existing wallets dirty for their cold-start
+			// scan), and on a client swap it catches any change that happened while we
+			// were detached. (The NOTIFICATION baseline is still recorded separately and
+			// lazily; reconcileStatus only drives the balance-refresh dirty flag.)
+			const status = await electrum.subscribeScripthash(scripthash);
+			reconcileStatus(scripthash, status);
 			subscribed++;
 		} catch (e) {
 			// Leave it in the map: a reconnect resubscribe or a later refresh retries.
@@ -1280,7 +1411,14 @@ async function baselinePendingScripthashes(): Promise<{ done: number; failed: nu
 }
 
 function attachListeners(electrum: ElectrumPool): void {
-	state.onScripthash = (sh: string) => {
+	state.onScripthash = (sh: string, status: string | null) => {
+		// Dirty-tracking first (synchronous, cairn-wcxw): persist the new status and
+		// mark the wallet dirty on a real change. This fires on live changes AND on
+		// the reconnect resubscribe replay (client.ts resubscribe re-emits each sub's
+		// current status), so an outage during which the chain moved is reconciled
+		// the moment we reconnect. Independent of — and ahead of — the notification
+		// path, which stays gated on state.baselined.
+		reconcileStatus(sh, status);
 		void handleScripthashChange(sh).catch((e) =>
 			log.error({ err: e }, 'scripthash handler threw')
 		);
@@ -1349,5 +1487,9 @@ export const _internals = {
 	spvVerifyConfirmed,
 	maxCachedTarget,
 	TIP_CACHE_SIZE,
-	DIFFICULTY_FLOOR_FACTOR
+	DIFFICULTY_FLOOR_FACTOR,
+	// cairn-wcxw dirty-tracking seams (addressWatcherDirty.test.ts).
+	reconcileStatus,
+	watchDepthFor,
+	WATCH_WINDOW
 };

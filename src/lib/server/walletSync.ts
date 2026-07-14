@@ -24,6 +24,7 @@
 // deliberately does NOT read snapshots (it always re-scans live for fresh UTXOs).
 
 import QRCode from 'qrcode';
+import { env } from '$env/dynamic/private';
 import { db } from './db';
 import { DEFAULT_BACKGROUND_LANE_SIZE } from './electrum/pool';
 import { childLogger } from './logger';
@@ -65,6 +66,40 @@ const log = childLogger('wallet-sync');
  *  younger than this. ~20s per the SWR design — long enough that a burst of
  *  navigations coalesces, short enough that data never feels stale. */
 export const THROTTLE_MS = 20_000;
+
+/**
+ * Dirty-tracking clean-skip ceiling (cairn-wcxw, sync engine Phase 1). A wallet
+ * whose persisted snapshot is CLEAN (`wallet_snapshots.dirty_since IS NULL` — no
+ * Electrum scripthash status change has been observed since the last scan) is
+ * returned from cache WITHOUT re-scanning until it is this old, instead of the
+ * 20 s `THROTTLE_MS`. The scripthash subscription the app already holds for every
+ * watched address is what flips a wallet dirty on a real change (new tx,
+ * confirmation, reorg, RBF, reconnect delta), so a genuinely idle wallet costs
+ * ~zero Electrum work between changes; this TTL is only the self-healing net that
+ * bounds the worst-case stale window if a signal is ever missed. 30 min balances
+ * "claws back nearly all the idle-scan savings" against "bounded staleness."
+ * Dirty wallets are unaffected — they still coalesce on `THROTTLE_MS` and scan.
+ */
+export const MAX_CLEAN_TTL_MS = 30 * 60_000;
+
+/**
+ * Ops kill-switch for the clean-skip (cairn-wcxw). Set the env var to any truthy
+ * value to collapse `MAX_CLEAN_TTL` back to `THROTTLE_MS`, i.e. revert to the old
+ * "always re-scan past 20 s" behavior instantly without a redeploy — the escape
+ * hatch for the medium false-clean risk (a missed status signal showing a stale
+ * balance). Read once at module load; a restart re-reads it. The dirty-MARKING
+ * path (watcher persistence) always runs regardless, so flipping this off/on
+ * never leaves stale baselines behind.
+ */
+const CLEAN_SKIP_DISABLED = /^(1|true|yes|on)$/i.test(
+	(env.CAIRN_SYNC_DISABLE_DIRTY_SKIP ?? env.HEARTWOOD_SYNC_DISABLE_DIRTY_SKIP ?? '').trim()
+);
+
+/** The effective clean-skip window: `MAX_CLEAN_TTL_MS` normally, or `THROTTLE_MS`
+ *  when the kill-switch is set (dirty-tracking clean-skip disabled). */
+export function cleanSkipWindowMs(): number {
+	return CLEAN_SKIP_DISABLED ? THROTTLE_MS : MAX_CLEAN_TTL_MS;
+}
 
 /** QR options — copied from the page loaders so a snapshot's stored QR matches
  *  what the receive panel would have rendered live (Heartwood parchment on
@@ -166,6 +201,9 @@ export interface StoredSnapshot<T> {
 	snapshot: T;
 	/** ms epoch of the scan that produced this snapshot. */
 	lastSyncedAt: number;
+	/** Dirty flag (cairn-wcxw): NULL/`null` = clean; ms epoch = marked-dirty-at.
+	 *  Read by the refresh gate to decide clean-skip vs rescan. */
+	dirtySince: number | null;
 }
 
 // -------------------------------------------------------- list-view summary blob
@@ -260,20 +298,103 @@ function writeSnapshot(
 }
 
 const readStmt = db.prepare(
-	'SELECT snapshot, last_synced_at FROM wallet_snapshots WHERE wallet_kind = ? AND wallet_id = ?'
+	'SELECT snapshot, last_synced_at, dirty_since FROM wallet_snapshots WHERE wallet_kind = ? AND wallet_id = ?'
 );
 
 /** Read + parse a stored snapshot, or null when absent/corrupt. Never throws. */
 function readSnapshot<T>(kind: SnapshotKind, id: number): StoredSnapshot<T> | null {
 	try {
 		const row = readStmt.get(kind, id) as
-			| { snapshot: string; last_synced_at: number }
+			| { snapshot: string; last_synced_at: number; dirty_since: number | null }
 			| undefined;
 		if (!row) return null;
-		return { snapshot: JSON.parse(row.snapshot) as T, lastSyncedAt: row.last_synced_at };
+		return {
+			snapshot: JSON.parse(row.snapshot) as T,
+			lastSyncedAt: row.last_synced_at,
+			dirtySince: row.dirty_since ?? null
+		};
 	} catch (e) {
 		log.debug({ err: e, kind, id }, 'read wallet snapshot failed (ignored)');
 		return null;
+	}
+}
+
+// -------------------------------------------------------------- dirty tracking
+//
+// cairn-wcxw sync engine Phase 1. The address watcher marks a wallet dirty (sets
+// `wallet_snapshots.dirty_since`) the instant an Electrum scripthash status
+// actually changes; this module READS that flag to skip clean rescans, and
+// CLEARS it after a successful scan persist — but only if no NEW change landed
+// while the scan was in flight (compare-and-swap on the exact flag value), so a
+// deposit that races a scan is never silently swallowed into a "clean" snapshot.
+
+const readDirtyStmt = db.prepare(
+	'SELECT dirty_since FROM wallet_snapshots WHERE wallet_kind = ? AND wallet_id = ?'
+);
+
+/** The current dirty_since for a wallet/multisig (null = clean or no snapshot). */
+export function readDirtySince(kind: SnapshotKind, id: number): number | null {
+	try {
+		const row = readDirtyStmt.get(kind, id) as { dirty_since: number | null } | undefined;
+		return row?.dirty_since ?? null;
+	} catch (e) {
+		log.debug({ err: e, kind, id }, 'read dirty_since failed (ignored)');
+		return null;
+	}
+}
+
+const readSyncMetaStmt = db.prepare(
+	'SELECT last_synced_at, dirty_since FROM wallet_snapshots WHERE wallet_kind = ? AND wallet_id = ?'
+);
+
+/** last_synced_at + dirty_since for the refresh pass, WITHOUT parsing the full
+ *  snapshot JSON (cairn-wcxw). Returns null when never synced. Never throws.
+ *  Lighter than readWalletSnapshot/readMultisigSnapshot (which JSON.parse the
+ *  whole address+tx blob just to read two integers), so the coalesced pass — run
+ *  for every wallet of every user at boot — does one indexed read per item. */
+export function readSyncMeta(
+	kind: SnapshotKind,
+	id: number
+): { lastSyncedAt: number; dirtySince: number | null } | null {
+	try {
+		const row = readSyncMetaStmt.get(kind, id) as
+			| { last_synced_at: number; dirty_since: number | null }
+			| undefined;
+		if (!row) return null;
+		return { lastSyncedAt: row.last_synced_at, dirtySince: row.dirty_since ?? null };
+	} catch (e) {
+		log.debug({ err: e, kind, id }, 'read sync meta failed (ignored)');
+		return null;
+	}
+}
+
+// `dirty_since IS ?` is a null-safe equality (SQLite): it matches a stored NULL
+// when `expected` is null and an exact timestamp otherwise — so this only clears
+// the flag if it is byte-for-byte what the scan saw at its start. A status change
+// that landed mid-scan rewrote dirty_since to a fresh timestamp, so the WHERE no
+// longer matches and the wallet correctly stays dirty for another scan.
+const clearDirtyStmt = db.prepare(
+	`UPDATE wallet_snapshots SET dirty_since = NULL
+	  WHERE wallet_kind = ? AND wallet_id = ? AND dirty_since IS ?`
+);
+
+/**
+ * Clear a wallet's dirty flag after a successful scan persist — but ONLY if the
+ * flag is unchanged from `expected` (the value read at scan start). Returns true
+ * when it actually cleared. A mid-scan status change (which bumped dirty_since to
+ * a newer timestamp) fails the compare-and-swap and leaves the wallet dirty, so
+ * the next refresh rescans and captures that change. Best-effort; never throws.
+ */
+export function clearDirtyIfUnchanged(
+	kind: SnapshotKind,
+	id: number,
+	expected: number | null
+): boolean {
+	try {
+		return clearDirtyStmt.run(kind, id, expected).changes > 0;
+	} catch (e) {
+		log.debug({ err: e, kind, id }, 'clear dirty_since failed (ignored)');
+		return false;
 	}
 }
 
@@ -327,14 +448,49 @@ function readCachedSummary(
 // ------------------------------------------------- single-flight + throttle core
 
 /**
+ * The dirty-aware skip decision shared by `singleFlightThrottled` and
+ * `runPortfolioRefreshPass` (cairn-wcxw). Returns true when a scan can be SKIPPED
+ * and the cached snapshot returned as-is. Exported pure for direct testing.
+ *
+ * Rules, in order:
+ *   • `force` ⇒ never skip.
+ *   • no snapshot (`lastSyncedAt === null`) ⇒ never skip — the first scan of a
+ *     wallet always runs (the money-grade invariant: never fabricate "clean" for
+ *     an address/wallet we've never actually scanned).
+ *   • otherwise skip iff the snapshot is younger than the applicable window:
+ *       – DIRTY (`dirtySince != null`) ⇒ the short `throttleMs` burst-coalescing
+ *         floor only (a dirty wallet must rescan promptly);
+ *       – CLEAN (`dirtySince == null`) ⇒ the long `cleanSkipMs` ceiling (skip
+ *         idle wallets), defaulting to `throttleMs` when a caller opts out of
+ *         dirty-tracking so the plain throttle semantics are unchanged.
+ */
+export function shouldSkipScan(opts: {
+	force?: boolean;
+	lastSyncedAt: number | null;
+	dirtySince?: number | null;
+	throttleMs?: number;
+	cleanSkipMs?: number;
+	now?: () => number;
+}): boolean {
+	if (opts.force) return false;
+	if (opts.lastSyncedAt === null) return false;
+	const now = opts.now ?? Date.now;
+	const throttleMs = opts.throttleMs ?? THROTTLE_MS;
+	const cleanSkipMs = opts.cleanSkipMs ?? throttleMs;
+	const window = opts.dirtySince != null ? throttleMs : cleanSkipMs;
+	return now() - opts.lastSyncedAt < window;
+}
+
+/**
  * The shared single-flight + throttle engine. Exported for direct testing.
  *
- * Returns the CACHED value without calling `doScan` when a snapshot exists and is
- * younger than `throttleMs`. Otherwise, if a scan for this key is already in
- * flight, returns that same promise (single-flight); if not, starts one, records
- * it in `map`, and clears it when settled. Deliberately NOT an `async` function:
- * the map get/set must run synchronously (before any await) so two concurrent
- * callers can never both start a scan.
+ * Returns the CACHED value without calling `doScan` when {@link shouldSkipScan}
+ * says the snapshot is fresh enough (a clean wallet skips for up to `cleanSkipMs`;
+ * a dirty one only coalesces within `throttleMs`). Otherwise, if a scan for this
+ * key is already in flight, returns that same promise (single-flight); if not,
+ * starts one, records it in `map`, and clears it when settled. Deliberately NOT
+ * an `async` function: the map get/set must run synchronously (before any await)
+ * so two concurrent callers can never both start a scan.
  */
 export function singleFlightThrottled<T>(
 	map: Map<string, Promise<T>>,
@@ -342,8 +498,12 @@ export function singleFlightThrottled<T>(
 	opts: {
 		force?: boolean;
 		throttleMs?: number;
+		/** Clean-skip ceiling (cairn-wcxw); defaults to `throttleMs` (no dirty-skip). */
+		cleanSkipMs?: number;
 		/** last_synced_at of the currently persisted snapshot, or null if none. */
 		lastSyncedAt: number | null;
+		/** dirty_since of the persisted snapshot (null = clean); drives the window. */
+		dirtySince?: number | null;
 		/** Return the persisted snapshot — only called on a throttle hit. */
 		readCached: () => T;
 		/** The real (expensive) scan + persist. */
@@ -352,10 +512,16 @@ export function singleFlightThrottled<T>(
 		now?: () => number;
 	}
 ): Promise<T> {
-	const now = opts.now ?? Date.now;
-	const throttleMs = opts.throttleMs ?? THROTTLE_MS;
-
-	if (!opts.force && opts.lastSyncedAt !== null && now() - opts.lastSyncedAt < throttleMs) {
+	if (
+		shouldSkipScan({
+			force: opts.force,
+			lastSyncedAt: opts.lastSyncedAt,
+			dirtySince: opts.dirtySince,
+			throttleMs: opts.throttleMs,
+			cleanSkipMs: opts.cleanSkipMs,
+			now: opts.now
+		})
+	) {
 		return Promise.resolve(opts.readCached());
 	}
 
@@ -436,6 +602,13 @@ const scanLimit = createLimiter(SCAN_CONCURRENCY);
  *  so a failure rejects to the API route (which keeps serving cached data)
  *  rather than persisting an error snapshot over the last good one. */
 async function doWalletScan(userId: number, row: WalletRow): Promise<WalletSnapshot> {
+	// Snapshot the dirty flag BEFORE any Electrum work (cairn-wcxw): a status change
+	// that lands while this scan is in flight bumps dirty_since to a newer value, so
+	// the compare-and-swap clear at the end won't match and the wallet correctly
+	// stays dirty for a follow-up scan. Read once, up front, with nothing async
+	// between here and the read.
+	const dirtyAtStart = readDirtySince('wallet', row.id);
+
 	// Core scan first — this is the one that must succeed to have anything worth
 	// persisting. A failure here throws (see above). Runs on the BACKGROUND lane
 	// so its ~200 pipelined history/balance calls never fill the socket an
@@ -499,6 +672,9 @@ async function doWalletScan(userId: number, row: WalletRow): Promise<WalletSnaps
 		scanError: null
 	};
 	writeSnapshot('wallet', row.id, snapshot, summarizeWalletSnapshot(snapshot));
+	// A fresh successful scan reflects on-chain state as of scan start, so clear the
+	// dirty flag — unless a status change raced this scan (CAS on dirtyAtStart).
+	clearDirtyIfUnchanged('wallet', row.id, dirtyAtStart);
 	return snapshot;
 }
 
@@ -518,6 +694,8 @@ export function refreshWalletSnapshot(
 	return singleFlightThrottled(inFlightWallet, `wallet:${walletId}`, {
 		force: opts.force,
 		lastSyncedAt: cached?.lastSyncedAt ?? null,
+		dirtySince: cached?.dirtySince ?? null,
+		cleanSkipMs: cleanSkipWindowMs(),
 		readCached: () => cached!.snapshot,
 		// Only the real Electrum work goes through the global semaphore — a throttle
 		// hit (readCached) and the single-flight bookkeeping stay outside it.
@@ -529,6 +707,9 @@ export function refreshWalletSnapshot(
 
 /** The real multisig scan. Throws when the core detail scan is unreachable. */
 async function doMultisigScan(userId: number, multisig: MultisigRow): Promise<MultisigSnapshot> {
+	// Snapshot the dirty flag before any Electrum work — see doWalletScan (cairn-wcxw).
+	const dirtyAtStart = readDirtySince('multisig', multisig.id);
+
 	// Background lane: the multisig gap-limit scan + UTXO fetch are bulk work that
 	// must not queue an interactive request behind them (cairn — HOL blocking).
 	const detail = await getMultisigDetail(multisig, 'background');
@@ -579,6 +760,8 @@ async function doMultisigScan(userId: number, multisig: MultisigRow): Promise<Mu
 		scanError: null
 	};
 	writeSnapshot('multisig', multisig.id, snapshot, summarizeMultisigSnapshot(snapshot));
+	// Clear dirty on a successful persist unless a status change raced the scan.
+	clearDirtyIfUnchanged('multisig', multisig.id, dirtyAtStart);
 	return snapshot;
 }
 
@@ -599,6 +782,8 @@ export function refreshMultisigSnapshot(
 	return singleFlightThrottled(inFlightMultisig, `multisig:${multisigId}`, {
 		force: opts.force,
 		lastSyncedAt: cached?.lastSyncedAt ?? null,
+		dirtySince: cached?.dirtySince ?? null,
+		cleanSkipMs: cleanSkipWindowMs(),
 		readCached: () => cached!.snapshot,
 		doScan: () => scanLimit(() => doMultisigScan(userId, multisig))
 	});
@@ -681,6 +866,10 @@ export interface PortfolioRefreshItem {
 	id: number;
 	/** last_synced_at of the persisted snapshot, or null when never synced. */
 	lastSyncedAt: number | null;
+	/** dirty_since of the persisted snapshot (cairn-wcxw): null/absent = clean, so
+	 *  the pass skips it for up to `cleanSkipMs` instead of the short throttle. A
+	 *  dirty item (timestamp) rescans as soon as it clears the throttle floor. */
+	dirtySince?: number | null;
 }
 
 export interface PortfolioRefreshSummary {
@@ -713,22 +902,41 @@ export async function runPortfolioRefreshPass(
 	opts: {
 		concurrency?: number;
 		throttleMs?: number;
+		/** Clean-skip ceiling (cairn-wcxw); defaults to `throttleMs` (no dirty-skip).
+		 *  Production passes `cleanSkipWindowMs()` so an idle CLEAN wallet is skipped
+		 *  for up to MAX_CLEAN_TTL — the biggest lever for the startup warm pass and
+		 *  the periodic portfolio refresh, which otherwise re-scan every wallet. */
+		cleanSkipMs?: number;
 		now?: () => number;
 		isFatal?: (err: unknown) => boolean;
 	} = {}
 ): Promise<PortfolioRefreshSummary> {
 	const now = opts.now ?? Date.now;
 	const throttleMs = opts.throttleMs ?? THROTTLE_MS;
+	const cleanSkipMs = opts.cleanSkipMs ?? throttleMs;
 	const isFatal = opts.isFatal ?? isConnectClassError;
 	const concurrency = Math.max(1, Math.floor(opts.concurrency ?? SCAN_CONCURRENCY) || 1);
 
 	const summary: PortfolioRefreshSummary = { refreshed: 0, skipped: 0, failed: 0, aborted: false };
 
-	// Throttle-skip up front (counted, never scanned); the rest, most-stale-first.
+	// Skip up front (counted, never scanned): a fresh-enough CLEAN item within the
+	// clean ceiling and a DIRTY item within the throttle floor both skip here; the
+	// rest go through most-stale-first (cairn-wcxw dirty-aware).
 	const due: PortfolioRefreshItem[] = [];
 	for (const it of items) {
-		if (it.lastSyncedAt !== null && now() - it.lastSyncedAt < throttleMs) summary.skipped++;
-		else due.push(it);
+		if (
+			shouldSkipScan({
+				lastSyncedAt: it.lastSyncedAt,
+				dirtySince: it.dirtySince,
+				throttleMs,
+				cleanSkipMs,
+				now
+			})
+		) {
+			summary.skipped++;
+		} else {
+			due.push(it);
+		}
 	}
 	due.sort((a, b) => (a.lastSyncedAt ?? -Infinity) - (b.lastSyncedAt ?? -Infinity));
 
@@ -832,10 +1040,12 @@ export async function refreshPortfolio(userId: number): Promise<PortfolioRefresh
 	const items: PortfolioRefreshItem[] = [];
 
 	for (const row of listWalletRows(userId)) {
+		const meta = readSyncMeta('wallet', row.id);
 		items.push({
 			kind: 'wallet',
 			id: row.id,
-			lastSyncedAt: readWalletSnapshot(row.id)?.lastSyncedAt ?? null
+			lastSyncedAt: meta?.lastSyncedAt ?? null,
+			dirtySince: meta?.dirtySince ?? null
 		});
 	}
 
@@ -845,7 +1055,13 @@ export async function refreshPortfolio(userId: number): Promise<PortfolioRefresh
 	const noteMultisig = (id: number) => {
 		if (seenMultisig.has(id)) return;
 		seenMultisig.add(id);
-		items.push({ kind: 'multisig', id, lastSyncedAt: readMultisigSnapshot(id)?.lastSyncedAt ?? null });
+		const meta = readSyncMeta('multisig', id);
+		items.push({
+			kind: 'multisig',
+			id,
+			lastSyncedAt: meta?.lastSyncedAt ?? null,
+			dirtySince: meta?.dirtySince ?? null
+		});
 	};
 	for (const row of listMultisigs(userId)) noteMultisig(row.id);
 	for (const s of listSharedMultisigs(userId)) {
@@ -853,10 +1069,15 @@ export async function refreshPortfolio(userId: number): Promise<PortfolioRefresh
 		if (getViewableMultisig(userId, s.multisigId)) noteMultisig(s.multisigId);
 	}
 
-	const summary = await runPortfolioRefreshPass(items, (item) =>
-		item.kind === 'wallet'
-			? refreshWalletSnapshot(userId, item.id)
-			: refreshMultisigSnapshot(userId, item.id)
+	const summary = await runPortfolioRefreshPass(
+		items,
+		(item) =>
+			item.kind === 'wallet'
+				? refreshWalletSnapshot(userId, item.id)
+				: refreshMultisigSnapshot(userId, item.id),
+		// Clean idle wallets skip for up to MAX_CLEAN_TTL here too (cairn-wcxw), so
+		// the warm/periodic pass stops re-scanning every wallet on every trigger.
+		{ cleanSkipMs: cleanSkipWindowMs() }
 	);
 
 	// Rebuild the dashboard aggregate from the freshly-persisted snapshots. Pure

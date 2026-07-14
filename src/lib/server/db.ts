@@ -501,7 +501,41 @@ db.exec(`
 	if (!snapCols.includes('summary')) {
 		db.exec('ALTER TABLE wallet_snapshots ADD COLUMN summary TEXT');
 	}
+	// Dirty-tracking flag (cairn-wcxw, sync engine Phase 1). NULL = clean (the
+	// persisted snapshot is trusted current); a ms-epoch timestamp = "an Electrum
+	// scripthash status changed at T and this wallet needs a rescan." The refresh
+	// gate (walletSync.singleFlightThrottled) skips scanning a CLEAN snapshot until
+	// MAX_CLEAN_TTL, and a successful scan compare-and-swaps the flag back to NULL
+	// only if no NEW status change landed mid-scan (walletSync.clearDirtyIfUnchanged).
+	// Nullable + additive so existing rows read as clean (which the reconnect
+	// reconciliation + TTL fallback then re-dirty on the first real signal).
+	if (!snapCols.includes('dirty_since')) {
+		db.exec('ALTER TABLE wallet_snapshots ADD COLUMN dirty_since INTEGER');
+	}
 }
+
+// Per-scripthash last-seen Electrum status baseline (cairn-wcxw, sync engine
+// Phase 1). Electrum's blockchain.scripthash.subscribe returns a STATUS HASH that
+// changes iff the address's history changes (new tx, confirmation, reorg, RBF).
+// The address watcher persists the last-seen status here so that, on a live
+// scripthash event OR a reconnect resubscribe replay, it can tell a REAL change
+// (status differs from / is absent vs the stored baseline ⇒ mark the owning
+// wallet dirty) from a redundant re-notification (status unchanged ⇒ skip). Kept
+// per-wallet in the PK so an address shared across two imported copies of the
+// same wallet is tracked independently and each is swept correctly on delete.
+// Keyed by (wallet_kind, wallet_id, scripthash) so it matches the polymorphic
+// child-table shape (deleteCascade.test.ts) and is swept by the two
+// trg_*_delete_children triggers below.
+db.exec(`
+	CREATE TABLE IF NOT EXISTS scripthash_status (
+		wallet_kind TEXT NOT NULL,     -- 'wallet' | 'multisig'
+		wallet_id   INTEGER NOT NULL,  -- id within its kind's table
+		scripthash  TEXT NOT NULL,     -- Electrum scripthash (hex)
+		status      TEXT,              -- last-seen Electrum status hash; NULL = never used
+		updated_at  INTEGER NOT NULL,  -- ms epoch of the last-seen status write
+		PRIMARY KEY (wallet_kind, wallet_id, scripthash)
+	);
+`);
 
 // Address-level labels (see src/lib/server/addressLabels.ts and cairn-nbsx).
 // Complements tx_labels: lets a user annotate WHY an individual address exists
@@ -864,6 +898,7 @@ db.exec(`
 		DELETE FROM backup_missing_notified WHERE wallet_kind = 'wallet' AND wallet_id = OLD.id;
 		DELETE FROM notified_txids WHERE wallet_kind = 'wallet' AND wallet_id = OLD.id;
 		DELETE FROM wallet_snapshots WHERE wallet_kind = 'wallet' AND wallet_id = OLD.id;
+		DELETE FROM scripthash_status WHERE wallet_kind = 'wallet' AND wallet_id = OLD.id;
 	END;
 
 	DROP TRIGGER IF EXISTS trg_multisigs_delete_children;
@@ -874,6 +909,7 @@ db.exec(`
 		DELETE FROM backup_missing_notified WHERE wallet_kind = 'multisig' AND wallet_id = OLD.id;
 		DELETE FROM notified_txids WHERE wallet_kind = 'multisig' AND wallet_id = OLD.id;
 		DELETE FROM wallet_snapshots WHERE wallet_kind = 'multisig' AND wallet_id = OLD.id;
+		DELETE FROM scripthash_status WHERE wallet_kind = 'multisig' AND wallet_id = OLD.id;
 	END;
 `);
 
@@ -892,7 +928,8 @@ for (const table of [
 	'address_labels',
 	'backup_missing_notified',
 	'notified_txids',
-	'wallet_snapshots'
+	'wallet_snapshots',
+	'scripthash_status'
 ]) {
 	db.exec(`
 		DELETE FROM ${table}

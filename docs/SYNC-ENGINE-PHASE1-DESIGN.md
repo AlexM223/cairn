@@ -1,6 +1,13 @@
 # Sync Engine Phase 1 — Dirty-Tracking Design (cairn-wcxw)
 
-Status: DESIGN (not yet implemented)
+Status: IMPLEMENTED (2026-07-14) — see MANUAL.md §"Electrum status-hash
+dirty-tracking". Built as designed with these concrete decisions: MAX_CLEAN_TTL =
+30 min (§5 Q1); WATCH_WINDOW fix uses the snapshot-derived depth, not a raised
+fixed cap (§5 Q3, watchDepthFor); the clean-skip kill-switch is an ENV var
+(CAIRN_SYNC_DISABLE_DIRTY_SKIP), not a user-facing feature flag (§5 Q4 — the
+feature-flag registry is admin/user-facing with `userMessage`s, wrong instrument
+for an ops toggle); scripthash_status is keyed (wallet_kind, wallet_id,
+scripthash) so it matches the polymorphic-child delete-cascade shape.
 Parent epic: cairn-6xxa (Perf re-architecture)
 Author: Fable deep-reasoner audit, 2026-07-13
 Related beads: cairn-qyvl, cairn-xlrm (closed), cairn-y802, cairn-8ubd (sequence-before), cairn-1q4b (Phase 2)

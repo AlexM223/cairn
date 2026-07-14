@@ -756,6 +756,54 @@ data" (dashboard/explorer), per-wallet balances, and per-tx decoded data.
   connect-class failure. **The send/PSBT flow deliberately bypasses
   snapshots entirely** — it always re-scans live for fresh UTXOs
   (correctness beats freshness there).
+
+  **Electrum status-hash dirty-tracking (cairn-wcxw, sync engine Phase 1).**
+  Layered on top of the throttle above. The app already holds a live Electrum
+  scripthash subscription for every watched address (`addressWatcher.ts`), and
+  each subscription carries a STATUS HASH that changes iff that address's
+  history changes (new tx, confirmation, reorg, RBF). Phase 1 stops throwing
+  that signal away:
+  - **`scripthash_status` table** persists the last-seen status per
+    `(wallet_kind, wallet_id, scripthash)`; **`wallet_snapshots.dirty_since`**
+    (NULL = clean, ms-epoch = marked-dirty-at) is the per-wallet dirty flag.
+    Both additive/PRAGMA-guarded; both swept by the `trg_*_delete_children`
+    triggers (the delete-cascade test enforces it).
+  - **`addressWatcher.reconcileStatus()`** runs on the live `'scripthash'`
+    event AND on the subscribe/resubscribe return value (initial subscribe,
+    client swap, and — critically — the reconnect-after-outage replay, making
+    reconnect a free reconciliation checkpoint). A status that DIFFERS from, or
+    is ABSENT versus, the stored baseline updates the baseline and marks the
+    owning wallet dirty; an UNCHANGED status is a no-op (so an idle reconnect
+    doesn't re-dirty everything). Conservative by construction: absent baseline
+    ⇒ dirty; the first scan of a wallet always runs (never-synced wallets scan
+    by absence regardless of the flag).
+  - **The refresh gate** (`shouldSkipScan()`, used by both
+    `singleFlightThrottled` and `runPortfolioRefreshPass`): a CLEAN wallet is
+    served from cache without scanning for up to **`MAX_CLEAN_TTL_MS` (30 min)**
+    instead of the 20 s `THROTTLE_MS`; a DIRTY wallet still only coalesces
+    within `THROTTLE_MS` and then rescans. On a successful scan the flag is
+    **compare-and-swap-cleared** (`clearDirtyIfUnchanged`) only if it is
+    byte-for-byte what the scan saw at its start, so a deposit that races a scan
+    keeps the wallet dirty for a follow-up rather than being swallowed into a
+    "clean" snapshot. A failed scan never clears, so it retries (preserves the
+    existing "a failed scan never clobbers the last good snapshot" contract).
+    The 30-min TTL is the self-healing net that bounds the worst-case stale
+    window if any signal is ever missed.
+  - **WATCH_WINDOW blind-spot fix (prerequisite).** `watchDepthFor()` now sizes
+    the per-chain subscription depth from the persisted snapshot's highest used
+    index + `GAP_LIMIT` (floored at `WATCH_WINDOW = 30`), so the watch set
+    always covers the scanned set. Before this, a wallet with >30 used
+    addresses on a chain had live addresses that were never subscribed — a
+    deposit there fired no event and would never mark the wallet dirty (a
+    false-clean). The dirty signal is only sound because the watch set is now a
+    strict function of the scan set.
+  - **Kill-switch.** Set `CAIRN_SYNC_DISABLE_DIRTY_SKIP=1` (or
+    `HEARTWOOD_SYNC_DISABLE_DIRTY_SKIP`) to collapse the clean ceiling back to
+    `THROTTLE_MS` — instant revert to "always re-scan past 20 s" without a
+    redeploy, the escape hatch for the medium false-clean risk. The
+    dirty-MARKING path always runs regardless, so toggling it never leaves stale
+    baselines behind. Cold-start scans everyone once (empty baselines ⇒ all
+    dirty), matching the pre-existing `warmAllSnapshots` behavior.
 - **`src/lib/server/chain/cache.ts`** — in-process (not persisted) TTL
   caches used directly by `ChainService`: `cachedTip` (10min ceiling,
   normally invalidated instantly by the `'header'` event), `cachedFeeEstimates`
@@ -1507,12 +1555,12 @@ append-only sequence:
    the old `UNIQUE` constraint shape is detected (SQLite can't `ALTER` a
    constraint, so it renames-old/creates-new/copies/drops).
 
-**Cross-table cleanup via triggers, not app code.** Six "polymorphic child"
+**Cross-table cleanup via triggers, not app code.** Seven "polymorphic child"
 tables (`balance_snapshots`, `wallet_backups`, `address_labels`,
-`backup_missing_notified`, `notified_txids`, `wallet_snapshots`) key off a
-`(wallet_kind, wallet_id)` pair rather than a real FK (SQLite has no
-polymorphic FK). Two triggers, `trg_wallets_delete_children` and
-`trg_multisigs_delete_children` (`db.ts:833-853`), sweep all six whenever a
+`backup_missing_notified`, `notified_txids`, `wallet_snapshots`,
+`scripthash_status`) key off a `(wallet_kind, wallet_id)` pair rather than a real
+FK (SQLite has no polymorphic FK). Two triggers, `trg_wallets_delete_children`
+and `trg_multisigs_delete_children`, sweep all seven whenever a
 `wallets`/`multisigs` row is deleted — covering both direct `DELETE`s and
 cascaded user deletion. They're defined with `DROP TRIGGER IF EXISTS` +
 `CREATE TRIGGER` (not `IF NOT EXISTS`) specifically so edits to the trigger

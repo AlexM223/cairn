@@ -41,7 +41,9 @@ import { registerUser } from './auth';
 import { setSetting } from './settings';
 import {
 	singleFlightThrottled,
+	shouldSkipScan,
 	THROTTLE_MS,
+	MAX_CLEAN_TTL_MS,
 	SCAN_CONCURRENCY,
 	createLimiter,
 	runPortfolioRefreshPass,
@@ -50,6 +52,9 @@ import {
 	summarizeMultisigSnapshot,
 	finalizeCachedBalance,
 	refreshWalletSnapshot,
+	readDirtySince,
+	readSyncMeta,
+	clearDirtyIfUnchanged,
 	EMPTY_WALLET_SNAPSHOT,
 	EMPTY_MULTISIG_SNAPSHOT,
 	type PortfolioRefreshItem,
@@ -357,6 +362,37 @@ describe('runPortfolioRefreshPass', () => {
 		expect(scanned.sort()).toEqual([2, 3]);
 		expect(summary.refreshed).toBe(2);
 		expect(summary.skipped).toBe(1);
+	});
+
+	it('dirty-aware: skips a CLEAN item within TTL but scans a DIRTY one past the throttle (cairn-wcxw)', async () => {
+		const now = () => 1_000_000_000;
+		const scanned: number[] = [];
+		const items: PortfolioRefreshItem[] = [
+			// clean, 25s old — inside the 30min clean ceiling → skip (the wcxw win)
+			{ kind: 'wallet', id: 1, lastSyncedAt: now() - (THROTTLE_MS + 5_000), dirtySince: null },
+			// dirty, 25s old — past the 20s throttle floor → scan
+			{
+				kind: 'wallet',
+				id: 2,
+				lastSyncedAt: now() - (THROTTLE_MS + 5_000),
+				dirtySince: now() - 4_000
+			},
+			// clean but older than the TTL → the self-heal net rescans
+			{ kind: 'wallet', id: 3, lastSyncedAt: now() - (MAX_CLEAN_TTL_MS + 1), dirtySince: null }
+		];
+
+		const summary = await runPortfolioRefreshPass(
+			items,
+			async (it) => {
+				scanned.push(it.id);
+				return {};
+			},
+			{ concurrency: 1, now, cleanSkipMs: MAX_CLEAN_TTL_MS }
+		);
+
+		expect(scanned.sort()).toEqual([2, 3]);
+		expect(summary.refreshed).toBe(2);
+		expect(summary.skipped).toBe(1); // the clean, in-TTL item
 	});
 
 	it('caps concurrency at the requested limit', async () => {
@@ -672,5 +708,181 @@ describe('doWalletScan coinbase bucketing — QA finding F2 regression lock', ()
 		await refreshWalletSnapshot(userId, walletId, { force: true });
 
 		expect(listUnspentMock).toHaveBeenCalledTimes(1);
+	});
+});
+
+// ============================================================================
+// cairn-wcxw — sync engine Phase 1: Electrum status-hash dirty-tracking
+// ============================================================================
+
+describe('shouldSkipScan — dirty-aware skip decision (cairn-wcxw)', () => {
+	const now = () => 1_000_000_000;
+
+	it('never skips when forced', () => {
+		expect(
+			shouldSkipScan({ force: true, lastSyncedAt: now() - 1_000, dirtySince: null, now })
+		).toBe(false);
+	});
+
+	it('never skips the FIRST scan (no snapshot yet)', () => {
+		// The money-grade invariant: an address/wallet we have never scanned is never
+		// treated as clean, regardless of window.
+		expect(shouldSkipScan({ lastSyncedAt: null, dirtySince: null, now })).toBe(false);
+	});
+
+	it('a CLEAN wallet skips past the 20s throttle, up to MAX_CLEAN_TTL', () => {
+		const cleanSkipMs = MAX_CLEAN_TTL_MS;
+		// 25s old — past the throttle floor but well inside the clean ceiling.
+		expect(
+			shouldSkipScan({
+				lastSyncedAt: now() - (THROTTLE_MS + 5_000),
+				dirtySince: null,
+				throttleMs: THROTTLE_MS,
+				cleanSkipMs,
+				now
+			})
+		).toBe(true);
+		// Older than the ceiling → the TTL self-heal net kicks in, rescan.
+		expect(
+			shouldSkipScan({
+				lastSyncedAt: now() - (cleanSkipMs + 1),
+				dirtySince: null,
+				throttleMs: THROTTLE_MS,
+				cleanSkipMs,
+				now
+			})
+		).toBe(false);
+	});
+
+	it('a DIRTY wallet only coalesces within the throttle floor, then rescans', () => {
+		const cleanSkipMs = MAX_CLEAN_TTL_MS;
+		// Dirty + within 20s → coalesce a burst (skip).
+		expect(
+			shouldSkipScan({
+				lastSyncedAt: now() - 5_000,
+				dirtySince: now() - 4_000,
+				throttleMs: THROTTLE_MS,
+				cleanSkipMs,
+				now
+			})
+		).toBe(true);
+		// Dirty + past 20s → rescan even though it's far inside the CLEAN ceiling.
+		expect(
+			shouldSkipScan({
+				lastSyncedAt: now() - (THROTTLE_MS + 1),
+				dirtySince: now() - (THROTTLE_MS + 1),
+				throttleMs: THROTTLE_MS,
+				cleanSkipMs,
+				now
+			})
+		).toBe(false);
+	});
+
+	it('defaults cleanSkipMs to throttleMs (plain throttle when a caller opts out)', () => {
+		// With no cleanSkipMs a clean wallet behaves exactly like the pre-wcxw
+		// throttle: skip within 20s, scan past it.
+		expect(shouldSkipScan({ lastSyncedAt: now() - 5_000, now })).toBe(true);
+		expect(shouldSkipScan({ lastSyncedAt: now() - (THROTTLE_MS + 1), now })).toBe(false);
+	});
+});
+
+describe('clearDirtyIfUnchanged — compare-and-swap clear (cairn-wcxw)', () => {
+	beforeEach(() => wipeWalletFixtures());
+
+	/** Insert a bare snapshot row with a given dirty_since. */
+	function seedSnapshotRow(dirtySince: number | null): void {
+		db.prepare(
+			`INSERT INTO wallet_snapshots (wallet_kind, wallet_id, snapshot, summary, last_synced_at, dirty_since)
+			 VALUES ('wallet', 42, '{}', NULL, ?, ?)`
+		).run(Date.now(), dirtySince);
+	}
+
+	it('clears the flag when it is unchanged from what the scan saw', () => {
+		seedSnapshotRow(5_000);
+		expect(clearDirtyIfUnchanged('wallet', 42, 5_000)).toBe(true);
+		expect(readDirtySince('wallet', 42)).toBeNull();
+	});
+
+	it('leaves the wallet DIRTY when a status change raced the scan (value moved)', () => {
+		// Scan started with dirty_since = 5_000; a mid-scan change bumped it to 9_000.
+		seedSnapshotRow(9_000);
+		expect(clearDirtyIfUnchanged('wallet', 42, 5_000)).toBe(false);
+		// Still dirty → the next refresh will rescan and capture the raced change.
+		expect(readDirtySince('wallet', 42)).toBe(9_000);
+	});
+
+	it('is a null-safe no-op clear for an already-clean row', () => {
+		seedSnapshotRow(null);
+		expect(clearDirtyIfUnchanged('wallet', 42, null)).toBe(true);
+		expect(readDirtySince('wallet', 42)).toBeNull();
+	});
+});
+
+describe('readSyncMeta (cairn-wcxw)', () => {
+	beforeEach(() => wipeWalletFixtures());
+
+	it('returns lastSyncedAt + dirtySince without parsing the snapshot blob', () => {
+		db.prepare(
+			`INSERT INTO wallet_snapshots (wallet_kind, wallet_id, snapshot, summary, last_synced_at, dirty_since)
+			 VALUES ('wallet', 7, 'not valid json {{{', NULL, 123456, 999)`
+		).run();
+		// Deliberately corrupt snapshot JSON — readSyncMeta must NOT touch it.
+		const meta = readSyncMeta('wallet', 7);
+		expect(meta).toEqual({ lastSyncedAt: 123456, dirtySince: 999 });
+		expect(readSyncMeta('wallet', 999)).toBeNull();
+	});
+});
+
+describe('refreshWalletSnapshot dirty gate — integration (cairn-wcxw)', () => {
+	beforeEach(() => {
+		wipeWalletFixtures();
+		getTxHexMock.mockReset();
+		listUnspentMock.mockReset();
+		scanWalletMock.mockReset();
+		findNextUnusedIndexMock.mockReset();
+	});
+
+	/** Backdate the persisted snapshot and set its dirty flag directly. */
+	function setSnapshotState(walletId: number, ageMs: number, dirtySince: number | null): void {
+		db.prepare(
+			'UPDATE wallet_snapshots SET last_synced_at = ?, dirty_since = ? WHERE wallet_kind = ? AND wallet_id = ?'
+		).run(Date.now() - ageMs, dirtySince, 'wallet', walletId);
+	}
+
+	it('a CLEAN wallet past the throttle but within TTL is served from cache — no scan', async () => {
+		const { userId, walletId } = await seedWallet();
+		stubOneConfirmedUtxo('12'.repeat(32), 150_000_000, 900_000);
+		getTxHexMock.mockResolvedValue(normalRawHex());
+
+		// First scan establishes the snapshot (dirty cleared to NULL on success).
+		await refreshWalletSnapshot(userId, walletId, { force: true });
+		expect(readDirtySince('wallet', walletId)).toBeNull();
+
+		// 25s old (past the 20s throttle) but clean → clean-skip up to 30min. Clear
+		// the mock so any call at all here means a (wrongly triggered) rescan — one
+		// doWalletScan hits scanWallet more than once (scan + getWalletUtxos), so we
+		// assert scan-happened vs skipped, not an exact count.
+		scanWalletMock.mockClear();
+		setSnapshotState(walletId, THROTTLE_MS + 5_000, null);
+		const snap = await refreshWalletSnapshot(userId, walletId);
+		expect(snap).not.toBeNull();
+		expect(scanWalletMock).not.toHaveBeenCalled(); // NOT re-scanned — the wcxw win
+	});
+
+	it('a DIRTY wallet past the throttle rescans and the scan clears the flag', async () => {
+		const { userId, walletId } = await seedWallet();
+		stubOneConfirmedUtxo('12'.repeat(32), 150_000_000, 900_000);
+		getTxHexMock.mockResolvedValue(normalRawHex());
+
+		await refreshWalletSnapshot(userId, walletId, { force: true });
+
+		// Simulate a scripthash status change: backdate + mark dirty.
+		scanWalletMock.mockClear();
+		setSnapshotState(walletId, THROTTLE_MS + 5_000, Date.now() - 3_000);
+		const snap = await refreshWalletSnapshot(userId, walletId);
+		expect(snap).not.toBeNull();
+		expect(scanWalletMock).toHaveBeenCalled(); // dirty → rescanned
+		// Successful scan compare-and-swapped the flag back to clean.
+		expect(readDirtySince('wallet', walletId)).toBeNull();
 	});
 });
