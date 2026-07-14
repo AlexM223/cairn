@@ -133,6 +133,55 @@ describe('deriveAddress', () => {
 	});
 });
 
+// The memoization added for cairn-8ubd must be invisible to correctness: same key +
+// index → same address (warm hit), and nothing leaks across keys or script types.
+describe('derivation memoization (cairn-8ubd)', () => {
+	it('parseXpub returns a cached instance for identical input (hit)', () => {
+		expect(parseXpub(ZPUB)).toBe(parseXpub(ZPUB)); // same object reference on repeat
+		expect(parseXpub(`  ${ZPUB}\n`)).toBe(parseXpub(ZPUB)); // trimmed to the same key
+		expect(parseXpub(YPUB)).not.toBe(parseXpub(ZPUB)); // different keys, different entries
+	});
+
+	it('deriveAddress is stable across repeated calls (warm hit equals cold)', () => {
+		const parsed = parseXpub(ZPUB);
+		const first = deriveAddress(parsed, 0, 3);
+		const second = deriveAddress(parsed, 0, 3); // served from the address cache
+		expect(second).toEqual(first);
+		// A fresh parse of the same key (distinct ParsedXpub) still derives the same address.
+		expect(deriveAddress(parseXpub(ZPUB), 0, 3).address).toBe(first.address);
+		// Warm hits still match the BIP84 vectors — the cache stores real values.
+		expect(deriveAddress(parsed, 0, 0).address).toBe('bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu');
+	});
+
+	it('does not leak across change chains or indices', () => {
+		const parsed = parseXpub(ZPUB);
+		const r0 = deriveAddress(parsed, 0, 0).address;
+		const c0 = deriveAddress(parsed, 1, 0).address;
+		const r1 = deriveAddress(parsed, 0, 1).address;
+		expect(new Set([r0, c0, r1]).size).toBe(3); // all distinct
+		expect(deriveAddress(parsed, 1, 0).address).toBe(c0); // change chain still stable
+	});
+
+	it('does not collide two script types over the same underlying key bytes', () => {
+		// Same 78-byte key, re-versioned as a ypub (p2sh-p2wpkh) — a DIFFERENT script
+		// form than the zpub (p2wpkh). The address cache keys on script type, so these
+		// must derive different addresses, never a cross-script-type cache hit.
+		const yOfZ = withVersion(ZPUB, 0x049d7cb2); // ypub version bytes
+		const asZpub = deriveAddress(parseXpub(ZPUB), 0, 0);
+		const asYpub = deriveAddress(parseXpub(yOfZ), 0, 0);
+		expect(parseXpub(yOfZ).scriptType).toBe('p2sh-p2wpkh');
+		expect(asYpub.address).not.toBe(asZpub.address);
+		expect(asYpub.address.startsWith('3')).toBe(true); // p2sh-p2wpkh
+		expect(asZpub.address.startsWith('bc1q')).toBe(true); // p2wpkh
+	});
+
+	it('does not leak across different wallets at the same index', () => {
+		expect(deriveAddress(parseXpub(XPUB), 0, 7).address).not.toBe(
+			deriveAddress(parseXpub(ZPUB), 0, 7).address
+		);
+	});
+});
+
 describe('addressToScriptPubKey', () => {
 	it('encodes P2PKH (genesis address)', () => {
 		const script = addressToScriptPubKey('1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa');

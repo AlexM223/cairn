@@ -580,7 +580,22 @@ export function deriveMultisigAddress(config: MultisigConfig, chain: 0 | 1, inde
 	const sorted = childPubkeys(resolved, chain, index)
 		.map((c) => c.pubkey)
 		.sort(compareBytes);
-	const ms = p2ms(config.threshold, sorted);
+	return assembleMultisigAddress(config.threshold, sorted, scriptType);
+}
+
+/**
+ * Wrap the BIP-67-sorted child pubkeys into the address + PSBT scripts for one
+ * script form: p2ms → p2wsh / sh(wsh) / bare sh. The single source of truth for the
+ * money-critical script assembly, shared by {@link deriveMultisigAddress} (which
+ * re-validates its config per call) and {@link createMultisigDeriver} (which resolves
+ * once). `sorted` MUST already be in BIP-67 order.
+ */
+function assembleMultisigAddress(
+	threshold: number,
+	sorted: Uint8Array[],
+	scriptType: MultisigScriptType
+): MultisigAddress {
+	const ms = p2ms(threshold, sorted);
 
 	if (scriptType === 'p2wsh') {
 		const payment = p2wsh(ms, NETWORK);
@@ -611,6 +626,71 @@ export function deriveMultisigAddress(config: MultisigConfig, chain: 0 | 1, inde
 		throw new MultisigError('Address construction failed.', 'derivation_failed');
 	}
 	return { address: payment.address, redeemScript: payment.redeemScript, sortedPubkeys: sorted };
+}
+
+/** A reusable, config-hoisted multisig address deriver (cairn-8ubd). */
+export interface MultisigDeriver {
+	readonly scriptType: MultisigScriptType;
+	readonly threshold: number;
+	/** The multisig's address (+ PSBT scripts) at <chain>/<index>. */
+	deriveAddress(chain: 0 | 1, index: number): MultisigAddress;
+}
+
+/**
+ * Build a deriver that resolves + validates a multisig config ONCE and hoists each
+ * cosigner's per-chain change node, then derives every address from that shared state
+ * (cairn-8ubd). For the HOT loops that derive many indices of one fixed config —
+ * multisigScan's gap-limit scan and addressWatcher's per-address subscription — where
+ * `deriveMultisigAddress` otherwise re-parsed all N cosigner xpubs from base58 and
+ * re-derived the chain node on EVERY index (linear in N, the real cost for a 2-of-3+).
+ *
+ * Deliberately NOT the default path: one-off callers (receive endpoint, address-detail
+ * pages, tests, the stateless flow) keep calling {@link deriveMultisigAddress}, which
+ * re-validates on every call — a bad config costs real money, so that guard stays put
+ * for callers that pass a fresh config each time. The address math is byte-identical
+ * between the two (both route through {@link assembleMultisigAddress}); the factory only
+ * removes redundant *re*-work when the SAME config is derived many times.
+ */
+export function createMultisigDeriver(config: MultisigConfig): MultisigDeriver {
+	const resolved = resolveMultisig(config); // parse every cosigner + validate, ONCE
+	const scriptType = multisigScriptType(config);
+	const threshold = config.threshold;
+
+	// Each cosigner's change node (m/<chain>) derived once per chain, lazily. This is
+	// the CKDpub childPubkeys re-ran for every index; hoisting it is the per-N win.
+	const chainNodes: [HDKey[] | null, HDKey[] | null] = [null, null];
+	const nodesFor = (chain: 0 | 1): HDKey[] => {
+		let nodes = chainNodes[chain];
+		if (!nodes) {
+			nodes = resolved.map((k) => k.hdkey.deriveChild(chain));
+			chainNodes[chain] = nodes;
+		}
+		return nodes;
+	};
+
+	return {
+		scriptType,
+		threshold,
+		deriveAddress(chain: 0 | 1, index: number): MultisigAddress {
+			if (chain !== 0 && chain !== 1) {
+				throw new MultisigError(`Invalid chain ${chain} (0 = receive, 1 = change).`, 'derivation_failed');
+			}
+			if (!Number.isInteger(index) || index < 0 || index >= HARDENED) {
+				throw new MultisigError(`Invalid derivation index: ${index}`, 'derivation_failed');
+			}
+			const nodes = nodesFor(chain);
+			const sorted = nodes
+				.map((node, i) => {
+					const pubkey = node.deriveChild(index).publicKey;
+					if (!pubkey) {
+						throw new MultisigError(`Key derivation failed for ${resolved[i].label}.`, 'derivation_failed');
+					}
+					return pubkey;
+				})
+				.sort(compareBytes);
+			return assembleMultisigAddress(threshold, sorted, scriptType);
+		}
+	};
 }
 
 /**

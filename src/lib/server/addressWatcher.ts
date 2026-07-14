@@ -26,7 +26,7 @@
 import { db } from './db';
 import { getChain } from './chain/index';
 import { parseXpub, deriveAddress, addressToScripthash, scriptPubKeyHex } from './bitcoin/xpub';
-import { deriveMultisigAddress } from './bitcoin/multisig';
+import { createMultisigDeriver } from './bitcoin/multisig';
 import { GAP_LIMIT } from './bitcoin/gapLimitScanner';
 import { toMultisigConfig, type MultisigRow, type MultisigKeyRow } from './wallets/multisig';
 import { notify } from './notifications';
@@ -281,11 +281,15 @@ function multisigAddresses(multisig: MultisigRow): Watched[] {
 		log.warn({ err: e, multisigId: multisig.id }, 'skip multisig: config build failed');
 		return out;
 	}
+	// One deriver for the whole wallet: resolve/validate once, hoist the chain nodes,
+	// then derive every watched index off that shared state (cairn-8ubd) instead of
+	// re-parsing all N cosigner xpubs per address.
+	const deriver = createMultisigDeriver(config);
 	const depth = watchDepthFor('multisig', multisig.id);
 	for (const change of [0, 1] as const) {
 		for (let i = 0; i < depth[change]; i++) {
 			try {
-				const { address } = deriveMultisigAddress(config, change, i);
+				const { address } = deriver.deriveAddress(change, i);
 				out.push({ kind: 'multisig', walletId: multisig.id, userId: multisig.userId, address });
 			} catch {
 				// Skip a bad index.

@@ -12,7 +12,7 @@
 //   nextMultisigChangeIndex(multisig) → first unused change index
 
 import { bytesToHex } from '@noble/hashes/utils.js';
-import { deriveMultisigAddress, multisigToDescriptor } from './bitcoin/multisig';
+import { deriveMultisigAddress, createMultisigDeriver, multisigToDescriptor } from './bitcoin/multisig';
 import { annotateCoinbase } from './bitcoin/coinbaseScan';
 import { addressToScripthash } from './bitcoin/xpub';
 import { getChain } from './chain/index';
@@ -146,14 +146,19 @@ async function doScan(
 	multisig: MultisigRow,
 	lane: ElectrumLane
 ): Promise<MultisigScanResult & { scanned: ScannedAddress[] }> {
+	// Resolve + validate the config ONCE and hoist the per-chain nodes (cairn-8ubd):
+	// a gap-limit scan derives dozens of indices, and deriveMultisigAddress otherwise
+	// re-parsed every cosigner xpub and re-derived the chain node on each one.
+	const config = toMultisigConfig(multisig);
+	const deriver = createMultisigDeriver(config);
 	const scan = await runGapScan((chain, index) => ({
-		address: multisigAddressAt(multisig, chain, index),
+		address: deriver.deriveAddress(chain, index).address,
 		chain
 	}), lane);
 
 	// Persist ONLY the public result (never the heavy per-address `scanned`
 	// histories) so a cold restart can serve it instantly. One write, best-effort.
-	persistScanResult('multisig', multisigToDescriptor(toMultisigConfig(multisig)), {
+	persistScanResult('multisig', multisigToDescriptor(config), {
 		addresses: scan.addresses,
 		txs: scan.txs,
 		confirmed: scan.confirmed,

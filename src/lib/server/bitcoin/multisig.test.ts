@@ -8,6 +8,7 @@ import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
 import { parseXpub, addressToScriptPubKey } from './xpub';
 import {
 	deriveMultisigAddress,
+	createMultisigDeriver,
 	multisigKeyDerivations,
 	multisigTestAddress,
 	multisigToDescriptor,
@@ -179,6 +180,70 @@ describe('deriveMultisigAddress', () => {
 		expect(deriveMultisigAddress(viaZpub, 0, 0).address).toBe(
 			deriveMultisigAddress(MULTISIG_2OF3, 0, 0).address
 		);
+	});
+});
+
+// ── createMultisigDeriver (cairn-8ubd) ───────────────────────────────────────
+
+describe('createMultisigDeriver', () => {
+	const ALL_TYPES: MultisigScriptType[] = ['p2wsh', 'p2sh-p2wsh', 'p2sh'];
+
+	it('is byte-identical to deriveMultisigAddress across configs, chains, indices', () => {
+		for (const base of [MULTISIG_2OF3, MULTISIG_3OF5]) {
+			for (const scriptType of ALL_TYPES) {
+				const config: MultisigConfig = { ...base, scriptType };
+				const deriver = createMultisigDeriver(config);
+				for (const chain of [0, 1] as const) {
+					for (const index of [0, 1, 7, 42, 300]) {
+						const viaDeriver = deriver.deriveAddress(chain, index);
+						const viaDirect = deriveMultisigAddress(config, chain, index);
+						expect(viaDeriver.address).toBe(viaDirect.address);
+						expect(bytesToHex(viaDeriver.sortedPubkeys[0])).toBe(
+							bytesToHex(viaDirect.sortedPubkeys[0])
+						);
+						expect(viaDeriver.witnessScript && bytesToHex(viaDeriver.witnessScript)).toEqual(
+							viaDirect.witnessScript && bytesToHex(viaDirect.witnessScript)
+						);
+						expect(viaDeriver.redeemScript && bytesToHex(viaDeriver.redeemScript)).toEqual(
+							viaDirect.redeemScript && bytesToHex(viaDirect.redeemScript)
+						);
+					}
+				}
+			}
+		}
+	});
+
+	it('re-derivation of the same index is stable (warm hit returns the same address)', () => {
+		const deriver = createMultisigDeriver(MULTISIG_2OF3);
+		expect(deriver.deriveAddress(0, 5).address).toBe(deriver.deriveAddress(0, 5).address);
+		expect(deriver.deriveAddress(1, 5).address).toBe(deriver.deriveAddress(1, 5).address);
+	});
+
+	it('exposes the resolved threshold + script type', () => {
+		const d = createMultisigDeriver({ ...MULTISIG_3OF5, scriptType: 'p2sh-p2wsh' });
+		expect(d.threshold).toBe(3);
+		expect(d.scriptType).toBe('p2sh-p2wsh');
+		expect(createMultisigDeriver(MULTISIG_2OF3).scriptType).toBe('p2wsh'); // absent → p2wsh
+	});
+
+	it('does not leak addresses across distinct configs', () => {
+		const a = createMultisigDeriver(MULTISIG_2OF3);
+		const b = createMultisigDeriver(MULTISIG_3OF5);
+		for (const index of [0, 3, 19]) {
+			expect(a.deriveAddress(0, index).address).not.toBe(b.deriveAddress(0, index).address);
+		}
+	});
+
+	it('validates the config once, up front, and rejects bad chain/index at derive time', () => {
+		expect(() => createMultisigDeriver({ ...MULTISIG_2OF3, threshold: 0 })).toThrow(MultisigError);
+		expect(() => createMultisigDeriver({ threshold: 1, keys: [KEYS[0], KEYS[1], KEYS[0]] })).toThrow(
+			/distinct/
+		);
+		const d = createMultisigDeriver(MULTISIG_2OF3);
+		expect(() => d.deriveAddress(0, -1)).toThrow(MultisigError);
+		expect(() => d.deriveAddress(0, 0x80000000)).toThrow(MultisigError);
+		// @ts-expect-error deliberately bad chain
+		expect(() => d.deriveAddress(2, 0)).toThrow(MultisigError);
 	});
 });
 
