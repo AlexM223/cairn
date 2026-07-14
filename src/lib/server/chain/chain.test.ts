@@ -27,8 +27,16 @@ vi.mock('../chainEvents', () => ({
 }));
 vi.mock('../packageRelay', () => ({ resetPackageRelaySupport: vi.fn() }));
 vi.mock('../activity', () => ({ recordActivity: vi.fn() }));
+// testElectrum (cairn-goey) constructs its own throwaway ElectrumClient rather
+// than going through the pool — stub the class itself so its tests never open
+// a real socket.
+vi.mock('../electrum/client', async (importOriginal) => {
+	const mod = await importOriginal<typeof import('../electrum/client')>();
+	return { ...mod, ElectrumClient: vi.fn() };
+});
 
-import { ChainService, testCoreRpc, coreRpcUrlError } from './index';
+import { ChainService, testCoreRpc, coreRpcUrlError, testElectrum } from './index';
+import { ElectrumClient } from '../electrum/client';
 import { CoreRpcError } from '../bitcoinCore/client';
 import {
 	resetChainCaches,
@@ -40,7 +48,8 @@ import {
 	blockStatsCacheSize,
 	clearBlockStatsCache,
 	clearHeaderCache,
-	clearMerklePosCache
+	clearMerklePosCache,
+	clearPoolCache
 } from './cache';
 import type { BlockStats } from './index';
 
@@ -121,6 +130,7 @@ interface ElectrumStub {
 	getHistory: ReturnType<typeof vi.fn>;
 	getTransaction: ReturnType<typeof vi.fn>;
 	getMerkleProof: ReturnType<typeof vi.fn>;
+	banner: ReturnType<typeof vi.fn>;
 }
 
 /** Install stubbed Electrum methods onto a ChainService's pooled facade
@@ -150,6 +160,7 @@ afterEach(() => {
 	// The block-context header + merkle-pos caches (tx block context), same reason.
 	clearHeaderCache();
 	clearMerklePosCache();
+	clearPoolCache();
 });
 
 // ---- tip (electrum-backed, cairn-zoz8.5) -----------------------------------------
@@ -220,6 +231,143 @@ describe('getTip', () => {
 		});
 
 		await expect(svc.getTip()).rejects.toThrow(/electrum down/);
+	});
+});
+
+// ---- node health (electrum-backed, cairn-goey) -----------------------------------
+
+describe('getNodeInfo', () => {
+	it('reports connected with server/tip/banner on success', async () => {
+		const svc = makeService();
+		const hex = buildHeader({ time: 1_700_000_000, bits: GENESIS_BITS });
+		withElectrum(svc, {
+			headersSubscribe: vi.fn(async () => ({ height: TIP_HEIGHT, hex })),
+			banner: vi.fn(async () => 'Welcome to electrs')
+		});
+
+		await expect(svc.getNodeInfo()).resolves.toMatchObject({
+			connected: true,
+			server: 'stub:50001',
+			tipHeight: TIP_HEIGHT,
+			tipHash: headerHash(hex),
+			serverBanner: 'Welcome to electrs',
+			network: 'mainnet'
+		});
+	});
+
+	it('degrades banner to undefined (still connected) when the server does not implement it', async () => {
+		const svc = makeService();
+		const hex = buildHeader({ time: 1_700_000_000, bits: GENESIS_BITS });
+		withElectrum(svc, {
+			headersSubscribe: vi.fn(async () => ({ height: TIP_HEIGHT, hex })),
+			banner: vi.fn(async () => {
+				throw new Error('unsupported method');
+			})
+		});
+
+		const info = await svc.getNodeInfo();
+		expect(info).toMatchObject({ connected: true, tipHeight: TIP_HEIGHT });
+		expect(info.serverBanner).toBeUndefined();
+	});
+
+	it('reports disconnected with the error message and null tip when headersSubscribe fails', async () => {
+		const svc = makeService();
+		withElectrum(svc, {
+			headersSubscribe: vi.fn(async () => {
+				throw new Error('socket timeout');
+			})
+		});
+
+		await expect(svc.getNodeInfo()).resolves.toMatchObject({
+			connected: false,
+			server: 'stub:50001',
+			tipHeight: null,
+			tipHash: null,
+			error: 'socket timeout'
+		});
+	});
+
+	it('degrades tipHash to null (stays connected) when the header cannot be hashed', async () => {
+		const svc = makeService();
+		withElectrum(svc, {
+			// Invalid (non-hex) header bytes fail blockHashFromHeader's decode
+			// without failing the whole probe — the height still came from
+			// headersSubscribe.
+			headersSubscribe: vi.fn(async () => ({ height: TIP_HEIGHT, hex: 'zz' })),
+			banner: vi.fn(async () => 'banner')
+		});
+
+		await expect(svc.getNodeInfo()).resolves.toMatchObject({
+			connected: true,
+			tipHeight: TIP_HEIGHT,
+			tipHash: null
+		});
+	});
+});
+
+describe('testElectrum', () => {
+	function stubClient(overrides: {
+		headersSubscribe?: () => Promise<{ height: number }>;
+		banner?: () => Promise<string>;
+	}): { close: ReturnType<typeof vi.fn> } {
+		const close = vi.fn();
+		const instance = {
+			headersSubscribe: vi.fn(overrides.headersSubscribe ?? (async () => ({ height: TIP_HEIGHT }))),
+			banner: vi.fn(overrides.banner ?? (async () => 'stub banner')),
+			close
+		};
+		vi.mocked(ElectrumClient).mockImplementation(function () {
+			return instance as unknown as ElectrumClient;
+		} as unknown as () => ElectrumClient);
+		return { close };
+	}
+
+	const CFG_PROBE = { host: '10.0.0.5', port: 50001, tls: false };
+
+	it('reports ok with tip height and banner on success', async () => {
+		stubClient({});
+
+		await expect(testElectrum(CFG_PROBE)).resolves.toEqual({
+			ok: true,
+			tipHeight: TIP_HEIGHT,
+			banner: 'stub banner'
+		});
+	});
+
+	it('degrades banner to undefined (still ok) when the server does not implement it', async () => {
+		stubClient({
+			banner: async () => {
+				throw new Error('unsupported');
+			}
+		});
+
+		const result = await testElectrum(CFG_PROBE);
+		expect(result).toMatchObject({ ok: true, tipHeight: TIP_HEIGHT });
+		expect(result.banner).toBeUndefined();
+	});
+
+	it('reports not-ok with the error message on connection failure', async () => {
+		stubClient({
+			headersSubscribe: async () => {
+				throw new Error('ECONNREFUSED');
+			}
+		});
+
+		await expect(testElectrum(CFG_PROBE)).resolves.toMatchObject({
+			ok: false,
+			error: 'ECONNREFUSED'
+		});
+	});
+
+	it('always closes the throwaway client, on both success and failure', async () => {
+		const { close } = stubClient({
+			headersSubscribe: async () => {
+				throw new Error('down');
+			}
+		});
+
+		await testElectrum(CFG_PROBE);
+		expect(close).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -432,6 +580,119 @@ describe('getRecentBlocks', () => {
 		// via the Electrum path.
 		expect(blocks.map((b) => b.height)).toEqual([804]);
 		expect(blocks[0].hash).toBe(headerHash(hex804));
+	});
+
+	// ---- pool identification (cairn-goey): identifyBlockPool is independently
+	// try/catched from getblockstats per row (chain/index.ts's getRecentBlocks) —
+	// a coinbase-lookup failure must degrade only `pool`, never suppress stats,
+	// and vice versa. Zero coverage of this path existed before this bead.
+	describe('pool identification', () => {
+		/** ASCII → coinbase scriptSig hex, same convention as pools.test.ts. */
+		function asciiToHex(s: string): string {
+			let hex = '';
+			for (let i = 0; i < s.length; i++) hex += s.charCodeAt(i).toString(16).padStart(2, '0');
+			return hex;
+		}
+
+		function stubBlockAndCoinbase(
+			core: CoreStub,
+			hash: string,
+			coinbaseTag: string
+		): void {
+			core.getBlock.mockImplementation(async (h: string) =>
+				h === hash ? { tx: ['coinbase-txid-' + h], hash: h } : { tx: [], hash: h }
+			);
+			core.call.mockImplementation(async (method: string, params?: unknown[]) => {
+				if (method === 'getrawtransaction' && params?.[0] === 'coinbase-txid-' + hash) {
+					return {
+						vin: [{ coinbase: 'deadbeef' + asciiToHex(coinbaseTag) }],
+						vout: []
+					};
+				}
+				throw new Error(`unstubbed core.call ${method} ${JSON.stringify(params)}`);
+			});
+		}
+
+		it('identifies the pool from the coinbase and attaches it to the row alongside stats', async () => {
+			const core = makeCoreStub();
+			const svc = makeCoreService(core);
+			const hex = buildHeader({ time: 1_700_000_000, bits: GENESIS_BITS });
+			withElectrum(svc, { getBlockHeader: vi.fn(async () => hex) });
+			const hash = headerHash(hex);
+			stubBlockAndCoinbase(core, hash, '\x03abc/Foundry USA Pool #dropgold/');
+			core.getBlockStats.mockResolvedValue({
+				txs: 10,
+				total_size: 2000,
+				total_weight: 8000,
+				total_out: 99,
+				feerate_percentiles: [1, 2, 3, 4, 5]
+			});
+
+			const blocks = await svc.getRecentBlocks(1, 805);
+
+			expect(blocks[0].pool).toEqual({ name: 'Foundry USA', link: 'https://foundrydigital.com' });
+			expect(blocks[0].txCount).toBe(10); // stats enrichment unaffected
+		});
+
+		it('degrades pool to undefined (leaves stats intact) when the coinbase lookup fails', async () => {
+			const core = makeCoreStub();
+			const svc = makeCoreService(core);
+			const hex = buildHeader({ time: 1_700_000_000, bits: GENESIS_BITS });
+			withElectrum(svc, { getBlockHeader: vi.fn(async () => hex) });
+			core.getBlock.mockImplementation(async () => {
+				throw new Error('getblock: block not found (pruned)');
+			});
+			core.getBlockStats.mockResolvedValue({
+				txs: 10,
+				total_size: 2000,
+				total_weight: 8000,
+				total_out: 99,
+				feerate_percentiles: [1, 2, 3, 4, 5]
+			});
+
+			const blocks = await svc.getRecentBlocks(1, 805);
+
+			expect(blocks[0].pool).toBeUndefined();
+			expect(blocks[0].txCount).toBe(10); // stats still enriched independently
+		});
+
+		it('degrades stats to null (leaves pool intact) when getblockstats fails', async () => {
+			const core = makeCoreStub();
+			const svc = makeCoreService(core);
+			const hex = buildHeader({ time: 1_700_000_000, bits: GENESIS_BITS });
+			withElectrum(svc, { getBlockHeader: vi.fn(async () => hex) });
+			const hash = headerHash(hex);
+			stubBlockAndCoinbase(core, hash, '....AntPool....');
+			core.getBlockStats.mockRejectedValue(new Error('getblockstats: pruned'));
+
+			const blocks = await svc.getRecentBlocks(1, 805);
+
+			expect(blocks[0].pool?.name).toBe('AntPool');
+			expect(blocks[0].txCount).toBeNull(); // stats degraded independently
+		});
+
+		it('caches a resolved pool by block hash — a second refresh of the same block makes no new RPC', async () => {
+			const core = makeCoreStub();
+			const svc = makeCoreService(core);
+			const hex = buildHeader({ time: 1_700_000_000, bits: GENESIS_BITS });
+			withElectrum(svc, { getBlockHeader: vi.fn(async () => hex) });
+			const hash = headerHash(hex);
+			stubBlockAndCoinbase(core, hash, '....AntPool....');
+			core.getBlockStats.mockResolvedValue({
+				txs: 10,
+				total_size: 2000,
+				total_weight: 8000,
+				total_out: 99,
+				feerate_percentiles: [1, 2, 3, 4, 5]
+			});
+
+			await svc.getRecentBlocks(1, 805);
+			expect(core.getBlock).toHaveBeenCalledTimes(1);
+
+			const again = await svc.getRecentBlocks(1, 805);
+			expect(core.getBlock).toHaveBeenCalledTimes(1); // pure cache hit, no new RPC
+			expect(again[0].pool?.name).toBe('AntPool');
+		});
 	});
 });
 
