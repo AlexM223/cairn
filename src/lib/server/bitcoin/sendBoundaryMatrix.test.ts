@@ -654,6 +654,25 @@ describe('boundary: fee-rate floor (min-relay-fee) and ceiling', () => {
 		expect(draft.feeRate).toBeGreaterThan(0);
 	});
 
+	it('single-sig: minFeeRate of exactly 0 is a legitimate ultra-low floor, not "unknown" — 0.5 builds (cairn-eacw.8)', async () => {
+		// A node with minrelaytxfee=0.00000001 BTC/kvB (0.001 sat/vB) reports a
+		// raw relay floor that round2()'s to exactly 0 (ChainService.
+		// getMinFeeRate()). That must NOT be treated the same as "floor unknown"
+		// (whose sentinel is 1) — found live verifying cairn-eacw.8 on regtest,
+		// where this silently re-imposed the 1 sat/vB floor and rejected a real
+		// 0.5 sat/vB send the node would have happily relayed.
+		const draft = await constructPsbt({
+			...COMMON,
+			utxos: [utxo(60_000)],
+			recipients: [{ address: RECIPIENT_P2WPKH, amount: 10_000 }],
+			feeRate: 0.5,
+			minFeeRate: 0
+		});
+		expect(draft.amount).toBe(10_000);
+		expect(draft.feeRate).toBeLessThan(1);
+		expect(draft.feeRate).toBeGreaterThan(0);
+	});
+
 	it('single-sig: 0.5 is rejected when the node floor is 1 (incapable node), floor-aware copy', async () => {
 		const err = await expectPlainRejection(
 			constructPsbt({

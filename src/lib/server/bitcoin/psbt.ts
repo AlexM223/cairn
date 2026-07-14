@@ -306,6 +306,16 @@ function feeRateLabel(rate: number): string {
  * parameter — never fetched here — so this module stays pure/chain-independent
  * and unit-testable. A fee of 0, negative, or NaN is ALWAYS rejected regardless
  * of the floor (an absolute sanity bound), before the floor comparison.
+ *
+ * `minFeeRate` is never negative by construction (ChainService.
+ * getRelayFeeFloor()'s own "unknown" sentinel is 1, never 0) — a round2()'d
+ * value of exactly 0 is a LEGITIMATE ultra-low-but-real floor (e.g. a node
+ * configured with minrelaytxfee=0.00000001 BTC/kvB = 0.001 sat/vB rounds to
+ * 0.00), not "unknown". Treating that as falsy and silently re-imposing the
+ * historical 1 sat/vB floor defeated the entire sub-1 feature on exactly that
+ * setup, wrongly rejecting a real 0.5 sat/vB send (found verifying
+ * cairn-eacw.8 on regtest) — so only non-finite input falls back to 1, not
+ * a zero-but-finite one.
  */
 export function validateRecipientsAndFeeRate(
 	recipients: RecipientSpec[],
@@ -334,7 +344,7 @@ export function validateRecipientsAndFeeRate(
 	// is guaranteed to be rejected — refuse up front, in plain language, quoting
 	// the resolved floor (never a hardcoded 1). A node that relays sub-1 admits a
 	// sub-1 fee; a node whose capability is unknown keeps the 1 sat/vB minimum.
-	const floor = Number.isFinite(minFeeRate) && minFeeRate > 0 ? minFeeRate : 1;
+	const floor = Number.isFinite(minFeeRate) && minFeeRate >= 0 ? minFeeRate : 1;
 	if (feeRate < floor) {
 		throw new PsbtError(
 			`This fee is below what your node will relay right now — the minimum is ${feeRateLabel(floor)} sat/vB.`,

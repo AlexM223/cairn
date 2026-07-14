@@ -10,12 +10,17 @@ import type { FeeChoiceKey } from './sendCopy';
  * (cairn-eacw.3/.5) — the minimum fee this node will actually relay. A capable
  * node reports a sub-1 value; when the estimates are missing or the field is
  * absent (older payload, unknown/incapable node) this is 1 sat/vB, the
- * historical network-wide default. A non-positive or non-finite value is treated
- * as the same 1 fallback so the floor can never collapse to zero.
+ * historical network-wide default. A negative or non-finite value is treated
+ * as the same 1 fallback. A value of exactly 0 is NOT — the server rounds the
+ * floor to 2 decimals before sending it, so an ultra-low-but-real floor (e.g.
+ * minrelaytxfee=0.00000001 BTC/kvB = 0.001 sat/vB) legitimately displays as 0;
+ * treating that as "unknown" silently re-imposed the historical 1 sat/vB
+ * floor and defeated the sub-1 feature on exactly that setup (found
+ * verifying cairn-eacw.8 on regtest).
  */
 export function nodeFloorFrom(fees: FeeEstimates | null): number {
 	const f = fees?.minFeeRate;
-	return typeof f === 'number' && Number.isFinite(f) && f > 0 ? f : 1;
+	return typeof f === 'number' && Number.isFinite(f) && f >= 0 ? f : 1;
 }
 
 /**

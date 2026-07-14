@@ -17,10 +17,19 @@ describe('nodeFloorFrom', () => {
 		expect(nodeFloorFrom({ fastest: 5, halfHour: 3, hour: 2, economy: 1 })).toBe(1);
 	});
 
-	it('treats a non-positive or non-finite floor as the 1 fallback', () => {
-		expect(nodeFloorFrom({ ...INCAPABLE, minFeeRate: 0 })).toBe(1);
+	it('treats a negative or non-finite floor as the 1 fallback', () => {
 		expect(nodeFloorFrom({ ...INCAPABLE, minFeeRate: -2 })).toBe(1);
 		expect(nodeFloorFrom({ ...INCAPABLE, minFeeRate: NaN })).toBe(1);
+	});
+
+	// A floor of exactly 0 is NOT "unknown" — the server rounds the raw floor to
+	// 2 decimals before sending it, so an ultra-low-but-real relay floor (e.g. a
+	// node with minrelaytxfee=0.00000001 BTC/kvB = 0.001 sat/vB) legitimately
+	// displays as 0. Silently re-imposing the 1 sat/vB fallback here defeated the
+	// sub-1 feature on exactly that setup (found verifying cairn-eacw.8 on
+	// regtest) — 0 must pass through unchanged.
+	it('passes a floor of exactly 0 through unchanged (a real ultra-low floor, not unknown)', () => {
+		expect(nodeFloorFrom({ ...INCAPABLE, minFeeRate: 0 })).toBe(0);
 	});
 });
 
