@@ -1270,12 +1270,14 @@ describe('getMempoolBlocks projection from the Electrum fee histogram', () => {
 // (the whole point of the removal). getTxRbfInfo is now unconditionally null.
 
 describe('no Core RPC configured (Esplora removed)', () => {
-	// getBlock / getBlockTxs / getMempoolSummary stay Core-only (a bare Electrum header
-	// carries none of that detail). getTx is the exception: it now degrades to the
-	// full-indexing Electrum fallback (docs/TX-BLOCK-CONTEXT-DESIGN.md §2, covered by
-	// the "getTx via Electrum fallback" describe) instead of throwing, so it is
-	// deliberately not asserted here.
-	it('getBlock/getMempoolSummary throw a clear "needs Core RPC" error without any fetch', async () => {
+	// getBlockTxs / getMempoolSummary stay Core-only (Electrum's protocol has no
+	// "list a block's txids" method, and no mempool-aggregate RPC). getTx and
+	// getBlock-by-HEIGHT are the exceptions: they degrade to a full-indexing /
+	// bare-header Electrum fallback (docs/TX-BLOCK-CONTEXT-DESIGN.md §2; cairn-kcxy)
+	// instead of throwing, so those are deliberately not asserted here — see the
+	// "getTx via Electrum fallback" and "getBlock via Electrum fallback" describes.
+	// getBlock-by-HASH still throws: Electrum exposes no hash→height index.
+	it('getBlock(hash)/getMempoolSummary throw a clear "needs Core RPC" error without any fetch', async () => {
 		const fetchSpy = vi.fn(async () => {
 			throw new Error('no external fetch should ever happen here');
 		});
@@ -1536,6 +1538,82 @@ describe('getTx via Electrum fallback (no Core)', () => {
 		});
 
 		await expect(svc.getTx(ELECTRUM_VERBOSE_TX.txid)).rejects.toThrow(/ECONNRESET/);
+	});
+});
+
+describe('getBlock via Electrum fallback (no Core, cairn-kcxy)', () => {
+	it('decodes a bare header for a HEIGHT lookup: baseline fields present, stats null', async () => {
+		const svc = makeService();
+		const hex = buildHeader({
+			time: 1_750_000_000,
+			bits: GENESIS_BITS,
+			prevHash: 'a'.repeat(64),
+			merkleRoot: 'e'.repeat(64),
+			nonce: 12_345
+		});
+		const getBlockHeader = vi.fn(async (h: number) => {
+			if (h !== BLOCK.height) throw new Error(`no header stubbed for height ${h}`);
+			return hex;
+		});
+		withElectrum(svc, { getBlockHeader });
+
+		const block = await svc.getBlock(BLOCK.height);
+
+		expect(getBlockHeader).toHaveBeenCalledWith(BLOCK.height);
+		expect(block.height).toBe(BLOCK.height);
+		expect(block.hash).toBe(headerHash(hex));
+		expect(block.time).toBe(1_750_000_000);
+		expect(block.prevHash).toBe('a'.repeat(64));
+		expect(block.merkleRoot).toBe('e'.repeat(64));
+		expect(block.nonce).toBe(12_345);
+		expect(block.bits).toBe('1d00ffff'); // GENESIS_BITS as hex, passthrough shape
+		// tx_count/size/weight/fee stats have no bare-header equivalent — null, never
+		// a false 0/guess (Cardinal rule), matching getRecentBlocks' Electrum baseline.
+		expect(block).toMatchObject({
+			txCount: null,
+			size: null,
+			weight: null,
+			medianFee: null,
+			feeRange: null,
+			total_out: null,
+			fullness: null,
+			totalFees: null,
+			reward: null,
+			miner: undefined
+		});
+	});
+
+	it('a HASH lookup still throws the "needs Core RPC" error — Electrum has no hash→height index', async () => {
+		const svc = makeService();
+		const getBlockHeader = vi.fn(async () => {
+			throw new Error('should never be called for a hash lookup');
+		});
+		withElectrum(svc, { getBlockHeader });
+
+		await expect(svc.getBlock('a'.repeat(64))).rejects.toThrow(/Bitcoin Core RPC/);
+		expect(getBlockHeader).not.toHaveBeenCalled();
+	});
+
+	it('maps an out-of-range height to a not-found error', async () => {
+		const svc = makeService();
+		withElectrum(svc, {
+			getBlockHeader: vi.fn(async () => {
+				throw new Error('height out of range');
+			})
+		});
+
+		await expect(svc.getBlock(999_999_999)).rejects.toThrow(/Block not found/);
+	});
+
+	it('propagates a non-not-found Electrum error unchanged (real outage ≠ not-found)', async () => {
+		const svc = makeService();
+		withElectrum(svc, {
+			getBlockHeader: vi.fn(async () => {
+				throw new Error('read ECONNRESET');
+			})
+		});
+
+		await expect(svc.getBlock(BLOCK.height)).rejects.toThrow(/ECONNRESET/);
 	});
 });
 

@@ -402,8 +402,20 @@ Constructed from `getChainConfig()` (`settings.ts`). Notable methods:
   `'header'` event) via `electrum.headersSubscribe()`.
 - `getRecentBlocks(limit, fromHeight)` — Electrum headers only; txCount/
   size/weight/fees are 0/null unless later enriched by Core.
-- `getBlock` / `getBlockTxs` — Core only; catch `CoreRpcError` codes -5/-8 as
-  "not found", else throw the "needs Core RPC" error. No third-party fallback.
+- `getBlock` — Core first (`getblockhash` + `getblock` verbosity 1 +
+  `getblockstats`); catches `CoreRpcError` codes -5/-8 as "not found". **When
+  Core is _not_ configured and the lookup is by HEIGHT, it now falls back to
+  `getBlockViaElectrum` (cairn-kcxy)** — a bare `blockchain.block.header`
+  decode, the same null-baseline `getRecentBlocks()` already uses: hash/time/
+  prevHash/merkleRoot/nonce/bits/difficulty render, but txCount/size/weight/
+  fee stats stay `null` (no Electrum-protocol equivalent). A lookup by HASH
+  still throws the "needs Core RPC" error — Electrum exposes no hash→height
+  index, so there is nothing to fall back to for that shape of query.
+- `getBlockTxs` — Core only; no fallback. Electrum's protocol has no "list
+  this block's txids" method (unlike a single tx or a bare header), so a
+  Core-less instance shows the block hero from the Electrum baseline above
+  with a "couldn't load transactions" Banner in the tx-list section instead
+  of gating the whole page.
 - `getTx` — Core first (`getrawtransaction` verbosity 2, exact fee + prevout);
   on a -5/-8 it surfaces as not-found. **When Core is _not_ configured it now
   falls back to `getTxViaElectrum` (docs/TX-BLOCK-CONTEXT-DESIGN.md §2)** — a
@@ -4414,12 +4426,18 @@ backups, clear house-standard errors, **never red for routine states**, working 
   wizards, not app-wide — other forms still use `use:enhance`.
 - **Esplora fully removed (cairn-zoz8.16):** the explorer runs purely on Electrum + Core RPC
   with no third-party HTTP explorer API; README and this manual describe that. A public-Electrum-only
-  install has `core === null` and the Core-only Explorer sections (block detail, block tx list,
-  mempool summary) show the "needs Core RPC" notice. **Exception (tx-block-context feature):** the
-  **tx-detail page now works Electrum-only** — `getTx` falls back to `getTxViaElectrum`, so an
-  Electrum-only install renders the transaction plus a "basic"-tier block-context section (neighbour
-  dates + merkle position + summary) with no Core nag. Tapping a neighbour block still lands on the
-  Core-gated block-detail page, which shows its own notice — documented and accepted.
+  install has `core === null`. Explorer sections still gated to a "needs Core RPC" notice: the block's
+  transaction LIST (Electrum has no "list this block's txids" method) and the mempool summary.
+  **Exceptions (progressively fixed since this note was first written):** the **tx-detail page**
+  works Electrum-only — `getTx` falls back to `getTxViaElectrum`, rendering the transaction plus a
+  "basic"-tier block-context section (neighbour dates + merkle position + summary), no Core nag. The
+  **block-detail page's hero** (height/hash/time/prevHash/merkleRoot/nonce/bits/difficulty) also now
+  renders Electrum-only for a HEIGHT lookup — `getBlock` falls back to `getBlockViaElectrum`
+  (cairn-kcxy), a bare-header decode with tx-count/size/weight/fee stats staying `null` (no Core
+  enrichment) — only the tx-list section below the hero shows a "couldn't load transactions" Banner,
+  not a whole-page gate. Tapping a neighbour block still resolves the same way (by height, from the
+  block-context rail's own links). A block looked up by HASH (no known height) still shows the
+  Core-gated notice — Electrum exposes no hash→height index — documented and accepted.
 - **Regtest addresses are mainnet-derived:** you fund via the scriptPubKey/descriptor bridge
   (16.5), not by pasting Cairn's `bc1…` into regtest tooling.
 - **BIP21 paste (§20.11) — expected-fail by design, not yet a bug to fix:** `parseBip21()`

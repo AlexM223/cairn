@@ -740,10 +740,18 @@ export class ChainService {
 	/**
 	 * Full block detail. Sourced from the operator's own Bitcoin Core node
 	 * (`getblockhash` + `getblock` verbosity 1, plus `getblockstats` for fee/reward
-	 * stats), otherwise throwing a clear "needs Core RPC" error the block route
-	 * renders as the CoreRpcRequiredNotice empty-state (cairn-zoz8.10). Throws a
-	 * not-found error for an unknown hash/height so the search classifier can fall
-	 * through.
+	 * stats). Throws a not-found error for an unknown hash/height so the search
+	 * classifier can fall through.
+	 *
+	 * With no Core RPC configured, a HEIGHT lookup still renders via the operator's
+	 * own Electrum server's bare header (cairn-kcxy) — the same null-baseline
+	 * `getRecentBlocks()` already uses for the landing list: tx_count/size/weight/
+	 * fee stats have no Electrum-protocol equivalent so they stay null (Cardinal
+	 * rule: unknown reads as unknown, never a false 0), but the hero + neighbour
+	 * navigation work. A HASH lookup can't be resolved this way — Electrum exposes
+	 * no hash→height index — so it still throws the "needs Core RPC" error the
+	 * block route renders as the honest CoreRpcRequiredNotice empty-state
+	 * (cairn-zoz8.10).
 	 */
 	async getBlock(hashOrHeight: string | number): Promise<BlockDetail> {
 		if (this.core) {
@@ -756,9 +764,49 @@ export class ChainService {
 				throw e;
 			}
 		}
-		throw new Error(
-			'Block detail requires a Bitcoin Core RPC connection (configure it in admin settings).'
-		);
+		return this.getBlockViaElectrum(hashOrHeight);
+	}
+
+	private async getBlockViaElectrum(hashOrHeight: string | number): Promise<BlockDetail> {
+		const isHeight =
+			typeof hashOrHeight === 'number' || /^\d{1,9}$/.test(String(hashOrHeight));
+		if (!isHeight) {
+			throw new Error(
+				'Looking up a block by hash requires a Bitcoin Core RPC connection (configure it in admin settings).'
+			);
+		}
+		const height = Number(hashOrHeight);
+		let headerHex: string;
+		try {
+			headerHex = await this.electrum.getBlockHeader(height);
+		} catch (e) {
+			if (/no such|not found|out of range/i.test(String(e))) {
+				throw new Error(`Block not found: ${hashOrHeight}`);
+			}
+			throw e;
+		}
+		const d = decodeBlockHeader(headerHex);
+		return {
+			height,
+			hash: d.hash,
+			time: d.time,
+			txCount: null,
+			size: null,
+			weight: null,
+			medianFee: null,
+			feeRange: null,
+			total_out: null,
+			fullness: null,
+			miner: undefined,
+			prevHash: d.prevHash,
+			merkleRoot: d.merkleRoot,
+			nonce: d.nonce,
+			bits: d.bits.toString(16).padStart(8, '0'),
+			difficulty: d.difficulty,
+			version: d.version,
+			totalFees: null,
+			reward: null
+		};
 	}
 
 	private async getBlockViaCore(
@@ -817,7 +865,15 @@ export class ChainService {
 		};
 	}
 
-	/** Transactions of a block, 25 per page (page is 0-based). */
+	/**
+	 * Transactions of a block, 25 per page (page is 0-based). Stays Core-only: unlike
+	 * a single tx (`blockchain.transaction.get`, used by {@link getTxViaElectrum}) or
+	 * a bare header (used by {@link getBlockViaElectrum}, cairn-kcxy), the Electrum
+	 * protocol has no "list this block's txids" method — there is no fallback to
+	 * degrade to. The block route surfaces this failure only in the tx-list section
+	 * (a Banner, `txError`), not as a whole-page gate — the hero still renders from
+	 * the Electrum-only baseline above.
+	 */
 	async getBlockTxs(hash: string, page = 0): Promise<{ txs: TxDetail[]; total: number }> {
 		if (this.core) {
 			return this.getBlockTxsViaCore(this.core, hash, page);
