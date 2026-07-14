@@ -1398,6 +1398,12 @@
 								Wallet config — re-import the key into Heartwood, Sparrow or Electrum. Descriptor —
 								the raw text form, for Bitcoin Core and power users.
 							</p>
+							{#if data.wallet.xpub}
+								<div class="xpub-line">
+									<span class="hint">Public key (xpub):</span>
+									<CopyText value={data.wallet.xpub} truncate={10} />
+								</div>
+							{/if}
 						</div>
 					{/if}
 				</div>
@@ -2262,6 +2268,15 @@
 	.backup-copy {
 		margin: 0;
 		max-width: 640px;
+	}
+
+	.xpub-line {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 12.5px;
+		min-width: 0;
+		margin-top: 8px;
 	}
 
 	/* --- delete (quiet footer) --- */
