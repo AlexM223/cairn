@@ -363,7 +363,12 @@
 	const exceedsBalance = $derived(
 		!isMax && confirmed != null && createTotalSats > confirmed
 	);
-	const canBuild = $derived(rowsValid && feeRate >= 1 && !exceedsBalance);
+	// The fee gate follows the node's own relay floor (cairn-eacw.5), carried in
+	// the live estimates: a capable node relays sub-1, so a 0.x fee can build; an
+	// unknown/incapable node keeps the 1 sat/vB floor. FeeSpeedPicker already
+	// clamps the effective rate to this floor, so this is the matching guard.
+	const nodeFloor = $derived(fees?.minFeeRate ?? 1);
+	const canBuild = $derived(rowsValid && feeRate >= nodeFloor && !exceedsBalance);
 
 	let building = $state(false);
 	let buildError = $state<string | null>(null);

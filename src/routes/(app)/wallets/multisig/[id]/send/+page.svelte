@@ -201,7 +201,11 @@
 			return r.sats > 0;
 		})
 	);
-	const canBuild = $derived(rowsValid && feeRate >= 1);
+	// The fee gate follows the node's own relay floor (cairn-eacw.5), carried in
+	// the live estimates payload: sub-1 builds on a capable node, else the 1 sat/vB
+	// floor holds. FeeSpeedPicker clamps the effective rate to the same floor.
+	const nodeFloor = $derived(chain?.fees?.minFeeRate ?? 1);
+	const canBuild = $derived(rowsValid && feeRate >= nodeFloor);
 
 	let building = $state(false);
 	let buildError = $state<string | null>(null);

@@ -11,6 +11,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import { formatFeeRate } from '$lib/format';
 	import { FEE_SPEEDS, type FeeChoiceKey } from './sendCopy';
+	import { resolveFeeRate, belowFloorMessage } from './feeChoice';
 	import type { FeeEstimates } from '$lib/types';
 
 	let {
@@ -44,16 +45,12 @@
 		if (choice === 'custom') advancedOpen = true;
 	});
 
-	// The effective rate — derived exactly as the pages did: named tier value,
-	// falling back to the custom box (|| 1) when that tier is null; custom is
-	// clamped to a 1 floor.
-	const effectiveRate = $derived.by(() => {
-		const fallback = Number(customFee) || 1;
-		if (choice === 'priority') return fees?.fastest ?? fallback;
-		if (choice === 'standard') return fees?.halfHour ?? fallback;
-		if (choice === 'economy') return fees?.economy ?? fallback;
-		return Math.max(1, fallback);
-	});
+	// The effective rate + below-floor explanation are pure functions (feeChoice.ts,
+	// unit-tested there): the named tier's live value, or the Custom box clamped up
+	// to the node's own relay floor (cairn-eacw.5) — sub-1 honored on a capable
+	// node, clamped to 1 with an explanation on an incapable/unknown one.
+	const effectiveRate = $derived(resolveFeeRate(choice, customFee, fees));
+	const belowFloorNote = $derived(belowFloorMessage(choice, customFee, fees));
 
 	// Push the derived rate into the bound value the page reads in build().
 	$effect(() => {
@@ -156,6 +153,9 @@
 				/>
 				<span class="unit-sm">sat/vB</span>
 			</div>
+			{#if belowFloorNote}
+				<p class="fee-caption">{belowFloorNote}</p>
+			{/if}
 			{#if !fees && !loading}
 				<p class="fee-caption">
 					Live fee estimates are unavailable — set a custom sat/vB rate above.
