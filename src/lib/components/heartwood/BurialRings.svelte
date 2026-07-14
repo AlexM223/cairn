@@ -1,13 +1,11 @@
 <script module lang="ts">
-	/**
-	 * Brand copy for burial depth — never "N confirmations".
-	 * 0 → "no rings yet" · 1–5 → "buried N ring(s) deep" · 6+ → "sealed · six rings deep".
-	 */
-	export function burialRingsLabel(confirmations: number): string {
-		if (confirmations <= 0) return 'no rings yet';
-		if (confirmations >= 6) return 'sealed · six rings deep';
-		return `buried ${confirmations} ring${confirmations === 1 ? '' : 's'} deep`;
-	}
+	// Re-exported so existing call sites (`import BurialRings, { burialRingsLabel }
+	// from '$lib/components/heartwood/BurialRings.svelte'`) keep working — the
+	// implementation lives in a plain .ts module so it can be unit-tested (see
+	// burialRingsLabel.ts / BurialRings.test.ts). Imported (not just re-exported)
+	// so the instance script below can also call it directly.
+	import { burialRingsLabel } from './burialRingsLabel';
+	export { burialRingsLabel };
 </script>
 
 <script lang="ts">

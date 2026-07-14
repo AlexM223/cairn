@@ -192,6 +192,10 @@
 
 	let openPicker = $state<'send' | 'receive' | null>(null);
 	let heroActionsEl = $state<HTMLDivElement | null>(null);
+	// The picker panel itself now renders in-flow *below* hero-actions
+	// (cairn-pnps — it used to float absolutely and overlap the balance
+	// chart), so click-away has to check both elements.
+	let walletPickerEl = $state<HTMLDivElement | null>(null);
 	function togglePicker(kind: 'send' | 'receive') {
 		openPicker = openPicker === kind ? null : kind;
 	}
@@ -199,11 +203,13 @@
 		openPicker = null;
 	}
 	// Click-away: only wired while a picker is open, and only checks clicks
-	// outside the hero-actions row (pills + the panel both live inside it).
+	// outside the hero-actions row (pills) or the picker panel below it.
 	function onWindowClick(e: MouseEvent) {
-		if (openPicker && heroActionsEl && !heroActionsEl.contains(e.target as Node)) {
-			closePicker();
-		}
+		if (!openPicker) return;
+		const target = e.target as Node;
+		if (heroActionsEl?.contains(target)) return;
+		if (walletPickerEl?.contains(target)) return;
+		closePicker();
 	}
 	function onWindowKeydown(e: KeyboardEvent) {
 		if (openPicker && e.key === 'Escape') closePicker();
@@ -418,25 +424,32 @@
 							<Icon name="arrow-down-left" size={16} /> Receive
 						</a>
 					{/if}
-
-					{#if multiWallet && openPicker && portfolio}
-						<!-- Lightweight wallet chooser (cairn-5yz3.2) — replaces the old
-						     dumped-to-/wallets detour for 2+ wallet accounts. -->
-						<div class="wallet-picker fade-in" role="menu" aria-label="Choose a wallet">
-							{#each portfolio.allocation as w (w.key)}
-								<a
-									href={openPicker === 'send' ? sendHref(w) : w.href}
-									class="wallet-picker-row"
-									role="menuitem"
-									onclick={closePicker}
-								>
-									<span class="wallet-picker-name">{w.name}</span>
-									<span class="wallet-picker-balance mono">{formatBtc(w.balance)} BTC</span>
-								</a>
-							{/each}
-						</div>
-					{/if}
 				</div>
+
+				{#if multiWallet && openPicker && portfolio}
+					<!-- Lightweight wallet chooser (cairn-5yz3.2) — replaces the old
+					     dumped-to-/wallets detour for 2+ wallet accounts. Rendered
+					     in-flow (not absolutely positioned) so it pushes the balance
+					     chart below it down instead of overlapping it (cairn-pnps). -->
+					<div
+						class="wallet-picker fade-in"
+						role="menu"
+						aria-label="Choose a wallet"
+						bind:this={walletPickerEl}
+					>
+						{#each portfolio.allocation as w (w.key)}
+							<a
+								href={openPicker === 'send' ? sendHref(w) : w.href}
+								class="wallet-picker-row"
+								role="menuitem"
+								onclick={closePicker}
+							>
+								<span class="wallet-picker-name" title={w.name}>{w.name}</span>
+								<Amount sats={w.balance} size="row" />
+							</a>
+						{/each}
+					</div>
+				{/if}
 
 				{#if portfolio || portfolioSyncing}
 					<div class="hero-sync">
@@ -809,16 +822,17 @@
 
 	/* Multi-wallet Send/Receive chooser (cairn-5yz3.2) — a quiet inline panel
 	   anchored under the pills, not a full-screen modal (this isn't an
-	   irreversible action, just a shortcut past /wallets). */
+	   irreversible action, just a shortcut past /wallets). Renders in normal
+	   document flow (cairn-pnps) — no more `position: absolute`, so opening it
+	   pushes the balance chart down instead of floating over it. */
 	.wallet-picker {
-		position: absolute;
-		top: calc(100% + 8px);
-		left: 0;
-		z-index: 20;
+		align-self: flex-start;
 		display: flex;
 		flex-direction: column;
+		width: 100%;
 		min-width: 240px;
 		max-width: 320px;
+		margin-top: 8px;
 		padding: 6px;
 		background: var(--bg-input);
 		border: 1px solid var(--border-control);
@@ -841,18 +855,16 @@
 		background: var(--surface);
 	}
 
+	.wallet-picker-row :global(.hw-amount) {
+		flex-shrink: 0;
+	}
+
 	.wallet-picker-name {
 		font-weight: 600;
 		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-	}
-
-	.wallet-picker-balance {
-		flex-shrink: 0;
-		font-size: 12px;
-		color: var(--text-secondary);
 	}
 
 	/* SWR freshness for the portfolio aggregate — same quiet indicator the wallets
@@ -1091,8 +1103,7 @@
 		}
 
 		.wallet-picker {
-			left: 0;
-			right: 0;
+			align-self: stretch;
 			min-width: 0;
 			max-width: none;
 		}
