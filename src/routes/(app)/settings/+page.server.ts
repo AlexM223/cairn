@@ -12,13 +12,15 @@ import {
 	createSession,
 	setSessionCookie,
 	getAuthMode,
-	MIN_PASSWORD_LENGTH
+	MIN_PASSWORD_LENGTH,
+	DISPLAY_NAME_MAX
 } from '$lib/server/auth';
 import { hasRecoverySetup } from '$lib/server/recovery';
 import { notify } from '$lib/server/notifications';
 import { sessionContextFrom } from '$lib/server/deviceTracking';
 import { expectedPasskeyOrigin, passkeyAvailableOn } from '$lib/server/passkeyOrigin';
 import { requireUser } from '$lib/server/api';
+import { containsNulByte, graphemeLength } from '$lib/server/textGuard';
 import type { Actions, PageServerLoad } from './$types';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -58,6 +60,17 @@ export const actions: Actions = {
 		const email = String(form.get('email') ?? '').trim().toLowerCase();
 
 		if (!displayName) return fail(400, { profileError: 'Display name is required.' });
+		// cairn-l04v: same grapheme-cluster cap as registration's assertCanRegister
+		// — this profile edit is the other write path to users.display_name and
+		// was missing the cap entirely.
+		if (graphemeLength(displayName) > DISPLAY_NAME_MAX)
+			return fail(400, {
+				profileError: `Display name must be ${DISPLAY_NAME_MAX} characters or fewer.`
+			});
+		if (containsNulByte(displayName))
+			return fail(400, {
+				profileError: 'Display name contains a NUL character (U+0000), which cannot be stored.'
+			});
 		if (!EMAIL_RE.test(email)) return fail(400, { profileError: 'Enter a valid email address.' });
 
 		const taken = db

@@ -374,27 +374,68 @@ describe('hostile input: contact display name (registerUser -> listContacts)', (
 	});
 });
 
-describe('KNOWN GAP (candidate bead): registration displayName has NO upper length bound', () => {
-	// Expected: some enforced cap, matching every other free-text field in this
-	// file (wallet name 64, multisig name 60, address labels 60/120, tx label
-	// 120) — a display name is the single most widely-fanned-out free-text
-	// field in the app (contacts list, admin user list, "New account created"
-	// notification body, activity feed).
-	// Actual: auth.ts's assertCanRegister only checks `!displayName` (empty)
-	// after trim — there is no length ceiling at all. A 10,000-char display
-	// name is accepted, stored verbatim, and would be echoed into every one of
-	// those surfaces at full length.
-	it('a 10,000-char display name registers successfully with no truncation', async () => {
-		const user = await registerUser({
-			email: 'huge-name@example.com',
-			password: 'correct horse battery',
-			displayName: TEN_K
-		});
-		expect(user.displayName.length).toBe(10_000);
-		const row = db.prepare('SELECT display_name FROM users WHERE id = ?').get(user.id) as {
-			display_name: string;
+describe('FIXED (cairn-l04v): registration displayName is capped like every other name field', () => {
+	// Was: auth.ts's assertCanRegister only checked `!displayName` (empty) after
+	// trim — there was no length ceiling at all. A 10,000-char display name was
+	// accepted, stored verbatim, and would be echoed into every one of the
+	// app's widest-fanned-out surfaces (contacts list, admin user list, "New
+	// account created" notification body, activity feed).
+	// Now: capped at DISPLAY_NAME_MAX (60), counted in grapheme clusters (same
+	// cairn-vgbv reasoning as the multisig name cap) — see textGuard.ts's
+	// graphemeLength().
+	it('a 10,000-char display name is rejected with a friendly AuthError, no account created', async () => {
+		await expect(
+			registerUser({
+				email: 'huge-name@example.com',
+				password: 'correct horse battery',
+				displayName: TEN_K
+			})
+		).rejects.toThrow(AuthError);
+		const { n } = db.prepare('SELECT COUNT(*) AS n FROM users WHERE email = ?').get('huge-name@example.com') as {
+			n: number;
 		};
-		expect(row.display_name.length).toBe(10_000);
+		expect(n).toBe(0);
+	});
+
+	it('a display name at exactly the 60-char cap registers successfully', async () => {
+		const name = 'a'.repeat(60);
+		const user = await registerUser({
+			email: 'at-cap@example.com',
+			password: 'correct horse battery',
+			displayName: name
+		});
+		expect(user.displayName).toBe(name);
+	});
+
+	it('a display name one over the cap (61 chars) is rejected', async () => {
+		await expect(
+			registerUser({
+				email: 'over-cap@example.com',
+				password: 'correct horse battery',
+				displayName: 'a'.repeat(61)
+			})
+		).rejects.toThrow(AuthError);
+	});
+
+	it('60 repeated family-emoji glyphs (420 UTF-16 units, 60 visible glyphs) is accepted, not rejected as "too long"', async () => {
+		const name = EMOJI_ZWJ.repeat(60);
+		expect(name.length).toBeGreaterThan(60); // still true in raw UTF-16 units…
+		const user = await registerUser({
+			email: 'emoji-at-cap@example.com',
+			password: 'correct horse battery',
+			displayName: name
+		}); // …but no longer rejected
+		expect(user.displayName).toBe(name);
+	});
+
+	it('61 visible family-emoji glyphs (well over 60) is still rejected', async () => {
+		await expect(
+			registerUser({
+				email: 'emoji-over-cap@example.com',
+				password: 'correct horse battery',
+				displayName: EMOJI_ZWJ.repeat(61)
+			})
+		).rejects.toThrow(AuthError);
 	});
 });
 

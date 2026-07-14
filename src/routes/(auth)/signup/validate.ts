@@ -7,6 +7,19 @@ export interface SignupFields {
 	inviteCode?: string | null;
 }
 
+/** Display name cap, in grapheme clusters — mirrors the server-side
+ *  DISPLAY_NAME_MAX in $lib/server/auth.ts (cairn-l04v). Duplicated here
+ *  (rather than imported) because this file is bundled client-side and
+ *  $lib/server modules cannot be imported from client code. */
+export const DISPLAY_NAME_MAX = 60;
+
+/** Count `value` in user-perceived characters ("grapheme clusters") rather
+ *  than raw UTF-16 code units — same reasoning as the server-side
+ *  graphemeLength() in $lib/server/textGuard.ts (cairn-vgbv). */
+function graphemeLength(value: string): number {
+	return Array.from(new Intl.Segmenter().segment(value)).length;
+}
+
 /**
  * Client-side pre-submit validation for the signup form. Returns a
  * plain-language error message for the first failing field, or null when
@@ -21,6 +34,8 @@ export interface SignupFields {
  */
 export function validateSignup(fields: SignupFields): string | null {
 	if (!fields.displayName.trim()) return 'Enter a display name.';
+	if (graphemeLength(fields.displayName.trim()) > DISPLAY_NAME_MAX)
+		return `Display name must be ${DISPLAY_NAME_MAX} characters or fewer.`;
 	if (!fields.email.trim()) return 'Enter your email address.';
 	if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(fields.email.trim()))
 		return 'Enter a valid email address.';

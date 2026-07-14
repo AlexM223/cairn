@@ -86,7 +86,7 @@
 
 		<div class="field">
 			<label class="label" for="displayName">Display name</label>
-			<input class="input" id="displayName" name="displayName" autocomplete="name" required bind:value={displayName} />
+			<input class="input" id="displayName" name="displayName" autocomplete="name" maxlength="60" required bind:value={displayName} />
 		</div>
 
 		<div class="field">

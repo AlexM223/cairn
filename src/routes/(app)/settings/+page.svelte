@@ -218,7 +218,7 @@
 			>
 				<div class="field">
 					<label class="label" for="displayName">Display name</label>
-					<input class="input" id="displayName" name="displayName" required value={user.displayName} />
+					<input class="input" id="displayName" name="displayName" maxlength="60" required value={user.displayName} />
 				</div>
 				<div class="field">
 					<label class="label" for="email">Email</label>
