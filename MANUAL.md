@@ -1164,17 +1164,31 @@ additionally removed from the multisig wizard (`cairn-acft`, closed
 4d447fe) — the wizard's script-type radio disables `p2sh`, and
 `hw/common.ts` throws rather than derive at the wrong `…1'` slot; see §18.1
 row G. This create-vs-import asymmetry is deliberate, not an
-inconsistency. Two known gaps in the gate itself, both open: **`cairn-ryjc`**
-— the BIP-48 coin/account/script-type levels are checked by numeric value
-only (`unhardened()`), never confirming the hardened bit is actually set,
-so `m/48'/0/0'/2'` (unhardened coin type) or `m/48'/0'/0'/2` (unhardened
-script-type) both pass when they shouldn't; every existing acceptance test
-happens to use fully-hardened paths, so this hole doesn't show up in
-practice yet. **`cairn-e8de`** — `stateless.ts`'s descriptor-import escape
-hatch never calls `validateMultisigKeyPaths` at all, so a malformed or
+inconsistency. For BIP-48 paths the gate now also confirms every level is
+actually **hardened** — the coin/account/script-type levels are no longer
+checked by numeric value alone, so `m/48'/0/0'/2'` (unhardened coin type) or
+`m/48'/0'/0'/2` (unhardened script-type) are rejected, not waved through
+(**`cairn-ryjc`, fixed** — was a value-only `unhardened()` check that every
+fully-hardened acceptance test happened to miss). One known gap in the gate
+itself remains open: **`cairn-e8de`** — `stateless.ts`'s descriptor-import
+escape hatch never calls `validateMultisigKeyPaths` at all, so a malformed or
 wrong-script-type cosigner path pasted through that path is not caught at
 ingestion the way the wizard and Caravan-JSON import paths are. Don't
 describe this gate as airtight when reviewing or extending it.
+
+Beyond the path gate, `createMultisig` (`wallets/multisig.ts`) applies two
+more create-time guards and one persistence guarantee: it rejects a
+**depth-0 master** xpub pasted as a cosigner (`cosignerXpubDepth === 0`,
+**`cairn-b9iv`**) — a master's watch surface is the whole seed, not one
+account, and no path label reveals it, so the check is on the key's own
+BIP-32 depth (parseXpub now surfaces `depth`); it rejects an embedded **NUL
+byte** in the wallet name or any key name rather than let node:sqlite
+silently truncate at it (**`cairn-y73r`**, shared guard `textGuard.ts`); and
+the `multisigs` row plus all N `multisig_keys` rows are written inside one
+`BEGIN`/`COMMIT` transaction (**`cairn-vzvw`**), so a mid-loop failure rolls
+back rather than leaving a row whose stored key count disagrees with reality.
+All three are **create-only** (import round-trips an existing on-chain wallet
+untouched), mirroring the path gate's create-vs-import split.
 
 **Descriptor import/export**: `multisigToDescriptor()` / `parseDescriptor()`.
 Byte-compatible with Bastion's format (`[fp/48h/0h/0h/2h]xpub/0/*`, lowercase

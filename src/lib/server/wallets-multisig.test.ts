@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { HDKey } from '@scure/bip32';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { createBase58check } from '@scure/base';
@@ -36,7 +36,11 @@ function fixtureKeyAt(
 	path: string
 ): { xpub: string; fingerprint: string; path: string } {
 	const master = HDKey.fromMasterSeed(new Uint8Array(32).fill(seedByte));
-	const account = path === 'm' ? master : master.derive(path);
+	// An unrecorded origin ('m') is still a real ACCOUNT-level key whose derivation
+	// path simply wasn't captured — NEVER the depth-0 master, which createMultisig
+	// now rejects (cairn-b9iv). Derive a standard BIP-48 account so this fixture
+	// matches the real bare-xpub-paste scenario instead of an unrealistic master.
+	const account = path === 'm' ? master.derive(BIP48_PATH) : master.derive(path);
 	return {
 		xpub: account.publicExtendedKey,
 		fingerprint: (master.fingerprint >>> 0).toString(16).padStart(8, '0'),
@@ -566,6 +570,150 @@ describe('a stored legacy-P2SH wallet keeps loading and spending (cairn-acft)', 
 			fetchRawTx: async () => fund.hex
 		});
 		expect(draft.psbtBase64).toBeTruthy();
+	});
+});
+
+// ---- cairn-ryjc: BIP-48 paths must harden ALL four levels ----------------------
+
+describe('validateCosignerKeyPath rejects half-hardened BIP-48 paths (cairn-ryjc)', () => {
+	it("rejects an unhardened coin-type level (m/48'/0/0'/2')", () => {
+		expect(() => validateCosignerKeyPath("m/48'/0/0'/2'", 'p2wsh', 'K')).toThrow(/unhardened/i);
+	});
+	it("rejects an unhardened account level (m/48'/0'/0/2')", () => {
+		expect(() => validateCosignerKeyPath("m/48'/0'/0/2'", 'p2wsh', 'K')).toThrow(/unhardened/i);
+	});
+	it("rejects an unhardened script-type level (m/48'/0'/0'/2)", () => {
+		expect(() => validateCosignerKeyPath("m/48'/0'/0'/2", 'p2wsh', 'K')).toThrow(/unhardened/i);
+	});
+	it("rejects a fully-unhardened BIP-48 body (m/48'/0/0/2)", () => {
+		// NB not caught by the all-zeros mask early-return: 48' and 2 are non-zero.
+		expect(() => validateCosignerKeyPath("m/48'/0/0/2", 'p2wsh', 'K')).toThrow(/unhardened/i);
+	});
+	it("still accepts the fully-hardened canonical path (m/48'/0'/0'/2')", () => {
+		expect(() => validateCosignerKeyPath("m/48'/0'/0'/2'", 'p2wsh', 'K')).not.toThrow();
+	});
+	it('a half-hardened BIP-48 path is rejected through createMultisig too', async () => {
+		const user = await makeUser('ryjc@example.com');
+		const bad = { ...newKey(2, 'Half hardened'), path: "m/48'/0'/0'/2" };
+		expect(() =>
+			createMultisig(user.id, { name: 'Half', threshold: 2, keys: [newKey(1, 'A'), bad] })
+		).toThrow(MultisigError);
+	});
+});
+
+// ---- cairn-b9iv: master (depth-0) cosigner keys rejected at creation -----------
+
+describe('createMultisig rejects a master (depth-0) cosigner key (cairn-b9iv)', () => {
+	/** A genuine BIP-32 MASTER extended public key (depth 0) dressed as a cosigner:
+	 *  valid path label + real fingerprint. The only defect is the xpub is the
+	 *  seed's root, whose watch surface is the ENTIRE tree, not one account. */
+	function masterCosigner(seedByte: number, name: string, path = BIP48_PATH): NewMultisigKey {
+		const master = HDKey.fromMasterSeed(new Uint8Array(32).fill(seedByte));
+		expect(master.depth).toBe(0);
+		return {
+			name,
+			category: 'hardware',
+			xpub: master.publicExtendedKey,
+			fingerprint: (master.fingerprint >>> 0).toString(16).padStart(8, '0'),
+			path
+		};
+	}
+
+	it('rejects a master key even under a well-formed BIP-48 path label, naming the key', async () => {
+		const user = await makeUser('masterkey@example.com');
+		let caught: unknown;
+		try {
+			createMultisig(user.id, {
+				name: 'Oops all seed',
+				threshold: 2,
+				keys: [newKey(1, 'Real account'), masterCosigner(9, 'Whole seed')]
+			});
+		} catch (e) {
+			caught = e;
+		}
+		expect(caught).toBeInstanceOf(MultisigError);
+		expect((caught as MultisigError).code).toBe('invalid_key');
+		expect((caught as MultisigError).message).toContain('Whole seed');
+		expect((caught as MultisigError).message).toMatch(/master key/i);
+		expect(
+			(db.prepare('SELECT COUNT(*) AS n FROM multisigs WHERE user_id = ?').get(user.id) as { n: number })
+				.n
+		).toBe(0);
+	});
+
+	it("catches the master even pasted under an unknown origin ('m'), where no path label betrays it", async () => {
+		const user = await makeUser('masterkey2@example.com');
+		expect(() =>
+			createMultisig(user.id, {
+				name: 'Sneaky',
+				threshold: 2,
+				keys: [newKey(1, 'A'), { ...masterCosigner(9, 'Bare master', 'm'), fingerprint: '00000000' }]
+			})
+		).toThrow(/master key/i);
+	});
+
+	it('an already-imported wallet built from a master key is NOT re-rejected (import round-trips)', async () => {
+		// Depth-0 rejection is create-only, mirroring the create-vs-import split for
+		// path labels: an existing on-chain wallet must keep loading/deriving even if
+		// it was (unwisely) built on a master.
+		const user = await makeUser('masterimport@example.com');
+		const ms = createMultisig(user.id, {
+			name: 'Imported legacy',
+			threshold: 2,
+			source: 'imported',
+			keys: [newKey(1, 'A'), { ...masterCosigner(9, 'Historic master', 'm'), fingerprint: '00000000' }]
+		});
+		expect(ms.keys).toHaveLength(2);
+	});
+});
+
+// ---- cairn-vzvw: createMultisig is atomic (transactional) ----------------------
+
+describe('createMultisig is transactional (cairn-vzvw)', () => {
+	it('rolls back the multisigs row when a key insert fails partway through', async () => {
+		const user = await makeUser('vzvw@example.com');
+		const realPrepare = db.prepare.bind(db);
+		// Force the multisig_keys INSERT to throw AFTER the multisigs row is inserted
+		// inside the transaction — exercising the ROLLBACK path.
+		const spy = vi.spyOn(db, 'prepare').mockImplementation(((sql: string) => {
+			if (sql.includes('INSERT INTO multisig_keys')) {
+				throw new Error('injected key-insert failure');
+			}
+			return realPrepare(sql);
+		}) as typeof db.prepare);
+		try {
+			expect(() =>
+				createMultisig(user.id, {
+					name: 'Atomic vault',
+					threshold: 2,
+					keys: [newKey(1, 'A'), newKey(2, 'B'), newKey(3, 'C')]
+				})
+			).toThrow('injected key-insert failure');
+		} finally {
+			spy.mockRestore();
+		}
+		// No orphan multisigs row and no orphan keys survive the rolled-back attempt.
+		expect(
+			(db.prepare('SELECT COUNT(*) AS n FROM multisigs WHERE user_id = ?').get(user.id) as { n: number })
+				.n
+		).toBe(0);
+		expect((db.prepare('SELECT COUNT(*) AS n FROM multisig_keys').get() as { n: number }).n).toBe(0);
+	});
+
+	it('a successful create writes the multisigs row and all N key rows together', async () => {
+		const user = await makeUser('vzvw2@example.com');
+		const ms = createMultisig(user.id, {
+			name: 'Whole vault',
+			threshold: 2,
+			keys: [newKey(1, 'A'), newKey(2, 'B'), newKey(3, 'C')]
+		});
+		const keyCount = (
+			db.prepare('SELECT COUNT(*) AS n FROM multisig_keys WHERE multisig_id = ?').get(ms.id) as {
+				n: number;
+			}
+		).n;
+		expect(keyCount).toBe(3);
+		expect(getMultisig(user.id, ms.id)!.keys).toHaveLength(3);
 	});
 });
 

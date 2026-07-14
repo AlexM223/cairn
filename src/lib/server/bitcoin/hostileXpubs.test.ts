@@ -218,8 +218,8 @@ describe('xprv rejection never leaks the secret material back in the error', () 
 
 // ── 5. KNOWN GAPS: depth and declared-fingerprint are never cross-verified ──
 
-describe('KNOWN GAP (not fixed here — see final report): no depth/fingerprint provenance check', () => {
-	it('parseXpub accepts a MASTER key (depth 0) re-exported with standard xpub version bytes, indistinguishable from a real account-level key', () => {
+describe('depth-0 master keys (cairn-b9iv, fixed at the acceptance layer) + fingerprint gap (P3)', () => {
+	it('parseXpub stays lenient on a MASTER key (depth 0) but now EXPOSES the depth the acceptance gate rejects on (cairn-b9iv)', () => {
 		// Module: src/lib/server/bitcoin/xpub.ts (parseXpub).
 		// Input: a genuine BIP32 MASTER extended public key (depth 0, the root
 		// of an entire wallet — every account, every script type, every

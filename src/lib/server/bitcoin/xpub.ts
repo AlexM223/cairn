@@ -39,6 +39,17 @@ export interface ParsedXpub {
 	hdkey: HDKey;
 	/** Fingerprint of the account key itself, 8 hex chars. */
 	fingerprint: string;
+	/**
+	 * BIP-32 depth of the key (the 5th byte of the serialized payload): 0 = the
+	 * seed's MASTER key, higher values = successively deeper derivations (a BIP-44/
+	 * 49/84 account is depth 3, a BIP-48 multisig account depth 4). parseXpub itself
+	 * stays lenient — it returns depth rather than judging it — so low-level parsing/
+	 * comparison/export paths keep working with any depth; ACCEPTANCE gates that
+	 * import a key "as an account" use this to reject a depth-0 master, whose watch
+	 * surface is the entire seed rather than the single account the user expects
+	 * (cairn-b9iv).
+	 */
+	depth: number;
 }
 
 function hash160(data: Uint8Array): Uint8Array {
@@ -98,7 +109,7 @@ export function parseXpub(input: string): ParsedXpub {
 	if (!hdkey.publicKey) throw new Error('Extended key has no public key');
 
 	const fingerprint = (hdkey.fingerprint >>> 0).toString(16).padStart(8, '0');
-	return { scriptType, hdkey, fingerprint };
+	return { scriptType, hdkey, fingerprint, depth: hdkey.depth };
 }
 
 /**

@@ -159,6 +159,24 @@ export function canonicalXpub(input: string): string | null {
 	}
 }
 
+/**
+ * BIP-32 depth of a cosigner extended key (SLIP-132 Ypub/Zpub aliases normalized
+ * first), or null when the input is not a parseable extended public key. Depth 0
+ * is a MASTER key — never a legitimate account-level cosigner: accepting one as a
+ * "cosigner account" silently grants watch visibility into the seed's ENTIRE
+ * derivation tree, not the single account the user believes they're contributing
+ * (cairn-b9iv). Creation gates (createMultisig) reject depth 0; derivation/export
+ * of already-stored wallets deliberately does NOT re-check, so nothing on-chain is
+ * ever stranded over this.
+ */
+export function cosignerXpubDepth(input: string): number | null {
+	try {
+		return parseXpub(toStandardXpub(input)).depth;
+	} catch {
+		return null;
+	}
+}
+
 // --------------------------------------------------------------- path utils
 
 /** "m/48'/0'/0'/2'" (h/H/’ markers accepted, leading m/ optional) → index
@@ -356,6 +374,27 @@ export function validateCosignerKeyPath(
 				`${label}: the path "${shown}" is incomplete — a BIP-48 multisig path has four levels, like m/48'/0'/0'/2'.`,
 				'invalid_key'
 			);
+		}
+		// BIP-48 hardens ALL FOUR levels (purpose'/coin'/account'/script'). The
+		// purpose level (48') is hardened by construction to have reached this
+		// branch, but the value-only checks below (unhardened(indexes[1|3])) would
+		// otherwise wave through a path that leaves the coin, account or script-type
+		// level UNhardened — m/48'/0/0'/2' or m/48'/0'/0'/2 — recording a lying
+		// BIP-48 origin that every path-trusting tool (descriptors, PSBT
+		// bip32Derivation, hardware-wallet displays, from-seed recovery) then
+		// derives the WRONG key from. Reject them here at acceptance (cairn-ryjc).
+		const HARDENED_LEVELS: Array<[number, string]> = [
+			[1, 'coin-type'],
+			[2, 'account'],
+			[3, 'script-type']
+		];
+		for (const [lvl, levelName] of HARDENED_LEVELS) {
+			if (indexes[lvl] < HARDENED) {
+				throw new MultisigError(
+					`${label}: the path "${shown}" leaves its ${levelName} level unhardened — a BIP-48 multisig path hardens all four levels, like m/48'/0'/0'/2'.`,
+					'invalid_key'
+				);
+			}
 		}
 		const coin = unhardened(indexes[1]);
 		if (coin !== 0) {

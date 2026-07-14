@@ -18,10 +18,12 @@ import {
 	multisigTestAddress,
 	validateMultisigKeyPaths,
 	cosignerPathPurpose,
+	cosignerXpubDepth,
 	type MultisigConfig,
 	type MultisigKeyDescriptor,
 	MAX_MULTISIG_KEYS
 } from '../bitcoin/multisig';
+import { containsNulByte } from '../textGuard';
 import { detectXpubReuse } from '../cosignerDetection';
 import { parseXpub } from '../bitcoin/xpub';
 // Cyclic with ../multisigScan (it imports several things from this module),
@@ -262,6 +264,14 @@ export function createMultisig(
 	if (name.length === 0 || name.length > 60) {
 		throw new MultisigError('Multisig name must be 1-60 characters.', 'invalid_config');
 	}
+	// Reject an embedded NUL rather than let node:sqlite silently truncate the
+	// name at it on write (cairn-y73r) — see textGuard.ts for the shared cause.
+	if (containsNulByte(name)) {
+		throw new MultisigError(
+			'Multisig name contains a NUL character (U+0000), which cannot be stored.',
+			'invalid_config'
+		);
+	}
 	// Double-submit guard (cairn-50ng): two concurrent identical creates both
 	// reached the INSERT below because nothing existed to stop them. This
 	// check and the INSERT further down are separated by zero `await`s —
@@ -288,6 +298,13 @@ export function createMultisig(
 		}
 		if (k.name.trim().length === 0 || k.name.trim().length > 60) {
 			throw new MultisigError('Each key needs a name (1-60 characters).', 'invalid_key');
+		}
+		// Same NUL-truncation guard as the wallet name above (cairn-y73r).
+		if (containsNulByte(k.name)) {
+			throw new MultisigError(
+				`Key name “${k.name.trim()}” contains a NUL character (U+0000), which cannot be stored.`,
+				'invalid_key'
+			);
 		}
 	}
 
@@ -341,6 +358,28 @@ export function createMultisig(
 		});
 	}
 
+	// Master-key (depth 0) rejection (cairn-b9iv): a BIP-32 master xpub added as a
+	// cosigner "account" is almost always a mistake, and a costly one — its watch
+	// surface is the seed's ENTIRE derivation tree (every account, script type and
+	// address it can ever produce), not the single account the user thinks they're
+	// contributing. Nothing in the path label reveals this (a master can be pasted
+	// under any declared path, even "m"), so we check the key's own cryptographic
+	// depth. Create-only, mirroring the create-vs-import split above: an already
+	// on-chain imported wallet is defined by its xpubs and must keep round-tripping,
+	// but a freshly built vault must never take a master key.
+	if (source !== 'imported') {
+		params.keys.forEach((k, i) => {
+			const label = k.name.trim() || `key ${i + 1}`;
+			// null = unparseable; leave that to multisigTestAddress's real parse error.
+			if (cosignerXpubDepth(k.xpub) === 0) {
+				throw new MultisigError(
+					`${label}: this is a MASTER key (BIP-32 depth 0), not an account key — importing it would expose the whole seed's addresses, not just one account. Export the account-level key instead (e.g. at m/48'/0'/0'/2' for this wallet type).`,
+					'invalid_key'
+				);
+			}
+		});
+	}
+
 	// Cryptographic validation: deriving the first address exercises threshold
 	// bounds, xpub parsing, duplicate detection, and the actual script-building
 	// code path this wallet will use.
@@ -354,45 +393,63 @@ export function createMultisig(
 		params.keys.map((k) => k.xpub)
 	);
 
-	const info = db
-		.prepare(
-			'INSERT INTO multisigs (user_id, name, threshold, script_type, source, collaborative) VALUES (?, ?, ?, ?, ?, ?)'
-		)
-		.run(
-			userId,
-			name,
-			params.threshold,
-			scriptType,
-			source,
-			collaborative === null ? null : collaborative ? 1 : 0
-		);
-	const multisigId = Number(info.lastInsertRowid);
+	// Transactional write (cairn-vzvw): the multisigs row, the optional receive-
+	// cursor seed, and the N multisig_keys rows are ONE atomic unit. Without this
+	// wrapper a failure partway through the key-insert loop (a constraint trip, a
+	// disk error) would leave a multisigs row whose stored threshold/key count
+	// disagrees with the multisig_keys actually present — a corrupt wallet every
+	// downstream consumer (toMultisigConfig, address derivation, signing) assumes
+	// cannot exist. node:sqlite exposes no transaction() helper, so drive
+	// BEGIN/COMMIT/ROLLBACK directly — the same pattern backup.ts uses. These are
+	// synchronous statements with no `await` between them, so no other request's JS
+	// can interleave inside the transaction on Node's single-threaded event loop.
+	let multisigId: number;
+	db.exec('BEGIN');
+	try {
+		const info = db
+			.prepare(
+				'INSERT INTO multisigs (user_id, name, threshold, script_type, source, collaborative) VALUES (?, ?, ?, ?, ?, ?)'
+			)
+			.run(
+				userId,
+				name,
+				params.threshold,
+				scriptType,
+				source,
+				collaborative === null ? null : collaborative ? 1 : 0
+			);
+		multisigId = Number(info.lastInsertRowid);
 
-	// Seed the receive cursor from an imported config so a backup→restore doesn't
-	// reissue already-used addresses (cairn-u161). Default stays 0 for new wallets.
-	if (params.receiveCursor && Number.isInteger(params.receiveCursor) && params.receiveCursor > 0) {
-		db.prepare('UPDATE multisigs SET receive_cursor = ? WHERE id = ?').run(
-			params.receiveCursor,
-			multisigId
+		// Seed the receive cursor from an imported config so a backup→restore doesn't
+		// reissue already-used addresses (cairn-u161). Default stays 0 for new wallets.
+		if (params.receiveCursor && Number.isInteger(params.receiveCursor) && params.receiveCursor > 0) {
+			db.prepare('UPDATE multisigs SET receive_cursor = ? WHERE id = ?').run(
+				params.receiveCursor,
+				multisigId
+			);
+		}
+
+		const insertKey = db.prepare(
+			`INSERT INTO multisig_keys (multisig_id, position, name, category, device_type, xpub, fingerprint, path)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 		);
+		params.keys.forEach((k, i) => {
+			insertKey.run(
+				multisigId,
+				i,
+				k.name.trim(),
+				k.category,
+				k.deviceType ?? null,
+				k.xpub.trim(),
+				k.fingerprint.toLowerCase(),
+				k.path.trim()
+			);
+		});
+		db.exec('COMMIT');
+	} catch (e) {
+		db.exec('ROLLBACK');
+		throw e;
 	}
-
-	const insertKey = db.prepare(
-		`INSERT INTO multisig_keys (multisig_id, position, name, category, device_type, xpub, fingerprint, path)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-	);
-	params.keys.forEach((k, i) => {
-		insertKey.run(
-			multisigId,
-			i,
-			k.name.trim(),
-			k.category,
-			k.deviceType ?? null,
-			k.xpub.trim(),
-			k.fingerprint.toLowerCase(),
-			k.path.trim()
-		);
-	});
 
 	// Creating/importing a multisig is a significant account action: surface it
 	// in the user's activity feed and the admin log (cairn-cvcu). recordActivity

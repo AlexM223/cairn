@@ -407,10 +407,20 @@ describe('KNOWN GAP (candidate bead): embedded NUL bytes truncate the stored str
 		expect(summary.name).toBe(TRUNCATED);
 	});
 
-	it('multisig name (createMultisig)', async () => {
+	// multisig name (createMultisig) is FIXED (cairn-y73r): rather than silently
+	// truncating at the NUL, createMultisig now rejects it with a clean
+	// MultisigError and writes nothing. The remaining fields below still pin the
+	// (unfixed) truncation behavior — tracked for the owning modules in a follow-up
+	// bead; the shared guard (textGuard.ts › containsNulByte) is ready to drop in.
+	it('multisig name (createMultisig) — now REJECTS the NUL instead of truncating', async () => {
 		const user = await makeUser('owner@example.com');
-		const ms = createMultisig(user.id, { name: NULL_BYTE, threshold: 2, keys: makeMultisigKeys() });
-		expect(ms.name).toBe(TRUNCATED);
+		expect(() =>
+			createMultisig(user.id, { name: NULL_BYTE, threshold: 2, keys: makeMultisigKeys() })
+		).toThrow(MultisigError);
+		const { n } = db.prepare('SELECT COUNT(*) AS n FROM multisigs WHERE user_id = ?').get(user.id) as {
+			n: number;
+		};
+		expect(n).toBe(0);
 	});
 
 	it('wallet-scoped address label (setAddressLabel)', async () => {
