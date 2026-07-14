@@ -1466,4 +1466,81 @@ describe('coinbase maturity', () => {
 			})
 		).rejects.toMatchObject({ code: 'construction_failed' });
 	});
+
+	// cairn-oae1.1: tipHeight itself unresolved (e.g. a transient getTip()
+	// failure) must fail CLOSED — a coinbase-affected coin is treated as
+	// unverifiable rather than the guard being skipped entirely.
+	describe('tip unavailable (cairn-oae1.1 fail-closed)', () => {
+		// A coinbase old enough that it WOULD be mature if the tip were known
+		// (height 100 is >100 blocks behind any plausible real tip) — proves
+		// exclusion is driven by "tip unknown", not by height math.
+		const CB_WOULD_BE_MATURE: SpendableUtxo = {
+			...CB_IMMATURE,
+			txid: '66'.repeat(32),
+			height: 100
+		};
+
+		it('excludes a coinbase coin from automatic selection when the tip is unknown', async () => {
+			const normal = UTXOS[0]; // confirmed, non-coinbase, 60_000 sats
+			const draft = await constructPsbt({
+				...COMMON,
+				utxos: [CB_WOULD_BE_MATURE, normal],
+				recipients: [{ address: RECIPIENT, amount: 30_000 }],
+				feeRate: 10
+				// tipHeight omitted — simulates a failed getTip().
+			});
+			expect(draft.inputs.map((i) => i.txid)).not.toContain(CB_WOULD_BE_MATURE.txid);
+			expect(draft.inputs.map((i) => i.txid)).toContain(normal.txid);
+		});
+
+		it('rejects an explicit coin-control pick of a coinbase coin when the tip is unknown', async () => {
+			await expect(
+				constructPsbt({
+					...COMMON,
+					utxos: [CB_WOULD_BE_MATURE],
+					recipients: [{ address: RECIPIENT, amount: 30_000 }],
+					feeRate: 10,
+					onlyUtxos: [{ txid: CB_WOULD_BE_MATURE.txid, vout: 0 }]
+					// tipHeight omitted.
+				})
+			).rejects.toMatchObject({ code: 'immature_coinbase' });
+			try {
+				await constructPsbt({
+					...COMMON,
+					utxos: [CB_WOULD_BE_MATURE],
+					recipients: [{ address: RECIPIENT, amount: 30_000 }],
+					feeRate: 10,
+					onlyUtxos: [{ txid: CB_WOULD_BE_MATURE.txid, vout: 0 }]
+				});
+				expect.unreachable();
+			} catch (e) {
+				expect((e as Error).message).toMatch(/can't verify this mining reward/i);
+			}
+		});
+
+		it('treats an unverified coinbase-ness coin the same way when the tip is unknown', async () => {
+			const unverified: SpendableUtxo = { ...CB_WOULD_BE_MATURE, txid: '77'.repeat(32), coinbase: 'unknown' };
+			await expect(
+				constructPsbt({
+					...COMMON,
+					utxos: [unverified],
+					recipients: [{ address: RECIPIENT, amount: 30_000 }],
+					feeRate: 10,
+					onlyUtxos: [{ txid: unverified.txid, vout: 0 }]
+				})
+			).rejects.toMatchObject({ code: 'immature_coinbase' });
+		});
+
+		it('does not block an ordinary send with no coinbase coins when the tip is unknown', async () => {
+			// No coinbase UTXOs at all — mirrors the vast-majority-of-wallets case
+			// where the caller never even looks up the tip.
+			const draft = await constructPsbt({
+				...COMMON,
+				recipients: [{ address: RECIPIENT, amount: 30_000 }],
+				feeRate: 10
+				// tipHeight omitted.
+			});
+			expect(draft.amount).toBe(30_000);
+		});
+	});
 });

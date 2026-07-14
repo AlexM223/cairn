@@ -282,6 +282,11 @@ export async function buildMultisigDraft(
 			try {
 				tipHeight = (await getChain().getTip()).height;
 			} catch {
+				// Tip unavailable — leave tipHeight undefined. selectSpendCandidates
+				// fails CLOSED for coinbase-flagged coins when the tip is unknown
+				// (cairn-oae1.1): excludes them from auto-selection and rejects an
+				// explicit coin-control pick, while ordinary (non-coinbase) sends
+				// are completely unaffected.
 				tipHeight = undefined;
 			}
 		}

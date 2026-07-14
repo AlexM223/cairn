@@ -183,7 +183,7 @@ describe('unknown-coinbase coins are unspendable inside the maturity window (cai
 		} catch (e) {
 			expect(e).toBeInstanceOf(PsbtError);
 			expect((e as PsbtError).code).toBe('immature_coinbase');
-			expect((e as PsbtError).message).toMatch(/Couldn't verify/);
+			expect((e as PsbtError).message).toMatch(/can't verify/i);
 		}
 	});
 

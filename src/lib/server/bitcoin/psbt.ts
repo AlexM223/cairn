@@ -101,7 +101,11 @@ export interface ConstructParams {
 	 * Current chain tip height. When provided, coinbase (mining reward) inputs are
 	 * maturity-checked: an immature coinbase (< 100 confirmations) is skipped in
 	 * automatic selection and rejected if explicitly chosen via coin control.
-	 * Omitted = no maturity check (e.g. RBF, tests without coinbase inputs).
+	 * Omitted/undefined (e.g. a transient tip-fetch failure, cairn-oae1.1) does
+	 * NOT skip the guard — any coinbase-flagged coin (definite or unverified) is
+	 * then treated as unverifiable and handled the same fail-CLOSED way. Only
+	 * genuinely non-coinbase coins are exempt from needing a tip at all (e.g.
+	 * RBF's exactInputs path, or tests with no coinbase inputs).
 	 */
 	tipHeight?: number;
 }
@@ -390,28 +394,42 @@ export function selectSpendCandidates(
 	// before consensus lets it be spent. When we know the tip, drop immature ones
 	// from automatic selection; if the user explicitly picked one via coin control,
 	// reject with a clear message rather than silently building an invalid tx.
-	if (params.tipHeight != null && !params.exactInputs) {
+	//
+	// When the tip is UNKNOWN (chain-tip fetch failed, cairn-oae1.1), we cannot
+	// compute confirmations at all — fail CLOSED, not open. Every coinbase-flagged
+	// coin (coinbase === true, tip unknown) is treated as unverifiable, exactly
+	// like the tip-known "coinbase-ness could not be verified" case below: it is
+	// excluded from auto-selection and an explicit coin-control pick of it is
+	// rejected with a clear message. Ordinary (non-coinbase) coins are completely
+	// unaffected, so a transient tip-fetch failure never blocks a normal send.
+	if (!params.exactInputs) {
 		const tip = params.tipHeight;
 		// A confirmed coinbase output younger than 100 blocks is definitely immature.
-		const isImmature = (u: SpendableUtxo) => u.coinbase === true && isImmatureCoinbase(u.height, tip);
-		// A UTXO whose coinbase-ness couldn't be verified (chain hiccup, cairn-7fmd)
-		// AND that is still inside the maturity window could be an immature mining
-		// reward — we can't prove it's safe, so refuse rather than draft a tx the
-		// network may reject. Coins past 100 confirmations are safe regardless.
+		// (Only meaningful when we actually know the tip — see isUnverifiable below
+		// for the tip-unknown case.)
+		const isImmature = (u: SpendableUtxo) =>
+			tip != null && u.coinbase === true && isImmatureCoinbase(u.height, tip);
+		// Unverifiable maturity: either (a) coinbase-ness itself couldn't be
+		// determined (chain hiccup, cairn-7fmd) and the coin is still inside the
+		// maturity window, or (b) coinbase-ness IS known but the tip isn't, so
+		// confirmations can't be computed at all (cairn-oae1.1). Coins confirmed
+		// past 100 blocks are safe regardless in case (a).
 		const isUnverifiable = (u: SpendableUtxo) =>
-			u.coinbase === 'unknown' && isImmatureCoinbase(u.height, tip);
+			(u.coinbase === 'unknown' && (tip == null || isImmatureCoinbase(u.height, tip))) ||
+			(u.coinbase === true && tip == null);
 
 		const immature = spendable.filter(isImmature);
 		const unverifiable = spendable.filter(isUnverifiable);
 
 		if (coinControl && unverifiable.length > 0) {
 			throw new PsbtError(
-				"Couldn't verify whether a selected coin is a mature mining reward — the chain lookup failed. Try again in a moment.",
+				"Can't verify this mining reward is ready to spend right now — try again in a moment.",
 				'immature_coinbase'
 			);
 		}
 		if (immature.length > 0 && coinControl) {
-			const m = coinbaseMaturity(immature[0].height, tip);
+			// tip is guaranteed non-null here: isImmature only matches when tip != null.
+			const m = coinbaseMaturity(immature[0].height, tip!);
 			throw new PsbtError(
 				`A selected coin is an immature mining reward — it needs ${m.blocksRemaining} more confirmation${m.blocksRemaining === 1 ? '' : 's'} (~${m.etaHours}h) before it can be spent.`,
 				'immature_coinbase'
@@ -420,7 +438,8 @@ export function selectSpendCandidates(
 
 		if (immature.length > 0 || unverifiable.length > 0) {
 			// Auto-selection: drop both definitely-immature and unverifiable-young
-			// coins so we never build an invalid tx.
+			// (or unverifiable-because-tip-is-unknown) coins so we never build an
+			// invalid tx.
 			spendable = spendable.filter((u) => !isImmature(u) && !isUnverifiable(u));
 			if (spendable.length === 0) {
 				throw new PsbtError(`This ${walletNoun} has no mature coins to spend right now.`, 'no_utxos');
