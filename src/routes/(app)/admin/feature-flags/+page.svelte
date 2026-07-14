@@ -166,6 +166,15 @@
 		padding: 0;
 	}
 
+	/* Touch target (cairn-amyl, admin-scope follow-up): the visual switch
+	   stays a compact 40x22 to keep the flag table dense, but an invisible
+	   ::after extends the actual hit area to ~44x44. */
+	.switch::after {
+		content: '';
+		position: absolute;
+		inset: -11px -2px;
+	}
+
 	.switch.on {
 		background: var(--accent);
 	}

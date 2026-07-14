@@ -120,6 +120,12 @@
 		}
 
 		.toggle {
+			/* min-height keeps the tap target >=44px on touch without enlarging
+			   the text pill's visual weight beyond what the row already needs
+			   (cairn-amyl, admin-scope follow-up). */
+			display: inline-flex;
+			align-items: center;
+			min-height: 44px;
 			font-size: 12.5px;
 		}
 	}

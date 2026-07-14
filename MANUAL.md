@@ -4681,8 +4681,12 @@ backups, clear house-standard errors, **never red for routine states**, working 
      avatar's existing treatment), and the backup-banner "Dismiss for now" icon button in
      `src/routes/(app)/+layout.svelte` (`.backup-banner-dismiss`, invisible `::after`,
      `inset: -13px` — visual icon stays 18×18, same pattern) — conservative hit-area
-     expansion, no visual redesign (`cairn-amyl`). **Not yet covered:** `/admin/*` pages —
-     deferred to a dedicated design pass, not a regression to flag.
+     expansion, no visual redesign (`cairn-amyl`). `/admin/*` sub-nav tabs (`+layout.svelte`
+     `.toggle`, `min-height: 44px` scoped to the `max-width: 900px` media query, desktop
+     unaffected) and the feature-flags switch row (`/admin/feature-flags`, `.switch::after`,
+     `inset: -11px -2px`, visual switch unchanged at 40×22) now meet 44px on mobile too;
+     desktop admin density (feature-flag table row height, sub-nav pill height above 900px)
+     stays as-is by product intent.
 - **PASS (journey):** every ✅ above holds through one uninterrupted new-user pass. Any raw
   internal leaked without explanation, any red used for a routine state, any broken
   notification deep link, any silent wizard failure, or a missing/weak backup nudge is a ❌.
