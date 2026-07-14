@@ -139,6 +139,79 @@ export function ownedSharedMultisigs(userId: number): OwnedSharedMultisig[] {
 	});
 }
 
+/** One multisig where this (about-to-be-deleted) user is a COSIGNER (not the
+ *  owner) with at least one pending, unsigned signature slot. */
+export interface PendingCosignerAssignment {
+	multisigId: number;
+	name: string;
+	ownerId: number;
+	/** How many awaiting_signature transactions still needed this user's signature. */
+	pendingTxCount: number;
+}
+
+/**
+ * cairn-z93o: multisig_transaction_signers.user_id and multisig_keys.assigned_
+ * user_id both react to a user delete (cascade / SET NULL respectively), so a
+ * cosigner's roster slot vanishes cleanly — but silently, with no signal to the
+ * owner that a signer just left mid-quorum. Enumerates, BEFORE the cascade,
+ * every multisig this user co-signs (not owns) that has a transaction still
+ * awaiting_signature where this user hadn't signed yet. MUST be called before
+ * purgeUserRow().
+ */
+export function pendingCosignerAssignments(userId: number): PendingCosignerAssignment[] {
+	const rows = db
+		.prepare(
+			`SELECT m.id AS multisigId, m.name AS name, m.user_id AS ownerId,
+			        COUNT(*) AS pendingTxCount
+			   FROM multisig_transaction_signers s
+			   JOIN multisig_transactions t ON t.id = s.transaction_id
+			   JOIN multisigs m ON m.id = t.multisig_id
+			  WHERE s.user_id = ?
+			    AND s.has_signed = 0
+			    AND t.status = 'awaiting_signature'
+			    AND m.user_id != ?
+			  GROUP BY m.id, m.name, m.user_id
+			  ORDER BY m.id`
+		)
+		.all(userId, userId) as {
+		multisigId: number;
+		name: string;
+		ownerId: number;
+		pendingTxCount: number;
+	}[];
+	return rows;
+}
+
+/**
+ * Fire a `cosigner_left` in-app notification to each affected multisig's owner
+ * (best-effort, same contract as notifyOwnerDeletionCosigners: never turns a
+ * successful deletion into an error). Call AFTER the delete commits, with the
+ * list captured beforehand by pendingCosignerAssignments().
+ */
+export function notifyCosignerDeparture(
+	assignments: PendingCosignerAssignment[],
+	departedLabel: string
+): void {
+	for (const a of assignments) {
+		try {
+			notify({
+				type: 'cosigner_left',
+				userId: a.ownerId,
+				level: 'warn',
+				title: 'A cosigner left your shared wallet',
+				body: `${departedLabel} deleted their account while still holding an unsigned slot on “${a.name}” — ${a.pendingTxCount} transaction${a.pendingTxCount === 1 ? '' : 's'} awaiting signature will need the roster reviewed. The PSBT and any signatures already collected are unaffected.`,
+				detail: { multisigName: a.name, pendingTx: a.pendingTxCount },
+				link: '/wallets'
+			});
+		} catch (e) {
+			log.error(
+				{ err: e, ownerId: a.ownerId, multisigId: a.multisigId },
+				'cosigner-departure notice failed'
+			);
+		}
+	}
+}
+
 /**
  * Delete the user row and the FK targets the schema can't cascade, in ONE
  * transaction. Order: clear the three no-cascade FKs, delete the user (all

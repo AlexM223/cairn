@@ -27,6 +27,8 @@ import {
 	purgeUserRow,
 	notifyOwnerDeletionCosigners,
 	hasLiveBroadcastClaimForUser,
+	pendingCosignerAssignments,
+	notifyCosignerDeparture,
 	type UserDeletionRow
 } from './userDeletion';
 
@@ -83,14 +85,26 @@ export function deleteOwnAccount(userId: number): void {
 	// Enumerate shared-out multisigs BEFORE the cascade destroys them, so we can
 	// tell their collaborators afterward (cairn-8r0l).
 	const shared = ownedSharedMultisigs(userId);
+	// cairn-z93o: same idea, the other direction — multisigs this user CO-SIGNS
+	// (not owns) with a pending unsigned slot. The owner needs to know a signer
+	// just left mid-quorum, not just cosigners of wallets THEY themselves own.
+	const cosigned = pendingCosignerAssignments(userId);
 
 	purgeUserRow(userId);
 
 	// Post-commit, best-effort: the wallets are gone, now let their cosigners know.
-	notifyOwnerDeletionCosigners(shared, user.display_name || user.email);
+	const label = user.display_name || user.email;
+	notifyOwnerDeletionCosigners(shared, label);
+	notifyCosignerDeparture(cosigned, label);
 
 	log.info(
-		{ userId, wallets: walletCount, multisigs: multisigCount, sharedMultisigs: shared.length },
+		{
+			userId,
+			wallets: walletCount,
+			multisigs: multisigCount,
+			sharedMultisigs: shared.length,
+			cosignedWithPendingSlot: cosigned.length
+		},
 		'user deleted their own account'
 	);
 }

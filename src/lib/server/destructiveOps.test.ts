@@ -652,9 +652,12 @@ describe('shared-multisig destruction (cairn-8r0l / cairn-z93o)', () => {
 		expect(key1.assigned_user_id).toBeNull();
 		expect(count('multisig_keys', 'id IN (?, ?)', k0, k2)).toBe(2);
 
-		// KNOWN GAP (cairn-z93o): the owner gets no in-app or queued notification
-		// that their cosigner just left.
-		expect(count('events', 'user_id = ?', owner)).toBe(0); // pinned current behavior, not endorsed
-		expect(count('notification_queue', 'user_id = ?', owner)).toBe(0); // pinned current behavior, not endorsed
+		// FIXED (cairn-z93o): the owner now gets an in-app `cosigner_left` notice
+		// that Bob departed while still holding an unsigned slot on this pending tx.
+		const notices = db
+			.prepare("SELECT message FROM events WHERE user_id = ? AND type = 'cosigner_left'")
+			.all(owner) as { message: string }[];
+		expect(notices).toHaveLength(1);
+		expect(notices[0].message).toContain('Shared');
 	});
 });

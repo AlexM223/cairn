@@ -58,6 +58,7 @@ export const DEFAULT_PREFERENCES: Record<string, NotificationChannelId[]> = {
 	sign_session_waiting: ['inapp'],
 	sign_session_complete: ['inapp'],
 	multisig_removed: ['inapp'],
+	cosigner_left: ['inapp'],
 	admin_new_signup: ['inapp'],
 	admin_invite_used: ['inapp'],
 	admin_restore: ['inapp'],
