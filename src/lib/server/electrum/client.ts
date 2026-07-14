@@ -50,6 +50,26 @@ export interface ElectrumClientOptions {
 	 * stale-connection liveness check (cairn-jhj6) without waiting 45s.
 	 */
 	keepaliveIntervalMs?: number;
+	/**
+	 * Whether this client's dial outcomes feed the instance-wide chain-health
+	 * signal (chainHealth.ts's recordChainOk/recordChainError — the "can't reach
+	 * the Bitcoin network" banner). Defaults to true for backward compatibility
+	 * with any standalone ElectrumClient.
+	 *
+	 * ElectrumPool sets this false on every socket but its primary (cairn-d8aa):
+	 * before this flag existed, EVERY pooled connection reported to the same
+	 * global signal, so a transient hiccup on a secondary socket (e.g. one of a
+	 * background scan's parallel connections dropped under load) could flip the
+	 * instance-wide banner even while the primary — and the actual network —
+	 * were fine. Also set false by any one-off throwaway probe against a
+	 * candidate/different server (the admin "Test connection" button's
+	 * `testElectrum()`, Umbrel's zero-config `umbrelProbe.ts`) — those aren't
+	 * the operator's live connection and must never be able to flip the real
+	 * banner, mirroring the existing Core-RPC precedent (chainHealth.ts's
+	 * getCoreHealth() is fed only by the long-lived ChainService client, never
+	 * the admin Core test probe).
+	 */
+	reportsHealth?: boolean;
 }
 
 export interface ElectrumBalance {
@@ -112,6 +132,7 @@ export class ElectrumClient extends EventEmitter {
 	private readonly socks5Host: string | null;
 	private readonly socks5Port: number | null;
 	private readonly keepaliveIntervalMs: number;
+	private readonly reportsHealth: boolean;
 
 	private socket: net.Socket | null = null;
 	/** Socket for a connection still being established — see close(). */
@@ -139,6 +160,7 @@ export class ElectrumClient extends EventEmitter {
 		this.socks5Host = opts.socks5Host || null;
 		this.socks5Port = opts.socks5Port || null;
 		this.keepaliveIntervalMs = opts.keepaliveIntervalMs ?? KEEPALIVE_INTERVAL_MS;
+		this.reportsHealth = opts.reportsHealth ?? true;
 		// Consumers may not attach an 'error' listener; never let EventEmitter throw.
 		this.on('error', () => {});
 	}
@@ -212,7 +234,10 @@ export class ElectrumClient extends EventEmitter {
 				// dial — proxy rejection, TLS error, connect timeout — is what makes the
 				// "can't reach the Bitcoin network" banner appear instead of leaving the
 				// user on an endless skeleton with no idea the transport is the problem.
-				recordChainError(err);
+				// Only a client explicitly marked reportsHealth may drive this signal
+				// (cairn-d8aa) — a pool secondary or a throwaway test/probe connection
+				// must never flip the real banner on its own transient failure.
+				if (this.reportsHealth) recordChainError(err);
 				reject(err);
 			};
 
@@ -236,7 +261,8 @@ export class ElectrumClient extends EventEmitter {
 						this.reconnectDelay = RECONNECT_MIN_MS;
 						// The transport is reachable right now — clears the unhealthy
 						// signal + failure count behind the chain-health banner (cairn-hy8z).
-						recordChainOk();
+						// Gated the same as the failure path above (cairn-d8aa).
+						if (this.reportsHealth) recordChainOk();
 						await this.resubscribe();
 						this.startKeepalive();
 						if (settled) return;

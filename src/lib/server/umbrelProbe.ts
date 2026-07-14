@@ -56,7 +56,16 @@ function seedIfUnset(key: string, value: string): boolean {
 /** Credential-free Electrum handshake — true iff `headersSubscribe()`
  *  completes within the probe timeout. */
 async function probeOne(host: string, port: number): Promise<boolean> {
-	const client = new ElectrumClient({ host, port, tls: false, timeoutMs: PROBE_TIMEOUT_MS });
+	// reportsHealth: false (cairn-d8aa) — this probes a fixed candidate IP before
+	// the operator's real backend is even decided, so a failed probe must never
+	// flip the real instance-wide chain-health banner.
+	const client = new ElectrumClient({
+		host,
+		port,
+		tls: false,
+		timeoutMs: PROBE_TIMEOUT_MS,
+		reportsHealth: false
+	});
 	try {
 		await client.headersSubscribe();
 		return true;

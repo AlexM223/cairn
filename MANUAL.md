@@ -515,6 +515,19 @@ pure read with no network call, feeding the admin settings proxy indicator.
 `noteProxyConfigured()` lets the banner distinguish "misconfigured Tor/SOCKS
 proxy" from "node down."
 
+**Only the primary reports (cairn-d8aa).** `ElectrumClientOptions.reportsHealth`
+(default `true`) gates whether a given client's `recordChainOk`/`recordChainError`
+calls are allowed through at all — `ElectrumPool` passes `reportsHealth: false`
+to every socket but its primary (`pool.ts`'s constructor), and the admin
+"Test connection" probe (`testElectrum()` in `chain/index.ts`) and the
+Umbrel zero-config candidate probe (`umbrelProbe.ts`'s `probeOne()`) both pass
+it too. Before this flag existed, EVERY pooled connection — plus any
+throwaway test/candidate probe against a possibly-different server — fed the
+same global signal, so a transient blip on a secondary socket (e.g. one of a
+background scan's parallel connections dropping under load) or a failed admin
+test of a *candidate* server could flip the instance-wide "can't reach the
+Bitcoin network" banner even while the operator's real connection was fine.
+
 **Per-backend health + honest union (cairn-7qmw).** Post-Esplora, Bitcoin
 Core RPC is a first-class chain backend, so it carries its OWN reachability
 signal in the same module: `recordCoreOk()`/`recordCoreError()`/
@@ -2077,6 +2090,19 @@ have:
   deliberately if intended: the `api/admin/restore` response body, an
   `admin_restore` notification whose level bumps to `warn` when anything
   was skipped, and the `admin/backup` page's restore-summary panel.
+- **Collaborative-custody sharing captured (`cairn-s6x3`, closed).**
+  `buildBackup` now also snapshots the `multisig_shares` table, and
+  `restoreBackup` recreates each share row — remapping all three of its
+  references (`multisig_id`, `owner_id`, `shared_with_id`) — plus the
+  per-key collaborator assignment on `multisig_keys.assigned_user_id`.
+  Before this fix both were silently omitted, so a restore severed every
+  shared-wallet relationship with no warning. A share is only recreated
+  when its multisig **and** both endpoint accounts were themselves
+  restored (the fresh-instance disaster-recovery case); a share pointing
+  at an account that already existed (and so was skipped) or a dropped
+  multisig has no valid endpoint and is not recreated. The count is
+  surfaced on `RestoreSummary.shares`, in the `admin/backup` restore-summary
+  panel, and in the `admin_restore` notification detail (`sharesRestored`).
 
 ### Observability
 

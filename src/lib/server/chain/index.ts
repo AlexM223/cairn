@@ -1871,7 +1871,12 @@ export async function testElectrum(cfg: {
 	socks5Host?: string | null;
 	socks5Port?: number | null;
 }): Promise<{ ok: boolean; banner?: string; tipHeight?: number; error?: string }> {
-	const client = new ElectrumClient({ ...cfg, timeoutMs: 8_000 });
+	// reportsHealth: false (cairn-d8aa) — an admin testing a candidate server (which
+	// may not even be the currently active one) must never flip the real instance-
+	// wide chain-health banner off the back of this throwaway probe. Mirrors the
+	// existing Core-RPC "Test connection" precedent (chainHealth.ts's getCoreHealth
+	// is fed only by the long-lived ChainService client).
+	const client = new ElectrumClient({ ...cfg, timeoutMs: 8_000, reportsHealth: false });
 	try {
 		const header = await client.headersSubscribe();
 		let banner: string | undefined;

@@ -4,6 +4,7 @@ import tls from 'node:tls';
 import { EventEmitter } from 'node:events';
 import { ElectrumClient } from './client';
 import type { ElectrumHeader } from './client';
+import { getChainHealth, resetChainHealthForTests } from '../chainHealth';
 
 interface RpcRequest {
 	id: number;
@@ -279,6 +280,9 @@ afterEach(async () => {
 	while (cleanups.length > 0) {
 		await cleanups.pop()!();
 	}
+	// The chain-health module is process-global state (chainHealth.ts) — reset it
+	// so a reportsHealth assertion in one test can't leak into the next.
+	resetChainHealthForTests();
 });
 
 async function withServer(
@@ -931,4 +935,75 @@ describe('ElectrumClient', () => {
 			tlsConnectSpy.mockRestore();
 		}
 	}, 8000);
+});
+
+// ---- reportsHealth gating (cairn-d8aa) ----------------------------------------
+//
+// Every ElectrumClient used to feed chainHealth.ts's global recordChainOk/
+// recordChainError unconditionally, so a pool secondary (or a one-off test/probe
+// connection) could flip the instance-wide "can't reach the Bitcoin network"
+// banner off a failure that had nothing to do with the operator's real backend.
+// reportsHealth (default true, for backward compatibility) is the opt-out.
+
+describe('reportsHealth (cairn-d8aa)', () => {
+	function pingHandler(req: RpcRequest, socket: net.Socket): boolean | void {
+		if (req.method === 'server.ping') {
+			reply(socket, req.id, null);
+			return true;
+		}
+	}
+
+	it('defaults to true: a successful connect records chain-health OK', async () => {
+		const server = await withServer(pingHandler);
+		resetChainHealthForTests();
+
+		const client = makeClient(server.port);
+		await client.request('server.ping');
+
+		expect(getChainHealth().lastOkAt).not.toBeNull();
+	});
+
+	it('reportsHealth: false suppresses a successful connect from chain health', async () => {
+		const server = await withServer(pingHandler);
+		resetChainHealthForTests();
+
+		const client = new ElectrumClient({
+			host: '127.0.0.1',
+			port: server.port,
+			tls: false,
+			timeoutMs: 2000,
+			reportsHealth: false
+		});
+		cleanups.push(() => client.close());
+		await client.request('server.ping');
+
+		expect(getChainHealth().lastOkAt).toBeNull();
+	});
+
+	it('defaults to true: a failed connect records a chain-health failure', async () => {
+		resetChainHealthForTests();
+		// Nothing listening on this loopback port — the dial itself fails.
+		const client = makeClient(1, 300);
+
+		await expect(client.request('server.ping')).rejects.toThrow();
+
+		expect(getChainHealth().lastErrorAt).not.toBeNull();
+	});
+
+	it('reportsHealth: false suppresses a failed connect from chain health (the pool-secondary / test-probe case)', async () => {
+		resetChainHealthForTests();
+		const client = new ElectrumClient({
+			host: '127.0.0.1',
+			port: 1, // nothing listening — the dial fails
+			tls: false,
+			timeoutMs: 300,
+			reportsHealth: false
+		});
+		cleanups.push(() => client.close());
+
+		await expect(client.request('server.ping')).rejects.toThrow();
+
+		expect(getChainHealth().lastErrorAt).toBeNull();
+		expect(getChainHealth().healthy).toBe(true);
+	});
 });

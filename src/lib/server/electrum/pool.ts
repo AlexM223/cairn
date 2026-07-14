@@ -79,7 +79,17 @@ export class ElectrumPool extends EventEmitter {
 	constructor(opts: ElectrumClientOptions, size: number = DEFAULT_POOL_SIZE) {
 		super();
 		const n = Math.max(1, Math.min(MAX_POOL_SIZE, Math.floor(size) || DEFAULT_POOL_SIZE));
-		this.clients = Array.from({ length: n }, () => new ElectrumClient(opts));
+		// Only the primary's dial outcomes feed the instance-wide chain-health signal
+		// (cairn-d8aa): before this, every pooled socket reported to the same global
+		// recordChainOk/recordChainError, so a transient blip on a secondary — e.g. one
+		// of a background scan's parallel connections dropping under load — could flip
+		// the "can't reach the Bitcoin network" banner even while the primary (and the
+		// actual network) were fine. The secondaries still reconnect independently and
+		// still serve traffic; they just don't drive the banner on their own.
+		this.clients = Array.from(
+			{ length: n },
+			(_, i) => new ElectrumClient({ ...opts, reportsHealth: i === 0 })
+		);
 		this.primary = this.clients[0];
 
 		// SSE attaches one 'header' listener per open tab on top of the watcher's;
