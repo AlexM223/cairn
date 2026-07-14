@@ -117,6 +117,20 @@ describe('feeRateToX', () => {
 			expect(x).toBeLessThanOrEqual(1);
 		}
 	});
+
+	// cairn-eacw.6: sub-1 sat/vB rates (a node with a relay floor below 1) are
+	// real, honest data now — this pins the deliberate degradation the audit
+	// signed off on (EDGES starts at 1, so sub-1 mass lands in the lowest band
+	// and its marker sits at the left wall) as INTENTIONAL, not silently lossy:
+	// the mass is still counted (never dropped), just not visually distinguished
+	// from the [1,2) band until sub-1 rates are common enough to earn their own
+	// leading edge.
+	it('folds sub-1 sat/vB mass into the lowest band honestly (counted, not dropped) rather than a dedicated sub-1 edge', () => {
+		expect(feeRateToX(0.04)).toBe(0);
+		const buckets = bucketFees([[0.04, 500]])!;
+		expect(buckets[0].vsize).toBe(500); // counted in the lowest band...
+		expect(buckets[0].min).toBe(1); // ...which still reads "1–2", not "0.04–…"
+	});
 });
 
 describe('ridgeAreaPath', () => {

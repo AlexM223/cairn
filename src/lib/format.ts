@@ -113,9 +113,28 @@ export function formatFiat(usd: number): string {
 	}).format(usd);
 }
 
+/**
+ * Sub-1 sat/vB rates are honest data now that some nodes relay below the historical
+ * 1 sat/vB floor (cairn-eacw). One decimal place is fine down to ~0.05 sat/vB, but
+ * below that `toFixed(1)` rounds to "0.0" — collapsing a real nonzero rate to a
+ * dishonest "0" (Cardinal rule: a missing/unknown value renders as nothing, never
+ * as a fake zero; here the value is real and simply small). Widen precision only
+ * as far as needed to keep the first significant digit visible.
+ */
 export function formatFeeRate(satPerVb: number | null | undefined): string {
 	if (satPerVb == null) return '—';
-	return `${satPerVb < 10 ? satPerVb.toFixed(1).replace(/\.0$/, '') : Math.round(satPerVb)} sat/vB`;
+	if (satPerVb <= 0) return '0 sat/vB';
+	if (satPerVb >= 10) return `${Math.round(satPerVb)} sat/vB`;
+	for (const decimals of [1, 2, 3, 4]) {
+		const fixed = satPerVb.toFixed(decimals);
+		if (Number(fixed) > 0) {
+			const trimmed = fixed.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+			return `${trimmed} sat/vB`;
+		}
+	}
+	// Astronomically small but still >0 — show the smallest precision tried above
+	// rather than ever rendering a real positive rate as "0".
+	return `${satPerVb.toFixed(4)} sat/vB`;
 }
 
 /** "~N BTC moved" from a block's total_out (sats): compact whole numbers for

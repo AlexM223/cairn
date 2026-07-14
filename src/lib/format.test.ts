@@ -160,7 +160,14 @@ describe('formatFeeRate', () => {
 		[9.96, '10 sat/vB'], // rounds up out of the decimal regime
 		[10.4, '10 sat/vB'],
 		[25.6, '26 sat/vB'],
-		[0, '0 sat/vB']
+		[0, '0 sat/vB'],
+		// Sub-1 sat/vB rates (cairn-eacw.6): a real nonzero rate must never render
+		// as a dishonest "0" just because it's smaller than the old 1 sat/vB floor.
+		[0.04, '0.04 sat/vB'],
+		[0.01, '0.01 sat/vB'],
+		[0.5, '0.5 sat/vB'],
+		[0.1, '0.1 sat/vB'],
+		[1.5, '1.5 sat/vB']
 	])('%s -> %s', (rate, expected) => {
 		expect(formatFeeRate(rate)).toBe(expected);
 	});
