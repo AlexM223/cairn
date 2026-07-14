@@ -5,6 +5,7 @@
 
 import { db } from './db';
 import { parseXpub, deriveAddress } from './bitcoin/xpub';
+import { containsNulByte, TextInputError } from './textGuard';
 import {
 	scanWallet,
 	invalidateWalletCache,
@@ -318,6 +319,13 @@ export function createWallet(
 	assertDerivationMatchesPrefix(derivationPath, scriptType);
 
 	let name = String(input.name ?? '').trim().slice(0, 64);
+	// Reject an embedded NUL rather than let node:sqlite silently truncate the
+	// name at it on write (cairn-y73r/cairn-x5m9) — see textGuard.ts.
+	if (containsNulByte(name)) {
+		throw new Error(
+			'Wallet name contains a NUL character (U+0000), which cannot be stored. Remove it and try again.'
+		);
+	}
 	if (!name) {
 		const { n } = db
 			.prepare('SELECT COUNT(*) AS n FROM wallets WHERE user_id = ?')
@@ -475,6 +483,13 @@ export function setLabel(
 	if (!getWallet(userId, walletId)) return null;
 
 	const trimmed = String(label ?? '').trim().slice(0, TX_LABEL_MAX);
+	// Reject an embedded NUL rather than let node:sqlite silently truncate the
+	// label at it on write (cairn-y73r/cairn-x5m9) — see textGuard.ts.
+	if (containsNulByte(trimmed)) {
+		throw new TextInputError(
+			'Transaction label contains a NUL character (U+0000), which cannot be stored. Remove it and try again.'
+		);
+	}
 	if (!trimmed) {
 		db.prepare('DELETE FROM tx_labels WHERE wallet_id = ? AND txid = ?').run(walletId, txid);
 		return { txid, label: '' };

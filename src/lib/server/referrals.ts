@@ -13,6 +13,7 @@
 
 import { db } from './db';
 import { getSetting, setSetting } from './settings';
+import { containsNulByte } from './textGuard';
 import {
 	OFFICIAL_STORE_URLS,
 	REFERRAL_DEVICE_IDS,
@@ -159,6 +160,13 @@ function normalizeInput(input: MultisigServiceReferralInput): {
 	if (!name) throw new ReferralValidationError('Give the service a name.');
 	if (name.length > 100)
 		throw new ReferralValidationError('The service name must be 100 characters or fewer.');
+	// Reject an embedded NUL rather than let node:sqlite silently truncate the
+	// name/description at it on write (cairn-y73r/cairn-x5m9) — see textGuard.ts.
+	if (containsNulByte(name)) {
+		throw new ReferralValidationError(
+			'The service name contains a NUL character (U+0000), which cannot be stored.'
+		);
+	}
 	if (!url) throw new ReferralValidationError('Enter the service link.');
 	if (!isHttpUrl(url))
 		throw new ReferralValidationError('The service link must start with http:// or https://.');
@@ -166,6 +174,11 @@ function normalizeInput(input: MultisigServiceReferralInput): {
 		throw new ReferralValidationError('The logo URL must start with http:// or https://.');
 	if (description && description.length > 300)
 		throw new ReferralValidationError('Keep the description to 300 characters or fewer.');
+	if (description && containsNulByte(description)) {
+		throw new ReferralValidationError(
+			'The description contains a NUL character (U+0000), which cannot be stored.'
+		);
+	}
 	if (!Number.isInteger(displayOrder))
 		throw new ReferralValidationError('Display order must be a whole number.');
 

@@ -10,6 +10,7 @@ import { getChainHealth } from '$lib/server/chainHealth';
 import { resetInstance } from '$lib/server/admin';
 import { invalidateWalletCache } from '$lib/server/bitcoin/walletScan';
 import { getUserAgreement, setUserAgreement } from '$lib/server/disclosures';
+import { TextInputError } from '$lib/server/textGuard';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async () => {
@@ -42,9 +43,14 @@ export const actions: Actions = {
 		const text = String(form.get('agreementText') ?? '');
 		// The operator name is edited (and saved) in the main settings form; keep
 		// the current one here so this button only touches the agreement text.
-		const saved = setUserAgreement({ text, operator: getUserAgreement().operator });
-		// Report whether this bumped the version (so existing users re-accept).
-		return { agreementSaved: true, agreementVersion: saved.version };
+		try {
+			const saved = setUserAgreement({ text, operator: getUserAgreement().operator });
+			// Report whether this bumped the version (so existing users re-accept).
+			return { agreementSaved: true, agreementVersion: saved.version };
+		} catch (e) {
+			if (e instanceof TextInputError) return fail(400, { error: e.message });
+			throw e;
+		}
 	},
 
 	save: async ({ request, locals }) => {
@@ -103,7 +109,12 @@ export const actions: Actions = {
 		// easy to miss (cairn-kc4e). Bumps the agreement version if it changed.
 		const operatorName = form.get('operatorName');
 		if (operatorName !== null) {
-			setUserAgreement({ text: getUserAgreement().text, operator: String(operatorName) });
+			try {
+				setUserAgreement({ text: getUserAgreement().text, operator: String(operatorName) });
+			} catch (e) {
+				if (e instanceof TextInputError) return fail(400, { error: e.message });
+				throw e;
+			}
 		}
 
 		// Electrum connection-pool size — a client-side tuning knob independent of

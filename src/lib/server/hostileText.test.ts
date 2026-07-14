@@ -19,7 +19,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { HDKey } from '@scure/bip32';
 import { db } from './db';
-import { registerUser } from './auth';
+import { registerUser, AuthError } from './auth';
 import { setSetting } from './settings';
 import { createWallet, setLabel, TX_LABEL_MAX } from './wallets';
 import { createMultisig } from './wallets/multisig';
@@ -27,6 +27,12 @@ import { MultisigError } from './bitcoin/multisig';
 import { setAddressLabel, getAddressLabels, ADDRESS_LABEL_MAX as WALLET_LABEL_MAX } from './addressLabels';
 import { saveAddress, AddressBookError, ADDRESS_LABEL_MAX as BOOK_LABEL_MAX } from './addressBook';
 import { requestContact, respondToContact, listContacts } from './contacts';
+import { TextInputError } from './textGuard';
+import { setUserAgreement } from './disclosures';
+import { createAnnouncement, AnnouncementValidationError } from './announcements';
+import { createApiToken, ApiTokenError } from './apiTokens';
+import { createInvites } from './admin';
+import { createMultisigServiceReferral, ReferralValidationError } from './referrals';
 
 // A real BIP84 doc-vector zpub (same fixture bitcoin/sendBoundaryMatrix.test.ts
 // uses) — createWallet round-trips through the REAL parseXpub, so a syntactic
@@ -380,39 +386,28 @@ describe('KNOWN GAP (candidate bead): registration displayName has NO upper leng
 	});
 });
 
-// ── consolidated: embedded NUL byte behavior, all fields ────────────────────
+// ── consolidated: embedded NUL byte behavior, all fields (cairn-y73r/cairn-x5m9) ─
 
-describe('KNOWN GAP (candidate bead): embedded NUL bytes truncate the stored string', () => {
-	// Expected: "abc\0def" stored and read back through a TEXT column should
-	// either round-trip byte-identical, or be explicitly rejected — silent data
-	// loss is the one outcome that should never happen for free-text input.
-	// Actual: every free-text field tested here — wallet name, multisig name,
-	// wallet-scoped address label, address-book label, tx label, and
-	// registration display name — silently truncates at the first NUL byte and
-	// drops everything after it ("abc\0def" is stored/returned as "abc"), with
-	// no error raised anywhere in the call chain. This is consistent across
-	// unrelated modules, so it's very likely a single underlying cause (the
-	// node:sqlite binding or v8's string-to-C-string marshaling treating the
-	// value as NUL-terminated) rather than a per-field bug — but every one of
-	// these call sites currently has zero validation guarding against it, so a
-	// user who pastes a NUL byte (e.g. from a botched copy-paste, a QR
-	// mis-scan, or a deliberate attempt to truncate what a cosigner/admin sees)
-	// gets no error and an unexpectedly shortened value with no indication
-	// anything was dropped.
-	const TRUNCATED = 'abc'; // "abc\0def" observed to come back as exactly this
+describe('FIXED (cairn-y73r/cairn-x5m9): embedded NUL bytes are rejected, not truncated', () => {
+	// node:sqlite binds a JS string to a TEXT column as a NUL-terminated
+	// C-string, so an embedded NUL byte used to silently truncate everything
+	// after it at storage time ("abc\0def" stored/returned as "abc") with no
+	// error anywhere in the call chain — a single shared cause (see
+	// textGuard.ts) across every free-text write path in the app. Every path
+	// below now runs the value through containsNulByte()/assertNoNulByte()
+	// BEFORE the write and rejects it with a friendly, typed error instead —
+	// nothing is written on a rejected attempt.
 
-	it('wallet name (createWallet)', async () => {
+	it('wallet name (createWallet) — REJECTS the NUL, writes nothing', async () => {
 		const user = await makeUser('owner@example.com');
-		const summary = createWallet(user.id, { name: NULL_BYTE, xpub: ZPUB });
-		expect(summary.name).toBe(TRUNCATED);
+		expect(() => createWallet(user.id, { name: NULL_BYTE, xpub: ZPUB })).toThrow(/NUL character/);
+		const { n } = db.prepare('SELECT COUNT(*) AS n FROM wallets WHERE user_id = ?').get(user.id) as {
+			n: number;
+		};
+		expect(n).toBe(0);
 	});
 
-	// multisig name (createMultisig) is FIXED (cairn-y73r): rather than silently
-	// truncating at the NUL, createMultisig now rejects it with a clean
-	// MultisigError and writes nothing. The remaining fields below still pin the
-	// (unfixed) truncation behavior — tracked for the owning modules in a follow-up
-	// bead; the shared guard (textGuard.ts › containsNulByte) is ready to drop in.
-	it('multisig name (createMultisig) — now REJECTS the NUL instead of truncating', async () => {
+	it('multisig name (createMultisig) — REJECTS the NUL instead of truncating', async () => {
 		const user = await makeUser('owner@example.com');
 		expect(() =>
 			createMultisig(user.id, { name: NULL_BYTE, threshold: 2, keys: makeMultisigKeys() })
@@ -423,32 +418,34 @@ describe('KNOWN GAP (candidate bead): embedded NUL bytes truncate the stored str
 		expect(n).toBe(0);
 	});
 
-	it('wallet-scoped address label (setAddressLabel)', async () => {
+	it('wallet-scoped address label (setAddressLabel) — REJECTS the NUL, writes nothing', async () => {
 		const user = await makeUser('owner@example.com');
 		const walletId = Number(
 			db
 				.prepare("INSERT INTO wallets (user_id, name, xpub, script_type) VALUES (?, 'w', ?, 'p2wpkh')")
 				.run(user.id, `xpub-nul-${Math.random()}`).lastInsertRowid
 		);
-		setAddressLabel(user.id, 'wallet', walletId, 'bc1qhostile', NULL_BYTE);
-		expect(getAddressLabels(user.id, 'wallet', walletId)).toEqual({ bc1qhostile: TRUNCATED });
+		expect(() =>
+			setAddressLabel(user.id, 'wallet', walletId, 'bc1qhostile', NULL_BYTE)
+		).toThrow(TextInputError);
+		expect(getAddressLabels(user.id, 'wallet', walletId)).toEqual({});
 	});
 
-	it('address book label (saveAddress)', async () => {
+	it('address book label (saveAddress) — REJECTS the NUL, writes nothing', async () => {
 		const user = await makeUser('owner@example.com');
-		const { entry } = saveAddress(user.id, {
-			address: 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4',
-			label: NULL_BYTE
-		});
-		expect(entry.label).toBe(TRUNCATED);
+		expect(() =>
+			saveAddress(user.id, {
+				address: 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4',
+				label: NULL_BYTE
+			})
+		).toThrow(AddressBookError);
+		const { n } = db
+			.prepare('SELECT COUNT(*) AS n FROM saved_addresses WHERE user_id = ?')
+			.get(user.id) as { n: number };
+		expect(n).toBe(0);
 	});
 
-	it('transaction label (setLabel) — DB-persisted value, not the JS-computed return value', async () => {
-		// setLabel's *return value* is the in-memory trimmed JS string, computed
-		// before the INSERT — it never re-reads the row, so it does NOT show this
-		// truncation (r.label is the full, untruncated "abc\0def"). The gap only
-		// shows up in what's actually PERSISTED, which is what every real caller
-		// (a page reload, another session) ultimately reads back.
+	it('transaction label (setLabel) — REJECTS the NUL, writes nothing', async () => {
 		const user = await makeUser('owner@example.com');
 		const walletId = Number(
 			db
@@ -456,25 +453,84 @@ describe('KNOWN GAP (candidate bead): embedded NUL bytes truncate the stored str
 				.run(user.id, `xpub-nul-tx-${Math.random()}`).lastInsertRowid
 		);
 		const txid = '33'.repeat(32);
-		setLabel(user.id, walletId, txid, NULL_BYTE);
+		expect(() => setLabel(user.id, walletId, txid, NULL_BYTE)).toThrow(TextInputError);
 		const row = db
 			.prepare('SELECT label FROM tx_labels WHERE wallet_id = ? AND txid = ?')
-			.get(walletId, txid) as { label: string };
-		expect(row.label).toBe(TRUNCATED);
+			.get(walletId, txid) as { label: string } | undefined;
+		expect(row).toBeUndefined();
 	});
 
-	it('registration display name (registerUser) — DB-persisted value, not the JS-computed return value', async () => {
-		// Same caveat as setLabel above: registerUser's returned SessionUser
-		// carries the in-memory trimmed displayName, not a re-read row, so
-		// user.displayName alone would NOT show this. The persisted row does.
-		const user = await registerUser({
-			email: 'nul-name@example.com',
-			password: 'correct horse battery',
-			displayName: NULL_BYTE
-		});
-		const row = db.prepare('SELECT display_name FROM users WHERE id = ?').get(user.id) as {
-			display_name: string;
+	it('registration display name (registerUser) — REJECTS the NUL, creates no account', async () => {
+		await expect(
+			registerUser({
+				email: 'nul-name@example.com',
+				password: 'correct horse battery',
+				displayName: NULL_BYTE
+			})
+		).rejects.toThrow(AuthError);
+		const row = db.prepare('SELECT id FROM users WHERE email = ?').get('nul-name@example.com');
+		expect(row).toBeUndefined();
+	});
+});
+
+// ── additional free-text write paths swept for the same gap (cairn-x5m9) ───
+// Found by grepping every db.prepare(...).run(...) write for genuinely
+// user-chosen free text beyond the four call sites the bead named — each of
+// these had the same zero-guard shape as the fields above and is fixed the
+// same way (reuse the module's own typed validation error).
+
+describe('FIXED (cairn-x5m9, additional gaps found in the same sweep)', () => {
+	it('user agreement text/operator (disclosures.setUserAgreement) — REJECTS the NUL', () => {
+		expect(() => setUserAgreement({ text: NULL_BYTE, operator: 'Op' })).toThrow(TextInputError);
+		expect(() => setUserAgreement({ text: 'Fine text', operator: NULL_BYTE })).toThrow(
+			TextInputError
+		);
+	});
+
+	it('announcement title/body/linkText (announcements.createAnnouncement) — REJECTS the NUL', () => {
+		const base = { type: 'info' as const, title: 'Title', body: 'Body' };
+		expect(() => createAnnouncement({ ...base, title: NULL_BYTE })).toThrow(
+			AnnouncementValidationError
+		);
+		expect(() => createAnnouncement({ ...base, body: NULL_BYTE })).toThrow(
+			AnnouncementValidationError
+		);
+		expect(() =>
+			createAnnouncement({ ...base, linkUrl: 'https://example.com', linkText: NULL_BYTE })
+		).toThrow(AnnouncementValidationError);
+		const { n } = db.prepare('SELECT COUNT(*) AS n FROM announcements').get() as { n: number };
+		expect(n).toBe(0);
+	});
+
+	it('API token name (apiTokens.createApiToken) — REJECTS the NUL, mints nothing', async () => {
+		const user = await makeUser('owner@example.com');
+		expect(() => createApiToken(user.id, NULL_BYTE)).toThrow(ApiTokenError);
+		const { n } = db.prepare('SELECT COUNT(*) AS n FROM api_tokens WHERE user_id = ?').get(user.id) as {
+			n: number;
 		};
-		expect(row.display_name).toBe(TRUNCATED);
+		expect(n).toBe(0);
+	});
+
+	it('invite label (admin.createInvites) — REJECTS the NUL, creates no invite', async () => {
+		const user = await makeUser('owner@example.com');
+		expect(() => createInvites({ createdBy: user.id, count: 1, label: NULL_BYTE })).toThrow(
+			AuthError
+		);
+		const { n } = db.prepare('SELECT COUNT(*) AS n FROM invites').get() as { n: number };
+		expect(n).toBe(0);
+	});
+
+	it('referral service name/description (referrals.createMultisigServiceReferral) — REJECTS the NUL', () => {
+		const base = { name: 'Service', url: 'https://example.com' };
+		expect(() => createMultisigServiceReferral({ ...base, name: NULL_BYTE })).toThrow(
+			ReferralValidationError
+		);
+		expect(() =>
+			createMultisigServiceReferral({ ...base, description: NULL_BYTE })
+		).toThrow(ReferralValidationError);
+		const { n } = db.prepare('SELECT COUNT(*) AS n FROM multisig_service_referrals').get() as {
+			n: number;
+		};
+		expect(n).toBe(0);
 	});
 });

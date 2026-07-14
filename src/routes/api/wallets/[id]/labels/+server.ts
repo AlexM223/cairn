@@ -1,5 +1,6 @@
 import { json, readJson, requireUser } from '$lib/server/api';
 import { getLabels, setLabel, TX_LABEL_MAX } from '$lib/server/wallets';
+import { TextInputError } from '$lib/server/textGuard';
 import type { RequestHandler } from './$types';
 
 function parseId(param: string): number | null {
@@ -43,7 +44,12 @@ export const PUT: RequestHandler = async (event) => {
 		return json({ error: `label must be at most ${TX_LABEL_MAX} characters` }, { status: 400 });
 	}
 
-	const result = setLabel(user.id, id, body.txid.toLowerCase(), body.label);
-	if (result === null) return notFound();
-	return json(result);
+	try {
+		const result = setLabel(user.id, id, body.txid.toLowerCase(), body.label);
+		if (result === null) return notFound();
+		return json(result);
+	} catch (e) {
+		if (e instanceof TextInputError) return json({ error: e.message }, { status: 400 });
+		throw e;
+	}
 };

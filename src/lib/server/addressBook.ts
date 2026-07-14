@@ -4,6 +4,7 @@
 
 import { db } from './db';
 import { isValidAddress } from './bitcoin/xpub';
+import { containsNulByte } from './textGuard';
 
 export const ADDRESS_LABEL_MAX = 60;
 
@@ -94,6 +95,14 @@ export function saveAddress(
 	if (hasLabel && (label.length < 1 || label.length > ADDRESS_LABEL_MAX)) {
 		throw new AddressBookError(
 			`Give this contact a name (1–${ADDRESS_LABEL_MAX} characters).`,
+			'invalid_label'
+		);
+	}
+	// Reject an embedded NUL rather than let node:sqlite silently truncate the
+	// label at it on write (cairn-y73r/cairn-x5m9) — see textGuard.ts.
+	if (hasLabel && containsNulByte(label)) {
+		throw new AddressBookError(
+			'Contact name contains a NUL character (U+0000), which cannot be stored.',
 			'invalid_label'
 		);
 	}

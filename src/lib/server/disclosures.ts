@@ -8,6 +8,7 @@
 
 import { db } from './db';
 import { getSetting, setSetting } from './settings';
+import { containsNulByte, TextInputError } from './textGuard';
 
 const K_TEXT = 'user_agreement_text';
 const K_OPERATOR = 'user_agreement_operator';
@@ -115,6 +116,18 @@ export function setUserAgreement(input: { text: string; operator: string }): Use
 	const current = getUserAgreement();
 	const text = input.text.trim() || DEFAULT_USER_AGREEMENT;
 	const operator = input.operator.trim() || DEFAULT_OPERATOR;
+	// Reject an embedded NUL rather than let node:sqlite silently truncate the
+	// agreement text/operator name at it on write (cairn-y73r/cairn-x5m9).
+	if (containsNulByte(text)) {
+		throw new TextInputError(
+			'The agreement text contains a NUL character (U+0000), which cannot be stored.'
+		);
+	}
+	if (containsNulByte(operator)) {
+		throw new TextInputError(
+			'The operator name contains a NUL character (U+0000), which cannot be stored.'
+		);
+	}
 	const changed = text !== current.text || operator !== current.operator;
 	const version = changed ? current.version + 1 : current.version;
 

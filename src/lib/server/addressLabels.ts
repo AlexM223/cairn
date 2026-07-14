@@ -7,6 +7,7 @@
 // of defense (contrast saved_addresses, which is user-scoped at the query level).
 
 import { db } from './db';
+import { containsNulByte, TextInputError } from './textGuard';
 
 export type WalletKind = 'wallet' | 'multisig';
 
@@ -77,6 +78,13 @@ export function setAddressLabel(
 	const trimmed = String(label ?? '')
 		.trim()
 		.slice(0, ADDRESS_LABEL_MAX);
+	// Reject an embedded NUL rather than let node:sqlite silently truncate the
+	// label at it on write (cairn-y73r/cairn-x5m9) — see textGuard.ts.
+	if (containsNulByte(trimmed)) {
+		throw new TextInputError(
+			'Address label contains a NUL character (U+0000), which cannot be stored. Remove it and try again.'
+		);
+	}
 	if (!trimmed) {
 		db.prepare(
 			'DELETE FROM address_labels WHERE wallet_kind = ? AND wallet_id = ? AND address = ?'

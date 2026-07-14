@@ -14,6 +14,7 @@
 // `announcement_banners`, which gates both user rendering and the admin page.
 
 import { db } from './db';
+import { containsNulByte } from './textGuard';
 
 export const ANNOUNCEMENT_TYPES = ['info', 'warning', 'urgent', 'promotion'] as const;
 export type AnnouncementType = (typeof ANNOUNCEMENT_TYPES)[number];
@@ -119,11 +120,23 @@ function normalizeInput(input: AnnouncementInput): {
 	if (title.length > MAX_TITLE) {
 		throw new AnnouncementValidationError(`Keep the title under ${MAX_TITLE} characters.`);
 	}
+	// Reject an embedded NUL rather than let node:sqlite silently truncate the
+	// title at it on write (cairn-y73r/cairn-x5m9) — see textGuard.ts.
+	if (containsNulByte(title)) {
+		throw new AnnouncementValidationError(
+			'The title contains a NUL character (U+0000), which cannot be stored.'
+		);
+	}
 
 	const body = (input.body ?? '').trim();
 	if (!body) throw new AnnouncementValidationError('A message is required.');
 	if (body.length > MAX_BODY) {
 		throw new AnnouncementValidationError(`Keep the message under ${MAX_BODY} characters.`);
+	}
+	if (containsNulByte(body)) {
+		throw new AnnouncementValidationError(
+			'The message contains a NUL character (U+0000), which cannot be stored.'
+		);
 	}
 
 	let linkUrl = (input.linkUrl ?? '').trim() || null;
@@ -145,6 +158,11 @@ function normalizeInput(input: AnnouncementInput): {
 	if (!linkUrl) linkText = null;
 	if (linkText && linkText.length > MAX_LINK_TEXT) {
 		throw new AnnouncementValidationError(`Keep the link text under ${MAX_LINK_TEXT} characters.`);
+	}
+	if (linkText && containsNulByte(linkText)) {
+		throw new AnnouncementValidationError(
+			'The link text contains a NUL character (U+0000), which cannot be stored.'
+		);
 	}
 
 	let expiresAt: string | null = null;

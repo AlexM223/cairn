@@ -1,5 +1,6 @@
 import { db } from './db';
 import { destroyUserSessions, generateInviteCode, AuthError } from './auth';
+import { containsNulByte } from './textGuard';
 import {
 	deletionOrphansAdmins,
 	ownedSharedMultisigs,
@@ -262,6 +263,14 @@ export interface CreateInvitesInput {
 }
 
 export function createInvites(input: CreateInvitesInput): InviteInfo[] {
+	// Reject an embedded NUL rather than let node:sqlite silently truncate the
+	// invite label at it on write (cairn-y73r/cairn-x5m9) — see textGuard.ts.
+	if (input.label != null && containsNulByte(input.label)) {
+		throw new AuthError(
+			'Invite label contains a NUL character (U+0000), which cannot be stored.',
+			'invalid_label'
+		);
+	}
 	const count = Math.min(Math.max(1, input.count || 1), 50);
 	const maxUses = Math.min(Math.max(1, input.maxUses || 1), 1000);
 	const expiresAt =

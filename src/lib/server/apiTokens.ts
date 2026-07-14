@@ -16,6 +16,7 @@ import { randomBytes } from 'node:crypto';
 import { db } from './db';
 import { hashToken } from './auth';
 import { childLogger } from './logger';
+import { containsNulByte } from './textGuard';
 import type { SessionUser } from '$lib/types';
 
 // Security-event log — token issuance/revocation/abuse belongs in /admin/logs,
@@ -71,6 +72,11 @@ export function createApiToken(
 ): { id: number; token: string; name: string; expiresAt: string | null } {
 	const trimmed = name.trim().slice(0, MAX_TOKEN_NAME_LENGTH);
 	if (!trimmed) throw new ApiTokenError('Give the token a name so you can recognize it later.');
+	// Reject an embedded NUL rather than let node:sqlite silently truncate the
+	// token name at it on write (cairn-y73r/cairn-x5m9) — see textGuard.ts.
+	if (containsNulByte(trimmed)) {
+		throw new ApiTokenError('Token name contains a NUL character (U+0000), which cannot be stored.');
+	}
 	if (expiresDays != null && (!Number.isInteger(expiresDays) || expiresDays < 1 || expiresDays > 3650)) {
 		throw new ApiTokenError('Expiry must be between 1 and 3650 days.');
 	}

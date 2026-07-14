@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import { requireAdmin, readJson } from '$lib/server/api';
 import { listInvites, createInvites, revokeInvite } from '$lib/server/admin';
+import { AuthError } from '$lib/server/auth';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async (event) => {
@@ -18,14 +19,19 @@ export const POST: RequestHandler = async (event) => {
 		expiresDays?: number;
 	}>(event);
 
-	const created = createInvites({
-		createdBy: admin.id,
-		count: body.count ?? 1,
-		label: body.label,
-		maxUses: body.maxUses,
-		expiresDays: body.expiresDays ?? null
-	});
-	return json({ invites: created }, { status: 201 });
+	try {
+		const created = createInvites({
+			createdBy: admin.id,
+			count: body.count ?? 1,
+			label: body.label,
+			maxUses: body.maxUses,
+			expiresDays: body.expiresDays ?? null
+		});
+		return json({ invites: created }, { status: 201 });
+	} catch (e) {
+		if (e instanceof AuthError) return json({ error: e.message, code: e.code }, { status: 400 });
+		throw e;
+	}
 };
 
 /** DELETE { id } — revoke an invite. */

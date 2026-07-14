@@ -6,6 +6,7 @@ import { getInstanceSettings, getSetting } from './settings';
 import { notify } from './notifications';
 import { recordDeviceAndMaybeNotify, type SessionContext } from './deviceTracking';
 import { childLogger } from './logger';
+import { containsNulByte } from './textGuard';
 import type { CredentialInfo, SessionUser } from '$lib/types';
 
 // Security-event log — auth outcomes must be visible in /admin/logs (cairn-wbmu).
@@ -433,6 +434,14 @@ export function assertCanRegister(input: {
 
 	if (!EMAIL_RE.test(email)) throw new AuthError('Enter a valid email address.', 'invalid_email');
 	if (!displayName) throw new AuthError('Display name is required.', 'invalid_name');
+	// Reject an embedded NUL rather than let node:sqlite silently truncate the
+	// display name at it on write (cairn-y73r/cairn-x5m9) — see textGuard.ts.
+	if (containsNulByte(displayName)) {
+		throw new AuthError(
+			'Display name contains a NUL character (U+0000), which cannot be stored.',
+			'invalid_name'
+		);
+	}
 
 	const isFirstUser = userCount() === 0;
 	if (!isFirstUser) {

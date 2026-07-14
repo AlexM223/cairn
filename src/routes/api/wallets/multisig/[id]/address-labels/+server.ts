@@ -5,6 +5,7 @@ import {
 	setAddressLabel,
 	ADDRESS_LABEL_MAX
 } from '$lib/server/addressLabels';
+import { TextInputError } from '$lib/server/textGuard';
 import type { RequestHandler } from './$types';
 
 function parseId(param: string): number | null {
@@ -54,5 +55,10 @@ export const PUT: RequestHandler = async (event) => {
 		return json({ error: `label must be at most ${ADDRESS_LABEL_MAX} characters` }, { status: 400 });
 	}
 
-	return json(setAddressLabel(user.id, 'multisig', id, body.address.trim(), body.label));
+	try {
+		return json(setAddressLabel(user.id, 'multisig', id, body.address.trim(), body.label));
+	} catch (e) {
+		if (e instanceof TextInputError) return json({ error: e.message }, { status: 400 });
+		throw e;
+	}
 };
