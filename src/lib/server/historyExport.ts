@@ -46,9 +46,37 @@ function dateString(time: number | null): string {
 	return new Date(time * 1000).toISOString().replace('T', ' ').slice(0, 19);
 }
 
-/** Quote a field per RFC 4180 when it contains a comma, quote, or newline. */
+// Characters a spreadsheet (Excel, LibreOffice, Google Sheets) treats as the
+// start of a formula when they lead a cell. A user-controlled field (the tx
+// Label, and — in multi-user mode — another user's data) starting with one of
+// these could smuggle a formula that executes when a victim opens the CSV.
+// See OWASP "CSV Injection". Tab (0x09) and CR (0x0D) are included because some
+// importers strip leading whitespace before re-reading the first glyph.
+const FORMULA_LEAD = new Set(['=', '+', '-', '@', '|', '\t', '\r', '\n']);
+
+/**
+ * Neutralize a spreadsheet formula-injection vector (cairn-mf68): a cell whose
+ * first character a spreadsheet would treat as a formula lead-in is prefixed
+ * with a single quote, so the app renders it as literal text instead of
+ * evaluating it. A cell that parses as a plain finite number (e.g. a negative
+ * amount "-0.00030200") is left untouched — `Number()` accepts it, so it can't
+ * be a formula, and we don't want to corrupt the numeric Amount columns.
+ */
+function neutralizeFormula(value: string): string {
+	if (value === '' || !FORMULA_LEAD.has(value[0])) return value;
+	// Genuine numbers (incl. leading '-'/'+') are safe and must stay numeric.
+	if (Number.isFinite(Number(value))) return value;
+	return `'${value}`;
+}
+
+/**
+ * Serialize one field: neutralize formula injection first (cairn-mf68), THEN
+ * quote per RFC 4180 when the resulting value contains a comma, quote, or
+ * newline. Order matters — a prepended `'` must sit inside the RFC quoting.
+ */
 function csvField(value: string): string {
-	return /[",\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+	const safe = neutralizeFormula(value);
+	return /[",\n\r]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 
 /**

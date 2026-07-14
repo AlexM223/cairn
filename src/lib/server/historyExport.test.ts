@@ -114,6 +114,62 @@ describe('buildHistoryCsv', () => {
 		expect(cols[7]).toBe(''); // counterparty blank, row kept
 	});
 
+	it('neutralizes formula injection in the user-controlled Label field (cairn-mf68)', async () => {
+		const txid = 'i'.repeat(64);
+		const payloads: Record<string, string> = {
+			eq: '=1+2',
+			plusCmd: '+cmd|\' /C calc\'!A0',
+			atSum: '@SUM(A1:A9)',
+			minusDde: '-2+3+cmd|\' /C calc\'!A0',
+			pipe: '|ping',
+			tab: '\tHIDDEN'
+		};
+		const csv = await buildHistoryCsv({
+			rows: Object.keys(payloads).map((k, n) => ({
+				txid: k.padEnd(64, '0'),
+				height: 800000 + n,
+				time: 1_700_000_000,
+				delta: 1,
+				fee: 1
+			})),
+			ownedAddresses: [OWN],
+			tipHeight: 900000,
+			getTx: async () => tx({ txid, vin: [vinFrom(PAYER)], vout: [voutTo(OWN, 1)] }),
+			labels: Object.fromEntries(
+				Object.keys(payloads).map((k) => [k.padEnd(64, '0'), payloads[k]])
+			)
+		});
+		// Every dangerous label is now prefixed with a single quote so a
+		// spreadsheet renders it as literal text. (None of these payloads contain
+		// a comma/double-quote/newline, so RFC-4180 quoting doesn't also apply.)
+		expect(csv).toContain(`,'=1+2`);
+		expect(csv).toContain(`,'+cmd|' /C calc'!A0`);
+		expect(csv).toContain(`,'@SUM(A1:A9)`);
+		expect(csv).toContain(`,'-2+3+cmd|' /C calc'!A0`);
+		expect(csv).toContain(`,'|ping`);
+		expect(csv).toContain(`,'\tHIDDEN`); // leading tab → neutralized
+		// No raw formula lead-in ever survives directly after a comma delimiter.
+		expect(csv).not.toMatch(/,=/);
+		expect(csv).not.toMatch(/,@/);
+		expect(csv).not.toMatch(/,\|/);
+	});
+
+	it('does NOT corrupt legitimate negative numeric amount cells (cairn-mf68)', async () => {
+		// A "Sent" tx yields "-0.00030200" in the BTC column and "-30200" in the
+		// sats column — both start with '-' but are real numbers, so they must be
+		// left untouched (not prefixed with a quote).
+		const csv = await buildHistoryCsv({
+			rows: rows({ txid: 'n'.repeat(64), height: 800000, time: 1_700_000_000, delta: -30200, fee: 200 }),
+			ownedAddresses: [OWN],
+			tipHeight: 800000,
+			getTx: async () => tx({ txid: 'n'.repeat(64), vout: [voutTo(PAYEE, 30000)] })
+		});
+		const [, row] = csv.trimEnd().split('\r\n');
+		const cols = row.split(',');
+		expect(cols[2]).toBe('-0.00030200'); // no leading quote
+		expect(cols[3]).toBe('-30200'); // no leading quote
+	});
+
 	it('quotes fields containing commas or quotes (RFC 4180)', async () => {
 		// Addresses never contain commas, but a defensive check on the escaper.
 		const csv = await buildHistoryCsv({
