@@ -40,6 +40,22 @@ function makeKey(seedByte: number, name?: string): MultisigKeyDescriptor {
 	};
 }
 
+/** Like makeKey, but actually derived at an arbitrary path — needed wherever a
+ *  fixture's `path` must genuinely correspond to its xpub (cairn-3is8's
+ *  depth-1 fingerprint cross-check derives real parent-fingerprint data from
+ *  the xpub itself, unlike a plain `{ ...makeKey(n), path: '...' }` override,
+ *  which only overrides the label and would no longer round-trip). */
+function makeKeyAt(seedByte: number, path: string, name?: string): MultisigKeyDescriptor {
+	const master = HDKey.fromMasterSeed(new Uint8Array(32).fill(seedByte));
+	const account = master.derive(path);
+	return {
+		xpub: account.publicExtendedKey,
+		fingerprint: (master.fingerprint >>> 0).toString(16).padStart(8, '0'),
+		path,
+		...(name ? { name } : {})
+	};
+}
+
 const KEYS = [1, 2, 3, 4, 5].map((n) => makeKey(n));
 const MULTISIG_2OF3: MultisigConfig = { threshold: 2, keys: KEYS.slice(0, 3) };
 const MULTISIG_3OF5: MultisigConfig = { threshold: 3, keys: KEYS.slice(0, 5) };
@@ -659,7 +675,7 @@ describe('validateMultisigKeyPaths', () => {
 			keys: [
 				{ ...KEYS[0], path: "m/48'/0'/0'/0'", name: 'Trezor' },
 				{ ...KEYS[1], path: "m/48'/0'/0'/1'", name: 'Nested-SegWit key' },
-				{ ...KEYS[2], path: "m/45'", name: 'Backup' }
+				makeKeyAt(3, "m/45'", 'Backup')
 			]
 		};
 		expect(() => validateMultisigKeyPaths(config)).toThrow(/Nested-SegWit key/);
@@ -673,6 +689,43 @@ describe('validateMultisigKeyPaths', () => {
 			keys: [{ ...KEYS[0], path: "m/48'/0'/0'/1'" }]
 		};
 		expect(() => validateMultisigKeyPaths(config)).toThrow(/p2wsh/);
+	});
+
+	// cairn-3is8: resolveKey used to accept ANY well-formed 8-hex fingerprint
+	// with no cross-check against the xpub's own cryptographic provenance —
+	// pinned as a KNOWN GAP in hostileXpubs.test.ts. A full check is impossible
+	// for multi-level (depth > 1) paths (BIP-32 only exposes a key's IMMEDIATE
+	// parent fingerprint, and standard multisig paths are hardened past the
+	// master), but a single-level path (depth 1 — exactly BIP-45's own m/45')
+	// IS fully checkable: the xpub's own parent-fingerprint field is the
+	// master fingerprint.
+	it("cross-checks a m/45' (depth-1) key's declared fingerprint against its xpub's actual parent fingerprint", () => {
+		const real = makeKeyAt(9, "m/45'", 'Real');
+		const spoofed: MultisigKeyDescriptor = { ...real, fingerprint: 'deadbeef' };
+		const config: MultisigConfig = { threshold: 1, keys: [spoofed] };
+		expect(() => validateMultisigKeyPaths(config)).toThrow(/declared fingerprint.*deadbeef.*does not match/i);
+	});
+
+	it("accepts a m/45' key whose declared fingerprint genuinely matches its xpub", () => {
+		const real = makeKeyAt(9, "m/45'", 'Real');
+		const config: MultisigConfig = { threshold: 1, keys: [real] };
+		expect(() => validateMultisigKeyPaths(config)).not.toThrow();
+	});
+
+	it("does not cross-check a placeholder '00000000' fingerprint on a m/45' key (documented 'unknown' sentinel)", () => {
+		const real = makeKeyAt(9, "m/45'", 'Real');
+		const unknown: MultisigKeyDescriptor = { ...real, fingerprint: '00000000' };
+		const config: MultisigConfig = { threshold: 1, keys: [unknown] };
+		expect(() => validateMultisigKeyPaths(config)).not.toThrow();
+	});
+
+	it('does not cross-check a multi-level (depth > 1) path — not cryptographically possible from the account xpub alone', () => {
+		// A BIP-48 key's declared fingerprint is its MASTER's, but the xpub only
+		// exposes its immediate (depth-3) parent's fingerprint — genuinely
+		// un-checkable public data, not a bug this function can fix.
+		const spoofed: MultisigKeyDescriptor = { ...KEYS[0], fingerprint: 'deadbeef' };
+		const config: MultisigConfig = { threshold: 1, keys: [spoofed] };
+		expect(() => validateMultisigKeyPaths(config)).not.toThrow();
 	});
 });
 

@@ -246,6 +246,52 @@ function resolveKey(key: MultisigKeyDescriptor, i: number): ResolvedKey {
 	};
 }
 
+/**
+ * cairn-3is8: cross-check a key's declared fingerprint against its xpub where
+ * that's actually cryptographically possible. A BIP-32 extended key only
+ * embeds the fingerprint of its own IMMEDIATE parent, and every standard
+ * multisig account path (BIP-48's four-level m/48'/…, and BIP-45's own
+ * multi-level sub-accounts) derives through hardened steps that public-key
+ * math cannot walk back through — so for a multi-level path there is no way
+ * to verify a declared ROOT fingerprint from the account xpub alone; that
+ * remains an inherent trust boundary (the same one every wallet in the
+ * ecosystem relies on — the signing device attesting to its own fingerprint),
+ * not a gap this function can close.
+ *
+ * The one case that IS fully checkable: a single-level path (depth 1, exactly
+ * BIP-45's own m/45' — genuinely used throughout this codebase for
+ * collaborative-custody vaults). There, the xpub's OWN parent-fingerprint
+ * field *is* the master fingerprint, so it can be compared directly. A
+ * '00000000' fingerprint is the documented "unknown/not declared" placeholder
+ * (wallets/multisig.ts, keyInput.ts) — nothing to check there.
+ *
+ * Deliberately called only from the ACCEPTANCE gate (validateMultisigKeyPaths,
+ * run by createMultisig/import — never from resolveKey, which also runs on
+ * every read/derive/export of an ALREADY STORED wallet). Mirrors the same
+ * accept-time-only discipline cosignerXpubDepth's depth-0 check uses: a
+ * mismatch that somehow made it into storage before this check existed must
+ * never block deriving addresses or spending from a wallet that already
+ * exists (cairn-b9iv's rule) — it can only refuse a NEW key at the door.
+ */
+function verifyCosignerFingerprint(key: MultisigKeyDescriptor, label: string): void {
+	const indexes = parsePath(key.path); // already validated by validateCosignerKeyPath by this point
+	if (indexes.length !== 1) return;
+	if (key.fingerprint.toLowerCase() === '00000000') return;
+	let hdkey: HDKey;
+	try {
+		hdkey = parseXpub(toStandardXpub(key.xpub)).hdkey;
+	} catch {
+		return; // malformed xpub is resolveKey's error to raise, not this check's
+	}
+	const declaredFingerprint = parseInt(key.fingerprint, 16) >>> 0;
+	if (hdkey.parentFingerprint !== declaredFingerprint) {
+		throw new MultisigError(
+			`${label}: declared fingerprint "${key.fingerprint}" does not match this key's own master fingerprint (this xpub's parent, at depth 1)`,
+			'invalid_key'
+		);
+	}
+}
+
 /** Resolve (and validate) a config's script form; absent means p2wsh.
  *  Taproot multisig is rejected by name: MuSig2 (key path) and FROST (script
  *  path) tooling is not mature or interoperable enough to build multisigs on. */
@@ -467,8 +513,10 @@ export function validateMultisigKeyPaths(
 	const scriptType = multisigScriptType(config);
 	const warnings: string[] = [];
 	(config.keys ?? []).forEach((key, i) => {
-		const warning = validateCosignerKeyPath(key.path, scriptType, key.name?.trim() || `key ${i + 1}`, opts);
+		const label = key.name?.trim() || `key ${i + 1}`;
+		const warning = validateCosignerKeyPath(key.path, scriptType, label, opts);
 		if (warning) warnings.push(warning);
+		verifyCosignerFingerprint(key, label);
 	});
 	return warnings;
 }
