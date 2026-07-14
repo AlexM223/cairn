@@ -25,6 +25,12 @@
 			flags: data.flags.filter((f) => f.category === g.category)
 		})).filter((g) => g.flags.length > 0)
 	);
+
+	// Per-user overrides are set from /admin/users/[id], which — like the
+	// /admin/users list — 404s in solo mode via assertTeamMode() (cairn-7xlf):
+	// it's a multi-user MANAGEMENT surface, hidden outright rather than shown
+	// disabled. Don't advertise copy/links that dead-end in a 404 (cairn-369e).
+	const teamMode = $derived(data.instanceMode === 'team');
 </script>
 
 <svelte:head>
@@ -32,8 +38,11 @@
 </svelte:head>
 
 <p class="lead">
-	Turn features on or off for the whole instance. Everything is on by default. A per-user
-	exception (either direction) can be set from a user's page under <a href="/admin/users">Users</a>.
+	Turn features on or off for the whole instance. Everything is on by default.
+	{#if teamMode}
+		A per-user exception (either direction) can be set from a user's page under
+		<a href="/admin/users">Users</a>.
+	{/if}
 </p>
 
 {#if form?.error}
@@ -54,9 +63,22 @@
 							<span class="flag-label">{flag.label}</span>
 							{#if flag.description}<span class="flag-desc">{flag.description}</span>{/if}
 							{#if flag.overrideCount > 0}
-								<a class="override-badge" href="/admin/users" title="Users with a per-user override for this flag">
-									{flag.overrideCount} user override{flag.overrideCount === 1 ? '' : 's'}
-								</a>
+								{#if teamMode}
+									<a
+										class="override-badge"
+										href="/admin/users"
+										title="Users with a per-user override for this flag"
+									>
+										{flag.overrideCount} user override{flag.overrideCount === 1 ? '' : 's'}
+									</a>
+								{:else}
+									<!-- Solo mode: overrides can still exist (e.g. set before switching
+									     out of team mode) but the management page to view/clear them
+									     404s, so render as plain text, not a dead link. -->
+									<span class="override-badge" title="Per-user overrides for this flag">
+										{flag.overrideCount} user override{flag.overrideCount === 1 ? '' : 's'}
+									</span>
+								{/if}
 							{/if}
 						</div>
 						<form method="POST" action="?/toggle" use:enhance>
