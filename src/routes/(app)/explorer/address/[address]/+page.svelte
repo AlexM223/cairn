@@ -25,7 +25,7 @@
 
 	// The address itself is known synchronously (from the route param), so the
 	// header chrome, page title, and QR paint instantly. The address summary and
-	// its transaction history are Electrum/esplora round-trips, STREAMED in after
+	// its transaction history are Electrum round-trips, STREAMED in after
 	// first paint (cairn-2zxt.3). Neither promise rejects.
 	type InfoResult = Awaited<(typeof data)['infoResult']>;
 	let infoResult = $state<InfoResult | null>(null);
@@ -72,8 +72,8 @@
 	// or the info/txs promises resolving). Reads `info` and `seedTxs` so it
 	// re-runs when either lands.
 	//
-	// Cursor page size varies by backend (blockstream esplora pages confirmed txs
-	// 25 at a time, mempool.space 50), so we can't treat a "short" page as the
+	// Cursor page size varies by backend (some servers page confirmed txs
+	// in fixed-size chunks), so we can't treat a "short" page as the
 	// end. Instead: offer more while the total count says history remains, and
 	// stop once a fetch brings nothing new.
 	$effect(() => {
@@ -167,7 +167,7 @@
 	async function loadMore(): Promise<void> {
 		if (loadingMore) return;
 		// Oldest loaded tx; confirmed txs sort after mempool ones, so this is a
-		// valid confirmed-page cursor for esplora.
+		// valid confirmed-page cursor.
 		const last = allTxs[allTxs.length - 1];
 		if (!last) return;
 		loadingMore = true;

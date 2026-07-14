@@ -31,7 +31,7 @@ interface BlockPageData {
 	error: string | null;
 }
 
-/** getBlock + getTip + getBlockTxs are Electrum/esplora round-trips (cairn-2zxt.3)
+/** getBlock + getTip + getBlockTxs are Electrum/Core RPC round-trips (cairn-2zxt.3)
  *  — bundled into one streamed promise so the page chrome paints instantly and
  *  the block + its transactions fill in when the backend answers. Never rejects:
  *  a missing block resolves to `notFound`, any other failure to `error`, so a

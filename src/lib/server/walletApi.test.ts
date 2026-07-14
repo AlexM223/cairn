@@ -24,7 +24,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { RequestEvent } from '@sveltejs/kit';
 
 // ---- Mock the chain source + signing-mass cache so classifyUtxoMasses is
-// deterministic without a live Electrum/esplora backend. Everything else
+// deterministic without a live Electrum/Core RPC backend. Everything else
 // (api.ts feature gates, the real PsbtError, walletExport slug) stays real.
 const chainMock = vi.hoisted(() => ({ getTxHex: vi.fn() }));
 vi.mock('./chain', () => ({

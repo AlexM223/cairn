@@ -4,7 +4,7 @@
 // The retrofitted dashboard/explorer load()s NEVER call the chain here; they
 // only read the persisted snapshot. The client fires POST /api/chain/refresh on
 // mount and on every new block, which calls refreshChainSnapshot() below, which
-// does the real Electrum/esplora work once and persists the result. Two guards
+// does the real Electrum/Core RPC work once and persists the result. Two guards
 // keep that cheap and safe:
 //
 //   • single-flight — this is GLOBAL data (not per-wallet), so concurrent
@@ -69,7 +69,7 @@ async function doRefresh(current: ChainSnapshotRow | null): Promise<ChainSnapsho
 		// Volatile-every-pass fetches + the core tip-bearing ones. `getRecentBlocks`
 		// is the required core fetch (its failure means the backend is unreachable and
 		// sends us to the catch); every other sub-fetch carries its own catch so a
-		// backend that lacks one (plain esplora) or a single flaky lookup degrades
+		// backend that lacks one or a single flaky lookup degrades
 		// that field to null instead of failing the whole refresh. Mempool summary,
 		// fee estimates, projected blocks, the fee histogram and the backlog trend are
 		// genuinely volatile — they can change within a single block — so they refetch
@@ -110,7 +110,7 @@ async function doRefresh(current: ChainSnapshotRow | null): Promise<ChainSnapsho
 		// within the same block. So fetch it only when the tip actually advanced since
 		// the last successful refresh; otherwise carry the persisted values forward.
 		// (cairn — Explorer over-fetch.) The first refresh has no `current`, so it
-		// always fetches; a plain-esplora backend that returns null stays null until
+		// always fetches; a backend that returns null stays null until
 		// the tip moves, exactly as before.
 		let hashrate = current?.data.hashrate ?? null;
 		let difficultyInfo = current?.data.difficultyInfo ?? null;

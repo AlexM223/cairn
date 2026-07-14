@@ -14,7 +14,7 @@ import type { CpfpInfo, FeeEstimates, RbfInfo, TxDetail } from '$lib/types';
 const RAW_HEX_LIMIT = 400_000;
 
 // First-ever view of a txid must fetch (nothing cached to show), but a slow /
-// unreachable Electrum-esplora backend must not hang the request indefinitely.
+// unreachable Electrum/Core RPC backend must not hang the request indefinitely.
 // Cap the blocking fetch; on timeout the page renders a "looking this up" shell
 // and the client polls until the (still in-flight, self-persisting) fetch lands.
 const TX_FETCH_TIMEOUT_MS = 4_000;
@@ -43,7 +43,7 @@ interface TxDetails {
 }
 
 /** The fee-outlook estimate, RBF timeline, CPFP package context, and raw hex are
- *  each EXTRA Electrum/esplora round-trips (cairn-2zxt.3) — the RBF-index lookup
+ *  each EXTRA Electrum/Core RPC round-trips (cairn-2zxt.3) — the RBF-index lookup
  *  and raw-hex fetch can be slow. They're streamed so the decoded transaction
  *  paints immediately and these supplementary details fill in after. Never
  *  rejects: every sub-call already degrades to null. */

@@ -378,7 +378,7 @@
 		</section>
 	{:else if history === null}
 		<p class="hint degrade-note">
-			Adjustment history needs a mempool.space-compatible backend.
+			Adjustment history couldn't be read from your Electrum server right now.
 		</p>
 	{/if}
 {/if}

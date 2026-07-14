@@ -1,21 +1,18 @@
 // Regression tests for cairn-a0nb: the ChainService facade (chain/index.ts) had
-// zero test coverage. Pins down the facade's mapping/normalization logic. getTx
-// and getBlock still run against a stubbed Esplora backend (toTxDetail —
-// confirmations from the tip, vout scriptPubKey passthrough, fee-rate/segwit/RBF
-// derivation — and the outspends degrade-to-null path). The chain views migrated
-// off esplora onto the operator's own Electrum server (cairn-zoz8.1/.3/.5/.6) —
-// getTip, getRecentBlocks, getFeeEstimates, getDifficultyInfo/History, getHashrate,
-// getAddressInfo/getAddressTxs — run against a stubbed Electrum pool instead.
+// zero test coverage. Pins down the facade's mapping/normalization logic. With
+// Esplora fully removed (cairn-zoz8.16) the explorer runs purely on the
+// operator's own Electrum server (getTip, getRecentBlocks, getFeeEstimates,
+// getDifficultyInfo/History, getHashrate, getAddressInfo/getAddressTxs,
+// getFeeHistogram) and Bitcoin Core RPC (getTx, getBlock, getBlockTxs,
+// getMempoolSummary, getCpfpInfo). Both are stubbed here — no sockets, no RPC.
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
-import type { EsploraBlock, EsploraTx } from './esplora';
 import { scriptPubKeyHex, addressToScripthash } from '../bitcoin/xpub';
 
 // Keep the ChainService constructor side-effect free: no Electrum sockets, no
-// activity-feed wiring, no package-relay probing. The esplora client itself is
-// replaced per-test with a stub object.
+// activity-feed wiring, no package-relay probing.
 vi.mock('../electrum/pool', () => ({
 	ElectrumPool: class {
 		server = 'stub:50001';
@@ -48,7 +45,6 @@ import type { BlockStats } from './index';
 // ---- fixtures -----------------------------------------------------------------
 
 const TIP_HEIGHT = 868_000;
-const TIP_HASH = 't'.repeat(64);
 
 const CFG = {
 	mode: 'custom',
@@ -58,70 +54,15 @@ const CFG = {
 	electrumTlsInsecure: false,
 	socks5Host: null,
 	socks5Port: null,
-	electrumPoolSize: 1,
-	esploraUrl: 'http://esplora.test'
+	electrumPoolSize: 1
 };
 
 const WATCHED_SCRIPT = '0014' + 'bb'.repeat(20);
 
-/** Confirmed 2-in/2-out-shaped segwit tx, 10 blocks deep, RBF-signalled. */
-const ESPLORA_TX: EsploraTx = {
-	txid: 'f'.repeat(64),
-	version: 2,
-	locktime: 0,
-	vin: [
-		{
-			txid: 'e'.repeat(64),
-			vout: 1,
-			is_coinbase: false,
-			prevout: {
-				scriptpubkey: '0014' + 'aa'.repeat(20),
-				scriptpubkey_type: 'v0_p2wpkh',
-				scriptpubkey_address: 'bc1qsender',
-				value: 200_000
-			},
-			sequence: 0xfffffffd, // < 0xfffffffe → BIP125 opt-in
-			witness: ['02abcd']
-		}
-	],
-	vout: [
-		{
-			scriptpubkey: WATCHED_SCRIPT,
-			scriptpubkey_type: 'v0_p2wpkh',
-			scriptpubkey_address: 'bc1qreceiver',
-			value: 150_000
-		},
-		{
-			scriptpubkey: '0014' + 'cc'.repeat(20),
-			scriptpubkey_type: 'v0_p2wpkh',
-			scriptpubkey_address: 'bc1qchange',
-			value: 48_590
-		}
-	],
-	size: 222,
-	weight: 561, // vsize = ceil(561/4) = 141; < size*4 → segwit
-	fee: 1_410, // 1410 / 141 = 10 sat/vB exactly
-	status: {
-		confirmed: true,
-		block_height: TIP_HEIGHT - 10,
-		block_hash: 'd'.repeat(64),
-		block_time: 1_750_000_000
-	}
-};
-
-const BLOCK: EsploraBlock = {
+/** Block identity referenced by the Bitcoin Core block tests below. */
+const BLOCK = {
 	id: 'b'.repeat(64),
-	height: 867_990,
-	version: 0x20000000,
-	timestamp: 1_750_000_000,
-	tx_count: 3_000,
-	size: 1_500_000,
-	weight: 3_990_000,
-	merkle_root: 'e'.repeat(64),
-	previousblockhash: 'a'.repeat(64),
-	nonce: 12_345,
-	bits: 0x1b0404cb,
-	difficulty: 9.5e13
+	height: 867_990
 };
 
 /** Compact target for difficulty exactly 1 (the genesis block's nBits). */
@@ -185,43 +126,10 @@ function withElectrum(svc: ChainService, patch: Partial<ElectrumStub>): void {
 	Object.assign(svc.electrum, patch);
 }
 
-interface EsploraStub {
-	getTipHeight: ReturnType<typeof vi.fn>;
-	getTipHash: ReturnType<typeof vi.fn>;
-	getTx: ReturnType<typeof vi.fn>;
-	getTxHex: ReturnType<typeof vi.fn>;
-	getTxOutspends: ReturnType<typeof vi.fn>;
-	getAddress: ReturnType<typeof vi.fn>;
-	getAddressTxs: ReturnType<typeof vi.fn>;
-	getBlockByHash: ReturnType<typeof vi.fn>;
-	getBlockHashAtHeight: ReturnType<typeof vi.fn>;
-	getBlocks: ReturnType<typeof vi.fn>;
-	getFeeEstimates: ReturnType<typeof vi.fn>;
-}
-
-function makeEsploraStub(): EsploraStub {
-	return {
-		getTipHeight: vi.fn(async () => TIP_HEIGHT),
-		getTipHash: vi.fn(async () => TIP_HASH),
-		getTx: vi.fn(async () => ESPLORA_TX),
-		// Present only so a regression back to the esplora raw-hex path would show
-		// up as an unexpected call (getTxHex now goes through Electrum — cairn-zoz8.4).
-		getTxHex: vi.fn(async () => 'esplora-should-not-be-called'),
-		getTxOutspends: vi.fn(async () => [{ spent: true }, { spent: false }]),
-		getAddress: vi.fn(),
-		getAddressTxs: vi.fn(),
-		getBlockByHash: vi.fn(async () => BLOCK),
-		getBlockHashAtHeight: vi.fn(async () => BLOCK.id),
-		getBlocks: vi.fn(async () => []),
-		getFeeEstimates: vi.fn()
-	};
-}
-
-/** A ChainService whose esplora client is the given stub (readonly is TS-only). */
-function makeService(stub: EsploraStub): ChainService {
-	const svc = new ChainService(CFG as unknown as ConstructorParameters<typeof ChainService>[0]);
-	Object.assign(svc, { esplora: stub });
-	return svc;
+/** A ChainService with no Bitcoin Core RPC configured — the Electrum-only
+ *  baseline. Electrum methods are stubbed per-test via withElectrum. */
+function makeService(): ChainService {
+	return new ChainService(CFG as unknown as ConstructorParameters<typeof ChainService>[0]);
 }
 
 afterEach(() => {
@@ -240,10 +148,10 @@ afterEach(() => {
 // ---- tip (electrum-backed, cairn-zoz8.5) -----------------------------------------
 
 // getTip now derives height+hash from headersSubscribe (the same source
-// getNodeInfo already used) instead of a third-party esplora HTTP API.
+// getNodeInfo already used), not a third-party HTTP explorer API.
 describe('getTip', () => {
 	function withHeader(height: number, hex: string): { svc: ChainService; headersSubscribe: ReturnType<typeof vi.fn> } {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		const headersSubscribe = vi.fn(async () => ({ height, hex }));
 		withElectrum(svc, { headersSubscribe });
 		return { svc, headersSubscribe };
@@ -284,7 +192,7 @@ describe('getTip', () => {
 
 describe('getRecentBlocks', () => {
 	it('fetches `limit` headers ending at fromHeight, newest first, decoding only what a bare header carries', async () => {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		const headersByHeight = new Map<number, string>();
 		for (let h = 800; h <= 805; h++) {
 			headersByHeight.set(h, buildHeader({ time: 1_700_000_000 + h, bits: GENESIS_BITS }));
@@ -317,7 +225,7 @@ describe('getRecentBlocks', () => {
 	});
 
 	it('derives fromHeight from the current tip when omitted', async () => {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		const hex = buildHeader({ time: 1_700_000_000, bits: GENESIS_BITS });
 		const headersSubscribe = vi.fn(async () => ({ height: 5, hex }));
 		const getBlockHeader = vi.fn(async () => hex);
@@ -328,7 +236,7 @@ describe('getRecentBlocks', () => {
 	});
 
 	it('clamps the count near genesis instead of requesting a negative height', async () => {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		const hex = buildHeader({ time: 1_700_000_000, bits: GENESIS_BITS });
 		const getBlockHeader = vi.fn(async () => hex);
 		withElectrum(svc, { getBlockHeader });
@@ -471,108 +379,12 @@ describe('blockStatsCache (immutable LRU, cairn-6efi.1 U2)', () => {
 	});
 });
 
-// ---- getTx / toTxDetail -----------------------------------------------------------
-
-describe('getTx (toTxDetail mapping)', () => {
-	it('maps a confirmed tx: confirmations from tip, scriptPubKey passthrough, fee math', async () => {
-		const stub = makeEsploraStub();
-		const svc = makeService(stub);
-
-		const tx = await svc.getTx(ESPLORA_TX.txid);
-
-		expect(stub.getTx).toHaveBeenCalledWith(ESPLORA_TX.txid);
-		// tip 868000, block 867990 → 868000 - 867990 + 1 = 11
-		expect(tx.confirmed).toBe(true);
-		expect(tx.blockHeight).toBe(TIP_HEIGHT - 10);
-		expect(tx.confirmations).toBe(11);
-		expect(tx.blockHash).toBe('d'.repeat(64));
-		expect(tx.blockTime).toBe(1_750_000_000);
-
-		// vout: scriptPubKey passes through untouched, spent-ness from outspends.
-		expect(tx.vout).toHaveLength(2);
-		expect(tx.vout[0].scriptPubKey).toBe(WATCHED_SCRIPT);
-		expect(tx.vout[0].address).toBe('bc1qreceiver');
-		expect(tx.vout[0].value).toBe(150_000);
-		expect(tx.vout[0].spent).toBe(true);
-		expect(tx.vout[1].spent).toBe(false);
-
-		// vin: prevout mapping.
-		expect(tx.vin[0]).toMatchObject({
-			txid: 'e'.repeat(64),
-			vout: 1,
-			address: 'bc1qsender',
-			value: 200_000,
-			prevScriptPubKey: '0014' + 'aa'.repeat(20),
-			coinbase: false
-		});
-
-		// Derived numbers: vsize = ceil(weight/4), feeRate = fee/vsize (2dp).
-		expect(tx.vsize).toBe(141);
-		expect(tx.fee).toBe(1_410);
-		expect(tx.feeRate).toBe(10);
-		expect(tx.segwit).toBe(true); // weight 561 < size*4 = 888
-		expect(tx.rbf).toBe(true); // sequence 0xfffffffd
-	});
-
-	it('reports an unconfirmed tx with 0 confirmations and null block fields', async () => {
-		const stub = makeEsploraStub();
-		stub.getTx.mockResolvedValue({ ...ESPLORA_TX, status: { confirmed: false } });
-		const svc = makeService(stub);
-
-		const tx = await svc.getTx(ESPLORA_TX.txid);
-
-		expect(tx.confirmed).toBe(false);
-		expect(tx.confirmations).toBe(0);
-		expect(tx.blockHeight).toBeNull();
-		expect(tx.blockHash).toBeNull();
-		expect(tx.blockTime).toBeNull();
-	});
-
-	it('degrades output spent-ness to null when the outspends lookup fails', async () => {
-		const stub = makeEsploraStub();
-		stub.getTxOutspends.mockRejectedValue(new Error('outspends endpoint down'));
-		const svc = makeService(stub);
-
-		const tx = await svc.getTx(ESPLORA_TX.txid); // must not throw
-		expect(tx.vout.map((v) => v.spent)).toEqual([null, null]);
-		// The rest of the detail is intact.
-		expect(tx.confirmations).toBe(11);
-		expect(tx.vout[0].scriptPubKey).toBe(WATCHED_SCRIPT);
-	});
-
-	it('fetches tx, tip, and outspends concurrently — not outspends after the others (cairn-daej)', async () => {
-		const stub = makeEsploraStub();
-		// Gate tx/tipHeight behind a manual latch. If outspends were still a
-		// sequential await after their Promise.all, it would NOT be called until
-		// after this latch releases; a concurrent Promise.all invokes all three
-		// synchronously, so getTxOutspends is called while tx/tip are still pending.
-		let releaseTx!: () => void;
-		const txGate = new Promise<void>((r) => (releaseTx = r));
-		stub.getTx.mockImplementation(async () => {
-			await txGate;
-			return ESPLORA_TX;
-		});
-		const svc = makeService(stub);
-
-		const pending = svc.getTx(ESPLORA_TX.txid);
-		// Let microtasks drain so the Promise.all has kicked off every fetch.
-		await Promise.resolve();
-		expect(stub.getTxOutspends).toHaveBeenCalledTimes(1); // already in flight
-		expect(stub.getTipHeight).toHaveBeenCalledTimes(1);
-
-		releaseTx();
-		const tx = await pending;
-		expect(tx.vout[0].spent).toBe(true);
-		expect(tx.vout[1].spent).toBe(false);
-	});
-});
-
 // ---- getTxHex (raw hex via Electrum) ----------------------------------------------
 
-// getTxHex no longer touches esplora (cairn-zoz8.4): it fetches raw hex from the
-// operator's own Electrum server via blockchain.transaction.get(txid, verbose=false),
-// which returns the raw serialization for both confirmed and mempool txids on a
-// full-indexing backend (ElectrumX/Fulcrum/electrs).
+// getTxHex fetches raw hex from the operator's own Electrum server via
+// blockchain.transaction.get(txid, verbose=false) (cairn-zoz8.4), which returns
+// the raw serialization for both confirmed and mempool txids on a full-indexing
+// backend (ElectrumX/Fulcrum/electrs).
 describe('getTxHex (Electrum raw-hex path)', () => {
 	// Plausible raw serializations; getTxHex passes them through untouched (no decode).
 	const CONFIRMED_TX_HEX = '02000000000101' + 'ab'.repeat(100) + '00000000';
@@ -583,9 +395,8 @@ describe('getTxHex (Electrum raw-hex path)', () => {
 		Object.assign(svc.electrum, { getTransaction });
 	}
 
-	it('returns a confirmed tx hex via getTransaction(txid, false), without touching esplora', async () => {
-		const stub = makeEsploraStub();
-		const svc = makeService(stub);
+	it('returns a confirmed tx hex via getTransaction(txid, false)', async () => {
+		const svc = makeService();
 		const getTransaction = vi.fn(async () => CONFIRMED_TX_HEX);
 		withElectrum(svc, getTransaction);
 
@@ -593,12 +404,10 @@ describe('getTxHex (Electrum raw-hex path)', () => {
 		await expect(svc.getTxHex(txid)).resolves.toBe(CONFIRMED_TX_HEX);
 		// verbose=false so the server returns raw hex rather than a decoded object.
 		expect(getTransaction).toHaveBeenCalledWith(txid, false);
-		// The esplora client must not be consulted for raw hex any more.
-		expect(stub.getTxHex).not.toHaveBeenCalled();
 	});
 
 	it('returns an unconfirmed (mempool) tx hex the same way', async () => {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		const getTransaction = vi.fn(async () => MEMPOOL_TX_HEX);
 		withElectrum(svc, getTransaction);
 
@@ -607,8 +416,8 @@ describe('getTxHex (Electrum raw-hex path)', () => {
 		expect(getTransaction).toHaveBeenCalledWith(txid, false);
 	});
 
-	it('throws when the Electrum server has no such tx (contract parity with the old esplora path)', async () => {
-		const svc = makeService(makeEsploraStub());
+	it('throws when the Electrum server has no such tx', async () => {
+		const svc = makeService();
 		const getTransaction = vi.fn(async () => {
 			throw new Error('Electrum error: No such mempool or blockchain transaction');
 		});
@@ -629,7 +438,7 @@ describe('getTxHex (Electrum raw-hex path)', () => {
 	// expiry (confirmed tx bytes never change).
 
 	it('serves a second lookup for the same txid from the LRU without re-hitting electrum', async () => {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		const getTransaction = vi.fn(async () => CONFIRMED_TX_HEX);
 		withElectrum(svc, getTransaction);
 
@@ -642,7 +451,7 @@ describe('getTxHex (Electrum raw-hex path)', () => {
 	});
 
 	it('keys the cache by txid, so a different txid always misses', async () => {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		const getTransaction = vi.fn(async (txid: string) =>
 			txid === 'c'.repeat(64) ? CONFIRMED_TX_HEX : MEMPOOL_TX_HEX
 		);
@@ -655,7 +464,7 @@ describe('getTxHex (Electrum raw-hex path)', () => {
 	});
 
 	it('clearRawTxCache forces the next lookup to re-hit electrum', async () => {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		const getTransaction = vi.fn(async () => CONFIRMED_TX_HEX);
 		withElectrum(svc, getTransaction);
 
@@ -668,7 +477,7 @@ describe('getTxHex (Electrum raw-hex path)', () => {
 	});
 
 	it('does not cache a failed fetch', async () => {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		let calls = 0;
 		const getTransaction = vi.fn(async () => {
 			calls++;
@@ -684,7 +493,7 @@ describe('getTxHex (Electrum raw-hex path)', () => {
 	});
 
 	it('bounds cache growth at the LRU cap', async () => {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		const getTransaction = vi.fn(async () => CONFIRMED_TX_HEX);
 		withElectrum(svc, getTransaction);
 
@@ -699,14 +508,14 @@ describe('getTxHex (Electrum raw-hex path)', () => {
 
 // ---- fee estimates (electrum-backed, cairn-zoz8.1) --------------------------------
 
-// getFeeEstimates now reads blockchain.estimatefee at 4 targets from the
-// operator's own Electrum server instead of a third-party esplora HTTP API.
+// getFeeEstimates reads blockchain.estimatefee at 4 targets from the operator's
+// own Electrum server (cairn-zoz8.1).
 describe('getFeeEstimates', () => {
 	function withFees(byTarget: Record<number, number>): {
 		svc: ChainService;
 		estimateFee: ReturnType<typeof vi.fn>;
 	} {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		const estimateFee = vi.fn(async (n: number) => byTarget[n]);
 		withElectrum(svc, { estimateFee });
 		return { svc, estimateFee };
@@ -765,7 +574,7 @@ describe('getDifficultyInfo', () => {
 	const T2 = 1_700_672_000; // tip block time — exactly 600s/block over 1,120 intervals
 
 	it('derives epoch state, avg pace, and the retarget projection from two header fetches', async () => {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		const tipHex = buildHeader({ time: T2, bits: GENESIS_BITS }); // difficulty 1
 		const startHex = buildHeader({ time: T1, bits: 0x1b0404cb });
 		const headersSubscribe = vi.fn(async () => ({ height: TIP_HEIGHT, hex: tipHex }));
@@ -790,7 +599,7 @@ describe('getDifficultyInfo', () => {
 	});
 
 	it('falls back to base epoch state (no projection) when the epoch-start header fetch fails', async () => {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		const tipHex = buildHeader({ time: T2, bits: GENESIS_BITS });
 		const headersSubscribe = vi.fn(async () => ({ height: TIP_HEIGHT, hex: tipHex }));
 		const getBlockHeader = vi.fn(async () => {
@@ -810,7 +619,7 @@ describe('getDifficultyInfo', () => {
 
 describe('getDifficultyHistory', () => {
 	it('fetches epoch-boundary headers oldest-first and computes changePercent between consecutive epochs', async () => {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		const tipHex = buildHeader({ time: 1_700_672_000, bits: GENESIS_BITS });
 		const BITS_A = 0x1d00ffff;
 		const BITS_B = 0x1c00ffff;
@@ -843,7 +652,7 @@ describe('getDifficultyHistory', () => {
 	});
 
 	it('returns null when the tip header fetch fails', async () => {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		const headersSubscribe = vi.fn(async () => {
 			throw new Error('electrum down');
 		});
@@ -855,7 +664,7 @@ describe('getDifficultyHistory', () => {
 
 describe('getHashrate', () => {
 	it('derives hashrate from the tip header difficulty (difficulty * 2^32 / 600)', async () => {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		const hex = buildHeader({ time: 1_700_000_000, bits: GENESIS_BITS }); // difficulty 1
 		const headersSubscribe = vi.fn(async () => ({ height: TIP_HEIGHT, hex }));
 		withElectrum(svc, { headersSubscribe });
@@ -864,7 +673,7 @@ describe('getHashrate', () => {
 	});
 
 	it('returns null when the tip header is unavailable', async () => {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		const headersSubscribe = vi.fn(async () => {
 			throw new Error('electrum down');
 		});
@@ -883,7 +692,7 @@ const OTHER_SCRIPT = '0014' + 'aa'.repeat(20);
 
 describe('getAddressInfo', () => {
 	it('derives balance/tx-count/used from get_balance + get_history; lifetime totals are null (no Electrum equivalent)', async () => {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		const getBalance = vi.fn(async (sh: string) => {
 			expect(sh).toBe(SCRIPTHASH);
 			return { confirmed: 400_000, unconfirmed: 25_000 };
@@ -903,7 +712,7 @@ describe('getAddressInfo', () => {
 			confirmedBalance: 400_000,
 			unconfirmedBalance: 25_000,
 			txCount: 2,
-			// Esplora's lifetime funded/spent sums have no Electrum equivalent
+			// Lifetime funded/spent sums have no Electrum equivalent
 			// without walking every historical tx — null signals "unknown" rather
 			// than a misleading 0 (the Explorer address page hides these when null).
 			totalReceived: null,
@@ -913,7 +722,7 @@ describe('getAddressInfo', () => {
 	});
 
 	it('reports an unused address (empty history) with used:false', async () => {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		withElectrum(svc, {
 			getBalance: vi.fn(async () => ({ confirmed: 0, unconfirmed: 0 })),
 			getHistory: vi.fn(async () => [])
@@ -923,7 +732,7 @@ describe('getAddressInfo', () => {
 	});
 
 	it('surfaces a friendly error when the server rejects an over-large history', async () => {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		withElectrum(svc, {
 			getBalance: vi.fn(async () => ({ confirmed: 0, unconfirmed: 0 })),
 			getHistory: vi.fn(async () => {
@@ -937,9 +746,8 @@ describe('getAddressInfo', () => {
 
 describe('getAddressTxs', () => {
 	// TX1: confirmed, address receives 150k funded by an external 200k prevout
-	// (change 48,590 elsewhere) → fee 1,410, delta +150,000 (mirrors the old
-	// esplora-backed fixture's numbers). TX2: mempool, spends TX1's output onward
-	// → fee 1,000, delta -150,000.
+	// (change 48,590 elsewhere) → fee 1,410, delta +150,000. TX2: mempool, spends
+	// TX1's output onward → fee 1,000, delta -150,000.
 	const TX1 = 'a'.repeat(64);
 	const TX2 = 'b'.repeat(64);
 	const PREV = 'c'.repeat(64);
@@ -949,7 +757,7 @@ describe('getAddressTxs', () => {
 		getHistory: ReturnType<typeof vi.fn>;
 		getTransaction: ReturnType<typeof vi.fn>;
 	} {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		const history = [
 			{ tx_hash: TX2, height: 0 },
 			{ tx_hash: TX1, height: 800_000 }
@@ -1007,7 +815,7 @@ describe('getAddressTxs', () => {
 	});
 
 	it('surfaces a friendly error when the server rejects an over-large history', async () => {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		withElectrum(svc, {
 			getHistory: vi.fn(async () => {
 				throw new Error('server.Error: history too large');
@@ -1018,79 +826,20 @@ describe('getAddressTxs', () => {
 	});
 });
 
-// ---- block lookup -----------------------------------------------------------------
-
-describe('block lookup', () => {
-	it('getBlock resolves a height to a hash and merges /v1 extras (rounded fees, miner)', async () => {
-		const stub = makeEsploraStub();
-		stub.getBlocks.mockResolvedValue([
-			{
-				...BLOCK,
-				extras: {
-					medianFee: 12.345,
-					feeRange: [1, 2, 100.129],
-					totalFees: 12_345_678,
-					reward: 325_000_000,
-					pool: { name: 'Foundry USA' }
-				}
-			}
-		]);
-		const svc = makeService(stub);
-
-		const block = await svc.getBlock(BLOCK.height);
-
-		expect(stub.getBlockHashAtHeight).toHaveBeenCalledWith(BLOCK.height);
-		expect(stub.getBlockByHash).toHaveBeenCalledWith(BLOCK.id);
-		expect(block.hash).toBe(BLOCK.id);
-		expect(block.height).toBe(BLOCK.height);
-		expect(block.prevHash).toBe('a'.repeat(64));
-		expect(block.merkleRoot).toBe(BLOCK.merkle_root);
-		expect(block.bits).toBe('1b0404cb'); // hex rendering of the compact target
-		expect(block.txCount).toBe(3_000);
-		// extras: fees rounded to 2dp, feeRange collapsed to [min, max], miner name.
-		expect(block.medianFee).toBe(12.35);
-		expect(block.feeRange).toEqual([1, 100.13]);
-		expect(block.miner).toBe('Foundry USA');
-		expect(block.totalFees).toBe(12_345_678);
-		expect(block.reward).toBe(325_000_000);
-	});
-
-	it('getBlock still succeeds without extras when the summaries endpoint fails', async () => {
-		const stub = makeEsploraStub();
-		stub.getBlocks.mockRejectedValue(new Error('v1/blocks down'));
-		const svc = makeService(stub);
-
-		const block = await svc.getBlock(BLOCK.id); // by hash this time
-
-		expect(stub.getBlockHashAtHeight).not.toHaveBeenCalled();
-		expect(block.hash).toBe(BLOCK.id);
-		expect(block.medianFee).toBeNull();
-		expect(block.feeRange).toBeNull();
-		expect(block.miner).toBeUndefined();
-		expect(block.totalFees).toBeNull();
-		expect(block.reward).toBeNull();
-	});
-});
-
 // ---- fee histogram (electrum-backed, cairn-zoz8.2) ----------------------------------
 
-// getFeeHistogram now reads mempool.get_fee_histogram from the operator's own
-// Electrum connection instead of the esplora /mempool response. Stub the pooled
-// Electrum facade (readonly is TS-only) so the facade's passthrough + empty→null
-// collapse is exercised without a socket.
+// getFeeHistogram reads mempool.get_fee_histogram from the operator's own Electrum
+// connection (cairn-zoz8.2). Stub the pooled Electrum facade (readonly is TS-only)
+// so the facade's passthrough + empty→null collapse is exercised without a socket.
 describe('getFeeHistogram (electrum-backed)', () => {
 	function withElectrumHistogram(result: unknown): {
 		svc: ChainService;
 		getFeeHistogram: ReturnType<typeof vi.fn>;
-		getMempool: ReturnType<typeof vi.fn>;
 	} {
-		const stub = makeEsploraStub();
-		const getMempool = vi.fn();
-		Object.assign(stub, { getMempool });
-		const svc = makeService(stub);
+		const svc = makeService();
 		const getFeeHistogram = vi.fn(async () => result);
 		Object.assign(svc, { electrum: { getFeeHistogram } });
-		return { svc, getFeeHistogram, getMempool };
+		return { svc, getFeeHistogram };
 	}
 
 	it('passes the mempool.get_fee_histogram pairs through, highest fee first', async () => {
@@ -1100,12 +849,10 @@ describe('getFeeHistogram (electrum-backed)', () => {
 			[10, 210_000],
 			[1, 90_000]
 		];
-		const { svc, getFeeHistogram, getMempool } = withElectrumHistogram(histogram);
+		const { svc, getFeeHistogram } = withElectrumHistogram(histogram);
 
 		await expect(svc.getFeeHistogram()).resolves.toEqual(histogram);
 		expect(getFeeHistogram).toHaveBeenCalledTimes(1);
-		// The esplora /mempool response is no longer the source of this chart.
-		expect(getMempool).not.toHaveBeenCalled();
 	});
 
 	it('collapses an empty mempool histogram to null', async () => {
@@ -1115,7 +862,7 @@ describe('getFeeHistogram (electrum-backed)', () => {
 
 	// ---- 30s TTL caches + single-fetch projection (cairn-6efi.1, U3) -----------
 	it('serves a second getFeeHistogram from the TTL cache (one electrum round-trip)', async () => {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		const getFeeHistogram = vi.fn(async () => [[20, 1000]] as [number, number][]);
 		Object.assign(svc, { electrum: { getFeeHistogram } });
 
@@ -1142,7 +889,7 @@ describe('getFeeHistogram (electrum-backed)', () => {
 	});
 
 	it('getMempoolBlocks(sharedHistogram) projects from the passed value without re-fetching', async () => {
-		const svc = makeService(makeEsploraStub());
+		const svc = makeService();
 		const getFeeHistogram = vi.fn(async () => null);
 		Object.assign(svc, { electrum: { getFeeHistogram } });
 
@@ -1156,12 +903,12 @@ describe('getFeeHistogram (electrum-backed)', () => {
 	});
 });
 
-// ---- Bitcoin Core RPC path (Esplora removal Wave 2) --------------------------------
+// ---- Bitcoin Core RPC path ---------------------------------------------------------
 //
-// When a Core RPC backend is configured, getTx/getBlock/getBlockTxs/getMempoolSummary/
-// getCpfpInfo source from the operator's own node instead of Esplora. These tests pin
-// the Core→app mapping — especially the BTC→sats unit conversions (Core reports values
-// as BTC floats), confirmations→height, and per-output gettxout spent-ness.
+// getTx/getBlock/getBlockTxs/getMempoolSummary/getCpfpInfo source from the operator's
+// own Core node (the sole source of this rich detail). These tests pin the Core→app
+// mapping — especially the BTC→sats unit conversions (Core reports values as BTC
+// floats), confirmations→height, and per-output gettxout spent-ness.
 
 interface CoreStub {
 	call: ReturnType<typeof vi.fn>;
@@ -1176,8 +923,7 @@ interface CoreStub {
 }
 
 /** A confirmed 1-in/2-out segwit tx as Bitcoin Core `getrawtransaction verbosity=2`
- *  returns it — values in BTC, prevout present on the input. Mirrors ESPLORA_TX's
- *  numbers so the mapped result is directly comparable. */
+ *  returns it — values in BTC, prevout present on the input. */
 const CORE_TX = {
 	txid: 'f'.repeat(64),
 	version: 2,
@@ -1242,12 +988,12 @@ function makeCoreStub(): CoreStub {
 	};
 }
 
-/** A ChainService wired to a stubbed Core client, no Esplora, with a tip header
- *  stub so getTip() (used for confirmations→height) resolves. */
+/** A ChainService wired to a stubbed Core client, with a tip header stub so
+ *  getTip() (used for confirmations→height) resolves. */
 function makeCoreService(core: CoreStub): ChainService {
 	const svc = new ChainService(CFG as unknown as ConstructorParameters<typeof ChainService>[0]);
 	const tipHex = buildHeader({ time: 1_750_000_000, bits: GENESIS_BITS });
-	Object.assign(svc, { core, esplora: null });
+	Object.assign(svc, { core });
 	Object.assign(svc.electrum, {
 		headersSubscribe: vi.fn(async () => ({ height: TIP_HEIGHT, hex: tipHex }))
 	});
@@ -1327,39 +1073,15 @@ describe('getTx via Bitcoin Core', () => {
 		expect(tx.vout.map((v) => v.spent)).toEqual([null, null]);
 	});
 
-	it('throws a not-found error for an unknown txid (code -5) so search can fall through', async () => {
-		const core = makeCoreStub();
-		core.call.mockRejectedValue(new CoreRpcError(-5, 'getrawtransaction', 'No such tx'));
-		const svc = makeCoreService(core);
-
-		await expect(svc.getTx(CORE_TX.txid)).rejects.toThrow(/not found/i);
-	});
-
-	// A Core node without -txindex reports the SAME code -5 for "genuinely no such
-	// tx" and "confirmed tx exists but isn't in the mempool/wallet and Core has no
-	// index to find it". An explicitly-configured Esplora backend can still serve
-	// the second case (electrs/mempool index everything) — that's the whole reason
-	// the fallback exists — so a -5/-8 must try it before declaring not-found.
-	it('falls back to esplora on a Core -5/-8 (e.g. no -txindex) before declaring not-found', async () => {
+	// A Core node without -txindex reports code -5 for BOTH "genuinely no such tx"
+	// and "confirmed tx exists but isn't in the mempool/wallet and Core has no
+	// index to find it". With Esplora removed there is no fallback index, so either
+	// case surfaces as not-found (an operator who wants arbitrary historical tx
+	// lookups runs Core with -txindex).
+	it('throws a not-found error for a Core -5/-8 so search can fall through', async () => {
 		const core = makeCoreStub();
 		core.call.mockRejectedValue(new CoreRpcError(-5, 'getrawtransaction', 'No such tx. Use -txindex.'));
-		const esplora = makeEsploraStub();
 		const svc = makeCoreService(core);
-		Object.assign(svc, { esplora });
-
-		const tx = await svc.getTx(ESPLORA_TX.txid);
-
-		expect(esplora.getTx).toHaveBeenCalledWith(ESPLORA_TX.txid);
-		expect(tx.txid).toBe(ESPLORA_TX.txid);
-	});
-
-	it('still reports not-found when esplora ALSO misses after a Core -5/-8', async () => {
-		const core = makeCoreStub();
-		core.call.mockRejectedValue(new CoreRpcError(-5, 'getrawtransaction', 'No such tx'));
-		const esplora = makeEsploraStub();
-		esplora.getTx.mockRejectedValue(new Error('esplora: also not found'));
-		const svc = makeCoreService(core);
-		Object.assign(svc, { esplora });
 
 		await expect(svc.getTx(CORE_TX.txid)).rejects.toThrow(/not found/i);
 	});
@@ -1524,10 +1246,60 @@ describe('getMempoolBlocks projection from the Electrum fee histogram', () => {
 		expect(blocks![1].feeRange).toEqual([10, 100]);
 	});
 
-	it('returns null when the mempool histogram is empty and no Esplora fallback exists', async () => {
+	it('returns null when the mempool histogram is empty', async () => {
 		const svc = makeCoreService(makeCoreStub());
 		Object.assign(svc.electrum, { getFeeHistogram: vi.fn(async () => []) });
 		await expect(svc.getMempoolBlocks()).resolves.toBeNull();
+	});
+});
+
+// ---- post-Esplora-removal regressions (cairn-zoz8.16) ------------------------------
+//
+// With no Core RPC configured, the Core-backed methods must fail with an honest
+// "needs Core RPC" error — NEVER silently reach out to a third-party HTTP host
+// (the whole point of the removal). getTxRbfInfo is now unconditionally null.
+
+describe('no Core RPC configured (Esplora removed)', () => {
+	it('getBlock/getTx/getMempoolSummary throw a clear "needs Core RPC" error without any fetch', async () => {
+		const fetchSpy = vi.fn(async () => {
+			throw new Error('no external fetch should ever happen here');
+		});
+		vi.stubGlobal('fetch', fetchSpy);
+		const svc = makeService(); // CFG has no coreRpcUrl → core is null
+
+		await expect(svc.getBlock('a'.repeat(64))).rejects.toThrow(/Bitcoin Core RPC/);
+		await expect(svc.getTx('b'.repeat(64))).rejects.toThrow(/Bitcoin Core RPC/);
+		await expect(svc.getMempoolSummary()).rejects.toThrow(/Bitcoin Core RPC/);
+		// No chain method dialed any host — there is no Esplora fallback to leak to.
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it('getBlockTxs throws a clear "needs Core RPC" error', async () => {
+		const svc = makeService();
+		await expect(svc.getBlockTxs('a'.repeat(64))).rejects.toThrow(/Bitcoin Core RPC/);
+	});
+
+	it('getCpfpInfo returns null when Core RPC is not configured', async () => {
+		const svc = makeService();
+		await expect(svc.getCpfpInfo('a'.repeat(64))).resolves.toBeNull();
+	});
+
+	it('getTxRbfInfo always returns null (no Core-based RBF watcher yet, cairn-zoz8.13)', async () => {
+		const withCore = makeCoreService(makeCoreStub());
+		await expect(withCore.getTxRbfInfo('a'.repeat(64))).resolves.toBeNull();
+		const noCore = makeService();
+		await expect(noCore.getTxRbfInfo('a'.repeat(64))).resolves.toBeNull();
+	});
+
+	it('getBtcUsdPrice is the one remaining external call (public price source)', async () => {
+		const fetchSpy = vi.fn(async () =>
+			new Response(JSON.stringify({ USD: 65_000 }), { status: 200 })
+		);
+		vi.stubGlobal('fetch', fetchSpy);
+		const svc = makeService();
+		await expect(svc.getBtcUsdPrice()).resolves.toBe(65_000);
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
+		expect(String((fetchSpy.mock.calls[0] as unknown[])[0])).toContain('/v1/prices');
 	});
 });
 

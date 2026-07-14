@@ -3,17 +3,13 @@
 // The strip draws one vertical line per difficulty epoch, x-positioned by the
 // epoch's REAL wall-clock duration — which needs the block timestamp at every
 // epoch boundary height (0, 2016, 4032, …). Boundary heights are deterministic;
-// the timestamps are not, so they're fetched once and cached hard:
-//
-//   1. Preferred source: mempool.space's all-time /v1/mining/difficulty-adjustments
-//      — ONE request returns [time, height, difficulty, changePercent] for every
-//      retarget, giving both boundary timestamps and the real difficulty-change
-//      magnitude the spec's alpha formula wants.
-//   2. Plain-esplora fallback: fetch the block at each boundary height directly
-//      (2 requests per epoch, limited concurrency). Slow the first time, then
-//      persisted forever; difficulty-change magnitude is approximated from each
-//      epoch's duration deviation (an epoch far off 2016×10min implies a big
-//      retarget — documented approximation, see alpha() below).
+// the timestamps are not, so they're fetched once and cached hard by reading the
+// block at each boundary height from the operator's own Electrum server
+// (getBlockTimeAtHeight → block.header → decode; limited concurrency). Slow the
+// first time, then persisted forever. Difficulty-change magnitude is approximated
+// from each epoch's duration deviation (an epoch far off 2016×10min implies a big
+// retarget — documented approximation, see alpha() below). This works on an
+// Umbrel-style local-only deploy with no third-party API (cairn-zoz8.16).
 //
 // Caching: boundary timestamps are immutable chain history. They live in a
 // module-level singleton AND in the settings table (key `chainEpochs.v1`), so a
@@ -174,52 +170,9 @@ function persist(state: EpochCacheState): void {
 }
 
 /**
- * Source 1: one all-time retarget-history request (mempool.space-compatible
- * backends only). Returns null when the backend lacks the endpoint or the
- * response is unusably sparse.
- */
-async function fromRetargetHistory(tipEpoch: number): Promise<EpochCacheState | null> {
-	const chain = getChain();
-	// Empty interval = the all-time series. Available only from an explicitly
-	// configured Esplora backend (mempool.space-compatible); null otherwise, which
-	// sends us to the Electrum-backed boundary-block source below (works anywhere).
-	const raw = chain.esplora
-		? await chain.esplora.getDifficultyHistory('').catch(() => null)
-		: null;
-	if (!raw || raw.length === 0) return null;
-
-	const times: (number | null)[] = new Array(tipEpoch + 1).fill(null);
-	const changes: (number | null)[] = new Array(tipEpoch + 1).fill(null);
-	times[0] = GENESIS_TIME;
-	changes[0] = 0;
-	let known = 1;
-	for (const entry of raw) {
-		if (!Array.isArray(entry) || entry.length < 4) continue;
-		const [time, height, , change] = entry;
-		if (typeof time !== 'number' || typeof height !== 'number') continue;
-		if (height <= 0 || height % EPOCH !== 0) continue;
-		const idx = height / EPOCH;
-		if (idx > tipEpoch) continue;
-		if (times[idx] === null) known++;
-		times[idx] = time;
-		changes[idx] = typeof change === 'number' ? change : null;
-	}
-	// A couple of stray points can't shape 475 epochs — fall back to real blocks.
-	if (known < Math.max(3, Math.floor((tipEpoch + 1) * 0.2))) {
-		log.debug({ known, tipEpoch }, 'retarget history too sparse; using boundary blocks');
-		return null;
-	}
-	return {
-		boundaryTimes: interpolateGaps(times),
-		changes,
-		source: 'retarget-history'
-	};
-}
-
-/**
- * Source 2: read the block at each boundary height (works on any esplora
- * backend). Reuses any previously cached prefix so an epoch rollover only
- * fetches the one new boundary.
+ * Read the block at each boundary height from the operator's own Electrum server.
+ * Reuses any previously cached prefix so an epoch rollover only fetches the one
+ * new boundary.
  */
 async function fromBoundaryBlocks(
 	tipEpoch: number,
@@ -253,7 +206,7 @@ async function fromBoundaryBlocks(
 			const idx = missing[cursor++];
 			try {
 				// Boundary-block timestamp from the operator's own Electrum server
-				// (block.header → decode), not a third-party esplora HTTP API — works on
+				// (block.header → decode), not a third-party HTTP explorer API — works on
 				// an Umbrel-style local-only deploy (cairn-zoz8).
 				const timestamp = await chain.getBlockTimeAtHeight(idx * EPOCH);
 				times[idx] = timestamp;
@@ -301,8 +254,7 @@ async function ensureState(tipEpoch: number): Promise<EpochCacheState | null> {
 		fetchProgress.knownEpochs = mem ? Math.min(mem.boundaryTimes.length, tipEpoch + 1) : 0;
 		inFlight = (async () => {
 			try {
-				const state =
-					(await fromRetargetHistory(tipEpoch)) ?? (await fromBoundaryBlocks(tipEpoch, mem));
+				const state = await fromBoundaryBlocks(tipEpoch, mem);
 				if (state) {
 					mem = state;
 					persist(state);
@@ -335,7 +287,7 @@ function quantile(values: number[], p: number): number {
 export async function getEpochStrip(): Promise<EpochStripData | null> {
 	let tipHeight: number;
 	try {
-		// Tip via the Electrum-backed, TTL-cached getTip (cairn-zoz8) — no esplora.
+		// Tip via the Electrum-backed, TTL-cached getTip (cairn-zoz8).
 		tipHeight = (await getChain().getTip()).height;
 	} catch (e) {
 		log.debug({ err: e }, 'tip height unavailable; no strip data');

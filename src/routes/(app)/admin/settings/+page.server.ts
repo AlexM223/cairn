@@ -5,7 +5,7 @@ import {
 	setSecretSetting,
 	readSecretSetting
 } from '$lib/server/settings';
-import { reconfigureChain, testElectrum, testEsplora, testCoreRpc } from '$lib/server/chain';
+import { reconfigureChain, testElectrum, testCoreRpc } from '$lib/server/chain';
 import { getChainHealth } from '$lib/server/chainHealth';
 import { resetInstance } from '$lib/server/admin';
 import { invalidateWalletCache } from '$lib/server/bitcoin/walletScan';
@@ -149,11 +149,6 @@ export const actions: Actions = {
 				'electrum_tls_insecure',
 				form.get('electrumTlsInsecure') === 'on' ? 'true' : 'false'
 			);
-
-			const esplora = String(form.get('esploraUrl') ?? '').trim();
-			if (esplora && !/^https?:\/\//.test(esplora))
-				return fail(400, { error: 'Esplora URL must start with http:// or https://.' });
-			setSetting('esplora_url', esplora.replace(/\/+$/, ''));
 		}
 
 		// Bitcoin Core RPC is a separate concern from connectionMode/Electrum
@@ -211,18 +206,6 @@ export const actions: Actions = {
 		const { socks5Host, socks5Port } = readProxyFromForm(form);
 		const result = await testElectrum({ host, port, tls, tlsInsecure, socks5Host, socks5Port });
 		return { electrumTest: result };
-	},
-
-	testEsplora: async ({ request, locals }) => {
-		if (!locals.user?.isAdmin) return fail(403, { error: 'Admin access required.' });
-		const form = await request.formData();
-		const url = String(form.get('esploraUrl') ?? '').trim();
-		if (!url)
-			return fail(400, { esploraTest: { ok: false, error: 'Enter an Esplora URL first.' } });
-
-		const proxy = readProxyFromForm(form);
-		const result = await testEsplora(url.replace(/\/+$/, ''), proxy);
-		return { esploraTest: result };
 	},
 
 	testCoreRpc: async ({ request, locals }) => {

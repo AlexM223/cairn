@@ -250,8 +250,9 @@ const EXPLORER_BASE58_VERSIONS = new Set([
  * Unlike {@link addressToScriptPubKey}/{@link isValidAddress} (mainnet only, by
  * design — wallet code relies on that strictness), this accepts addresses on
  * mainnet, testnet/signet AND regtest. The explorer only ever forwards the
- * address string to the configured Esplora backend, so a checksum-validated,
- * network-agnostic gate is all that's needed to unblock bcrt1/tb1 lookups.
+ * address string to the Electrum server (as a scripthash lookup), so a
+ * checksum-validated, network-agnostic gate is all that's needed to unblock
+ * bcrt1/tb1 lookups.
  *
  * Accepts:
  *   - bech32/bech32m with HRP 'bc' | 'tb' | 'bcrt'; witness v0 program of 20 or

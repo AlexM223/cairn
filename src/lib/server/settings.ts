@@ -17,7 +17,6 @@ const DEFAULTS: InstanceSettings = {
 	electrumTls: true,
 	electrumTlsInsecure: false,
 	electrumPoolSize: 3,
-	esploraUrl: 'https://mempool.space/api',
 	socks5Host: null,
 	socks5Port: null,
 	coreRpcUrl: null,
@@ -32,8 +31,7 @@ const DEFAULTS: InstanceSettings = {
 export const PUBLIC_DEFAULTS = {
 	electrumHost: DEFAULTS.electrumHost,
 	electrumPort: DEFAULTS.electrumPort,
-	electrumTls: DEFAULTS.electrumTls,
-	esploraUrl: DEFAULTS.esploraUrl
+	electrumTls: DEFAULTS.electrumTls
 };
 
 export function getSetting(key: string): string | null {
@@ -125,7 +123,6 @@ export function getInstanceSettings(): InstanceSettings {
 		const n = parseInt(str('electrum_pool_size')!, 10);
 		if (Number.isInteger(n) && n >= 1 && n <= 4) s.electrumPoolSize = n;
 	}
-	if (str('esplora_url')) s.esploraUrl = str('esplora_url')!;
 	if (str('socks5_host')) s.socks5Host = str('socks5_host')!;
 	if (str('socks5_port')) {
 		const p = parseInt(str('socks5_port')!, 10);
@@ -224,7 +221,6 @@ export function getChainConfig(): {
 	electrumTls: boolean;
 	electrumTlsInsecure: boolean;
 	electrumPoolSize: number;
-	esploraUrl: string;
 	socks5Host: string | null;
 	socks5Port: number | null;
 	coreRpcUrl: string | null;
@@ -243,9 +239,9 @@ export function getChainConfig(): {
 		electrumPoolSize: s.electrumPoolSize
 	};
 	// Bitcoin Core RPC is inherently a custom/self-hosted-only backend: there is
-	// no "public default" Core node to fall back to, so unlike electrum/esplora
-	// these values are NOT swapped out in public mode — whatever is actually
-	// stored is always returned, in both modes (cairn-zoz8.8).
+	// no "public default" Core node to fall back to, so unlike Electrum these
+	// values are NOT swapped out in public mode — whatever is actually stored is
+	// always returned, in both modes (cairn-zoz8.8).
 	const coreRpc = {
 		coreRpcUrl: s.coreRpcUrl,
 		coreRpcUser: s.coreRpcUser,
@@ -262,21 +258,11 @@ export function getChainConfig(): {
 			mode: 'public'
 		};
 	}
-	// Esplora is an OPTIONAL last-resort backend after the Wave 2 chain migration
-	// (Core RPC + Electrum serve the explorer). In custom mode it is dialed ONLY
-	// when the operator EXPLICITLY stored an esplora_url — do NOT fall back to the
-	// mempool.space default here, or an Umbrel-style local-only deploy (no route to
-	// the public internet) would burn 12s timeouts against an API it can't reach.
-	// `getInstanceSettings` defaults s.esploraUrl to mempool.space, so read the raw
-	// stored value directly to tell "explicitly set" from "defaulted". Public mode
-	// (above) still gets the public default — those users do have internet.
-	const rawEsplora = getSetting('esplora_url');
 	return {
 		electrumHost: s.electrumHost,
 		electrumPort: s.electrumPort,
 		electrumTls: s.electrumTls,
 		electrumTlsInsecure: s.electrumTlsInsecure,
-		esploraUrl: rawEsplora && rawEsplora.trim() !== '' ? rawEsplora.trim() : '',
 		...tuning,
 		...coreRpc,
 		mode: 'custom'

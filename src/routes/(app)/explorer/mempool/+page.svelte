@@ -311,8 +311,8 @@
 						<div class="ridge-skeleton skeleton" aria-busy="true" aria-label="Loading fee distribution"></div>
 					{:else}
 						<p class="hint">
-							A fee-rate breakdown needs a mempool.space-compatible backend — the configured server
-							provides basic totals only.
+							A fee-rate breakdown needs a mempool fee histogram from your Electrum server, which
+							this server didn't provide.
 						</p>
 					{/if}
 				</section>
@@ -333,8 +333,8 @@
 				</section>
 			{:else if projected === null && !neverSynced}
 				<p class="hint degrade-note">
-					Projected rings and history need a mempool.space-compatible backend — the configured
-					Esplora server provides basic mempool totals only.
+					Projected rings and history need a mempool fee histogram from your Electrum server, which
+					this server didn't provide.
 				</p>
 			{/if}
 		{/if}

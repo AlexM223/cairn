@@ -33,6 +33,7 @@ import { startFirstSync } from '$lib/server/syncStatus';
 import { migratePlaintextSecretsAtRest } from '$lib/server/secretsMigration';
 import { migrateInstanceMode } from '$lib/server/instanceModeMigration';
 import { migrateExplorerDefault } from '$lib/server/explorerDefaultMigration';
+import { migrateDropEsploraUrl } from '$lib/server/esploraUrlMigration';
 import { ensureDefaultAgreementVersion } from '$lib/server/disclosures';
 import { httpsExternalPort } from '$lib/server/httpsPort';
 import { DB_PATH } from '$lib/server/db';
@@ -137,6 +138,16 @@ async function init(): Promise<void> {
 		migrateExplorerDefault();
 	} catch (e) {
 		errLog.error({ err: e }, 'explorer default migration failed');
+	}
+
+	// Drop the dead `esplora_url` settings row left by installs upgraded from a
+	// version that stored one (Esplora fully removed, cairn-zoz8.16). Order-
+	// independent — a pure settings-table cleanup that touches no other key.
+	// Idempotent; never throws.
+	try {
+		migrateDropEsploraUrl();
+	} catch (e) {
+		errLog.error({ err: e }, 'esplora_url cleanup migration failed');
 	}
 
 	// Non-interactive admin bootstrap for deployment tooling (Umbrel/Docker set

@@ -8,7 +8,7 @@
 	// svelte-ignore state_referenced_locally — intentionally seeds local UI state
 	let connectionMode = $state(data.settings.connectionMode);
 	let saving = $state(false);
-	let testing = $state<'electrum' | 'esplora' | 'coreRpc' | null>(null);
+	let testing = $state<'electrum' | 'coreRpc' | null>(null);
 
 	// Umbrel Wave B assisted-connect (cairn-ylz5 B3 / cairn-mz9p). Mirrors
 	// src/lib/server/umbrelCoreProbe.ts's UMBREL_CORE_RPC_URL/UMBREL_CORE_RPC_USER
@@ -54,7 +54,6 @@
 	// share one ActionData slot, so rendering `form` directly would let each
 	// result wipe the others' badges.
 	let electrumResult = $state<TestResult>(null);
-	let esploraResult = $state<TestResult>(null);
 	let coreRpcResult = $state<CoreRpcTestResult>(null);
 
 	// User agreement editor (its own form/action, independent of chain settings).
@@ -73,9 +72,6 @@
 
 	$effect(() => {
 		if (form?.electrumTest) electrumResult = form.electrumTest as TestResult;
-	});
-	$effect(() => {
-		if (form?.esploraTest) esploraResult = form.esploraTest as TestResult;
 	});
 	$effect(() => {
 		if (form?.coreRpcTest) coreRpcResult = form.coreRpcTest as CoreRpcTestResult;
@@ -111,11 +107,9 @@
 		// request never fires and the spinner sticks forever (cairn-unp).
 		const which = action.search.includes('testElectrum')
 			? ('electrum' as const)
-			: action.search.includes('testEsplora')
-				? ('esplora' as const)
-				: action.search.includes('testCoreRpc')
-					? ('coreRpc' as const)
-					: null;
+			: action.search.includes('testCoreRpc')
+				? ('coreRpc' as const)
+				: null;
 		if (which) testing = which;
 		else saving = true;
 
@@ -126,8 +120,7 @@
 			if (which && testing === which) {
 				const timedOut = { ok: false, error: 'Timed out — no response from the server.' };
 				if (which === 'electrum') electrumResult = timedOut;
-				else if (which === 'esplora') esploraResult = timedOut;
-					else coreRpcResult = timedOut;
+				else coreRpcResult = timedOut;
 			}
 			testing = null;
 			saving = false;
@@ -197,7 +190,7 @@
 			<label class="radio-card" class:selected={connectionMode === 'public'}>
 				<input type="radio" name="connectionMode" value="public" bind:group={connectionMode} />
 				<span class="radio-label">Public servers <span class="badge badge-neutral">default</span></span>
-				<span class="radio-desc">electrum.blockstream.info + mempool.space</span>
+				<span class="radio-desc">electrum.blockstream.info (Electrum)</span>
 			</label>
 			<label class="radio-card" class:selected={connectionMode === 'custom'}>
 				<input type="radio" name="connectionMode" value="custom" bind:group={connectionMode} />
@@ -377,46 +370,6 @@
 						{/if}
 					</div>
 				</div>
-
-				<div class="subgroup">
-					<span class="subgroup-title">Explorer data source (Esplora-compatible API)</span>
-					<p class="hint">
-						Used for block and mempool detail the Electrum protocol can't provide. Works with a
-						self-hosted mempool instance or blockstream.info.
-					</p>
-					<div class="field">
-						<label class="label" for="esploraUrl">Base URL</label>
-						<input
-							class="input mono"
-							id="esploraUrl"
-							name="esploraUrl"
-							placeholder="https://mempool.space/api"
-							value={data.settings.esploraUrl}
-						/>
-					</div>
-					<div class="test-row">
-						<button
-							type="submit"
-							class="btn btn-secondary btn-sm"
-							formaction="?/testEsplora"
-							disabled={testing !== null || saving}
-						>
-							{#if testing === 'esplora'}<span class="spinner"></span>{/if}
-							Test connection
-						</button>
-						{#if esploraResult}
-							{#if esploraResult.ok}
-								<span class="badge badge-success">
-									OK{esploraResult.tipHeight
-										? ` — tip ${formatNumber(esploraResult.tipHeight)}`
-										: ''}
-								</span>
-							{:else}
-								<span class="badge badge-error">{esploraResult.error ?? 'Failed'}</span>
-							{/if}
-						{/if}
-					</div>
-				</div>
 			</div>
 		{/if}
 
@@ -427,12 +380,11 @@
 		     persisted it mode-independently since cairn-6uok, so this subgroup must
 		     render regardless of connectionMode too — it used to be nested inside
 		     the connectionMode==='custom' block above, which meant a public-mode
-		     admin who wanted to hand-enter a non-Umbrel Core RPC endpoint had no way
-		     to reach these inputs without first flipping to custom mode. It also
-		     coexists with the Esplora subgroup above ON PURPOSE for now: Core RPC is
-		     the eventual replacement for the third-party Esplora HTTP API, but the
-		     Esplora section stays until nothing depends on it any more — its removal
-		     is tracked separately as cairn-zoz8.16. -->
+		     admin who wanted to hand-enter a Core RPC endpoint had no way to reach
+		     these inputs without first flipping to custom mode. Core RPC is now the
+		     sole source of the rich block/tx/mempool detail the Electrum protocol
+		     can't provide — there is no longer any third-party HTTP explorer API in
+		     the path (cairn-zoz8.16). -->
 		<div class="subgroup proxy-group">
 			<span class="subgroup-title">
 				Bitcoin Core RPC <span class="badge badge-neutral">self-hosted</span>

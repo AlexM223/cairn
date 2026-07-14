@@ -1,7 +1,7 @@
 // Bitcoin Core JSON-RPC client (HTTP POST against a bitcoind node). Supports
 // user/password Basic auth and cookie-file auth, a per-request timeout, and
 // SOCKS5/Tor proxying — mirroring the connection-hygiene patterns established by
-// EsploraApi (chain/esplora.ts) and ElectrumClient (electrum/client.ts).
+// ElectrumClient (electrum/client.ts).
 //
 // Deliberately a thin, honest transport: no TTL caching lives here (callers add
 // their own where appropriate — cairn-zoz8.7). JSON-RPC error responses surface
@@ -64,7 +64,7 @@ interface JsonRpcResponse {
  * real failure — DNS (ENOTFOUND), refused (ECONNREFUSED), TLS — into an opaque
  * `TypeError: fetch failed`, with the actual cause one or more `.cause` links
  * deep. Surfacing that chain is the whole point (the same trap was fixed for
- * Esplora as cairn-s17j); do not let RPC transport errors regress to "fetch
+ * the chain layer as cairn-s17j); do not let RPC transport errors regress to "fetch
  * failed".
  */
 function fetchErrorDetail(err: unknown): string {
@@ -121,7 +121,7 @@ export class CoreRpcClient {
 		this.cookiePath = config.cookiePath ?? null;
 		this.timeoutMs = config.timeoutMs ?? REQUEST_TIMEOUT_MS;
 		// socks5h:// keeps DNS resolution on the proxy side (no DNS leak, .onion
-		// hosts resolve) — matches the Esplora/Electrum Tor convention (cairn-oh7a).
+		// hosts resolve) — matches the Electrum Tor convention (cairn-oh7a).
 		this.proxyAgent =
 			config.socks5Host && config.socks5Port
 				? new SocksProxyAgent(`socks5h://${config.socks5Host}:${config.socks5Port}`)

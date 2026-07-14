@@ -53,9 +53,9 @@ multisig wallets from xpubs, while **never holding a private key** anywhere
 on the server. Every signature comes from outside the process — a hardware
 wallet over WebUSB/WebHID/WebSerial, or an air-gapped file/QR round-trip.
 Chain data comes from an operator-controlled Electrum server as the primary
-source, with optional Bitcoin Core RPC for explorer-grade detail and Esplora
-as a last-resort HTTP fallback. All durable state lives in one synchronous
-`node:sqlite` database.
+source, with optional Bitcoin Core RPC for explorer-grade detail. There is no
+third-party HTTP explorer API anywhere in the path. All durable state lives in
+one synchronous `node:sqlite` database.
 
 The name split is deliberate, and the internals half of it is permanent
 regardless of how the product-facing half resolves: package metadata, UI
@@ -148,8 +148,7 @@ Domain services: src/lib/server/**
    ▼
 Chain facade: src/lib/server/chain/index.ts  (ChainService singleton, getChain())
    ├─ Electrum pool (electrum/pool.ts → N × electrum/client.ts sockets)   [PRIMARY]
-   ├─ Bitcoin Core RPC (bitcoinCore/client.ts)                            [optional]
-   └─ Esplora HTTP (chain/esplora.ts)                                     [optional, fallback]
+   └─ Bitcoin Core RPC (bitcoinCore/client.ts)                            [optional, explorer detail]
    ▼
 Bitcoin network:  operator's Electrum/electrs + bitcoind (Umbrel), or public Electrum
 ```
@@ -214,7 +213,7 @@ A quick map so you know where to look before grepping blind.
 | `src/routes/api/**/+server.ts` | ~100 JSON API endpoints, guarded by `src/lib/server/api.ts` helpers. |
 | `src/routes/agreement/`, `terms/`, `disclosure/`, `setup-admin/`, `sync/`, `logout/` | Standalone top-level routes outside the two route groups. |
 | `src/lib/server/**` | All server-only domain logic: DB, auth, wallets, transactions, chain facade, notifications, feature flags, secrets. Never imported client-side. |
-| `src/lib/server/chain/` | `index.ts` (`ChainService` facade), `esplora.ts`, `cache.ts`. |
+| `src/lib/server/chain/` | `index.ts` (`ChainService` facade), `cache.ts`, `pools.ts`. |
 | `src/lib/server/electrum/` | `client.ts` (single-socket protocol client), `pool.ts` (N-socket pool with lanes). |
 | `src/lib/server/bitcoinCore/` | `client.ts` — Bitcoin Core JSON-RPC client. |
 | `src/lib/server/bitcoin/` | `psbt.ts` (single-sig PSBT construction + shared spend rules), `multisigPsbt.ts`, `xpub.ts`, `multisig.ts`, `signingMass.ts`, plus `vaultRegtestE2E.test.ts` (the gated live-regtest test). |
@@ -233,12 +232,12 @@ A quick map so you know where to look before grepping blind.
 ## 4. Server: The Chain Layer
 
 Every route and service that needs Bitcoin data imports exactly one thing:
-`getChain()` from `src/lib/server/chain/index.ts`. That facade hides three
-backends behind one API and picks between them by a documented priority
-order, so nothing above it needs to know or care whether the operator has
-Bitcoin Core configured.
+`getChain()` from `src/lib/server/chain/index.ts`. That facade hides two
+backends behind one API and picks between them by a documented split of
+responsibilities, so nothing above it needs to know or care whether the
+operator has Bitcoin Core configured.
 
-### Backend priority (deliberate, documented in the facade's file header)
+### Backend responsibilities (deliberate, documented in the facade's file header)
 
 1. **Electrum** (the operator's own server) — tip height, recent block
    headers (no `tx_count`/size/weight — a raw Electrum header doesn't carry
@@ -250,27 +249,24 @@ Bitcoin Core configured.
 2. **Bitcoin Core RPC** (the operator's own node, optional) — the
    "explorer-rich" views Electrum can't provide: full block/tx detail,
    per-output spent-ness (`gettxout`), mempool summary, CPFP ancestor/
-   descendant context. Added in the "Esplora-removal Wave 2" so a
-   local-only Umbrel deploy (Core + electrs, no internet route) is fully
-   self-sufficient.
-3. **Esplora** (optional, only when the operator sets an explicit
-   `esploraUrl`) — last-resort fallback for the above when Core isn't
-   configured or a Core call fails, and the *only* source for things Core
-   genuinely can't do (the RBF replacement tree/history — Core keeps no
-   historical-replacement index).
-4. **Public `mempool.space` price endpoint** — the very last fallback, and
-   only for BTC/USD spot price, and only if the configured Esplora backend
-   has no `/v1/prices` of its own (a self-hosted mempool instance is checked
-   first, so a sovereignty-minded operator's box never silently leaks to the
-   public internet).
+   descendant context. A local-only Umbrel deploy (Core + electrs, no internet
+   route) is fully self-sufficient. When Core isn't configured these methods
+   throw a clear "needs Core RPC" error (or return `null`) — never a
+   third-party fallback.
+3. **Public `mempool.space` price endpoint** — the ONE remaining external
+   call, and only for the opt-in BTC/USD spot price (neither Electrum nor Core
+   exposes a price). TTL-cached, short-timeout, and only fired when a caller
+   actually asks for a fiat value. Tracked for a future opt-in/removal decision
+   as its own bead (cairn-zoz8.18).
 
-`ChainService.core` and `.esplora` are `null` when not configured. Every
-Core/Esplora-backed method either falls through to the next backend in the
-chain or throws a clear "needs Core RPC" error that the UI renders as
-`CoreRpcRequiredNotice` (`src/lib/components/CoreRpcRequiredNotice.svelte`).
-**A stock Umbrel deploy has `esplora === null` and `core !== null`** — keep
-this in mind; README.md's "Configuration notes" section still describes
-Esplora as if it were the primary external dependency, which is stale (§15).
+There is no third-party HTTP explorer API (Esplora) anywhere in the path — it
+was removed entirely in **cairn-zoz8.16**. `ChainService.core` is `null` when
+Core RPC isn't configured; every Core-backed method then throws a clear "needs
+Core RPC" error the UI renders as `CoreRpcRequiredNotice`
+(`src/lib/components/CoreRpcRequiredNotice.svelte`), or returns `null` where a
+null result already degrades cleanly. **A stock Umbrel deploy has `core !==
+null`** and a public-Electrum-only install has `core === null` (those Explorer
+sections show the honest notice).
 
 ### Electrum client — `src/lib/server/electrum/client.ts`
 
@@ -375,44 +371,23 @@ connection.
 forgets to pass `'background'` will silently compete with interactive
 traffic for every socket. Check this whenever adding a new bulk scan.
 
-### Esplora HTTP client — `src/lib/server/chain/esplora.ts`
-
-`EsploraApi` wraps mempool.space-style / plain-esplora REST APIs. **Only
-constructed when the operator explicitly sets `esploraUrl`** — never dialed
-on a stock Umbrel/local-only deploy. `REQUEST_TIMEOUT_MS = 12_000`. Caches:
-`SHORT_TTL_MS = 10s` (tip/mempool/fees), `IMMUTABLE_TTL_MS = 10min` (confirmed
-txs/blocks), `PRICE_TTL_MS = 5min`. Uses global `fetch` (undici) normally;
-falls back to node `http`/`https` + `SocksProxyAgent` when a SOCKS5 proxy is
-configured (global `fetch` can't take a SOCKS dispatcher), using the
-`socks5h://` scheme so DNS resolution stays proxy-side (no leak, `.onion`
-hosts resolve — `cairn-oh7a`). `fetchErrorDetail()` unwraps chained `.cause`
-up to 3 levels so a collapsed `TypeError: fetch failed` doesn't hide the real
-DNS/TLS/refused cause underneath (`cairn-s17j` — this was the actual root
-cause behind a prior "can't reach chain data" investigation). `probeV1()`
-probes once whether the backend exposes mempool.space `/v1/*` endpoints
-versus plain esplora (blockstream.info-style); a 4xx pins the answer false, a
-network error leaves it undecided for re-probing later. Covers tip, blocks
-(preferring `/v1/blocks` for `extras` — medianFee/feeRange/pool name),
-block txs, tx detail/outspends/hex, RBF tree (mempool.space only), CPFP
-(mempool.space only), address info/txs, mempool summary, fee estimates,
-mempool block projections, mempool 2h statistics, difficulty
-adjustment/history, hashrate. Kept strictly as a last-resort fallback.
-
 ### Bitcoin Core RPC client — `src/lib/server/bitcoinCore/client.ts`
 
 `CoreRpcClient` — HTTP POST JSON-RPC 1.0-envelope client against `bitcoind`.
-Added in the Esplora-removal Wave 2 so a Core+electrs-only deploy pays no
-third-party timeout penalty. `REQUEST_TIMEOUT_MS = 12_000`. Auth: user/
-password Basic auth, or cookie-file auth (reads `user:pass` from Core's
-`.cookie` file, memoized, **re-read from disk on a 401** since Core rewrites
-the cookie on every restart — retries once after refresh). Same SOCKS5/Tor
-proxy pattern and cause-chain-unwrapping fix as Esplora, plus
-`AggregateError.errors` unwrapping for Node's happy-eyeballs multi-address
-dial failures. `CoreRpcError` carries Core's numeric error code (`-5`/`-8` =
-not found, `-28` = still warming up/IBD) so `ChainService` can branch
-cleanly on "not found" vs. "fall back to Esplora." Deliberately **no TTL
-caching** in this module ("thin, honest transport" — callers cache where
-appropriate). Wrapped RPCs: `getBlockchainInfo`, `getBlockCount`,
+The sole source of the explorer-rich detail Electrum can't provide, so a
+Core+electrs-only deploy is fully self-sufficient with no third-party API.
+`REQUEST_TIMEOUT_MS = 12_000`. Auth: user/password Basic auth, or cookie-file
+auth (reads `user:pass` from Core's `.cookie` file, memoized, **re-read from
+disk on a 401** since Core rewrites the cookie on every restart — retries once
+after refresh). SOCKS5/Tor proxy support via `SocksProxyAgent` using the
+`socks5h://` scheme so DNS resolution stays proxy-side (no leak, `.onion` hosts
+resolve — `cairn-oh7a`), plus cause-chain unwrapping (`cairn-s17j`) and
+`AggregateError.errors` unwrapping for Node's happy-eyeballs multi-address dial
+failures. `CoreRpcError` carries Core's numeric error code (`-5`/`-8` =
+not found, `-28` = still warming up/IBD) so `ChainService` can branch cleanly
+on "not found" vs. a real transport failure. Deliberately **no TTL caching**
+in this module ("thin, honest transport" — callers cache where appropriate).
+Wrapped RPCs: `getBlockchainInfo`, `getBlockCount`,
 `getBlockHash`, `getBlockHeader`, `getBlock` (verbosity 0-3),
 `getBlockStats`, `getRawTransaction` (needs `txindex` for arbitrary confirmed
 non-wallet txids — errors propagate, not swallowed), `getTxOut`,
@@ -427,25 +402,28 @@ Constructed from `getChainConfig()` (`settings.ts`). Notable methods:
   `'header'` event) via `electrum.headersSubscribe()`.
 - `getRecentBlocks(limit, fromHeight)` — Electrum headers only; txCount/
   size/weight/fees are 0/null unless later enriched by Core.
-- `getBlock` / `getBlockTxs` / `getTx` — try Core first, catch
-  `CoreRpcError` codes -5/-8 as "not found" (with an Esplora retry attempted
-  first, since Core's -5/-8 is ambiguous between "genuinely missing" and "no
-  txindex"), else fall back to Esplora, else throw the "needs Core RPC"
-  error.
+- `getBlock` / `getBlockTxs` / `getTx` — Core only; catch `CoreRpcError` codes
+  -5/-8 as "not found" (Core's -5/-8 covers both "genuinely missing" and "no
+  txindex to find an arbitrary confirmed tx" — either way it surfaces as
+  not-found), else throw the "needs Core RPC" error. No third-party fallback.
 - `getTxHex()` — Electrum `blockchain.transaction.get(verbose=false)`, LRU-
   cached cross-build by txid (`RAW_TX_CACHE_MAX = 200`) since confirmed tx
   bytes never change.
-- `getTxRbfInfo()` — Esplora-only (`/v1/tx/{txid}/rbf`); `null` otherwise.
-- `getCpfpInfo()` — Core (`getmempoolentry` + ancestors/descendants)
-  preferred, Esplora fallback.
+- `getTxRbfInfo()` — always `null` for now. Core keeps no historical-
+  replacement index and there is no external index to read one from; a real
+  chain needs a forward-looking, Core-based watcher, deferred as cairn-zoz8.13.
+  The tx page's RBF section is already gated on a null result.
+- `getCpfpInfo()` — Core (`getmempoolentry` + ancestors/descendants); `null`
+  when Core isn't configured or the tx isn't in the mempool.
 - `getAddressInfo` / `getAddressTxs()` — Electrum scripthash protocol only
   (no lifetime totalReceived/Sent field — Electrum has no equivalent without
   walking full history; the UI shows "unknown" rather than a misleading 0).
-- `getMempoolSummary()` — Core `getmempoolinfo` preferred, Esplora fallback.
+- `getMempoolSummary()` — Core `getmempoolinfo`; throws the "needs Core RPC"
+  error when Core isn't configured.
 - `getFeeHistogram()` / `getMempoolBlocks()` — Electrum
   `mempool.get_fee_histogram`, projected locally into blocks via
   `projectBlocksFromHistogram()` (a greedy 1MvB-bucket packer, approximate by
-  design), Esplora fallback only if the histogram is empty.
+  design); `null` when the histogram is empty.
 - `getMempoolTrend()` — reads the **locally persisted** rolling sample
   window (`mempoolSamples.ts`, §4.7), not a live call.
 - `getFeeEstimates()` — 30s TTL-cached; 4 Electrum `estimatefee` targets
@@ -453,8 +431,9 @@ Constructed from `getChainConfig()` (`settings.ts`). Notable methods:
   the next-longer target" repair pass for targets the server can't estimate
   (`-1`), floored at 1 sat/vB.
 - `getDifficultyInfo()` / `getDifficultyHistory()` / `getHashrate()` — all
-  derived from Electrum block headers, no Esplora/Core dependency at all.
-- `getBtcUsdPrice()` — see the backend-priority list above.
+  derived from Electrum block headers, no Core dependency at all.
+- `getBtcUsdPrice()` — the one remaining external call (public mempool.space
+  `/v1/prices`, opt-in fiat only); see the backend-responsibilities list above.
 
 `reconfigureChain()` is called after an admin saves connection settings —
 tears down the old `ChainService` (no restart needed) and resets **every**
@@ -463,8 +442,8 @@ piece of per-backend in-memory state: connection dedup state
 cache, and the tip/fee TTL caches. **This is the one place that must reset
 all per-backend caches/state** — a new module that adds backend-specific
 in-memory state needs a reset hook wired in here too, or it will leak stale
-data across an admin-triggered server switch. `testElectrum`/`testEsplora`/
-`testCoreRpc` are standalone connectivity probes for the admin settings "Test
+data across an admin-triggered server switch. `testElectrum`/`testCoreRpc`
+are standalone connectivity probes for the admin settings "Test
 connection" buttons; `testCoreRpc` wraps raw errors in
 `friendlyCoreRpcTestError()` rather than surfacing a bare exception string (a
 real prior bug).
@@ -629,8 +608,9 @@ data" (dashboard/explorer), per-wallet balances, and per-tx decoded data.
   new-block event passes `force: true`. `doRefresh()` fetches recent blocks
   (the "required" fetch — its failure means the backend is unreachable) plus
   mempool summary/fees/tip/mempool-blocks/fee-histogram/mempool-trend, each
-  individually `.catch(() => null)` so a partial-capability backend (plain
-  esplora) degrades field-by-field instead of failing the whole refresh.
+  individually `.catch(() => null)` so a partial-capability backend (e.g.
+  Electrum-only, no Core RPC) degrades field-by-field instead of failing the
+  whole refresh.
   Epoch-scale data (hashrate/difficulty info/history) is only refetched when
   the tip height actually changed since the last successful refresh —
   otherwise carried forward from the persisted snapshot, since refetching
@@ -690,10 +670,10 @@ data" (dashboard/explorer), per-wallet balances, and per-tx decoded data.
 - **`src/lib/server/chainEpochs.ts`** — one-time historical build of
   difficulty-epoch boundary timestamps (genesis → tip, every 2016 blocks)
   for the Heartwood "ChainStrip" visualization and first-sync progress.
-  Prefers mempool.space's all-time retarget-history endpoint; falls back to
-  fetching each boundary block directly on plain esplora. Cached forever in
-  the `settings` table — immutable chain history, only a new boundary
-  crossing (~every 2 weeks) adds one entry.
+  Reads the block at each boundary height directly from the operator's own
+  Electrum server (`getBlockTimeAtHeight` → block header → decode). Cached
+  forever in the `settings` table — immutable chain history, only a new
+  boundary crossing (~every 2 weeks) adds one entry.
 - **`src/lib/server/chainDepth.ts`** — unconfirmed-chain-depth warnings (not
   blocking) for chained unconfirmed spends, via `getCpfpInfo()`. Defaults to
   the conservative **legacy** mempool policy limits (25 ancestors/
@@ -785,9 +765,10 @@ client sees only "Something went wrong" plus the ID.
 2. **The pool is many sockets to ONE Electrum server, not independent
    sources** — this is why the address watcher needs its own SPV/difficulty-
    floor logic rather than trusting Electrum's header claims outright.
-3. **Esplora is a fallback, not a first-class backend** — every
-   `ChainService` method that touches it checks `this.esplora` for null
-   first.
+3. **There is no third-party HTTP explorer API** — Esplora was removed
+   entirely (cairn-zoz8.16). The rich block/tx/mempool detail comes only from
+   the operator's own Bitcoin Core RPC; when it isn't configured those methods
+   throw the "needs Core RPC" error (or return `null`) — never a fallback.
 4. **`reconfigureChain()` must reset ALL per-backend caches/state** — a new
    module adding backend-specific in-memory state needs a reset hook wired
    in here too.
@@ -1448,7 +1429,7 @@ left behind before the triggers existed.
 
 | Table | Purpose |
 |---|---|
-| `settings` | plain key/value store (registration_mode, instance_mode, electrum_*, esplora_url, socks5_*, core_rpc_url/user, auth_mode, ...) |
+| `settings` | plain key/value store (registration_mode, instance_mode, electrum_*, socks5_*, core_rpc_url/user, auth_mode, ...) |
 | `instance_secrets` | key/value_enc — encrypted-at-rest counterpart to `settings` |
 | `feature_flags` / `user_feature_flags` | global + per-user overrides |
 | `announcements` / `announcement_dismissals` | admin banner system |
@@ -3166,13 +3147,14 @@ it. Treat every entry here as a standing QA lead: worth a quick check before
 you build on top of the affected area, and worth a bead if you confirm it's
 actually biting someone.
 
-1. **README's "Configuration notes" section is stale on Esplora.** It still
-   describes Esplora as an external dependency required for block/mempool
-   detail. Esplora was demoted to a last-resort fallback and Bitcoin Core
-   RPC was added as the primary "explorer-rich" backend in the v0.2.9
-   "Esplora-removal Wave 2" (see §4). A stock Umbrel deploy has
-   `esplora === null`, `core !== null`. The manual describes the current
-   Electrum→Core→Esplora priority; README needs a docs pass to match.
+1. **Esplora is fully removed (cairn-zoz8.16).** The explorer now runs purely
+   on the operator's own Electrum server + Bitcoin Core RPC; there is no
+   third-party HTTP explorer API anywhere in the path (see §4). README's
+   "Configuration notes" and this manual were updated together with the
+   removal — if you find any lingering reference to an "Esplora backend" or an
+   `esploraUrl`/`esplora_url` setting outside the one-time DB cleanup migration
+   (`esploraUrlMigration.ts`) or its regression tests, it's stale and should be
+   removed.
 2. **`docs/PUBLISH-PLAN.md` is a living document with inline
    SUPERSEDED/EXECUTED annotations**, not a clean historical record — read
    its status block before trusting any section body. Its §6 env-var table
@@ -3282,10 +3264,11 @@ actually biting someone.
     sessionStorage resume), **cairn-czi0** (`multisigScan.ts` almost entirely
     untested, including the spend-flow data path); the **cairn-6xxa** P1
     epic (sync/dashboard/derivation perf re-architecture, 7 dependent beads);
-    and the **cairn-zoz8** P1 epic (removing the last Esplora remnants —
-    Wave 2 already shipped Core RPC + zero third-party calls on Umbrel, but
-    `EsploraApi` removal/admin-settings cleanup/RBF-lineage-on-Core-RPC
-    children are still open).
+    and the **cairn-zoz8** epic (Esplora removal): `EsploraApi` removal +
+    admin-settings cleanup (cairn-zoz8.16) is now **done** — the explorer runs
+    purely on Electrum + Core RPC with zero third-party explorer calls; the
+    remaining open children are the Core-RPC-based RBF-lineage watcher
+    (cairn-zoz8.13, deferred) and the fiat-price-fetch decision (cairn-zoz8.18).
 15. **v0.2.19 was a consolidation wave, not a single feature** — it merges
     the QA test wave, the banner-consolidation branch, the dollar-based
     multisig threshold entry, and the phone-testing UX fixes wave onto
@@ -3431,8 +3414,8 @@ Three run targets exist. Pick per what you are testing.
   `${APP_PASSWORD}`), and the account is flagged `must_reset_password` → forced
   `/setup-admin`. This is the journey tested in full in §21.
 - Chain backend is seeded once from `CAIRN_ELECTRUM_*` / `CAIRN_CORE_RPC_*` (Umbrel's
-  `electrs`/`bitcoin` dependency wiring); a stock deploy has `esplora === null`,
-  `core !== null`, Electrum primary.
+  `electrs`/`bitcoin` dependency wiring); a stock deploy has `core !== null`,
+  Electrum primary, and no third-party explorer API in the path.
 - Even without that manifest dependency wiring, `CAIRN_PLATFORM=umbrel` (set by the store
   compose) enables the Wave A `probeAndSeedUmbrelElectrum()` credential-free Docker-network
   probe (`umbrelProbe.ts`) — see 20.14 for the dedicated QA scenario and
@@ -4366,9 +4349,9 @@ backups, clear house-standard errors, **never red for routine states**, working 
   by design (poll-based `refreshWatches`).
 - **`safeAction` scope:** no-silent-failure is guaranteed only in the two `new`-wallet
   wizards, not app-wide — other forms still use `use:enhance`.
-- **README Esplora section is stale:** README still lists Esplora as an external dependency;
-  a stock Umbrel deploy is Electrum-primary + Core RPC, `esplora === null`. Ignore the README
-  on this point.
+- **Esplora fully removed (cairn-zoz8.16):** the explorer runs purely on Electrum + Core RPC
+  with no third-party HTTP explorer API; README and this manual describe that. A public-Electrum-only
+  install has `core === null` and the rich Explorer sections show the "needs Core RPC" notice.
 - **Regtest addresses are mainnet-derived:** you fund via the scriptPubKey/descriptor bridge
   (16.5), not by pasting Cairn's `bc1…` into regtest tooling.
 - **BIP21 paste (§20.11) — expected-fail by design, not yet a bug to fix:** `parseBip21()`

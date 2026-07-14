@@ -31,8 +31,8 @@ export interface ExplorerChainData {
 	/** The next few projected blocks (cairn-pw3u), for the index's compact
 	 *  "Up next" strip — same snapshot field the mempool page's "Projected
 	 *  next rings" section and /explorer/mempool/blocks treemap already read,
-	 *  just condensed for the index. Null when the backend doesn't provide
-	 *  projections (plain esplora) or the snapshot hasn't landed yet. */
+	 *  just condensed for the index. Null when the Electrum server doesn't provide
+	 *  a mempool fee histogram to project from, or the snapshot hasn't landed yet. */
 	mempoolBlocks: MempoolBlockProjection[] | null;
 }
 

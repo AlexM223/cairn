@@ -5,7 +5,7 @@
 // IBD; Cairn is Electrum-based and never downloads or verifies blocks itself.
 // The honest, observable equivalents on this architecture are:
 //
-//   1. connecting — the chain backend (Electrum/esplora) hasn't answered with
+//   1. connecting — the chain backend (Electrum/Core RPC) hasn't answered with
 //      a live tip height yet after boot.
 //   2. history    — the one-time chain-history walk in chainEpochs.ts: real
 //      boundary timestamps for every difficulty epoch since genesis, fetched
@@ -274,7 +274,7 @@ async function cachedTip(): Promise<number | null> {
 	const now = Date.now();
 	if (state.tip !== null && now - state.tipAt < TIP_TTL_MS) return state.tip;
 	try {
-		// Electrum-backed, TTL-cached tip (cairn-zoz8) — no third-party esplora call.
+		// Electrum-backed, TTL-cached tip (cairn-zoz8) — no third-party explorer call.
 		const tip = (await getChain().getTip()).height;
 		if (Number.isFinite(tip) && tip >= 0) {
 			state.tip = tip;

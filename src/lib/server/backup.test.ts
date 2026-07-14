@@ -367,11 +367,11 @@ describe('restore', () => {
 
 	it('still restores ordinary connectivity settings the allowlist covers', async () => {
 		await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
-		db.prepare("INSERT INTO settings (key, value) VALUES ('esplora_url', 'https://esplora.example')").run();
+		db.prepare("INSERT INTO settings (key, value) VALUES ('electrum_host', 'my.node')").run();
 		db.prepare("INSERT INTO settings (key, value) VALUES ('smtp_host', 'smtp.example.org')").run();
 		const data = buildBackup('t');
 
-		db.prepare("DELETE FROM settings WHERE key IN ('esplora_url', 'smtp_host')").run();
+		db.prepare("DELETE FROM settings WHERE key IN ('electrum_host', 'smtp_host')").run();
 		const summary = await restoreBackup(data);
 
 		const value = (key: string) =>
@@ -380,10 +380,28 @@ describe('restore', () => {
 					| { value: string }
 					| undefined
 			)?.value;
-		expect(value('esplora_url')).toBe('https://esplora.example');
+		expect(value('electrum_host')).toBe('my.node');
 		expect(value('smtp_host')).toBe('smtp.example.org');
-		expect(summary.settingsSkipped).not.toContain('esplora_url');
+		expect(summary.settingsSkipped).not.toContain('electrum_host');
 		expect(summary.settingsSkipped).not.toContain('smtp_host');
+	});
+
+	// Esplora is fully removed (cairn-zoz8.16): esplora_url is no longer on the
+	// restore allowlist, so an OLD backup that still carries one must be skipped
+	// silently — never re-adopted, never a crash — and reported in settingsSkipped.
+	it('silently skips a legacy esplora_url when restoring an old backup', async () => {
+		await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+		db.prepare("INSERT INTO settings (key, value) VALUES ('esplora_url', 'https://esplora.example')").run();
+		const data = buildBackup('t');
+
+		db.prepare("DELETE FROM settings WHERE key = 'esplora_url'").run();
+		const summary = await restoreBackup(data);
+
+		const restored = db.prepare("SELECT value FROM settings WHERE key = 'esplora_url'").get() as
+			| { value: string }
+			| undefined;
+		expect(restored).toBeUndefined(); // not re-adopted
+		expect(summary.settingsSkipped).toContain('esplora_url');
 	});
 
 	it('withholds security-posture settings from a hostile backup instead of silently adopting them (cairn-0dg4)', async () => {

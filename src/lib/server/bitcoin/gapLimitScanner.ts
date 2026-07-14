@@ -122,8 +122,7 @@ function isCoinbaseInput(input: { txid?: Uint8Array; index?: number }): boolean 
 
 /**
  * Wallet-relevant delta + fee for one transaction, derived ENTIRELY from raw
- * transaction bytes (chain.getTxHex — plain Electrum, no Core RPC / Esplora
- * needed). This is collectScanTxs()'s fallback for when chain.getTx() is
+ * transaction bytes (chain.getTxHex — plain Electrum, no Core RPC needed). This is collectScanTxs()'s fallback for when chain.getTx() is
  * unavailable: in an Electrum-only deployment getTx() unconditionally throws
  * (no backend can serve decoded/verbose tx detail — see chain/index.ts), which
  * used to make EVERY wallet transaction silently vanish from the activity
@@ -209,7 +208,7 @@ async function txDeltaFromRaw(
  * every output and report delta 0. See scriptPubKeyHex in xpub.ts.
  *
  * Newest TX_DETAIL_CAP transactions only, fetched with bounded concurrency.
- * chain.getTx() (Core RPC / Esplora) is tried first; when it's unavailable —
+ * chain.getTx() (Core RPC) is tried first; when it's unavailable —
  * always the case in an Electrum-only deployment — txDeltaFromRaw() derives
  * the same delta/fee purely from Electrum raw-tx data instead of dropping the
  * transaction (QA F4). Only a genuine failure of BOTH paths omits a tx.
@@ -281,7 +280,7 @@ export async function collectScanTxs(
 					}
 					return { txid, height, time: tx.blockTime, delta, fee: tx.fee };
 				} catch {
-					// getTx() needs Core RPC or Esplora — always throws in an
+					// getTx() needs Core RPC — always throws in an
 					// Electrum-only deployment (QA F4). Fall back to deriving the
 					// same delta/fee straight from Electrum raw-tx data before
 					// giving up on this transaction.

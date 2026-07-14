@@ -3,7 +3,7 @@
 // admin-guard comment) — a POST straight to /admin/settings?/save (or any
 // other action here) skipped the layout's isAdmin gate entirely and, before
 // the fix, reached setSetting/setSecretSetting/reconfigureChain/testElectrum/
-// testEsplora for an anonymous or non-admin caller. Every action now starts
+// testCoreRpc for an anonymous or non-admin caller. Every action now starts
 // with `if (!locals.user?.isAdmin) return fail(403, ...)`. This pins that
 // down for anon + non-admin, confirms the mutation is never invoked in either
 // denied case, and confirms a real admin still reaches it.
@@ -28,7 +28,6 @@ vi.mock('$lib/server/chain', async (importOriginal) => {
 		...mod,
 		reconfigureChain: vi.fn(),
 		testElectrum: vi.fn(async () => ({ ok: true })),
-		testEsplora: vi.fn(async () => ({ ok: true })),
 		testCoreRpc: vi.fn(async () => ({ ok: true, blockHeight: 800_000, chain: 'main' }))
 	};
 });
@@ -49,7 +48,7 @@ vi.mock('$lib/server/bitcoin/walletScan', async (importOriginal) => {
 });
 
 import { setSetting, setSecretSetting } from '$lib/server/settings';
-import { reconfigureChain, testElectrum, testEsplora, testCoreRpc } from '$lib/server/chain';
+import { reconfigureChain, testElectrum, testCoreRpc } from '$lib/server/chain';
 import { setUserAgreement } from '$lib/server/disclosures';
 import { resetInstance } from '$lib/server/admin';
 import { invalidateWalletCache } from '$lib/server/bitcoin/walletScan';
@@ -101,16 +100,6 @@ describe('admin/settings actions — anon and non-admin are denied a 403 fail(),
 			);
 			expect(res).toMatchObject({ status: 403 });
 			expect(testElectrum).not.toHaveBeenCalled();
-		}
-	});
-
-	it('testEsplora', async () => {
-		for (const user of [undefined, NON_ADMIN]) {
-			const res = await actions.testEsplora(
-				makeEvent(user, { esploraUrl: 'http://esplora.example' })
-			);
-			expect(res).toMatchObject({ status: 403 });
-			expect(testEsplora).not.toHaveBeenCalled();
 		}
 	});
 
@@ -178,12 +167,6 @@ describe('admin/settings actions — a real admin still reaches the mutation', (
 		);
 		expect(res).toEqual({ electrumTest: { ok: true } });
 		expect(testElectrum).toHaveBeenCalledTimes(1);
-	});
-
-	it('testEsplora calls the chain test helper', async () => {
-		const res = await actions.testEsplora(makeEvent(ADMIN, { esploraUrl: 'http://esplora.example' }));
-		expect(res).toEqual({ esploraTest: { ok: true } });
-		expect(testEsplora).toHaveBeenCalledTimes(1);
 	});
 
 	it('testCoreRpc calls the chain test helper and echoes its result', async () => {
@@ -344,7 +327,25 @@ describe('admin/settings save action — core_rpc_* persistence (cairn-6uok)', (
 		expect(setSecretSetting).toHaveBeenCalledWith('core_rpc_pass', '');
 	});
 
-	it('does not regress existing custom-mode Electrum/Esplora behavior', async () => {
+	it('does not regress existing custom-mode Electrum behavior', async () => {
+		const res = await actions.save(
+			makeEvent(ADMIN, {
+				connectionMode: 'custom',
+				electrumHost: '10.0.0.5',
+				electrumPort: '50001',
+				electrumPoolSize: '2'
+			})
+		);
+		expect(res).toEqual({ saved: true });
+		expect(setSetting).toHaveBeenCalledWith('electrum_host', '10.0.0.5');
+		expect(setSetting).toHaveBeenCalledWith('electrum_port', '50001');
+	});
+
+	// Esplora is fully removed (cairn-zoz8.16): a stray esploraUrl field on a
+	// submission (e.g. an old cached form, or a scripted caller) must be silently
+	// ignored — never persisted, never an error, and it must not block the rest of
+	// the save.
+	it('ignores a stray esploraUrl form field without error or persistence', async () => {
 		const res = await actions.save(
 			makeEvent(ADMIN, {
 				connectionMode: 'custom',
@@ -355,9 +356,7 @@ describe('admin/settings save action — core_rpc_* persistence (cairn-6uok)', (
 			})
 		);
 		expect(res).toEqual({ saved: true });
-		expect(setSetting).toHaveBeenCalledWith('electrum_host', '10.0.0.5');
-		expect(setSetting).toHaveBeenCalledWith('electrum_port', '50001');
-		expect(setSetting).toHaveBeenCalledWith('esplora_url', 'http://esplora.example');
+		expect(setSetting).not.toHaveBeenCalledWith('esplora_url', expect.anything());
 	});
 });
 

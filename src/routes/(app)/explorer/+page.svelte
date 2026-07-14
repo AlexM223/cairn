@@ -193,8 +193,8 @@
 		return null;
 	});
 
-	// Compact "Up next" strip (cairn-pw3u): the next few projected blocks,
-	// mempool.space's signature forward-looking view — previously buried two
+	// Compact "Up next" strip (cairn-pw3u): the next few projected blocks, a
+	// forward-looking view — previously buried two
 	// clicks deep at /explorer/mempool -> Visualize. Reuses the same
 	// mempoolBlocks snapshot field the mempool page's "Projected next rings"
 	// section and the /explorer/mempool/blocks treemap already read; no new
@@ -217,8 +217,7 @@
 		if (!range) return null;
 		return `${range[0]}–${range[1]} sat/vB`;
 	}
-	// Pool copy: "Likely X" for a coinbase-derived identification (Core path); a
-	// plain miner name when it came from esplora extras (already definitive). Null
+	// Pool copy: "Likely X" for a coinbase-derived identification (Core path). Null
 	// (nothing rendered) when no pool is known — never a wrong guess.
 	function poolLabel(block: BlockSummary): string | null {
 		if (block.pool?.name) return `Likely ${block.pool.name}`;

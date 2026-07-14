@@ -609,7 +609,7 @@ export class ElectrumClient extends EventEmitter {
 	 * The server's current mempool fee-rate distribution (`mempool.get_fee_histogram`,
 	 * no params): [feeRate sat/vB, cumulative vsize] pairs, highest fee rate first.
 	 * Sources the mempool fee-distribution chart from the operator's own Electrum
-	 * connection instead of a third-party esplora HTTP API (cairn-zoz8.2).
+	 * connection instead of a third-party HTTP explorer API (cairn-zoz8.2).
 	 */
 	async getFeeHistogram(): Promise<ElectrumFeeHistogram> {
 		return (await this.request('mempool.get_fee_histogram', [])) as ElectrumFeeHistogram;

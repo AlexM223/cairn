@@ -59,7 +59,7 @@ describe('checkUnconfirmedChainDepth', () => {
 	});
 
 	it('never throws on a lookup failure — skips that txid', async () => {
-		getCpfpInfoMock.mockRejectedValueOnce(new Error('esplora down')).mockResolvedValue(null);
+		getCpfpInfoMock.mockRejectedValueOnce(new Error('core down')).mockResolvedValue(null);
 		expect(await checkUnconfirmedChainDepth([TXID])).toBeNull();
 	});
 

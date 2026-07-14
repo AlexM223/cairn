@@ -1,5 +1,5 @@
 // Unit tests for the Bitcoin Core JSON-RPC client. The HTTP layer is stubbed by
-// replacing global fetch (same approach chain.test.ts uses for EsploraApi), so
+// replacing global fetch (same approach chain.test.ts uses), so
 // these pin down: request shape (envelope + Basic-auth header), result parsing,
 // JSON-RPC error → CoreRpcError with its code, HTTP 401 → cookie file re-read +
 // retry, the unwrapped-cause transport-error message, and ping() never throwing.

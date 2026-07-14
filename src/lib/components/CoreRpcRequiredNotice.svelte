@@ -3,7 +3,7 @@
 	 * CoreRpcRequiredNotice — the one shared "this feature needs your own Bitcoin
 	 * Core node" empty-state (cairn-zoz8.9).
 	 *
-	 * Cairn is dropping its third-party Esplora dependency: the RICH Explorer
+	 * Cairn has no third-party HTTP explorer dependency: the RICH Explorer
 	 * features (full recent-block metadata, CPFP package info, per-output
 	 * spent/unspent status, mempool-blocks projection, mempool time-series) can
 	 * only come from a self-hosted Bitcoin Core RPC. Public-Electrum-only installs

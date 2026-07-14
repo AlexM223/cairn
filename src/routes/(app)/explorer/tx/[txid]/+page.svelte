@@ -43,7 +43,7 @@
 
 	// The decoded transaction (above) renders immediately from the awaited load.
 	// Its supplementary details — fee outlook, RBF timeline, CPFP badges, raw hex —
-	// are extra Electrum/esplora round-trips, STREAMED in after first paint
+	// are extra Electrum/Core RPC round-trips, STREAMED in after first paint
 	// (cairn-2zxt.3). loadTxDetails never rejects.
 	type Details = Awaited<(typeof data)['details']>;
 	let details = $state<Details | null>(null);

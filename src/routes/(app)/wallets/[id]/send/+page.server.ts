@@ -40,7 +40,7 @@ export interface SendLiveData {
 }
 
 /**
- * The Electrum/esplora-dependent half of the send load. Returned UNAWAITED from
+ * The Electrum/Core RPC-dependent half of the send load. Returned UNAWAITED from
  * load() so SvelteKit streams it in: the page shell (name, saved recipients, the
  * ?tx= resume step) paints instantly while this resolves in the background. Every
  * network hop degrades gracefully to a zero/empty value — the page never 500s on

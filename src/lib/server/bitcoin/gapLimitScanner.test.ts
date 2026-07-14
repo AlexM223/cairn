@@ -4,9 +4,9 @@
 // correct (both come straight from Electrum's get_balance/get_history), but
 // wallet.lastActivity stayed null and the Transactions tab showed nothing.
 // Root cause: collectScanTxs called chain.getTx() for every candidate tx's
-// delta/fee/time, and getTx() unconditionally throws when neither Core RPC
-// nor an Esplora backend is configured (chain/index.ts) — exactly the
-// Electrum-only setup Cairn's docs treat as the primary deployment. A caught
+// delta/fee/time, and getTx() unconditionally throws when Core RPC is not
+// configured (chain/index.ts) — exactly the Electrum-only setup Cairn's docs
+// treat as the primary deployment. A caught
 // getTx() failure silently OMITTED the transaction rather than falling back,
 // so scan.txs came back empty and wallet.lastActivity (derived from it) had
 // nothing to work with.
@@ -26,7 +26,7 @@ const { getTxHexMock, getBlockTimeAtHeightMock } = vi.hoisted(() => ({
 
 vi.mock('../chain/index', () => ({
 	// Deliberately NO getTx — mirrors an Electrum-only deployment where
-	// chain.getTx() unconditionally throws (no Core RPC / Esplora configured).
+	// chain.getTx() unconditionally throws (no Core RPC configured).
 	getChain: () => ({
 		getTxHex: getTxHexMock,
 		getBlockTimeAtHeight: getBlockTimeAtHeightMock

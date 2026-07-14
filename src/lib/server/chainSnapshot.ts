@@ -1,7 +1,7 @@
 // Persistence for the global chain-data snapshot that powers stale-while-
 // revalidate (SWR) page loads on the dashboard + explorer pages.
 //
-// The old pattern re-fetched blocks/mempool/fees/difficulty from Electrum/esplora
+// The old pattern re-fetched blocks/mempool/fees/difficulty from Electrum/Core RPC
 // on EVERY navigation (streamed, so the page didn't blank — but the round-trips
 // still happened each time). Instead, one persisted snapshot is rendered
 // instantly by the page load()s (a synchronous SQLite read, zero live chain
@@ -32,7 +32,7 @@ const log = childLogger('chain-snapshot');
  * and read synchronously by the retrofitted page load()s. `blocks` holds the
  * newest N (currently 15, enough for both the dashboard's 10 and the explorer's
  * 15). Optional sub-fields are null when the configured backend doesn't provide
- * them (plain esplora) or a single sub-fetch failed.
+ * them, or a single sub-fetch failed.
  */
 export interface PersistedChainData {
 	blocks: BlockSummary[];

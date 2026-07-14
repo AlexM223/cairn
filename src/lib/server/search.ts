@@ -1,19 +1,17 @@
 // Search classifier: turns free-text explorer queries into a destination.
 
 import { getChain } from './chain';
-import { EsploraHttpError } from './chain/esplora';
 import { CoreRpcError } from './bitcoinCore/client';
 import { isExplorerAddress } from './bitcoin/xpub';
 import type { SearchResult } from '$lib/types';
 
 /**
  * True when an upstream chain error means "no such object" (or a malformed id)
- * rather than "chain data sources unreachable". Backend-agnostic: covers Esplora
- * HTTP 404/400, Bitcoin Core's not-found/invalid-param codes (-5 / -8), and the
- * generic "not found" message ChainService throws for a Core miss.
+ * rather than "chain data sources unreachable". Covers Bitcoin Core's
+ * not-found/invalid-param codes (-5 / -8) and the generic "not found" message
+ * ChainService throws for a Core miss.
  */
 export function isNotFoundError(e: unknown): boolean {
-	if (e instanceof EsploraHttpError) return e.status === 404 || e.status === 400;
 	if (e instanceof CoreRpcError) return e.code === -5 || e.code === -8;
 	return e instanceof Error && /not found/i.test(e.message);
 }

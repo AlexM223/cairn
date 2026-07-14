@@ -263,7 +263,6 @@ const RESTORABLE_SETTING_KEYS = new Set<string>([
 	'electrum_port',
 	'electrum_tls',
 	'electrum_pool_size',
-	'esplora_url',
 	'core_rpc_url',
 	'core_rpc_user',
 	'socks5_host',

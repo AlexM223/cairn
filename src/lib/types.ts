@@ -460,9 +460,8 @@ export interface InstanceSettings {
 	 *  address/balance lookups run concurrently instead of queuing on one socket;
 	 *  1 disables pooling. Default 2 (cairn-ynfp). */
 	electrumPoolSize: number;
-	esploraUrl: string;
-	/** SOCKS5 proxy for ALL chain traffic (Electrum + Esplora), e.g. Tor at
-	 *  127.0.0.1:9050. Null = connect directly. Applies in both public and custom
+	/** SOCKS5 proxy for ALL chain traffic (Electrum + Bitcoin Core RPC), e.g. Tor
+	 *  at 127.0.0.1:9050. Null = connect directly. Applies in both public and custom
 	 *  connection modes so the operator's IP is never exposed to the chain backend
 	 *  — including third-party public servers (cairn-oh7a). */
 	socks5Host: string | null;

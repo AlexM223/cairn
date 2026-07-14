@@ -1,20 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { getEpochStrip, epochIndexForHeight, resetEpochStripCache } from './chainEpochs';
 
-// chainEpochs resolves the chain via getChain() and persists through the
-// settings module; stub both so no db/network code loads. After Esplora-removal
-// Wave 2 the module reaches the chain through the backend-agnostic ChainService
-// seams — getTip() and getBlockTimeAtHeight() (Electrum-backed) — with the
-// all-time retarget-history endpoint still an optional esplora-only source.
-const esplora = {
-	getDifficultyHistory: vi.fn<(interval: string) => Promise<unknown[]>>()
-};
+// chainEpochs resolves the chain via getChain() and persists through the settings
+// module; stub both so no db/network code loads. With Esplora fully removed
+// (cairn-zoz8.16) the module reaches the chain purely through the backend-agnostic
+// ChainService seams — getTip() and getBlockTimeAtHeight(), both Electrum-backed —
+// so the block at each difficulty-epoch boundary height supplies the timestamps.
 const chainGetTip = vi.fn<() => Promise<{ height: number; hash: string }>>();
 const chainGetBlockTimeAtHeight = vi.fn<(h: number) => Promise<number>>();
 
 vi.mock('$lib/server/chain', () => ({
 	getChain: () => ({
-		esplora,
 		getTip: chainGetTip,
 		getBlockTimeAtHeight: chainGetBlockTimeAtHeight
 	})
@@ -41,15 +37,27 @@ const EPOCH = 2016;
 const TWO_WEEKS = EPOCH * 600;
 const GENESIS_TIME = 1_231_006_505;
 
-/** All-time retarget history: [time, height, difficulty, changePercent]. */
-function makeHistory(tipEpoch: number): [number, number, number, number][] {
-	const out: [number, number, number, number][] = [];
+/** Boundary timestamp for epoch i, at the ideal two-week pace. Any per-epoch
+ *  duration deviation is injected via `overrides` (epoch index → seconds), which
+ *  is what the alpha-from-duration path reads now that no retarget-history source
+ *  supplies real change magnitudes. */
+function boundaryTimes(tipEpoch: number, overrides: Record<number, number> = {}): number[] {
+	const times: number[] = [GENESIS_TIME];
 	for (let i = 1; i <= tipEpoch; i++) {
-		// Mild varied changes, plus one big +30% retarget entering epoch 10.
-		const change = i === 10 ? 30 : (i % 7) + 1;
-		out.push([GENESIS_TIME + i * TWO_WEEKS, i * EPOCH, 1000 + i, change]);
+		const prevEpochDuration = overrides[i - 1] ?? TWO_WEEKS;
+		times.push(times[i - 1] + prevEpochDuration);
 	}
-	return out;
+	return times;
+}
+
+/** Stub getBlockTimeAtHeight to serve from a precomputed boundary-times array. */
+function serveBoundaries(times: number[]): void {
+	chainGetBlockTimeAtHeight.mockImplementation(async (h) => {
+		const idx = h / EPOCH;
+		const t = times[idx];
+		if (typeof t !== 'number') throw new Error(`no boundary time for height ${h} (epoch ${idx})`);
+		return t;
+	});
 }
 
 beforeEach(() => {
@@ -68,19 +76,19 @@ describe('epochIndexForHeight', () => {
 	});
 });
 
-describe('getEpochStrip — retarget-history source', () => {
+describe('getEpochStrip — boundary-blocks (Electrum) source', () => {
 	const TIP_EPOCH = 105; // spans the first halving (block 210,000 in epoch 104)
 	const TIP = TIP_EPOCH * EPOCH + 100;
 
 	beforeEach(() => {
 		chainGetTip.mockResolvedValue({ height: TIP, hash: 'tip' });
-		esplora.getDifficultyHistory.mockResolvedValue(makeHistory(TIP_EPOCH));
+		serveBoundaries(boundaryTimes(TIP_EPOCH));
 	});
 
 	it('produces one epoch per difficulty period, in ChainStrip prop shape', async () => {
 		const strip = await getEpochStrip();
 		expect(strip).not.toBeNull();
-		expect(strip!.source).toBe('retarget-history');
+		expect(strip!.source).toBe('boundary-blocks');
 		expect(strip!.tipHeight).toBe(TIP);
 		expect(strip!.epochCount).toBe(TIP_EPOCH + 1);
 		expect(strip!.epochs).toHaveLength(TIP_EPOCH + 1);
@@ -112,57 +120,47 @@ describe('getEpochStrip — retarget-history source', () => {
 		expect(sapwood).toEqual([98, 99, 100, 101, 102, 103, 104, 105]);
 	});
 
-	it('gives a big retarget a brighter line than a mild one, and the forming epoch the floor', async () => {
+	it('reads the block-header timestamp once per boundary, then serves later calls from cache', async () => {
 		const strip = await getEpochStrip();
-		// The +30% retarget was applied at boundary 10 — the verdict on epoch 9.
-		const big = strip!.epochs[9].alpha;
-		const mild = strip!.epochs[20].alpha;
-		expect(big).toBeGreaterThan(mild);
-		// Forming epoch has no verdict yet: exactly the 0.07 floor, no pop.
-		expect(strip!.epochs.at(-1)!.alpha).toBeCloseTo(0.07, 10);
-	});
-
-	it('persists boundaries and never refetches history on later calls', async () => {
-		await getEpochStrip();
-		expect(esplora.getDifficultyHistory).toHaveBeenCalledTimes(1);
+		expect(strip).not.toBeNull();
+		// One fetch per boundary height (0..tipEpoch).
+		expect(chainGetBlockTimeAtHeight).toHaveBeenCalledTimes(TIP_EPOCH + 1);
 		expect(settingsStore.has('chainEpochs.v1')).toBe(true);
 
-		// Same process: served from the module cache.
+		// Same process: served from the module cache — no refetch.
 		await getEpochStrip();
-		expect(esplora.getDifficultyHistory).toHaveBeenCalledTimes(1);
+		expect(chainGetBlockTimeAtHeight).toHaveBeenCalledTimes(TIP_EPOCH + 1);
 
 		// "Restart" (memory cache dropped): served from the persisted copy.
 		resetEpochStripCache();
-		const strip = await getEpochStrip();
-		expect(esplora.getDifficultyHistory).toHaveBeenCalledTimes(1);
-		expect(strip!.epochCount).toBe(TIP_EPOCH + 1);
+		const again = await getEpochStrip();
+		expect(chainGetBlockTimeAtHeight).toHaveBeenCalledTimes(TIP_EPOCH + 1);
+		expect(again!.epochCount).toBe(TIP_EPOCH + 1);
 	});
 });
 
-describe('getEpochStrip — boundary-blocks fallback', () => {
-	const TIP_EPOCH = 5;
-	const TIP = TIP_EPOCH * EPOCH + 653;
+describe('getEpochStrip — alpha from epoch-duration deviation', () => {
+	// With no retarget-history source, the difficulty-change magnitude that drives
+	// each epoch's line brightness is approximated from how far its real duration
+	// deviates from the ideal two weeks (a much-too-fast epoch implies a big upward
+	// retarget). This pins that approximation path.
+	const TIP_EPOCH = 30;
+	const TIP = TIP_EPOCH * EPOCH + 200;
 
 	beforeEach(() => {
 		chainGetTip.mockResolvedValue({ height: TIP, hash: 'tip' });
-		// No retarget-history endpoint → fall through to the Electrum boundary-block
-		// timestamps (getBlockTimeAtHeight), the source that works on any backend.
-		esplora.getDifficultyHistory.mockRejectedValue(new Error('404'));
-		chainGetBlockTimeAtHeight.mockImplementation(async (h) =>
-			GENESIS_TIME + (h / EPOCH) * TWO_WEEKS
-		);
+		// Epoch 9 ran 4× too fast (a big implied retarget); every other epoch was
+		// on-pace. Its verdict lands on epoch 9's line.
+		serveBoundaries(boundaryTimes(TIP_EPOCH, { 9: TWO_WEEKS / 4 }));
 	});
 
-	it('reads the block-header timestamp at each boundary height instead', async () => {
+	it('gives the off-pace epoch a brighter line than an on-pace one, and the forming epoch the floor', async () => {
 		const strip = await getEpochStrip();
-		expect(strip).not.toBeNull();
-		expect(strip!.source).toBe('boundary-blocks');
-		expect(strip!.epochs).toHaveLength(TIP_EPOCH + 1);
-		expect(strip!.epochs.at(-1)!.xEnd).toBeCloseTo(1, 10);
-		// One fetch per boundary (0..tipEpoch), then cached.
-		expect(chainGetBlockTimeAtHeight).toHaveBeenCalledTimes(TIP_EPOCH + 1);
-		await getEpochStrip();
-		expect(chainGetBlockTimeAtHeight).toHaveBeenCalledTimes(TIP_EPOCH + 1);
+		const big = strip!.epochs[9].alpha; // the 4×-fast epoch
+		const mild = strip!.epochs[20].alpha; // on-pace
+		expect(big).toBeGreaterThan(mild);
+		// Forming epoch has no verdict yet: exactly the 0.07 floor, no pop.
+		expect(strip!.epochs.at(-1)!.alpha).toBeCloseTo(0.07, 10);
 	});
 });
 

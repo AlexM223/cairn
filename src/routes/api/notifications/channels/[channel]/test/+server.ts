@@ -51,6 +51,6 @@ export const POST: RequestHandler = async (event) => {
 	}
 
 	// Always 200 at the HTTP layer; ok:false is the application-level failure the
-	// UI renders as a red badge (mirrors the Electrum/Esplora test pattern).
+	// UI renders as a red badge (mirrors the Electrum test pattern).
 	return json(result);
 };

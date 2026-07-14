@@ -27,7 +27,7 @@ type SendUtxo = {
 	unconfirmedTrust: UnconfirmedTrust | null;
 };
 
-/** The Electrum/esplora-dependent slice of this page: fee estimates, spendable
+/** The Electrum/Core RPC-dependent slice of this page: fee estimates, spendable
  *  coins, and the block tip. Streamed (not awaited) so navigation paints the
  *  send shell — and any resumed step — instantly while these round-trips settle
  *  in the background (cairn-vknb.4). Never rejects: every hop degrades to its

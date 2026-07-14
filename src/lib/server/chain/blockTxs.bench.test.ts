@@ -45,8 +45,7 @@ const CFG = {
 	electrumTlsInsecure: false,
 	socks5Host: null,
 	socks5Port: null,
-	electrumPoolSize: 1,
-	esploraUrl: 'http://esplora.test'
+	electrumPoolSize: 1
 };
 
 const BLOCK_HASH = 'b'.repeat(64);
@@ -122,7 +121,7 @@ function makeCoreStub(txCount: number) {
 
 function makeCoreService(core: ReturnType<typeof makeCoreStub>): ChainService {
 	const svc = new ChainService(CFG as unknown as ConstructorParameters<typeof ChainService>[0]);
-	Object.assign(svc, { core, esplora: null });
+	Object.assign(svc, { core });
 	return svc;
 }
 

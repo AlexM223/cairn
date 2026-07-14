@@ -1252,7 +1252,7 @@ db.exec(`
 // transaction (whatever chain.getTx returned) as JSON, plus the epoch-ms
 // `cached_at`. The tx page reads this SYNCHRONOUSLY so it can render AND make its
 // RBF-redirect decision from cached data instantly, instead of blocking first
-// paint on a live Electrum/esplora getTx — the one route the chain_snapshot SWR
+// paint on a live Electrum/Core RPC getTx — the one route the chain_snapshot SWR
 // work above didn't cover (that page's getTx stayed awaited because it drives a
 // 302-to-replacement vs 404 decision). Keyed by txid because a decoded tx is
 // GLOBAL (identical for every user), and its own table rather than a `settings`

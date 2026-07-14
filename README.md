@@ -41,15 +41,15 @@ or multisig), and a multi-user instance you run yourself.
 - **Admin panel** — user management, invites, registration modes
   (open / invite-only / closed), node configuration, encrypted instance
   backup/restore, and a server log viewer.
-- **Works without your own node** — public Electrum + Esplora servers by
-  default; point it at your own Fulcrum/electrs and mempool instance from
-  the admin panel, applied live without a restart.
+- **Works without your own node** — a public Electrum server by default;
+  point it at your own Fulcrum/electrs and Bitcoin Core node from the admin
+  panel, applied live without a restart.
 
 ## Stack
 
 - [SvelteKit](https://svelte.dev/docs/kit) + TypeScript (UI and API in one app)
 - `node:sqlite` — no external database, no native addons
-- Electrum protocol client (TCP/TLS) + Esplora-compatible HTTP for rich
+- Electrum protocol client (TCP/TLS) + Bitcoin Core JSON-RPC for rich
   explorer data
 - [@scure/bip32](https://github.com/paulmillr/scure-bip32) +
   [@scure/btc-signer](https://github.com/paulmillr/scure-btc-signer) for key
@@ -133,18 +133,18 @@ Locked out? See [docs/RECOVERY.md](docs/RECOVERY.md).
 1. Open the app — you'll land on **Create account**. The first account is
    automatically the administrator; no invite needed.
 2. By default the instance uses public servers
-   (`electrum.blockstream.info:50002` + `mempool.space`). Change this under
+   (`electrum.blockstream.info:50002`). Change this under
    **Admin → Settings → Node connection**.
 3. Create invite codes under **Admin → Invites** to let others in.
 
 ## Configuration notes
 
-- **Electrum server** — serves wallet balances and history. Fulcrum,
-  electrs, and ElectrumX all work (TCP or TLS).
-- **Esplora API** — serves block/mempool detail the Electrum protocol
-  can't provide (block transaction lists, fee ranges, mempool totals). A
-  self-hosted [mempool](https://mempool.space/docs) instance works, as does
-  `https://blockstream.info/api` (with some fields gracefully degraded).
-- **Bitcoin Core RPC** — optional; credentials are stored for upcoming
-  features but nothing uses them yet. Wallet queries and transaction
-  broadcasting go through the Electrum server.
+- **Electrum server** — serves wallet balances and history, fee estimates,
+  the mempool fee histogram, and difficulty data. Fulcrum, electrs, and
+  ElectrumX all work (TCP or TLS).
+- **Bitcoin Core RPC** — optional, self-hosted only. Serves the rich explorer
+  detail the Electrum protocol can't provide: full block/transaction detail,
+  per-output spent status, mempool summary, and CPFP package info. Without it
+  those Explorer sections show an honest "needs your own Bitcoin Core node"
+  notice rather than a third-party fallback — there is no third-party explorer
+  API anywhere in the path.

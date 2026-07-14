@@ -15,7 +15,7 @@ interface AddressInfoResult {
 	error: string | null;
 }
 
-/** getAddressInfo is an Electrum/esplora round-trip (cairn-2zxt.3) — streamed so
+/** getAddressInfo is an Electrum round-trip (cairn-2zxt.3) — streamed so
  *  the page chrome, address, and QR paint instantly instead of blocking SSR.
  *  Never rejects: a missing address resolves to `notFound`, any other failure to
  *  `error`, so a slow/unreachable backend degrades to a graceful in-page state

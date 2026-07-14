@@ -77,11 +77,18 @@ describe('PUT /api/admin/settings validation (cairn-qmo5)', () => {
 		expect(getSetting('electrum_pool_size')).toBeNull();
 	});
 
-	it('rejects a non-http(s) esploraUrl and an invalid socks5Port with 400', async () => {
-		expect((await put({ esploraUrl: 'ftp://mempool.example' })).status).toBe(400);
+	it('rejects an invalid socks5Port with 400', async () => {
 		expect((await put({ socks5Port: 'not-a-port' })).status).toBe(400);
-		expect(getSetting('esplora_url')).toBeNull();
 		expect(getSetting('socks5_port')).toBeNull();
+	});
+
+	// Esplora is fully removed (cairn-zoz8.16): esploraUrl is no longer a known key,
+	// so a stray one (old client, scripted caller) is silently ignored — not an
+	// error, and never persisted.
+	it('ignores a stray esploraUrl instead of persisting it', async () => {
+		const { status } = await put({ esploraUrl: 'https://mempool.example' });
+		expect(status).toBe(200);
+		expect(getSetting('esplora_url')).toBeNull();
 	});
 
 	it('an invalid field rejects the WHOLE body — valid keys alongside it must not persist', async () => {

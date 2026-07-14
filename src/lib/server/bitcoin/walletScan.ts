@@ -1,5 +1,5 @@
 // Wallet scanning from an xpub: BIP44-style gap-limit discovery over Electrum,
-// with tx details filled in from the esplora backend via ChainService. The
+// with tx details filled in via ChainService. The
 // discovery/attribution/caching engine is the shared gapLimitScanner.ts (also
 // used by multisigScan.ts); this module supplies single-sig derivation and the
 // persisted-scan plumbing.

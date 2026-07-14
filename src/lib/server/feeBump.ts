@@ -376,8 +376,8 @@ export async function executeCpfpDraft<TDraft, TDetails extends ConstructedSpend
 		);
 	}
 
-	// The parent's real vsize + fee (esplora provides both — no mempool.space-only
-	// dependency). A confirmed parent has nothing left to accelerate.
+	// The parent's real vsize + fee. A confirmed parent has nothing left to
+	// accelerate.
 	let parentVsize: number;
 	let parentFee: number;
 	try {

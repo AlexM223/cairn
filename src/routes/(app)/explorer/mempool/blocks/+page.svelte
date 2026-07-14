@@ -233,8 +233,8 @@
 	<div class="empty-state fade-in">
 		<span class="empty-title">No projection available</span>
 		<p>
-			Block projections need a mempool.space-compatible backend. The configured Esplora
-			server only provides basic mempool totals — see Admin → Settings.
+			Block projections need a mempool fee histogram from your Electrum server, which this
+			server didn't provide — see Admin → Settings.
 		</p>
 	</div>
 {:else}

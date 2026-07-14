@@ -3,7 +3,7 @@
 // 0xffffffff (consensus-enforced, not backend-specific). We derive that
 // directly from the funding tx's RAW SERIALIZATION (getTxHex) rather than a
 // decoded/verbose tx lookup (getTx) — getTxHex is served by a plain Electrum
-// connection (`blockchain.transaction.get`) with no Core RPC / Esplora backend
+// connection (`blockchain.transaction.get`) with no Core RPC backend
 // required, so this works in every backend configuration (fund-freeze fix:
 // getTx unconditionally throws in Electrum-only mode, which used to make
 // every UTXO resolve to 'unknown').
@@ -40,7 +40,7 @@ function isCoinbasePrevout(input: { txid?: Uint8Array; index?: number }): boolea
  * callers MUST treat that as "unverifiable", not as a safe "not coinbase", so a
  * transient chain hiccup can't make an immature mining reward look ordinary and
  * spendable (cairn-7fmd). With getTxHex backing this (works on Electrum alone,
- * no Core RPC / Esplora needed), 'unknown' is now reserved for genuine
+ * no Core RPC needed), 'unknown' is now reserved for genuine
  * transient failures, not a permanent per-backend capability gap.
  */
 async function isCoinbaseTx(txid: string): Promise<CoinbaseStatus> {

@@ -108,7 +108,7 @@ describe('setSecretSetting / readSecretSetting — encrypted at rest', () => {
 
 // cairn-zoz8.8 — getChainConfig() now also surfaces the Bitcoin Core RPC
 // url/user/pass so a future ChainService can talk to a self-hosted Core node.
-// Unlike electrum/esplora, Core RPC has no "public default" to fall back to, so
+// Unlike Electrum, Core RPC has no "public default" to fall back to, so
 // the stored values must pass through in BOTH public and custom connection mode.
 describe('getChainConfig — Bitcoin Core RPC passthrough', () => {
 	const RPC_URL = 'http://127.0.0.1:8332';
@@ -142,8 +142,8 @@ describe('getChainConfig — Bitcoin Core RPC passthrough', () => {
 
 		const cfg = getChainConfig();
 		expect(cfg.mode).toBe('public');
-		// The electrum/esplora fields ARE swapped for the public defaults here…
-		expect(cfg.esploraUrl).toBe('https://mempool.space/api');
+		// The Electrum fields ARE swapped for the public defaults here…
+		expect(cfg.electrumHost).toBe('electrum.blockstream.info');
 		// …but Core RPC is self-hosted-only, so its values are returned as stored.
 		expect(cfg.coreRpcUrl).toBe(RPC_URL);
 		expect(cfg.coreRpcUser).toBe(RPC_USER);

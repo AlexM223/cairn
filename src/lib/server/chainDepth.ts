@@ -16,8 +16,8 @@
 // looser), whereas warning late on a legacy node means an unexplained broadcast
 // rejection, the worse outcome. The signal comes from ChainService.getCpfpInfo —
 // now backed by the operator's own Bitcoin Core mempool (getmempoolentry +
-// getmempoolancestors/descendants, cairn-zoz8.12), with an optional Esplora
-// fallback. When neither backend can serve it (no Core RPC configured) getCpfpInfo
+// getmempoolancestors/descendants, cairn-zoz8.12). When Core RPC isn't
+// configured getCpfpInfo
 // returns null and we degrade silently (no warning), as before.
 
 import { getChain } from './chain';

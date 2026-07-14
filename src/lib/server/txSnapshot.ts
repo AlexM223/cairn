@@ -3,7 +3,7 @@
 // (chainSnapshot.ts) or the per-wallet wallet_snapshots (walletSync.ts), this
 // caches ONE decoded transaction per txid so the tx page can render — and make
 // its RBF-redirect decision — from the last-seen data instantly, without a live
-// Electrum/esplora getTx gating first paint. That page's getTx stayed awaited
+// Electrum/Core RPC getTx gating first paint. That page's getTx stayed awaited
 // (it drives a 302-to-replacement vs 404 decision), so on a slow/unreachable
 // backend it hung until the backend answered; this cache is the fix.
 //

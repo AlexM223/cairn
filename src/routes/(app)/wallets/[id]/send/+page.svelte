@@ -215,7 +215,7 @@
 	const consolidateParams = readConsolidateParams();
 
 	// --- streamed network data (cairn-vknb.3) -------------------------------
-	// The Electrum/esplora-dependent half of the load STREAMS in (see
+	// The Electrum/Core RPC-dependent half of the load STREAMS in (see
 	// +page.server.ts's `live` field): the page shell paints immediately from the
 	// cheap synchronous fields, and these fill in when the node answers. Each is
 	// seeded to a safe empty/zero default and updated once `data.live` resolves.

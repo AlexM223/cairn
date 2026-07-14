@@ -1,6 +1,6 @@
 // TTL caches for the two hottest previously-uncached chain lookups: the chain
 // tip and the fee estimates (ChainService.getTip / getFeeEstimates in ./index).
-// Each was a fresh esplora HTTP round-trip on every call, so on ARM/Umbrel —
+// Each was a fresh chain round-trip on every call, so on ARM/Umbrel —
 // where every network hop is meaningfully slow — a single navigation, or a few
 // tabs open at once (dashboard + wallet + send), paid for the same slow lookup
 // several times over (cairn-vknb.5).

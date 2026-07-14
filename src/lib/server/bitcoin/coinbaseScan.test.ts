@@ -3,7 +3,7 @@
 // fund-freeze fix (QA finding F2, P0): isCoinbaseTx now derives coinbase-ness
 // from the funding tx's RAW HEX (getTxHex — served by a plain Electrum
 // connection via blockchain.transaction.get) instead of a decoded/verbose tx
-// lookup (getTx, which requires Core RPC or an Esplora backend and
+// lookup (getTx, which requires Core RPC and
 // unconditionally throws without one). The old getTx-based check returned
 // 'unknown' for EVERY UTXO in Electrum-only deployments, which walletSync.ts's
 // bare-truthiness filter then rendered as an immature mining reward — freezing
