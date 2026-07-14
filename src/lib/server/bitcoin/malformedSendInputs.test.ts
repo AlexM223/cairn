@@ -479,3 +479,101 @@ describe('malformed / wrong-network addresses are rejected cleanly via isValidAd
 		);
 	});
 });
+
+// ═══════════════════════════════════════ 5. WHITESPACE-PADDED ADDRESSES (cairn-3l1e)
+//
+// FIXED (cairn-3l1e): a whitespace-padded but otherwise valid address used to
+// pass isValidAddress (addressToScriptPubKey trims internally) but sail
+// through to @scure/btc-signer's tx.addOutputAddress still padded — which does
+// NOT trim, and threw its own raw error instead of a friendly PsbtError.
+// validateRecipientsAndFeeRate now trims r.address in place, so every
+// downstream consumer (constructPsbt/constructMultisigPsbt's own
+// `params.recipients` — the same object references) sees the clean value.
+
+describe('whitespace-padded addresses are trimmed before validation, not crashed on downstream (cairn-3l1e)', () => {
+	const PAD_CASES: { label: string; pad: (s: string) => string }[] = [
+		{ label: 'leading spaces', pad: (s) => `   ${s}` },
+		{ label: 'trailing spaces', pad: (s) => `${s}   ` },
+		{ label: 'leading and trailing spaces', pad: (s) => `  ${s}  ` },
+		{ label: 'leading tab', pad: (s) => `\t${s}` },
+		{ label: 'trailing newline', pad: (s) => `${s}\n` },
+		{ label: 'mixed tab/newline/space padding on both ends', pad: (s) => `\t\n ${s} \n\t` }
+	];
+
+	for (const { label, pad } of PAD_CASES) {
+		it(`single-sig: a p2wpkh address padded with ${label} builds successfully, and the persisted recipient is the TRIMMED address (no raw library throw)`, async () => {
+			const padded = pad(RECIPIENT_P2WPKH);
+			const draft = await constructPsbt({
+				...COMMON,
+				utxos: [utxo(60_000)],
+				recipients: [{ address: padded, amount: 10_000 }],
+				feeRate: 5
+			});
+			expect(draft.recipient).toBe(RECIPIENT_P2WPKH);
+			expect(draft.recipients[0].address).toBe(RECIPIENT_P2WPKH);
+		});
+	}
+
+	it('single-sig: a legacy p2pkh address padded with both leading and trailing whitespace still builds, trimmed', async () => {
+		const draft = await constructPsbt({
+			...COMMON,
+			utxos: [utxo(60_000)],
+			recipients: [{ address: `  ${RECIPIENT_P2PKH}  `, amount: 10_000 }],
+			feeRate: 5
+		});
+		expect(draft.recipient).toBe(RECIPIENT_P2PKH);
+	});
+
+	it('multisig: a padded address builds successfully via the same shared validateRecipientsAndFeeRate, trimmed', async () => {
+		const details = await msBuild({
+			recipients: [{ address: `  \t${RECIPIENT_P2WPKH}\n  `, amount: 50_000 }]
+		});
+		expect(details.recipient).toBe(RECIPIENT_P2WPKH);
+	});
+
+	it('an address that is ONLY whitespace is rejected as invalid_recipient, plain language, not a crash', async () => {
+		const err = await expectPlainRejection(
+			constructPsbt({
+				...COMMON,
+				utxos: [utxo(60_000)],
+				recipients: [{ address: '   \t\n  ', amount: 10_000 }],
+				feeRate: 5
+			}),
+			'invalid_recipient'
+		);
+		expect(err.message.toLowerCase()).toContain('valid bitcoin address');
+	});
+
+	it('an address that is still invalid AFTER trimming (whitespace-padded garbage) is rejected as invalid_recipient, not accepted', async () => {
+		const err = await expectPlainRejection(
+			constructPsbt({
+				...COMMON,
+				utxos: [utxo(60_000)],
+				recipients: [{ address: '  not-a-real-address  ', amount: 10_000 }],
+				feeRate: 5
+			}),
+			'invalid_recipient'
+		);
+		expect(err.message.toLowerCase()).toContain('valid bitcoin address');
+	});
+
+	it('an address that is valid on the WRONG network only after trimming (padded testnet bech32) is still rejected as invalid_recipient, not silently accepted', async () => {
+		const paddedTestnet = `  ${reencodeBech32(RECIPIENT_P2WPKH, 'tb')}  `;
+		await expectPlainRejection(
+			constructPsbt({
+				...COMMON,
+				utxos: [utxo(60_000)],
+				recipients: [{ address: paddedTestnet, amount: 10_000 }],
+				feeRate: 5
+			}),
+			'invalid_recipient'
+		);
+	});
+
+	it('multisig: an address that is still invalid after trimming is rejected the same way as single-sig', async () => {
+		await expectPlainRejection(
+			msBuild({ recipients: [{ address: '  garbage-not-an-address  ', amount: 10_000 }] }),
+			'invalid_recipient'
+		);
+	});
+});

@@ -326,6 +326,21 @@ export function validateRecipientsAndFeeRate(
 		throw new PsbtError('At least one recipient is required.', 'invalid_recipient');
 	}
 	for (const r of recipients) {
+		// Trim in place (cairn-3l1e): a whitespace-padded but otherwise valid
+		// address passes isValidAddress (addressToScriptPubKey trims internally),
+		// but @scure/btc-signer's tx.addOutputAddress does NOT trim — it re-parses
+		// the raw string later during construction and throws its own raw error
+		// instead of the friendly PsbtError above. Every downstream consumer
+		// (dustThreshold here, and constructPsbt/constructMultisigPsbt's own
+		// `params.recipients` — the exact same array/object references) reads
+		// `r.address` off this same recipient object, so mutating it here is the
+		// single choke-point fix for single-sig, multisig, and RBF/CPFP alike
+		// (they all route through this shared validator; see constructPsbt/
+		// constructMultisigPsbt). Guarded on typeof: a null/undefined address
+		// (bypassing the type system) must keep failing cleanly through
+		// isValidAddress's own try/catch below, not throw a raw TypeError from
+		// calling .trim() on a non-string here.
+		if (typeof r.address === 'string') r.address = r.address.trim();
 		if (!isValidAddress(r.address)) {
 			throw new PsbtError(
 				recipients.length === 1
