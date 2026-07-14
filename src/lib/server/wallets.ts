@@ -5,7 +5,7 @@
 
 import { db } from './db';
 import { parseXpub, deriveAddress } from './bitcoin/xpub';
-import { containsNulByte, TextInputError } from './textGuard';
+import { containsNulByte, truncateUtf16Safe, TextInputError } from './textGuard';
 import { AuthError } from './auth';
 import {
 	scanWallet,
@@ -319,7 +319,7 @@ export function createWallet(
 	const derivationPath = parsedInput.path ?? explicit.path;
 	assertDerivationMatchesPrefix(derivationPath, scriptType);
 
-	let name = String(input.name ?? '').trim().slice(0, 64);
+	let name = truncateUtf16Safe(String(input.name ?? '').trim(), 64);
 	// Reject an embedded NUL rather than let node:sqlite silently truncate the
 	// name at it on write (cairn-y73r/cairn-x5m9) — see textGuard.ts.
 	if (containsNulByte(name)) {

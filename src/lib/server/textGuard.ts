@@ -44,3 +44,25 @@ export function assertNoNulByte(value: string, fieldLabel = 'This field'): void 
 		);
 	}
 }
+
+/**
+ * Cap `value` at `maxLen` UTF-16 code units — same shape as `value.slice(0,
+ * maxLen)` — but never leave a lone (unpaired) surrogate dangling at the cut
+ * point (cairn-qmx8). A plain `.slice()` cares nothing about surrogate-pair
+ * boundaries: an astral-plane character (emoji, many CJK extension-B/etc.
+ * glyphs) is TWO UTF-16 code units, and a cut landing between them keeps only
+ * the lone high surrogate — invalid UTF-16 that node:sqlite's UTF-8-at-rest
+ * TEXT storage cannot represent, so it silently round-trips back as U+FFFD
+ * (the replacement character) instead of the original glyph, and with no
+ * error raised anywhere. Dropping the dangling high surrogate instead keeps
+ * the result one code unit shorter than the cap, but always valid UTF-16.
+ */
+export function truncateUtf16Safe(value: string, maxLen: number): string {
+	const sliced = value.slice(0, maxLen);
+	const lastCode = sliced.length > 0 ? sliced.charCodeAt(sliced.length - 1) : NaN;
+	// High surrogates are 0xD800–0xDBFF; a lone one at the very end (with no
+	// low surrogate following, because that's exactly what got cut off) means
+	// the cap split a surrogate pair in half.
+	if (lastCode >= 0xd800 && lastCode <= 0xdbff) return sliced.slice(0, -1);
+	return sliced;
+}

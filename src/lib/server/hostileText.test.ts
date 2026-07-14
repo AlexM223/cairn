@@ -157,24 +157,29 @@ describe('hostile input: wallet name (createWallet)', () => {
 	});
 });
 
-describe('KNOWN GAP (candidate bead): wallet-name truncation can mangle a surrogate pair', () => {
-	// Expected: a 64-char cap on a string containing astral-plane emoji (2 UTF-16
-	// code units each) should never cut inside a code unit pair — at minimum it
-	// shouldn't silently corrupt the last character into something else.
-	// Actual: createWallet's `name.slice(0, 64)` is a raw UTF-16 code-unit slice
-	// with no grapheme/surrogate awareness, so a name landing exactly on a pair
-	// boundary is truncated mid-emoji, leaving a lone (unpaired) high surrogate
-	// in the JS string. That invalid UTF-16 is then round-tripped through
-	// node:sqlite's TEXT storage (UTF-8 at rest), which cannot represent an
-	// unpaired surrogate — it comes back as U+FFFD, the Unicode replacement
-	// character. So the stored/returned name doesn't just lose the emoji, its
-	// last character becomes a visible "�" with no error raised anywhere.
-	it('a name with 👍👍 straddling the 64-char cutoff comes back with a U+FFFD replacement character', async () => {
+describe('FIXED (cairn-qmx8): wallet-name truncation no longer mangles a surrogate pair', () => {
+	// createWallet's name cap used to be a raw `name.slice(0, 64)` — a UTF-16
+	// code-unit slice with no surrogate awareness, so a name landing exactly on
+	// an astral-plane character's pair boundary (emoji are 2 UTF-16 code units
+	// each) was truncated mid-emoji, leaving a lone (unpaired) high surrogate.
+	// That invalid UTF-16 round-tripped through node:sqlite's UTF-8-at-rest TEXT
+	// storage as U+FFFD, the Unicode replacement character — the stored/returned
+	// name's last character silently became a visible "�". truncateUtf16Safe
+	// (textGuard.ts) now drops a dangling high surrogate instead of keeping it,
+	// so the cap can land one code unit short of 64 but is always valid UTF-16.
+	it('a name with 👍👍 straddling the 64-char cutoff drops the split emoji instead of corrupting into U+FFFD', async () => {
 		const user = await makeUser('owner@example.com');
 		const hostileName = 'a'.repeat(63) + '👍👍'; // 63 + 4 UTF-16 units = length 67
 		const summary = createWallet(user.id, { name: hostileName, xpub: ZPUB });
-		expect(summary.name.length).toBe(64);
-		expect(summary.name.charCodeAt(63)).toBe(0xfffd); // U+FFFD REPLACEMENT CHARACTER
+		expect(summary.name).toBe('a'.repeat(63)); // the split 👍 is dropped, not corrupted
+		expect(summary.name).not.toContain('�');
+	});
+
+	it('a name with 👍👍 landing WELL inside the cap keeps both emoji intact', async () => {
+		const user = await makeUser('owner@example.com');
+		const hostileName = 'a'.repeat(50) + '👍👍'; // 50 + 4 = 54, nowhere near the 64 cap
+		const summary = createWallet(user.id, { name: hostileName, xpub: ZPUB });
+		expect(summary.name).toBe(hostileName);
 	});
 });
 
