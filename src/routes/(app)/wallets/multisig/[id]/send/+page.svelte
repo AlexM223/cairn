@@ -10,7 +10,6 @@
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
 	import QuorumArc from '$lib/components/heartwood/QuorumArc.svelte';
 	import BurialRings from '$lib/components/heartwood/BurialRings.svelte';
-	import Modal from '$lib/components/heartwood/Modal.svelte';
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
 	import AtTipPill from '$lib/components/heartwood/AtTipPill.svelte';
 	import Term from '$lib/components/Term.svelte';
@@ -633,9 +632,13 @@
 	// ------------------------------------------------------------ CONFIRM step
 	let broadcasting = $state(false);
 	let broadcastError = $state<string | null>(null);
-	// The irreversible-act modal ("Once it's broadcast, there is no undo.") —
-	// broadcast() only runs from its confirm.
-	let confirmOpen = $state(false);
+	// cairn-5yz3.1: broadcast() used to run only from a follow-up Modal that
+	// repeated the same irreversibility warning the Confirm step's own
+	// SendReviewCard already made visible (amount/recipients/fee right above
+	// the button) — a genuine double-confirm, not two different checks. The
+	// Confirm step's primary button is the one are-you-sure now; it
+	// broadcasts directly, so the review stays exactly as visible as before
+	// and only the redundant second dialog is gone.
 	// svelte-ignore state_referenced_locally — intentional per-load seed
 	let sentTxid = $state<string | null>(resumeTx?.txid ?? null);
 	// Set only when this broadcast turned out to duplicate another draft's
@@ -1473,7 +1476,7 @@
 				</button>
 				<button
 					class="btn btn-primary pill-lg"
-					onclick={() => (confirmOpen = true)}
+					onclick={() => void broadcast()}
 					disabled={broadcasting}
 				>
 					{#if broadcasting}<span class="spinner"></span> Broadcasting…{:else}{sendCtaLabel(
@@ -1531,12 +1534,10 @@
 			{/if}
 
 			<div class="row step-actions" style="justify-content: center">
-				{#if data.flags?.explorer !== false}
-					<a class="btn btn-primary pill-lg" href={explorerUrl}>Watch it get buried</a>
-					<a class="btn btn-secondary" href={`/wallets/multisig/${multisigId}`}>Done</a>
-				{:else}
-					<a class="btn btn-primary pill-lg" href={`/wallets/multisig/${multisigId}`}>Done</a>
-				{/if}
+				<!-- /explorer/tx/[txid] is exempt from the explorer flag (cairn-5yz3.3
+				     — tx detail, not chain browsing), so this link is always live. -->
+				<a class="btn btn-primary pill-lg" href={explorerUrl}>Watch it get buried</a>
+				<a class="btn btn-secondary" href={`/wallets/multisig/${multisigId}`}>Done</a>
 			</div>
 			<p class="sent-caption">We'll nudge you at the first ring — and at six.</p>
 			<a class="sent-again" href={`/wallets/multisig/${multisigId}/send`} data-sveltekit-reload
@@ -1546,14 +1547,6 @@
 	{/if}
 	</div>
 </div>
-
-<Modal
-	bind:open={confirmOpen}
-	title="Broadcast this transaction?"
-	message="Once it's broadcast, there is no undo."
-	confirmLabel="Broadcast"
-	onConfirm={() => void broadcast()}
-/>
 
 <Toasts />
 
