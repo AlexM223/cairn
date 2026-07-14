@@ -1063,39 +1063,45 @@
 									backups.
 								</p>
 								<div class="row" style="gap: 8px; flex-wrap: wrap">
-									<a
-										href="/api/wallets/multisig/{data.multisig.id}/caravan"
-										class="btn btn-secondary btn-sm"
-										download
-										onclick={markBackupDownloaded}
-									>
-										Wallet config (JSON)
-									</a>
-									<a
-										href="/api/wallets/multisig/{data.multisig.id}/coldcard"
-										class="btn btn-secondary btn-sm"
-										download
-										onclick={markBackupDownloaded}
-									>
-										ColdCard file
-									</a>
-									<a
-										href="/api/wallets/multisig/{data.multisig.id}/descriptor?download=1"
-										class="btn btn-ghost btn-sm"
-										download
-										onclick={markBackupDownloaded}
-									>
-										Descriptor (.txt)
-									</a>
-									{#if data.role === 'owner'}
+									{#if data.flags?.wallet_config_export !== false}
 										<a
-											href="/api/wallets/multisig/{data.multisig.id}/backup-pdf"
+											href="/api/wallets/multisig/{data.multisig.id}/caravan"
+											class="btn btn-secondary btn-sm"
+											download
+											onclick={markBackupDownloaded}
+										>
+											Wallet config (JSON)
+										</a>
+										<a
+											href="/api/wallets/multisig/{data.multisig.id}/coldcard"
+											class="btn btn-secondary btn-sm"
+											download
+											onclick={markBackupDownloaded}
+										>
+											ColdCard file
+										</a>
+										<a
+											href="/api/wallets/multisig/{data.multisig.id}/descriptor?download=1"
 											class="btn btn-ghost btn-sm"
 											download
 											onclick={markBackupDownloaded}
 										>
-											<Icon name="shield" size={13} /> Printable backup (PDF)
+											Descriptor (.txt)
 										</a>
+										{#if data.role === 'owner'}
+											<a
+												href="/api/wallets/multisig/{data.multisig.id}/backup-pdf"
+												class="btn btn-ghost btn-sm"
+												download
+												onclick={markBackupDownloaded}
+											>
+												<Icon name="shield" size={13} /> Printable backup (PDF)
+											</a>
+										{/if}
+									{:else}
+										<FeatureDisabled
+											message="Wallet config export has been disabled by your administrator."
+										/>
 									{/if}
 									{#if data.flags?.csv_export !== false}
 										<a

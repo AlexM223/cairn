@@ -1347,22 +1347,28 @@
 								or back into Heartwood. It <strong>can't spend</strong>.
 							</p>
 							<div class="row" style="gap: 8px; flex-wrap: wrap">
-								<a
-									href="/api/wallets/{data.wallet.id}/config"
-									class="btn btn-secondary btn-sm"
-									download
-									onclick={markBackupDownloaded}
-								>
-									Wallet config (JSON)
-								</a>
-								<a
-									href="/api/wallets/{data.wallet.id}/descriptor"
-									class="btn btn-ghost btn-sm"
-									download
-									onclick={markBackupDownloaded}
-								>
-									Descriptor (.txt)
-								</a>
+								{#if data.flags?.wallet_config_export !== false}
+									<a
+										href="/api/wallets/{data.wallet.id}/config"
+										class="btn btn-secondary btn-sm"
+										download
+										onclick={markBackupDownloaded}
+									>
+										Wallet config (JSON)
+									</a>
+									<a
+										href="/api/wallets/{data.wallet.id}/descriptor"
+										class="btn btn-ghost btn-sm"
+										download
+										onclick={markBackupDownloaded}
+									>
+										Descriptor (.txt)
+									</a>
+								{:else}
+									<FeatureDisabled
+										message="Wallet config export has been disabled by your administrator."
+									/>
+								{/if}
 								{#if data.flags?.csv_export !== false}
 									<a
 										href="/api/wallets/{data.wallet.id}/history.csv"
