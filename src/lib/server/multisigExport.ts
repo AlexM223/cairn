@@ -292,8 +292,18 @@ export function parseCaravanImport(text: string): CaravanImport {
 		}
 		seenXpubs.add(xpub);
 		const xfp = typeof k.xfp === 'string' ? k.xfp.trim() : '';
-		const path =
+		const rawPath =
 			typeof k.bip32Path === 'string' && k.bip32Path.trim() ? k.bip32Path.trim() : 'm';
+		// cairn-o7zy: Caravan (and Cairn's own caravanExport) MASKS an
+		// unknown-origin key as "m/0/0/…" — bare "m" trips some consumers, so the
+		// xpub's real depth is faked with all-zero, unhardened levels (maskedPath).
+		// Recognize that masking on the way back in and restore it to the
+		// unknown-origin sentinel "m", so a Cairn export→import round-trip of an
+		// unknown-origin key stays unknown instead of silently hardening into a
+		// concrete (and wrong) derivation path. A genuine origin path always
+		// carries hardened levels (m/48'/…), so it never matches this all-zero,
+		// all-unhardened shape — no real path is misread as masked.
+		const path = /^m(\/0)+$/.test(rawPath) ? 'm' : rawPath;
 		// Path hygiene with per-key attribution (cairn-1kc3.1/.3/.5): a declared
 		// single-sig path, a BIP-48 script-type suffix contradicting the file's
 		// addressType, or a non-mainnet coin type fails HERE, at import preview,

@@ -28,6 +28,12 @@ const TV1 =
 const TV2 =
 	'xpub661MyMwAqRbcFW31YEwpkMuc5THy2PSt5bDMsktWQcFF8syAmRUapSCGu8ED9W6oDMSgv6Zz8idoc4a6mr8BDzTJY47LJhkJ8UB7WEGuduB';
 const TV3 = HDKey.fromMasterSeed(new Uint8Array(32).fill(3)).publicExtendedKey;
+// A realistic cosigner xpub derived to depth 2 (NOT a master) — used to exercise
+// the unknown-origin masking round-trip (cairn-o7zy): a non-zero depth means the
+// mask carries "/0" levels, unlike the depth-0 masters above.
+const TV_DEEP = HDKey.fromMasterSeed(new Uint8Array(32).fill(9))
+	.deriveChild(0)
+	.deriveChild(0).publicExtendedKey;
 
 const BIP48_PATH = "m/48'/0'/0'/2'";
 
@@ -266,6 +272,45 @@ describe('parseCaravanImport', () => {
 		);
 	});
 
+	it('round-trips an unknown-origin key LOSSLESSLY: export masks depth, import restores unknown "m" (cairn-o7zy)', () => {
+		// Before the fix, export masked an unknown-origin key to depth-preserving
+		// "m/0/0" and import read that literally — silently hardening "unknown"
+		// into a concrete (wrong) path. Now the mask is recognized on the way in.
+		const multisig = makeMultisig({
+			keys: [
+				keyRow(0, TV_DEEP, 'aabbccdd', 'm'), // unknown origin, depth-2 xpub
+				keyRow(1, TV1, '3442193e', "m/48'/0'/0'/2'"), // real origin, preserved
+				keyRow(2, TV2, 'deadbeef') // real origin (BIP-48 default)
+			]
+		});
+
+		const exported = JSON.parse(caravanExport(multisig));
+		// Export masks the unknown key's real depth (2 → "m/0/0") so bare "m"
+		// doesn't trip downstream consumers, and leaves real origins untouched.
+		expect(exported.extendedPublicKeys[0].bip32Path).toBe('m/0/0');
+		expect(exported.extendedPublicKeys[1].bip32Path).toBe("m/48'/0'/0'/2'");
+
+		const imported = parseCaravanImport(caravanExport(multisig));
+		// The unknown-origin key comes back as unknown 'm', NOT the literal mask;
+		// real origins survive verbatim.
+		expect(imported.keys.map((k) => k.path)).toEqual([
+			'm',
+			"m/48'/0'/0'/2'",
+			"m/48'/0'/0'/2'"
+		]);
+		// Full deep-equal on the load-bearing key fields: name, xpub, fingerprint
+		// AND path all round-trip (the fingerprints are the interop-critical bit
+		// this bead also names).
+		expect(imported.keys).toEqual(
+			multisig.keys.map((k) => ({
+				name: k.name,
+				xpub: k.xpub,
+				fingerprint: k.fingerprint,
+				path: k.path === '' || k.path === 'm' ? 'm' : k.path
+			}))
+		);
+	});
+
 	it('round-trips a non-zero receive cursor via startingAddressIndex (cairn-u161)', () => {
 		const multisig = makeMultisig({ receiveCursor: 50 });
 		const json = JSON.parse(caravanExport(multisig));
@@ -396,11 +441,15 @@ describe('parseCaravanImport', () => {
 		expect(() => parseCaravanImport(blob)).toThrow(/mainnet/);
 	});
 
-	it("accepts BIP-45 paths and unknown/masked paths on import (45' has no subfields; imports keep their real paths)", () => {
+	it("accepts BIP-45 paths and normalizes masked all-zero paths back to unknown 'm' on import (cairn-o7zy)", () => {
 		const imported = parseCaravanImport(
 			blobWithPaths('P2WSH', ["m/45'", undefined, 'm/0/0/0/0'])
 		);
-		expect(imported.keys.map((k) => k.path)).toEqual(["m/45'", 'm', 'm/0/0/0/0']);
+		// 45' is a real origin (kept); an omitted path is unknown 'm'; and
+		// Caravan's masked all-zero, all-unhardened "m/0/0/0/0" is recognized as
+		// the unknown-origin mask and restored to 'm' rather than read literally
+		// as a concrete (wrong) derivation path.
+		expect(imported.keys.map((k) => k.path)).toEqual(["m/45'", 'm', 'm']);
 	});
 
 	it('tolerates unknown extra fields and missing optional metadata', () => {
