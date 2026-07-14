@@ -28,6 +28,7 @@ import {
 	cachedFeeEstimates,
 	cachedMempoolSummary,
 	cachedFeeHistogram,
+	cachedRelayFeeFloor,
 	resetChainCaches,
 	getCachedRawTx,
 	cacheRawTx,
@@ -1651,6 +1652,47 @@ export class ChainService {
 			const out = {} as FeeEstimates;
 			for (const s of slots) out[s.key] = Math.max(1, round2(s.v as number));
 			return out;
+		});
+	}
+
+	/**
+	 * The effective minimum relay fee rate (sat/vB, float) this node will accept
+	 * right now — the honest floor beneath which a broadcast is guaranteed to be
+	 * rejected, replacing the historical hardcoded "1 sat/vB" assumption
+	 * (cairn-eacw, cairn-eacw.3). Bitcoin Core is authoritative for the connected
+	 * node's OWN relay policy when configured: effective floor = max(mempoolminfee,
+	 * minrelaytxfee) — both reported BTC/kvB, compared in that unit before
+	 * converting to sat/vB, because mempoolminfee is DYNAMIC (rises above
+	 * minrelaytxfee once the mempool fills), so this can legitimately exceed 1.
+	 * Electrum's `blockchain.relayfee` is used only when no Core RPC is configured
+	 * (most deploys don't have both, and Core's view is of this exact node rather
+	 * than the Electrum server's). Any failure to get an answer — no backend
+	 * configured, an RPC error, a missing/unsupported Electrum method, or a
+	 * nonsensical <=0 result — falls back to 1 sat/vB, the network-wide default.
+	 * 30s TTL-cached (cachedRelayFeeFloor) since mempoolminfee drifts continuously,
+	 * same honest model as {@link getFeeEstimates}.
+	 */
+	async getRelayFeeFloor(): Promise<number> {
+		return cachedRelayFeeFloor(async () => {
+			if (this.core) {
+				try {
+					const m = await this.core.getMempoolInfo();
+					const floorBtcPerKvb = Math.max(m.mempoolminfee ?? 0, m.minrelaytxfee ?? 0);
+					if (floorBtcPerKvb > 0) return floorBtcPerKvb * 1e5;
+				} catch (e) {
+					log.debug({ err: e }, 'core getmempoolinfo unavailable for relay-fee floor probe');
+				}
+				return 1;
+			}
+			try {
+				const floorBtcPerKvb = await this.electrum.relayFee();
+				if (typeof floorBtcPerKvb === 'number' && floorBtcPerKvb > 0) {
+					return floorBtcPerKvb * 1e5;
+				}
+			} catch (e) {
+				log.debug({ err: e }, 'electrum relayfee unavailable for relay-fee floor probe');
+			}
+			return 1;
 		});
 	}
 

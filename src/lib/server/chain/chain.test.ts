@@ -116,6 +116,7 @@ interface ElectrumStub {
 	headersSubscribe: ReturnType<typeof vi.fn>;
 	getBlockHeader: ReturnType<typeof vi.fn>;
 	estimateFee: ReturnType<typeof vi.fn>;
+	relayFee: ReturnType<typeof vi.fn>;
 	getBalance: ReturnType<typeof vi.fn>;
 	getHistory: ReturnType<typeof vi.fn>;
 	getTransaction: ReturnType<typeof vi.fn>;
@@ -655,6 +656,133 @@ describe('getFeeEstimates', () => {
 		await svc.getFeeEstimates();
 
 		expect(estimateFee).toHaveBeenCalledTimes(4); // 4 targets, one round of calls
+	});
+});
+
+// ---- relay-fee floor (cairn-eacw.3) ------------------------------------------------
+//
+// ChainService.getRelayFeeFloor(): the effective minimum relay rate (sat/vB, float)
+// this node accepts right now, replacing the historical hardcoded "1 sat/vB"
+// assumption. Core is authoritative for the connected node's own policy when
+// configured (max(mempoolminfee, minrelaytxfee), BTC/kvB → sat/vB); Electrum's
+// blockchain.relayfee is the fallback when no Core RPC is configured; any failure
+// or nonsensical (<=0) answer degrades to 1 sat/vB.
+describe('getRelayFeeFloor', () => {
+	it('Core: returns mempoolminfee converted to sat/vB when it is the higher of the two', async () => {
+		const core = makeCoreStub();
+		core.getMempoolInfo.mockResolvedValue({
+			size: 0,
+			bytes: 0,
+			usage: 0,
+			total_fee: 0,
+			mempoolminfee: 0.000001, // 0.1 sat/vB
+			minrelaytxfee: 0.00000001 // 0.001 sat/vB — lower
+		});
+		const svc = makeCoreService(core);
+
+		await expect(svc.getRelayFeeFloor()).resolves.toBeCloseTo(0.1, 10);
+	});
+
+	it('Core: returns minrelaytxfee converted to sat/vB when a full mempool has NOT pushed mempoolminfee above it', async () => {
+		const core = makeCoreStub();
+		core.getMempoolInfo.mockResolvedValue({
+			size: 0,
+			bytes: 0,
+			usage: 0,
+			total_fee: 0,
+			mempoolminfee: 0.00000001, // 0.001 sat/vB — lower
+			minrelaytxfee: 0.000005 // 0.5 sat/vB
+		});
+		const svc = makeCoreService(core);
+
+		await expect(svc.getRelayFeeFloor()).resolves.toBeCloseTo(0.5, 10);
+	});
+
+	it('Core: the dynamic mempoolminfee is respected when the mempool is full and it exceeds the static minrelaytxfee', async () => {
+		const core = makeCoreStub();
+		core.getMempoolInfo.mockResolvedValue({
+			size: 50_000,
+			bytes: 300_000_000,
+			usage: 0,
+			total_fee: 10,
+			mempoolminfee: 0.00002, // 2 sat/vB — mempool-full-driven floor
+			minrelaytxfee: 0.000001 // 0.1 sat/vB — static default
+		});
+		const svc = makeCoreService(core);
+
+		await expect(svc.getRelayFeeFloor()).resolves.toBeCloseTo(2, 10);
+	});
+
+	it('Core configured but the RPC call fails: falls back to 1 sat/vB', async () => {
+		const core = makeCoreStub();
+		core.getMempoolInfo.mockRejectedValue(new Error('boom'));
+		const svc = makeCoreService(core);
+
+		await expect(svc.getRelayFeeFloor()).resolves.toBe(1);
+	});
+
+	it('Electrum fallback: no Core configured, blockchain.relayfee answers', async () => {
+		const svc = makeService();
+		const relayFee = vi.fn(async () => 0.000005); // 0.5 sat/vB
+		withElectrum(svc, { relayFee });
+
+		await expect(svc.getRelayFeeFloor()).resolves.toBeCloseTo(0.5, 10);
+		expect(relayFee).toHaveBeenCalledTimes(1);
+	});
+
+	it('Electrum fallback: server does not implement blockchain.relayfee (unknown method) -> falls back to 1', async () => {
+		const svc = makeService();
+		const relayFee = vi.fn(async () => {
+			throw new Error('unknown method "blockchain.relayfee"');
+		});
+		withElectrum(svc, { relayFee });
+
+		await expect(svc.getRelayFeeFloor()).resolves.toBe(1);
+	});
+
+	it('no backend answers a usable value -> falls back to 1', async () => {
+		const svc = makeService();
+		const relayFee = vi.fn(async () => 0); // nonsensical <=0 "answer"
+		withElectrum(svc, { relayFee });
+
+		await expect(svc.getRelayFeeFloor()).resolves.toBe(1);
+	});
+
+	it('TTL-caches so a second call does not re-hit the backend', async () => {
+		const core = makeCoreStub();
+		core.getMempoolInfo.mockResolvedValue({
+			size: 0,
+			bytes: 0,
+			usage: 0,
+			total_fee: 0,
+			mempoolminfee: 0.00001,
+			minrelaytxfee: 0
+		});
+		const svc = makeCoreService(core);
+
+		await svc.getRelayFeeFloor();
+		await svc.getRelayFeeFloor();
+
+		expect(core.getMempoolInfo).toHaveBeenCalledTimes(1);
+	});
+
+	it('resetChainCaches() clears the cached floor so a stale value is not served after a backend change', async () => {
+		const core = makeCoreStub();
+		core.getMempoolInfo.mockResolvedValue({
+			size: 0,
+			bytes: 0,
+			usage: 0,
+			total_fee: 0,
+			mempoolminfee: 0.00001,
+			minrelaytxfee: 0
+		});
+		const svc = makeCoreService(core);
+
+		await svc.getRelayFeeFloor();
+		resetChainCaches();
+		await svc.getRelayFeeFloor();
+
+		expect(core.getMempoolInfo).toHaveBeenCalledTimes(2);
 	});
 });
 

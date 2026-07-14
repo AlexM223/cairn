@@ -31,6 +31,11 @@ const FEE_TTL_MS = 30_000;
  *  mempool promptly, long enough to dedupe repeated reads within one refresh cycle
  *  and across the mempool sub-pages (cairn-6efi.1, U3). */
 const MEMPOOL_TTL_MS = 30_000;
+/** Relay-fee floor (ChainService.getRelayFeeFloor, cairn-eacw.3): Core's
+ *  mempoolminfee is DYNAMIC (rises when the mempool fills), so this needs the
+ *  same short-TTL honest model as fees/mempool summary above rather than a
+ *  one-shot cached verdict like packageRelay.ts's support probe. */
+const RELAY_FEE_FLOOR_TTL_MS = 30_000;
 
 interface Entry<T> {
 	value: T;
@@ -43,6 +48,7 @@ let tipCache: Entry<Tip> | null = null;
 let feeCache: Entry<FeeEstimates> | null = null;
 let mempoolSummaryCache: Entry<MempoolSummary> | null = null;
 let feeHistogramCache: Entry<FeeHistogram | null> | null = null;
+let relayFeeFloorCache: Entry<number> | null = null;
 
 /**
  * Return the cached tip if still fresh, else fetch via `load`, cache, return.
@@ -99,6 +105,21 @@ export async function cachedFeeHistogram(
 }
 
 /**
+ * As {@link cachedFeeEstimates} but for the node relay-fee floor (30s flat TTL) —
+ * Core's mempoolminfee is dynamic (rises above minrelaytxfee when the mempool
+ * fills), so a fixed short TTL rather than a one-shot cached verdict.
+ */
+export async function cachedRelayFeeFloor(load: () => Promise<number>): Promise<number> {
+	const now = Date.now();
+	if (relayFeeFloorCache && now - relayFeeFloorCache.at < RELAY_FEE_FLOOR_TTL_MS) {
+		return relayFeeFloorCache.value;
+	}
+	const value = await load();
+	relayFeeFloorCache = { value, at: now };
+	return value;
+}
+
+/**
  * Drop the cached tip. Called from the 'header' handler in ../chainEvents.ts the
  * instant a new block arrives, so the next getTip() reflects the new tip without
  * waiting out the TTL ceiling.
@@ -116,6 +137,7 @@ export function resetChainCaches(): void {
 	feeCache = null;
 	mempoolSummaryCache = null;
 	feeHistogramCache = null;
+	relayFeeFloorCache = null;
 	// The header cache is keyed by HEIGHT (not a globally-unique hash), so a switch
 	// to a different chain must drop it or height 800000 on the new chain could serve
 	// the old chain's header. The merkle-pos cache is keyed by txid (globally unique)

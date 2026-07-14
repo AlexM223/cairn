@@ -705,6 +705,18 @@ export class ElectrumClient extends EventEmitter {
 	}
 
 	/**
+	 * The server's minimum relay fee, BTC/kvB (electrum convention, same units as
+	 * {@link estimateFee}). Used as the Electrum-side relay-floor probe
+	 * (ChainService.getRelayFeeFloor, cairn-eacw.3) when no Bitcoin Core RPC is
+	 * configured. Not every server implements this method — callers should treat a
+	 * rejection as "no answer" and fall back, the same way packageRelay.ts treats an
+	 * unknown-method error as an unsupported verdict rather than a hard failure.
+	 */
+	async relayFee(): Promise<number> {
+		return (await this.request('blockchain.relayfee', [])) as number;
+	}
+
+	/**
 	 * The server's current mempool fee-rate distribution (`mempool.get_fee_histogram`,
 	 * no params): [feeRate sat/vB, cumulative vsize] pairs, highest fee rate first.
 	 * Sources the mempool fee-distribution chart from the operator's own Electrum

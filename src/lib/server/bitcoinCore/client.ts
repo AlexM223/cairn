@@ -369,12 +369,20 @@ export class CoreRpcClient {
 		return this.call('gettxout', [txid, n, includeMempool]);
 	}
 
+	/**
+	 * `minrelaytxfee` (BTC/kvB, Core >= 0.19) is the node's static configured relay
+	 * floor; `mempoolminfee` (BTC/kvB) is the DYNAMIC floor — it rises above
+	 * minrelaytxfee when the mempool is full. The effective relay floor for a
+	 * transaction to be accepted right now is max(mempoolminfee, minrelaytxfee)
+	 * (cairn-eacw.3, ChainService.getRelayFeeFloor).
+	 */
 	getMempoolInfo(): Promise<{
 		size: number;
 		bytes: number;
 		usage: number;
 		total_fee: number;
 		mempoolminfee: number;
+		minrelaytxfee?: number;
 	}> {
 		return this.call('getmempoolinfo');
 	}

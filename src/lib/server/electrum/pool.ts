@@ -199,6 +199,11 @@ export class ElectrumPool extends EventEmitter {
 		return this.pick().estimateFee(targetBlocks);
 	}
 
+	/** Relay-fee floor probe passthrough (cairn-eacw.3, ChainService.getRelayFeeFloor). */
+	relayFee(): Promise<number> {
+		return this.pick().relayFee();
+	}
+
 	getFeeHistogram(): Promise<ElectrumFeeHistogram> {
 		return this.pick().getFeeHistogram();
 	}
