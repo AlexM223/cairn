@@ -19,6 +19,7 @@ import { listMultisigTransactionSummaries } from '$lib/server/multisigTransactio
 import { isBackedUp } from '$lib/server/backups';
 import { getAddressLabels } from '$lib/server/addressLabels';
 import { readMultisigSnapshot, EMPTY_MULTISIG_SNAPSHOT } from '$lib/server/walletSync';
+import { requireUser } from '$lib/server/api';
 import type { Actions, PageServerLoad } from './$types';
 
 const QR_OPTS = {
@@ -130,7 +131,9 @@ export const load: PageServerLoad = ({ params, locals, url, depends }) => {
 
 export const actions: Actions = {
 	/** Hand out the next unused receive address (after the one on display). */
-	receive: async ({ params, locals, request }) => {
+	receive: async (event) => {
+		requireUser(event);
+		const { params, locals, request } = event;
 		const id = multisigId(params.id);
 		// Any participant can fetch a deposit address for a shared wallet.
 		const multisig = getViewableMultisig(locals.user!.id, id);
@@ -155,7 +158,9 @@ export const actions: Actions = {
 		}
 	},
 
-	delete: async ({ params, locals }) => {
+	delete: async (event) => {
+		requireUser(event);
+		const { params, locals } = event;
 		const id = multisigId(params.id);
 		const multisig = getMultisig(locals.user!.id, id);
 		if (!multisig || !deleteMultisig(locals.user!.id, id)) error(404, 'Multisig not found');
