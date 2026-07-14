@@ -919,6 +919,8 @@ describe('getFeeHistogram (electrum-backed)', () => {
 interface CoreStub {
 	call: ReturnType<typeof vi.fn>;
 	getBlockHash: ReturnType<typeof vi.fn>;
+	getBlockHeader: ReturnType<typeof vi.fn>;
+	getBlockCount: ReturnType<typeof vi.fn>;
 	getBlock: ReturnType<typeof vi.fn>;
 	getBlockStats: ReturnType<typeof vi.fn>;
 	getRawTransaction: ReturnType<typeof vi.fn>;
@@ -983,6 +985,8 @@ function makeCoreStub(): CoreStub {
 			throw new Error(`unstubbed core.call ${method}`);
 		}),
 		getBlockHash: vi.fn(async () => BLOCK.id),
+		getBlockHeader: vi.fn(async () => ({ hash: BLOCK.id, height: TIP_HEIGHT, time: 1_750_000_000 })),
+		getBlockCount: vi.fn(async () => TIP_HEIGHT),
 		getBlock: vi.fn(),
 		getBlockStats: vi.fn(),
 		getRawTransaction: vi.fn(async () => CORE_TX),
@@ -1615,6 +1619,93 @@ describe('getTxBlockContext', () => {
 		// exact denominator from Core replaces the merkle-depth estimate.
 		expect(ctx.positionTotal).toBe(2_500);
 		expect(ctx.positionEstimated).toBe(false);
+	});
+
+	// cairn-zc4x: Core-up / Electrum-down deployment. Electrum can't decode the tx,
+	// supply the tip, or serve merkle proofs / headers — every Electrum call throws.
+	// The section must still resolve a usable tier from Core alone (decode via
+	// getrawtransaction, tip recovered from the tx's block height + confirmations,
+	// neighbours via getblockhash + getblockheader, per-block stats via getblockstats)
+	// instead of dead-ending to 'none' — that 'none' contradicts the page's own
+	// "Verified by your Bitcoin Core node" provenance. Merkle position has no Core
+	// equivalent, so it is honestly omitted (never faked).
+	it('Core-only (Electrum fully down): recovers a full tier, omits merkle position', async () => {
+		const core = makeCoreStub();
+		const svc = makeCoreService(core);
+		// Electrum offline for every capability the block context uses.
+		withElectrum(svc, {
+			headersSubscribe: vi.fn(async () => {
+				throw new Error('electrum down');
+			}),
+			getTransaction: vi.fn(async () => {
+				throw new Error('electrum down');
+			}),
+			getBlockHeader: vi.fn(async () => {
+				throw new Error('electrum down');
+			}),
+			getMerkleProof: vi.fn(async () => {
+				throw new Error('electrum down');
+			})
+		});
+		// Core decodes the tx (confirmations 11, blockhash 'd'*64, vsize 141 from CORE_TX).
+		// Tip is recovered from the center block's height (460) + confirmations − 1 = 470.
+		core.getBlockHeader.mockImplementation(async (hash: string) => {
+			if (hash === 'd'.repeat(64)) return { hash, height: 460, time: 1_750_000_000 };
+			const m = /^nhash-(\d+)$/.exec(String(hash));
+			if (m) {
+				const h = Number(m[1]);
+				return { hash, height: h, time: 1_750_000_000 + h };
+			}
+			throw new Error(`unstubbed getBlockHeader ${hash}`);
+		});
+		core.getBlockHash.mockImplementation(async (h: number) => `nhash-${h}`);
+		core.getBlockStats.mockResolvedValue({
+			txs: 1_200,
+			total_size: 900_000,
+			total_weight: 3_600_000,
+			feerate_percentiles: [1, 2, 3, 4, 5]
+		});
+
+		const ctx = await svc.getTxBlockContext(CORE_TX.txid);
+
+		// A usable tier from Core alone — NOT the 'none' dead-end.
+		expect(ctx.richness).toBe('full');
+		expect(ctx.confirmed).toBe(true);
+		expect(ctx.height).toBe(460);
+		expect(ctx.tipHeight).toBe(470);
+		expect(ctx.confirmations).toBe(11);
+		expect(ctx.vsize).toBe(141);
+		// Full 3-block rail with real dates, sourced from Core headers.
+		expect(ctx.neighbors.map((n) => n.height)).toEqual([459, 460, 461]);
+		expect(ctx.neighbors.every((n) => n.hash !== null && n.time !== null)).toBe(true);
+		// Merkle position is Electrum-only → honestly omitted, never faked.
+		expect(ctx.position).toBeNull();
+		expect(ctx.positionEstimated).toBe(false);
+		// Core enrichment still lands per-block aggregates on the center block.
+		const current = ctx.neighbors.find((n) => n.isCurrent)!;
+		expect(current.txCount).toBe(1_200);
+		expect(current.size).toBe(900_000);
+		expect(current.fullness).toBeCloseTo(0.9, 6);
+	});
+
+	it('Core-only but Core cannot decode the tx (no txindex) ⇒ honest "none"', async () => {
+		const core = makeCoreStub();
+		const svc = makeCoreService(core);
+		withElectrum(svc, {
+			headersSubscribe: vi.fn(async () => {
+				throw new Error('electrum down');
+			}),
+			getTransaction: vi.fn(async () => {
+				throw new Error('electrum down');
+			})
+		});
+		// Core reachable but the tx isn't indexed → getrawtransaction throws.
+		core.getRawTransaction.mockRejectedValue(new Error('No such mempool or blockchain transaction'));
+
+		const ctx = await svc.getTxBlockContext(CORE_TX.txid);
+		expect(ctx.richness).toBe('none');
+		expect(ctx.height).toBeNull();
+		expect(ctx.neighbors).toEqual([]);
 	});
 
 	it('tip failure ⇒ richness "none" (honest connecting state, no fake data)', async () => {

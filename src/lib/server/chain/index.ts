@@ -948,25 +948,62 @@ export class ChainService {
 			coreConfigured
 		});
 
-		// 1. Tip — cached, the always-fresh source for confirmations. Failure ⇒ 'none'.
-		let tipHeight: number;
+		// 1. Tip — cached, the always-fresh source for confirmations. Sourced from
+		//    Electrum; a Core-up / Electrum-down deployment recovers it from Core after
+		//    the decode below (a confirmed tx's block height + confirmations pin the tip
+		//    exactly), so this failure is not yet fatal (cairn-zc4x).
+		let tipHeight: number | null = null;
 		try {
 			tipHeight = (await this.getTip()).height;
 		} catch {
-			return none();
+			tipHeight = null;
 		}
 
-		// 2. Decode the tx (Electrum verbose — works with or without Core, no txindex
-		//    dependency) to learn confirmed-ness and its block anchoring.
+		// 2. Decode the tx to learn confirmed-ness and its block anchoring. Prefer
+		//    Electrum verbose (no txindex dependency); fall back to the operator's own
+		//    Core node (`getrawtransaction` verbose — needs txindex) so a Core-up /
+		//    Electrum-down deployment resolves a usable tier instead of the 'none'
+		//    dead-end that contradicts the page's "Verified by your Bitcoin Core node"
+		//    provenance (cairn-zc4x). `electrumOk` gates the merkle-position step below
+		//    — the merkle proof is an Electrum-only capability with no Core equivalent.
 		let raw: CoreRawTx;
+		let electrumOk = false;
 		try {
 			raw = (await this.electrum.getTransaction(txid, true)) as CoreRawTx;
+			electrumOk = true;
 		} catch {
-			return none();
+			const core = this.core;
+			if (!core) return none();
+			try {
+				raw = (await core.getRawTransaction(txid, true)) as CoreRawTx;
+			} catch {
+				return none();
+			}
 		}
 		const vsize = typeof raw.vsize === 'number' ? raw.vsize : null;
 		const confirmations = typeof raw.confirmations === 'number' ? raw.confirmations : 0;
 		const confirmed = confirmations > 0 && !!raw.blockhash;
+
+		// Recover the tip from Core when Electrum couldn't supply it (Core-only path):
+		// a confirmed tx's own block height plus its confirmations pins the tip exactly;
+		// an unconfirmed tx falls back to getblockcount (cairn-zc4x).
+		const coreForTip = this.core;
+		if (tipHeight === null && coreForTip) {
+			try {
+				if (confirmed && raw.blockhash) {
+					const hdr = await coreForTip.getBlockHeader(raw.blockhash, true);
+					if (hdr && typeof hdr.height === 'number') {
+						tipHeight = hdr.height + confirmations - 1;
+					}
+				} else {
+					tipHeight = await coreForTip.getBlockCount();
+				}
+			} catch {
+				tipHeight = null;
+			}
+		}
+		// No tip from either backend ⇒ honest 'none' (can't place the tx on a rail).
+		if (tipHeight === null) return none();
 
 		// Mempool tx: no block row — honest "waiting" state. We reached the backend, so
 		// this is 'basic' (an unconfirmed tx can never gain Core block enrichment).
@@ -1014,16 +1051,22 @@ export class ChainService {
 			})
 		);
 
-		// 5. Position from the merkle proof (Electrum, exact). The basic-tier denominator
-		//    is estimated from proof depth; Core supplies the exact count in step 6.
+		// 5. Position from the merkle proof (Electrum, exact) — only when Electrum
+		//    decoded the tx. The merkle proof has no Core RPC equivalent, so a Core-only
+		//    path honestly omits the position marker (position stays null → the UI hides
+		//    the indicator) while still rendering the block rail (cairn-zc4x). The
+		//    basic-tier denominator is estimated from proof depth; Core supplies the
+		//    exact count in step 6.
 		let position: number | null = null;
 		let positionTotal: number | null = null;
 		let positionEstimated = false;
-		const pos = await this.merklePos(txid, height);
-		if (pos) {
-			position = pos.pos;
-			positionTotal = 2 ** pos.merkleDepth; // over-estimate; positionEstimated flags it
-			positionEstimated = true;
+		if (electrumOk) {
+			const pos = await this.merklePos(txid, height);
+			if (pos) {
+				position = pos.pos;
+				positionTotal = 2 ** pos.merkleDepth; // over-estimate; positionEstimated flags it
+				positionEstimated = true;
+			}
 		}
 
 		// 6. Core enrichment (full tier): per-block getblockstats aggregates, served from
@@ -1082,14 +1125,33 @@ export class ChainService {
 		const dist = tipHeight - height;
 		const cached = getCachedHeader(height, dist);
 		if (cached) return cached;
+		// Prefer Electrum's raw header. Fall back to the operator's own Core node
+		// (getblockhash + getblockheader) so neighbours still resolve in a Core-up /
+		// Electrum-down deployment — otherwise the block rail would render height-only
+		// cells with no dates (cairn-zc4x).
 		try {
 			const d = decodeBlockHeader(await this.electrum.getBlockHeader(height));
 			const value = { hash: d.hash, time: d.time };
 			cacheHeader(height, value);
 			return value;
 		} catch {
-			return null;
+			// fall through to Core
 		}
+		const core = this.core;
+		if (core) {
+			try {
+				const hash = await core.getBlockHash(height);
+				const hdr = await core.getBlockHeader(hash, true);
+				if (hdr && typeof hdr.hash === 'string' && typeof hdr.time === 'number') {
+					const value = { hash: hdr.hash, time: hdr.time };
+					cacheHeader(height, value);
+					return value;
+				}
+			} catch {
+				// degrade to null — the cell renders with its height only
+			}
+		}
+		return null;
 	}
 
 	/** The tx's merkle position within its block, immutable-cached by (txid, height)
