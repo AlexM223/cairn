@@ -216,6 +216,17 @@ export const actions: Actions = {
 		const collabRaw = String(form.get('collaborative') ?? '');
 		const collaborative = collabRaw === 'true' ? true : collabRaw === 'false' ? false : null;
 
+		// cairn-etz9: Option B (cairn-acft) removed bare legacy P2SH from this
+		// wizard's UI, but that only hid the choice — a scripted POST straight to
+		// this action could still mint a fresh bare-P2SH wallet. Enforce the same
+		// restriction server-side for CREATE; a restored/imported legacy config
+		// still needs scriptType='p2sh' to round-trip, so only 'created' is blocked.
+		if (scriptType === 'p2sh' && source !== 'imported') {
+			return fail(400, {
+				error: 'Legacy P2SH multisig wallets can no longer be created new — import an existing one instead.'
+			});
+		}
+
 		let keys: NewMultisigKey[];
 		let threshold: number;
 		try {

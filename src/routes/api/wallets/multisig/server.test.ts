@@ -106,6 +106,17 @@ describe('POST /api/wallets/multisig — double-submit guard (cairn-50ng)', () =
 	});
 });
 
+describe('POST /api/wallets/multisig — bare legacy P2SH create is rejected server-side (cairn-etz9)', () => {
+	it('scriptType=p2sh is rejected with 400, not silently created, even with otherwise-valid keys', async () => {
+		const body = { ...threeKeyBody('Legacy vault'), scriptType: 'p2sh' };
+		const res = await POST(event(body));
+		expect(res.status).toBe(400);
+		const resBody = await res.json();
+		expect(resBody.error).toMatch(/p2sh/i);
+		expect(listMultisigs(ownerId)).toHaveLength(0);
+	});
+});
+
 describe('POST /api/wallets/multisig — descriptor-derived fingerprint wins (cairn-mvtf)', () => {
 	it('a [fingerprint/path]xpub key-origin expression overrides a contradicting declared fingerprint', async () => {
 		const real = fixtureKey(1);

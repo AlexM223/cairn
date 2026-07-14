@@ -100,6 +100,19 @@ export const POST: RequestHandler = async (event) => {
 		};
 	});
 
+	// cairn-etz9: this endpoint never sets `source`, so createMultisig always
+	// treats it as a from-scratch build — mirror the wizard UI's Option B
+	// (cairn-acft) removal of bare legacy P2SH from fresh creation here too, so
+	// a scripted client can't bypass the UI-level restriction. (Restoring a
+	// legacy P2SH config goes through /api/wallets/multisig/import, which does
+	// pass source: 'imported' and is unaffected.)
+	if (body.scriptType === 'p2sh') {
+		return json(
+			{ error: 'Legacy P2SH multisig wallets can no longer be created new — import an existing one instead.' },
+			{ status: 400 }
+		);
+	}
+
 	try {
 		// Cross-wallet reuse check BEFORE creation so the response can carry it
 		// (cairn-1kc3.4) — non-blocking; createMultisig also records a warning in
