@@ -2,6 +2,7 @@ import { json, requireUser } from '$lib/server/api';
 import { getWallet, nextReceiveAddress } from '$lib/server/wallets';
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
+import { sanitizeChainError } from '$lib/server/chainErrors';
 
 const log = childLogger('wallet');
 
@@ -18,9 +19,17 @@ export const POST: RequestHandler = async (event) => {
 		if (!next) return json({ error: 'Wallet not found' }, { status: 404 });
 		return json(next);
 	} catch (e) {
-		log.error({ err: e, walletId: id }, 'wallet receive-address failed');
 		return json(
-			{ error: e instanceof Error ? e.message : 'Could not derive a receive address' },
+			{
+				error: sanitizeChainError(
+					e,
+					log,
+					{ walletId: id },
+					'wallet receive-address failed',
+					undefined,
+					'Could not derive a receive address'
+				)
+			},
 			{ status: 502 }
 		);
 	}

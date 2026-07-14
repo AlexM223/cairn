@@ -5,6 +5,7 @@ import { classifyUtxoMasses } from '$lib/server/walletApi';
 import { getCachedParentMass, rememberWalletMassProfile } from '$lib/server/bitcoin/signingMass';
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
+import { sanitizeChainError } from '$lib/server/chainErrors';
 
 const log = childLogger('wallet');
 
@@ -48,9 +49,17 @@ export const GET: RequestHandler = async (event) => {
 
 		return json({ masses });
 	} catch (e) {
-		log.error({ err: e, walletId: Number(event.params.id) }, 'wallet utxo-mass failed');
 		return json(
-			{ error: e instanceof Error ? e.message : 'Could not classify this wallet’s coins' },
+			{
+				error: sanitizeChainError(
+					e,
+					log,
+					{ walletId: Number(event.params.id) },
+					'wallet utxo-mass failed',
+					undefined,
+					'Could not classify this wallet’s coins'
+				)
+			},
 			{ status: 502 }
 		);
 	}

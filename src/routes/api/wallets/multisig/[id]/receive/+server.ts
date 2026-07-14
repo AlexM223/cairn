@@ -2,6 +2,7 @@ import { json, requireUser } from '$lib/server/api';
 import { getViewableMultisig } from '$lib/server/wallets/multisig';
 import { nextMultisigReceiveAddress } from '$lib/server/multisigScan';
 import { childLogger } from '$lib/server/logger';
+import { sanitizeChainError } from '$lib/server/chainErrors';
 import type { RequestHandler } from './$types';
 
 const log = childLogger('wallet');
@@ -29,9 +30,17 @@ export const GET: RequestHandler = async (event) => {
 		);
 		return json(next);
 	} catch (e) {
-		log.error({ err: e, multisigId: Number(event.params.id) }, 'wallet receive-address failed');
 		return json(
-			{ error: e instanceof Error ? e.message : 'Could not derive a receive address' },
+			{
+				error: sanitizeChainError(
+					e,
+					log,
+					{ multisigId: Number(event.params.id) },
+					'wallet receive-address failed',
+					undefined,
+					'Could not derive a receive address'
+				)
+			},
 			{ status: 502 }
 		);
 	}

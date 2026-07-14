@@ -3,7 +3,11 @@ import { requireFeature } from '$lib/server/api';
 import { getWallet, getLabels } from '$lib/server/wallets';
 import { scanWallet } from '$lib/server/bitcoin/walletScan';
 import { historyCsvResponse } from '$lib/server/walletApi';
+import { sanitizeChainError } from '$lib/server/chainErrors';
+import { childLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
+
+const log = childLogger('wallet');
 
 /**
  * GET /api/wallets/:id/history.csv — this wallet's transaction history as a
@@ -23,7 +27,17 @@ export const GET: RequestHandler = async (event) => {
 	try {
 		scan = await scanWallet(wallet.xpub);
 	} catch (e) {
-		error(502, e instanceof Error ? e.message : 'Could not scan the wallet.');
+		error(
+			502,
+			sanitizeChainError(
+				e,
+				log,
+				{ walletId: id },
+				'wallet history.csv scan failed',
+				undefined,
+				'Could not scan the wallet.'
+			)
+		);
 	}
 
 	return historyCsvResponse({

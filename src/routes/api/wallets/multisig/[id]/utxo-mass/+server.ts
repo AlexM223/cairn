@@ -4,6 +4,7 @@ import { getMultisigUtxos } from '$lib/server/multisigScan';
 import { classifyUtxoMasses } from '$lib/server/walletApi';
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
+import { sanitizeChainError } from '$lib/server/chainErrors';
 
 const log = childLogger('wallet');
 
@@ -36,9 +37,17 @@ export const GET: RequestHandler = async (event) => {
 		const masses = await classifyUtxoMasses(utxos);
 		return json({ masses });
 	} catch (e) {
-		log.error({ err: e, multisigId: Number(event.params.id) }, 'wallet utxo-mass failed');
 		return json(
-			{ error: e instanceof Error ? e.message : 'Could not classify this multisig’s coins' },
+			{
+				error: sanitizeChainError(
+					e,
+					log,
+					{ multisigId: Number(event.params.id) },
+					'wallet utxo-mass failed',
+					undefined,
+					'Could not classify this multisig’s coins'
+				)
+			},
 			{ status: 502 }
 		);
 	}
