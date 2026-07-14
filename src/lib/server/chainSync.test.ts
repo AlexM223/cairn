@@ -168,23 +168,73 @@ describe('refreshChainSnapshot — persistence & failure', () => {
 		expect(row!.data.fees?.fastest).toBe(20);
 	});
 
-	it('keeps the last good snapshot when a later refresh fails', async () => {
-		await refreshChainSnapshot();
+	/**
+	 * Make EVERY chain fetch fail for the NEXT refresh pass only — a true total
+	 * outage (both backends down). `*Once` so the rejection is consumed by that
+	 * single pass and can't leak into a later test (the shared beforeEach clears
+	 * call history but does not reset mock implementations).
+	 */
+	function failAllFetches(): void {
 		h.state.recent = async () => {
 			throw new Error('backend down');
 		};
+		h.chain.getMempoolSummary.mockRejectedValueOnce(new Error('backend down'));
+		h.chain.getFeeEstimates.mockRejectedValueOnce(new Error('backend down'));
+		h.chain.getTip.mockRejectedValueOnce(new Error('backend down'));
+		h.chain.getFeeHistogram.mockRejectedValueOnce(new Error('backend down'));
+		h.chain.getMempoolBlocks.mockRejectedValueOnce(new Error('backend down'));
+		h.chain.getMempoolTrend.mockRejectedValueOnce(new Error('backend down'));
+	}
+
+	it('keeps the last good snapshot when a later refresh reaches NO backend', async () => {
+		await refreshChainSnapshot();
+		failAllFetches();
 		const res = await refreshChainSnapshot({ force: true });
-		// Stale data is served rather than an error being surfaced.
+		// Stale data is served rather than an error being surfaced, and the snapshot
+		// is NOT overwritten (or its freshness bumped) with an empty one.
 		expect(res.data.tipHeight).toBe(800_000);
 		expect(readChainSnapshot()!.data.tipHeight).toBe(800_000);
 	});
 
-	it('throws when the fetch fails and there is no prior snapshot', async () => {
-		h.state.recent = async () => {
-			throw new Error('backend down');
-		};
-		await expect(refreshChainSnapshot({ force: true })).rejects.toThrow('backend down');
+	it('throws when NO backend is reachable and there is no prior snapshot', async () => {
+		failAllFetches();
+		await expect(refreshChainSnapshot({ force: true })).rejects.toThrow(/unreachable/i);
 		expect(readChainSnapshot()).toBeNull();
+	});
+});
+
+describe('refreshChainSnapshot — partial success persists (cairn-zm7o)', () => {
+	it('persists the Core-sourced mempool summary when Electrum recent-blocks fails', async () => {
+		// Post-Esplora Core-RPC-only shape: Electrum is down so getRecentBlocks (its
+		// baseline headers come from Electrum) throws, but Core RPC is up so
+		// getMempoolSummary resolves. The whole snapshot used to abort on the
+		// getRecentBlocks throw; now every field is best-effort and the write happens.
+		h.state.recent = async () => {
+			throw new Error('Electrum connection closed (electrum.example:50002)');
+		};
+		// No prior snapshot at all — proves the write is not merely serving stale data.
+		const res = await refreshChainSnapshot({ force: true });
+
+		const row = readChainSnapshot();
+		expect(row).not.toBeNull();
+		// The Core-sourced field persisted despite the Electrum-sourced fetch throwing.
+		expect(row!.data.mempoolSummary).toEqual({ txCount: 3, vsize: 1200, totalFees: 900 });
+		expect(res.data.mempoolSummary?.txCount).toBe(3);
+		// Recent blocks degrade to empty (no prior list to carry) — never a thrown abort.
+		expect(row!.data.blocks).toEqual([]);
+	});
+
+	it('carries the last good recent-blocks list forward across an Electrum blip', async () => {
+		// First pass populates blocks; a later pass loses only Electrum (recent blocks)
+		// while Core keeps the mempool summary fresh — the good block list is retained.
+		await refreshChainSnapshot();
+		h.state.recent = async () => {
+			throw new Error('Electrum connection closed');
+		};
+		const res = await refreshChainSnapshot({ force: true });
+		expect(res.data.blocks).toHaveLength(1);
+		expect(res.data.blocks[0].height).toBe(800_000);
+		expect(res.data.mempoolSummary?.txCount).toBe(3);
 	});
 });
 

@@ -66,28 +66,31 @@ export function refreshChainSnapshot(opts: { force?: boolean } = {}): Promise<Ch
 async function doRefresh(current: ChainSnapshotRow | null): Promise<ChainSnapshotRow> {
 	const chain = getChain();
 	try {
-		// Volatile-every-pass fetches + the core tip-bearing ones. `getRecentBlocks`
-		// is the required core fetch (its failure means the backend is unreachable and
-		// sends us to the catch); every other sub-fetch carries its own catch so a
-		// backend that lacks one or a single flaky lookup degrades
-		// that field to null instead of failing the whole refresh. Mempool summary,
-		// fee estimates, projected blocks, the fee histogram and the backlog trend are
-		// genuinely volatile — they can change within a single block — so they refetch
-		// on every pass.
+		// EVERY snapshot field is independently best-effort: each sub-fetch carries
+		// its own catch so a backend that lacks one, a single flaky lookup, or a whole
+		// transport being down degrades only THAT field — the snapshot write below
+		// still happens with whatever succeeded (cairn-zm7o). This matters post-
+		// Esplora: `getRecentBlocks` is Electrum-sourced, so an Electrum outage used to
+		// abort the entire refresh (it was the one fetch with no catch) and the
+		// Core-sourced mempool summary — which resolved fine — never got persisted, so
+		// a Core-RPC-only instance saw a broken explorer home + mempool. Recent blocks
+		// now degrade to the last good list (or empty) like hashrate/difficulty do,
+		// instead of taking the whole snapshot down with them.
 		// Fetch the fee histogram exactly ONCE per refresh, then feed the SAME value
 		// into both the mempool-block projection and the snapshot's histogram field.
 		// Previously getMempoolBlocks() re-fetched it internally, so every refresh
 		// paid for two identical histogram round-trips (cairn-6efi.1, U3).
 		const histPromise = chain.getFeeHistogram().catch(() => null);
-		const [blocks, mempoolSummary, fees, tip, mempoolBlocks, feeHistogram, mempoolTrend] =
+		const [fetchedBlocks, mempoolSummary, fees, tip, mempoolBlocks, feeHistogram, mempoolTrend] =
 			await Promise.all([
 				// Core-enriched when Core RPC is configured (getblockstats per block).
 				// Those aggregates are immutable-cached by hash (chain/cache.ts), so
 				// steady-state refreshes only fetch stats for the newly-arrived tip
 				// block — the other ~14 rows are cache hits. The enriched rows persist
 				// verbatim in the snapshot's JSON blob below; the widened number|null
-				// fields need no DB schema change (cairn-6efi.1, U4).
-				chain.getRecentBlocks(SNAPSHOT_BLOCKS),
+				// fields need no DB schema change (cairn-6efi.1, U4). null on failure so
+				// we can carry the last good list forward rather than blanking it.
+				chain.getRecentBlocks(SNAPSHOT_BLOCKS).catch(() => null),
 				chain.getMempoolSummary().catch(() => null),
 				chain.getFeeEstimates().catch(() => null),
 				chain.getTip().catch(() => null),
@@ -95,6 +98,32 @@ async function doRefresh(current: ChainSnapshotRow | null): Promise<ChainSnapsho
 				histPromise,
 				chain.getMempoolTrend().catch(() => null)
 			]);
+
+		// A TOTAL outage — not one field was reachable this pass — keeps the exact
+		// pre-existing honest behaviour: don't overwrite (or bump the freshness of) a
+		// good snapshot with an empty one, and with nothing cached at all propagate so
+		// the endpoint reports "can't reach chain data sources." Only the PARTIAL-
+		// success path changed (cairn-zm7o): if ANYTHING resolved — e.g. the Core-
+		// sourced mempool summary while Electrum is down — we persist it below.
+		const anySucceeded =
+			fetchedBlocks !== null ||
+			mempoolSummary !== null ||
+			fees !== null ||
+			tip !== null ||
+			feeHistogram !== null ||
+			mempoolTrend !== null ||
+			mempoolBlocks !== null;
+		if (!anySucceeded) {
+			log.warn('chain snapshot refresh: no backend reachable; keeping last snapshot');
+			if (current) return current;
+			throw new Error('chain backends unreachable — no chain data to snapshot');
+		}
+
+		// Recent blocks are stable, relatively expensive data — when this pass
+		// couldn't fetch them (e.g. Electrum down) keep the last good list rather than
+		// overwriting a populated snapshot with an empty one, mirroring the
+		// hashrate/difficulty carry-forward below. Empty only when we've never had any.
+		const blocks = fetchedBlocks ?? current?.data.blocks ?? [];
 
 		const tipHeight = tip?.height ?? blocks[0]?.height ?? null;
 

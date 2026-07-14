@@ -5,10 +5,13 @@
 // and adds no chain traffic. Read-only.
 
 import { json, requireUser } from '$lib/server/api';
-import { getChainHealth } from '$lib/server/chainHealth';
+import { getNetworkHealth } from '$lib/server/chainHealth';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = (event) => {
 	requireUser(event);
-	return json(getChainHealth());
+	// The UNION across backends (cairn-7qmw): an Electrum-only outage must not raise
+	// the "can't reach the Bitcoin network" banner when Core RPC is configured and
+	// reachable — the operator's own node is still serving the explorer.
+	return json(getNetworkHealth());
 };

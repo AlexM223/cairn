@@ -499,10 +499,30 @@ from `ElectrumClient.ensureConnected()` calling `recordChainOk()`/
 `recordChainError()` on every connection attempt's outcome.
 `UNHEALTHY_AFTER = 2` consecutive failures before flipping unhealthy (so one
 transient idle-socket drop doesn't trip the banner). `getChainHealth()` is a
-pure read with no network call, feeding the "can't reach the Bitcoin
-network" banner and the admin settings proxy indicator.
+pure read with no network call, feeding the admin settings proxy indicator.
 `noteProxyConfigured()` lets the banner distinguish "misconfigured Tor/SOCKS
 proxy" from "node down."
+
+**Per-backend health + honest union (cairn-7qmw).** Post-Esplora, Bitcoin
+Core RPC is a first-class chain backend, so it carries its OWN reachability
+signal in the same module: `recordCoreOk()`/`recordCoreError()`/
+`getCoreHealth()`, fed by the `CoreRpcClient`'s per-call `onResult` sink
+(wired only for the long-lived `ChainService` client — the admin "Test
+connection" probe leaves it unset so a probe never pollutes the global
+signal). A JSON-RPC error still counts as *reachable* (the node answered);
+only a transport/auth/timeout failure counts against Core. `reconfigureChain()`
+resets both signals. This is what lets **NodeTrust** (`nodeTrust.ts`) read the
+reachability of whichever backend actually SERVES the explorer —
+`gatherNodeTrust()` reads `getCoreHealth()` when Core RPC is configured, else
+`getChainHealth()` — so a working Core node with a dead Electrum honestly earns
+"Verified by your Bitcoin Core node" instead of being falsely reported
+unreachable. The instance-wide "can't reach the Bitcoin network" banner reads
+`getNetworkHealth()` (the union): an Electrum-only outage does **not** raise it
+when Core RPC is configured and reachable, since the operator's own node is
+still serving the explorer. (The wallet-sync `SyncBanner` remains
+Electrum-scoped — address watching genuinely needs Electrum — so a Core-up/
+Electrum-down instance can honestly show a working explorer alongside a stalled
+wallet sync.)
 
 ### Address watcher / tx watch — `src/lib/server/addressWatcher.ts`
 
@@ -625,19 +645,26 @@ data" (dashboard/explorer), per-wallet balances, and per-tx decoded data.
   multiple tabs, a nav plus a new-block event) share one in-flight promise,
   since this is global data. **Throttle**: `THROTTLE_MS = 20_000` — a
   non-forced call on a fresh-enough snapshot skips the fetch entirely; a
-  new-block event passes `force: true`. `doRefresh()` fetches recent blocks
-  (the "required" fetch — its failure means the backend is unreachable) plus
-  mempool summary/fees/tip/mempool-blocks/fee-histogram/mempool-trend, each
-  individually `.catch(() => null)` so a partial-capability backend (e.g.
-  Electrum-only, no Core RPC) degrades field-by-field instead of failing the
-  whole refresh.
-  Epoch-scale data (hashrate/difficulty info/history) is only refetched when
-  the tip height actually changed since the last successful refresh —
-  otherwise carried forward from the persisted snapshot, since refetching
-  every 20s would waste 3 Electrum round-trips for data that's identical
-  within a block. **Never overwrites a good snapshot with a failure** — on
-  error, returns the last-good snapshot (stale) if one exists; only throws
-  when there's nothing cached at all.
+  new-block event passes `force: true`. `doRefresh()` fetches recent blocks,
+  mempool summary/fees/tip/mempool-blocks/fee-histogram/mempool-trend — **every
+  field is independently `.catch(() => null)`**, so a partial-capability or
+  partially-down backend degrades field-by-field instead of failing the whole
+  refresh (cairn-zm7o). This matters post-Esplora: recent blocks are
+  Electrum-sourced but the mempool summary is Core-sourced, so an Electrum
+  outage on a Core-RPC-up instance must still persist the Core mempool summary
+  (it used to abort the entire snapshot because recent-blocks was the one
+  un-caught "required" fetch, leaving the explorer home + mempool broken).
+  Recent blocks are carried forward from the last good snapshot when a pass
+  can't fetch them (like hashrate/difficulty below), rather than blanking a
+  populated list. Epoch-scale data (hashrate/difficulty info/history) is only
+  refetched when the tip height actually changed since the last successful
+  refresh — otherwise carried forward from the persisted snapshot, since
+  refetching every 20s would waste 3 Electrum round-trips for data that's
+  identical within a block. **Never overwrites a good snapshot with a failure**
+  — a pass in which *no* backend was reachable does not persist (nor bump the
+  snapshot's freshness): it returns the last-good snapshot (stale) if one
+  exists and only throws when there's nothing cached at all. A pass in which
+  *anything* resolved persists whatever succeeded, null for the rest.
 - **`src/lib/server/walletSync.ts`** — same SWR pattern, per-wallet/per-
   multisig (`wallet_snapshots` table), `THROTTLE_MS = 20_000`.
   `singleFlightThrottled()` is a generic, deliberately non-`async` reusable
@@ -1822,6 +1849,22 @@ normalized two raw-technical-error paths to house-standard "what happened +
 what to do" copy: `walletApi.ts`'s `psbtBuildErrorResponse` (Electrum-
 unreachable during PSBT build) and `chain/index.ts`'s `testCoreRpc`.
 
+**Core RPC "Test connection" error copy (`chain/index.ts`).** `testCoreRpc()`
+validates the URL with `coreRpcUrlError()` **before** any fetch — a relative or
+non-`http(s)` value (e.g. `not-a-url`, `ftp://…`) returns "That doesn't look
+like a valid URL — enter something like http://192.168.1.10:8332" instead of
+letting SvelteKit's global fetch leak a framework-internal "use `event.fetch`"
+error (cairn-mf9i). The same guard runs on the admin-settings save path, so an
+invalid URL is never persisted. `friendlyCoreRpcTestError()` then maps the
+remaining transport failures to plain copy: an abort/timeout (the 8s
+`AbortController` firing, Node's "This operation was aborted (20)") → "No
+response from the node after 8 seconds — check the address and that the node is
+reachable from this server." (cairn-i9u6); an **HTTP 403** → "The node refused
+this connection (HTTP 403) — your server's IP address is probably not in the
+node's `rpcallowip` allowlist." (cairn-ymcg), the accurate cause rather than a
+misleading "check username/password." The `CoreRpcClient` HTTP-status error also
+omits the body when it's empty, so no dangling "HTTP 403: ." ever renders.
+
 Concrete before/after: `requireFeature()` throwing for a disabled `send`
 flag now serializes as
 ```json
@@ -2147,7 +2190,7 @@ Pages under `(app)`:
 | `wallets/multisig/[id]/send/+page.svelte` | multisig send/co-sign flow |
 | `wallets/multisig/stateless/+page.svelte` | stateless (no-account) multisig PSBT signer |
 | `explorer/+page.svelte` | block explorer home — includes an "Up next" strip (up to 4 projected-block chips, fed by the same server-loaded `mempoolBlocks` snapshot, linking through to the full mempool treemap viz; hidden gracefully rather than erroring when the chain backend has no projection data) |
-| `explorer/address/[address]`, `explorer/block/[id]`, `explorer/tx/[txid]` | detail pages — `explorer/block/[id]` shows a block-level "Yours in this ring" callout AND (cairn-6efi.12) a per-row sage "Yours" pip on any transaction in the paginated tx list that touches the viewer's own wallets, via `ownership.server.ts`'s memoized, viewer-scoped `ownedTxids()`/`ownedTxsInBlock()` — zero extra chain calls, same privacy boundary (viewer's own wallets only) as the index's `ownedBlockHeights()` pip. **`explorer/tx/[txid]` also renders a BlueWallet-style block-context section** (`BlockContext.svelte` under the status row): a confirmation badge ("6+ confirmations" green at ≥6, paired with the burial-rings glyph), a tappable 1–3 block row (prev/confirmed/next with dates, the tx's position marker inside the confirmed block, each block linking to `explorer/block/[height]`), and a plain-language confirmation summary. Streamed via `loadTxDetails` as `blockContext` (never blocks first paint) from `ChainService.getTxBlockContext` and progressive-enhancement aware — `none` (connecting), `basic` (Electrum-only: dates + position + summary, no Core nag; a quiet admin-only hint offers Core for block sizes), `full` (Core adds block tx-count/size/fullness). Pure copy/badge logic in `blockContext.ts` (`summaryLine`/`confirmationBadge`); one block glyph is `MiniBlock.svelte`. Also exposed standalone at `GET /api/tx/[txid]/block-context`. Because `getTx` now falls back to Electrum (above), this page works on a pure-Electrum Umbrel with no Core RPC. See docs/TX-BLOCK-CONTEXT-DESIGN.md |
+| `explorer/address/[address]`, `explorer/block/[id]`, `explorer/tx/[txid]` | detail pages — `explorer/block/[id]` shows a block-level "Yours in this ring" callout AND (cairn-6efi.12) a per-row sage "Yours" pip on any transaction in the paginated tx list that touches the viewer's own wallets, via `ownership.server.ts`'s memoized, viewer-scoped `ownedTxids()`/`ownedTxsInBlock()` — zero extra chain calls, same privacy boundary (viewer's own wallets only) as the index's `ownedBlockHeights()` pip. **`explorer/tx/[txid]` also renders a BlueWallet-style block-context section** (`BlockContext.svelte` under the status row): a confirmation badge ("6+ confirmations" green at ≥6, paired with the burial-rings glyph), a tappable 1–3 block row (prev/confirmed/next with dates, the tx's position marker inside the confirmed block, each block linking to `explorer/block/[height]`), and a plain-language confirmation summary. Streamed via `loadTxDetails` as `blockContext` (never blocks first paint) from `ChainService.getTxBlockContext` and progressive-enhancement aware — `none` (connecting), `basic` (Electrum-only: dates + position + summary, no Core nag; a quiet admin-only hint offers Core for block sizes), `full` (Core adds block tx-count/size/fullness). Pure copy/badge logic in `blockContext.ts` (`summaryLine`/`confirmationBadge`); one block glyph is `MiniBlock.svelte`. Also exposed standalone at `GET /api/tx/[txid]/block-context`. Because `getTx` now falls back to Electrum (above), this page works on a pure-Electrum Umbrel with no Core RPC. See docs/TX-BLOCK-CONTEXT-DESIGN.md. **"Total in" degrades honestly**: an unconfirmed (mempool) tx has no resolved prevout values, so each input shows "—" and the `txTotalIn()` helper (`txTotals.ts`) reports `known:false` when *any* input value is unknown — the total then renders "—" too, never a misleading "0.00 BTC" summing of unknowns (cairn-zmym), matching how the fee already degrades. |
 | `explorer/mempool/+page.svelte`, `explorer/mempool/blocks/+page.svelte` | mempool visualizer |
 | `explorer/difficulty` | difficulty chart |
 | `recovery-setup/+page.svelte` | post-signup recovery/backup setup flow |

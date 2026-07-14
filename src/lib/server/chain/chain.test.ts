@@ -28,7 +28,7 @@ vi.mock('../chainEvents', () => ({
 vi.mock('../packageRelay', () => ({ resetPackageRelaySupport: vi.fn() }));
 vi.mock('../activity', () => ({ recordActivity: vi.fn() }));
 
-import { ChainService, testCoreRpc } from './index';
+import { ChainService, testCoreRpc, coreRpcUrlError } from './index';
 import { CoreRpcError } from '../bitcoinCore/client';
 import {
 	resetChainCaches,
@@ -1358,6 +1358,91 @@ describe('testCoreRpc', () => {
 		expect(res.ok).toBe(false);
 		expect(res.error).toMatch(/^Couldn't connect to Bitcoin Core:/);
 		expect(res.error).toContain('401 Unauthorized');
+	});
+
+	// cairn-mf9i — a relative/invalid URL used to reach global fetch and throw a
+	// SvelteKit-internal "use event.fetch" error, leaked verbatim to the admin.
+	it('rejects a relative/invalid URL with plain copy BEFORE any fetch (cairn-mf9i)', async () => {
+		const spy = vi.fn();
+		vi.stubGlobal('fetch', spy);
+		const res = await testCoreRpc({ url: 'not-a-url', user: 'u', pass: 'p' });
+		expect(res.ok).toBe(false);
+		expect(res.error).toMatch(/doesn't look like a valid URL/i);
+		// No SvelteKit internals / docs link.
+		expect(res.error).not.toMatch(/event\.fetch|svelte\.dev|relative URL/i);
+		// The URL never even reached fetch.
+		expect(spy).not.toHaveBeenCalled();
+	});
+
+	it('rejects a non-http(s) scheme up front (cairn-mf9i)', async () => {
+		const spy = vi.fn();
+		vi.stubGlobal('fetch', spy);
+		const res = await testCoreRpc({ url: 'ftp://example.com', user: 'u', pass: 'p' });
+		expect(res.ok).toBe(false);
+		expect(res.error).toMatch(/doesn't look like a valid URL/i);
+		expect(spy).not.toHaveBeenCalled();
+	});
+
+	// cairn-i9u6 — the 8s AbortController firing used to leak "This operation was
+	// aborted (20)" (Node ABORT_ERR), meaningless to an operator.
+	it('maps an abort/timeout to plain "no response" copy (cairn-i9u6)', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => {
+				throw Object.assign(new Error('This operation was aborted'), { code: 20 });
+			})
+		);
+		const res = await testCoreRpc({ url: 'http://10.255.255.1:8332', user: 'u', pass: 'p' });
+		expect(res.ok).toBe(false);
+		expect(res.error).toMatch(/No response from the node after 8 seconds/i);
+		// The raw abort/errno text is gone.
+		expect(res.error).not.toMatch(/aborted|\(20\)/i);
+	});
+
+	// cairn-ymcg — a 403 with an empty body used to render "HTTP 403: ." with no
+	// rpcallowip hint and a misleading "check username/password".
+	it('maps HTTP 403 to an rpcallowip hint, no dangling punctuation (cairn-ymcg)', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => new Response('', { status: 403 }))
+		);
+		const res = await testCoreRpc({ url: 'http://192.168.50.146:8332', user: 'u', pass: 'p' });
+		expect(res.ok).toBe(false);
+		expect(res.error).toMatch(/rpcallowip/);
+		expect(res.error).toMatch(/HTTP 403/);
+		// No dangling "HTTP 403: ." artifact, and no misdirecting credential hint.
+		expect(res.error).not.toContain('HTTP 403: .');
+		expect(res.error).not.toContain('HTTP 403: ');
+		expect(res.error).not.toMatch(/username\/password/i);
+	});
+
+	it('trims an empty response body so no "HTTP NNN: ." dangling colon renders (cairn-ymcg)', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => new Response('', { status: 502 }))
+		);
+		const res = await testCoreRpc({ url: 'http://127.0.0.1:8332', user: 'u', pass: 'p' });
+		expect(res.ok).toBe(false);
+		expect(res.error).toContain('HTTP 502');
+		// The dangling ": ." from an empty body is gone at the transport layer.
+		expect(res.error).not.toContain('HTTP 502:');
+	});
+});
+
+// ---- coreRpcUrlError (URL validation guard, cairn-mf9i) ------------------------
+
+describe('coreRpcUrlError', () => {
+	it('accepts absolute http and https URLs', () => {
+		expect(coreRpcUrlError('http://127.0.0.1:8332')).toBeNull();
+		expect(coreRpcUrlError('https://node.local:8332')).toBeNull();
+	});
+
+	it('rejects a relative/non-URL string with plain copy', () => {
+		expect(coreRpcUrlError('not-a-url')).toMatch(/valid URL/i);
+	});
+
+	it('rejects a non-http(s) scheme', () => {
+		expect(coreRpcUrlError('ftp://example.com')).toMatch(/valid URL/i);
 	});
 });
 

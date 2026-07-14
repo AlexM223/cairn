@@ -34,6 +34,16 @@ export interface CoreRpcConfig {
 	timeoutMs?: number;
 	socks5Host?: string | null;
 	socks5Port?: number | null;
+	/**
+	 * Optional per-call reachability sink (cairn-7qmw). Invoked after every RPC:
+	 * `ok=true` when the node answered (an HTTP response we could parse — including
+	 * a JSON-RPC error, since the node IS reachable), `ok=false` on a transport
+	 * failure / auth rejection / timeout. Lets a long-lived service client feed a
+	 * Core-scoped health signal without every call site knowing about it. The
+	 * admin "Test connection" client leaves this unset so a probe never pollutes
+	 * the global signal.
+	 */
+	onResult?: (ok: boolean, err?: unknown) => void;
 }
 
 /**
@@ -109,6 +119,8 @@ export class CoreRpcClient {
 	private readonly timeoutMs: number;
 	/** SOCKS5 proxy agent when a Tor/SOCKS proxy is configured; null = direct. */
 	private readonly proxyAgent: Agent | null;
+	/** Per-call reachability sink (cairn-7qmw); null when not tracking health. */
+	private readonly onResult: ((ok: boolean, err?: unknown) => void) | null;
 
 	/** In-memory cache of the cookie file's `user:pass` — dropped on any 401. */
 	private cookieCreds: string | null = null;
@@ -120,6 +132,7 @@ export class CoreRpcClient {
 		this.pass = config.pass ?? null;
 		this.cookiePath = config.cookiePath ?? null;
 		this.timeoutMs = config.timeoutMs ?? REQUEST_TIMEOUT_MS;
+		this.onResult = config.onResult ?? null;
 		// socks5h:// keeps DNS resolution on the proxy side (no DNS leak, .onion
 		// hosts resolve) — matches the Electrum Tor convention (cairn-oh7a).
 		this.proxyAgent =
@@ -166,6 +179,21 @@ export class CoreRpcClient {
 	 * throw a diagnosable Error with the unwrapped cause chain.
 	 */
 	async call<T>(method: string, params: unknown[] = []): Promise<T> {
+		try {
+			const result = await this.perform<T>(method, params);
+			// The node answered — reachable (cairn-7qmw).
+			this.onResult?.(true);
+			return result;
+		} catch (e) {
+			// A structured JSON-RPC error means the node DID answer (it's reachable,
+			// just rejecting this particular request — e.g. -5 tx-not-found); only a
+			// transport failure / auth rejection / timeout means it's unreachable.
+			this.onResult?.(e instanceof CoreRpcError, e);
+			throw e;
+		}
+	}
+
+	private async perform<T>(method: string, params: unknown[] = []): Promise<T> {
 		const id = this.nextId++;
 		const body = JSON.stringify({ jsonrpc: '1.0', id, method, params });
 
@@ -203,8 +231,12 @@ export class CoreRpcClient {
 		}
 
 		if (res.status < 200 || res.status >= 300) {
+			// Many bitcoind rejections (e.g. a 403 from an rpcallowip miss) carry an
+			// empty body; appending ": <body>" then renders a dangling "HTTP 403: ."
+			// (cairn-ymcg). Only include the body when there actually is one.
+			const body = res.text.trim().slice(0, 200);
 			throw new Error(
-				`Core RPC ${method} failed: HTTP ${res.status}: ${res.text.slice(0, 200)}`
+				`Core RPC ${method} failed: HTTP ${res.status}${body ? `: ${body}` : ''}`
 			);
 		}
 		if (!parsed) {

@@ -5,7 +5,7 @@ import {
 	setSecretSetting,
 	readSecretSetting
 } from '$lib/server/settings';
-import { reconfigureChain, testElectrum, testCoreRpc } from '$lib/server/chain';
+import { reconfigureChain, testElectrum, testCoreRpc, coreRpcUrlError } from '$lib/server/chain';
 import { getChainHealth } from '$lib/server/chainHealth';
 import { resetInstance } from '$lib/server/admin';
 import { invalidateWalletCache } from '$lib/server/bitcoin/walletScan';
@@ -172,7 +172,15 @@ export const actions: Actions = {
 		// possible: submit the field present-but-empty, or (for the
 		// password) the clearCoreRpcPass marker.
 		if (form.has('coreRpcUrl')) {
-			setSetting('core_rpc_url', String(form.get('coreRpcUrl') ?? '').trim());
+			const coreUrl = String(form.get('coreRpcUrl') ?? '').trim();
+			// A present-but-empty field clears Core config; a non-empty one must be a
+			// valid absolute http(s) URL, or we'd persist a value that later leaks a
+			// SvelteKit-internal fetch error on every explorer load (cairn-mf9i).
+			if (coreUrl) {
+				const urlErr = coreRpcUrlError(coreUrl);
+				if (urlErr) return fail(400, { coreRpcTest: { ok: false, error: urlErr } });
+			}
+			setSetting('core_rpc_url', coreUrl);
 		}
 		if (form.has('coreRpcUser')) {
 			setSetting('core_rpc_user', String(form.get('coreRpcUser') ?? '').trim());

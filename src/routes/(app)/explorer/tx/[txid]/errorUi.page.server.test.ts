@@ -20,7 +20,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 const h = vi.hoisted(() => {
 	const chain = {
 		getTx: vi.fn(),
-		getTxRbfInfo: vi.fn(async () => null),
+		getTxRbfInfo: vi.fn(async (): Promise<{ chain: { txid: string }[] } | null> => null),
 		getFeeEstimates: vi.fn(async () => null),
 		getCpfpInfo: vi.fn(async () => null),
 		getTxHex: vi.fn(async () => null)

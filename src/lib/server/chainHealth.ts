@@ -17,7 +17,7 @@
 // loads keep attempting connections, so the signal stays fresh on its own.
 
 import { childLogger } from './logger';
-import { isChainNeverConfigured } from './settings';
+import { isChainNeverConfigured, coreRpcConfigured } from './settings';
 
 // Wave 2 / log-chain.md: this module used to mutate in-memory state with ZERO
 // log output — the single biggest logging blind spot in the app. An operator
@@ -140,5 +140,109 @@ export function getChainHealth(): ChainHealth {
 /** Test hook: wipe all recorded health (including proxyConfigured). */
 export function resetChainHealthForTests(): void {
 	resetChainHealth();
+	resetCoreHealth();
 	state.proxyConfigured = false;
+}
+
+// --------------------------------------------------------------- Core RPC health
+//
+// Post-Esplora, Bitcoin Core RPC is a first-class chain backend (the primary /
+// only explorer source on a sovereignty deploy), yet the Electrum-fed `state`
+// above never sees a Core call. Tracking Core's reachability separately is what
+// lets NodeTrust honestly say "Verified by your Bitcoin Core node" when Core is
+// the live source even while Electrum is down, instead of falsely reporting the
+// whole network unreachable (cairn-7qmw). Fed by the CoreRpcClient's per-call
+// `onResult` sink, wired only for the long-lived ChainService client (never the
+// admin "Test connection" probe).
+
+interface CoreHealthState {
+	lastOkAt: number | null;
+	lastErrorAt: number | null;
+	lastError: string | null;
+	consecutiveFailures: number;
+}
+
+const coreState: CoreHealthState = {
+	lastOkAt: null,
+	lastErrorAt: null,
+	lastError: null,
+	consecutiveFailures: 0
+};
+
+/** The Core-scoped view read by NodeTrust and the network-health union. */
+export interface CoreHealth {
+	/** Whether Core RPC is configured at all (a keyed settings read). */
+	configured: boolean;
+	/** False once too many Core RPC calls have failed in a row. */
+	healthy: boolean;
+	/** ms epoch of the latest successful Core RPC call, or null if none seen. */
+	lastOkAt: number | null;
+	/** ms epoch of the latest Core RPC failure, or null if none seen. */
+	lastErrorAt: number | null;
+	/** Latest Core RPC failure message (only surfaced while unhealthy). */
+	lastError: string | null;
+}
+
+/** A Core RPC call the node answered — Core is reachable right now. */
+export function recordCoreOk(): void {
+	const wasUnhealthy = coreState.consecutiveFailures >= UNHEALTHY_AFTER;
+	coreState.lastOkAt = Date.now();
+	coreState.consecutiveFailures = 0;
+	coreState.lastError = null;
+	if (wasUnhealthy) {
+		log.info('Bitcoin Core RPC recovered: a call succeeded');
+	}
+}
+
+/** A failed Core RPC transport/auth attempt (refused, TLS, timeout, 401/403, …). */
+export function recordCoreError(err: unknown): void {
+	coreState.lastErrorAt = Date.now();
+	coreState.lastError = err instanceof Error ? err.message : String(err);
+	coreState.consecutiveFailures++;
+	if (coreState.consecutiveFailures === UNHEALTHY_AFTER) {
+		log.warn(
+			{ consecutiveFailures: coreState.consecutiveFailures, lastError: coreState.lastError },
+			'Bitcoin Core RPC unhealthy: too many consecutive call failures'
+		);
+	}
+}
+
+/** Forget accumulated Core failures — called when the chain is reconfigured. */
+export function resetCoreHealth(): void {
+	coreState.lastOkAt = null;
+	coreState.lastErrorAt = null;
+	coreState.lastError = null;
+	coreState.consecutiveFailures = 0;
+}
+
+/** Current Core RPC health — a pure in-memory read, no network call. */
+export function getCoreHealth(): CoreHealth {
+	const healthy = coreState.consecutiveFailures < UNHEALTHY_AFTER;
+	return {
+		configured: coreRpcConfigured(),
+		healthy,
+		lastOkAt: coreState.lastOkAt,
+		lastErrorAt: coreState.lastErrorAt,
+		lastError: healthy ? null : coreState.lastError
+	};
+}
+
+/**
+ * The honest UNION of chain reachability across backends, for the instance-wide
+ * "can't reach the Bitcoin network" banner (cairn-7qmw). Electrum health is the
+ * base; but when Core RPC is the configured backend and IS reachable, an
+ * Electrum-only outage must NOT claim the whole network is unreachable — the
+ * explorer is being served from the operator's own node. Returns the same
+ * {@link ChainHealth} shape the banner already consumes, only flipping `healthy`
+ * true when Core covers the outage (the other, Electrum-scoped fields are moot
+ * while healthy, since the banner renders nothing then).
+ */
+export function getNetworkHealth(): ChainHealth {
+	const base = getChainHealth();
+	if (base.healthy) return base;
+	const core = getCoreHealth();
+	if (core.configured && core.healthy && core.lastOkAt !== null) {
+		return { ...base, healthy: true };
+	}
+	return base;
 }

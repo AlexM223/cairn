@@ -42,7 +42,7 @@ import {
 	isChainNeverConfigured,
 	getSetting
 } from '../settings';
-import { getChainHealth } from '../chainHealth';
+import { getChainHealth, getCoreHealth } from '../chainHealth';
 import { readChainSnapshot } from '../chainSnapshot';
 import { isFirstSyncComplete } from '../syncStatus';
 
@@ -233,10 +233,18 @@ function coarseSyncPhase(connected: boolean, everConnected: boolean): NodeSyncPh
  */
 export function gatherNodeTrust(): NodeTrust {
 	const cfg = getChainConfig();
-	const health = getChainHealth();
+	const coreConfigured = coreRpcConfigured();
+	// Read the reachability of whichever backend actually SERVES this instance's
+	// explorer data: Bitcoin Core RPC when it's configured (the primary/only source
+	// post-Esplora), else the Electrum transport. Reading the Electrum-only signal
+	// for a Core-backed instance was exactly the cairn-7qmw bug — a working Core
+	// node was mislabelled "unreachable" and denied its "Verified" badge whenever
+	// Electrum happened to be down. Both signals expose `healthy` + `lastOkAt`, the
+	// only two fields the connection derivation needs.
+	const health = coreConfigured ? getCoreHealth() : getChainHealth();
 	const snap = readChainSnapshot();
 
-	// "Connected" = the transport is currently healthy AND has succeeded at least
+	// "Connected" = the backend is currently healthy AND has succeeded at least
 	// once (lastOkAt set). Fresh boot before any handshake is healthy-by-default
 	// with lastOkAt null — that is NOT a connection, so it reads as connecting.
 	const everConnected = health.lastOkAt !== null;
@@ -245,7 +253,7 @@ export function gatherNodeTrust(): NodeTrust {
 	return deriveNodeTrust({
 		neverConfigured: isChainNeverConfigured(),
 		mode: cfg.mode,
-		coreConfigured: coreRpcConfigured(),
+		coreConfigured,
 		connected,
 		tipHeight: snap?.data.tipHeight ?? null,
 		lastSyncedAt: snap?.lastSyncedAt ?? null,

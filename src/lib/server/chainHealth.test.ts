@@ -10,7 +10,12 @@ import {
 	recordChainError,
 	noteProxyConfigured,
 	resetChainHealth,
-	resetChainHealthForTests
+	resetChainHealthForTests,
+	getCoreHealth,
+	recordCoreOk,
+	recordCoreError,
+	resetCoreHealth,
+	getNetworkHealth
 } from './chainHealth';
 import { db } from './db';
 import { setSetting } from './settings';
@@ -118,5 +123,95 @@ describe('neverConfigured (cairn-7zjo)', () => {
 		const h = getChainHealth();
 		expect(h.healthy).toBe(false); // transport is down…
 		expect(h.neverConfigured).toBe(true); // …but that's unrelated to provisioning state
+	});
+});
+
+// cairn-7qmw — Bitcoin Core RPC is a first-class chain backend post-Esplora, so
+// it carries its OWN reachability signal, fed by the CoreRpcClient's per-call
+// onResult sink. This is what lets NodeTrust honestly claim "Verified by your
+// Bitcoin Core node" when Core is the live source even while Electrum is down.
+describe('Core RPC health (cairn-7qmw)', () => {
+	beforeEach(() => {
+		db.exec('DELETE FROM settings;');
+		resetCoreHealth();
+	});
+
+	it('starts healthy with nothing recorded; reports configured from settings', () => {
+		const c = getCoreHealth();
+		expect(c.healthy).toBe(true);
+		expect(c.lastOkAt).toBeNull();
+		expect(c.configured).toBe(false);
+
+		setSetting('core_rpc_url', 'http://127.0.0.1:8332');
+		expect(getCoreHealth().configured).toBe(true);
+	});
+
+	it('records ok/error independently of the Electrum signal', () => {
+		// Electrum goes fully down…
+		recordChainError(new Error('electrum down'));
+		recordChainError(new Error('electrum down'));
+		expect(getChainHealth().healthy).toBe(false);
+		// …but a successful Core call keeps Core healthy with a fresh lastOkAt.
+		recordCoreOk();
+		const c = getCoreHealth();
+		expect(c.healthy).toBe(true);
+		expect(c.lastOkAt).not.toBeNull();
+	});
+
+	it('tolerates a single Core blip but flips unhealthy past the threshold', () => {
+		recordCoreError(new Error('ECONNREFUSED'));
+		expect(getCoreHealth().healthy).toBe(true);
+		recordCoreError(new Error('ECONNREFUSED'));
+		const c = getCoreHealth();
+		expect(c.healthy).toBe(false);
+		expect(c.lastError).toMatch(/ECONNREFUSED/);
+	});
+
+	it('resetCoreHealth clears the Core signal without touching Electrum', () => {
+		recordCoreOk();
+		recordChainOk();
+		resetCoreHealth();
+		expect(getCoreHealth().lastOkAt).toBeNull();
+		// Electrum's own lastOkAt is untouched by a Core reset.
+		expect(getChainHealth().lastOkAt).not.toBeNull();
+	});
+});
+
+// cairn-7qmw — the instance-wide "can't reach the Bitcoin network" banner reads
+// the UNION: an Electrum-only outage must not raise it when Core RPC is
+// configured and reachable (the operator's own node still serves the explorer).
+describe('getNetworkHealth — honest backend union (cairn-7qmw)', () => {
+	beforeEach(() => {
+		db.exec('DELETE FROM settings;');
+		resetCoreHealth();
+	});
+
+	it('is healthy when Electrum is healthy regardless of Core', () => {
+		expect(getNetworkHealth().healthy).toBe(true);
+	});
+
+	it('stays healthy when Electrum is down but Core is configured and reachable', () => {
+		setSetting('core_rpc_url', 'http://127.0.0.1:8332');
+		recordChainError(new Error('electrum down'));
+		recordChainError(new Error('electrum down'));
+		expect(getChainHealth().healthy).toBe(false); // Electrum-only signal is down…
+		recordCoreOk(); // …but Core answered.
+		expect(getNetworkHealth().healthy).toBe(true);
+	});
+
+	it('reports unreachable when Electrum is down and Core is NOT configured', () => {
+		recordChainError(new Error('electrum down'));
+		recordChainError(new Error('electrum down'));
+		recordCoreOk(); // a stray Core ok must not rescue the banner when Core isn't configured
+		expect(getNetworkHealth().healthy).toBe(false);
+	});
+
+	it('reports unreachable when BOTH Electrum and Core are down', () => {
+		setSetting('core_rpc_url', 'http://127.0.0.1:8332');
+		recordChainError(new Error('electrum down'));
+		recordChainError(new Error('electrum down'));
+		recordCoreError(new Error('core down'));
+		recordCoreError(new Error('core down'));
+		expect(getNetworkHealth().healthy).toBe(false);
 	});
 });

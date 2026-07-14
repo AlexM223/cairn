@@ -17,7 +17,7 @@ import { ElectrumPool } from '../electrum/pool';
 import type { ElectrumBalance, ElectrumHistoryItem } from '../electrum/client';
 import { addressToScripthash, scriptPubKeyHex } from '../bitcoin/xpub';
 import { wireChainEvents, resetConnectionState } from '../chainEvents';
-import { noteProxyConfigured, resetChainHealth } from '../chainHealth';
+import { noteProxyConfigured, resetChainHealth, resetCoreHealth, recordCoreOk, recordCoreError } from '../chainHealth';
 import { resetPackageRelaySupport } from '../packageRelay';
 import { recordActivity } from '../activity';
 import { childLogger } from '../logger';
@@ -588,7 +588,11 @@ export class ChainService {
 					user: config.coreRpcUser,
 					pass: config.coreRpcPass,
 					socks5Host: config.socks5Host,
-					socks5Port: config.socks5Port
+					socks5Port: config.socks5Port,
+					// Feed a Core-scoped reachability signal so NodeTrust can honestly say
+					// "Verified by your Bitcoin Core node" when Core is the live source even
+					// while Electrum is down, instead of a false "unreachable" (cairn-7qmw).
+					onResult: (ok, err) => (ok ? recordCoreOk() : recordCoreError(err))
 				})
 			: null;
 	}
@@ -1728,6 +1732,9 @@ export function reconfigureChain(): void {
 	// the chain-health banner (cairn-hy8z). The next ChainService (built lazily by
 	// getChain) re-notes whether a proxy is configured in its constructor.
 	resetChainHealth();
+	// The Core-scoped signal is per-backend too — a stale Core failure/success from
+	// the old endpoint must not leak into the new one's NodeTrust claim (cairn-7qmw).
+	resetCoreHealth();
 	// Package-relay support is per-server — forget the cached verdict so the new
 	// backend is probed afresh (cairn-u9ob.8).
 	resetPackageRelaySupport();
@@ -1774,7 +1781,50 @@ export async function testElectrum(cfg: {
  * ONLY sentence shown, matching broadcastRejection.ts's friendlyBroadcastRejection.
  */
 function friendlyCoreRpcTestError(raw: string): string {
-	return `Couldn't connect to Bitcoin Core: ${raw}. Check the RPC URL, username/password, and that Core is running and reachable from this server.`;
+	const lower = raw.toLowerCase();
+	// Timeout / abort — the 8s AbortController fired. Node surfaces this as
+	// "This operation was aborted (20)" / AbortError, which means nothing to an
+	// operator (cairn-i9u6). It's a no-response, never a config typo.
+	if (
+		lower.includes('aborted') ||
+		lower.includes('aborterror') ||
+		lower.includes('timed out') ||
+		lower.includes('timeout')
+	) {
+		return 'No response from the node after 8 seconds — check the address and that the node is reachable from this server.';
+	}
+	// HTTP 403 from bitcoind almost always means this host's IP isn't in the node's
+	// rpcallowip allowlist, NOT a credential problem — the generic "check
+	// username/password" hint misdirects (cairn-ymcg).
+	if (/\bhttp 403\b/.test(lower)) {
+		return "The node refused this connection (HTTP 403) — your server's IP address is probably not in the node's rpcallowip allowlist.";
+	}
+	// Otherwise keep the raw detail (an operator may recognize node-specific
+	// phrasing a generic hint doesn't cover), but trim any trailing punctuation so
+	// an empty/edge detail never renders dangling "…: ." artifacts (cairn-ymcg).
+	const detail = raw.replace(/[\s.:]+$/, '');
+	return `Couldn't connect to Bitcoin Core: ${detail}. Check the RPC URL, username/password, and that Core is running and reachable from this server.`;
+}
+
+/**
+ * Validate a Bitcoin Core RPC URL BEFORE any fetch touches it. A relative string
+ * like `not-a-url` makes SvelteKit's global fetch throw a framework-internal
+ * "Cannot use relative URL … use event.fetch" error, and a non-http scheme
+ * (`ftp://…`) fails with an opaque "unknown scheme" — both leaked verbatim to the
+ * admin (cairn-mf9i). Catch them here with plain operator copy. Returns an error
+ * string when invalid, or null when the URL is an absolute http(s):// endpoint.
+ */
+export function coreRpcUrlError(url: string): string | null {
+	const invalid =
+		"That doesn't look like a valid URL — enter something like http://192.168.1.10:8332";
+	let parsed: URL;
+	try {
+		parsed = new URL(url);
+	} catch {
+		return invalid;
+	}
+	if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return invalid;
+	return null;
 }
 
 /**
@@ -1789,6 +1839,10 @@ export async function testCoreRpc(cfg: {
 	user?: string | null;
 	pass?: string | null;
 }): Promise<{ ok: boolean; blockHeight?: number; chain?: string; error?: string }> {
+	// Reject an invalid/relative URL up front, before it reaches global fetch and
+	// throws a SvelteKit-internal error the admin can't parse (cairn-mf9i).
+	const urlError = coreRpcUrlError(cfg.url);
+	if (urlError) return { ok: false, error: urlError };
 	// The CoreRpcClient is a normal static import (top of file), matching
 	// testElectrum. Any real connection/auth failure still degrades to the
 	// `{ ok: false, error }` shape the settings UI renders.

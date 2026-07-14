@@ -16,8 +16,15 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { deriveNodeTrust, nodeTrustKind, gatherNodeTrust } from './nodeTrust';
 import type { NodeTrustInputs } from './nodeTrust';
 import type { NodeTrustKind } from '$lib/types';
-import { resetChainHealthForTests, recordChainOk } from '../chainHealth';
+import {
+	resetChainHealthForTests,
+	recordChainOk,
+	recordChainError,
+	recordCoreOk,
+	recordCoreError
+} from '../chainHealth';
 import { setSetting } from '../settings';
+import { db } from '../db';
 
 /** A fully-specified baseline; each case overrides only the axes under test. */
 function inputs(over: Partial<NodeTrustInputs> = {}): NodeTrustInputs {
@@ -223,5 +230,53 @@ describe('gatherNodeTrust — cached-signal wiring (no chain calls)', () => {
 		expect(gatherNodeTrust().connected).toBe(false);
 		recordChainOk();
 		expect(gatherNodeTrust().connected).toBe(true);
+	});
+});
+
+// cairn-7qmw regression — when Core RPC is the configured backend, the trust
+// chip must read CORE reachability, not the Electrum-only signal. A working
+// Core node with a dead Electrum earns "Verified by your Bitcoin Core node";
+// it is never falsely reported unreachable.
+describe('gatherNodeTrust — per-backend health honesty (cairn-7qmw)', () => {
+	beforeEach(() => {
+		db.exec('DELETE FROM settings;');
+		resetChainHealthForTests();
+	});
+
+	it('Core up + Electrum down → connected with Core provenance (the verified badge)', () => {
+		setSetting('core_rpc_url', 'http://127.0.0.1:8332');
+		// Electrum is fully down — the OLD behaviour would mislabel this unreachable.
+		recordChainError(new Error('electrum down'));
+		recordChainError(new Error('electrum down'));
+		// Core answered.
+		recordCoreOk();
+
+		const t = gatherNodeTrust();
+		expect(t.connected).toBe(true);
+		expect(t.source).toBe('core');
+		expect(t.kind).toBe('core-verified');
+		expect(t.verified).toBe(true);
+	});
+
+	it('Core configured but not yet answering → core-unreachable (never falsely verified)', () => {
+		setSetting('core_rpc_url', 'http://127.0.0.1:8332');
+		// Even a healthy Electrum must not lend Core a "verified" it hasn't earned.
+		recordChainOk();
+		const t = gatherNodeTrust();
+		expect(t.connected).toBe(false);
+		expect(t.kind).toBe('core-unreachable');
+		expect(t.verified).toBe(false);
+	});
+
+	it('both backends down → unreachable, not verified', () => {
+		setSetting('core_rpc_url', 'http://127.0.0.1:8332');
+		recordChainError(new Error('electrum down'));
+		recordChainError(new Error('electrum down'));
+		recordCoreError(new Error('core down'));
+		recordCoreError(new Error('core down'));
+		const t = gatherNodeTrust();
+		expect(t.connected).toBe(false);
+		expect(t.kind).toBe('core-unreachable');
+		expect(t.verified).toBe(false);
 	});
 });

@@ -15,6 +15,7 @@
 	import BlockContext from '$lib/components/heartwood/BlockContext.svelte';
 	import CoreRpcRequiredNotice from '$lib/components/CoreRpcRequiredNotice.svelte';
 	import { txPageTitle } from './txTitle';
+	import { txTotalIn } from './txTotals';
 	import { feeOutlook } from '$lib/bitcoin';
 	import {
 		formatNumber,
@@ -39,7 +40,13 @@
 	// anyone else's ownership.
 	const ownership = $derived(data.ownership ?? null);
 	const isCoinbase = $derived(tx ? tx.vin.some((v) => v.coinbase) : false);
-	const totalIn = $derived(tx ? tx.vin.reduce((sum, v) => sum + (v.value ?? 0), 0) : 0);
+	// "Total in" is only honest when EVERY input's prevout value is known. For an
+	// unconfirmed (mempool) tx none are resolved — each input shows "—", so summing
+	// them to "0.00 BTC" falsely implies the tx spends nothing (cairn-zmym). The
+	// helper flags that so the total degrades to "—" too, like the fee already does.
+	const totalInInfo = $derived(txTotalIn(tx?.vin ?? []));
+	const totalIn = $derived(totalInInfo.sats);
+	const totalInKnown = $derived(totalInInfo.known);
 	const totalOut = $derived(tx ? tx.vout.reduce((sum, v) => sum + v.value, 0) : 0);
 
 	// The decoded transaction (above) renders immediately from the awaited load.
@@ -514,8 +521,11 @@
 					{/each}
 					<div class="io-total">
 						<span class="hint">Total in</span>
-						<span class="tabular" title={!isCoinbase ? `${formatSats(totalIn)} sats` : undefined}>
-							{isCoinbase ? '—' : `${formatBtc(totalIn)} BTC`}
+						<span
+							class="tabular"
+							title={!isCoinbase && totalInKnown ? `${formatSats(totalIn)} sats` : undefined}
+						>
+							{isCoinbase || !totalInKnown ? '—' : `${formatBtc(totalIn)} BTC`}
 						</span>
 					</div>
 				</div>
