@@ -7,7 +7,7 @@ import { readChainSnapshot } from '$lib/server/chainSnapshot';
 import { gatherNodeTrust } from '$lib/server/chain/nodeTrust';
 import { txOwnership } from '../../ownership.server';
 import type { PageServerLoad } from './$types';
-import type { CpfpInfo, FeeEstimates, RbfInfo, TxDetail } from '$lib/types';
+import type { BlockContext, CpfpInfo, FeeEstimates, RbfInfo, TxDetail } from '$lib/types';
 
 // Raw hex beyond this is a novelty payload (huge inscriptions etc.) — don't
 // ship hundreds of KB to the client just for a curiosity viewer.
@@ -40,6 +40,28 @@ interface TxDetails {
 	cpfp: CpfpInfo | null;
 	rawHex: string | null;
 	rawTooLarge: boolean;
+	blockContext: BlockContext;
+}
+
+/** The honest "connecting" block context (docs/TX-BLOCK-CONTEXT-DESIGN.md §6) — the
+ *  final safety net; getTxBlockContext already never throws, this only guards against
+ *  a truly unexpected rejection so the stream still resolves. */
+function noneBlockContext(coreConfigured: boolean): BlockContext {
+	return {
+		richness: 'none',
+		confirmed: false,
+		height: null,
+		confirmations: null,
+		tipHeight: null,
+		position: null,
+		positionTotal: null,
+		positionEstimated: false,
+		neighbors: [],
+		vsize: null,
+		fee: null,
+		feeRate: null,
+		coreConfigured
+	};
 }
 
 /** The fee-outlook estimate, RBF timeline, CPFP package context, and raw hex are
@@ -70,16 +92,24 @@ async function loadTxDetails(tx: TxDetail, isCoinbase: boolean): Promise<TxDetai
 
 	const rawHexPromise: Promise<string | null> = chain.getTxHex(tx.txid).catch(() => null);
 
-	const [fees, rbf, cpfp, fetchedHex] = await Promise.all([
+	// Block context: the block the tx landed in, its neighbours, and its position.
+	// Never rejects (getTxBlockContext degrades to richness:'none'); the extra catch
+	// is belt-and-braces so a truly unexpected throw still resolves the stream.
+	const blockContextPromise: Promise<BlockContext> = chain
+		.getTxBlockContext(tx.txid)
+		.catch(() => noneBlockContext(chain.coreConfigured));
+
+	const [fees, rbf, cpfp, fetchedHex, blockContext] = await Promise.all([
 		feesPromise,
 		rbfPromise,
 		cpfpPromise,
-		rawHexPromise
+		rawHexPromise,
+		blockContextPromise
 	]);
 
 	const rawTooLarge = fetchedHex !== null && fetchedHex.length > RAW_HEX_LIMIT;
 	const rawHex = rawTooLarge ? null : fetchedHex;
-	return { fees, rbf, cpfp, rawHex, rawTooLarge };
+	return { fees, rbf, cpfp, rawHex, rawTooLarge, blockContext };
 }
 
 export const load: PageServerLoad = async ({ params, url, depends, locals }) => {

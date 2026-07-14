@@ -178,6 +178,51 @@ export interface TxDetail {
 	vout: TxVout[];
 }
 
+/**
+ * How rich a {@link BlockContext} could be assembled, driven by which backend
+ * answered (docs/TX-BLOCK-CONTEXT-DESIGN.md §1):
+ *   'none'  — neither Electrum nor Core reachable (transient): the UI shows an
+ *             honest "connecting" state, never fake data or an external fallback.
+ *   'basic' — Electrum reachable (typical Umbrel, no Core): confirmations, block
+ *             height, neighbour dates, exact tx position, plain-language summary.
+ *   'full'  — Core RPC also reachable: adds per-block tx-count / size / fullness
+ *             and the exact block tx-count as the position denominator.
+ */
+export type BlockContextRichness = 'none' | 'basic' | 'full';
+
+/** One block in the tx-detail three-block context row. Enrichment-only fields are
+ *  null at the 'basic' tier and whenever a per-block lookup degrades. */
+export interface BlockContextNeighbor {
+	height: number;
+	hash: string | null; // null if the header was unavailable
+	time: number | null; // unix seconds (block timestamp); null if header unavailable
+	txCount: number | null; // full tier only (getblockstats.txs)
+	size: number | null; // bytes, full tier only (getblockstats.total_size)
+	fullness: number | null; // 0..1 (weight ÷ 4M), full tier only
+	isCurrent: boolean; // the block that contains this transaction
+}
+
+/** The block a transaction landed in, its neighbours, and the tx's position within
+ *  it — the data behind the tx-detail block-context section
+ *  (docs/TX-BLOCK-CONTEXT-DESIGN.md §4). Always resolvable: on total backend
+ *  failure it degrades to `richness:'none'` rather than throwing. */
+export interface BlockContext {
+	richness: BlockContextRichness;
+	confirmed: boolean;
+	height: number | null; // center (containing) block height
+	confirmations: number | null; // tip-relative, always fresh (never cached)
+	tipHeight: number | null;
+	position: number | null; // 0-based tx index within its block (from the merkle proof)
+	positionTotal: number | null; // block tx count (full: exact; basic: estimate or null)
+	positionEstimated: boolean; // true when positionTotal is a merkle-depth estimate
+	neighbors: BlockContextNeighbor[]; // ascending height, 1–3 entries
+	// Tx-level facts echoed for the plain-language summary (may be null at basic tier):
+	vsize: number | null; // vB
+	fee: number | null; // sats
+	feeRate: number | null; // sat/vB
+	coreConfigured: boolean; // drives the quiet admin-only "connect Core" hint
+}
+
 export interface AddressInfo {
 	address: string;
 	scriptType: string | null;

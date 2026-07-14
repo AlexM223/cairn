@@ -16,7 +16,24 @@ const h = vi.hoisted(() => {
 		// Streamed supplementary lookups — never awaited by load(); stub as harmless.
 		getFeeEstimates: vi.fn(async () => null),
 		getCpfpInfo: vi.fn(async () => null),
-		getTxHex: vi.fn(async () => null)
+		getTxHex: vi.fn(async () => null),
+		// Block context is streamed alongside the other details (never awaited by load).
+		getTxBlockContext: vi.fn(async () => ({
+			richness: 'basic',
+			confirmed: true,
+			height: 800_000,
+			confirmations: 3,
+			tipHeight: 800_002,
+			position: 7,
+			positionTotal: 16,
+			positionEstimated: true,
+			neighbors: [],
+			vsize: 140,
+			fee: null,
+			feeRate: null,
+			coreConfigured: false
+		})),
+		coreConfigured: false
 	};
 	return { chain };
 });
@@ -101,6 +118,21 @@ describe('explorer tx load — cache miss', () => {
 		expect(data.tx?.txid).toBe(TXID);
 		// Persisted for the next visit.
 		expect(readTxSnapshot(TXID)?.tx.txid).toBe(TXID);
+	});
+
+	it('streams the block context alongside the other tx details', async () => {
+		h.chain.getTx.mockResolvedValue(makeTx(TXID));
+
+		const data = (await load(loadEvent(TXID))) as {
+			details: Promise<{ blockContext: { richness: string; position: number | null } }> | null;
+		};
+
+		// details is streamed (a promise), never awaited by load itself.
+		expect(data.details).not.toBeNull();
+		const details = await data.details!;
+		expect(h.chain.getTxBlockContext).toHaveBeenCalledWith(TXID);
+		expect(details.blockContext.richness).toBe('basic');
+		expect(details.blockContext.position).toBe(7);
 	});
 
 	it('renders the loading shell (not a hang) when the fetch never resolves', async () => {

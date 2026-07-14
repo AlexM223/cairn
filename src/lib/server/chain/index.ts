@@ -34,12 +34,18 @@ import {
 	getCachedBlockStats,
 	cacheBlockStats,
 	getCachedPool,
-	cachePool
+	cachePool,
+	getCachedHeader,
+	cacheHeader,
+	getCachedMerklePos,
+	cacheMerklePos
 } from './cache';
 import { identifyPool } from './pools';
 import type {
 	AddressInfo,
 	AddressTx,
+	BlockContext,
+	BlockContextNeighbor,
 	BlockDetail,
 	BlockPool,
 	BlockSummary,
@@ -870,9 +876,239 @@ export class ChainService {
 				throw e;
 			}
 		}
-		throw new Error(
-			'Transaction detail requires a Bitcoin Core RPC connection (configure it in admin settings).'
+		// Electrum-only fallback (docs/TX-BLOCK-CONTEXT-DESIGN.md §2): with no Core RPC
+		// configured, a full-indexing Electrum server (electrs / Fulcrum) still decodes
+		// any confirmed or mempool tx, so the tx page — and its block-context section —
+		// render at the 'basic' tier instead of the CoreRpcRequiredNotice. Near-zero new
+		// mapping code: the verbose result is Core's getrawtransaction shape exactly.
+		return this.getTxViaElectrum(txid);
+	}
+
+	/**
+	 * Decode a transaction from the operator's own Electrum server via
+	 * `blockchain.transaction.get(txid, verbose=true)` (docs/TX-BLOCK-CONTEXT-DESIGN.md
+	 * §2). A full-indexing backend returns Bitcoin Core's `getrawtransaction verbose`
+	 * JSON exactly, which maps through the existing {@link toTxDetailFromCore}. There
+	 * is no prevout at this verbosity, so `fee` and input addresses/values degrade to
+	 * null (same as the older-Core verbose=true path); everything the block-context
+	 * feature needs — blockhash / blocktime / confirmations / size / vsize — is
+	 * present. An unknown txid ("No such mempool or blockchain transaction…") maps to
+	 * the same not-found signal Core uses so the route/search handling is uniform.
+	 */
+	private async getTxViaElectrum(txid: string): Promise<TxDetail> {
+		let raw: CoreRawTx;
+		try {
+			raw = (await this.electrum.getTransaction(txid, true)) as CoreRawTx;
+		} catch (e) {
+			if (/no such|not found/i.test(String(e))) throw new Error(`Transaction not found: ${txid}`);
+			throw e;
+		}
+		const tipHeight = await this.getTip()
+			.then((t) => t.height)
+			.catch(() => null);
+		return toTxDetailFromCore(raw, { tipHeight });
+	}
+
+	/**
+	 * Assemble the block context behind a transaction's detail page
+	 * (docs/TX-BLOCK-CONTEXT-DESIGN.md §3): the block it landed in, its 1–3 neighbours
+	 * with dates, the tx's position within its block, and — with Core — per-block
+	 * tx-count / size / fullness aggregates.
+	 *
+	 * Progressive enhancement, and it NEVER throws — it resolves to `richness:'none'`
+	 * on a total backend failure so the UI shows an honest "connecting" state instead
+	 * of an error:
+	 *   - tip unreachable                 → 'none'
+	 *   - Electrum decodes the tx         → 'basic' (dates + exact position + summary)
+	 *   - Core also answers getblockstats → 'full'  (+ counts/size/fullness, exact total)
+	 *
+	 * Position always comes from Electrum's merkle proof (cheap and exact) in every
+	 * tier; Core is used only for the immutable-cached getblockstats aggregate — no
+	 * `getblock` v1 whole-block fan-out just to locate one index (§1 rationale).
+	 */
+	async getTxBlockContext(txid: string): Promise<BlockContext> {
+		const coreConfigured = this.core !== null;
+		const none = (): BlockContext => ({
+			richness: 'none',
+			confirmed: false,
+			height: null,
+			confirmations: null,
+			tipHeight: null,
+			position: null,
+			positionTotal: null,
+			positionEstimated: false,
+			neighbors: [],
+			vsize: null,
+			fee: null,
+			feeRate: null,
+			coreConfigured
+		});
+
+		// 1. Tip — cached, the always-fresh source for confirmations. Failure ⇒ 'none'.
+		let tipHeight: number;
+		try {
+			tipHeight = (await this.getTip()).height;
+		} catch {
+			return none();
+		}
+
+		// 2. Decode the tx (Electrum verbose — works with or without Core, no txindex
+		//    dependency) to learn confirmed-ness and its block anchoring.
+		let raw: CoreRawTx;
+		try {
+			raw = (await this.electrum.getTransaction(txid, true)) as CoreRawTx;
+		} catch {
+			return none();
+		}
+		const vsize = typeof raw.vsize === 'number' ? raw.vsize : null;
+		const confirmations = typeof raw.confirmations === 'number' ? raw.confirmations : 0;
+		const confirmed = confirmations > 0 && !!raw.blockhash;
+
+		// Mempool tx: no block row — honest "waiting" state. We reached the backend, so
+		// this is 'basic' (an unconfirmed tx can never gain Core block enrichment).
+		if (!confirmed) {
+			return {
+				richness: 'basic',
+				confirmed: false,
+				height: null,
+				confirmations: 0,
+				tipHeight,
+				position: null,
+				positionTotal: null,
+				positionEstimated: false,
+				neighbors: [],
+				vsize,
+				fee: null,
+				feeRate: null,
+				coreConfigured
+			};
+		}
+
+		// 3. Center block height from the fresh tip (clamp a racey tip < height).
+		let height = tipHeight - confirmations + 1;
+		if (height > tipHeight) height = tipHeight;
+		if (height < 0) height = 0;
+
+		// 4. Neighbours [h-1, h, h+1] clamped to [0, tip]. Each header degrades on its
+		//    own (hash/time null) without failing the row.
+		const heights: number[] = [];
+		for (const h of [height - 1, height, height + 1]) {
+			if (h >= 0 && h <= tipHeight && !heights.includes(h)) heights.push(h);
+		}
+		const neighbors: BlockContextNeighbor[] = await Promise.all(
+			heights.map(async (h): Promise<BlockContextNeighbor> => {
+				const header = await this.neighborHeader(h, tipHeight);
+				return {
+					height: h,
+					hash: header?.hash ?? null,
+					time: header?.time ?? null,
+					txCount: null,
+					size: null,
+					fullness: null,
+					isCurrent: h === height
+				};
+			})
 		);
+
+		// 5. Position from the merkle proof (Electrum, exact). The basic-tier denominator
+		//    is estimated from proof depth; Core supplies the exact count in step 6.
+		let position: number | null = null;
+		let positionTotal: number | null = null;
+		let positionEstimated = false;
+		const pos = await this.merklePos(txid, height);
+		if (pos) {
+			position = pos.pos;
+			positionTotal = 2 ** pos.merkleDepth; // over-estimate; positionEstimated flags it
+			positionEstimated = true;
+		}
+
+		// 6. Core enrichment (full tier): per-block getblockstats aggregates, served from
+		//    the immutable blockStatsCache shared with the explorer block list. The
+		//    center block's exact tx count becomes the position denominator. Each block
+		//    degrades on its own; a total Core outage simply keeps the 'basic' tier.
+		let richness: 'basic' | 'full' = 'basic';
+		const core = this.core;
+		if (core) {
+			await Promise.all(
+				neighbors.map(async (n) => {
+					if (!n.hash) return;
+					try {
+						const stats = await this.getRecentBlockStats(core, n.hash);
+						if (!stats) return;
+						n.txCount = stats.txCount;
+						n.size = stats.size;
+						n.fullness = fullnessFromWeight(stats.weight);
+						richness = 'full';
+						if (n.isCurrent && typeof stats.txCount === 'number') {
+							positionTotal = stats.txCount; // exact denominator
+							positionEstimated = false;
+						}
+					} catch {
+						// Pruned node / disabled getblockstats: leave this block at the
+						// basic-tier baseline (null counts) rather than failing the section.
+					}
+				})
+			);
+		}
+
+		return {
+			richness,
+			confirmed: true,
+			height,
+			confirmations: Math.max(1, tipHeight - height + 1), // recomputed fresh
+			tipHeight,
+			position,
+			positionTotal,
+			positionEstimated,
+			neighbors,
+			vsize,
+			fee: null,
+			feeRate: null,
+			coreConfigured
+		};
+	}
+
+	/** One neighbour block's (hash, time), reorg-window-cached by height
+	 *  (chain/cache.ts). Degrades to null on any header failure — the caller renders
+	 *  that cell with its height only. */
+	private async neighborHeader(
+		height: number,
+		tipHeight: number
+	): Promise<{ hash: string; time: number } | null> {
+		const dist = tipHeight - height;
+		const cached = getCachedHeader(height, dist);
+		if (cached) return cached;
+		try {
+			const d = decodeBlockHeader(await this.electrum.getBlockHeader(height));
+			const value = { hash: d.hash, time: d.time };
+			cacheHeader(height, value);
+			return value;
+		} catch {
+			return null;
+		}
+	}
+
+	/** The tx's merkle position within its block, immutable-cached by (txid, height)
+	 *  (chain/cache.ts). `merkleDepth` is the proof length — `2 ** depth` is the
+	 *  basic-tier denominator estimate. Null when the server lacks get_merkle or the
+	 *  proof fails; the position marker is then simply hidden. */
+	private async merklePos(
+		txid: string,
+		height: number
+	): Promise<{ pos: number; merkleDepth: number } | null> {
+		const cached = getCachedMerklePos(txid, height);
+		if (cached) return cached;
+		try {
+			const proof = await this.electrum.getMerkleProof(txid, height);
+			const value = {
+				pos: proof.pos,
+				merkleDepth: Array.isArray(proof.merkle) ? proof.merkle.length : 0
+			};
+			cacheMerklePos(txid, height, value);
+			return value;
+		} catch {
+			return null;
+		}
 	}
 
 	private async getTxViaCore(core: CoreRpcClient, txid: string): Promise<TxDetail> {
