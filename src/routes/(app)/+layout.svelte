@@ -263,6 +263,7 @@
 	}
 
 	.backup-banner-dismiss {
+		position: relative;
 		display: flex;
 		align-items: center;
 		background: none;
@@ -275,6 +276,15 @@
 
 	.backup-banner-dismiss:hover {
 		color: var(--text);
+	}
+
+	/* Touch-target fix (cairn-amyl, flagged in its 2026-07-14 QA comment): the
+	   visual icon stays 18x18, but an invisible ::after extends the actual hit
+	   area to ~44x44, matching the MobileTopBar avatar/search-icon pattern. */
+	.backup-banner-dismiss::after {
+		content: '';
+		position: absolute;
+		inset: -13px;
 	}
 
 	@media (max-width: 900px) {
