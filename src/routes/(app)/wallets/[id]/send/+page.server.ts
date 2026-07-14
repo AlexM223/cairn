@@ -12,12 +12,25 @@ import type { UnconfirmedTrust } from '$lib/server/bitcoin/psbt';
 import { summarizePsbt, type PsbtSummary } from '$lib/server/bitcoin/psbt';
 import { getReferralBuyUrls } from '$lib/server/referrals';
 import { getChain } from '$lib/server/chain';
+import { coinbaseMaturity } from '$lib/shared/coinbase';
 import type { FeeEstimates } from '$lib/types';
 import type { PageServerLoad } from './$types';
 
 export interface SendLiveData {
-	/** Confirmed spendable balance; null when the scan couldn't reach the node. */
+	/**
+	 * Truly-spendable confirmed balance — immature coinbase value already
+	 * excluded (cairn-oae1.3: Electrum's raw confirmed balance counts it, but
+	 * the build engine refuses to spend it, so the eyebrow and max-amount
+	 * validation must agree with what a build will actually accept). Null when
+	 * the scan couldn't reach the node.
+	 */
 	confirmed: number | null;
+	/**
+	 * Sum of immature-coinbase value folded OUT of `confirmed` above — the
+	 * "still maturing" figure the page can surface alongside it. 0 when the
+	 * wallet holds no immature coinbase (or the scan failed).
+	 */
+	maturingTotal: number;
 	/** Human-readable reason the scan was unreachable, or null on success. */
 	scanError: string | null;
 	/**
@@ -117,7 +130,24 @@ async function loadSendLiveData(userId: number, id: number, xpub: string): Promi
 		tipHeight = 0;
 	}
 
-	return { confirmed, scanError, utxos, fees, tipHeight };
+	// cairn-oae1.3: fold immature-coinbase value out of `confirmed` so the
+	// eyebrow/max-amount validation never advertises sats the build engine will
+	// refuse to spend (psbt.ts's selectSpendCandidates already excludes them).
+	// `utxos` and `tipHeight` are both in scope regardless of which of the two
+	// try/catch blocks above populated them — a hiccup in either just leaves
+	// this at 0 (no coinbase utxos / tip unresolved => nothing reads as mature
+	// enough to subtract, so `confirmed` is left as Electrum reported it).
+	let maturingTotal = 0;
+	if (confirmed !== null) {
+		for (const u of utxos) {
+			if (u.coinbase && u.height > 0 && !coinbaseMaturity(u.height, tipHeight).mature) {
+				maturingTotal += u.value;
+			}
+		}
+		confirmed -= maturingTotal;
+	}
+
+	return { confirmed, maturingTotal, scanError, utxos, fees, tipHeight };
 }
 
 export const load: PageServerLoad = async (event) => {

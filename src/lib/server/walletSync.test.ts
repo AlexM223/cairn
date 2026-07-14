@@ -609,6 +609,8 @@ describe('doWalletScan coinbase bucketing — QA finding F2 regression lock', ()
 		const snap = await refreshWalletSnapshot(userId, walletId, { force: true });
 		expect(snap).not.toBeNull();
 		expect(snap!.coinbaseUtxos).toEqual([]);
+		// cairn-oae1.3: a non-coinbase wallet must report zero maturing value.
+		expect(snap!.maturingTotal).toBe(0);
 	});
 
 	it('a genuine MATURE coinbase deposit IS bucketed as a mining reward', async () => {
@@ -620,6 +622,25 @@ describe('doWalletScan coinbase bucketing — QA finding F2 regression lock', ()
 		expect(snap).not.toBeNull();
 		expect(snap!.coinbaseUtxos).toHaveLength(1);
 		expect(snap!.coinbaseUtxos[0]).toMatchObject({ txid: 'cd'.repeat(32), vout: 0 });
+		// cairn-oae1.3: mature coinbase contributes nothing to the maturing figure —
+		// it's already fully counted in the ordinary "available" balance.
+		expect(snap!.maturingTotal).toBe(0);
+	});
+
+	it('cairn-oae1.3: a genuine IMMATURE coinbase deposit is excluded from available and counted as maturing', async () => {
+		const { userId, walletId } = await seedWallet();
+		stubOneConfirmedUtxo('12'.repeat(32), 5_000_000_000, 900_000); // 51 confs at tip 900_050 — immature
+		getTxHexMock.mockResolvedValue(coinbaseRawHex());
+
+		const snap = await refreshWalletSnapshot(userId, walletId, { force: true });
+		expect(snap).not.toBeNull();
+		expect(snap!.coinbaseUtxos).toHaveLength(1);
+		// Electrum's `confirmed` (scan.confirmed) counts the immature coinbase as
+		// spendable — maturingTotal is the piece a caller subtracts to get the
+		// truly-spendable figure, and it must equal the coin's full value here
+		// (nothing else on the wallet).
+		expect(snap!.scan!.confirmed).toBe(5_000_000_000);
+		expect(snap!.maturingTotal).toBe(5_000_000_000);
 	});
 
 	it("a chain hiccup (getTxHex failing => coinbase 'unknown') does NOT bucket the coin as a mining reward", async () => {
@@ -632,6 +653,7 @@ describe('doWalletScan coinbase bucketing — QA finding F2 regression lock', ()
 		// The pre-fix bug: 'unknown' is truthy, so a bare `.filter((u) => u.coinbase)`
 		// would have put this coin here. Strict `=== true` must exclude it.
 		expect(snap!.coinbaseUtxos).toEqual([]);
+		expect(snap!.maturingTotal).toBe(0);
 	});
 
 	// cairn-zdgt: a single refresh must fetch the wallet's UTXO set ONCE. The

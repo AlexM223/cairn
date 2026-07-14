@@ -58,6 +58,7 @@ function writeWalletSnapshot(
 		receive: null,
 		coinbaseUtxos: [],
 		tipHeight,
+		maturingTotal: 0,
 		speedUp: [],
 		scanError: null
 	};

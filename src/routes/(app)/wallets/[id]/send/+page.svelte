@@ -228,6 +228,9 @@
 	type SendLive = Awaited<(typeof data)['live']>;
 	type SendUtxo = SendLive['utxos'][number];
 	let confirmed = $state<number | null>(null);
+	// cairn-oae1.3: sats folded OUT of `confirmed` because they're an immature
+	// coinbase (mining reward) the build engine won't spend yet.
+	let maturingTotal = $state(0);
 	let scanError = $state<string | null>(null);
 	let fees = $state<FeeEstimates | null>(null);
 	let utxos = $state<SendUtxo[]>([]);
@@ -301,6 +304,7 @@
 			.then((live) => {
 				if (stale) return;
 				confirmed = live.confirmed;
+				maturingTotal = live.maturingTotal;
 				scanError = live.scanError;
 				fees = live.fees;
 				utxos = live.utxos;
@@ -919,6 +923,13 @@
 								title="Sweep the whole spendable balance">Max</button
 							>
 						</div>
+						{#if maturingTotal > 0}
+							<p class="maturing-note">
+								<Icon name="clock" size={13} />
+								Plus <Amount sats={maturingTotal} size="inline" /> from a mining reward still maturing
+								— not spendable yet.
+							</p>
+						{/if}
 					</div>
 
 					<!-- TO: hairline field, mono, with scan + paste. -->
@@ -1791,6 +1802,15 @@
 
 	.hero-sub.attention {
 		color: var(--attention);
+	}
+
+	.maturing-note {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		margin-top: 10px;
+		font-size: 13px;
+		color: var(--text-muted);
 	}
 
 	.mode-toggles {

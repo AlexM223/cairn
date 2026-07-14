@@ -47,6 +47,12 @@
 	const coinbaseUtxos = $derived(chainData.coinbaseUtxos);
 	const tipHeight = $derived(chainData.tipHeight);
 	const speedUp = $derived(chainData.speedUp);
+	// cairn-oae1.3: Electrum's `confirmed` counts an immature coinbase output as
+	// spendable — `maturingTotal` is that slice, so the headline can show what's
+	// actually available separately from what's still cooling down.
+	const maturingTotal = $derived(chainData.maturingTotal ?? 0);
+	// 0 when there's no scan yet — only ever rendered inside `{#if scan}` below.
+	const available = $derived(scan ? scan.confirmed - maturingTotal : 0);
 	// Inbound payments double-spent / RBF'd away before confirming (cairn-a2p1) —
 	// the live scan drops them from the balance, so these amber rows reconcile the
 	// vanished amount the user briefly saw "on its way".
@@ -539,16 +545,22 @@
 
 			{#if scan}
 				<div class="hw-hero">
-					<Amount sats={scan.confirmed} size="hero" />
+					<Amount sats={available} size="hero" />
 				</div>
 				<p class="hw-hero-sub">
-					<span class="tabular">{formatSats(scan.confirmed)} sats</span>
+					<span class="tabular">{formatSats(available)} sats</span>
 					{#if scan.unconfirmed !== 0}
 						<span class="hw-pending">
 							· <Amount sats={scan.unconfirmed} size="inline" sign direction="in" /> on its way
 						</span>
 					{/if}
 				</p>
+				{#if maturingTotal > 0}
+					<p class="hw-hero-sub hw-maturing">
+						· <Amount sats={maturingTotal} size="inline" /> maturing —
+						<a href="#mining-rewards">mining rewards not yet spendable</a>
+					</p>
+				{/if}
 			{:else if loading}
 				<div class="hw-hero">
 					<span class="hero-number hw-hero-btc hw-skeleton hw-skeleton-hero" aria-hidden="true"
@@ -1545,6 +1557,17 @@
 
 	.hw-pending {
 		color: var(--attention);
+	}
+
+	.hw-hero-sub.hw-maturing {
+		margin-top: 4px;
+		font-size: 13px;
+		color: var(--text-muted);
+	}
+
+	.hw-hero-sub.hw-maturing a {
+		color: inherit;
+		text-decoration: underline;
 	}
 
 	.hw-pills {

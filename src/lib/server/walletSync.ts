@@ -57,6 +57,7 @@ import { ownMultisigTxids } from './multisigTransactions';
 import { listSharedMultisigs } from './multisigShares';
 import { assemblePortfolio, type AggregateInput } from './portfolio';
 import { writePortfolioSnapshot } from './portfolioSnapshot';
+import { coinbaseMaturity } from '$lib/shared/coinbase';
 
 const log = childLogger('wallet-sync');
 
@@ -78,6 +79,22 @@ const QR_OPTS = {
 
 type CoinbaseUtxo = { txid: string; vout: number; value: number; height: number };
 
+/** Sum of coinbase-UTXO value that is NOT yet mature at `tipHeight` (cairn-oae1.3).
+ *  `confirmed`/`detail.balance.confirmed` below come straight from Electrum, which
+ *  counts an immature coinbase output as confirmed — this is the piece callers
+ *  subtract to get a truly-spendable figure without changing `confirmed`'s
+ *  existing meaning (still the full net-worth total the portfolio aggregate and
+ *  list summaries rely on). Zero when there's no coinbase or the tip is unknown
+ *  (tipHeight 0 reads every coinbase height as immature, which is safe — it just
+ *  means the maturing figure over-reports until the tip resolves, never under). */
+function sumImmatureCoinbase(coinbaseUtxos: CoinbaseUtxo[], tipHeight: number): number {
+	let total = 0;
+	for (const u of coinbaseUtxos) {
+		if (!coinbaseMaturity(u.height, tipHeight).mature) total += u.value;
+	}
+	return total;
+}
+
 /** The scan-derived slice of the single-sig wallet detail page, persisted as one
  *  JSON blob. Mirrors the old streamed `WalletChainData` so the page renders
  *  identically — just instantly, from cache. `scanError` is always null in a
@@ -93,6 +110,10 @@ export interface WalletSnapshot {
 	receive: { address: string; path: string; index: number; qr: string } | null;
 	coinbaseUtxos: CoinbaseUtxo[];
 	tipHeight: number;
+	/** Sum of `coinbaseUtxos` value not yet mature at `tipHeight` — the slice of
+	 *  `scan.confirmed` a wallet doesn't actually hold spendable yet (cairn-oae1.3).
+	 *  `scan.confirmed` itself is UNCHANGED (still the full net-worth total). */
+	maturingTotal: number;
 	speedUp: UnconfirmedInflow[];
 	scanError: string | null;
 }
@@ -109,6 +130,9 @@ export interface MultisigSnapshot {
 	receive: { address: string; index: number; qr: string } | null;
 	coinbaseUtxos: CoinbaseUtxo[];
 	tipHeight: number;
+	/** Sum of `coinbaseUtxos` value not yet mature at `tipHeight` — see the
+	 *  single-sig WalletSnapshot field of the same name (cairn-oae1.3). */
+	maturingTotal: number;
 	speedUp: UnconfirmedInflow[];
 	scanError: string | null;
 }
@@ -120,6 +144,7 @@ export const EMPTY_WALLET_SNAPSHOT: WalletSnapshot = {
 	receive: null,
 	coinbaseUtxos: [],
 	tipHeight: 0,
+	maturingTotal: 0,
 	speedUp: [],
 	scanError: null
 };
@@ -130,6 +155,7 @@ export const EMPTY_MULTISIG_SNAPSHOT: MultisigSnapshot = {
 	receive: null,
 	coinbaseUtxos: [],
 	tipHeight: 0,
+	maturingTotal: 0,
 	speedUp: [],
 	scanError: null
 };
@@ -468,6 +494,7 @@ async function doWalletScan(userId: number, row: WalletRow): Promise<WalletSnaps
 		receive: { ...receive, qr },
 		coinbaseUtxos,
 		tipHeight,
+		maturingTotal: sumImmatureCoinbase(coinbaseUtxos, tipHeight),
 		speedUp,
 		scanError: null
 	};
@@ -547,6 +574,7 @@ async function doMultisigScan(userId: number, multisig: MultisigRow): Promise<Mu
 		receive: { ...receive, qr },
 		coinbaseUtxos,
 		tipHeight,
+		maturingTotal: sumImmatureCoinbase(coinbaseUtxos, tipHeight),
 		speedUp,
 		scanError: null
 	};

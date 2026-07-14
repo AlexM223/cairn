@@ -30,6 +30,7 @@ function seedWallet(userId: number, txs: WalletTx[], addresses: WalletAddress[] 
 		receive: null,
 		coinbaseUtxos: [],
 		tipHeight: 800_000,
+		maturingTotal: 0,
 		speedUp: [],
 		scanError: null
 	};

@@ -41,6 +41,12 @@
 	const tipHeight = $derived(scan.tipHeight);
 	const speedUp = $derived(scan.speedUp);
 	const savedTxs = $derived(scan.savedTxs);
+	// cairn-oae1.3: Electrum's `confirmed` counts an immature coinbase output as
+	// spendable — `maturingTotal` is that slice, so the headline can show what's
+	// actually available separately from what's still cooling down.
+	const maturingTotal = $derived(scan.maturingTotal ?? 0);
+	// 0 when there's no scan yet — only ever rendered inside `{#if detail}` below.
+	const available = $derived(detail ? detail.balance.confirmed - maturingTotal : 0);
 
 	// Advanced expander on the receive panel: derivation path is power-user
 	// detail, collapsed by default (never persisted — always resets closed).
@@ -434,10 +440,10 @@
 
 			{#if detail}
 				<div class="hw-hero">
-					<Amount sats={detail.balance.confirmed} size="hero" />
+					<Amount sats={available} size="hero" />
 				</div>
 				<p class="hw-hero-sub">
-					<span class="tabular">{formatSats(detail.balance.confirmed)} sats</span>
+					<span class="tabular">{formatSats(available)} sats</span>
 					{#if detail.balance.unconfirmed !== 0}
 						<span class="hw-pending">
 							· {detail.balance.unconfirmed > 0 ? '+' : ''}{formatBtc(
@@ -446,6 +452,12 @@
 						</span>
 					{/if}
 				</p>
+				{#if maturingTotal > 0}
+					<p class="hw-hero-sub hw-maturing">
+						· <Amount sats={maturingTotal} size="inline" /> maturing —
+						<a href="#mining-rewards">mining rewards not yet spendable</a>
+					</p>
+				{/if}
 			{:else if scanLoading}
 				<!-- Balance streams in from the server scan — skeleton until it lands. -->
 				<div class="hw-hero">
@@ -1253,6 +1265,17 @@
 
 	.hw-pending {
 		color: var(--attention);
+	}
+
+	.hw-hero-sub.hw-maturing {
+		margin-top: 4px;
+		font-size: 13px;
+		color: var(--text-muted);
+	}
+
+	.hw-hero-sub.hw-maturing a {
+		color: inherit;
+		text-decoration: underline;
 	}
 
 	.hw-pills {

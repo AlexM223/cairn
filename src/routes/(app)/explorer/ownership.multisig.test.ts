@@ -64,6 +64,7 @@ function seedMultisig(
 		receive: null,
 		coinbaseUtxos: [],
 		tipHeight: 800_000,
+		maturingTotal: 0,
 		speedUp: [],
 		scanError: null
 	};
