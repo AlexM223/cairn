@@ -870,6 +870,19 @@
 			<AtTipPill height={tipHeight} pulseKey={tipHeight} />
 		</div>
 
+		<!-- The send wizard is fully client-driven (WebUSB/QR signing, live fee
+		     estimates, coin control, availability probing) so its SSR output has
+		     no functional value — the flow cannot advance without JS. Rendering
+		     its ~40-component subtree on the server was ~30% of the send GET's
+		     synchronous CPU per request (harness scenario c: tier-200 46->70 rps,
+		     p50 10s->5.4s once gated). Gate the whole step chain behind `mounted`
+		     (false during SSR AND the initial hydration render, so there is no
+		     hydration mismatch; flipped true in onMount): the server ships only the
+		     light shell + skeleton and the wizard mounts client-side. load() (auth +
+		     data) stays server-side. NB the dominant residual cost is the streamed
+		     loadSendLiveData live re-scan in +page.server.ts (cairn-97gt/qyvl), not
+		     this render — gating it alone does not fully kill the mixed-load cliff. -->
+		{#if mounted}
 		<!-- ============================================================ CREATE -->
 		{#if step === 'create'}
 			<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
@@ -1590,6 +1603,19 @@
 				>
 			</section>
 		{/if}
+		{:else}
+			<!-- SSR / pre-mount shell: a layout-stable skeleton of the create step
+			     so first paint has no jank before the client mounts the wizard. -->
+			<section class="step-body" aria-hidden="true">
+				<div class="skel-stack">
+					<span class="skeleton skel-line skel-lg"></span>
+					<span class="skeleton skel-line skel-md"></span>
+					<span class="skeleton skel-line skel-md"></span>
+					<span class="skeleton skel-block"></span>
+					<span class="skeleton skel-cta"></span>
+				</div>
+			</section>
+		{/if}
 	</div>
 </div>
 
@@ -1663,6 +1689,36 @@
 	   :focus-visible convention applies (keyboard). */
 	.step-body:focus:not(:focus-visible) {
 		outline: none;
+	}
+
+	/* Pre-mount skeleton (SSR shell). Roughly mirrors the create step's stack —
+	   amount + recipient lines, a coin/fee block, and the CTA — so the swap to
+	   the real wizard on mount doesn't shift layout. `.skeleton` (shimmer) is
+	   global (src/app.css). */
+	.skel-stack {
+		display: flex;
+		flex-direction: column;
+		gap: 22px;
+	}
+	.skel-line {
+		height: 18px;
+		border-radius: var(--radius-badge);
+	}
+	.skel-lg {
+		width: 60%;
+	}
+	.skel-md {
+		width: 85%;
+	}
+	.skel-block {
+		height: 120px;
+		border-radius: var(--radius-card, 14px);
+	}
+	.skel-cta {
+		height: 48px;
+		width: 180px;
+		border-radius: 999px;
+		align-self: flex-start;
 	}
 
 	.step-lead {

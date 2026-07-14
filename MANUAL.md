@@ -2722,6 +2722,23 @@ import path resolves to the route-local one). Multisig send flow
 using `MultisigFileSigner` instead of the per-hardware-device components
 since multisig co-signing here is file/PSBT-based.
 
+**Rendering model (`cairn-97gt`).** The whole step chain is client-mounted, not
+server-rendered: the wizard is fully JS/WebUSB/QR-dependent (it cannot advance
+without JS), so SSR of its ~40-component subtree had no functional value and cost
+~30% of the send GET's synchronous CPU per request. Both send pages gate the step
+chain behind `{#if mounted}` (a `$state` flag flipped `true` in `onMount`; `false`
+during SSR **and** the initial hydration render, so there is no hydration mismatch)
+and render a small `.skeleton` shell in the `{:else}`. `load()` (auth + wallet row
++ streamed `live` data) still runs server-side; only the interactive subtree moves
+to the client. Net effect measured with the load harness (`scripts/load-test`,
+scenario c): tier-200 throughput 46→70 rps, p50 10s→5.4s. NOTE this did **not**
+eliminate the mixed-load cliff — the dominant residual cost is the streamed
+`loadSendLiveData` live wallet re-scan (`+page.server.ts`), which every send GET
+performs (the send/PSBT flow deliberately re-scans live rather than reading the
+cached snapshot — see `walletScan.ts`) and which the harness driver waits for by
+draining the full streamed body. That residual is the sync/data lane
+(`cairn-qyvl`/`cairn-1q4b`), not the render.
+
 The recipient field's invalid-address messaging distinguishes a **shape**
 that's simply garbage from one that's a real address on the wrong network:
 `addressShape.ts`'s `classifyRecipientAddress()` (`'empty' | 'mainnet' |

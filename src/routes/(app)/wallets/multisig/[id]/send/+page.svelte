@@ -82,14 +82,21 @@
 		};
 	});
 
+	// The send wizard is fully client-driven (device/QR signing, live fees, coin
+	// control) so its SSR output has no functional value — mirrors cairn-97gt on
+	// the single-sig page. `mounted` gates the step chain: false during SSR and
+	// the initial hydration render (no mismatch), true after onMount, so the
+	// server ships only the shell + skeleton and the wizard mounts client-side.
+	let mounted = $state(false);
 	// Live new-block updates refresh only the streamed fee/tip snapshot via the
 	// existing SSE channel — never a poll. The coin/utxo scan rides along in the
 	// same invalidate, which is fine: coins change on new blocks too.
-	onMount(() =>
-		onNewBlock(() => {
+	onMount(() => {
+		mounted = true;
+		return onNewBlock(() => {
 			void invalidate(`cairn:multisig-send:${multisigId}`);
-		})
-	);
+		});
+	});
 	// svelte-ignore state_referenced_locally — per-navigation constant
 	const required = data.multisig.threshold;
 	// svelte-ignore state_referenced_locally — per-navigation constant
@@ -802,6 +809,9 @@
 		{/if}
 	</div>
 
+	<!-- Gate the whole client-driven wizard behind `mounted` so the server ships
+	     only the shell + skeleton (cairn-97gt). load() stays server-side. -->
+	{#if mounted}
 	<!-- ============================================================ CREATE -->
 	{#if step === 'create'}
 		<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
@@ -1549,6 +1559,18 @@
 			>
 		</section>
 	{/if}
+	{:else}
+		<!-- SSR / pre-mount shell: layout-stable skeleton of the create step. -->
+		<section class="step-body" aria-hidden="true">
+			<div class="skel-stack">
+				<span class="skeleton skel-line skel-lg"></span>
+				<span class="skeleton skel-line skel-md"></span>
+				<span class="skeleton skel-line skel-md"></span>
+				<span class="skeleton skel-block"></span>
+				<span class="skeleton skel-cta"></span>
+			</div>
+		</section>
+	{/if}
 	</div>
 </div>
 
@@ -1641,6 +1663,33 @@
 	   :focus-visible convention applies (keyboard). */
 	.step-body:focus:not(:focus-visible) {
 		outline: none;
+	}
+
+	/* Pre-mount skeleton (SSR shell); `.skeleton` shimmer is global (app.css). */
+	.skel-stack {
+		display: flex;
+		flex-direction: column;
+		gap: 22px;
+	}
+	.skel-line {
+		height: 18px;
+		border-radius: var(--radius-badge);
+	}
+	.skel-lg {
+		width: 60%;
+	}
+	.skel-md {
+		width: 85%;
+	}
+	.skel-block {
+		height: 120px;
+		border-radius: var(--radius-card, 14px);
+	}
+	.skel-cta {
+		height: 48px;
+		width: 180px;
+		border-radius: 999px;
+		align-self: flex-start;
 	}
 
 	.step-lead {
