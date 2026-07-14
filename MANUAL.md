@@ -2025,6 +2025,22 @@ remove a user's LAST passkey — throws `AuthError('last_passkey')` — since
 recovery on a passkey-only account is by re-registering a new account, not
 password reset. Uses `@simplewebauthn/server`'s `WebAuthnCredential` type.
 
+**Origin allowlist (`passkeyOrigin.ts`, cairn-ib7w).** `getRp()` derives `rpID`
+from the bare host (identical on both the plain-HTTP proxy and the self-signed
+HTTPS listener). `expectedOrigin`, however, is NOT a single value: verification
+passes the full set from `allowedPasskeyOrigins()` — the configured
+`CAIRN_ORIGIN` (or the request origin when unset) **plus** the HTTPS listener
+variant of the same host (`https://<host>:CAIRN_HTTPS_EXTERNAL_PORT`). Without
+this, Umbrel's `CAIRN_ORIGIN` pins to the plain-HTTP proxy origin
+(`http://<device>:3211`, kept non-Secure for the cookie, cairn-wrph/9njl), so a
+ceremony run on the secure HTTPS listener — the ONLY surface a browser will do
+WebAuthn on — never matched and always failed. The set is derived purely from
+server config (no attacker-controllable header when an origin is configured), so
+it never widens beyond the same configured host: no wildcard. The same
+`allowedPasskeyOrigins()`/`passkeyAvailableOn()` gate drives the login / recover
+/ settings UI, which hides the passkey entry point (and names the secure address)
+on any origin where a ceremony can't verify.
+
 ---
 
 ## 8. Server: API Routes & Cross-Cutting Server Concerns
@@ -2845,7 +2861,10 @@ listener's port (`page.data.httpsPort`); it takes a `what` prop naming the
 gated capability so the copy reads naturally per host card, and renders an
 "Open the secure address" link (`https://{hostname}:{httpsPort}{pathname}
 {search}`) plus plain-language guidance about the expected self-signed cert
-warning and a note that passkeys don't work on the self-signed address.
+warning and a note that passkeys **do** work on the self-signed address — it is
+the only secure-context surface, so it is the one place a browser will run a
+passkey ceremony (WebAuthn's `expectedOrigin` accepts that HTTPS listener origin
+via the allowlist in `passkeyOrigin.ts`, cairn-ib7w).
 `secureRedirect.ts` is the automatic hop for *returning* users who already
 clicked through the cert warning once: a `fetch()` to the HTTPS origin with
 `mode:'no-cors'` only resolves if the browser has already accepted that
@@ -3127,7 +3146,7 @@ The table below is built from source, not from either doc alone.
 | `CAIRN_LOG_MAX_SIZE` | 10 MiB | rotation threshold for the custom `RotatingFileStream` |
 | `CAIRN_LOG_MAX_FILES` | 5 | rotation retention |
 | `LOG_LEVEL` | `debug` dev / `info` prod / `silent` vitest | `error\|warn\|info\|debug` |
-| `CAIRN_ORIGIN` | unset (falls back to request origin) | absolute origin used in notification email links / WebAuthn origin fallback; Umbrel sets `http://${DEVICE_DOMAIN_NAME}:3211` |
+| `CAIRN_ORIGIN` | unset (falls back to request origin) | absolute origin used in notification email links, and the base of the WebAuthn `expectedOrigin` allowlist (`passkeyOrigin.ts` also admits the `https://<host>:CAIRN_HTTPS_EXTERNAL_PORT` listener variant, cairn-ib7w); Umbrel sets `http://${DEVICE_DOMAIN_NAME}:3211` |
 | `CAIRN_RP_ID` | unset (derives from request) | WebAuthn RP ID override |
 | `CAIRN_AUTH_MODE` | `password` | leave unset for Umbrel — password mode is required there |
 | `CAIRN_ADMIN_EMAIL` | `admin@cairn.local` | first-boot admin bootstrap email |
@@ -3952,8 +3971,9 @@ scanner attribute inbound value by **scriptPubKey membership, not address string
 
 ### 16.6 Creating test users
 - **First user = admin** automatically (`isFirstUser`). Signup at `/signup`
-  (email + password; passkeys are additive, not required and not usable on the self-signed
-  HTTPS origin — email+password there).
+  (email + password; passkeys are additive, not required. They **are** usable on the
+  self-signed HTTPS origin — that secure-context address is the one place a browser will run
+  the ceremony — but not on the plain-HTTP origin, cairn-ib7w).
 - Additional users: registration mode is `open`/`invite`/`closed` (`/admin/settings`,
   `/admin/invites`). Multi-user *management* (invites, contacts, shares) is gated on
   `instance_mode = 'team'`; a fresh install defaults to **solo** — flip it in
@@ -4473,7 +4493,8 @@ Umbrel's default. Verify:
      "camera scanning"), with an **"Open the secure address"** link to
      `https://{hostname}:{httpsPort}{path}` and plain-language guidance about the expected
      self-signed cert warning ("Advanced → Continue…", remembered ~a week) and that
-     **passkeys don't work on the self-signed address** (sign in with email+password there).
+     **passkeys work on the self-signed address** — it's the only secure-context surface, so
+     the one place a browser runs the ceremony (cairn-ib7w).
 2. On Umbrel the secure link targets host **4488** (mapped to container 3443) via
    `CAIRN_HTTPS_EXTERNAL_PORT`. Click through once.
 3. **Auto-hop for returning users:** on a later visit, `secureRedirect.ts` silently hops to

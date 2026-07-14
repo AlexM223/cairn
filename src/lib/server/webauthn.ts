@@ -20,6 +20,7 @@ import {
 } from '@simplewebauthn/server';
 import { notify } from './notifications';
 import { cookieSecure } from './auth';
+import { allowedPasskeyOrigins } from './passkeyOrigin';
 import { childLogger } from './logger';
 import type {
 	AuthenticatorTransportFuture,
@@ -43,7 +44,17 @@ const CEREMONY_TTL_S = 300; // 5 minutes to complete a ceremony
 
 type Descriptor = { id: string; transports?: string[] };
 
-/** RP identity for this request. rpID is the host (no scheme/port). */
+/**
+ * RP identity for this request. rpID is the bare host (no scheme/port) and is
+ * identical across the plain-HTTP proxy and the self-signed HTTPS listener, so
+ * a credential registered on one verifies on the other.
+ *
+ * `origin` is the single primary/configured origin — kept for callers that want
+ * one canonical value. The expectedOrigin passed to @simplewebauthn's verify
+ * calls is NOT this single value but the full allowlist (allowedPasskeyOrigins),
+ * which additionally accepts the HTTPS listener origin so passkeys work on the
+ * one secure-context surface Umbrel exposes (cairn-ib7w).
+ */
 export function getRp(event: RequestEvent): { rpID: string; rpName: string; origin: string } {
 	const origin = env.CAIRN_ORIGIN ?? event.url.origin;
 	const rpID = env.CAIRN_RP_ID ?? event.url.hostname;
@@ -87,12 +98,13 @@ export async function verifyRegistration(
 	response: RegistrationResponseJSON,
 	expectedChallenge: string
 ): Promise<VerifiedRegistrationResponse> {
-	const { rpID, origin } = getRp(event);
+	const { rpID } = getRp(event);
+	const expectedOrigin = allowedPasskeyOrigins(event.url.origin);
 	try {
 		const result = await verifyRegistrationResponse({
 			response,
 			expectedChallenge,
-			expectedOrigin: origin,
+			expectedOrigin,
 			expectedRPID: rpID,
 			// Accept both biometric (UV) and possession-only security keys.
 			requireUserVerification: false
@@ -123,12 +135,13 @@ export async function verifyAuthentication(
 	expectedChallenge: string,
 	credential: WebAuthnCredential
 ): Promise<VerifiedAuthenticationResponse> {
-	const { rpID, origin } = getRp(event);
+	const { rpID } = getRp(event);
+	const expectedOrigin = allowedPasskeyOrigins(event.url.origin);
 	try {
 		const result = await verifyAuthenticationResponse({
 			response,
 			expectedChallenge,
-			expectedOrigin: origin,
+			expectedOrigin,
 			expectedRPID: rpID,
 			credential,
 			requireUserVerification: false

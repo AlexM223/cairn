@@ -92,13 +92,35 @@ describe('verifyRegistration / verifyAuthentication — the exact origin/RPID re
 			'chal-1'
 		);
 
+		// expectedOrigin is now the full allowlist (allowedPasskeyOrigins). With no
+		// HTTPS listener configured it is a single-element array of the configured
+		// origin — still an exact allowlist, no attacker origin admitted.
 		expect(swa.verifyRegistrationResponse).toHaveBeenCalledWith(
 			expect.objectContaining({
-				expectedOrigin: 'https://trusted.example.org',
+				expectedOrigin: ['https://trusted.example.org'],
 				expectedRPID: 'trusted.example.org',
 				expectedChallenge: 'chal-1'
 			})
 		);
+	});
+
+	it('verifyRegistration hands the library the FULL origin allowlist including the HTTPS listener variant when CAIRN_HTTPS_EXTERNAL_PORT is set (cairn-ib7w)', async () => {
+		process.env.CAIRN_ORIGIN = 'http://umbrel.local:3211';
+		process.env.CAIRN_HTTPS_EXTERNAL_PORT = '4488';
+		swa.verifyRegistrationResponse.mockResolvedValue({ verified: true });
+
+		// Ceremony physically performed on the HTTPS listener.
+		await verifyRegistration(
+			makeEvent('https://umbrel.local:4488/settings'),
+			{ id: 'cred-h' } as never,
+			'chal-h'
+		);
+
+		const call = swa.verifyRegistrationResponse.mock.calls[0][0] as { expectedOrigin: string[] };
+		expect(call.expectedOrigin).toEqual(
+			expect.arrayContaining(['http://umbrel.local:3211', 'https://umbrel.local:4488'])
+		);
+		delete process.env.CAIRN_HTTPS_EXTERNAL_PORT;
 	});
 
 	it('verifyAuthentication rethrows (does not swallow) a library-side origin-mismatch rejection — the actual anti-phishing enforcement lives in the library, and webauthn.ts must not hide its failure', async () => {
