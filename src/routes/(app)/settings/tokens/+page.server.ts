@@ -10,6 +10,7 @@ import {
 	revokeApiToken,
 	ApiTokenError
 } from '$lib/server/apiTokens';
+import { requireUser } from '$lib/server/api';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -17,7 +18,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 };
 
 export const actions: Actions = {
-	create: async ({ request, locals }) => {
+	create: async (event) => {
+		requireUser(event);
+		const { request, locals } = event;
 		const form = await request.formData();
 		const name = String(form.get('name') ?? '');
 		// '' = never expires; otherwise a day count from the select.
@@ -39,7 +42,9 @@ export const actions: Actions = {
 		}
 	},
 
-	revoke: async ({ request, locals }) => {
+	revoke: async (event) => {
+		requireUser(event);
+		const { request, locals } = event;
 		const form = await request.formData();
 		const id = Number(form.get('id'));
 		if (!Number.isInteger(id)) return fail(400, { error: 'Bad token id.' });

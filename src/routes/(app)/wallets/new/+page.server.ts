@@ -5,7 +5,7 @@ import { createWallet, friendlyXpubError } from '$lib/server/wallets';
 import { getReferralBuyUrls } from '$lib/server/referrals';
 import { parseKeyOriginInput, normalizeFingerprint } from '$lib/hw/keyOrigin';
 import { rememberPrefetchedSharedKey, DeviceKeyError } from '$lib/server/deviceKeys';
-import { requireFeature } from '$lib/server/api';
+import { requireFeature, requireUser } from '$lib/server/api';
 import type { Actions, PageServerLoad } from './$types';
 
 // Server-side mirror of the wizard's device-card gating (cairn-cl13): a
@@ -41,7 +41,9 @@ export const actions: Actions = {
 	 * (cairn-alw8). An optional `fingerprint` field covers wallets that
 	 * export only the bare key plus a "master fingerprint"/XFP label.
 	 */
-	preview: async ({ request }) => {
+	preview: async (event) => {
+		requireUser(event);
+		const { request } = event;
 		const form = await request.formData();
 		const raw = String(form.get('xpub') ?? '').trim();
 		const parsedInput = parseKeyOriginInput(raw);
@@ -80,6 +82,7 @@ export const actions: Actions = {
 	 * backup download before finishing (cairn-dcp) — no redirect here.
 	 */
 	create: async (event) => {
+		requireUser(event);
 		const { request, locals } = event;
 		const form = await request.formData();
 		const xpub = String(form.get('xpub') ?? '').trim();
@@ -122,7 +125,9 @@ export const actions: Actions = {
 	 * independent of wallet creation: a failure here never blocks the wizard —
 	 * the client shows a soft notice and moves on.
 	 */
-	rememberSharedKey: async ({ request, locals }) => {
+	rememberSharedKey: async (event) => {
+		requireUser(event);
+		const { request, locals } = event;
 		const form = await request.formData();
 		const field = (name: string) => String(form.get(name) ?? '').trim();
 

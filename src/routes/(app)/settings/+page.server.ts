@@ -18,6 +18,7 @@ import { hasRecoverySetup } from '$lib/server/recovery';
 import { notify } from '$lib/server/notifications';
 import { sessionContextFrom } from '$lib/server/deviceTracking';
 import { expectedPasskeyOrigin, passkeyAvailableOn } from '$lib/server/passkeyOrigin';
+import { requireUser } from '$lib/server/api';
 import type { Actions, PageServerLoad } from './$types';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -49,7 +50,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 };
 
 export const actions: Actions = {
-	profile: async ({ request, locals }) => {
+	profile: async (event) => {
+		requireUser(event);
+		const { request, locals } = event;
 		const form = await request.formData();
 		const displayName = String(form.get('displayName') ?? '').trim();
 		const email = String(form.get('email') ?? '').trim().toLowerCase();
@@ -71,6 +74,7 @@ export const actions: Actions = {
 	},
 
 	password: async (event) => {
+		requireUser(event);
 		const { request, locals, cookies, url } = event;
 		const form = await request.formData();
 		const current = String(form.get('currentPassword') ?? '');
@@ -130,7 +134,9 @@ export const actions: Actions = {
 	 * user owns goes; multisigs they merely participated in survive for their
 	 * owner (only the share row is removed).
 	 */
-	deleteAccount: async ({ request, locals }) => {
+	deleteAccount: async (event) => {
+		requireUser(event);
+		const { request, locals } = event;
 		const form = await request.formData();
 		if (String(form.get('confirm') ?? '') !== 'DELETE')
 			return fail(400, { deleteError: 'Type DELETE to confirm deleting your account.' });

@@ -28,7 +28,7 @@ import { containsPrivateKeyMaterial, parseCaravanImport } from '$lib/server/mult
 import { detectCosignerContacts } from '$lib/server/cosignerDetection';
 import { listMultisigs } from '$lib/server/wallets/multisig';
 import { listActiveMultisigServiceReferrals } from '$lib/server/referrals';
-import { requireFeature } from '$lib/server/api';
+import { requireFeature, requireUser } from '$lib/server/api';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async (event) => {
@@ -114,7 +114,9 @@ function parseConfigJson(json: string): MultisigConfig {
 
 export const actions: Actions = {
 	/** Validate + normalize one key (paste, device read, or ColdCard file). */
-	key: async ({ request, locals }) => {
+	key: async (event) => {
+		requireUser(event);
+		const { request, locals } = event;
 		const form = await request.formData();
 		const name = String(form.get('name') ?? '').trim();
 		const category = String(form.get('category') ?? '') as MultisigKeyCategory;
@@ -178,7 +180,9 @@ export const actions: Actions = {
 	},
 
 	/** First receive addresses for the Review step's cross-check. */
-	preview: async ({ request }) => {
+	preview: async (event) => {
+		requireUser(event);
+		const { request } = event;
 		const form = await request.formData();
 		try {
 			const config = parseConfigJson(String(form.get('config') ?? ''));

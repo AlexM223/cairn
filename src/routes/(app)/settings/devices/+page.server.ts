@@ -11,6 +11,7 @@ import {
 	listKnownDevices,
 	forgetKnownDevice
 } from '$lib/server/accountData';
+import { requireUser } from '$lib/server/api';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals, cookies }) => {
@@ -23,7 +24,9 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
 };
 
 export const actions: Actions = {
-	revokeSession: async ({ request, locals, cookies }) => {
+	revokeSession: async (event) => {
+		requireUser(event);
+		const { request, locals, cookies } = event;
 		const form = await request.formData();
 		const id = Number(form.get('id'));
 		if (!Number.isInteger(id)) return fail(400, { error: 'Bad session id.' });
@@ -38,7 +41,9 @@ export const actions: Actions = {
 		return { revoked: true };
 	},
 
-	forgetDevice: async ({ request, locals }) => {
+	forgetDevice: async (event) => {
+		requireUser(event);
+		const { request, locals } = event;
 		const form = await request.formData();
 		const fingerprint = String(form.get('fingerprint') ?? '');
 		if (!fingerprint) return fail(400, { error: 'Bad device fingerprint.' });

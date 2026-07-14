@@ -1949,6 +1949,26 @@ function apiError(status: number, message: string): never {
 }
 ```
 
+**Non-admin `(app)/*` form actions now call `requireUser(event)` explicitly
+(`cairn-wqkk`).** Root cause: SvelteKit form actions never run a parent
+layout's `load()`, so the `(app)/+layout.server.ts` login redirect never
+gated them — only a `locals.user!.id` non-null assertion (a masked 500 for
+an anonymous caller) stood between an action and an unauthenticated
+request. Every action in `settings/+page.server.ts`,
+`settings/devices/+page.server.ts`, `settings/tokens/+page.server.ts`,
+`wallets/[id]/+page.server.ts`, `wallets/new/+page.server.ts`, and the
+`key`/`preview` actions of `wallets/multisig/new/+page.server.ts` (the two
+actions the bead confirmed were anon-reachable — harmless today, pure
+computation, no mutation) now calls `requireUser(event)` as its first line,
+converting that masked 500 into a clean 401 and hardening against a future
+refactor flipping a `!` to `?.`. Admin `(app)/admin/*` actions were
+out of scope — they already gate via `requireAdmin` (which calls
+`requireUser`) or an equivalent explicit `isAdmin` check.
+`wallets/multisig/[id]/+page.server.ts`'s `receive`/`delete` actions have
+the identical gap and are the one confirmed exception, deliberately
+deferred to avoid colliding with concurrent work on that file — tracked as
+`cairn-v27o`.
+
 SvelteKit's own `error()` serializes to `{ message }` only, but ~100
 existing client call sites read `body?.error` — so before this fix,
 guard-specific reasons (most notably `requireFeature`'s admin-set "disabled

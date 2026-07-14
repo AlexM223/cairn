@@ -6,6 +6,7 @@ import { getAddressLabels } from '$lib/server/addressLabels';
 import { isBackedUp } from '$lib/server/backups';
 import { readWalletSnapshot, EMPTY_WALLET_SNAPSHOT } from '$lib/server/walletSync';
 import { listReplacedInbound } from '$lib/server/addressWatcher';
+import { requireUser } from '$lib/server/api';
 import type { Actions, PageServerLoad } from './$types';
 
 const QR_OPTS = {
@@ -71,7 +72,9 @@ export const load: PageServerLoad = ({ params, locals, url, depends }) => {
 
 export const actions: Actions = {
 	/** Hand out the next unused receive address (after the one on display). */
-	receive: async ({ params, locals, request }) => {
+	receive: async (event) => {
+		requireUser(event);
+		const { params, locals, request } = event;
 		const id = walletId(params.id);
 		const form = await request.formData();
 		const currentRaw = form.get('current');
@@ -99,7 +102,9 @@ export const actions: Actions = {
 		}
 	},
 
-	delete: async ({ params, locals }) => {
+	delete: async (event) => {
+		requireUser(event);
+		const { params, locals } = event;
 		const id = walletId(params.id);
 		if (!deleteWallet(locals.user!.id, id)) error(404, 'Wallet not found');
 		redirect(303, '/wallets');
