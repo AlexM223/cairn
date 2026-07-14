@@ -3,7 +3,7 @@
 	import Term from '$lib/components/Term.svelte';
 	import Amount from '$lib/components/Amount.svelte';
 	import { formatSats } from '$lib/format';
-	import { coinbaseMaturity } from '$lib/shared/coinbase';
+	import { coinbaseMaturity, formatMaturityEta } from '$lib/shared/coinbase';
 
 	// Coinbase-only UTXOs (mining rewards). The caller filters upstream, so an
 	// empty list here should never happen — but rendering nothing is harmless.
@@ -24,7 +24,7 @@
 	);
 </script>
 
-<section class="card card-pad mining-card">
+<section id="mining-rewards" class="card card-pad mining-card">
 	<div class="row" style="gap: 8px">
 		<Icon name="flame" size={15} />
 		<span class="card-title grow">
@@ -56,9 +56,13 @@
 						<div class="immature-line">
 							<Icon name="clock" size={13} />
 							<span class="immature-label">
-								Immature — {formatSats(row.maturity.confirmations)}/{row.maturity.required} confirmations
+								{formatSats(row.maturity.confirmations)} of {row.maturity.required} confirmations
 							</span>
-							<span class="immature-eta">~{row.maturity.etaHours}h until spendable</span>
+							<span class="immature-eta"
+								>— spendable in ~{formatSats(
+									row.maturity.blocksRemaining
+								)} blocks ({formatMaturityEta(row.maturity.blocksRemaining)})</span
+							>
 						</div>
 						<div
 							class="progress-track"

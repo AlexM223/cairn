@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { coinbaseMaturity, isImmatureCoinbase, COINBASE_MATURITY } from './coinbase';
+import {
+	coinbaseMaturity,
+	isImmatureCoinbase,
+	formatMaturityEta,
+	COINBASE_MATURITY
+} from './coinbase';
 
 describe('coinbase maturity', () => {
 	it('requires 100 confirmations', () => {
@@ -49,5 +54,28 @@ describe('coinbase maturity', () => {
 		const m = coinbaseMaturity(900010, 900000);
 		expect(m.confirmations).toBe(0);
 		expect(m.mature).toBe(false);
+	});
+});
+
+// cairn-oae1.4: MiningRewards.svelte's "spendable in ~N blocks (~Xh)" countdown.
+describe('formatMaturityEta', () => {
+	it("matches Alex's 42-of-100 example (58 blocks remaining)", () => {
+		expect(formatMaturityEta(58)).toBe('~9.7 hours');
+	});
+
+	it('a freshly-mined reward (100 blocks remaining) reads ~16.7 hours', () => {
+		expect(formatMaturityEta(100)).toBe('~16.7 hours');
+	});
+
+	it('the 99-confirmation edge (1 block remaining) drops to minutes, not "~0.2 hours"', () => {
+		expect(formatMaturityEta(1)).toBe('~10 minutes');
+	});
+
+	it('zero blocks remaining (mature) reads as no wait', () => {
+		expect(formatMaturityEta(0)).toBe('~0 minutes');
+	});
+
+	it('rounds sub-minute fragments to whole minutes below the 1-hour boundary', () => {
+		expect(formatMaturityEta(5)).toBe('~50 minutes');
 	});
 });

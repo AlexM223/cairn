@@ -2379,10 +2379,10 @@ Pages under `(app)`:
 | `activity/+page.svelte` | user activity feed |
 | `wallets/+page.svelte` | wallet list |
 | `wallets/new/+page.svelte` | single-sig add-wallet wizard (§9.4) |
-| `wallets/[id]/+page.svelte` | single-sig wallet detail |
-| `wallets/[id]/send/+page.svelte` | single-sig send flow (§9.4) |
+| `wallets/[id]/+page.svelte` | single-sig wallet detail — **available-vs-maturing split** (`cairn-oae1.3`): Electrum's `confirmed` balance counts an immature coinbase (mining reward) output as spendable, but the send engine's `selectSpendCandidates` refuses to spend it (§ above) — showing the raw Electrum figure as "available" was misleading. `walletSync.ts`'s snapshot now carries a `maturingTotal` field (sum of coinbase-UTXO value not yet mature at the snapshot's `tipHeight`, computed by `sumImmatureCoinbase()`); the hero balance renders `scan.confirmed - maturingTotal` as the honest available figure, with a secondary "· N maturing — mining rewards not yet spendable" line (only shown when `maturingTotal > 0`) linking to the `#mining-rewards` anchor on the `MiningRewards` card below. `scan.confirmed` itself is UNCHANGED in the snapshot (still the full net-worth total the portfolio aggregate / list-view summaries rely on) — the split is a display-layer computation, not a data-model change. Same split applied to `wallets/multisig/[id]/+page.svelte` below. |
+| `wallets/[id]/send/+page.svelte` | single-sig send flow (§9.4) — the eyebrow's "available" figure and the max-amount client validation both come from `+page.server.ts`'s streamed `live.confirmed`, which now has immature-coinbase value folded out (`live.maturingTotal` carries the excluded sum) so client-side validation agrees with what the build engine will actually accept (`cairn-oae1.3`); a "Plus N from a mining reward still maturing" hint appears under the amount field when `maturingTotal > 0` |
 | `wallets/multisig/new/+page.svelte` | multisig creation wizard (§9.4) |
-| `wallets/multisig/[id]/+page.svelte` | multisig vault detail |
+| `wallets/multisig/[id]/+page.svelte` | multisig vault detail — same available-vs-maturing split as the single-sig detail page above (`MultisigSnapshot.maturingTotal`, `cairn-oae1.3`) |
 | `wallets/multisig/[id]/send/+page.svelte` | multisig send/co-sign flow |
 | `wallets/multisig/stateless/+page.svelte` | stateless (no-account) multisig PSBT signer |
 | `explorer/+page.svelte` | block explorer home — includes an "Up next" strip (up to 4 projected-block chips, fed by the same server-loaded `mempoolBlocks` snapshot, linking through to the full mempool treemap viz; hidden gracefully rather than erroring when the chain backend has no projection data) |
@@ -2427,7 +2427,15 @@ error/status banner — contrast with toasts below), `CopyText`,
 per-tile by feature flag, `file` is the ungated universal fallback — §9.7),
 `FeatureDisabled` (flag-gated placeholder), `HowItWorks` (collapsible
 per-page explainer, open/closed state persisted in `localStorage` keyed
-`cairn.explain.{id}`), `Icon`, `MiningRewards`, `NotificationPanel`,
+`cairn.explain.{id}`), `Icon`, `MiningRewards` (per-coin coinbase maturity
+card, `id="mining-rewards"` anchor for the wallet-detail hero's "maturing"
+link — §above; each immature row reads "`N` of 100 confirmations —
+spendable in ~`B` blocks (~`eta`)" per `cairn-oae1.4`, e.g. "42 of 100
+confirmations — spendable in ~58 blocks (~9.7 hours)"; `eta` is
+`formatMaturityEta()` from `$lib/shared/coinbase.ts` — 1-decimal hours once
+the wait crosses an hour, whole minutes below that, at a flat ~10 min/block —
+distinct from `coinbaseMaturity()`'s own `etaHours` field, which stays a
+rounded-up integer for its other caller, `CoinControl.svelte`), `NotificationPanel`,
 `QrScanner` (shared camera-scan/paste-fallback UI, committed as `96cd16a
 refactor(qr): shared QrScanner component behind existing signer flows` —
 extracted from the near-identical scan loops `QrSigner.svelte` and

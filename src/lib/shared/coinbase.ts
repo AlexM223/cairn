@@ -42,3 +42,15 @@ export function coinbaseMaturity(height: number, tipHeight: number): CoinbaseMat
 export function isImmatureCoinbase(height: number, tipHeight: number): boolean {
 	return !coinbaseMaturity(height, tipHeight).mature;
 }
+
+/**
+ * Human ETA for `blocksRemaining` blocks at ~10 min/block (cairn-oae1.4), e.g.
+ * "~9.7 hours" for 58 blocks, "~10 minutes" for 1 block. 1-decimal hours once
+ * the wait crosses an hour; whole minutes below that — a bare rounded-up hour
+ * ("~1h", `etaHours` above) reads wrong for a coin that matures in 6 minutes.
+ */
+export function formatMaturityEta(blocksRemaining: number): string {
+	const minutes = blocksRemaining * BLOCK_MINUTES;
+	if (minutes < 60) return `~${Math.round(minutes)} minutes`;
+	return `~${(minutes / 60).toFixed(1)} hours`;
+}
