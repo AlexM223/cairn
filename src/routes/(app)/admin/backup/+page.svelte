@@ -22,6 +22,7 @@
 		usersSkipped: number;
 		wallets: number;
 		multisigs: number;
+		shares: number;
 		addresses: number;
 		labels: number;
 		settings: number;
