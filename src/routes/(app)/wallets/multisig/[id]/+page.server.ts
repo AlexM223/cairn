@@ -21,7 +21,11 @@ import { isBackedUp } from '$lib/server/backups';
 import { getAddressLabels } from '$lib/server/addressLabels';
 import { readMultisigSnapshot, EMPTY_MULTISIG_SNAPSHOT } from '$lib/server/walletSync';
 import { requireUser } from '$lib/server/api';
+import { childLogger } from '$lib/server/logger';
+import { sanitizeChainError } from '$lib/server/chainErrors';
 import type { Actions, PageServerLoad } from './$types';
+
+const log = childLogger('wallet');
 
 const QR_OPTS = {
 	margin: 1,
@@ -153,8 +157,7 @@ export const actions: Actions = {
 			return { receive: { ...next, qr } };
 		} catch (e) {
 			return fail(502, {
-				receiveError:
-					e instanceof Error ? e.message : 'Could not reach the Electrum server.'
+				receiveError: sanitizeChainError(e, log, { multisigId: id }, 'multisig receive-address action failed')
 			});
 		}
 	},

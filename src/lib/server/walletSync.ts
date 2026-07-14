@@ -28,6 +28,7 @@ import { env } from '$env/dynamic/private';
 import { db } from './db';
 import { DEFAULT_BACKGROUND_LANE_SIZE } from './electrum/pool';
 import { childLogger } from './logger';
+import { sanitizeChainError } from './chainErrors';
 import type { WalletAddress, WalletTx, WalletSummary } from '$lib/types';
 import { scanWallet } from './bitcoin/walletScan';
 import {
@@ -747,7 +748,18 @@ async function doWalletScan(userId: number, row: WalletRow): Promise<WalletSnaps
 	// persisting. A failure here throws (see above). Runs on the BACKGROUND lane
 	// so its ~200 pipelined history/balance calls never fill the socket an
 	// interactive request (a send, a tx page) needs (cairn — HOL blocking).
-	const scan = await scanWallet(row.xpub, { lane: 'background' });
+	let scan;
+	try {
+		scan = await scanWallet(row.xpub, { lane: 'background' });
+	} catch (e) {
+		// cairn-sgtr: this is what the /refresh API route's catch surfaces
+		// verbatim as its JSON `error` field — sanitize here so a raw
+		// "connect ECONNREFUSED ..."-style Electrum error never reaches that
+		// response.
+		throw new Error(
+			sanitizeChainError(e, log, { walletId: row.id }, 'wallet refresh scan failed', undefined, 'Wallet scan failed')
+		);
+	}
 	const receive = await peekReceiveAddress(row);
 	const qr = await QRCode.toDataURL(receive.address, QR_OPTS);
 

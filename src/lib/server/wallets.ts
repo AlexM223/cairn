@@ -16,6 +16,7 @@ import {
 import { unwatchWallet } from './addressWatcher';
 import { withLock } from './keyedLock';
 import { childLogger } from './logger';
+import { sanitizeChainError } from './chainErrors';
 import { recordActivity } from './activity';
 import {
 	parseKeyOriginInput,
@@ -168,7 +169,14 @@ export async function listWallets(
 				const scan = await scanWallet(row.xpub);
 				return toWalletSummary(row, scan);
 			} catch (e) {
-				errors[row.id] = e instanceof Error ? e.message : 'Wallet scan failed';
+				errors[row.id] = sanitizeChainError(
+					e,
+					log,
+					{ walletId: row.id },
+					'wallet list scan failed',
+					undefined,
+					'Wallet scan failed'
+				);
 				return toWalletSummary(row);
 			}
 		})
@@ -476,9 +484,10 @@ export async function getWalletDetail(
 		const scan = await scanWallet(wallet.xpub);
 		return { wallet, scan };
 	} catch (e) {
-		throw new Error(e instanceof Error ? e.message : 'Wallet scan failed', {
-			cause: 'unreachable'
-		});
+		throw new Error(
+			sanitizeChainError(e, log, { walletId: id }, 'wallet detail scan failed', undefined, 'Wallet scan failed'),
+			{ cause: 'unreachable' }
+		);
 	}
 }
 

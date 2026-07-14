@@ -31,6 +31,10 @@ import {
 } from './wallets/multisig';
 import { listSharedMultisigs, type ShareRole } from './multisigShares';
 import { persistScanResult, deletePersistedScan, clearPersistedScans } from './scanCachePersist';
+import { childLogger } from './logger';
+import { sanitizeChainError } from './chainErrors';
+
+const log = childLogger('multisig-scan');
 
 /** One scanned multisig address. Superset of the send-flow contract's
  *  `{ address, chain, index, used }` — balance/txCount feed the detail page. */
@@ -278,14 +282,33 @@ export async function getMultisigDetail(
 	multisig: MultisigRow,
 	lane: ElectrumLane = 'interactive'
 ): Promise<MultisigDetail> {
-	const scan = await scanMultisig(multisig, { lane });
-	const utxos = await getMultisigUtxos(multisig, lane);
-	return {
-		balance: { confirmed: scan.confirmed, unconfirmed: scan.unconfirmed },
-		utxos,
-		addresses: scan.addresses,
-		history: scan.txs
-	};
+	try {
+		const scan = await scanMultisig(multisig, { lane });
+		const utxos = await getMultisigUtxos(multisig, lane);
+		return {
+			balance: { confirmed: scan.confirmed, unconfirmed: scan.unconfirmed },
+			utxos,
+			addresses: scan.addresses,
+			history: scan.txs
+		};
+	} catch (e) {
+		// cairn-sgtr: every caller (the multisig detail/send routes, history.csv,
+		// the background snapshot refresh) otherwise surfaced this raw — a bare
+		// "connect ECONNREFUSED 127.0.0.1:50001"-style Electrum/socket error —
+		// straight to the UI. Sanitize once here so every consumer inherits clean
+		// copy, same pattern as wallets.ts's getWalletDetail.
+		throw new Error(
+			sanitizeChainError(
+				e,
+				log,
+				{ multisigId: multisig.id },
+				'multisig detail scan failed',
+				undefined,
+				'Multisig scan failed'
+			),
+			{ cause: 'unreachable' }
+		);
+	}
 }
 
 function nextUnusedIndex(scan: MultisigScanResult, chain: 0 | 1): number {
@@ -451,7 +474,14 @@ export async function listMultisigSummaries(
 		try {
 			return toMultisigSummary(row, await scanMultisig(row), share);
 		} catch (e) {
-			errors[row.id] = e instanceof Error ? e.message : 'Multisig scan failed';
+			errors[row.id] = sanitizeChainError(
+				e,
+				log,
+				{ multisigId: row.id },
+				'multisig list scan failed',
+				undefined,
+				'Multisig scan failed'
+			);
 			return toMultisigSummary(row, undefined, share);
 		}
 	};

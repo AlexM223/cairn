@@ -8,7 +8,11 @@ import { isBackedUp } from '$lib/server/backups';
 import { readWalletSnapshot, EMPTY_WALLET_SNAPSHOT } from '$lib/server/walletSync';
 import { listReplacedInbound } from '$lib/server/addressWatcher';
 import { requireUser } from '$lib/server/api';
+import { childLogger } from '$lib/server/logger';
+import { sanitizeChainError } from '$lib/server/chainErrors';
 import type { Actions, PageServerLoad } from './$types';
+
+const log = childLogger('wallet');
 
 const QR_OPTS = {
 	margin: 1,
@@ -97,8 +101,7 @@ export const actions: Actions = {
 			// degraded 502 form response.
 			if (isHttpError(e)) throw e;
 			return fail(502, {
-				receiveError:
-					e instanceof Error ? e.message : 'Could not reach the Electrum server.'
+				receiveError: sanitizeChainError(e, log, { walletId: id }, 'receive-address action failed')
 			});
 		}
 	},
