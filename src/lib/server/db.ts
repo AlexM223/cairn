@@ -24,6 +24,17 @@ db.exec(`
 	PRAGMA journal_mode = WAL;
 	PRAGMA foreign_keys = ON;
 	PRAGMA busy_timeout = 5000;
+	-- WAL + synchronous=NORMAL is the SQLite-recommended durable pairing for a
+	-- server workload (cairn-y802): FULL (the default) fsyncs the WAL on EVERY
+	-- commit, which serializes concurrent writers behind the disk and produces
+	-- the multi-second commit-stall tail seen under write pressure. NORMAL only
+	-- fsyncs at checkpoint, never corrupts the database (WAL guarantees that),
+	-- and the sole exposure is that a handful of just-committed transactions can
+	-- roll back on an OS crash / power loss — fully acceptable here, where the DB
+	-- holds only re-derivable wallet metadata (xpubs, PSBTs, snapshots), never
+	-- private-key material. Per-connection (not persisted in the file), so this
+	-- only governs this process's single DatabaseSync handle.
+	PRAGMA synchronous = NORMAL;
 
 	-- Auth supports BOTH email+password (scrypt — the default) and passkeys
 	-- (WebAuthn — optional/additive). password_hash is NULL for passkey-only
