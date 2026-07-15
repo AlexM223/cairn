@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { FEE_SPEEDS, arrivalWords, summarySentence } from './sendCopy';
+import { FEE_SPEEDS, arrivalWords, summarySentence, feeContextClause } from './sendCopy';
 
 // The summary sentence + arrival copy are the plain-language heart of the send
 // review surface (cairn-krwp): a normal person reads one sentence, not sat/vB.
@@ -105,6 +105,59 @@ describe('summarySentence: batch', () => {
 		).toBe(
 			"You're sending $250.00 (0.00386 BTC) across 3 recipients. It should arrive in about 10 minutes."
 		);
+	});
+});
+
+// R7 (docs/UX-PSYCHOLOGY-RESEARCH-2026-07-15.md ~L300): the fee row's
+// %-of-payment context clause. Anchors the fee against the payment instead
+// of zero, but never spins an unflattering fraction — anything genuinely
+// above ~5% of the send is omitted outright, not rounded away.
+describe('feeContextClause', () => {
+	it('reads "less than 1%" below the 1% threshold', () => {
+		expect(feeContextClause(9, 1000)).toBe('less than 1% of this payment'); // 0.9%
+	});
+
+	it('reads "about 1%" right at the 1% threshold', () => {
+		expect(feeContextClause(10, 1000)).toBe('about 1% of this payment'); // 1%
+	});
+
+	it('reads "about 5%" just under the suppression cutoff', () => {
+		expect(feeContextClause(49, 1000)).toBe('about 5% of this payment'); // 4.9%
+	});
+
+	it('still shows "about 5%" exactly at the cutoff (suppression is > 5%, not >=)', () => {
+		expect(feeContextClause(50, 1000)).toBe('about 5% of this payment'); // 5%
+	});
+
+	it('suppresses the clause just past the cutoff', () => {
+		expect(feeContextClause(51, 1000)).toBeNull(); // 5.1%
+	});
+
+	it('suppresses the clause for a clearly unflattering fee', () => {
+		expect(feeContextClause(300, 1000)).toBeNull(); // 30%
+		expect(feeContextClause(1000, 1000)).toBeNull(); // 100%
+		expect(feeContextClause(1500, 1000)).toBeNull(); // fee > amount
+	});
+
+	it('suppresses when the send amount is zero or unknown', () => {
+		expect(feeContextClause(500, 0)).toBeNull();
+		expect(feeContextClause(500, -1)).toBeNull();
+		expect(feeContextClause(500, NaN)).toBeNull();
+	});
+
+	it('suppresses for a degenerate negative or non-finite fee', () => {
+		expect(feeContextClause(-1, 1000)).toBeNull();
+		expect(feeContextClause(NaN, 1000)).toBeNull();
+		expect(feeContextClause(Infinity, 1000)).toBeNull();
+	});
+
+	it('reads "less than 1%" for a zero fee', () => {
+		expect(feeContextClause(0, 1000)).toBe('less than 1% of this payment');
+	});
+
+	it('rounds mid-range percentages to the nearest whole number', () => {
+		expect(feeContextClause(24, 1000)).toBe('about 2% of this payment'); // 2.4% -> 2%
+		expect(feeContextClause(25, 1000)).toBe('about 3% of this payment'); // 2.5% -> 3% (round-half-up)
 	});
 });
 

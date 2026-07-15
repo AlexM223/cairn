@@ -35,6 +35,28 @@ export function arrivalWords(choice: FeeChoiceKey): string {
 	}
 }
 
+/** R7 (docs/UX-PSYCHOLOGY-RESEARCH-2026-07-15.md ~L300): anchors the fee
+ *  against the payment instead of zero — "less than 1% of this payment"
+ *  reads as a benign, comprehensible cost rather than an isolated number
+ *  (F6). Returns null (render nothing) rather than spin an unflattering
+ *  fraction: an unknown/zero/negative amount, or a fee that's genuinely
+ *  more than ~5% of the send, both suppress the clause outright — the raw
+ *  percentage stays available in the Details expander regardless.
+ *
+ *  The >5% cutoff is evaluated against the *unrounded* percentage so a fee
+ *  just over the line (e.g. 5.1%) is never dressed up by display rounding;
+ *  a fee at or just under 5% (e.g. 4.9% or exactly 5%) both read "about 5%". */
+export function feeContextClause(feeSats: number, amountSats: number): string | null {
+	if (!Number.isFinite(feeSats) || !Number.isFinite(amountSats)) return null;
+	if (amountSats <= 0 || feeSats < 0) return null;
+
+	const pct = (feeSats / amountSats) * 100;
+	if (pct > 5) return null;
+
+	if (pct < 1) return 'less than 1% of this payment';
+	return `about ${Math.round(pct)}% of this payment`;
+}
+
 /** The one plain-language summary sentence at the top of the review card.
  *  Single vs batch vs multisig variants — multisig replaces the arrival tail
  *  with the signature-collection context (arrival is dominated by signing
