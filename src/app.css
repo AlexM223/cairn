@@ -106,7 +106,7 @@
 
 	/* Typography */
 	--font-ui: 'Inter', system-ui, -apple-system, sans-serif;
-	--font-serif: 'Fraunces', 'Source Serif 4', Georgia, serif;
+	--font-serif: 'Fraunces Variable', 'Source Serif 4', Georgia, serif;
 	--font-mono: ui-monospace, 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
 
 	/* The 5-token type scale (DESIGN-MANIFESTO.md §3). Family/weight/extras

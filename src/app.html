@@ -11,8 +11,13 @@
 			// before the stylesheet paints, so there is no flash of the wrong
 			// theme. No stored value (or 'system') leaves data-theme unset —
 			// src/app.css's @media (prefers-color-scheme: light) block then
-			// drives the OS-level choice. Runs synchronously, before
-			// %sveltekit.head% inserts the stylesheet link.
+			// drives the OS-level choice. Runs synchronously, before the
+			// SvelteKit head placeholder below inserts the stylesheet link.
+			// (Do not spell that placeholder out literally in this comment:
+			// SvelteKit's template substitution is a plain, first-match-only
+			// string replace, so a second literal copy of the token earlier
+			// in the file steals the real substitution and corrupts this
+			// script tag — cairn-sdx5.10.)
 			(function () {
 				try {
 					var t = localStorage.getItem('hw.theme');
