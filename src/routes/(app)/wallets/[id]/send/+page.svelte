@@ -440,6 +440,21 @@
 			: null
 	);
 
+	// R2 (docs/UX-PSYCHOLOGY-RESEARCH-2026-07-15.md): the "known address" set
+	// SendReviewCard checks a first-send against — saved contacts (a name the
+	// user already vouched for) plus every address this wallet has actually
+	// paid before (data.sentAddresses, server-computed from completed sends).
+	// svelte-ignore state_referenced_locally — per-navigation constant
+	const sentAddresses = data.sentAddresses;
+	const knownAddresses = $derived([...savedAddresses.map((a) => a.address), ...sentAddresses]);
+
+	// Bindable from SendReviewCard: true once its R2 micro-step (if shown) is
+	// satisfied, or always true when no check applies. Gates the Review step's
+	// own "Continue" button below — the rare exception to "the card never owns
+	// navigation" is that the CALLER, not the card, decides what "verified"
+	// blocks.
+	let reviewRecipientVerified = $state(true);
+
 	// Signing-mass summary for the Review panel: a fresh build carries it on
 	// the build response; a resume may carry it on the PSBT summary. Absent =
 	// unknown = no panel. Mass affects signing time ONLY — never the fee — so
@@ -1120,6 +1135,9 @@
 					recipientLabel={reviewRecipientLabel}
 					arrivalWords={arrivalWords(feeChoice)}
 					multisig={null}
+					balanceSats={confirmed}
+					{knownAddresses}
+					bind:recipientVerified={reviewRecipientVerified}
 				/>
 
 				{#if chainDepthWarning}
@@ -1186,7 +1204,11 @@
 					<button class="btn btn-secondary" onclick={goCreate}>
 						<Icon name="chevron-left" size={15} /> Back &amp; edit
 					</button>
-					<button class="btn btn-primary pill-lg" onclick={() => (step = 'sign')}>
+					<button
+						class="btn btn-primary pill-lg"
+						onclick={() => (step = 'sign')}
+						disabled={!reviewRecipientVerified}
+					>
 						{sendCtaLabel(review.amount + review.fee, $btcUsd, 'review')}
 						<Icon name="arrow-right" size={15} />
 					</button>

@@ -21,7 +21,8 @@ import {
 	bumpMultisigTransaction,
 	buildMultisigCpfpDraft,
 	detectMultisigUnconfirmedInflows,
-	multisigTransactionProgress
+	multisigTransactionProgress,
+	sentMultisigRecipientAddresses
 } from './multisigTransactions';
 import { BroadcastError, BumpError, CpfpError } from './transactions';
 import { isRosterMember } from './multisigRoster';
@@ -285,6 +286,57 @@ describe('multisig transaction lifecycle', () => {
 		expect(
 			db.prepare('SELECT COUNT(*) AS n FROM multisig_transactions WHERE id = ?').get(txId)
 		).toMatchObject({ n: 0 });
+	});
+});
+
+// R2 (docs/UX-PSYCHOLOGY-RESEARCH-2026-07-15.md): the multisig mirror of
+// transactions.test.ts's sentRecipientAddresses coverage — multisig has no
+// address book, so this is the WHOLE "known address" signal SendReviewCard's
+// first-send check gets for a multisig send.
+describe('sentMultisigRecipientAddresses (R2 first-send signal)', () => {
+	function seedRow(
+		multisigId: number,
+		status: 'draft' | 'awaiting_signature' | 'completed' | 'superseded',
+		recipient: string,
+		recipients: string | null = null
+	): void {
+		db.prepare(
+			`INSERT INTO multisig_transactions (multisig_id, status, psbt, recipient, amount, fee, fee_rate, recipients)
+			 VALUES (?, ?, 'cHNidP8=', ?, 1000, 200, 1.5, ?)`
+		).run(multisigId, status, recipient, recipients);
+	}
+
+	it('only counts status=completed rows', async () => {
+		const { userId, multisigId } = await seedMultisig('msigsentaddrs@example.com');
+		const paid = 'bc1qmsigpaidaddress000000000000000000000';
+		seedRow(multisigId, 'completed', paid);
+		seedRow(multisigId, 'draft', 'bc1qmsigdraftaddress00000000000000000000');
+		seedRow(multisigId, 'awaiting_signature', 'bc1qmsigawaiting0000000000000000000000000');
+		seedRow(multisigId, 'superseded', 'bc1qmsigsuperseded00000000000000000000000');
+
+		expect(sentMultisigRecipientAddresses(userId, multisigId)).toEqual([paid]);
+	});
+
+	it('flattens the recipients JSON column for completed batch rows and de-dupes', async () => {
+		const { userId, multisigId } = await seedMultisig('msigsentbatch@example.com');
+		const recipients = [
+			{ address: RECIPIENT, amount: 20_000 },
+			{ address: 'bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3', amount: 30_000 }
+		];
+		seedRow(multisigId, 'completed', recipients[0].address, JSON.stringify(recipients));
+		seedRow(multisigId, 'completed', RECIPIENT); // repeat of recipients[0] — must de-dupe
+
+		expect(new Set(sentMultisigRecipientAddresses(userId, multisigId))).toEqual(
+			new Set(recipients.map((r) => r.address))
+		);
+	});
+
+	it('scopes to a signable participant, like listMultisigTransactions', async () => {
+		const owner = await seedMultisig('msigsentowner@example.com');
+		const outsider = await seedMultisig('msigsentoutsider@example.com');
+		seedRow(owner.multisigId, 'completed', RECIPIENT);
+
+		expect(sentMultisigRecipientAddresses(outsider.userId, owner.multisigId)).toEqual([]);
 	});
 });
 

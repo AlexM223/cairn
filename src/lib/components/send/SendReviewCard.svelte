@@ -15,9 +15,14 @@
 		formatFiat,
 		formatBtc,
 		btcToFiat,
-		truncateMiddle
+		truncateMiddle,
+		chunkString
 	} from '$lib/format';
 	import { summarySentence } from './sendCopy';
+	// R2 (docs/UX-PSYCHOLOGY-RESEARCH-2026-07-15.md): stake-triggered recipient
+	// verification. Pure trigger/match logic lives in recipientVerify.ts —
+	// this component only wires it to the card's own props/state.
+	import { shouldVerifyRecipient, matchesAddressTail, addressTail } from './recipientVerify';
 
 	type ReviewRecipient = { address: string; amount: number };
 	type ReviewInput = { txid: string; vout: number; value: number | null };
@@ -35,7 +40,10 @@
 		arrivalWords,
 		multisig = null,
 		detailExtra = undefined,
-		onDetailsOpen = undefined
+		onDetailsOpen = undefined,
+		balanceSats = null,
+		knownAddresses = [],
+		recipientVerified = $bindable(true)
 	}: {
 		mode: 'review' | 'confirm';
 		amountSats: number;
@@ -52,11 +60,71 @@
 		/** Fired the first time the Details expander opens — lets a page trigger a
 		 *  lazy fetch (e.g. multisig per-coin signing masses) only when revealed. */
 		onDetailsOpen?: () => void;
+		/** This wallet's spendable balance, for the R2 stake-relative trigger.
+		 *  Null while unknown/streaming — the flat sats floor still applies. */
+		balanceSats?: number | null;
+		/** Addresses this wallet has already paid or saved as a contact — the R2
+		 *  first-send signal. A known address never triggers the micro-step. */
+		knownAddresses?: readonly string[];
+		/** Bindable: true once the R2 micro-step (if shown) is satisfied, or
+		 *  always true when no check applies. The CALLER gates its own primary
+		 *  CTA on this — the card stays presentational and never owns navigation. */
+		recipientVerified?: boolean;
 	} = $props();
 
 	const SATS_PER_BTC = 100_000_000;
 	const totalSats = $derived(amountSats + feeSats);
 	const isBatch = $derived(recipients.length > 1);
+
+	// ------------------------------------------------------- R2 recipient check
+	// Gated to mode==='review' only: Confirm re-renders the same recipient a
+	// moment later as a fresh card instance, and re-asking there would be a
+	// second exposure to the exact same check — the habituation failure F4
+	// warns against. Verification happens once, at Review, or not at all.
+	const singleRecipient = $derived(!isBatch && recipients.length === 1 ? recipients[0] : null);
+	// Grouped-display chunks for the single-recipient address (R2 §1) — computed
+	// once per render rather than inline in the {#each} so the "last chunk"
+	// index check doesn't re-run chunkString per iteration.
+	const singleRecipientChunks = $derived(
+		recipients.length === 1 ? chunkString(recipients[0].address) : []
+	);
+
+	const needsRecipientCheck = $derived.by(() => {
+		if (mode !== 'review' || !singleRecipient) return false;
+		return shouldVerifyRecipient({
+			address: singleRecipient.address,
+			amountSats: singleRecipient.amount,
+			balanceSats,
+			knownAddresses,
+			isBatch
+		});
+	});
+
+	const recipientTail = $derived(singleRecipient ? addressTail(singleRecipient.address) : '');
+
+	let recipientCheckInput = $state('');
+	let recipientCheckWrong = $state(false);
+
+	// Reset the micro-step's local state whenever what it's checking changes —
+	// a fresh recipient/amount on this card instance (e.g. Back & edit, then
+	// Review again with a different address) never inherits a stale match or
+	// a leftover "wrong" message. Also seeds `recipientVerified` for the
+	// caller: true immediately when no check applies, false while one is
+	// pending.
+	$effect(() => {
+		void needsRecipientCheck;
+		void recipientTail;
+		recipientCheckInput = '';
+		recipientCheckWrong = false;
+		recipientVerified = !needsRecipientCheck;
+	});
+
+	function checkRecipientInput() {
+		if (!needsRecipientCheck) return;
+		const ok = matchesAddressTail(recipientCheckInput, singleRecipient!.address);
+		recipientCheckWrong = !ok;
+		recipientVerified = ok;
+	}
 
 	const feePct = $derived.by(() => {
 		if (amountSats <= 0) return null;
@@ -138,8 +206,73 @@
 		<div class="recipient-line">
 			<span class="recipient-to">To</span>
 			<span class="recipient-name">{recipientLabel ?? truncateMiddle(recipients[0].address, 12, 10)}</span>
-			<span class="recipient mono">{recipients[0].address}</span>
+			<!-- Grouped, not truncated (R2): the full address stays on screen,
+			     chunked into scannable 4-char groups with the first/last group
+			     emphasized and the middle muted — forensics of wrong-sends shows
+			     people actually compare the ends, so the ends are what pop. -->
+			<span class="recipient mono grouped" aria-label={recipients[0].address}>
+				{#each singleRecipientChunks as chunk, i (i)}
+					<span
+						class="addr-chunk"
+						class:addr-end={i === 0 || i === singleRecipientChunks.length - 1}>{chunk}</span
+					>
+				{/each}
+			</span>
 		</div>
+
+		{#if needsRecipientCheck}
+			<!-- The R2 micro-step: rare by construction (shouldVerifyRecipient),
+			     and deliberately unlike anything else on this card — a distinct
+			     bordered panel with its own accent, not a checkbox or a modal,
+			     so it stays neurally "alive" instead of habituating (F4). Plain
+			     language, no jargon, no alarm register (confident, not scary —
+			     doctrine's friction-ladder tone for this stakes tier). -->
+			<div class="recipient-check" class:matched={recipientVerified} role="group" aria-label="Verify recipient address">
+				<div class="recipient-check-head">
+					<Icon name="eye" size={15} />
+					<span
+						>First time sending here, and it's a meaningful amount — verify the last 4
+						characters of the address.</span
+					>
+				</div>
+				<div class="recipient-check-row">
+					<label class="sr-only" for="recipient-check-input"
+						>Last 4 characters of the address</label
+					>
+					<input
+						id="recipient-check-input"
+						class="recipient-check-input mono"
+						type="text"
+						inputmode="text"
+						autocomplete="off"
+						autocapitalize="off"
+						spellcheck="false"
+						maxlength="8"
+						placeholder="····"
+						bind:value={recipientCheckInput}
+						oninput={() => (recipientCheckWrong = false)}
+						onkeydown={(e) => {
+							if (e.key === 'Enter') {
+								e.preventDefault();
+								checkRecipientInput();
+							}
+						}}
+					/>
+					<button type="button" class="btn btn-secondary btn-sm" onclick={checkRecipientInput}>
+						Check
+					</button>
+				</div>
+				{#if recipientVerified}
+					<p class="recipient-check-note ok">
+						<Icon name="check" size={13} strokeWidth={2.5} /> Matches — this address is confirmed.
+					</p>
+				{:else if recipientCheckWrong}
+					<p class="recipient-check-note wrong">
+						That doesn't match "{recipientTail}" — check the address above before continuing.
+					</p>
+				{/if}
+			</div>
+		{/if}
 	{/if}
 
 	<div class="core-rows">
@@ -415,5 +548,103 @@
 
 	.utxo-row:last-child {
 		border-bottom: none;
+	}
+
+	/* Grouped address display (R2 §1): full address, chunked, first/last group
+	   emphasized at full --text, middle muted — the eye verifies the ends. */
+	.grouped {
+		display: inline-flex;
+		flex-wrap: wrap;
+		gap: 0 6px;
+		color: var(--text-muted);
+	}
+
+	.addr-chunk.addr-end {
+		color: var(--text);
+		font-weight: 600;
+	}
+
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
+	}
+
+	/* R2 §2 micro-step: visually distinct from the routine card body (accent
+	   border + tinted fill, not amber/red — this isn't a warning, it's a
+	   recognition check) so rarity + variation keep it from habituating (F4). */
+	.recipient-check {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		padding: 14px 16px;
+		border: 1px solid var(--accent-border);
+		border-radius: 12px;
+		background: var(--accent-muted);
+	}
+
+	.recipient-check.matched {
+		border-color: var(--sage);
+		background: var(--sage-muted);
+	}
+
+	.recipient-check-head {
+		display: flex;
+		align-items: flex-start;
+		gap: 8px;
+		font-size: 13.5px;
+		line-height: 1.5;
+		color: var(--text);
+	}
+
+	.recipient-check-head :global(svg) {
+		flex-shrink: 0;
+		margin-top: 1px;
+		color: var(--accent);
+	}
+
+	.recipient-check-row {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+	}
+
+	.recipient-check-input {
+		width: 6.5em;
+		padding: 8px 10px;
+		border: 1px solid var(--hairline);
+		border-radius: 8px;
+		background: var(--surface);
+		color: var(--text);
+		font-size: 15px;
+		letter-spacing: 0.08em;
+		text-transform: lowercase;
+	}
+
+	.recipient-check-input:focus {
+		outline: none;
+		border-color: var(--accent);
+	}
+
+	.recipient-check-note {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 13px;
+		margin: 0;
+	}
+
+	.recipient-check-note.ok {
+		color: var(--sage);
+	}
+
+	.recipient-check-note.wrong {
+		color: var(--attention);
 	}
 </style>

@@ -13,7 +13,8 @@ import {
 	btcToFiat,
 	formatFiat,
 	gatedFiatPrice,
-	isFiatPrimary
+	isFiatPrimary,
+	chunkString
 } from './format';
 
 describe('formatBtc', () => {
@@ -188,6 +189,26 @@ describe('truncateMiddle', () => {
 		expect(truncateMiddle('short')).toBe('short');
 		expect(truncateMiddle('exactly17chars!!!')).toBe('exactly17chars!!!');
 		expect(truncateMiddle('')).toBe('');
+	});
+});
+
+describe('chunkString', () => {
+	it('splits into fixed-size groups, left to right', () => {
+		expect(chunkString('bc1qx8k2abcd9f4d', 4)).toEqual(['bc1q', 'x8k2', 'abcd', '9f4d']);
+	});
+
+	it('leaves a shorter final chunk when the length does not divide evenly', () => {
+		expect(chunkString('abcdefghij', 4)).toEqual(['abcd', 'efgh', 'ij']);
+	});
+
+	it('defaults to groups of 4', () => {
+		expect(chunkString('abcdefgh')).toEqual(['abcd', 'efgh']);
+	});
+
+	it('returns the whole string as one chunk for an empty/short input or non-positive size', () => {
+		expect(chunkString('')).toEqual([]);
+		expect(chunkString('ab', 4)).toEqual(['ab']);
+		expect(chunkString('abcdef', 0)).toEqual(['abcdef']);
 	});
 });
 

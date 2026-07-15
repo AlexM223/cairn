@@ -583,6 +583,27 @@ export function listTransactions(userId: number, walletId: number): SavedTransac
 	return rows.map(mapRow);
 }
 
+/**
+ * Distinct addresses this wallet has successfully PAID before — the R2
+ * (docs/UX-PSYCHOLOGY-RESEARCH-2026-07-15.md) first-send signal for the send
+ * review's stake-triggered recipient-verification micro-step. Only
+ * status='completed' (actually broadcast) rows count: a draft or
+ * awaiting-signature row never left the wallet, and a superseded row may
+ * represent a mistake that was caught before it ever sent — neither
+ * establishes "we've paid this address before" confidence. No new table:
+ * this reads the existing transactions rows the same way listTransactions
+ * does.
+ */
+export function sentRecipientAddresses(userId: number, walletId: number): string[] {
+	const rows = listTransactions(userId, walletId) ?? [];
+	const set = new Set<string>();
+	for (const r of rows) {
+		if (r.status !== 'completed') continue;
+		for (const rec of r.recipients) set.add(rec.address);
+	}
+	return [...set];
+}
+
 export function getTransaction(
 	userId: number,
 	walletId: number,

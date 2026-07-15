@@ -164,6 +164,24 @@ export function listMultisigTransactions(
 	return rows.map(mapRow);
 }
 
+/**
+ * Distinct addresses this multisig has successfully PAID before — the
+ * multisig mirror of transactions.ts's sentRecipientAddresses, feeding the
+ * same R2 first-send signal (docs/UX-PSYCHOLOGY-RESEARCH-2026-07-15.md) for
+ * the shared SendReviewCard. Only status='completed' rows count (see the
+ * single-sig version's doc comment for why). Multisig has no address book,
+ * so this is the WHOLE "known addresses" signal here, not just part of it.
+ */
+export function sentMultisigRecipientAddresses(userId: number, multisigId: number): string[] {
+	const rows = listMultisigTransactions(userId, multisigId) ?? [];
+	const set = new Set<string>();
+	for (const r of rows) {
+		if (r.status !== 'completed') continue;
+		for (const rec of r.recipients) set.add(rec.address);
+	}
+	return [...set];
+}
+
 /** The PSBT-free projection of a saved transaction a pure viewer may see. */
 export interface MultisigTransactionSummary {
 	id: number;

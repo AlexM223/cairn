@@ -18,6 +18,7 @@ import {
 	broadcastTransaction,
 	bumpTransaction,
 	normalizePsbt,
+	sentRecipientAddresses,
 	InvalidPsbtError,
 	BroadcastError,
 	BumpError
@@ -531,6 +532,68 @@ describe('batch row storage (recipients column)', () => {
 			.run(walletId);
 		const tx = getTransaction(userId, walletId, Number(res.lastInsertRowid));
 		expect(tx!.recipients).toEqual([{ address: 'bc1qexample', amount: 1000 }]);
+	});
+});
+
+describe('sentRecipientAddresses (R2 first-send signal)', () => {
+	it('only counts status=completed rows, not draft/awaiting_signature/superseded', async () => {
+		const { userId, walletId } = await seedWallet('sentaddrs@example.com');
+		const paid = 'bc1qpaidaddress0000000000000000000000000';
+		const draftOnly = 'bc1qdraftaddress000000000000000000000000';
+		const awaiting = 'bc1qawaitingaddress00000000000000000000';
+		const superseded = 'bc1qsupersededaddress0000000000000000000';
+		db.prepare(
+			`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate) VALUES (?, 'completed', 'cHNidP8=', ?, 1000, 200, 1.5)`
+		).run(walletId, paid);
+		db.prepare(
+			`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate) VALUES (?, 'draft', 'cHNidP8=', ?, 1000, 200, 1.5)`
+		).run(walletId, draftOnly);
+		db.prepare(
+			`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate) VALUES (?, 'awaiting_signature', 'cHNidP8=', ?, 1000, 200, 1.5)`
+		).run(walletId, awaiting);
+		db.prepare(
+			`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate) VALUES (?, 'superseded', 'cHNidP8=', ?, 1000, 200, 1.5)`
+		).run(walletId, superseded);
+
+		const addrs = sentRecipientAddresses(userId, walletId);
+		expect(addrs).toEqual([paid]);
+	});
+
+	it('flattens the recipients JSON column for completed batch rows', async () => {
+		const { userId, walletId } = await seedWallet('sentbatch@example.com');
+		const recipients = [
+			{ address: RECIPIENT, amount: 20_000 },
+			{ address: 'bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3', amount: 30_000 }
+		];
+		db.prepare(
+			`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate, recipients)
+			 VALUES (?, 'completed', 'cHNidP8=', ?, 50000, 500, 5, ?)`
+		).run(walletId, recipients[0].address, JSON.stringify(recipients));
+
+		const addrs = sentRecipientAddresses(userId, walletId);
+		expect(new Set(addrs)).toEqual(new Set(recipients.map((r) => r.address)));
+	});
+
+	it('de-duplicates repeat sends to the same address', async () => {
+		const { userId, walletId } = await seedWallet('sentdupe@example.com');
+		db.prepare(
+			`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate) VALUES (?, 'completed', 'cHNidP8=', ?, 1000, 200, 1.5)`
+		).run(walletId, RECIPIENT);
+		db.prepare(
+			`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate) VALUES (?, 'completed', 'cHNidP8=', ?, 2000, 200, 1.5)`
+		).run(walletId, RECIPIENT);
+
+		expect(sentRecipientAddresses(userId, walletId)).toEqual([RECIPIENT]);
+	});
+
+	it('scopes to the owning user, like listTransactions', async () => {
+		const alice = await seedWallet('sentowner-alice@example.com');
+		const bob = await seedWallet('sentowner-bob@example.com');
+		db.prepare(
+			`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate) VALUES (?, 'completed', 'cHNidP8=', ?, 1000, 200, 1.5)`
+		).run(alice.walletId, RECIPIENT);
+
+		expect(sentRecipientAddresses(bob.userId, alice.walletId)).toEqual([]);
 	});
 });
 
