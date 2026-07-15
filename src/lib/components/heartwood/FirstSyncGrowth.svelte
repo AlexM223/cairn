@@ -148,12 +148,12 @@
 			const bn = alphaSeeds[i - 1] ?? 0.5;
 			const pop = bn > 0.87;
 			if (isHalvingRing(i)) {
-				ctx.strokeStyle = 'rgba(251,225,198,.8)';
+				ctx.strokeStyle = 'rgba(212,229,244,.8)';
 				ctx.lineWidth = 1.4 * dpr;
-				ctx.shadowColor = 'rgba(232,147,90,.6)';
+				ctx.shadowColor = 'rgba(103,150,201,.6)';
 				ctx.shadowBlur = 5 * dpr;
 			} else {
-				ctx.strokeStyle = `rgba(232,147,90,${(0.07 + 0.14 * bn + (pop ? 0.28 : 0)).toFixed(3)})`;
+				ctx.strokeStyle = `rgba(103,150,201,${(0.07 + 0.14 * bn + (pop ? 0.28 : 0)).toFixed(3)})`;
 				ctx.lineWidth = (0.55 + 0.55 * bn + (pop ? 0.35 : 0)) * dpr;
 			}
 			ringPath(ctx, ringR(i, total), i > total * 0.6 ? 96 : 72);
@@ -206,9 +206,9 @@
 
 		// Wood disc.
 		const wg = ctx.createRadialGradient(cx, cy, 0, cx, cy, rNow * 1.05);
-		wg.addColorStop(0, '#3b2b1f');
-		wg.addColorStop(0.55, '#281b12');
-		wg.addColorStop(1, '#170f0a');
+		wg.addColorStop(0, '#1c2523');
+		wg.addColorStop(0.55, '#141b19');
+		wg.addColorStop(1, '#090d0c');
 		ringPath(ctx, rNow);
 		ctx.fillStyle = wg;
 		ctx.fill();
@@ -227,9 +227,9 @@
 		if (nDone < lastRingCount) lastRingCount = nDone;
 		if (flash && now - flash.t < 700 && flash.i <= nDone) {
 			const k = 1 - (now - flash.t) / 700;
-			ctx.strokeStyle = `rgba(251,225,198,${(0.7 * k).toFixed(3)})`;
+			ctx.strokeStyle = `rgba(212,229,244,${(0.7 * k).toFixed(3)})`;
 			ctx.lineWidth = 1.6 * dpr;
-			ctx.shadowColor = 'rgba(232,147,90,.8)';
+			ctx.shadowColor = 'rgba(103,150,201,.8)';
 			ctx.shadowBlur = 8 * dpr;
 			ringPath(ctx, ringR(flash.i, total), 96);
 			ctx.stroke();
@@ -238,8 +238,8 @@
 
 		// Frontier — the bark being written.
 		ctx.lineWidth = 1.8 * dpr;
-		ctx.strokeStyle = done ? 'rgba(232,147,90,.9)' : 'rgba(246,200,154,.85)';
-		ctx.shadowColor = 'rgba(232,147,90,.6)';
+		ctx.strokeStyle = done ? 'rgba(103,150,201,.9)' : 'rgba(182,210,234,.85)';
+		ctx.shadowColor = 'rgba(103,150,201,.6)';
 		ctx.shadowBlur = 7 * dpr;
 		ringPath(ctx, rNow, 96);
 		ctx.stroke();
@@ -258,9 +258,9 @@
 				if (s === 0) ctx.moveTo(x, y);
 				else ctx.lineTo(x, y);
 			}
-			ctx.strokeStyle = 'rgba(255,238,216,.9)';
+			ctx.strokeStyle = 'rgba(234,243,251,.9)';
 			ctx.lineWidth = 2.4 * dpr;
-			ctx.shadowColor = 'rgba(232,147,90,.9)';
+			ctx.shadowColor = 'rgba(103,150,201,.9)';
 			ctx.shadowBlur = 10 * dpr;
 			ctx.lineCap = 'round';
 			ctx.stroke();
@@ -280,9 +280,9 @@
 				if (s === 0) ctx.moveTo(x, y);
 				else ctx.lineTo(x, y);
 			}
-			ctx.strokeStyle = 'rgba(246,200,154,.8)';
+			ctx.strokeStyle = 'rgba(182,210,234,.8)';
 			ctx.lineWidth = 1.5 * dpr;
-			ctx.shadowColor = 'rgba(232,147,90,.7)';
+			ctx.shadowColor = 'rgba(103,150,201,.7)';
 			ctx.shadowBlur = 6 * dpr;
 			ctx.stroke();
 			ctx.shadowBlur = 0;
@@ -293,8 +293,8 @@
 			const pulse = reducedMotion ? 0.5 : 0.5 + 0.5 * Math.sin(time * 2.2);
 			ctx.beginPath();
 			ctx.arc(tx, ty, (2.4 + 0.8 * pulse) * dpr, 0, TAU);
-			ctx.fillStyle = '#fbe1c6';
-			ctx.shadowColor = 'rgba(232,147,90,1)';
+			ctx.fillStyle = '#d4e5f4';
+			ctx.shadowColor = 'rgba(103,150,201,1)';
 			ctx.shadowBlur = 9 * dpr;
 			ctx.fill();
 			ctx.shadowBlur = 0;
@@ -303,7 +303,7 @@
 			if (!reducedMotion && syncedAt !== null && now - syncedAt < 4200) {
 				const sp = (now - syncedAt) / 4200;
 				const ease = 1 - Math.pow(1 - sp, 3);
-				ctx.strokeStyle = `rgba(251,225,198,${(0.55 * (1 - sp)).toFixed(3)})`;
+				ctx.strokeStyle = `rgba(212,229,244,${(0.55 * (1 - sp)).toFixed(3)})`;
 				ctx.lineWidth = 1.6 * dpr;
 				ringPath(ctx, coreR + (rNow - coreR) * ease, 96);
 				ctx.stroke();
@@ -313,14 +313,14 @@
 		// The pith.
 		const cp = reducedMotion ? 0.9 : 0.82 + 0.18 * Math.sin(time * 1.6);
 		const cg = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreR * 3);
-		cg.addColorStop(0, `rgba(255,238,216,${(0.85 * cp).toFixed(3)})`);
-		cg.addColorStop(0.35, `rgba(246,200,154,${(0.4 * cp).toFixed(3)})`);
-		cg.addColorStop(1, 'rgba(232,147,90,0)');
+		cg.addColorStop(0, `rgba(234,243,251,${(0.85 * cp).toFixed(3)})`);
+		cg.addColorStop(0.35, `rgba(182,210,234,${(0.4 * cp).toFixed(3)})`);
+		cg.addColorStop(1, 'rgba(103,150,201,0)');
 		ctx.fillStyle = cg;
 		ctx.beginPath();
 		ctx.arc(cx, cy, coreR * 3, 0, TAU);
 		ctx.fill();
-		ctx.fillStyle = `rgba(255,245,232,${cp.toFixed(3)})`;
+		ctx.fillStyle = `rgba(234,243,251,${cp.toFixed(3)})`;
 		ctx.beginPath();
 		ctx.arc(cx, cy, 2.4 * dpr, 0, TAU);
 		ctx.fill();
@@ -380,8 +380,8 @@
 		inset: -60px;
 		background: radial-gradient(
 			circle,
-			rgba(232, 147, 90, 0.09),
-			rgba(232, 147, 90, 0.02) 50%,
+			rgba(103, 150, 201, 0.09),
+			rgba(103, 150, 201, 0.02) 50%,
 			transparent 70%
 		);
 		animation: hwBreathe 9s ease-in-out infinite;

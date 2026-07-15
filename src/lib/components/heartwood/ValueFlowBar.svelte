@@ -124,7 +124,7 @@
 	}
 
 	.seg.transferred {
-		background: color-mix(in oklab, var(--text-secondary) 55%, var(--panel, #241d19));
+		background: color-mix(in oklab, var(--text-secondary) 55%, var(--panel, #1c2523));
 	}
 
 	.seg.subsidy {
@@ -172,7 +172,7 @@
 	}
 
 	.dot.transferred {
-		background: color-mix(in oklab, var(--text-secondary) 55%, var(--panel, #241d19));
+		background: color-mix(in oklab, var(--text-secondary) 55%, var(--panel, #1c2523));
 	}
 
 	.dot.subsidy {

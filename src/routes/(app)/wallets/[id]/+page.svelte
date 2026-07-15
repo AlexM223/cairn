@@ -1525,7 +1525,7 @@
 		flex-shrink: 0;
 		border-radius: 50%;
 		color: var(--attention);
-		background: rgba(232, 147, 90, 0.1);
+		background: rgba(217, 180, 126, 0.1);
 	}
 
 	.cancel-badge {
@@ -1535,7 +1535,7 @@
 		letter-spacing: 0.04em;
 		text-transform: uppercase;
 		color: var(--attention);
-		background: rgba(232, 147, 90, 0.12);
+		background: rgba(217, 180, 126, 0.12);
 		padding: 2px 7px;
 		border-radius: var(--radius-badge, 4px);
 		vertical-align: middle;

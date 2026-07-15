@@ -1745,7 +1745,7 @@
 	}
 
 	.txt-toggle.active {
-		background: rgba(232, 147, 90, 0.1);
+		background: rgba(103, 150, 201, 0.1);
 		color: var(--accent-bright);
 	}
 
@@ -1849,8 +1849,9 @@
 		outline: none;
 		padding: 4px 0;
 		font-family: var(--font-serif);
-		font-weight: 600;
+		font-weight: var(--t-hero-weight);
 		font-size: 22px;
+		font-variant-numeric: tabular-nums;
 		color: var(--text-hero);
 		caret-color: var(--accent);
 	}
@@ -1924,8 +1925,9 @@
 		outline: none;
 		padding: 4px 0;
 		font-family: var(--font-serif);
-		font-weight: 600;
+		font-weight: var(--t-hero-weight);
 		font-size: 17px;
+		font-variant-numeric: tabular-nums;
 		color: var(--text-hero);
 		caret-color: var(--accent);
 	}
@@ -1976,7 +1978,7 @@
 
 	.hero-amount {
 		font-family: var(--font-serif);
-		font-weight: 600;
+		font-weight: var(--t-hero-weight);
 		font-size: 64px;
 		line-height: 0.96;
 		letter-spacing: -0.015em;
@@ -2615,7 +2617,7 @@
 
 	.sent-title {
 		font-family: var(--font-serif);
-		font-weight: 600;
+		font-weight: var(--t-hero-weight);
 		font-size: 40px;
 		line-height: 1.1;
 		letter-spacing: -0.015em;

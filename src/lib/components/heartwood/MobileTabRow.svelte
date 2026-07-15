@@ -1,6 +1,6 @@
 <script lang="ts">
 	// Heartwood mobile text-tab row (<=900px, tab pages): the toggle grammar —
-	// active copper-bright on a copper tint, inactive path-tone text pills.
+	// active slate-blue-bright on an accent tint, inactive path-tone text pills.
 	import { page } from '$app/state';
 
 	let { tabs }: { tabs: { href: string; label: string }[] } = $props();
@@ -52,7 +52,7 @@
 
 	.tab.active {
 		color: var(--accent-bright);
-		background: rgba(232, 147, 90, 0.1);
+		background: var(--accent-muted);
 	}
 
 	@media (max-width: 900px) {

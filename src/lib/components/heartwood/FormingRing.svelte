@@ -86,7 +86,7 @@
 		gap: 8px;
 		padding: 10px 16px;
 		border-radius: var(--radius-strip);
-		background: linear-gradient(160deg, rgba(232, 147, 90, 0.16), rgba(232, 147, 90, 0.03));
+		background: linear-gradient(160deg, rgba(103, 150, 201, 0.16), rgba(103, 150, 201, 0.03));
 		border: 1px solid var(--accent);
 	}
 
@@ -114,7 +114,7 @@
 		stroke: var(--accent-bright);
 		stroke-width: 3;
 		stroke-linecap: round;
-		filter: drop-shadow(0 0 3px rgba(232, 147, 90, 0.55));
+		filter: drop-shadow(0 0 3px rgba(103, 150, 201, 0.55));
 		transition: stroke-dasharray 600ms var(--ease);
 	}
 

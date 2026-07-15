@@ -1288,7 +1288,7 @@
 
 	.hw-hero-unit {
 		font-family: var(--font-serif);
-		font-weight: 600;
+		font-weight: var(--t-hero-weight);
 		font-size: clamp(20px, 3vw, 30px);
 		color: var(--text-secondary);
 	}

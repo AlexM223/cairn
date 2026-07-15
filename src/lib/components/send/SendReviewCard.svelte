@@ -251,8 +251,10 @@
 
 	.summary-sentence {
 		font-family: var(--font-serif);
+		font-weight: var(--t-hero-weight);
 		font-size: 21px;
 		line-height: 1.4;
+		font-variant-numeric: tabular-nums;
 		color: var(--text);
 		letter-spacing: -0.01em;
 	}

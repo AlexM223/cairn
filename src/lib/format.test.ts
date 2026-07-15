@@ -12,7 +12,8 @@ import {
 	formatDuration,
 	btcToFiat,
 	formatFiat,
-	gatedFiatPrice
+	gatedFiatPrice,
+	isFiatPrimary
 } from './format';
 
 describe('formatBtc', () => {
@@ -228,6 +229,23 @@ describe('gatedFiatPrice', () => {
 
 	it('stays null (not a fake $0) while the toggle is on but the price has not loaded yet', () => {
 		expect(gatedFiatPrice(true, null)).toBeNull();
+	});
+});
+
+describe('isFiatPrimary', () => {
+	// cairn-6ppq: DESIGN-MANIFESTO.md §3 MUST rule — BTC/sats is primary BY
+	// DEFAULT everywhere Amount.svelte renders, fiat is a muted secondary line.
+	it('defaults to BTC/sats-primary (false) when the user has no explicit preference, even with a loaded fiat value', () => {
+		expect(isFiatPrimary(false, '$65,000.00')).toBe(false);
+	});
+
+	it('an explicit fiat-primary preference still wins over the sats-first default', () => {
+		expect(isFiatPrimary(true, '$65,000.00')).toBe(true);
+	});
+
+	it('never goes fiat-primary when no fiat value rendered at all (no price loaded), regardless of preference', () => {
+		expect(isFiatPrimary(true, null)).toBe(false);
+		expect(isFiatPrimary(false, null)).toBe(false);
 	});
 });
 

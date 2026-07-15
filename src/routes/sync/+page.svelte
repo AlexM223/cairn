@@ -298,7 +298,7 @@
 		font: 600 10.5px var(--font-ui);
 		letter-spacing: 0.2em;
 		text-transform: uppercase;
-		color: #b39a88;
+		color: var(--text-secondary);
 	}
 
 	.sage-text {
@@ -320,7 +320,7 @@
 		height: 6px;
 		border-radius: 50%;
 		background: var(--sage);
-		box-shadow: 0 0 8px rgba(138, 160, 110, 0.8);
+		box-shadow: 0 0 8px rgba(131, 184, 146, 0.8);
 		animation: hwBlink 2.4s ease-in-out infinite;
 	}
 
@@ -355,13 +355,13 @@
 		margin-top: 16px;
 		height: 3px;
 		border-radius: 2px;
-		background: #241c18;
+		background: var(--bg-input);
 		overflow: hidden;
 	}
 
 	.bar-fill {
 		height: 100%;
-		background: linear-gradient(90deg, #b5673a, var(--accent));
+		background: linear-gradient(90deg, var(--accent-dim), var(--accent));
 		transition: width 0.9s ease;
 	}
 
@@ -377,7 +377,7 @@
 	.note-card {
 		margin-top: 22px;
 		padding: 14px 16px;
-		background: #201a16;
+		background: var(--surface-elevated);
 		border: 1px solid var(--border-control);
 		border-radius: 9px;
 	}

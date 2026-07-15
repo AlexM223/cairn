@@ -237,7 +237,7 @@
 
 	.speed-row.active {
 		border-color: var(--accent);
-		background: rgba(232, 147, 90, 0.1);
+		background: rgba(103, 150, 201, 0.1);
 	}
 
 	.speed-main {
@@ -313,8 +313,9 @@
 		outline: none;
 		padding: 4px 0;
 		font-family: var(--font-serif);
-		font-weight: 600;
+		font-weight: var(--t-hero-weight);
 		font-size: 17px;
+		font-variant-numeric: tabular-nums;
 		color: var(--text-hero);
 		caret-color: var(--accent);
 	}

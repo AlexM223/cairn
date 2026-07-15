@@ -1,7 +1,7 @@
 <script lang="ts">
 	/**
 	 * QuorumArc — multisig signature-quorum ring. The ring is split into
-	 * `total` equal segments: collected ones glow copper, the segment
+	 * `total` equal segments: collected ones glow slate-blue, the segment
 	 * currently being signed (when `active`) pulses cream, the rest are a
 	 * dim track.
 	 *
@@ -73,7 +73,7 @@
 
 	.seg.collected {
 		stroke: var(--accent);
-		filter: drop-shadow(0 0 3px rgba(232, 147, 90, 0.5));
+		filter: drop-shadow(0 0 3px rgba(103, 150, 201, 0.5));
 	}
 
 	.seg.active {
@@ -82,8 +82,7 @@
 	}
 
 	.seg.track {
-		/* Spec literal #2E2620 for the quorum/dial track — close to
-		   --border-control but warmer. */
-		stroke: #2e2620;
+		/* White-alpha wash, same family as --border-control. */
+		stroke: var(--border-control);
 	}
 </style>

@@ -1772,7 +1772,7 @@
 	}
 
 	.txt-toggle.active {
-		background: rgba(232, 147, 90, 0.1);
+		background: rgba(103, 150, 201, 0.1);
 		color: var(--accent-bright);
 	}
 
@@ -1794,7 +1794,9 @@
 		min-width: 0;
 	}
 
-	/* The one number that owns the page: 86px serif on desktop (5a). */
+	/* The one number that owns the page: 86px serif on desktop (5a). Weight
+	   matches --t-hero-weight (~440, DESIGN-MANIFESTO.md §3) — /600 reads too
+	   heavy on the Fraunces variable serif for a calm money numeral. */
 	.hero-input {
 		background: transparent;
 		border: none;
@@ -1803,7 +1805,7 @@
 		max-width: 100%;
 		min-width: 4ch;
 		font-family: var(--font-serif);
-		font-weight: 600;
+		font-weight: var(--t-hero-weight);
 		font-size: 86px;
 		line-height: 0.92;
 		letter-spacing: -0.015em;
@@ -1826,7 +1828,7 @@
 
 	.hero-max {
 		font-family: var(--font-serif);
-		font-weight: 600;
+		font-weight: var(--t-hero-weight);
 		font-size: 64px;
 		line-height: 1;
 		letter-spacing: -0.015em;
@@ -1972,8 +1974,9 @@
 		outline: none;
 		padding: 4px 0;
 		font-family: var(--font-serif);
-		font-weight: 600;
+		font-weight: var(--t-hero-weight);
 		font-size: 20px;
+		font-variant-numeric: tabular-nums;
 		color: var(--text-hero);
 		caret-color: var(--accent);
 	}
@@ -2036,8 +2039,9 @@
 		outline: none;
 		padding: 4px 0;
 		font-family: var(--font-serif);
-		font-weight: 600;
+		font-weight: var(--t-hero-weight);
 		font-size: 17px;
+		font-variant-numeric: tabular-nums;
 		color: var(--text-hero);
 		caret-color: var(--accent);
 	}
@@ -2655,7 +2659,7 @@
 
 	.sent-title {
 		font-family: var(--font-serif);
-		font-weight: 600;
+		font-weight: var(--t-hero-weight);
 		font-size: 40px;
 		line-height: 1.1;
 		letter-spacing: -0.015em;

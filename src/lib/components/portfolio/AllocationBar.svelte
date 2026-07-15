@@ -18,9 +18,11 @@
 
 	let { slices, total }: { slices: Slice[]; total: number } = $props();
 
-	// Copper-family shades only — the allocation strip is a quiet texture, not
-	// a pie chart.
-	const PALETTE = ['#e8935a', '#b5673a', '#7a5238', '#d8b27a', '#5e3f2c', '#caa06a'];
+	// Cool-neutral shades only — the allocation strip is a quiet texture, not
+	// a pie chart. The slate-blue accent stays reserved for the primary
+	// button + active nav (DESIGN-MANIFESTO.md §2), so this ramp is
+	// deliberately hue-free rather than a copper or blue family.
+	const PALETTE = ['#9ba6a1', '#838f8a', '#6e7975', '#5a6662', '#49524e', '#384039'];
 
 	const colorFor = (i: number) => PALETTE[i % PALETTE.length];
 

@@ -61,16 +61,16 @@
 {/if}
 
 <style>
-	/* Sage band — a calm, wallet-owned green distinct from the copper fee
-	   language, so "yours" reads instantly against the anonymous mempool. */
+	/* Sage band — a calm, wallet-owned grove-green distinct from the slate-blue
+	   accent, so "yours" reads instantly against the anonymous mempool. */
 	.pending-band {
 		display: flex;
 		flex-direction: column;
 		gap: 10px;
 		padding: 16px 18px;
 		border-radius: var(--radius-card, 10px);
-		border: 1px solid color-mix(in srgb, var(--success, #7c9c73) 40%, transparent);
-		background: color-mix(in srgb, var(--success, #7c9c73) 9%, transparent);
+		border: 1px solid color-mix(in srgb, var(--success, #83b892) 40%, transparent);
+		background: color-mix(in srgb, var(--success, #83b892) 9%, transparent);
 	}
 
 	.band-head {
@@ -90,7 +90,7 @@
 	}
 
 	.band-title :global(svg) {
-		color: var(--success, #7c9c73);
+		color: var(--success, #83b892);
 	}
 
 	.band-sub {
@@ -112,7 +112,7 @@
 		gap: 14px;
 		flex-wrap: wrap;
 		padding: 7px 0;
-		border-top: 1px solid color-mix(in srgb, var(--success, #7c9c73) 18%, transparent);
+		border-top: 1px solid color-mix(in srgb, var(--success, #83b892) 18%, transparent);
 	}
 
 	.row:first-child {
@@ -142,7 +142,7 @@
 	}
 
 	.amount.in {
-		color: var(--success, #7c9c73);
+		color: var(--success, #83b892);
 	}
 
 	.meta {

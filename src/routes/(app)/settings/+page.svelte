@@ -7,6 +7,7 @@
 	import Toasts from '$lib/components/Toasts.svelte';
 	import { toast } from '$lib/components/toast.svelte';
 	import { addPasskey, browserSupportsWebAuthn } from '$lib/passkey';
+	import { fiatPrimaryPref, setFiatPrimaryPref } from '$lib/price';
 	import type { CredentialInfo } from '$lib/types';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
@@ -154,6 +155,38 @@
 		showFiat = on;
 		localStorage.setItem('cairn.fiat', on ? 'on' : 'off');
 	}
+
+	// --- Theme (Settings → Display "Theme" row, cairn-sdx5.7) ----------------
+	// Same read-on-mount / write-on-click shape as unit/fiat above: the
+	// `$effect` below has no reactive dependencies of its own, so it only
+	// ever runs once (functionally an onMount), and every write happens
+	// imperatively inside setTheme() rather than in a reactive effect keyed
+	// off `theme` — so there is no wizardProgress-style (cairn-pwo1) clobber
+	// risk of a persistence effect racing a restore. `data-theme` on <html>
+	// is also flipped here, live, with no reload — the app.html inline
+	// script only handles the *first paint*, before hydration.
+	let theme = $state<'system' | 'dark' | 'light'>('system');
+	$effect(() => {
+		const saved = localStorage.getItem('hw.theme');
+		if (saved === 'dark' || saved === 'light') theme = saved;
+	});
+	function applyTheme(t: 'system' | 'dark' | 'light') {
+		if (t === 'system') document.documentElement.removeAttribute('data-theme');
+		else document.documentElement.setAttribute('data-theme', t);
+	}
+	function setTheme(t: 'system' | 'dark' | 'light') {
+		theme = t;
+		if (t === 'system') localStorage.removeItem('hw.theme');
+		else localStorage.setItem('hw.theme', t);
+		applyTheme(t);
+	}
+
+	// --- Primary display order (cairn-6ppq) ----------------------------------
+	// DESIGN-MANIFESTO.md §3 MUST rule: BTC/sats is primary everywhere by
+	// default. This durable preference (default OFF/BTC-primary) is what lets
+	// a user explicitly opt into fiat-primary instead; Amount.svelte reads the
+	// shared `fiatPrimaryPref` store directly, so flipping it here updates
+	// every Amount on the site immediately.
 
 	// Which hairline rows are expanded inline (account / passkeys / recovery /
 	// contacts-gate / about). Everything the old card layout held still lives
@@ -368,6 +401,30 @@
 		</div>
 	</div>
 
+	{#if showFiat}
+		<!-- Primary display order (cairn-6ppq): only meaningful once fiat is
+		     shown at all above. Default BTC/sats-primary per the manifesto. -->
+		<div class="hw-row static">
+			<span class="row-title">Primary display</span>
+			<div class="unit-toggle" role="group" aria-label="Primary display">
+				<button
+					type="button"
+					class="unit"
+					class:active={!$fiatPrimaryPref}
+					aria-pressed={!$fiatPrimaryPref}
+					onclick={() => setFiatPrimaryPref(false)}>BTC/sats</button
+				>
+				<button
+					type="button"
+					class="unit"
+					class:active={$fiatPrimaryPref}
+					aria-pressed={$fiatPrimaryPref}
+					onclick={() => setFiatPrimaryPref(true)}>Fiat</button
+				>
+			</div>
+		</div>
+	{/if}
+
 	<!-- Notifications -->
 	<a class="hw-row" href="/settings/notifications">
 		<span class="row-title">Notifications</span>
@@ -566,10 +623,35 @@
 		<span class="chev"><Icon name="arrow-down-left" size={14} /></span>
 	</a>
 
-	<!-- Theme (single theme for now — the toggle lights up in a future release) -->
+	<!-- Theme (UX spec §2.6c "Theme · Heartwood (dark)" row; app-wide light
+	     mode rollout, cairn-sdx5.7). System honors the OS's
+	     prefers-color-scheme; Dark/Light are explicit overrides applied via
+	     data-theme on <html> (src/app.css), with no page reload. -->
 	<div class="hw-row static">
 		<span class="row-title">Theme</span>
-		<span class="row-meta">Heartwood (dark) · light coming soon</span>
+		<div class="unit-toggle" role="group" aria-label="Theme">
+			<button
+				type="button"
+				class="unit"
+				class:active={theme === 'system'}
+				aria-pressed={theme === 'system'}
+				onclick={() => setTheme('system')}>System</button
+			>
+			<button
+				type="button"
+				class="unit"
+				class:active={theme === 'dark'}
+				aria-pressed={theme === 'dark'}
+				onclick={() => setTheme('dark')}>Dark</button
+			>
+			<button
+				type="button"
+				class="unit"
+				class:active={theme === 'light'}
+				aria-pressed={theme === 'light'}
+				onclick={() => setTheme('light')}>Light</button
+			>
+		</div>
 	</div>
 
 	<!-- About -->
@@ -778,7 +860,7 @@
 		height: 56px;
 		flex-shrink: 0;
 		border-radius: 50%;
-		background: linear-gradient(135deg, #b5673a, var(--accent));
+		background: linear-gradient(135deg, var(--accent-dim), var(--accent));
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -948,7 +1030,10 @@
 	.unit.active {
 		font-weight: 600;
 		color: var(--accent-bright);
-		background: rgba(232, 147, 90, 0.1);
+		/* var() not a literal (cairn-sdx5.7) — this pill sits under the new
+		   3-way theme toggle too, so it must retint on light mode instead of
+		   always washing in the dark-mode accent hex. */
+		background: var(--accent-muted);
 	}
 
 	@media (max-width: 900px) {
@@ -1245,7 +1330,7 @@
 		   (cairn-amyl). */
 		min-height: 44px;
 		color: var(--error);
-		border-color: rgba(224, 96, 76, 0.4);
+		border-color: rgba(224, 102, 79, 0.4);
 	}
 
 	.danger-btn:hover:not(:disabled) {

@@ -45,10 +45,14 @@
 	const tipX = $derived(17 + R * Math.cos(tipAngle));
 	const tipY = $derived(17 + R * Math.sin(tipAngle));
 
-	// at-tip: copper · syncing: dim copper (spec literal #B5673A, sits between
-	// --accent and --accent-dim) · behind: --accent-dim, duller still.
+	// at-tip: slate-blue accent · syncing: a dim blend between --accent and
+	// --accent-dim · behind: --accent-dim, duller still.
 	const arcColor = $derived(
-		dialState === 'at-tip' ? 'var(--accent)' : dialState === 'syncing' ? '#b5673a' : 'var(--accent-dim)'
+		dialState === 'at-tip'
+			? 'var(--accent)'
+			: dialState === 'syncing'
+				? 'color-mix(in srgb, var(--accent) 55%, var(--accent-dim))'
+				: 'var(--accent-dim)'
 	);
 
 	// One-shot sweep retrigger: any change to pulseKey after the first render
@@ -85,7 +89,7 @@
 	<circle cx="17" cy="17" r="5" fill="none" stroke={arcColor} stroke-width="1.1" opacity="0.45" />
 	<circle cx="17" cy="17" r="9" fill="none" stroke={arcColor} stroke-width="1.1" opacity="0.6" />
 	<!-- Track -->
-	<circle cx="17" cy="17" r={R} fill="none" stroke="#2e2620" stroke-width="1.6" />
+	<circle cx="17" cy="17" r={R} fill="none" stroke="var(--border-subtle)" stroke-width="1.6" />
 	<!-- Forming-ring progress arc, 12 o'clock start -->
 	<circle
 		cx="17"
@@ -97,7 +101,7 @@
 		stroke-linecap="round"
 		stroke-dasharray="{arc} {C}"
 		transform="rotate(-90 17 17)"
-		style={dialState === 'at-tip' ? 'filter: drop-shadow(0 0 3px rgba(232, 147, 90, 0.5))' : ''}
+		style={dialState === 'at-tip' ? 'filter: drop-shadow(0 0 3px rgba(103, 150, 201, 0.5))' : ''}
 	/>
 	<!-- Tip dot at the arc's leading edge -->
 	<circle

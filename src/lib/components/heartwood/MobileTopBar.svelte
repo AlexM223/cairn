@@ -82,7 +82,7 @@
 			     copy — the Node lane (cairn-koy4.8) wires the live height. -->
 			<span class="tip-pill" aria-hidden="true">
 				<svg width="16" height="16" viewBox="0 0 34 34" class="tip-dial">
-					<circle cx="17" cy="17" r="13.5" fill="none" stroke="#2e2620" stroke-width="2.4" />
+					<circle cx="17" cy="17" r="13.5" fill="none" stroke="var(--border-subtle)" stroke-width="2.4" />
 					<circle
 						cx="17"
 						cy="17"
@@ -212,7 +212,7 @@
 		height: 30px;
 		border: none;
 		border-radius: 50%;
-		background: linear-gradient(135deg, #b5673a, #e8935a);
+		background: linear-gradient(135deg, var(--accent-dim), var(--accent));
 		display: flex;
 		align-items: center;
 		justify-content: center;

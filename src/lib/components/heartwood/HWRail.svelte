@@ -111,7 +111,7 @@
 	<svg class="dial" width="38" height="38" viewBox="0 0 34 34" aria-hidden="true">
 		<circle cx="17" cy="17" r="5" fill="none" stroke="var(--accent)" stroke-width="1.1" opacity=".45" />
 		<circle cx="17" cy="17" r="9" fill="none" stroke="var(--accent)" stroke-width="1.1" opacity=".6" />
-		<circle cx="17" cy="17" r="13.5" fill="none" stroke="#2e2620" stroke-width="1.6" />
+		<circle cx="17" cy="17" r="13.5" fill="none" stroke="var(--border-subtle)" stroke-width="1.6" />
 		<circle
 			cx="17"
 			cy="17"
@@ -209,10 +209,11 @@
 		align-items: center;
 		justify-content: center;
 		gap: 4px;
-		/* Spec rail-inactive tone — between --text-faint and --eyebrow-path;
-		   decorative-weight by design, the icon-label span makes the meaning
-		   visible too (cairn-vtpu — icon-only was illegible to first-timers). */
-		color: #7a6e63;
+		/* Inactive = cool-neutral text token (DESIGN-MANIFESTO.md §2/§5 — the
+		   one accent hue is reserved for the active item below); the
+		   icon-label span makes the meaning visible too (cairn-vtpu —
+		   icon-only was illegible to first-timers). */
+		color: var(--text-muted);
 		background: transparent;
 		transition:
 			color 120ms var(--ease),
@@ -225,7 +226,7 @@
 
 	.icon-btn.active {
 		color: var(--accent-bright);
-		background: rgba(232, 147, 90, 0.1);
+		background: var(--accent-muted);
 	}
 
 	.icon-label {
@@ -246,8 +247,12 @@
 		margin-bottom: 14px;
 	}
 
+	/* Cool signal-sheen on the epoch dial's active arc (DESIGN-MANIFESTO.md §5
+	   permits glow on the ring/dial family — it's the identity's own "signal
+	   sheen," never a warm crypto-neon button glow). Token-mixed rather than a
+	   literal rgb triplet so it can't drift from --accent again. */
 	.dial-arc {
-		filter: drop-shadow(0 0 3px rgba(232, 147, 90, 0.5));
+		filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 50%, transparent));
 	}
 
 	.dial-tip {
@@ -267,7 +272,7 @@
 		height: 30px;
 		border: none;
 		border-radius: 50%;
-		background: linear-gradient(135deg, #b5673a, #e8935a);
+		background: linear-gradient(135deg, var(--accent-dim), var(--accent));
 		display: flex;
 		align-items: center;
 		justify-content: center;

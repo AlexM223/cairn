@@ -583,7 +583,7 @@
 		position: absolute;
 		transform: translate(0, calc(-100% - 12px));
 		pointer-events: none;
-		background: #201a16;
+		background: var(--surface-elevated);
 		border: 1px solid var(--border-control);
 		border-radius: var(--radius-strip);
 		padding: 0.4rem 0.6rem;

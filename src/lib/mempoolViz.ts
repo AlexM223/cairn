@@ -208,16 +208,18 @@ function squarify(
 
 // ------------------------------------------------------------------ color
 
-/** Warm ramp anchors: cool steel → copper → amber → hot red, by fee rate. */
+/** Ramp anchors: cool steel → gold → hot red, by fee rate. No copper/orange
+ *  band (DESIGN-MANIFESTO.md §7 AVOID — no accent-adjacent orange anywhere,
+ *  including data-viz heat scales). */
 const RAMP: [number, [number, number, number]][] = [
 	[1, [94, 114, 128]],
 	[3, [110, 127, 134]],
 	[6, [138, 133, 120]],
-	[12, [192, 137, 96]],
-	[25, [232, 147, 90]],
-	[50, [232, 180, 90]],
-	[100, [232, 201, 90]],
-	[250, [232, 90, 90]]
+	[12, [175, 148, 110]],
+	[25, [217, 180, 126]],
+	[50, [224, 196, 110]],
+	[100, [230, 208, 100]],
+	[250, [234, 100, 80]]
 ];
 
 /** Fee rate (sat/vB) → CSS color on the forge ramp, interpolated in log space. */

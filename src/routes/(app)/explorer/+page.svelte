@@ -1101,10 +1101,10 @@
 		border-radius: var(--radius-strip);
 		background: linear-gradient(
 			160deg,
-			rgba(232, 147, 90, calc(0.18 - var(--depth) * 0.03)),
-			rgba(232, 147, 90, 0.04)
+			rgba(103, 150, 201, calc(0.18 - var(--depth) * 0.03)),
+			rgba(103, 150, 201, 0.04)
 		);
-		border: 1px solid rgba(232, 147, 90, calc(0.3 - var(--depth) * 0.05));
+		border: 1px solid rgba(103, 150, 201, calc(0.3 - var(--depth) * 0.05));
 	}
 
 	.upcoming-chip.next {
@@ -1155,7 +1155,7 @@
 	}
 
 	.cap-now {
-		color: #b39a88;
+		color: var(--text-secondary);
 	}
 
 	/* --- latest rings --- */

@@ -41,7 +41,7 @@
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-card);
 		background: var(--accent-muted);
-		border-color: rgba(232, 147, 90, 0.25);
+		border-color: rgba(103, 150, 201, 0.25);
 		margin-bottom: 18px;
 	}
 

@@ -60,14 +60,14 @@
 		copper: {
 			stroke: 'var(--accent)',
 			core: 'var(--accent-core)',
-			glow: 'drop-shadow(0 0 3px rgba(232, 147, 90, 0.85))'
+			glow: 'drop-shadow(0 0 3px rgba(103, 150, 201, 0.85))'
 		},
 		cream: {
-			stroke: '#f1e4d6',
+			stroke: '#f3efe6',
 			core: '#ffffff',
-			glow: 'drop-shadow(0 0 2px rgba(255, 240, 225, 0.5))'
+			glow: 'drop-shadow(0 0 2px rgba(243, 239, 230, 0.5))'
 		},
-		ink: { stroke: '#241812', core: '#3a241a', glow: 'none' },
+		ink: { stroke: '#1c2523', core: '#090d0c', glow: 'none' },
 		mono: { stroke: 'var(--accent)', core: 'var(--accent)', glow: 'none' }
 	};
 

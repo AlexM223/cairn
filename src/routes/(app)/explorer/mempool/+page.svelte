@@ -529,10 +529,10 @@
 		border-radius: var(--radius-strip);
 		background: linear-gradient(
 			160deg,
-			rgba(232, 147, 90, calc(0.22 - var(--depth) * 0.03)),
-			rgba(232, 147, 90, 0.05)
+			rgba(103, 150, 201, calc(0.22 - var(--depth) * 0.03)),
+			rgba(103, 150, 201, 0.05)
 		);
-		border: 1px solid rgba(232, 147, 90, calc(0.35 - var(--depth) * 0.05));
+		border: 1px solid rgba(103, 150, 201, calc(0.35 - var(--depth) * 0.05));
 	}
 
 	.proj-eta {

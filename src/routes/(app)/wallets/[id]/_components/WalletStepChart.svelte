@@ -238,8 +238,8 @@
 			>
 				<defs>
 					<linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-						<stop offset="0%" stop-color="rgba(232, 147, 90, 0.16)" />
-						<stop offset="100%" stop-color="rgba(232, 147, 90, 0)" />
+						<stop offset="0%" stop-color="rgba(103, 150, 201, 0.16)" />
+						<stop offset="100%" stop-color="rgba(103, 150, 201, 0)" />
 					</linearGradient>
 				</defs>
 
@@ -371,7 +371,7 @@
 		position: absolute;
 		transform: translate(0, calc(-100% - 10px));
 		pointer-events: none;
-		background: #201a16;
+		background: var(--surface-elevated);
 		border: 1px solid var(--border-control);
 		border-radius: var(--radius-strip);
 		padding: 0.35rem 0.55rem;
@@ -387,7 +387,8 @@
 	.tooltip-balance {
 		font-family: var(--font-serif);
 		font-size: 0.84rem;
-		font-weight: 600;
+		font-weight: var(--t-hero-weight);
+		font-variant-numeric: tabular-nums;
 		color: var(--text-rows);
 		white-space: nowrap;
 	}

@@ -201,7 +201,7 @@
 		border-radius: var(--radius-badge);
 		padding: 0 6px;
 		background: var(--accent-dim-2);
-		color: var(--bg-body, #17120f);
+		color: var(--bg-body, #141b19);
 		white-space: nowrap;
 	}
 

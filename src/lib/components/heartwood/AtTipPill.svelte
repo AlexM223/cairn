@@ -62,9 +62,9 @@
 	}
 
 	.num {
-		/* Spec literal #CFC3B8 ("number" tone) — sits between --text-secondary
+		/* Spec literal #C7C8C0 ("number" tone) — sits between --text-secondary
 		   and --text-rows; no token exists for it. */
-		color: #cfc3b8;
+		color: #c7c8c0;
 		font-variant-numeric: tabular-nums;
 	}
 </style>

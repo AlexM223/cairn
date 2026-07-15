@@ -95,6 +95,24 @@ export function btcToFiat(btcAmount: number, usdPrice: number): number {
 }
 
 /**
+ * DESIGN-MANIFESTO.md §3 money-typesetting rule 3 (MUST): BTC/sats is the
+ * hero line, fiat is a muted secondary line, BY DEFAULT — a saver's BTC
+ * balance only grows, so fiat-first framing makes roughly half of all
+ * balance check-ins feel like losses (myopic loss aversion). Amount.svelte
+ * consults this to decide which value fills its `.line.primary` slot.
+ *
+ * Fiat only takes the primary slot when BOTH a fiat value actually rendered
+ * (fiatText non-null — no price loaded yet always collapses to the BTC-only
+ * layout, independent of preference) AND the user explicitly opted into
+ * fiat-primary display (Settings -> Display, default OFF). That explicit
+ * choice is a durable per-user preference, not a one-off override — once set
+ * it keeps winning over the sats-first default (cairn-6ppq).
+ */
+export function isFiatPrimary(fiatPrimaryPref: boolean, fiatText: string | null): boolean {
+	return fiatPrimaryPref && fiatText != null;
+}
+
+/**
  * Single source of truth for "what price should a Home-page Amount show" given
  * the hero's privacy-gated fiat toggle (cairn-r7si). The hero's `showFiat` flag
  * is opt-in and OFF by default; every Amount on Home — the hero balance *and*
