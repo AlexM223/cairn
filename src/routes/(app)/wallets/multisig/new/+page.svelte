@@ -30,7 +30,8 @@
 	import {
 		WIZARD_PROGRESS_KEY,
 		parseSavedMultisigProgress,
-		hasMeaningfulMultisigProgress
+		hasMeaningfulMultisigProgress,
+		keysStepSubLabel
 	} from './_components/wizardProgress';
 	import WizardKeyCheck from './_components/WizardKeyCheck.svelte';
 	import QrKeyImport from './_components/QrKeyImport.svelte';
@@ -1039,8 +1040,15 @@
 	});
 
 	const stepIndex = $derived(STEPS.findIndex((s) => s.key === step));
+	// Secondary sub-progress for the Add-keys step (cairn-hla1) — see
+	// keysStepSubLabel's doc comment in wizardProgress.ts.
+	const keysSubLabel = $derived(keysStepSubLabel(quorumValid, keys.length, totalKeys));
 	const stepAriaLabel = $derived(
-		`Step ${stepIndex + 1} of ${STEPS.length}: ${STEPS[stepIndex]?.label ?? ''}`
+		`Step ${stepIndex + 1} of ${STEPS.length}: ${STEPS[stepIndex]?.label ?? ''}` +
+			// Fold the same sub-progress the visual step-subcount badge shows into
+			// the announced label — that span is aria-hidden, so screen-reader
+			// users get the fraction here instead.
+			(step === 'keys' && keysSubLabel ? `, key ${keys.length} of ${totalKeys} added` : '')
 	);
 </script>
 
@@ -1079,7 +1087,14 @@
 		<ol class="steps" aria-label="Setup progress">
 			{#each STEPS as s, i (s.key)}
 				<li class="step-item" class:active={i === stepIndex} class:done={i < stepIndex}>
-					<span class="step-word">{s.label}</span>
+					<span class="step-word">
+						{s.label}
+						{#if s.key === 'keys' && keysSubLabel}
+							<!-- Visible on the TOP-level indicator (not just while already on
+							     Add keys) so the real effort is legible from any step. -->
+							<span class="step-subcount tabular" aria-hidden="true">{keysSubLabel}</span>
+						{/if}
+					</span>
 					{#if i < STEPS.length - 1}<span class="step-line" aria-hidden="true"></span>{/if}
 				</li>
 			{/each}
@@ -1301,6 +1316,15 @@
 								Upload a wallet file
 							</button>
 						</div>
+						<!-- Links the previously-orphaned stateless signer (cairn-hla1,
+						     symptom d): for someone who wants to spend from this config
+						     right now without Heartwood remembering it at all — the
+						     complement to "Read it" above, which imports it INTO a saved
+						     wallet. Same descriptor/JSON works on either path. -->
+						<p class="hint" style="margin-top: 10px">
+							Or don't save it here at all —
+							<a href="/wallets/multisig/stateless">work from it directly, nothing saved</a>.
+						</p>
 					</div>
 				{/if}
 			</div>
@@ -2776,6 +2800,21 @@
 
 	.step-item.done .step-word {
 		color: var(--text-secondary);
+	}
+
+	/* Secondary sub-progress fraction on the "Add keys" step (cairn-hla1) —
+	   quiet, non-uppercase, tabular so "2/5" doesn't jitter as digits change. */
+	.step-subcount {
+		display: inline-block;
+		margin-left: 4px;
+		font-weight: 500;
+		letter-spacing: normal;
+		text-transform: none;
+		color: var(--text-faint);
+	}
+
+	.step-item.active .step-subcount {
+		color: var(--accent-bright);
 	}
 
 	.step-line {
