@@ -92,6 +92,17 @@
 		chain ? chain.utxos.filter((u) => u.height > 0).reduce((sum, u) => sum + u.value, 0) : null
 	);
 
+	// R2 (docs/UX-PSYCHOLOGY-RESEARCH-2026-07-15.md): multisig has no address
+	// book, so data.sentAddresses (server-computed from completed sends) is the
+	// WHOLE "known address" signal for SendReviewCard's first-send check.
+	// svelte-ignore state_referenced_locally — per-navigation constant
+	const knownAddresses = data.sentAddresses;
+
+	// Bindable from SendReviewCard: true once its R2 micro-step (if shown) is
+	// satisfied, or always true when no check applies. Gates the Review step's
+	// own "Continue" button.
+	let reviewRecipientVerified = $state(true);
+
 	// The send wizard is fully client-driven (device/QR signing, live fees, coin
 	// control) so its SSR output has no functional value — mirrors cairn-97gt on
 	// the single-sig page. `mounted` gates the step chain: false during SSR and
@@ -994,6 +1005,9 @@
 				arrivalWords={arrivalWords(feeChoice)}
 				multisig={{ threshold: required, keysTotal: keys.length, quorumLabel: quorum }}
 				onDetailsOpen={ensureUtxoMasses}
+				balanceSats={spendableSats}
+				{knownAddresses}
+				bind:recipientVerified={reviewRecipientVerified}
 			>
 				{#snippet detailExtra()}
 					{#if review}
@@ -1087,7 +1101,11 @@
 				<button class="btn btn-secondary" onclick={() => (step = 'create')}>
 					<Icon name="chevron-left" size={15} /> Back &amp; edit
 				</button>
-				<button class="btn btn-primary pill-lg" onclick={() => (step = 'sign')}>
+				<button
+					class="btn btn-primary pill-lg"
+					onclick={() => (step = 'sign')}
+					disabled={!reviewRecipientVerified}
+				>
 					{sendCtaLabel(review.amount + review.fee, $btcUsd, 'review')}
 					<Icon name="arrow-right" size={15} />
 				</button>

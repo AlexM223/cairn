@@ -2,7 +2,12 @@ import { error } from '@sveltejs/kit';
 import { requireFeature } from '$lib/server/api';
 import { getWallet, getWalletDetail } from '$lib/server/wallets';
 import { listSavedAddresses } from '$lib/server/addressBook';
-import { getTransaction, getWalletUtxos, ownBroadcastTxids } from '$lib/server/transactions';
+import {
+	getTransaction,
+	getWalletUtxos,
+	ownBroadcastTxids,
+	sentRecipientAddresses
+} from '$lib/server/transactions';
 import type { UnconfirmedTrust, CoinbaseStatus } from '$lib/server/bitcoin/psbt';
 import { summarizePsbt, type PsbtSummary } from '$lib/server/bitcoin/psbt';
 import { getReferralBuyUrls } from '$lib/server/referrals';
@@ -268,6 +273,13 @@ export const load: PageServerLoad = async (event) => {
 		// means the off state can't leak via a devtools/API-adjacent read of the
 		// page data either.
 		savedAddresses: locals.flags?.address_book === false ? [] : listSavedAddresses(locals.user!.id),
+		// R2 (docs/UX-PSYCHOLOGY-RESEARCH-2026-07-15.md): addresses this wallet has
+		// already broadcast a completed send to — half of the "known address"
+		// signal for the review step's stake-triggered verification micro-step
+		// (the other half is savedAddresses above). Cheap synchronous SQLite read,
+		// not gated on any flag — it's a first-send SAFETY signal, unrelated to the
+		// address_book convenience feature.
+		sentAddresses: sentRecipientAddresses(locals.user!.id, id),
 		// Buy-a-device links for the signer cards' unavailable states; null when
 		// the referral_links flag is off (the cards then render no referral UI).
 		referralBuyUrls: getReferralBuyUrls(locals.flags),

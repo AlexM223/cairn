@@ -26,7 +26,10 @@ vi.mock('$lib/server/transactions', () => ({
 	// Identity by default (real classifyUnconfirmedTrust is a pass-through-plus-tag
 	// function) — the cairn-oae1.3 tests below need the coinbase/height fields
 	// they hand to getWalletUtxos to survive this step unmodified.
-	classifyUnconfirmedTrust: vi.fn((utxos: unknown[]) => utxos)
+	classifyUnconfirmedTrust: vi.fn((utxos: unknown[]) => utxos),
+	// First-send detection for the recipient-verify stake check — default to no
+	// prior sends so existing tests are unaffected.
+	sentRecipientAddresses: vi.fn(() => [])
 }));
 vi.mock('$lib/server/bitcoin/psbt', () => ({ summarizePsbt: vi.fn() }));
 vi.mock('$lib/server/referrals', () => ({ getReferralBuyUrls: vi.fn(() => null) }));

@@ -5,6 +5,7 @@ import {
 	getMultisigTransaction,
 	multisigTransactionProgress,
 	ownMultisigTxids,
+	sentMultisigRecipientAddresses,
 	type SavedMultisigTransaction
 } from '$lib/server/multisigTransactions';
 import { getRoster, type RosterMember } from '$lib/server/multisigRoster';
@@ -219,6 +220,11 @@ export const load: PageServerLoad = async (event) => {
 		// the resumed step renders the instant the shell paints, with fees/utxos/
 		// tip filling in behind it.
 		resume,
+		// R2 (docs/UX-PSYCHOLOGY-RESEARCH-2026-07-15.md): addresses this multisig
+		// has already broadcast a completed send to — the review step's entire
+		// "known address" signal here (multisig has no address book), feeding the
+		// shared SendReviewCard's stake-triggered verification micro-step.
+		sentAddresses: sentMultisigRecipientAddresses(locals.user!.id, id),
 		// Buy-a-device links for the signer cards' unavailable states; null when
 		// the referral_links flag is off (the cards then render no referral UI).
 		referralBuyUrls: getReferralBuyUrls(locals.flags)

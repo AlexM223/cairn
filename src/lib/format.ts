@@ -189,6 +189,22 @@ export function truncateMiddle(s: string, head = 8, tail = 8): string {
 	return `${s.slice(0, head)}…${s.slice(-tail)}`;
 }
 
+/**
+ * Splits a string into fixed-size chunks left-to-right ("bc1qx8k2…9f4d" ->
+ * ["bc1q", "x8k2", …, "9f4d"]), the last chunk shorter if the length doesn't
+ * divide evenly. Used to render a full address in scannable groups (R2,
+ * docs/UX-PSYCHOLOGY-RESEARCH-2026-07-15.md) — the full string stays on
+ * screen (unlike truncateMiddle), just visually segmented so the first/last
+ * groups (what wrong-send forensics shows people actually compare) can be
+ * emphasized while the middle is muted.
+ */
+export function chunkString(s: string, size = 4): string[] {
+	if (size <= 0) return [s];
+	const chunks: string[] = [];
+	for (let i = 0; i < s.length; i += size) chunks.push(s.slice(i, i + size));
+	return chunks;
+}
+
 export function formatDuration(seconds: number): string {
 	if (seconds < 90) return `${Math.round(seconds)}s`;
 	if (seconds < 5400) return `${Math.round(seconds / 60)} min`;
