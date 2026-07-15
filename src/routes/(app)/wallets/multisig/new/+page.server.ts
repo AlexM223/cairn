@@ -1,4 +1,4 @@
-import { fail, redirect } from '@sveltejs/kit';
+import { error, fail, redirect } from '@sveltejs/kit';
 import {
 	deriveMultisigAddress,
 	parseDescriptor,
@@ -29,6 +29,14 @@ import { detectCosignerContacts } from '$lib/server/cosignerDetection';
 import { listMultisigs } from '$lib/server/wallets/multisig';
 import { listActiveMultisigServiceReferrals } from '$lib/server/referrals';
 import { requireFeature, requireUser } from '$lib/server/api';
+import {
+	getWizardDraft,
+	createWizardDraft,
+	syncWizardDraft,
+	deleteWizardDraft,
+	type WizardDraftKeyInput,
+	type WizardDraftVaultMode
+} from '$lib/server/multisigWizardDrafts';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async (event) => {
@@ -39,6 +47,22 @@ export const load: PageServerLoad = async (event) => {
 	if (!event.locals.user) throw redirect(302, '/login');
 	// The whole create-multisig wizard is gated; existing multisigs stay usable.
 	requireFeature(event, 'multisig_create');
+
+	// ?draft=N resumes a server-persisted wizard draft (cairn-jy3g), mirroring
+	// the send flow's ?tx=N resume (see wallets/[id]/send/+page.server.ts and
+	// getTransaction in transactions.ts). A synchronous SQLite read only — no
+	// Electrum, no device I/O. Owner-scoped: getWizardDraft returns null both
+	// when the draft doesn't exist and when it belongs to another user, and
+	// either case 404s identically, so a resume link can never be used to
+	// probe another user's in-progress vault.
+	let resumeDraft: ReturnType<typeof getWizardDraft> = null;
+	const draftParam = event.url.searchParams.get('draft');
+	if (draftParam !== null) {
+		const draftId = Number(draftParam);
+		resumeDraft = Number.isInteger(draftId) ? getWizardDraft(event.locals.user.id, draftId) : null;
+		if (!resumeDraft) error(404, 'Saved wizard draft not found');
+	}
+
 	// First-timers get the "why a multisig?" education expanded; repeat users get
 	// it collapsed out of the way.
 	return {
@@ -47,7 +71,8 @@ export const load: PageServerLoad = async (event) => {
 		// when the referral_links flag is on — otherwise an empty list, which the
 		// page treats as "render nothing".
 		multisigServices:
-			event.locals.flags?.referral_links !== false ? listActiveMultisigServiceReferrals() : []
+			event.locals.flags?.referral_links !== false ? listActiveMultisigServiceReferrals() : [],
+		resumeDraft
 	};
 };
 
@@ -254,6 +279,18 @@ export const actions: Actions = {
 				receiveCursor,
 				collaborative
 			});
+			// The wizard draft's job is done — the multisig itself is now the
+			// durable record. Best-effort/owner-scoped delete: a missing or
+			// already-cleared draftId is a no-op, never a reason to fail a
+			// successful create (cairn-jy3g).
+			const draftIdRaw = Number(form.get('draftId'));
+			if (Number.isInteger(draftIdRaw) && draftIdRaw > 0) {
+				try {
+					deleteWizardDraft(locals.user!.id, draftIdRaw);
+				} catch (e) {
+					log.warn({ err: e, userId: locals.user!.id, draftId: draftIdRaw }, 'wizard draft cleanup skipped');
+				}
+			}
 			return { multisigId: multisig.id };
 		} catch (e) {
 			// Double-submit guard (cairn-50ng): createMultisig's synchronous
@@ -264,6 +301,104 @@ export const actions: Actions = {
 				error: e instanceof MultisigError ? e.message : 'Could not create that multisig.'
 			});
 		}
+	},
+
+	/**
+	 * Server-side wizard persistence (cairn-jy3g, Phase 2 of cairn-1u41): commits
+	 * the wizard's current quorum/key-list/position to a per-user draft row,
+	 * creating it on the first call and updating it in place after. The client
+	 * calls this immediately after every local key add/remove (submitKey /
+	 * removeKey in +page.svelte) — see syncWizardDraft's doc comment for why a
+	 * full key-list replace is both simple and still gives each key its own
+	 * durable commit. `draftId` empty/absent creates a new draft; a non-empty
+	 * `draftId` that isn't owned by this user 404s (fail, not error() — this is
+	 * a background sync call, not a page navigation, so it must not blow away
+	 * the wizard's in-memory state with SvelteKit's error page).
+	 *
+	 * SECURITY: only public key fields are accepted (name/category/deviceType/
+	 * xpub/fingerprint/path) — the exact same shape the `key` action above
+	 * already validated and handed back to the client. This action does NOT
+	 * re-run normalizeMultisigKeyInput's private-key-material refusal because
+	 * it never accepts raw pasted text — only the already-normalized key
+	 * objects the client got back from a successful `key` call.
+	 */
+	draftSync: async (event) => {
+		const user = requireUser(event);
+		const { request } = event;
+		const form = await request.formData();
+
+		const name = String(form.get('name') ?? '').trim();
+		const threshold = Number(form.get('threshold'));
+		const totalKeys = Number(form.get('totalKeys'));
+		const scriptTypeRaw = String(form.get('scriptType') ?? '') as MultisigScriptType;
+		const scriptType = MULTISIG_SCRIPT_TYPES.includes(scriptTypeRaw) ? scriptTypeRaw : 'p2wsh';
+		const vaultModeRaw = String(form.get('vaultMode') ?? '');
+		const vaultMode: WizardDraftVaultMode | null =
+			vaultModeRaw === 'collaborative' || vaultModeRaw === 'personal' ? vaultModeRaw : null;
+		const step = String(form.get('step') ?? 'keys').slice(0, 40);
+		const configImported = String(form.get('configImported') ?? '') === 'true';
+		const importedStartIndexRaw = Number(form.get('importedStartIndex'));
+		const importedStartIndex =
+			Number.isInteger(importedStartIndexRaw) && importedStartIndexRaw >= 0 ? importedStartIndexRaw : 0;
+
+		if (!Number.isInteger(threshold) || !Number.isInteger(totalKeys) || threshold < 1 || totalKeys < threshold) {
+			return fail(400, { error: 'Invalid quorum.' });
+		}
+
+		let keys: WizardDraftKeyInput[];
+		try {
+			const parsed = JSON.parse(String(form.get('keys') ?? '[]')) as unknown[];
+			if (!Array.isArray(parsed)) throw new Error('not an array');
+			keys = parsed.map((raw) => {
+				const k = raw as Record<string, unknown>;
+				const category = String(k.category ?? '') as MultisigKeyCategory;
+				if (!MULTISIG_KEY_CATEGORIES.includes(category)) throw new Error('invalid category');
+				const deviceTypeRaw = String(k.deviceType ?? '');
+				const deviceType = (DEVICE_TYPES.has(deviceTypeRaw) ? deviceTypeRaw : null) as MultisigDeviceType;
+				const xpub = String(k.xpub ?? '').trim();
+				const fingerprint = String(k.fingerprint ?? '').trim();
+				const path = String(k.path ?? '').trim();
+				if (!xpub || !fingerprint || !path) throw new Error('incomplete key');
+				return { name: String(k.name ?? '').trim(), category, deviceType, xpub, fingerprint, path };
+			});
+		} catch {
+			return fail(400, { error: 'The wizard draft could not be saved (malformed key list).' });
+		}
+
+		const fields = { name, threshold, totalKeys, scriptType, vaultMode, step, configImported, importedStartIndex };
+
+		const draftIdRaw = Number(form.get('draftId'));
+		if (Number.isInteger(draftIdRaw) && draftIdRaw > 0) {
+			const updated = syncWizardDraft(user.id, draftIdRaw, fields, keys);
+			if (!updated) return fail(404, { error: 'Saved wizard draft not found.' });
+			return { draftId: updated.id };
+		}
+		const created = createWizardDraft(user.id, fields);
+		// A brand-new draft with keys already attached (e.g. the very first
+		// commit fires after the first key is added) — one more sync call folds
+		// them in immediately rather than leaving the draft keyless until the
+		// NEXT add.
+		if (keys.length > 0) {
+			const withKeys = syncWizardDraft(user.id, created.id, fields, keys);
+			return { draftId: (withKeys ?? created).id };
+		}
+		return { draftId: created.id };
+	},
+
+	/** Explicit abandon (Start over): deletes the draft so a later visit to
+	 *  /wallets/multisig/new starts genuinely fresh rather than offering a
+	 *  resume of work the user just discarded. Owner-scoped + idempotent
+	 *  (deleteWizardDraft is a no-op on a missing/foreign id), so this never
+	 *  fails the client's local reset. */
+	draftAbandon: async (event) => {
+		const user = requireUser(event);
+		const { request } = event;
+		const form = await request.formData();
+		const draftIdRaw = Number(form.get('draftId'));
+		if (Number.isInteger(draftIdRaw) && draftIdRaw > 0) {
+			deleteWizardDraft(user.id, draftIdRaw);
+		}
+		return { ok: true };
 	},
 
 	/**
