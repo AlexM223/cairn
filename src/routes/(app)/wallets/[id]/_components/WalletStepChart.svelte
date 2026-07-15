@@ -387,7 +387,8 @@
 	.tooltip-balance {
 		font-family: var(--font-serif);
 		font-size: 0.84rem;
-		font-weight: 600;
+		font-weight: var(--t-hero-weight);
+		font-variant-numeric: tabular-nums;
 		color: var(--text-rows);
 		white-space: nowrap;
 	}

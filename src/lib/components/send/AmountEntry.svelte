@@ -232,7 +232,7 @@
 		max-width: 100%;
 		min-width: 4ch;
 		font-family: var(--font-serif);
-		font-weight: 600;
+		font-weight: var(--t-hero-weight);
 		font-size: 86px;
 		line-height: 0.92;
 		letter-spacing: -0.015em;
@@ -331,8 +331,9 @@
 		outline: none;
 		padding: 4px 0;
 		font-family: var(--font-serif);
-		font-weight: 600;
+		font-weight: var(--t-hero-weight);
 		font-size: 20px;
+		font-variant-numeric: tabular-nums;
 		color: var(--text-hero);
 		caret-color: var(--accent);
 	}

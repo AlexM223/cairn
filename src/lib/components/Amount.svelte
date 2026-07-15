@@ -104,9 +104,15 @@
 		color: var(--text-muted);
 	}
 
-	/* --- hero: page-level total balance --- */
+	/* --- hero: page-level total balance ---
+	   Weight matches --t-hero-weight (~440, DESIGN-MANIFESTO.md §3) — /600
+	   reads too heavy on the Fraunces variable serif for one calm numeral.
+	   Scoped to .size-hero only: .line.primary's base weight (600) still
+	   governs size-row/size-inline, which are out of this pass's scope
+	   (those surfaces span Home/Activity/Explorer, not just wallet/send). */
 	.size-hero .line.primary {
 		font-size: clamp(40px, 6.5vw, 72px);
+		font-weight: var(--t-hero-weight);
 		line-height: 0.95;
 		letter-spacing: -0.015em;
 		color: var(--text-hero);

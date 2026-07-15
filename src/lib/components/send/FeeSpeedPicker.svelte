@@ -313,8 +313,9 @@
 		outline: none;
 		padding: 4px 0;
 		font-family: var(--font-serif);
-		font-weight: 600;
+		font-weight: var(--t-hero-weight);
 		font-size: 17px;
+		font-variant-numeric: tabular-nums;
 		color: var(--text-hero);
 		caret-color: var(--accent);
 	}
