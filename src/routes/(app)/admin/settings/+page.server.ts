@@ -160,6 +160,17 @@ export const actions: Actions = {
 				'electrum_tls_insecure',
 				form.get('electrumTlsInsecure') === 'on' ? 'true' : 'false'
 			);
+
+			// Which network the custom backend is actually on (cairn-10ox /
+			// cairn-x6pr). Deliberately nested inside the custom-mode block, not
+			// written unconditionally like the mode-independent Core RPC fields
+			// below: getChainConfig() forces 'mainnet' unconditionally in public
+			// mode regardless of what's stored, so the field only exists in the
+			// custom-mode form render (mirrors the UI).
+			const chainNetwork = String(form.get('chainNetwork') ?? '').trim();
+			if (chainNetwork && !['mainnet', 'testnet', 'regtest'].includes(chainNetwork))
+				return fail(400, { error: 'Invalid network.' });
+			if (chainNetwork) setSetting('chain_network', chainNetwork);
 		}
 
 		// Bitcoin Core RPC is a separate concern from connectionMode/Electrum

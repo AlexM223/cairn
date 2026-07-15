@@ -360,6 +360,67 @@ describe('admin/settings save action — core_rpc_* persistence (cairn-6uok)', (
 	});
 });
 
+// Regression tests for cairn-x6pr (admin UI follow-up to cairn-10ox): the
+// chainNetwork field is only read/written inside the connectionMode ===
+// 'custom' branch, mirroring getChainConfig()'s "always mainnet in public
+// mode" behavior — a chainNetwork submitted alongside connectionMode=public
+// must be silently ignored, never persisted.
+describe('admin/settings save action — chainNetwork (cairn-x6pr)', () => {
+	it('persists chain_network when present in custom mode', async () => {
+		const res = await actions.save(
+			makeEvent(ADMIN, {
+				connectionMode: 'custom',
+				electrumHost: '10.0.0.5',
+				electrumPort: '50001',
+				electrumPoolSize: '2',
+				chainNetwork: 'regtest'
+			})
+		);
+		expect(res).toEqual({ saved: true });
+		expect(setSetting).toHaveBeenCalledWith('chain_network', 'regtest');
+	});
+
+	it('rejects an invalid chainNetwork value with a 400, before reconfiguring the chain', async () => {
+		const res = await actions.save(
+			makeEvent(ADMIN, {
+				connectionMode: 'custom',
+				electrumHost: '10.0.0.5',
+				electrumPort: '50001',
+				electrumPoolSize: '2',
+				chainNetwork: 'garbage'
+			})
+		);
+		expect(res).toMatchObject({ status: 400 });
+		expect(setSetting).not.toHaveBeenCalledWith('chain_network', expect.anything());
+		expect(reconfigureChain).not.toHaveBeenCalled();
+	});
+
+	it('ignores chainNetwork entirely when connectionMode is public', async () => {
+		const res = await actions.save(
+			makeEvent(ADMIN, {
+				connectionMode: 'public',
+				electrumPoolSize: '2',
+				chainNetwork: 'testnet'
+			})
+		);
+		expect(res).toEqual({ saved: true });
+		expect(setSetting).not.toHaveBeenCalledWith('chain_network', expect.anything());
+	});
+
+	it('leaves chain_network untouched in custom mode when the field is omitted', async () => {
+		const res = await actions.save(
+			makeEvent(ADMIN, {
+				connectionMode: 'custom',
+				electrumHost: '10.0.0.5',
+				electrumPort: '50001',
+				electrumPoolSize: '2'
+			})
+		);
+		expect(res).toEqual({ saved: true });
+		expect(setSetting).not.toHaveBeenCalledWith('chain_network', expect.anything());
+	});
+});
+
 // Regression tests for the Umbrel Wave B assisted-connect follow-up
 // (cairn-6uok's own scope note; filed as cairn-3p9z): the `save` action's
 // `coreRpcAssisted=umbrel` branch is a distinct, minimal submission from the

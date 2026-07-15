@@ -3340,14 +3340,20 @@ this instance (`'umbrel-env'` / `'umbrel-probe'` / `null`) — informational
 only, drives the settings-page card, never changes which connection is
 active.
 
-**`chain_network` (`cairn-10ox`)** is a `mainnet`/`testnet`/`regtest` setting
-(`InstanceSettings.chainNetwork`, default `mainnet`) that records which network the
-*custom* Electrum/Core RPC backend is actually on — threaded through
-`getChainConfig().network` and gating `parseXpub()`'s prefix validation (see §"Single-sig
-derivation"). Always forced back to `mainnet` in `'public'` connection mode, since the
-public default server is always mainnet. Currently settable only via `PUT
-/api/admin/settings` (`chainNetwork` key) — the `/admin/settings` form UI has no field for
-it yet.
+**`chain_network` (`cairn-10ox`, admin UI added in `cairn-x6pr`)** is a
+`mainnet`/`testnet`/`regtest` setting (`InstanceSettings.chainNetwork`, default `mainnet`)
+that records which network the *custom* Electrum/Core RPC backend is actually on —
+threaded through `getChainConfig().network` and gating `parseXpub()`'s prefix validation
+(see §"Single-sig derivation"). Always forced back to `mainnet` in `'public'` connection
+mode, since the public default server is always mainnet. Settable via `PUT
+/api/admin/settings` (`chainNetwork` key) or the `/admin/settings` form UI: a "Network"
+selector (Mainnet/Testnet/Regtest) rendered inside the "Custom" connection-mode fields
+only — it's hidden whenever `'Public servers'` is selected, since the setting is ignored
+there, and the public radio card's description says as much ("always mainnet"). The
+selector carries a one-line caution that changing the network changes which keys and
+addresses are valid. Saving it (like every other field on this form) calls
+`reconfigureChain()`, which re-reads `getChainConfig()` and re-syncs `parseXpub()`'s
+default network via `setDefaultNetwork()` immediately — no restart needed.
 
 **Bitcoin Core RPC settings are saved independently of `connection_mode`.**
 `core_rpc_url`/`core_rpc_user`/`core_rpc_pass` have no relationship to the

@@ -190,7 +190,7 @@
 			<label class="radio-card" class:selected={connectionMode === 'public'}>
 				<input type="radio" name="connectionMode" value="public" bind:group={connectionMode} />
 				<span class="radio-label">Public servers <span class="badge badge-neutral">default</span></span>
-				<span class="radio-desc">electrum.blockstream.info (Electrum)</span>
+				<span class="radio-desc">electrum.blockstream.info (Electrum) — always mainnet</span>
 			</label>
 			<label class="radio-card" class:selected={connectionMode === 'custom'}>
 				<input type="radio" name="connectionMode" value="custom" bind:group={connectionMode} />
@@ -305,6 +305,34 @@
 
 		{#if connectionMode === 'custom'}
 			<div class="custom-fields fade-in">
+				<!-- Which network the custom backend is on (cairn-10ox / cairn-x6pr).
+				     Only meaningful in custom mode — getChainConfig() always forces
+				     'mainnet' in public mode, so this field only exists in this
+				     custom-only render (mirrors the server action's validation, which
+				     only reads/writes chainNetwork inside the same connectionMode ===
+				     'custom' branch). -->
+				<div class="subgroup">
+					<span class="subgroup-title">Network</span>
+					<p class="hint">
+						Which Bitcoin network your server and node are actually running. Changing this
+						changes which keys and addresses are valid — only switch it if your Electrum
+						server and Core node are on that network too.
+					</p>
+					<div class="field">
+						<label class="label" for="chainNetwork">Network</label>
+						<select
+							class="input"
+							id="chainNetwork"
+							name="chainNetwork"
+							value={data.settings.chainNetwork}
+						>
+							<option value="mainnet">Mainnet</option>
+							<option value="testnet">Testnet</option>
+							<option value="regtest">Regtest</option>
+						</select>
+					</div>
+				</div>
+
 				<div class="subgroup">
 					<span class="subgroup-title">Electrum server</span>
 					<div class="row-fields">
