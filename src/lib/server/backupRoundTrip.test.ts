@@ -25,6 +25,15 @@ import { registerUser, getUserByEmail } from './auth';
 import { setSetting } from './settings';
 import { buildBackup, encryptBackup, decryptBackup, restoreBackup, BackupError } from './backup';
 
+// Real BIP84 test-vector account zpub (mnemonic "abandon abandon ... about",
+// same vector backup.test.ts / bitcoin/xpub.test.ts use) -> p2wpkh. Any test
+// below that actually calls restoreBackup on a wallet row needs a
+// cryptographically real xpub: cairn-gmiw's restore-boundary check parses it
+// and cross-checks the derived script type against the row's script_type, so
+// a placeholder string like the old 'xpubBOB' is now correctly rejected.
+const ZPUB =
+	'zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs';
+
 function wipeAll(): void {
 	db.exec(`
 		DELETE FROM multisig_transaction_signers; DELETE FROM multisig_transactions;
@@ -126,7 +135,7 @@ describe('restore round-trip (cairn-s6x3)', () => {
 		const admin = await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
 		const bob = await registerUser({ email: 'bob@example.com', displayName: 'Bob' });
 		expect(admin.isAdmin).toBe(true); // first registration after wipe auto-admins
-		makeWallet(bob.id, 'xpubBOB');
+		makeWallet(bob.id, ZPUB);
 		const msId = Number(
 			db
 				.prepare(
@@ -194,7 +203,7 @@ describe('restore round-trip (cairn-s6x3)', () => {
 		const wallets = db
 			.prepare('SELECT xpub FROM wallets WHERE user_id = ?')
 			.all(restoredBob.id) as { xpub: string }[];
-		expect(wallets.map((w) => w.xpub)).toEqual(['xpubBOB']);
+		expect(wallets.map((w) => w.xpub)).toEqual([ZPUB]);
 
 		const ms = db
 			.prepare('SELECT name, threshold FROM multisigs WHERE user_id = ?')
@@ -279,7 +288,10 @@ describe('older-version / malformed backup shapes — KNOWN GAP (cairn-90k8)', (
 			user_id: 9001,
 			name: 'Old wallet',
 			// `type` deliberately omitted — simulates a pre-`type`-column backup.
-			xpub: 'xpub-old-format',
+			// The xpub itself must be real (cairn-gmiw's restore-boundary check
+			// parses it and cross-checks it against script_type below) — this test
+			// isolates the `type`-defaulting gap, not xpub validity.
+			xpub: ZPUB,
 			script_type: 'p2wpkh',
 			receive_cursor: 0,
 			created_at: 't',
@@ -301,7 +313,7 @@ describe('older-version / malformed backup shapes — KNOWN GAP (cairn-90k8)', (
 		expect(wallet.type).toBe('xpub');
 	});
 
-	it('a wallet row with a renamed xpub column (xpubkey instead of xpub) restores with an empty xpub, no error', async () => {
+	it('a wallet row with a renamed xpub column (xpubkey instead of xpub) is now rejected instead of restoring with a blank xpub (cairn-gmiw)', async () => {
 		const data = buildBackup('t');
 		data.users.push({
 			id: 9002,
@@ -327,15 +339,19 @@ describe('older-version / malformed backup shapes — KNOWN GAP (cairn-90k8)', (
 		});
 
 		const summary = await restoreBackup(data);
-		expect(summary.wallets).toBe(1);
+		// Previously (pre-cairn-gmiw) this row silently landed with xpub === ''
+		// (str(undefined)) — no error, a wallet nothing could ever derive real
+		// addresses from. cairn-gmiw's restore-boundary validation parses the
+		// xpub before insert, so an empty/unparseable xpub is now caught by the
+		// same guard that rejects a script_type/xpub mismatch, and the row is
+		// skipped rather than silently inserted broken.
+		expect(summary.wallets).toBe(0);
 
 		const renamed = getUserByEmail('renamed@example.com')!;
-		const wallet = db.prepare('SELECT xpub FROM wallets WHERE user_id = ?').get(renamed.id) as {
-			xpub: string;
-		};
-		// pinned current behavior, not endorsed: silently lands as '' (str(undefined))
-		// rather than erroring on the unrecognized column name.
-		expect(wallet.xpub).toBe('');
+		const wallet = db.prepare('SELECT xpub FROM wallets WHERE user_id = ?').get(renamed.id) as
+			| { xpub: string }
+			| undefined;
+		expect(wallet).toBeUndefined();
 	});
 
 	it('decryptBackup does NOT reject a backup older than VERSION — only newer-than-VERSION is rejected', async () => {

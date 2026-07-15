@@ -270,7 +270,7 @@ function purposeOf(path: string): number | null {
  * key string or passed explicitly) — an absent/unrecognized path is accepted
  * exactly as before, since there's nothing to contradict.
  */
-function assertDerivationMatchesPrefix(
+export function assertDerivationMatchesPrefix(
 	derivationPath: string | null,
 	prefixScriptType: ScriptType
 ): void {

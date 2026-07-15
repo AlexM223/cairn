@@ -24,6 +24,9 @@ import {
 import { notify } from './notifications';
 import { mintAdminRecoveryCode } from './recovery';
 import { childLogger } from './logger';
+import { parseXpub } from './bitcoin/xpub';
+import { assertDerivationMatchesPrefix } from './wallets';
+import { validateCosignerKeyPath, type MultisigScriptType } from './bitcoin/multisig';
 
 const log = childLogger('backup');
 
@@ -395,42 +398,87 @@ export async function restoreBackup(data: BackupData): Promise<RestoreSummary> {
 			const uid = userIdMap.get(Number(w.user_id));
 			if (!uid) continue;
 			try {
+				const walletType = str(w.type) || 'xpub';
+				const xpub = str(w.xpub);
+				const scriptType = str(w.script_type);
+				const derivationPath = orNull(w.derivation_path);
+				const label = str(w.name).trim() || `wallet ${String(w.id ?? '')}`.trim();
+				// cairn-gmiw: a backup file is untrusted input, same as the is_admin
+				// flag and settings allowlist above — an admin can be handed a
+				// hand-edited, corrupted, or cross-version backup. createWallet never
+				// lets a wallet's stored script_type disagree with what its own xpub
+				// actually derives (deriveAddress in xpub.ts trusts scriptType blindly,
+				// with no runtime cross-check), so restore must enforce the SAME
+				// invariant createWallet does, or a restored wallet's fee estimation,
+				// PSBT construction and displayed type can all silently diverge from
+				// the real addresses it watches. Only single-sig ('xpub' type) wallets
+				// carry a SLIP-132-derived script type this way; other types have
+				// nothing to cross-check.
+				if (walletType === 'xpub') {
+					let parsed;
+					try {
+						parsed = parseXpub(xpub);
+					} catch (eParse) {
+						const msg = eParse instanceof Error ? eParse.message : String(eParse);
+						throw new Error(`Wallet "${label}": xpub is invalid (${msg}) — refusing to restore it.`);
+					}
+					if (parsed.scriptType !== scriptType) {
+						throw new Error(
+							`Wallet "${label}": stored script type "${scriptType}" contradicts what its xpub ` +
+								`actually derives ("${parsed.scriptType}") — refusing to restore a wallet whose ` +
+								`addresses wouldn't match its real key.`
+						);
+					}
+					// Same derivation-path/prefix cross-check createWallet runs
+					// (wallets.ts) — a mismatched path is just as unusable as a
+					// mismatched script_type.
+					assertDerivationMatchesPrefix(derivationPath, parsed.scriptType);
+				}
 				const res = insertWallet.run(
 					uid,
 					str(w.name),
-					str(w.type) || 'xpub',
-					str(w.xpub),
-					str(w.script_type),
+					walletType,
+					xpub,
+					scriptType,
 					numOr(w.receive_cursor, 0),
 					str(w.created_at) || new Date().toISOString(),
 					orNull(w.master_fingerprint),
-					orNull(w.derivation_path),
+					derivationPath,
 					orNull(w.device_type)
 				);
 				walletIdMap.set(Number(w.id), Number(res.lastInsertRowid));
 				summary.wallets++;
 			} catch (e) {
-				// Duplicate (user_id, xpub) or malformed row — skip it, keep going.
+				// Duplicate (user_id, xpub), malformed row, or a script_type/xpub
+				// mismatch (cairn-gmiw) — skip it, keep going.
 				log.warn({ err: e, table: 'wallets', srcId: w.id }, 'restore: skipped a wallet row');
 			}
 		}
 
 		const multisigIdMap = new Map<number, number>();
+		// New multisig id -> its restored script_type, so each cosigner key can be
+		// cross-checked against the SAME wallet-level type its parent multisig was
+		// just inserted with (cairn-gmiw's multisig-side equivalent — see the
+		// validateCosignerKeyPath call below).
+		const multisigScriptTypeMap = new Map<number, string>();
 		const insertMs = db.prepare(
 			'INSERT INTO multisigs (user_id, name, threshold, script_type, receive_cursor, created_at) VALUES (?, ?, ?, ?, ?, ?)'
 		);
 		for (const m of data.multisigs) {
 			const uid = userIdMap.get(Number(m.user_id));
 			if (!uid) continue;
+			const scriptType = str(m.script_type) || 'p2wsh';
 			const res = insertMs.run(
 				uid,
 				str(m.name),
 				numOr(m.threshold, 1),
-				str(m.script_type) || 'p2wsh',
+				scriptType,
 				numOr(m.receive_cursor, 0),
 				str(m.created_at) || new Date().toISOString()
 			);
-			multisigIdMap.set(Number(m.id), Number(res.lastInsertRowid));
+			const newMsId = Number(res.lastInsertRowid);
+			multisigIdMap.set(Number(m.id), newMsId);
+			multisigScriptTypeMap.set(newMsId, scriptType);
 			summary.multisigs++;
 		}
 
@@ -448,6 +496,23 @@ export async function restoreBackup(data: BackupData): Promise<RestoreSummary> {
 			const assignedUserId =
 				k.assigned_user_id == null ? null : userIdMap.get(Number(k.assigned_user_id)) ?? null;
 			try {
+				const path = str(k.path);
+				const label = str(k.name).trim() || `key ${String(k.position ?? '')}`.trim() || 'unnamed key';
+				const scriptType = multisigScriptTypeMap.get(msId) as MultisigScriptType | undefined;
+				// cairn-gmiw: same hole as the single-sig wallet check above — a
+				// restored key's own declared path can contradict its multisig's
+				// stored script_type (e.g. a BIP-48 …/1' nested-SegWit path under a
+				// wallet restored as p2wsh), which would make every address this
+				// wallet displays wrong. createMultisig enforces this at creation via
+				// validateMultisigKeyPaths (bitcoin/multisig.ts); restore never ran
+				// it. 'import' mode matches how an already-on-chain config is treated
+				// elsewhere (createMultisig with source: 'imported') — it tolerates
+				// the historical legacy-P2SH 1' label instead of hard-rejecting it,
+				// since a restored wallet already exists on-chain with whatever path
+				// it was built with. A returned string is just an informational
+				// import-mode warning (not a rejection) — the restore path has no
+				// per-key surface to relay it through, so it's discarded here.
+				validateCosignerKeyPath(path, scriptType, label, { mode: 'import' });
 				insertKey.run(
 					msId,
 					numOr(k.position, 0),
@@ -456,7 +521,7 @@ export async function restoreBackup(data: BackupData): Promise<RestoreSummary> {
 					orNull(k.device_type),
 					str(k.xpub),
 					str(k.fingerprint),
-					str(k.path),
+					path,
 					orNull(k.last_verified_at),
 					assignedUserId
 				);

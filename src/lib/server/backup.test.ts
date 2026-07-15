@@ -48,6 +48,17 @@ beforeEach(() => {
 	db.prepare("INSERT INTO settings (key, value) VALUES ('registration_mode', 'open')").run();
 });
 
+// Real BIP32/SLIP-132 test-vector keys (mnemonic "abandon abandon ... about",
+// same vectors bitcoin/xpub.test.ts uses) — cairn-gmiw's restore-boundary
+// validation actually parses xpubs, so fixtures here must be cryptographically
+// real, not placeholder strings like the old 'xpubBOB'.
+const ZPUB = // BIP84 account zpub -> p2wpkh
+	'zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs';
+const YPUB = // BIP49 account ypub (same mnemonic) -> p2sh-p2wpkh
+	'ypub6Ww3ibxVfGzLrAH1PNcjyAWenMTbbAosGNB6VvmSEgytSER9azLDWCxoJwW7Ke7icmizBMXrzBx9979FfaHxHcrArf3zbeJJJUZPf663zsP';
+const XPUB = // BIP44 account xpub (same mnemonic) -> p2pkh
+	'xpub6BosfCnifzxcFwrSzQiqu2DBVTshkCXacvNsWGYJVVhhawA7d4R5WSWGFNbi8Aw6ZRc1brxMyWMzG3DSSSSoekkudhUd9yLb6qx39T9nMdj';
+
 function makeWallet(userId: number, xpub: string) {
 	db.prepare(
 		"INSERT INTO wallets (user_id, name, xpub, script_type) VALUES (?, 'W', ?, 'p2wpkh')"
@@ -132,7 +143,7 @@ describe('restore', () => {
 	it('additively restores missing accounts and their wallets, credential-less', async () => {
 		const admin = await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
 		const bob = await registerUser({ email: 'bob@example.com', displayName: 'Bob' });
-		makeWallet(bob.id, 'xpubBOB');
+		makeWallet(bob.id, ZPUB);
 
 		const data = buildBackup('t');
 
@@ -153,7 +164,7 @@ describe('restore', () => {
 		const wallets = db
 			.prepare('SELECT xpub FROM wallets WHERE user_id = ?')
 			.all(restoredBob!.id) as { xpub: string }[];
-		expect(wallets.map((w) => w.xpub)).toContain('xpubBOB');
+		expect(wallets.map((w) => w.xpub)).toContain(ZPUB);
 	});
 
 	it('mints a redeemable recovery code for each newly-restored account (cairn-j1q9)', async () => {
@@ -250,13 +261,13 @@ describe('restore', () => {
 			created_at: 't',
 			last_login: null
 		});
-		const wallet = (id: number, xpub: string) => ({
+		const wallet = (id: number, xpub: string, scriptType: string) => ({
 			id,
 			user_id: 500,
 			name: `W${id}`,
 			type: 'xpub',
 			xpub,
-			script_type: 'p2wpkh',
+			script_type: scriptType,
 			receive_cursor: 0,
 			created_at: 't',
 			master_fingerprint: null,
@@ -264,7 +275,14 @@ describe('restore', () => {
 			device_type: null
 		});
 		// Second wallet duplicates (user_id, xpub) → UNIQUE violation, skipped.
-		data.wallets.push(wallet(1, 'xpubDUP'), wallet(2, 'xpubDUP'), wallet(3, 'xpubOK'));
+		// (ZPUB really is p2wpkh and XPUB really is p2pkh — cairn-gmiw's new
+		// restore-boundary check parses the xpub, so fixtures here have to be
+		// cryptographically real, not placeholder strings.)
+		data.wallets.push(
+			wallet(1, ZPUB, 'p2wpkh'),
+			wallet(2, ZPUB, 'p2wpkh'),
+			wallet(3, XPUB, 'p2pkh')
+		);
 
 		data.multisigs.push({
 			id: 10,
@@ -336,7 +354,7 @@ describe('restore', () => {
 		)
 			.map((w) => w.xpub)
 			.sort();
-		expect(xpubs).toEqual(['xpubDUP', 'xpubOK']);
+		expect(xpubs).toEqual([XPUB, ZPUB].sort());
 
 		const vault = db.prepare("SELECT id FROM multisigs WHERE name = 'Vault'").get() as {
 			id: number;
@@ -350,6 +368,240 @@ describe('restore', () => {
 			.prepare('SELECT label FROM saved_addresses WHERE user_id = ?')
 			.all(carol!.id) as { label: string }[];
 		expect(addrs.map((a) => a.label)).toEqual(['Exchange']);
+	});
+
+	// cairn-gmiw: deriveAddress (bitcoin/xpub.ts) always trusts a wallet's
+	// stored script_type with no runtime cross-check against what its xpub
+	// actually derives. createWallet guards this at creation time, but restore
+	// inserted `wallets`/`multisig_keys` rows straight from backup JSON with no
+	// equivalent check — a hand-edited, corrupted, or cross-version backup file
+	// (untrusted input, same threat model as the is_admin/settings-allowlist
+	// checks above) could restore a wallet whose fee estimation, PSBT
+	// construction, and displayed addresses all silently disagree with the
+	// real addresses it watches.
+	describe('script_type / xpub consistency (cairn-gmiw)', () => {
+		it('rejects a restored wallet whose script_type contradicts its xpub', async () => {
+			await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+			const data = buildBackup('t');
+			data.users.push({
+				id: 600,
+				email: 'dave@example.com',
+				display_name: 'Dave',
+				is_admin: 0,
+				disabled: 0,
+				created_at: 't',
+				last_login: null
+			});
+			// ZPUB really derives p2wpkh addresses (see the ZPUB fixture comment
+			// above) — declaring it p2pkh here is the exact hand-edited/corrupted
+			// shape cairn-gmiw guards against.
+			data.wallets.push({
+				id: 1,
+				user_id: 600,
+				name: 'Mismatched',
+				type: 'xpub',
+				xpub: ZPUB,
+				script_type: 'p2pkh',
+				receive_cursor: 0,
+				created_at: 't',
+				master_fingerprint: null,
+				derivation_path: null,
+				device_type: null
+			});
+
+			logMock.warn.mockClear();
+			const summary = await restoreBackup(data);
+
+			expect(summary.usersAdded).toBe(1);
+			expect(summary.wallets).toBe(0); // the mismatched wallet was rejected
+
+			const dave = getUserByEmail('dave@example.com');
+			expect(dave).not.toBeNull();
+			const wallets = db.prepare('SELECT id FROM wallets WHERE user_id = ?').all(dave!.id);
+			expect(wallets).toHaveLength(0);
+
+			expect(logMock.warn).toHaveBeenCalledTimes(1);
+			const [ctx, msg] = logMock.warn.mock.calls[0] as [Record<string, unknown>, string];
+			expect(ctx).toMatchObject({ table: 'wallets', srcId: 1 });
+			expect(String((ctx.err as Error)?.message ?? ctx.err)).toMatch(
+				/contradicts what its xpub actually derives/i
+			);
+			expect(msg).toMatch(/skipped/i);
+		});
+
+		it('rejects a restored wallet whose derivation path purpose contradicts its xpub prefix', async () => {
+			await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+			const data = buildBackup('t');
+			data.users.push({
+				id: 601,
+				email: 'frank@example.com',
+				display_name: 'Frank',
+				is_admin: 0,
+				disabled: 0,
+				created_at: 't',
+				last_login: null
+			});
+			// script_type correctly matches XPUB's own prefix (p2pkh), but the
+			// declared path's purpose (84') implies p2wpkh — the same
+			// path-vs-prefix contradiction assertDerivationMatchesPrefix rejects at
+			// wallet creation (wallets.ts).
+			data.wallets.push({
+				id: 2,
+				user_id: 601,
+				name: 'BadPath',
+				type: 'xpub',
+				xpub: XPUB,
+				script_type: 'p2pkh',
+				receive_cursor: 0,
+				created_at: 't',
+				master_fingerprint: null,
+				derivation_path: "m/84'/0'/0'",
+				device_type: null
+			});
+
+			logMock.warn.mockClear();
+			const summary = await restoreBackup(data);
+
+			expect(summary.wallets).toBe(0);
+			const frank = getUserByEmail('frank@example.com');
+			const wallets = db.prepare('SELECT id FROM wallets WHERE user_id = ?').all(frank!.id);
+			expect(wallets).toHaveLength(0);
+			expect(logMock.warn).toHaveBeenCalledTimes(1);
+		});
+
+		it('restores a wallet whose script_type matches what its xpub actually derives', async () => {
+			await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+			const data = buildBackup('t');
+			data.users.push({
+				id: 602,
+				email: 'erin@example.com',
+				display_name: 'Erin',
+				is_admin: 0,
+				disabled: 0,
+				created_at: 't',
+				last_login: null
+			});
+			data.wallets.push({
+				id: 3,
+				user_id: 602,
+				name: 'Nested',
+				type: 'xpub',
+				xpub: YPUB,
+				script_type: 'p2sh-p2wpkh',
+				receive_cursor: 0,
+				created_at: 't',
+				master_fingerprint: null,
+				derivation_path: null,
+				device_type: null
+			});
+
+			const summary = await restoreBackup(data);
+			expect(summary.wallets).toBe(1);
+
+			const erin = getUserByEmail('erin@example.com')!;
+			const row = db
+				.prepare('SELECT xpub, script_type FROM wallets WHERE user_id = ?')
+				.get(erin.id) as { xpub: string; script_type: string };
+			expect(row).toMatchObject({ xpub: YPUB, script_type: 'p2sh-p2wpkh' });
+		});
+
+		it('rejects a restored multisig cosigner key whose path contradicts the multisig script_type', async () => {
+			await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+			const data = buildBackup('t');
+			data.users.push({
+				id: 603,
+				email: 'grace@example.com',
+				display_name: 'Grace',
+				is_admin: 0,
+				disabled: 0,
+				created_at: 't',
+				last_login: null
+			});
+			data.multisigs.push({
+				id: 20,
+				user_id: 603,
+				name: 'Corrupt Vault',
+				threshold: 2,
+				script_type: 'p2wsh',
+				receive_cursor: 0,
+				created_at: 't'
+			});
+			// BIP-48 suffix 1' is the NESTED-SEGWIT (p2sh-p2wsh) key slot, not
+			// p2wsh's 2' — the exact contradiction createMultisig's
+			// validateMultisigKeyPaths rejects at creation time.
+			data.multisig_keys.push({
+				multisig_id: 20,
+				position: 0,
+				name: 'K1',
+				category: 'hardware',
+				device_type: null,
+				xpub: 'xpubK1',
+				fingerprint: '00000000',
+				path: "m/48'/0'/0'/1'",
+				last_verified_at: null
+			});
+
+			logMock.warn.mockClear();
+			const summary = await restoreBackup(data);
+
+			expect(summary.multisigs).toBe(1); // the multisig row itself still restores
+			const vault = db.prepare("SELECT id FROM multisigs WHERE name = 'Corrupt Vault'").get() as {
+				id: number;
+			};
+			const keys = db
+				.prepare('SELECT name FROM multisig_keys WHERE multisig_id = ?')
+				.all(vault.id);
+			expect(keys).toHaveLength(0); // the contradictory key was rejected, not restored
+
+			expect(logMock.warn).toHaveBeenCalledTimes(1);
+			const [ctx] = logMock.warn.mock.calls[0] as [Record<string, unknown>, string];
+			expect(ctx).toMatchObject({ table: 'multisig_keys', srcMultisigId: 20 });
+		});
+
+		it('restores a multisig cosigner key whose path matches the multisig script_type', async () => {
+			await registerUser({ email: 'admin@example.com', displayName: 'Admin' });
+			const data = buildBackup('t');
+			data.users.push({
+				id: 604,
+				email: 'henry@example.com',
+				display_name: 'Henry',
+				is_admin: 0,
+				disabled: 0,
+				created_at: 't',
+				last_login: null
+			});
+			data.multisigs.push({
+				id: 21,
+				user_id: 604,
+				name: 'Good Vault',
+				threshold: 2,
+				script_type: 'p2wsh',
+				receive_cursor: 0,
+				created_at: 't'
+			});
+			data.multisig_keys.push({
+				multisig_id: 21,
+				position: 0,
+				name: 'K1',
+				category: 'hardware',
+				device_type: null,
+				xpub: 'xpubK1',
+				fingerprint: '00000000',
+				path: "m/48'/0'/0'/2'",
+				last_verified_at: null
+			});
+
+			const summary = await restoreBackup(data);
+			expect(summary.multisigs).toBe(1);
+
+			const vault = db.prepare("SELECT id FROM multisigs WHERE name = 'Good Vault'").get() as {
+				id: number;
+			};
+			const keys = db
+				.prepare('SELECT name FROM multisig_keys WHERE multisig_id = ?')
+				.all(vault.id) as { name: string }[];
+			expect(keys.map((k) => k.name)).toEqual(['K1']);
+		});
 	});
 
 	it('restores settings', async () => {
