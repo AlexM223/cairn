@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { browser } from '$app/environment';
+	import { onMount } from 'svelte';
 	import { copyToClipboard } from '$lib/clipboard';
 	import { scrollToTop } from '$lib/scrollToTop';
 	import Banner from '$lib/components/Banner.svelte';
@@ -8,17 +10,36 @@
 	import CopyText from '$lib/components/CopyText.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
+	import { buildVerifyQuestions, type VerifyQuestion } from './_components/recognitionVerify';
+	import {
+		WIZARD_PROGRESS_KEY,
+		parseSavedProgress,
+		hasMeaningfulProgress
+	} from './_components/wizardProgress';
 
 	let { data } = $props();
 
 	// --- wizard state ---------------------------------------------------------
-	// Two guided steps: (1) the recovery PHRASE behind a "written it down" gate,
-	// then (2) the one-time recovery CODES with a download. A secret is fetched
-	// (and thereby generated) at most once and held only in memory for the life
-	// of this page — reloading throws it away, which is why the copy hammers
-	// "you will not see this again".
+	// Two guided steps: (1) the recovery PHRASE behind an explain-first stakes
+	// screen, a reveal, and a recognition-based verify, then (2) the one-time
+	// recovery CODES with a download. A secret is fetched (and thereby
+	// generated) at most once and held only in memory for the life of this
+	// page — reloading throws it away, which is why the copy hammers "you will
+	// not see this again" (and why the resume snapshot below only ever stores
+	// which SCREEN the user reached, never the secret itself — see
+	// _components/wizardProgress.ts).
 	type Step = 'phrase' | 'codes' | 'done';
 	let step = $state<Step>('phrase');
+
+	// Sub-stages within the 'phrase' step (R4, docs/UX-PSYCHOLOGY-RESEARCH-
+	// 2026-07-15.md — F7, CHI 2021): explain the stakes in plain language
+	// BEFORE any word renders, then reveal, then a recognition-based check
+	// ("which word was #4?") instead of the old plain checkbox gate alone.
+	// Never auto-fires on mount — generating the phrase is now the visible
+	// result of the "Show my recovery phrase" button on the stakes screen, not
+	// a side effect of landing on the page.
+	type PhraseStage = 'stakes' | 'reveal' | 'verify';
+	let phraseStage = $state<PhraseStage>('stakes');
 
 	const steps = [
 		{ key: 'phrase', label: 'Recovery phrase' },
@@ -32,7 +53,21 @@
 	let phrase = $state<string | null>(null);
 	let phraseWords = $derived(phrase ? phrase.split(' ') : []);
 	let loadingPhrase = $state(false);
-	let wroteItDown = $state(false); // the gate: step 1 can't advance until checked
+	let wroteItDown = $state(false); // "I've written this down" — required before verify
+
+	// Recognition-based verify (R4): 2 positions, pick the right word among
+	// three decoys. Recall quizzes ("type word #4") punish and stall; this
+	// checks the same thing — did the word actually get written down — with
+	// far less friction (docs/UX-PSYCHOLOGY-RESEARCH-2026-07-15.md F7).
+	const VERIFY_QUESTION_COUNT = 2;
+	let verifyQuestions = $state<VerifyQuestion[]>([]);
+	// position -> the option currently picked (null = unanswered).
+	let verifyAnswers = $state<Record<number, string | null>>({});
+	// position -> true once answered correctly. All-true unlocks Continue.
+	let verifyCorrect = $state<Record<number, boolean>>({});
+	const verifyPassed = $derived(
+		verifyQuestions.length > 0 && verifyQuestions.every((q) => verifyCorrect[q.position])
+	);
 
 	// Codes step
 	let codes = $state<string[] | null>(null);
@@ -73,13 +108,48 @@
 
 	function toPhraseStep() {
 		step = 'phrase';
+		phraseStage = 'stakes';
+		error = null;
+		scrollToTop();
+	}
+
+	/** Stakes screen's CTA: only now does the phrase actually get generated —
+	 *  explain-before-reveal (R4), not a mount side effect. */
+	function revealPhrase() {
+		phraseStage = 'reveal';
 		error = null;
 		scrollToTop();
 		generatePhrase();
 	}
 
+	/** Reveal's Continue: move to the recognition-verify sub-stage instead of
+	 *  straight to the codes step. Builds fresh questions each time (e.g. a
+	 *  "Back to phrase" round-trip) so a stale answer set never lingers. */
+	function toVerifyStage() {
+		if (!wroteItDown || !phrase) return;
+		verifyQuestions = buildVerifyQuestions(phraseWords, VERIFY_QUESTION_COUNT);
+		verifyAnswers = {};
+		verifyCorrect = {};
+		phraseStage = 'verify';
+		error = null;
+		scrollToTop();
+	}
+
+	/** Verify's "Back to phrase" — the phrase is still in memory, so letting
+	 *  someone double-check is calm and non-punitive, not a restart. */
+	function backToReveal() {
+		phraseStage = 'reveal';
+		error = null;
+		scrollToTop();
+	}
+
+	function pickVerifyAnswer(q: VerifyQuestion, option: string) {
+		verifyAnswers = { ...verifyAnswers, [q.position]: option };
+		verifyCorrect = { ...verifyCorrect, [q.position]: option === q.correctWord };
+	}
+
 	function toCodesStep() {
-		if (!wroteItDown) return;
+		if (!verifyPassed) return;
 		step = 'codes';
 		error = null;
 		scrollToTop();
@@ -127,11 +197,69 @@
 		step = 'done';
 		error = null;
 		scrollToTop();
+		try {
+			sessionStorage.removeItem(WIZARD_PROGRESS_KEY);
+		} catch {
+			// Already done in memory; a stale snapshot just ages out.
+		}
 	}
 
-	// Kick off phrase generation as soon as the page mounts.
+	// ------------------------------------------- progress survives page reloads
+	//
+	// A full-page reload used to silently drop the user back to the very first
+	// screen with no explanation (Umbrel's app_proxy auth layer can force
+	// exactly such a reload mid-flow — the same failure mode documented on the
+	// add-wallet and multisig wizards). This mirrors THEIR sessionStorage
+	// resume pattern, with one deliberate difference: the payload here is a
+	// SECRET (the phrase, the codes), not a public key, so the snapshot stores
+	// only which SCREEN the user reached — never the words themselves. A
+	// resume into the phrase step always lands on the calm stakes explainer
+	// (phraseStage defaults to 'stakes'), not mid-reveal or mid-verify, because
+	// the actual phrase can't survive a reload by design.
+	const savedProgress = browser ? parseSavedProgress(safeReadProgress(), Date.now()) : null;
+	// True after a resume: shows the "picked up where you left off" note.
+	let resumed = $state(false);
+
+	function safeReadProgress(): string | null {
+		try {
+			return sessionStorage.getItem(WIZARD_PROGRESS_KEY);
+		} catch {
+			return null; // storage blocked (private mode etc.) — just start fresh
+		}
+	}
+
+	// Gate the persistence effect until onMount has applied any saved snapshot
+	// (cairn-pwo1 pattern): Svelte runs user effects in source order, and the
+	// persistence $effect below is declared before onMount finishes, so on
+	// mount it would otherwise fire first — while step is still the pristine
+	// initial 'phrase' — and clobber a valid 'codes' snapshot in sessionStorage
+	// before onMount ever gets to read it.
+	let hydrated = $state(false);
+
+	onMount(() => {
+		if (savedProgress && hasMeaningfulProgress(savedProgress)) {
+			step = savedProgress.step;
+			// A resume into 'codes' needs its own generateCodes() call — the
+			// codes, like the phrase, live only in memory and don't survive a
+			// reload; landing on the step without them would just spin forever.
+			if (savedProgress.step === 'codes') generateCodes();
+			resumed = true;
+		}
+		hydrated = true;
+	});
+
 	$effect(() => {
-		if (step === 'phrase' && !phrase && !loadingPhrase && !error) generatePhrase();
+		if (!hydrated) return;
+		// Only 'phrase' and 'codes' are ever persisted — 'done' clears the
+		// snapshot outright via finish() above.
+		if (step !== 'phrase' && step !== 'codes') return;
+		const snapshot = JSON.stringify({ step, savedAt: Date.now() });
+		try {
+			sessionStorage.setItem(WIZARD_PROGRESS_KEY, snapshot);
+		} catch {
+			// Best-effort: without storage the wizard still works, it just
+			// can't survive a reload.
+		}
 	});
 </script>
 
@@ -177,12 +305,51 @@
 		</div>
 	</div>
 
+	{#if resumed}
+		<!-- A reload landed mid-flow and we restored just the screen position —
+		     never the phrase or codes themselves, which can't survive a reload
+		     by design (see _components/wizardProgress.ts). -->
+		<div class="resume-note" role="status">
+			<Icon name="info" size={14} />
+			<span>Picked up where you left off.</span>
+		</div>
+	{/if}
+
 	{#if error}
 		<Banner variant="error">{error}</Banner>
 	{/if}
 
-	{#if step === 'phrase'}
-		<section class="panel">
+	{#if step === 'phrase' && phraseStage === 'stakes'}
+		<!-- Explain-before-reveal (R4): the stakes, in plain language, before a
+		     single word renders. Calm register — never "WARNING", never a
+		     skull-and-crossbones. The anxiety here is responsibility without
+		     confidence (CHI 2021), so the copy's job is to supply confidence,
+		     not pile on more caution. -->
+		<section class="panel stakes-panel fade-in">
+			<div class="panel-head">
+				<h2 class="section-title">Before we show your phrase</h2>
+			</div>
+			<div class="stakes-icon"><Icon name="shield" size={22} strokeWidth={1.6} /></div>
+			<ul class="stakes-list">
+				<li>These 12 words are the key to your Heartwood account.</li>
+				<li>Anyone who has them can sign in as you — treat them like a password.</li>
+				<li>
+					Lose them, and lose every passkey too, and nobody — not even Cairn — can get you back in.
+				</li>
+				<li>Write them on paper and keep it somewhere offline, away from your device.</li>
+			</ul>
+
+			<div class="step-actions">
+				<button class="btn btn-primary" onclick={revealPhrase}>
+					Show my recovery phrase
+					<Icon name="arrow-right" size={15} />
+				</button>
+			</div>
+		</section>
+	{/if}
+
+	{#if step === 'phrase' && phraseStage === 'reveal'}
+		<section class="panel fade-in">
 			<div class="panel-head">
 				<h2 class="section-title">Your recovery phrase</h2>
 				<span class="shown-once">shown once</span>
@@ -230,12 +397,72 @@
 				</label>
 
 				<div class="step-actions">
-					<button class="btn btn-primary" disabled={!wroteItDown} onclick={toCodesStep}>
+					<button class="btn btn-primary" disabled={!wroteItDown} onclick={toVerifyStage}>
 						Continue
 						<Icon name="arrow-right" size={15} />
 					</button>
 				</div>
 			{/if}
+		</section>
+	{/if}
+
+	{#if step === 'phrase' && phraseStage === 'verify'}
+		<!-- Recognition-based verify (R4): pick the word you just wrote down,
+		     among decoys — not "type word #4 from memory". Recall quizzes
+		     punish and stall; recognition checks the same thing (did the word
+		     actually get captured, in order) with far less friction. -->
+		<section class="panel fade-in">
+			<div class="panel-head">
+				<h2 class="section-title">Quick check</h2>
+			</div>
+			<p class="panel-lead">
+				Which word did you write down at each position? This just confirms the words made it to
+				paper — pick from the options below.
+			</p>
+
+			<div class="verify-list">
+				{#each verifyQuestions as q (q.position)}
+					{@const answered = verifyAnswers[q.position]}
+					{@const correct = verifyCorrect[q.position]}
+					<div class="verify-question">
+						<span class="verify-label">Word #{q.position}</span>
+						<div class="verify-options" role="radiogroup" aria-label="Word #{q.position}">
+							{#each q.options as option (option)}
+								{@const picked = answered === option}
+								<button
+									type="button"
+									class="verify-chip"
+									class:picked
+									class:wrong={picked && !correct}
+									class:right={picked && correct}
+									role="radio"
+									aria-checked={picked}
+									onclick={() => pickVerifyAnswer(q, option)}
+								>
+									{option}
+									{#if picked && correct}
+										<Icon name="check" size={13} strokeWidth={2.25} />
+									{/if}
+								</button>
+							{/each}
+						</div>
+						{#if answered && !correct}
+							<span class="verify-hint">Not quite — check word #{q.position} again.</span>
+						{/if}
+					</div>
+				{/each}
+			</div>
+
+			<div class="step-actions">
+				<button class="btn btn-ghost btn-sm" onclick={backToReveal}>
+					<Icon name="chevron-left" size={13} />
+					Back to phrase
+				</button>
+				<button class="btn btn-primary" disabled={!verifyPassed} onclick={toCodesStep}>
+					Continue
+					<Icon name="arrow-right" size={15} />
+				</button>
+			</div>
 		</section>
 	{/if}
 
@@ -439,6 +666,24 @@
 		font-weight: 600;
 	}
 
+	/* --- resume note (a reload restored the screen position only) --- */
+	.resume-note {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 8px 12px;
+		font-size: 12.5px;
+		color: var(--text-secondary);
+		background: var(--surface);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-control);
+	}
+
+	.resume-note :global(svg) {
+		color: var(--accent);
+		flex-shrink: 0;
+	}
+
 	/* Steps are hairline-bounded sections, not cards. */
 	.panel {
 		display: flex;
@@ -479,6 +724,110 @@
 	.panel-lead strong {
 		color: var(--text);
 		font-weight: 600;
+	}
+
+	/* --- stakes screen (explain-before-reveal, R4) --- */
+
+	.stakes-panel {
+		align-items: center;
+		text-align: center;
+		gap: 16px;
+		padding-bottom: 6px;
+	}
+
+	.stakes-icon {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 48px;
+		height: 48px;
+		border-radius: 50%;
+		background: var(--accent-muted);
+		color: var(--accent);
+	}
+
+	.stakes-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		max-width: 420px;
+		font-size: 14px;
+		line-height: 1.55;
+		color: var(--text-secondary);
+	}
+
+	.stakes-list li:first-child {
+		color: var(--text);
+		font-weight: 500;
+	}
+
+	/* --- recognition verify (R4) --- */
+
+	.verify-list {
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
+	}
+
+	.verify-question {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.verify-label {
+		font-size: 12px;
+		font-weight: 600;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		color: var(--text-muted);
+	}
+
+	.verify-options {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+
+	.verify-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		padding: 8px 14px;
+		font-size: 13.5px;
+		font-family: var(--font-mono, monospace);
+		color: var(--text);
+		background: var(--bg-input);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-strip);
+		cursor: pointer;
+		transition:
+			border-color 120ms var(--ease),
+			background 120ms var(--ease);
+	}
+
+	.verify-chip:hover {
+		border-color: var(--accent-border);
+	}
+
+	.verify-chip.picked.wrong {
+		border-color: var(--warning-border-strong);
+		background: var(--attention-muted);
+		color: var(--attention);
+	}
+
+	.verify-chip.picked.right {
+		border-color: var(--sage);
+		background: var(--sage-muted);
+		color: var(--sage);
+	}
+
+	.verify-hint {
+		font-size: 12px;
+		color: var(--attention);
 	}
 
 	.loading {
