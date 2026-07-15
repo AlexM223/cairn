@@ -35,6 +35,12 @@ const SAPWOOD_EPOCHS = 8;
 const MAG_FULL_SCALE = 28;
 /** Boundary-block fallback fetch parallelism. */
 const FETCH_CONCURRENCY = 6;
+/**
+ * Minimum gap between repeated "too many boundary fetch failures" WARNs while
+ * the condition persists (cairn-p7n6). A fresh success resets the backoff so
+ * the next failure, if any, logs immediately.
+ */
+const BOUNDARY_WARN_BACKOFF_MS = 10 * 60 * 1000; // 10 minutes
 
 export interface EpochStripData {
 	/** Ready-to-draw epochs for ChainStrip (xStart/xEnd are 0..1 fractions). */
@@ -56,6 +62,42 @@ interface EpochCacheState {
 
 let mem: EpochCacheState | null = null;
 let inFlight: Promise<EpochCacheState | null> | null = null;
+
+// -------------------------------------------------- boundary-failure logging
+// A chain with no complete difficulty epoch yet (tipEpoch 0, e.g. fresh
+// regtest) can never clear the knownCount threshold below — there's only one
+// possible boundary to know, and the pass threshold is 2. That's an expected,
+// structural state, not a fetch problem, so it's logged once at info and then
+// suppressed until the chain grows past its first epoch. Genuine repeated
+// fetch failures (tipEpoch >= 1) are still worth a WARN, but back off to at
+// most once per BOUNDARY_WARN_BACKOFF_MS while the condition persists
+// (cairn-p7n6 — this used to log every ~20s forever on sub-epoch chains).
+let noEpochInfoLogged = false;
+let lastBoundaryWarnAt = -Infinity;
+
+function logBoundaryFetchFailure(tipEpoch: number, knownCount: number): void {
+	if (tipEpoch === 0) {
+		if (!noEpochInfoLogged) {
+			noEpochInfoLogged = true;
+			log.info(
+				{ knownCount, tipEpoch },
+				'chain has no complete difficulty epoch yet; no strip data'
+			);
+		}
+		return;
+	}
+	const now = Date.now();
+	if (now - lastBoundaryWarnAt >= BOUNDARY_WARN_BACKOFF_MS) {
+		lastBoundaryWarnAt = now;
+		log.warn({ knownCount, tipEpoch }, 'too many boundary fetch failures; no strip data');
+	}
+}
+
+/** A successful build resets both backoffs so the next failure logs promptly. */
+function noteBoundaryFetchSuccess(): void {
+	noEpochInfoLogged = false;
+	lastBoundaryWarnAt = -Infinity;
+}
 
 // ---------------------------------------------------------- fetch progress
 // Live progress of the one-time boundary-timestamp build, read by the
@@ -227,9 +269,10 @@ async function fromBoundaryBlocks(
 	if (times[0] === null) times[0] = GENESIS_TIME;
 	const knownCount = times.filter((t) => t !== null).length;
 	if (knownCount < Math.max(2, Math.floor((tipEpoch + 1) * 0.5))) {
-		log.warn({ knownCount, tipEpoch }, 'too many boundary fetch failures; no strip data');
+		logBoundaryFetchFailure(tipEpoch, knownCount);
 		return null;
 	}
+	noteBoundaryFetchSuccess();
 	return {
 		boundaryTimes: interpolateGaps(times),
 		changes: new Array(tipEpoch + 1).fill(null),
@@ -350,4 +393,6 @@ export async function getEpochStrip(): Promise<EpochStripData | null> {
 export function resetEpochStripCache(): void {
 	mem = null;
 	inFlight = null;
+	noEpochInfoLogged = false;
+	lastBoundaryWarnAt = -Infinity;
 }

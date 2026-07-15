@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { getEpochStrip, epochIndexForHeight, resetEpochStripCache } from './chainEpochs';
 
 // chainEpochs resolves the chain via getChain() and persists through the settings
@@ -24,11 +24,13 @@ vi.mock('$lib/server/settings', () => ({
 	}
 }));
 
+const logInfo = vi.fn();
+const logWarn = vi.fn();
 vi.mock('$lib/server/logger', () => ({
 	childLogger: () => ({
 		debug: () => {},
-		info: () => {},
-		warn: () => {},
+		info: (...args: unknown[]) => logInfo(...args),
+		warn: (...args: unknown[]) => logWarn(...args),
 		error: () => {}
 	})
 }));
@@ -168,5 +170,95 @@ describe('getEpochStrip — unreachable chain', () => {
 	it('returns null (callers hide the strip) when the tip is unavailable', async () => {
 		chainGetTip.mockRejectedValue(new Error('electrum down'));
 		expect(await getEpochStrip()).toBeNull();
+	});
+});
+
+describe('getEpochStrip — boundary-failure logging backoff (cairn-p7n6)', () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it('sub-epoch chain (no complete difficulty epoch) logs info once, never warn, even on repeat', async () => {
+		// tipEpoch 0 (e.g. regtest at 668 blocks): only one possible boundary
+		// (genesis), so the knownCount threshold (>=2) can never be met. This is
+		// expected and structural, not a fetch failure.
+		chainGetTip.mockResolvedValue({ height: 668, hash: 'tip' });
+		chainGetBlockTimeAtHeight.mockRejectedValue(new Error('no boundary yet'));
+
+		expect(await getEpochStrip()).toBeNull();
+		expect(await getEpochStrip()).toBeNull();
+		expect(await getEpochStrip()).toBeNull();
+
+		expect(logInfo).toHaveBeenCalledTimes(1);
+		expect(logWarn).not.toHaveBeenCalled();
+	});
+
+	it('genuine repeated boundary-fetch failures: first occurrence warns, immediate repeat is suppressed', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+
+		// tipEpoch 3 (a complete epoch exists), but every boundary beyond genesis
+		// fails to fetch — genuinely too few known boundaries.
+		const TIP_EPOCH = 3;
+		chainGetTip.mockResolvedValue({ height: TIP_EPOCH * EPOCH + 5, hash: 'tip' });
+		chainGetBlockTimeAtHeight.mockRejectedValue(new Error('electrum timeout'));
+
+		expect(await getEpochStrip()).toBeNull();
+		expect(logWarn).toHaveBeenCalledTimes(1);
+
+		// Immediately again: still within the backoff window, no new WARN.
+		expect(await getEpochStrip()).toBeNull();
+		expect(logWarn).toHaveBeenCalledTimes(1);
+	});
+
+	it('logs again once the backoff window elapses', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+
+		const TIP_EPOCH = 3;
+		chainGetTip.mockResolvedValue({ height: TIP_EPOCH * EPOCH + 5, hash: 'tip' });
+		chainGetBlockTimeAtHeight.mockRejectedValue(new Error('electrum timeout'));
+
+		expect(await getEpochStrip()).toBeNull();
+		expect(logWarn).toHaveBeenCalledTimes(1);
+
+		// Just under the window: still suppressed.
+		vi.setSystemTime(10 * 60 * 1000 - 1);
+		expect(await getEpochStrip()).toBeNull();
+		expect(logWarn).toHaveBeenCalledTimes(1);
+
+		// Window elapsed: warns again.
+		vi.setSystemTime(10 * 60 * 1000);
+		expect(await getEpochStrip()).toBeNull();
+		expect(logWarn).toHaveBeenCalledTimes(2);
+	});
+
+	it('a later success resets the backoff so the next failure warns immediately', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+
+		const TIP_EPOCH = 3;
+		chainGetTip.mockResolvedValue({ height: TIP_EPOCH * EPOCH + 5, hash: 'tip' });
+		chainGetBlockTimeAtHeight.mockRejectedValue(new Error('electrum timeout'));
+
+		expect(await getEpochStrip()).toBeNull();
+		expect(logWarn).toHaveBeenCalledTimes(1);
+
+		// Chain recovers: all boundaries now fetch successfully.
+		resetEpochStripCache();
+		serveBoundaries(boundaryTimes(TIP_EPOCH));
+		const strip = await getEpochStrip();
+		expect(strip).not.toBeNull();
+		expect(logWarn).toHaveBeenCalledTimes(1); // unchanged — success, not a failure
+
+		// Drop both the in-memory and persisted cache (simulating a fresh outage
+		// with nothing usable cached) and fail again right away, with no time
+		// advance: should warn immediately since the success reset the backoff,
+		// rather than staying suppressed under the old window.
+		resetEpochStripCache();
+		settingsStore.clear();
+		chainGetBlockTimeAtHeight.mockRejectedValue(new Error('electrum timeout again'));
+		expect(await getEpochStrip()).toBeNull();
+		expect(logWarn).toHaveBeenCalledTimes(2);
 	});
 });
