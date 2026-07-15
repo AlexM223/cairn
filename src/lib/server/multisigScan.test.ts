@@ -161,7 +161,13 @@ function cacheKeyFor(multisig: MultisigRow): string {
 	return multisigToDescriptor(toMultisigConfig(multisig));
 }
 
-const EMPTY_SCAN: MultisigScanResult = { addresses: [], txs: [], confirmed: 0, unconfirmed: 0 };
+const EMPTY_SCAN: MultisigScanResult = {
+	addresses: [],
+	txs: [],
+	confirmed: 0,
+	unconfirmed: 0,
+	scanTruncated: false
+};
 
 describe('nextMultisigReceiveAddress concurrency and cursor safety (cairn-2qa4)', () => {
 	beforeEach(() => {

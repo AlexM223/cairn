@@ -287,7 +287,13 @@ describe('getMultisigUtxos', () => {
 
 // ────────────────────────────────────── listMultisigSummaries (cairn-czi0) ──
 
-const EMPTY_SCAN: MultisigScanResult = { addresses: [], txs: [], confirmed: 0, unconfirmed: 0 };
+const EMPTY_SCAN: MultisigScanResult = {
+	addresses: [],
+	txs: [],
+	confirmed: 0,
+	unconfirmed: 0,
+	scanTruncated: false
+};
 
 describe('listMultisigSummaries — per-multisig scan-failure isolation', () => {
 	it('one multisig failing to scan never throws and never blocks the others — it lands in errors[] with a zeroed balance', async () => {

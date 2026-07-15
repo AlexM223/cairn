@@ -148,7 +148,8 @@ function wireSingleCoinWallet(value: number): { txid: string } {
 		],
 		txs: [],
 		confirmed: value,
-		unconfirmed: 0
+		unconfirmed: 0,
+		scanTruncated: false
 	};
 	mocks.scanWallet.mockResolvedValue(scan);
 	mocks.findNextUnusedIndex.mockResolvedValue(0);

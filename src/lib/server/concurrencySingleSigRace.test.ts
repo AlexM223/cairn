@@ -110,7 +110,8 @@ function wireTwoCoinWallet(): { addr0: string; addr1: string } {
 		],
 		txs: [],
 		confirmed: 350_000,
-		unconfirmed: 0
+		unconfirmed: 0,
+		scanTruncated: false
 	};
 	mocks.scanWallet.mockResolvedValue(scan);
 	mocks.findNextUnusedIndex.mockResolvedValue(2);

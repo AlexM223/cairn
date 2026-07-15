@@ -74,7 +74,7 @@ function scanResult(
 	unconfirmed = 0,
 	txs: WalletScanResult['txs'] = []
 ): WalletScanResult {
-	return { addresses: [], txs, confirmed, unconfirmed };
+	return { addresses: [], txs, confirmed, unconfirmed, scanTruncated: false };
 }
 
 let userId: number;

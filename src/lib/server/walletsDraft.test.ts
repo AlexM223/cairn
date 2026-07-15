@@ -94,7 +94,8 @@ const SCAN: WalletScanResult = {
 	],
 	txs: [],
 	confirmed: 100_000,
-	unconfirmed: 0
+	unconfirmed: 0,
+	scanTruncated: false
 };
 
 const UNSPENT_BY_SCRIPTHASH: Record<string, { tx_hash: string; tx_pos: number; value: number; height: number }[]> = {

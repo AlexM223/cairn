@@ -12,6 +12,9 @@ import type { ElectrumBalance, ElectrumHistoryItem } from '../electrum/client';
 import type { ElectrumLane } from '../electrum/pool';
 import { Transaction } from '@scure/btc-signer';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
+import { childLogger } from '../logger';
+
+const log = childLogger('gap-scan');
 
 export const GAP_LIMIT = 20;
 const BATCH_SIZE = 20;
@@ -51,6 +54,20 @@ export interface GapScanTx {
 	fee: number | null;
 }
 
+/** Result of one chain's gap-limit discovery: the scanned addresses plus
+ *  whether HARD_CAP cut the scan short before a full gap-limit-wide quiet
+ *  window confirmed the wallet was actually done. */
+export interface ChainScanResult<T> {
+	addresses: T[];
+	/** True when HARD_CAP stopped discovery while the trailing gap-limit
+	 *  window still had activity in it — i.e. the scan would have kept going
+	 *  had the cap not been there, so there may be used addresses (and funds)
+	 *  past the cap that this scan never got to see. False on a normal
+	 *  gap-limit-satisfied completion, even one that happens to land exactly
+	 *  on the cap boundary (nothing was left unexamined in that case). */
+	truncated: boolean;
+}
+
 /**
  * Gap-limit discovery over one chain (receive or change). `deriveAt` supplies
  * the address at each index plus whatever derivation metadata the caller's
@@ -60,7 +77,7 @@ export interface GapScanTx {
 export async function scanChainAddresses<TExtra extends { address: string }>(
 	deriveAt: (index: number) => TExtra,
 	lane: ElectrumLane = 'interactive'
-): Promise<(TExtra & GapScannedFields)[]> {
+): Promise<ChainScanResult<TExtra & GapScannedFields>> {
 	const chain = getChain();
 	const out: (TExtra & GapScannedFields)[] = [];
 	let consecutiveUnused = 0;
@@ -103,10 +120,26 @@ export async function scanChainAddresses<TExtra extends { address: string }>(
 		index += batch.length;
 	}
 
+	// HARD_CAP stopped us before a full gap-limit-wide quiet window confirmed
+	// the wallet was done: consecutiveUnused < GAP_LIMIT here means a used
+	// address is still within the trailing gap window, so this chain could
+	// have kept going — anything past the cap is invisible, silently, unless
+	// we flag it (cairn-kxhv). A completion that lands exactly on the cap
+	// boundary WITH a full quiet gap already satisfied (consecutiveUnused >=
+	// GAP_LIMIT) is a normal, non-truncated finish that merely coincides with
+	// the cap — nothing was left unexamined.
+	const truncated = index >= HARD_CAP && consecutiveUnused < GAP_LIMIT;
+	if (truncated) {
+		log.warn(
+			{ lane, lastIndexScanned: index - 1, consecutiveUnused, hardCap: HARD_CAP, gapLimit: GAP_LIMIT },
+			'gap-limit scan hit HARD_CAP with activity still in the gap window — addresses (and possibly funds) past the cap were not scanned'
+		);
+	}
+
 	// Trim the unused tail to exactly the gap window after the last used address.
 	let lastUsed = -1;
 	for (const a of out) if (a.used) lastUsed = Math.max(lastUsed, a.index);
-	return out.filter((a) => a.index <= lastUsed + GAP_LIMIT);
+	return { addresses: out.filter((a) => a.index <= lastUsed + GAP_LIMIT), truncated };
 }
 
 /** Coinbase's synthetic prevout: 32 zero bytes at index 0xffffffff (consensus
@@ -341,12 +374,18 @@ export async function runGapScan<TExtra extends { address: string }>(
 	txs: GapScanTx[];
 	confirmed: number;
 	unconfirmed: number;
+	/** True when either chain's HARD_CAP truncated discovery with activity
+	 *  still in its gap window (see ChainScanResult.truncated) — surfaced so
+	 *  callers can flag the wallet as possibly showing an incomplete balance
+	 *  instead of silently under-reporting it (cairn-kxhv). */
+	scanTruncated: boolean;
 }> {
 	const [receive, change] = await Promise.all([
 		scanChainAddresses((i) => deriveAt(0, i), lane),
 		scanChainAddresses((i) => deriveAt(1, i), lane)
 	]);
-	const scanned = [...receive, ...change];
+	const scanned = [...receive.addresses, ...change.addresses];
+	const scanTruncated = receive.truncated || change.truncated;
 
 	const txs = await collectScanTxs(scanned);
 
@@ -363,7 +402,7 @@ export async function runGapScan<TExtra extends { address: string }>(
 	const addresses = scanned.map(
 		({ history: _h, confirmedSats: _c, unconfirmedSats: _u, ...addr }) => addr
 	) as (TExtra & Omit<GapScannedFields, 'history' | 'confirmedSats' | 'unconfirmedSats'>)[];
-	return { scanned, addresses, txs, confirmed, unconfirmed };
+	return { scanned, addresses, txs, confirmed, unconfirmed, scanTruncated };
 }
 
 /**

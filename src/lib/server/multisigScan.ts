@@ -63,6 +63,12 @@ export interface MultisigScanResult {
 	txs: MultisigTx[];
 	confirmed: number; // sats
 	unconfirmed: number; // sats (delta)
+	/** True when the scan's HARD_CAP cut discovery short with activity still
+	 *  in the gap window — some older addresses (and possibly funds) past the
+	 *  cap were never scanned. Surfaced to the multisig detail page so this
+	 *  shows as an honest notice instead of a silently wrong balance
+	 *  (cairn-kxhv). */
+	scanTruncated: boolean;
 }
 
 export interface MultisigDetail {
@@ -70,6 +76,7 @@ export interface MultisigDetail {
 	utxos: SpendableUtxo[];
 	addresses: MultisigScanAddress[];
 	history: MultisigTx[];
+	scanTruncated: boolean;
 }
 
 type ScannedAddress = MultisigScanAddress & GapScannedFields & { history: ElectrumHistoryItem[] };
@@ -166,13 +173,15 @@ async function doScan(
 		addresses: scan.addresses,
 		txs: scan.txs,
 		confirmed: scan.confirmed,
-		unconfirmed: scan.unconfirmed
+		unconfirmed: scan.unconfirmed,
+		scanTruncated: scan.scanTruncated
 	});
 	return {
 		addresses: scan.addresses,
 		txs: scan.txs,
 		confirmed: scan.confirmed,
 		unconfirmed: scan.unconfirmed,
+		scanTruncated: scan.scanTruncated,
 		scanned: scan.scanned
 	};
 }
@@ -289,7 +298,8 @@ export async function getMultisigDetail(
 			balance: { confirmed: scan.confirmed, unconfirmed: scan.unconfirmed },
 			utxos,
 			addresses: scan.addresses,
-			history: scan.txs
+			history: scan.txs,
+			scanTruncated: scan.scanTruncated
 		};
 	} catch (e) {
 		// cairn-sgtr: every caller (the multisig detail/send routes, history.csv,

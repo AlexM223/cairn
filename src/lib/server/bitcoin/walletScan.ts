@@ -21,6 +21,12 @@ export interface WalletScanResult {
 	confirmed: number;
 	/** Unconfirmed delta in sats. */
 	unconfirmed: number;
+	/** True when the scan's HARD_CAP cut discovery short with activity still
+	 *  in the gap window — some older addresses (and possibly funds) past the
+	 *  cap were never scanned. Surfaced to the wallet detail page so this
+	 *  shows as an honest notice instead of a silently wrong balance
+	 *  (cairn-kxhv). */
+	scanTruncated: boolean;
 }
 
 // --------------------------------------------------------------------- scanning
@@ -36,7 +42,8 @@ async function doScan(xpub: string, lane: ElectrumLane): Promise<WalletScanResul
 		addresses: scan.addresses,
 		txs: scan.txs,
 		confirmed: scan.confirmed,
-		unconfirmed: scan.unconfirmed
+		unconfirmed: scan.unconfirmed,
+		scanTruncated: scan.scanTruncated
 	};
 	// Persist this completed scan (one write) so a cold restart can serve it
 	// instantly before re-scanning. Best-effort — never blocks or throws.

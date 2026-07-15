@@ -122,7 +122,8 @@ function wireOneCoinWallet(): { addr0: string; fund: { hex: string; txid: string
 		],
 		txs: [],
 		confirmed: 200_000,
-		unconfirmed: 0
+		unconfirmed: 0,
+		scanTruncated: false
 	};
 	mocks.scanWallet.mockResolvedValue(scan);
 	mocks.findNextUnusedIndex.mockResolvedValue(1);

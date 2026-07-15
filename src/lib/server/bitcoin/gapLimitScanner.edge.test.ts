@@ -99,27 +99,39 @@ beforeEach(() => {
 describe('scanChainAddresses — gap-limit stopping and trim boundaries (cairn-es7a)', () => {
 	it('a zero-address wallet (nothing ever used) scans exactly one lookahead batch, all unused, no crash', async () => {
 		wireElectrum(0, new Set(), 20);
-		const out = await scanChainAddresses((i) => ({ address: addrAt(0, i) }), 'interactive');
+		const { addresses: out, truncated } = await scanChainAddresses(
+			(i) => ({ address: addrAt(0, i) }),
+			'interactive'
+		);
 		expect(out).toHaveLength(20); // BATCH_SIZE === GAP_LIMIT === 20
 		expect(out.every((a) => !a.used)).toBe(true);
 		expect(out.map((a) => a.index)).toEqual(Array.from({ length: 20 }, (_, i) => i));
+		expect(truncated).toBe(false);
 	});
 
 	it('exactly GAP_LIMIT (20) consecutive unused addresses after one used address stops the scan at that boundary', async () => {
 		// index 0 used; indices 1..20 (20 consecutive) unused. Window trims to
 		// lastUsed(0) + GAP_LIMIT(20) = 20, so index 20 is the last one kept.
 		wireElectrum(0, new Set([0]), 60);
-		const out = await scanChainAddresses((i) => ({ address: addrAt(0, i) }), 'interactive');
+		const { addresses: out, truncated } = await scanChainAddresses(
+			(i) => ({ address: addrAt(0, i) }),
+			'interactive'
+		);
 		expect(out.map((a) => a.index)).toEqual(Array.from({ length: 21 }, (_, i) => i));
 		expect(out[0].used).toBe(true);
 		expect(out.slice(1).every((a) => !a.used)).toBe(true);
+		expect(truncated).toBe(false);
 	});
 
 	it('a used address one past the first lookahead window (index 19) extends the scan window to 39', async () => {
 		wireElectrum(0, new Set([19]), 80);
-		const out = await scanChainAddresses((i) => ({ address: addrAt(0, i) }), 'interactive');
+		const { addresses: out, truncated } = await scanChainAddresses(
+			(i) => ({ address: addrAt(0, i) }),
+			'interactive'
+		);
 		expect(out[out.length - 1].index).toBe(39); // lastUsed(19) + GAP_LIMIT(20)
 		expect(out.find((a) => a.index === 19)!.used).toBe(true);
+		expect(truncated).toBe(false);
 	});
 
 	it('a used address exactly at index 20 is UNREACHABLE when 0-19 are all unused — gap-limit exhausts within batch 1 first', async () => {
@@ -132,10 +144,14 @@ describe('scanChainAddresses — gap-limit stopping and trim boundaries (cairn-e
 		// discovery gives up), documented here as a boundary pin so a future
 		// change to BATCH_SIZE/GAP_LIMIT's relationship doesn't silently alter it.
 		wireElectrum(0, new Set([20]), 60);
-		const out = await scanChainAddresses((i) => ({ address: addrAt(0, i) }), 'interactive');
+		const { addresses: out, truncated } = await scanChainAddresses(
+			(i) => ({ address: addrAt(0, i) }),
+			'interactive'
+		);
 		expect(out).toHaveLength(20); // stopped after the first all-unused batch
 		expect(out.every((a) => !a.used)).toBe(true);
 		expect(out.some((a) => a.index === 20)).toBe(false); // never even derived
+		expect(truncated).toBe(false);
 	});
 
 	it('a used address landing exactly on a BATCH_SIZE (20) multiple IS discovered when an earlier used address keeps the gap window open', async () => {
@@ -143,25 +159,59 @@ describe('scanChainAddresses — gap-limit stopping and trim boundaries (cairn-e
 		// the end of batch 1, so batch 2 (indices 20-39) is derived and index 20
 		// is found — extending the window to lastUsed(20) + GAP_LIMIT(20) = 40.
 		wireElectrum(0, new Set([0, 20]), 60);
-		const out = await scanChainAddresses((i) => ({ address: addrAt(0, i) }), 'interactive');
+		const { addresses: out, truncated } = await scanChainAddresses(
+			(i) => ({ address: addrAt(0, i) }),
+			'interactive'
+		);
 		expect(out.some((a) => a.index === 20 && a.used)).toBe(true);
 		expect(out[out.length - 1].index).toBe(40);
+		expect(truncated).toBe(false);
 	});
 
-	it('HARD_CAP (400) truncates the scan even when spaced-out usage would otherwise keep the gap window open forever', async () => {
+	it('HARD_CAP (400) truncates the scan even when spaced-out usage would otherwise keep the gap window open forever, and FLAGS it (cairn-kxhv)', async () => {
 		// Usage every 15 indices (< GAP_LIMIT) never lets consecutiveUnused reach
 		// 20, so gap-limit alone would never stop the scan — only the HARD_CAP
 		// bound on the outer loop (index < 400) can terminate it. This is the
 		// realistic way to actually reach the HARD_CAP boundary: an isolated
 		// used index near 400 is unreachable by this algorithm (gap-limit would
 		// have already stopped the scan after the very first all-unused batch).
+		// The last used index (390) is only 9 short of the cap — well inside the
+		// trailing gap window — so the scan would have kept going: truncated=true.
 		const used = new Set<number>();
 		for (let i = 0; i <= 390; i += 15) used.add(i);
 		wireElectrum(0, used, 400);
-		const out = await scanChainAddresses((i) => ({ address: addrAt(0, i) }), 'interactive');
+		const { addresses: out, truncated } = await scanChainAddresses(
+			(i) => ({ address: addrAt(0, i) }),
+			'interactive'
+		);
 		expect(out).toHaveLength(400);
 		expect(Math.max(...out.map((a) => a.index))).toBe(399);
 		expect(out.find((a) => a.index === 390)!.used).toBe(true);
+		expect(truncated).toBe(true);
+	}, 20_000);
+
+	it('HARD_CAP coinciding EXACTLY with a satisfied gap window is NOT flagged truncated — the quiet tail leaves nothing unexamined (cairn-kxhv)', async () => {
+		// Spaced usage (every 15) keeps the scan alive past every earlier
+		// lookahead batch, same as the test above, but the LAST used index here
+		// is 379 — the final index of the 19th batch (360-379) — followed by
+		// batch 20 (380-399), which is entirely unused. That's exactly
+		// GAP_LIMIT (20) consecutive unused addresses landing precisely on the
+		// HARD_CAP boundary: consecutiveUnused reaches 20 in the very same
+		// batch that also exhausts the cap, so the scan is a normal
+		// gap-satisfied completion that merely coincides with HARD_CAP —
+		// nothing past index 399 was left unscanned that the algorithm
+		// wouldn't also have stopped at anyway.
+		const used = new Set<number>();
+		for (let i = 0; i <= 375; i += 15) used.add(i);
+		used.add(379);
+		wireElectrum(0, used, 400);
+		const { addresses: out, truncated } = await scanChainAddresses(
+			(i) => ({ address: addrAt(0, i) }),
+			'interactive'
+		);
+		expect(Math.max(...out.map((a) => a.index))).toBe(399);
+		expect(out.find((a) => a.index === 379)!.used).toBe(true);
+		expect(truncated).toBe(false);
 	}, 20_000);
 });
 
@@ -174,6 +224,7 @@ describe('runGapScan — two-chain orchestration (cairn-es7a)', () => {
 		expect(result.confirmed).toBe(0);
 		expect(result.unconfirmed).toBe(0);
 		expect(result.txs).toEqual([]);
+		expect(result.scanTruncated).toBe(false);
 	});
 
 	it('usage on the change chain only extends that chain\'s window, independent of the receive chain', async () => {
@@ -184,6 +235,7 @@ describe('runGapScan — two-chain orchestration (cairn-es7a)', () => {
 		expect(receive).toHaveLength(20); // untouched, still just the lookahead batch
 		expect(change).toHaveLength(26); // lastUsed(5) + GAP_LIMIT(20) = 25 -> 26 entries (0..25)
 		expect(change.find((a) => a.index === 5)!.used).toBe(true);
+		expect(result.scanTruncated).toBe(false);
 	});
 
 	it('confirmed/unconfirmed totals sum sats from exactly the used addresses across both chains', async () => {
@@ -191,7 +243,19 @@ describe('runGapScan — two-chain orchestration (cairn-es7a)', () => {
 		const result = await runGapScan((chain, i) => ({ address: addrAt(chain, i), chain }), 'interactive');
 		expect(result.confirmed).toBe(10_000);
 		expect(result.unconfirmed).toBe(0);
+		expect(result.scanTruncated).toBe(false);
 	});
+
+	it('scanTruncated is true when EITHER chain hits HARD_CAP with activity still in its gap window (cairn-kxhv)', async () => {
+		// Receive chain: spaced usage every 15 up to 390 never lets the gap close
+		// (same fixture as the scanChainAddresses HARD_CAP test) — truncated.
+		// Change chain: a normal, small, fully-discovered wallet — not truncated.
+		const receiveUsed = new Set<number>();
+		for (let i = 0; i <= 390; i += 15) receiveUsed.add(i);
+		wireElectrumBoth({ 0: receiveUsed, 1: new Set([0]) }, 400);
+		const result = await runGapScan((chain, i) => ({ address: addrAt(chain, i), chain }), 'interactive');
+		expect(result.scanTruncated).toBe(true);
+	}, 20_000);
 });
 
 describe('ScanCache — TTL, prime, and failure isolation (cairn-es7a)', () => {

@@ -5,6 +5,7 @@
 	import { onNewBlock } from '$lib/liveBlocks';
 	import Icon from '$lib/components/Icon.svelte';
 	import Amount from '$lib/components/Amount.svelte';
+	import Banner from '$lib/components/Banner.svelte';
 	import SyncIndicator from '$lib/components/heartwood/SyncIndicator.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
@@ -649,6 +650,17 @@
 				</button>
 			</div>
 		{:else if scan}
+			{#if scan.scanTruncated}
+				<!-- cairn-kxhv: the gap-limit scan stopped at its safety cap while this
+				     wallet still had activity right up against that boundary — some
+				     older addresses (and any funds sent to them) may not be shown. -->
+				<Banner variant="warning">
+					This wallet has more address activity than we scan by default, so some
+					older addresses may not be shown here yet. Nothing is lost — any coins
+					on them are still safely on the blockchain. Contact support if you're
+					missing funds you expect to see.
+				</Banner>
+			{/if}
 			<!-- ------------------------------------------- stepped balance chart -->
 			{#if scan.txs.some((t) => t.height > 0)}
 				<div class="hw-chart">

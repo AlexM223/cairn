@@ -175,6 +175,12 @@ export interface WalletSnapshot {
 		txs: WalletTx[];
 		confirmed: number;
 		unconfirmed: number;
+		/** True when the scan's HARD_CAP cut discovery short with activity
+		 *  still in the gap window — some older addresses (and possibly
+		 *  funds) past the cap were never scanned (cairn-kxhv). Optional: a
+		 *  snapshot written before this field existed parses with it
+		 *  `undefined`, which the page treats as "not truncated" (falsy). */
+		scanTruncated?: boolean;
 	} | null;
 	receive: { address: string; path: string; index: number; qr: string } | null;
 	coinbaseUtxos: CoinbaseUtxo[];
@@ -201,6 +207,11 @@ export interface MultisigSnapshot {
 		addresses: MultisigScanAddress[];
 		history: MultisigTx[];
 		utxoCount: number;
+		/** True when the scan's HARD_CAP cut discovery short with activity
+		 *  still in the gap window — some older addresses (and possibly
+		 *  funds) past the cap were never scanned (cairn-kxhv). Optional —
+		 *  see WalletSnapshot's field of the same name. */
+		scanTruncated?: boolean;
 	} | null;
 	receive: { address: string; index: number; qr: string } | null;
 	coinbaseUtxos: CoinbaseUtxo[];
@@ -808,7 +819,8 @@ async function doWalletScan(userId: number, row: WalletRow): Promise<WalletSnaps
 			addresses: scan.addresses,
 			txs: scan.txs,
 			confirmed: scan.confirmed,
-			unconfirmed: scan.unconfirmed
+			unconfirmed: scan.unconfirmed,
+			scanTruncated: scan.scanTruncated
 		},
 		receive: { ...receive, qr },
 		coinbaseUtxos,
@@ -902,7 +914,8 @@ async function doMultisigScan(userId: number, multisig: MultisigRow): Promise<Mu
 			balance: detail.balance,
 			addresses: detail.addresses,
 			history: detail.history,
-			utxoCount: detail.utxos.length
+			utxoCount: detail.utxos.length,
+			scanTruncated: detail.scanTruncated
 		},
 		receive: { ...receive, qr },
 		coinbaseUtxos,

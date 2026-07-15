@@ -865,7 +865,13 @@ describe('createMultisig xpub reuse warning (cairn-1kc3.4)', () => {
 // ---- cairn-ez9y: deleteMultisig must invalidate the scan cache ------------------
 
 describe('deleteMultisig cache invalidation (cairn-ez9y)', () => {
-	const emptyScan: MultisigScanResult = { addresses: [], txs: [], confirmed: 0, unconfirmed: 0 };
+	const emptyScan: MultisigScanResult = {
+		addresses: [],
+		txs: [],
+		confirmed: 0,
+		unconfirmed: 0,
+		scanTruncated: false
+	};
 
 	function cacheKeyFor(multisig: MultisigRow): string {
 		return multisigToDescriptor(toMultisigConfig(multisig));
