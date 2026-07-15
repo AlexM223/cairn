@@ -12,6 +12,7 @@
 	import TxFlowDiagram from '$lib/components/heartwood/TxFlowDiagram.svelte';
 	import { computeTxFlow, computeFeePosition } from '$lib/components/heartwood/txFlow';
 	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
+	import { confirmationProgress } from '$lib/components/heartwood/burialRingsLabel';
 	import BlockContext from '$lib/components/heartwood/BlockContext.svelte';
 	import CoreRpcRequiredNotice from '$lib/components/CoreRpcRequiredNotice.svelte';
 	import { txPageTitle } from './txTitle';
@@ -79,6 +80,23 @@
 
 	const outlook = $derived(
 		tx && !tx.confirmed && tx.feeRate !== null && fees ? feeOutlook(tx.feeRate, fees) : null
+	);
+
+	// Explicit "N of 6" tally alongside the plain-language burial-ring label
+	// (cairn-cqch) — null once fully buried (6+), matching burialRingsLabel's
+	// own cap there.
+	const progress = $derived(
+		tx ? confirmationProgress(tx.confirmed ? tx.confirmations : 0) : null
+	);
+
+	// "Speed this up" CTA (cairn-cqch): only for an unconfirmed tx the viewer
+	// owns AND that the wallet-detail page's own eligibility check (already
+	// computed server-side by detectUnconfirmedInflows, read straight off the
+	// wallet's persisted snapshot) has actually flagged as bumpable — never
+	// re-derived here. Never shown for a confirmed tx or one that touches none
+	// of the viewer's wallets (the public explorer surface).
+	const speedUpWallet = $derived(
+		tx && !tx.confirmed ? (ownership?.speedUpWallet ?? null) : null
 	);
 
 	// CSS-only Sankey-lite value flow (cairn-6efi.8): inputs → outputs + fee, band
@@ -256,6 +274,9 @@
 			<div class="status-text">
 				<span class="status-label" class:sealed={tx.confirmed}>
 					{burialRingsLabel(tx.confirmed ? tx.confirmations : 0)}
+					{#if progress}
+						<span class="status-progress">· {progress}</span>
+					{/if}
 				</span>
 				<span class="status-detail">
 					{#if tx.confirmed}
@@ -278,6 +299,15 @@
 				</span>
 			</div>
 			<span class="status-badges">
+				{#if speedUpWallet}
+					<a
+						class="btn btn-secondary btn-sm speedup-cta"
+						href="{speedUpWallet.href}?speedup={tx.txid}"
+					>
+						<Icon name="zap" size={14} />
+						Speed this up
+					</a>
+				{/if}
 				{#if tx.segwit}
 					<Term
 						tip="This transaction uses Segregated Witness: signatures live in a separate 'witness' section that counts less toward block limits, so it takes less block space and pays lower fees than the legacy format."
@@ -868,6 +898,12 @@
 		color: var(--sage);
 	}
 
+	/* Explicit "N of 6" tally next to the plain-language label (cairn-cqch). */
+	.status-progress {
+		font-weight: 400;
+		color: var(--text-muted);
+	}
+
 	.status-detail {
 		font-size: 12.5px;
 		color: var(--text-muted);
@@ -879,6 +915,15 @@
 		align-items: center;
 		gap: 8px;
 		flex-wrap: wrap;
+	}
+
+	/* "Speed this up" CTA — links into the wallet-detail page's existing
+	   RBF/CPFP flow (cairn-cqch), never rendered on the public explorer
+	   surface for a tx that isn't the viewer's own. */
+	.speedup-cta {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
 	}
 
 	/* --- metrics: inline serif stats --- */

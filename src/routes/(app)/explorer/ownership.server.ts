@@ -22,6 +22,7 @@
 import { db } from '$lib/server/db';
 import { listWalletRows } from '$lib/server/wallets';
 import { readWalletSnapshot, readMultisigSnapshot } from '$lib/server/walletSync';
+import { multisigAccessRole } from '$lib/server/multisigShares';
 import type { TxDetail } from '$lib/types';
 
 /** A wallet the viewing user has access to, plus the route back to its detail page. */
@@ -88,6 +89,15 @@ interface UserWalletIndex {
 	/** The viewing user's unconfirmed txs (height ≤ 0), newest first, deduped by
 	 *  txid. Bounded by the user's own wallet history, not instance size. */
 	pending: PendingTx[];
+	/** txid -> the viewing user's wallet that can speed it up (first match wins),
+	 *  for the explorer tx-detail "Speed this up" CTA (cairn-cqch). Read straight
+	 *  off each wallet/multisig snapshot's own `speedUp` list — the exact same
+	 *  detectUnconfirmedInflows() output the wallet-detail "Bump fee"/"Speed up"
+	 *  controls key off — so eligibility (RBF-signaling, a spendable unconfirmed
+	 *  coin on this specific tx, etc.) is never re-derived here. A multisig
+	 *  viewer share is excluded (they can't act on it — mirrors the multisig
+	 *  detail page's own `role !== 'viewer'` gate on the same button). */
+	speedUp: Map<string, OwnedWalletRef>;
 }
 
 // Owner OR any accepted share (viewer/cosigner). Same access predicate as
@@ -106,6 +116,7 @@ function buildIndex(userId: number): UserWalletIndex {
 	const txid = new Map<string, OwnedWalletRef[]>();
 	const heights = new Set<number>();
 	const byHeight = new Map<number, OwnedBlockTx[]>();
+	const speedUp = new Map<string, OwnedWalletRef>();
 
 	// Confirmed txs carry a positive block height (0 / -1 = unconfirmed); an
 	// unconfirmed tx isn't in any listed block yet, so skip it. Records both the
@@ -169,14 +180,19 @@ function buildIndex(userId: number): UserWalletIndex {
 			href: `/wallets/${w.id}`
 		};
 		const snap = readWalletSnapshot(w.id)?.snapshot;
-		if (!snap?.scan) continue;
-		for (const a of snap.scan.addresses) {
-			if (!addr.has(a.address)) addr.set(a.address, { wallet: ref, change: a.change });
+		if (!snap) continue;
+		if (snap.scan) {
+			for (const a of snap.scan.addresses) {
+				if (!addr.has(a.address)) addr.set(a.address, { wallet: ref, change: a.change });
+			}
+			for (const t of snap.scan.txs) {
+				addTx(t.txid, ref);
+				addHeight(t, ref);
+				addPending(t, ref);
+			}
 		}
-		for (const t of snap.scan.txs) {
-			addTx(t.txid, ref);
-			addHeight(t, ref);
-			addPending(t, ref);
+		for (const s of snap.speedUp) {
+			if (!speedUp.has(s.txid)) speedUp.set(s.txid, ref);
 		}
 	}
 
@@ -189,22 +205,32 @@ function buildIndex(userId: number): UserWalletIndex {
 			href: `/wallets/multisig/${m.id}`
 		};
 		const snap = readMultisigSnapshot(m.id)?.snapshot;
-		if (!snap?.detail) continue;
-		for (const a of snap.detail.addresses) {
-			// MultisigScanAddress.chain: 0 = receive, 1 = change.
-			if (!addr.has(a.address)) addr.set(a.address, { wallet: ref, change: a.chain === 1 });
+		if (!snap) continue;
+		if (snap.detail) {
+			for (const a of snap.detail.addresses) {
+				// MultisigScanAddress.chain: 0 = receive, 1 = change.
+				if (!addr.has(a.address)) addr.set(a.address, { wallet: ref, change: a.chain === 1 });
+			}
+			for (const t of snap.detail.history) {
+				addTx(t.txid, ref);
+				addHeight(t, ref);
+				addPending(t, ref);
+			}
 		}
-		for (const t of snap.detail.history) {
-			addTx(t.txid, ref);
-			addHeight(t, ref);
-			addPending(t, ref);
+		// A viewer share can see the multisig but can't initiate a fee bump/CPFP —
+		// the multisig detail page itself hides that control for role 'viewer', so
+		// don't offer the explorer CTA either.
+		if (multisigAccessRole(userId, m.id) !== 'viewer') {
+			for (const s of snap.speedUp) {
+				if (!speedUp.has(s.txid)) speedUp.set(s.txid, ref);
+			}
 		}
 	}
 
 	// Newest first (nulls last), so the band leads with the freshest broadcast.
 	const pending = [...pendingByTxid.values()].sort((a, b) => (b.time ?? 0) - (a.time ?? 0));
 
-	return { addr, txid, heights, byHeight, pending };
+	return { addr, txid, heights, byHeight, pending, speedUp };
 }
 
 // Per-process memo, keyed by userId. Snapshots only change on the background
@@ -281,6 +307,13 @@ export interface TxOwnership {
 	/** address -> the user's wallet that owns it, for badging the individual
 	 *  input/output rows that are theirs. */
 	addressOwners: Record<string, OwnedWalletRef>;
+	/** The viewing user's wallet that can speed this tx up via the existing
+	 *  RBF/CPFP flow, or null when it isn't eligible from any of their wallets
+	 *  (confirmed, not theirs, no qualifying unconfirmed coin, a multisig
+	 *  viewer share, etc). Drives the tx-detail "Speed this up" CTA
+	 *  (cairn-cqch) — always null on the public explorer surface for a tx that
+	 *  touches none of the viewer's own wallets. */
+	speedUpWallet: OwnedWalletRef | null;
 }
 
 export function txOwnership(userId: number | undefined, tx: TxDetail): TxOwnership | null {
@@ -307,7 +340,11 @@ export function txOwnership(userId: number | undefined, tx: TxDetail): TxOwnersh
 	for (const w of idx.txid.get(tx.txid) ?? []) walletsByKey.set(keyOf(w), w);
 
 	if (walletsByKey.size === 0) return null;
-	return { wallets: [...walletsByKey.values()], addressOwners };
+	return {
+		wallets: [...walletsByKey.values()],
+		addressOwners,
+		speedUpWallet: idx.speedUp.get(tx.txid) ?? null
+	};
 }
 
 /**

@@ -135,6 +135,29 @@
 			}
 		}, 0);
 	});
+
+	// The explorer tx-detail page's "Speed this up" CTA (cairn-cqch) links here
+	// with ?speedup=<txid> instead of duplicating the RBF/CPFP forms on the
+	// explorer surface. Switch to the Saved tab (where those controls live) and
+	// open the same flow a click on "Bump fee"/"Speed up" would — openSpeedUp
+	// re-checks speedUpByTxid itself, so a tx that's confirmed or no longer
+	// eligible by the time this loads is a silent no-op, not a broken button.
+	// One-shot like ?imported=1 above.
+	afterNavigate(() => {
+		setTimeout(() => {
+			const url = new URL(window.location.href);
+			const txid = url.searchParams.get('speedup');
+			if (!txid) return;
+			tab = 'saved';
+			void openSpeedUp(txid);
+			url.searchParams.delete('speedup');
+			try {
+				replaceState(url, {});
+			} catch {
+				history.replaceState(history.state, '', url);
+			}
+		}, 0);
+	});
 	let confirmDelete = $state(false);
 	let deleting = $state(false);
 	let generating = $state(false);

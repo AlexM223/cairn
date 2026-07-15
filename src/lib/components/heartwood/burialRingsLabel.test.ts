@@ -6,7 +6,7 @@
 // (cairn-0ifm). This locks the plain-language output in place.
 
 import { describe, it, expect } from 'vitest';
-import { burialRingsLabel } from './burialRingsLabel';
+import { burialRingsLabel, confirmationProgress } from './burialRingsLabel';
 
 describe('burialRingsLabel', () => {
 	it('0 confirmations reads as plain "unconfirmed"', () => {
@@ -38,5 +38,29 @@ describe('burialRingsLabel', () => {
 			expect(label.toLowerCase()).not.toContain('buried');
 			expect(label.toLowerCase()).not.toContain('sealed');
 		}
+	});
+});
+
+// Explicit "N of 6" progress text (cairn-cqch): the burial-ring label alone
+// ("2 confirmations") doesn't say how far along a still-confirming tx is
+// toward Cairn's 6-confirmation "buried" threshold. This is the literal
+// tally shown alongside it on the explorer tx-detail page.
+describe('confirmationProgress', () => {
+	it('0 confirmations reads as "0 of 6 confirmations"', () => {
+		expect(confirmationProgress(0)).toBe('0 of 6 confirmations');
+	});
+
+	it('negative/invalid confirmations clamp to 0, like the label', () => {
+		expect(confirmationProgress(-1)).toBe('0 of 6 confirmations');
+	});
+
+	it('1-5 confirmations report the literal count out of 6', () => {
+		expect(confirmationProgress(1)).toBe('1 of 6 confirmations');
+		expect(confirmationProgress(5)).toBe('5 of 6 confirmations');
+	});
+
+	it('6+ confirmations has nothing further to add — null, not "6 of 6" or "97 of 6"', () => {
+		expect(confirmationProgress(6)).toBeNull();
+		expect(confirmationProgress(97)).toBeNull();
 	});
 });
