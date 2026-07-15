@@ -2890,6 +2890,13 @@ single-recipient must all hold) rather than tuned after the fact — warnings
 habituate within two exposures (F4), so any extra check has to stay
 genuinely uncommon to keep working.
 
+**Fee-as-%-of-payment context (R7, `cairn-5k9r`).** `SendReviewCard`'s fee
+line now appends `sendCopy.ts`'s `feeContextClause()` — "less than 1% of
+this payment" or "about N% of this payment" — anchoring the fee against the
+send amount instead of a bare sat figure (F6); it renders nothing for an
+unknown/zero/non-positive amount or once the unrounded fee exceeds ~5% of
+the payment, so the clause never dresses up a genuinely high fee.
+
 The Create step's amount field (`AmountEntry.svelte`, shared by both the
 single-sig and multisig send flows) is a labelled pill that cycles
 BTC → sats → USD → BTC via a swap-horizontal glyph on `Icon` — deliberately
