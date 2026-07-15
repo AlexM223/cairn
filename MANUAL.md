@@ -2755,6 +2755,15 @@ required number must be between 1 and the total, and the total at most 15."
 (`cairn-t3za`). `classifyQuorum` itself is untouched — this is messaging
 only.
 
+**Discoverability (`cairn-hla1`):** the top-level step bar's "keys" item now carries a
+secondary sub-progress fraction (e.g. "2/5", `keysStepSubLabel()` in `wizardProgress.ts`,
+null until quorum is chosen) so the Add-keys sub-wizard's real per-cosigner effort is
+legible from any step, not only once you're on it — folded into `stepAriaLabel` for
+screen readers too. The config-import disclosure on the keys step also now links the
+previously-orphaned stateless signer (`/wallets/multisig/stateless` — work from a
+config/descriptor directly with nothing saved), as the ephemeral complement to reading a
+config into a saved wallet.
+
 **Send flow** — `src/routes/(app)/wallets/[id]/send/+page.svelte`
 (single-sig). Five steps: **Create → Review → Sign → Confirm → Sent**
 (`StepKey` union). Resumable via a saved `SavedTransaction` row (not
@@ -3154,9 +3163,17 @@ debugging — they're independent decisions with independent code paths.
 ### Single-sig derivation
 
 `src/lib/server/bitcoin/xpub.ts`'s `parseXpub()` accepts xpub/ypub/zpub
-(SLIP-132 version bytes), normalizes to standard xpub bytes, and rejects
-private keys and non-mainnet prefixes outright — Cairn is mainnet-only by
-design. HW drivers (`src/lib/hw/common.ts`) implement single-sig BIP-44/49/
+(SLIP-132 version bytes), normalizes to standard xpub bytes, and always
+rejects private keys. Prefix validation is otherwise network-aware
+(`cairn-10ox`): `parseXpub(input, network)` accepts mainnet OR
+testnet/regtest SLIP-132 bytes (tpub/upub/vpub) depending on the network
+argument, defaulting to whatever `chain_network` is currently configured
+(`setDefaultNetwork()`, resynced on every `ChainService` construction/
+reconfigure) — so a regtest/testnet operator can import their own signer's
+exported keys, while a mainnet-configured instance still rejects
+testnet/regtest prefixes symmetrically. Address ENCODING
+(`deriveAddress`/`addressToScriptPubKey`) stays mainnet-only regardless. HW
+drivers (`src/lib/hw/common.ts`) implement single-sig BIP-44/49/
 84 account-path derivation (`singleSigAccountPathIndexes`) and read the
 account xpub + master fingerprint at connect time, both required for
 embedding `bip32Derivation` in constructed PSBTs so hardware signers can
@@ -3322,6 +3339,15 @@ seed-once-if-unset, non-destructive, never-throws contract; see
 this instance (`'umbrel-env'` / `'umbrel-probe'` / `null`) — informational
 only, drives the settings-page card, never changes which connection is
 active.
+
+**`chain_network` (`cairn-10ox`)** is a `mainnet`/`testnet`/`regtest` setting
+(`InstanceSettings.chainNetwork`, default `mainnet`) that records which network the
+*custom* Electrum/Core RPC backend is actually on — threaded through
+`getChainConfig().network` and gating `parseXpub()`'s prefix validation (see §"Single-sig
+derivation"). Always forced back to `mainnet` in `'public'` connection mode, since the
+public default server is always mainnet. Currently settable only via `PUT
+/api/admin/settings` (`chainNetwork` key) — the `/admin/settings` form UI has no field for
+it yet.
 
 **Bitcoin Core RPC settings are saved independently of `connection_mode`.**
 `core_rpc_url`/`core_rpc_user`/`core_rpc_pass` have no relationship to the
@@ -4089,9 +4115,12 @@ The only supported way to exercise real signing + broadcast without mainnet fund
   `.hw-emu-test/` collide: `docker rm -f cairn-trezor-emu cairn-speculos hwtest-bitcoind hwtest-electrs`.
 
 ### 16.5 Funding a Cairn wallet on regtest — the scriptPubKey bridge `[emulator]`
-**Critical constraint (grounded):** `parseXpub()` is **mainnet-only** — Cairn derives only
-`bc1…`/`3…`/`1…` mainnet address strings and rejects testnet/regtest xpub prefixes. A
-regtest `bitcoind` will not `sendtoaddress` a mainnet bech32 string. But the watcher and
+**Critical constraint (grounded):** address ENCODING is **mainnet-only** — Cairn's
+`deriveAddress()`/`addressToScriptPubKey()` always produce `bc1…`/`3…`/`1…` mainnet
+address strings, regardless of `chain_network`. (`parseXpub()`'s *prefix* validation is
+network-aware since `cairn-10ox` — see §"Single-sig derivation" — but that only governs
+which SLIP-132 xpub prefixes are accepted for import, not what address strings get
+derived.) A regtest `bitcoind` will not `sendtoaddress` a mainnet bech32 string. But the watcher and
 scanner attribute inbound value by **scriptPubKey membership, not address string**
 (cairn-v13r/j6fv). So fund via the scriptPubKey, not the displayed address:
 1. In Cairn, get the wallet's descriptor: `GET /api/wallets/{id}/descriptor` (single-sig)
