@@ -2499,7 +2499,7 @@ Pages under `(app)`:
 | `wallets/multisig/[id]/+page.svelte` | multisig vault detail — same available-vs-maturing split as the single-sig detail page above (`MultisigSnapshot.maturingTotal`, `cairn-oae1.3`) |
 | `wallets/multisig/[id]/send/+page.svelte` | multisig send/co-sign flow |
 | `wallets/multisig/stateless/+page.svelte` | stateless (no-account) multisig PSBT signer |
-| `explorer/+page.svelte` | block explorer home — includes an "Up next" strip (up to 4 projected-block chips, fed by the same server-loaded `mempoolBlocks` snapshot, linking through to the full mempool treemap viz; hidden gracefully rather than erroring when the chain backend has no projection data) |
+| `explorer/+page.svelte` | block explorer home — includes an "Up next" strip (up to 4 projected-block chips, fed by the same server-loaded `mempoolBlocks` snapshot, linking through to the full mempool treemap viz; hidden gracefully rather than erroring when the chain backend has no projection data). The tip-view block list (`data.before === null`) renders the dashed pending/mempool row **before** the `{#each blocks}` loop, so the next-block-to-be-mined always sorts **above** every confirmed block — it used to render after the loop, so pending sorted below confirmed blocks instead (`cairn-lynf`, fixed v0.2.26). `pending` stays gated to the tip view only, so paged/older history is unaffected. |
 | `explorer/address/[address]`, `explorer/block/[id]`, `explorer/tx/[txid]` | detail pages — `explorer/block/[id]` shows a block-level "Yours in this ring" callout AND (cairn-6efi.12) a per-row sage "Yours" pip on any transaction in the paginated tx list that touches the viewer's own wallets, via `ownership.server.ts`'s memoized, viewer-scoped `ownedTxids()`/`ownedTxsInBlock()` — zero extra chain calls, same privacy boundary (viewer's own wallets only) as the index's `ownedBlockHeights()` pip. **`explorer/tx/[txid]` also renders a BlueWallet-style block-context section** (`BlockContext.svelte` under the status row): a confirmation badge ("6+ confirmations" green at ≥6, paired with the burial-rings glyph), a tappable 1–3 block row (prev/confirmed/next with dates, the tx's position marker inside the confirmed block, each block linking to `explorer/block/[height]`), and a plain-language confirmation summary. Streamed via `loadTxDetails` as `blockContext` (never blocks first paint) from `ChainService.getTxBlockContext` and progressive-enhancement aware — `none` (connecting), `basic` (Electrum-only: dates + position + summary, no Core nag; a quiet admin-only hint offers Core for block sizes), `full` (Core adds block tx-count/size/fullness). Pure copy/badge logic in `blockContext.ts` (`summaryLine`/`confirmationBadge`); one block glyph is `MiniBlock.svelte`. Also exposed standalone at `GET /api/tx/[txid]/block-context`. Because `getTx` now falls back to Electrum (above), this page works on a pure-Electrum Umbrel with no Core RPC. See docs/TX-BLOCK-CONTEXT-DESIGN.md. **"Total in" degrades honestly**: an unconfirmed (mempool) tx has no resolved prevout values, so each input shows "—" and the `txTotalIn()` helper (`txTotals.ts`) reports `known:false` when *any* input value is unknown — the total then renders "—" too, never a misleading "0.00 BTC" summing of unknowns (cairn-zmym), matching how the fee already degrades. |
 | `explorer/mempool/+page.svelte`, `explorer/mempool/blocks/+page.svelte` | mempool visualizer |
 | `explorer/difficulty` | difficulty chart |
@@ -2536,7 +2536,17 @@ default per `docs/DESIGN-MANIFESTO.md` §3's MUST rule; a user can flip the
 default via Settings → Display's fiat-primary toggle, persisted to
 `localStorage` as `cairn.fiatPrimary` and read through the shared
 `fiatPrimaryPref` store in `$lib/price` — `isFiatPrimary()` in `$lib/format`
-makes the actual primary/secondary decision. Used app-wide including the
+makes the actual primary/secondary decision. By default an `Amount` instance
+subscribes to the shared `$btcUsd` store, which re-fetches `/api/price` on a
+60s interval for as long as any subscriber is mounted (`$lib/price.ts`). Home's
+hero balance and both wallet-detail heroes (`wallets/[id]`,
+`wallets/multisig/[id]`) instead pass an explicit `price` prop — a
+privacy-gated snapshot fetched once per page load, not the live-ticking
+store — so the fiat secondary line there updates only on navigation, never
+mid-view (F1: a live-repainting number is a fresh loss-aversion evaluation
+event every tick; `cairn-d326`, v0.2.27). Every other `Amount` call site
+(explorer, send review, activity, etc.) is unaffected and still live-ticks.
+Used app-wide including the
 stateless multisig flow, single-sig send, explorer address history, and the
 wallet unconfirmed-incoming line — PSBT "verify against your device" panels,
 fee/change/input breakdown line items, and `BalanceChart` axis labels stay
@@ -2580,11 +2590,40 @@ fixtures).
 `EyebrowBreadcrumb` (the "current segment vs path segments" breadcrumb using
 `--eyebrow`/`--eyebrow-path`), `FirstSyncGrowth`, `GroveField` (the ambient
 background texture), `HWRail`, `HeartwoodMark` (logo mark), `MobileTabRow`,
-`MobileTopBar`, `Modal`, `NavProgress`, `QuorumArc` (multisig m-of-n
+`MobileTopBar`, `Modal`, `NavProgress`, `NodeTrustChip` (the "Verified by
+your node" trust pill on Explorer heroes — pure presenter over the server's
+`nodeTrust.ts` honesty matrix; its popover renders in normal document flow
+(`position: relative`, not `absolute`), so opening it pushes the rest of the
+page down instead of floating over Status/Last-block-seen/Node-info content
+beneath it — it used to overlap that content, unreadable on mobile
+(`cairn-klxj`, fixed v0.2.26)), `QuorumArc` (multisig m-of-n
 visual), `RingStub`, `SyncBanner`, `SyncIndicator`.
 
-**`portfolio/`**: `AllocationBar`, `BalanceChart`, `RecentActivity`,
-`Sparkline` — home-dashboard widgets.
+**`portfolio/`**: `AllocationBar`, `BalanceChart`, `BalanceHorizons`,
+`RecentActivity`, `Sparkline` — home-dashboard widgets. `BalanceHorizons`
+renders the multi-horizon growth row (1d/30d/1yr/all-time together, per
+`docs/DESIGN-MANIFESTO.md`'s delta-display MUST: never a naked single-point
+delta) on Home (`portfolio.change`, server-aggregated across wallets) and
+both wallet-detail pages (client-derived from that one wallet's own confirmed-
+tx history, via `$lib/horizonDelta`'s `buildHorizonRows`/`historyFromTxDeltas`
+— no `balance_snapshots` wired to that loader). Percent leads ("+8%"); the
+absolute-sats figure sits one layer down in a title tooltip, never a second
+visible line. Only growth gets `--sage`; flat/down/unknown horizons all share
+the same neutral `--text-secondary` — "down is neutral, never red" applies
+literally, not just to color choice. Gated off entirely while the balance is
+hidden (a delta leaks wealth-change magnitude even with the total masked).
+Added v0.2.27 (`cairn-d326`); `getPortfolioAggregate`'s d365/all fields were
+hardened in v0.2.29 (`cairn-ht11`, `src/lib/server/portfolio.ts`'s
+`changeWithTxFallback`) to recompute live from each wallet's tx history
+instead of trusting the persisted `balance_snapshots`-derived value once
+`dataRetention.purgeBalanceSnapshots`'s ~13-month sweep ages out the
+one-time backfill's carry-in anchor point — before the fix, `all` in
+particular could silently report a change since whatever row happened to
+survive the purge (even flipping sign) rather than degrading honestly; d1/d30
+were never affected since retention always keeps the last 30 days at full
+resolution. Falls back to the persisted d365/all only when the live tx
+history itself can't be trusted (missing timestamps, deltas that don't
+reconcile with the scanned balance).
 
 **`signing/`** — shared hardware-wallet signer UI (used by both single-sig
 send and elsewhere): `BitboxSigner.svelte`, `JadeUsbSigner.svelte`,
@@ -2723,16 +2762,29 @@ sessionStorage) — `?tx=` query param round-trips the draft id
 (`syncTxParam`), and `initialStep()` derives which step to land on from the
 saved row's lifecycle (`completed`→Sent, `awaiting_signature`→Confirm if
 fully signed else Sign, else Review/`draft`). The Confirm step's primary
-button broadcasts directly (`cairn-5yz3.1`) — it used to open a follow-up
-`Modal` ("Broadcast this transaction? Once it's broadcast, there is no
-undo.") on top of the step's own full `SendReviewCard` summary
-(amount/recipients/fee already visible), which was a genuine double-confirm
-with no new information in the second dialog. The `Modal` import and
-`confirmOpen` state are gone from this page; the full review stays exactly
-as visible as before, only the redundant second click is gone. (Same fix
-mirrored in the multisig send page below — the stateless multisig send flow
-never had this pattern, just a single inline warning + direct broadcast, so
-it needed no change.) Composes: `CoinControl`, `RecipientCombobox`,
+button no longer opens a follow-up `Modal` ("Broadcast this transaction?
+Once it's broadcast, there is no undo.") on top of the step's own full
+`SendReviewCard` summary (amount/recipients/fee already visible) — that was
+a genuine double-confirm with no new information in the second dialog. The
+`Modal` import and `confirmOpen` state are gone from this page (`cairn-5yz3.1`).
+In its place, the primary button now arms a **~5s broadcast grace window**
+("Sending in 5s — Cancel / Send now", `BroadcastGraceControl.svelte` +
+`broadcastGrace.ts`, `cairn-avzs`, v0.2.28) instead of calling `broadcast()`
+immediately: undo beats a warning dialog (manifesto's confirmation-friction
+ladder) at the one moment an irreversible action can still genuinely be
+undone. Cancel (or navigating away mid-window — the control's `$effect`
+cleanup calls `grace.destroy()` on unmount) returns to the idle Confirm
+button with the draft, signatures, and step completely untouched — nothing
+is broadcast. "Send now" skips the remaining wait and fires immediately. The
+underlying state machine (`idle → counting → firing`, or `counting → idle`
+on cancel/destroy) guarantees `onFire`/the caller's `broadcast()` runs **at
+most once** and never after cancel/destroy — a hard reload or tab close
+during the window needs no special handling either, since JS execution
+simply stops and the pending `setTimeout` never fires. (Same control is used
+on the multisig send page below — the stateless multisig send flow never had
+the old double-confirm Modal pattern, just a single inline warning + direct
+broadcast, and does not currently use the grace window.) Composes:
+`CoinControl`, `RecipientCombobox`,
 `GroveField`/`EyebrowBreadcrumb`/`QuorumArc`/`BurialRings`/`BackCircle`/
 `AtTipPill` (Heartwood chrome), `Term`/`HowItWorks` (plain-language
 scaffolding), per-device signer components
@@ -2812,6 +2864,32 @@ generic "That doesn't look like a Bitcoin address yet." for `unknown`
 and `canBuild` gating) is unchanged — mainnet-only, `true` iff
 `classifyRecipientAddress() === 'mainnet'`.
 
+**Stake-triggered recipient verification (R2, `cairn-l7sv`, v0.2.27).**
+`SendReviewCard` (`mode === 'review'` only — never re-asked at Confirm, since
+that would be a second exposure to the same check) groups the single-
+recipient address into 4-character chunks for display and, when
+`recipientVerify.ts`'s `shouldVerifyRecipient()` gate passes, shows a
+"verify the last 4 characters" micro-step that must be answered correctly
+before the caller's primary CTA unlocks (bindable `recipientVerified` prop —
+the card stays presentational and never owns navigation itself). The gate
+requires **all** of: a single recipient (`isBatch` is false — batch sends
+never trigger, there's no one "the recipient" to spot-check), the address is
+**not** in `knownAddresses` (prior completed sends + saved contacts — a
+repeat/known payee never re-triggers), and the amount clears a stake floor
+— either a flat **100,000 sats** (`STAKE_FLAT_THRESHOLD_SATS`, protects a
+still-streaming-in balance too) or **10% of the wallet's own spendable
+balance** (`STAKE_BALANCE_FRACTION`, deliberately much lower than R1's 50%
+"most of the wallet" bar above — R2 is a recognition aid triggered by
+stakes, not a balance-drain warning). The check itself
+(`matchesAddressTail`) is case/whitespace-insensitive — a recognition aid
+against a wrong-paste, not a strict crypto verification — and resets
+(cleared input, cleared "wrong" state) whenever the recipient/amount this
+card instance is checking changes (e.g. Back-and-edit then Review again).
+Deliberately rare by construction (first-send AND high-stake AND
+single-recipient must all hold) rather than tuned after the fact — warnings
+habituate within two exposures (F4), so any extra check has to stay
+genuinely uncommon to keep working.
+
 The Create step's amount field (`AmountEntry.svelte`, shared by both the
 single-sig and multisig send flows) is a labelled pill that cycles
 BTC → sats → USD → BTC via a swap-horizontal glyph on `Icon` — deliberately
@@ -2826,6 +2904,21 @@ already stripped to digits, and the BTC/fiat modes now do too, via
 point — drops letters, commas, extra dots) and `textToSats()` (parse to
 canonical sats, `0` on non-numeric/non-positive input) — previously a paste
 like `"0.001hello"` left the letters visible in the field (`cairn-wi8a`).
+
+**Unit-slip guards (R1, `cairn-9nvo`, v0.2.27).** A live secondary line under
+the amount always keeps the OTHER Bitcoin-denominated unit (and fiat, when a
+price is known) visible while typing — e.g. typing in sats shows "≈ 0.0031
+BTC · $250.00" beneath — so an amount never exists on screen in only one
+unit; the sats↔BTC swap is a 100,000,000x slip, and misreading fiat as BTC
+(or vice versa) is a further one. Below that, `amountInput.ts`'s
+`isHighSpend(sats, spendableSats)` fires a calm, non-blocking amber note
+("That's most of this wallet's balance.") strictly when the typed amount is
+**>50% and <100%** of the wallet's spendable balance — deliberately below
+(and mutually exclusive with) the pre-existing ≥100% "That's more than this
+wallet holds." over-balance line, so the two notes never compete for the
+same line. `spendableSats == null` (balance still streaming in) or `<= 0`
+never triggers it. Applies to both the hero (Create step, single recipient)
+and compact (batch-row) amount fields.
 
 ### `safeAction` in the client (§8 has the full server-facing contract)
 
@@ -4845,6 +4938,39 @@ auto-connect the way Electrum does).
   cosmetic; Connect/Dismiss never mutate `connection_mode`; Core RPC fields are
   reachable and function the same in both public and custom Electrum modes.
 
+### 20.17 1yr/all-time balance horizons survive a data-retention purge `[none]` — regression guard (`cairn-ht11`, v0.2.29)
+`dataRetention.purgeBalanceSnapshots` hard-deletes `balance_snapshots` rows past
+~13 months. The one-time-per-wallet backfill (`buildBackfillPoints`) writes a
+single carry-in point at the 1yr-horizon edge for a wallet imported with older
+history — and since backfill never re-runs once any row exists, that fixed-in-
+time anchor point eventually falls out of the retention window on some later
+sweep, at which point `all` (which always reads `series[0]`) used to silently
+report the change since whichever row happened to survive instead — wrong, not
+an honest "no data", and could even flip sign.
+1. Seed a wallet with tx history older than 13 months (script pattern:
+   `scripts/qa/seed-r6-horizons.mjs`), let the one-time backfill run, then run
+   (or simulate the effect of) `purgeBalanceSnapshots` aging the backfill's
+   carry-in point out of `balance_snapshots`.
+2. Load `/` (Home) and the wallet's detail page; read the **1yr** and
+   **all-time** figures in `BalanceHorizons`.
+   - **Expected:** both figures match what the wallet's own confirmed-tx
+     history honestly reconstructs (`historyFromTxDeltas`/`changeWithTxFallback`
+     in `src/lib/server/portfolio.ts`), not a value derived from whatever
+     row of `balance_snapshots` happens to have survived the purge. **1d**/
+     **30d** are unaffected by this scenario (retention always keeps the last
+     30 days at full resolution) — verify they still read correctly too, as a
+     control.
+   - **Expected (fallback path):** if the tx history itself can't be trusted
+     for a given wallet (missing timestamp on a confirmed tx, or deltas that
+     don't reconcile with the scanned balance), the aggregate falls back to
+     the persisted d365/all rather than guessing — this degrades to the
+     pre-fix number for that one wallet's contribution rather than fabricating
+     one; it's the same behavior as before the fix, not a regression on the
+     honesty-check-fails path.
+- **PASS:** 1yr/all-time stay accurate (or degrade honestly) across a
+  retention purge; no sign flip, no silently-wrong "change since a random
+  surviving row" figure.
+
 ---
 
 ## 21. UX evaluation checklist — new-Umbrel-user journey
@@ -4916,6 +5042,27 @@ backups, clear house-standard errors, **never red for routine states**, working 
      (`friendlyBroadcastRejection`), and **red is reserved** for this genuinely-irrecoverable
      case — routine steps never go red.
    - ✅ `Sent` step confirms; `/activity` shows the send; `tx_confirmed` follows.
+   - ✅ **Broadcast grace window** (v0.2.28, `cairn-avzs`): clicking the Confirm step's
+     primary button does **not** broadcast immediately — it arms a "Sending in 5s — Cancel
+     / Send now" control. Click **Cancel**: the window stops, the primary button returns to
+     idle, and confirm the tx never appears in `/activity` / on the node's mempool — nothing
+     was broadcast. Re-arm and this time **navigate away** (e.g. Back, or a nav-bar link)
+     while it's counting: same result, no broadcast, draft/signatures untouched. Re-arm a
+     third time and click **Send now**: fires immediately without waiting out the rest of
+     the window. Finally, arm once and let the full 5s elapse untouched: it broadcasts
+     exactly once (watch `/activity` for exactly one send event, not a duplicate). This is
+     the same control on the multisig send page's Confirm step.
+   - ✅ **Recipient last-4 verify micro-step** (v0.2.27, `cairn-l7sv`): send to a
+     **brand-new address** (not a saved contact, never paid before from this wallet) an
+     amount **≥100,000 sats or ≥10% of the wallet's spendable balance**, single recipient
+     only. At Review, a "verify the last 4 characters" prompt should appear before the
+     primary CTA unlocks; typing the wrong 4 characters keeps it locked with a gentle
+     correction, typing the right ones (case/whitespace-insensitive) unlocks it. Repeat with
+     a **known/saved** address at the same amount, and with a **small** amount (well under
+     both floors) to a new address — neither should show the prompt. Also confirm a
+     **multi-recipient (batch)** send at a qualifying amount never shows it, and that
+     Confirm (a moment later, same draft) does **not** ask again — it's a Review-only,
+     once-per-send check by design (F4: repeated warnings habituate).
 
 ### 21.6 Backup nudges (prominent backups)
 8. Throughout, verify tiered backup nudges:
@@ -5106,15 +5253,37 @@ rate limiting, device/session revoke, and API tokens all lacked scenarios.
    - **Expected:** refused — `deleteCredential()` throws `AuthError('last_passkey')`
      (§7) since passkey-only recovery is by re-registering a new account, not
      password reset.
-2. **Recovery phrase + codes.** As the forced-recovery admin (or any user who
-   navigates to `/recovery-setup`), generate the 12-word recovery phrase (write-it-
-   down gate before advancing) then the 8 one-time recovery codes (download +
-   copy-all).
-   - **Expected:** phrase/codes are generated **once** per page load (reload
-     discards and regenerates — the plaintext is never persisted, only a hashed
-     form); each redeemed code is single-use (`used_at` marks it spent) and the
-     phrase is reusable. Confirm the copy is explicit that this is a **login**
-     recovery mechanism, not a bitcoin-key backup (recovery.ts's core invariant).
+2. **Recovery phrase + codes** (updated v0.2.28, R4/`cairn-ux-r4-7fzr` —
+   explain-before-reveal + recognition verify, `docs/UX-PSYCHOLOGY-RESEARCH-
+   2026-07-15.md` F7). As the forced-recovery admin (or any user who
+   navigates to `/recovery-setup`), work the phrase step's three sub-stages
+   in order: **stakes** (a calm plain-language explainer of what this
+   recovers and what it doesn't — the phrase is NOT generated yet, only
+   fetched when "Show my recovery phrase" is clicked) → **reveal** (the
+   12-word phrase, plus a "I've written this down" checkbox gate) →
+   **verify**, a *recognition* quiz (not recall): 2 of the 12 positions,
+   each a 4-way multiple choice among the real word and 3 decoys from a
+   fixed sample pool (`recognitionVerify.ts`'s `buildVerifyQuestions`) — all
+   positions must be answered correctly to unlock Continue into the codes
+   step (a wrong pick is just corrected in place, not punished). Then
+   generate the 8 one-time recovery codes (download + copy-all).
+   - **Expected:** phrase/codes are generated **once** per page load and
+     held only in memory (the plaintext is never persisted, only a hashed
+     form). **Reload mid-flow** restores which SCREEN you were on (`phrase`
+     or `codes`, via `sessionStorage` under `cairn.recovery-setup-wizard.v1`)
+     but never the secret itself — a resume into the `phrase` step always
+     lands back on the pristine **stakes** sub-stage (never mid-reveal or
+     mid-verify), and a resume into `codes` re-generates a fresh code set.
+     Each redeemed code is single-use (`used_at` marks it spent) and the
+     phrase is reusable. Confirm the copy is explicit throughout that this is
+     a **login** recovery mechanism, not a bitcoin-key backup
+     (recovery.ts's core invariant) — do not confuse this wizard with wallet
+     seed-phrase backup (§21.6/§9.4's wallet-config backup), which is a
+     completely separate concern. A non-admin can defer via "Skip for now"
+     (`/settings`'s `recovery-banner`, amber `alert-triangle`, dismissible
+     only by completing the wizard — no "x"); an admin cannot skip (forced
+     by `appGate.ts`'s recovery gate on every route except `/recovery-setup`
+     itself).
 3. **Rate limiting.** Attempt 6 failed logins for one email inside 15 minutes.
    - **Expected:** the 6th attempt (over `loginEmail = 5`) is throttled with a
      `retryAfter` seconds figure, independent of the looser per-IP bucket
@@ -5186,6 +5355,20 @@ the explorer as an ordinary feature with a healthy Electrum+Core backend.
 - **PASS:** happy-path navigation and search all resolve correctly with cross-links
   intact; the tx-link exemption is the only flag bypass — no other explorer surface
   is reachable with `explorer` off.
+
+5. **Node-trust popover layout** (v0.2.26, `cairn-klxj`). On any explorer page with
+   the `NodeTrustChip` ("Verified by your node" pill), click the chip to open its
+   popover, both at desktop width and at 375×812 mobile.
+   - **Expected:** the popover opens **beneath** the chip and pushes the page's own
+     content (Status, Last block seen, Node info, and — on `/explorer/tx/[txid]` —
+     the "involves your wallet" banner below the fold) **down**, never overlapping
+     it. Click outside, or press Escape, to close — focus returns to the chip.
+6. **Pending block position** (v0.2.26, `cairn-lynf`). On `/explorer`'s tip view
+   (no `?before=` param) with a mempool projection available, inspect the block
+   list.
+   - **Expected:** the dashed "pending" row is the **first** row, above block
+     height N (the latest confirmed block) — not below it. Paginate to an older
+     page (`?before=`) and confirm no pending row appears there at all.
 
 ### 22.6 Batch sending (multiple recipients, one transaction) `[emulator]`
 Covers `cairn-6s6` (closed/shipped) — no scenario existed for the shipped feature.
