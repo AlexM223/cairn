@@ -147,8 +147,18 @@
 
 <style>
 	.node-trust {
+		/* Column, not row: when the popover opens it stacks BELOW the chip and
+		   pushes the rest of the page down — it must never float on top of
+		   the content beneath it. The popover used to be position:absolute,
+		   which overlapped Status, Last block seen, Node info, and the
+		   "involves your wallet" banner below it (unreadable on mobile,
+		   cairn-klxj). Normal document flow sidesteps the whole
+		   z-index/anchoring problem instead of trying to out-guess it. */
 		position: relative;
 		display: inline-flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 8px;
 	}
 
 	.chip {
@@ -203,11 +213,12 @@
 	}
 
 	.popover {
-		position: absolute;
-		top: calc(100% + 8px);
-		left: 0;
-		z-index: 40;
+		/* In normal flow (not absolute) so it pushes surrounding content down
+		   instead of floating over it — see the .node-trust comment above. */
+		position: relative;
+		z-index: 1;
 		width: min(20rem, 88vw);
+		max-width: 100%;
 		padding: 14px;
 		border-radius: var(--radius-card);
 		border: 1px solid var(--border);
