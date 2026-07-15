@@ -22,6 +22,7 @@
 	import AmountEntry from '$lib/components/send/AmountEntry.svelte';
 	import FeeSpeedPicker from '$lib/components/send/FeeSpeedPicker.svelte';
 	import SendReviewCard from '$lib/components/send/SendReviewCard.svelte';
+	import BroadcastGraceControl from '$lib/components/send/BroadcastGraceControl.svelte';
 	import { sendCtaLabel } from '$lib/components/send/sendMoney';
 	import { arrivalWords, type FeeChoiceKey } from '$lib/components/send/sendCopy';
 	import { btcUsd } from '$lib/price';
@@ -562,12 +563,28 @@
 	// IS the one are-you-sure now — it broadcasts directly — so the review
 	// stays exactly as visible as before and only the redundant second
 	// dialog is gone.
+	//
+	// R3 (docs/UX-PSYCHOLOGY-RESEARCH-2026-07-15.md, cairn-avzs): the primary
+	// button no longer calls broadcast() straight away — it arms a 5s grace
+	// window (BroadcastGraceControl) that calls broadcast() only once the
+	// window elapses or the user taps "Send now". This is doctrinally
+	// distinct from the removed modal: it's an UNDO window, not a second
+	// warning — the manifesto's "undo beats a warning dialog" rule applied
+	// to the one action that previously had no undo at all (friction ladder
+	// top rung). broadcast() itself is unchanged; nothing here touches the
+	// network path or its error handling.
 	// svelte-ignore state_referenced_locally — intentional per-load seed
 	let sentTxid = $state<string | null>(resumeTx?.txid ?? null);
 	// Set only when this broadcast turned out to duplicate another draft's
 	// already-sent, byte-identical transaction (cairn QA R7 B4 sub-case 1) —
 	// no new payment went out; shown as an informational note on Sent.
 	let duplicateBroadcastNote = $state<string | null>(null);
+	// Mirrors BroadcastGraceControl's counting state so the Confirm step's own
+	// "Back" button can be disabled during the window — nothing should be
+	// navigable away from mid-countdown via the in-page Back control (an
+	// actual route navigation, e.g. the header's back circle, still tears the
+	// window down safely via the control's own unmount cleanup).
+	let graceCounting = $state(false);
 
 	async function broadcast() {
 		if (broadcasting || !draft) return;
@@ -1513,20 +1530,19 @@
 				{/if}
 
 				<div class="row step-actions">
-					<button class="btn btn-secondary" onclick={() => (step = 'sign')} disabled={broadcasting}>
+					<button
+						class="btn btn-secondary"
+						onclick={() => (step = 'sign')}
+						disabled={broadcasting || graceCounting}
+					>
 						<Icon name="chevron-left" size={15} /> Back
 					</button>
-					<button
-						class="btn btn-primary pill-lg"
-						onclick={() => void broadcast()}
+					<BroadcastGraceControl
+						label={sendCtaLabel(review.amount + review.fee, $btcUsd, 'confirm')}
 						disabled={broadcasting}
-					>
-						{#if broadcasting}<span class="spinner"></span> Broadcasting…{:else}{sendCtaLabel(
-								review.amount + review.fee,
-								$btcUsd,
-								'confirm'
-							)}{/if}
-					</button>
+						onbroadcast={() => void broadcast()}
+						bind:counting={graceCounting}
+					/>
 				</div>
 			</section>
 
