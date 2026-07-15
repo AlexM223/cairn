@@ -1,9 +1,11 @@
 import { getChain } from '$lib/server/chain';
-import { classifySearch, chainErrorMessage } from '$lib/server/search';
+import { classifySearch } from '$lib/server/search';
 import { getEpochStrip } from '$lib/server/chainEpochs';
 import { ownedBlockHeights } from './ownership.server';
 import { readChainSnapshot } from '$lib/server/chainSnapshot';
 import { gatherNodeTrust } from '$lib/server/chain/nodeTrust';
+import { childLogger } from '$lib/server/logger';
+import { sanitizeChainError } from '$lib/server/chainErrors';
 import type { PersistedChainData } from '$lib/server/chainSnapshot';
 import type { PageServerLoad } from './$types';
 import type {
@@ -16,6 +18,8 @@ import type {
 } from '$lib/types';
 
 const PAGE_SIZE = 15;
+
+const log = childLogger('chain');
 
 export interface ExplorerChainData {
 	blocks: BlockSummary[];
@@ -71,7 +75,11 @@ async function loadOlderBlocks(before: number): Promise<ExplorerChainData> {
 		const blocks = await getChain().getRecentBlocks(PAGE_SIZE, Math.max(0, before - 1));
 		return { blocks, chainError: null, ...context };
 	} catch (e) {
-		return { blocks: [], chainError: chainErrorMessage(e), ...context };
+		return {
+			blocks: [],
+			chainError: sanitizeChainError(e, log, { before }, 'explorer older-blocks load failed'),
+			...context
+		};
 	}
 }
 

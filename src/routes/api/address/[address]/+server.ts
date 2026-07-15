@@ -1,9 +1,10 @@
 import { json, requireUser } from '$lib/server/api';
 import { getChain } from '$lib/server/chain';
 import { isExplorerAddress } from '$lib/server/bitcoin/xpub';
-import { isNotFoundError, chainErrorMessage } from '$lib/server/search';
+import { isNotFoundError } from '$lib/server/search';
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
+import { sanitizeChainError } from '$lib/server/chainErrors';
 
 const log = childLogger('chain');
 
@@ -38,7 +39,9 @@ export const GET: RequestHandler = async (event) => {
 		return json({ address, txs });
 	} catch (e) {
 		if (isNotFoundError(e)) return json({ error: 'Address not found' }, { status: 404 });
-		log.error({ err: e }, 'address lookup failed');
-		return json({ error: chainErrorMessage(e) }, { status: 502 });
+		return json(
+			{ error: sanitizeChainError(e, log, {}, 'address lookup failed') },
+			{ status: 502 }
+		);
 	}
 };

@@ -1,13 +1,17 @@
 import { error, redirect } from '@sveltejs/kit';
 import { getChain } from '$lib/server/chain';
 import { coreRpcConfigured } from '$lib/server/settings';
-import { isNotFoundError, chainErrorMessage } from '$lib/server/search';
+import { isNotFoundError } from '$lib/server/search';
 import { readTxSnapshot, writeTxSnapshot, refreshTxSnapshot } from '$lib/server/txSnapshot';
 import { readChainSnapshot } from '$lib/server/chainSnapshot';
 import { gatherNodeTrust } from '$lib/server/chain/nodeTrust';
 import { txOwnership } from '../../ownership.server';
+import { childLogger } from '$lib/server/logger';
+import { sanitizeChainError } from '$lib/server/chainErrors';
 import type { PageServerLoad } from './$types';
 import type { BlockContext, CpfpInfo, FeeEstimates, RbfInfo, TxDetail } from '$lib/types';
+
+const log = childLogger('chain');
 
 // Raw hex beyond this is a novelty payload (huge inscriptions etc.) — don't
 // ship hundreds of KB to the client just for a curiosity viewer.
@@ -206,7 +210,7 @@ export const load: PageServerLoad = async ({ params, url, depends, locals }) => 
 		if (!base.coreRpcConfigured) {
 			return { ...base, notFound: true as const, loading: false as const, txid, tx: null, replacedFrom, ownership: null, details: null };
 		}
-		error(502, chainErrorMessage(e));
+		error(502, sanitizeChainError(e, log, { txid }, 'tx page load failed'));
 	}
 
 	if (raced === TX_TIMEOUT) {

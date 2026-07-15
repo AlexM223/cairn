@@ -1,8 +1,9 @@
 import { json, requireUser } from '$lib/server/api';
 import { getChain } from '$lib/server/chain';
-import { isNotFoundError, chainErrorMessage } from '$lib/server/search';
+import { isNotFoundError } from '$lib/server/search';
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
+import { sanitizeChainError } from '$lib/server/chainErrors';
 
 const log = childLogger('chain');
 
@@ -29,7 +30,16 @@ export const GET: RequestHandler = async (event) => {
 		return json({ block, txs, total });
 	} catch (e) {
 		if (isNotFoundError(e)) return json({ error: 'Block not found' }, { status: 404 });
-		log.error({ err: e, id: event.params.id }, 'block lookup failed');
-		return json({ error: chainErrorMessage(e) }, { status: 502 });
+		return json(
+			{
+				error: sanitizeChainError(
+					e,
+					log,
+					{ id: event.params.id },
+					'block lookup failed'
+				)
+			},
+			{ status: 502 }
+		);
 	}
 };

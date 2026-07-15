@@ -2,10 +2,14 @@ import { error } from '@sveltejs/kit';
 import QRCode from 'qrcode';
 import { getChain } from '$lib/server/chain';
 import { isExplorerAddress } from '$lib/server/bitcoin/xpub';
-import { isNotFoundError, chainErrorMessage } from '$lib/server/search';
+import { isNotFoundError } from '$lib/server/search';
 import { addressOwnership } from '../../ownership.server';
+import { childLogger } from '$lib/server/logger';
+import { sanitizeChainError } from '$lib/server/chainErrors';
 import type { PageServerLoad } from './$types';
 import type { AddressInfo, AddressTx } from '$lib/types';
+
+const log = childLogger('chain');
 
 interface AddressInfoResult {
 	info: AddressInfo | null;
@@ -25,7 +29,11 @@ async function loadAddressInfo(address: string): Promise<AddressInfoResult> {
 		return { info: await getChain().getAddressInfo(address), notFound: false, error: null };
 	} catch (e) {
 		if (isNotFoundError(e)) return { info: null, notFound: true, error: null };
-		return { info: null, notFound: false, error: chainErrorMessage(e) };
+		return {
+			info: null,
+			notFound: false,
+			error: sanitizeChainError(e, log, { address }, 'address info page load failed')
+		};
 	}
 }
 
@@ -36,7 +44,10 @@ async function loadAddressTxs(address: string): Promise<{ txs: AddressTx[]; erro
 	try {
 		return { txs: await getChain().getAddressTxs(address), error: null };
 	} catch (e) {
-		return { txs: [], error: chainErrorMessage(e) };
+		return {
+			txs: [],
+			error: sanitizeChainError(e, log, { address }, 'address txs page load failed')
+		};
 	}
 }
 

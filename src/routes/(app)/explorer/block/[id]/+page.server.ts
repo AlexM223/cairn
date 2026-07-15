@@ -1,12 +1,16 @@
 import { error } from '@sveltejs/kit';
 import { getChain } from '$lib/server/chain';
 import { coreRpcConfigured } from '$lib/server/settings';
-import { isNotFoundError, chainErrorMessage } from '$lib/server/search';
+import { isNotFoundError } from '$lib/server/search';
 import { getEpochStrip } from '$lib/server/chainEpochs';
 import { gatherNodeTrust } from '$lib/server/chain/nodeTrust';
 import { ownedTxsInBlock, ownedTxids, type OwnedBlockTx } from '../../ownership.server';
+import { childLogger } from '$lib/server/logger';
+import { sanitizeChainError } from '$lib/server/chainErrors';
 import type { PageServerLoad } from './$types';
 import type { BlockDetail, TxDetail } from '$lib/types';
+
+const log = childLogger('chain');
 
 interface BlockPageData {
 	block: BlockDetail | null;
@@ -58,7 +62,9 @@ async function loadBlockData(
 			yours: [],
 			ownedTxids: new Set(),
 			notFound: isNotFoundError(e),
-			error: isNotFoundError(e) ? null : chainErrorMessage(e)
+			error: isNotFoundError(e)
+				? null
+				: sanitizeChainError(e, log, { id }, 'block page load failed')
 		};
 	}
 
@@ -69,7 +75,9 @@ async function loadBlockData(
 			(e) => ({
 				txs: [] as TxDetail[],
 				total: block.txCount ?? 0,
-				error: isNotFoundError(e) ? 'No transactions at this page.' : chainErrorMessage(e)
+				error: isNotFoundError(e)
+					? 'No transactions at this page.'
+					: sanitizeChainError(e, log, { id, blockHash: block.hash }, 'block txs page load failed')
 			})
 		)
 	]);

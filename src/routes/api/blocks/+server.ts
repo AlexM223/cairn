@@ -1,8 +1,8 @@
 import { json, requireUser } from '$lib/server/api';
 import { getChain } from '$lib/server/chain';
-import { chainErrorMessage } from '$lib/server/search';
 import type { RequestHandler } from './$types';
 import { childLogger } from '$lib/server/logger';
+import { sanitizeChainError } from '$lib/server/chainErrors';
 
 const log = childLogger('chain');
 
@@ -26,7 +26,9 @@ export const GET: RequestHandler = async (event) => {
 		const blocks = await getChain().getRecentBlocks(limit, fromHeight);
 		return json({ blocks });
 	} catch (e) {
-		log.error({ err: e }, 'blocks list failed');
-		return json({ error: chainErrorMessage(e) }, { status: 502 });
+		return json(
+			{ error: sanitizeChainError(e, log, {}, 'blocks list failed') },
+			{ status: 502 }
+		);
 	}
 };

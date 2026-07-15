@@ -34,6 +34,7 @@ import { db } from '$lib/server/db';
 import { setSetting } from '$lib/server/settings';
 import { __resetTxSnapshotForTests } from '$lib/server/txSnapshot';
 import { load } from './+page.server';
+import { DEFAULT_CHAIN_ERROR_MESSAGE } from '$lib/server/chainErrors';
 
 const TXID = 'e'.repeat(64);
 
@@ -87,7 +88,11 @@ describe('explorer tx load() — Core RPC configured, genuine backend outage (ca
 		expect(caught).not.toBeNull();
 		// SvelteKit's error() throws an object carrying { status, body }.
 		expect((caught as { status?: number }).status).toBe(502);
-		expect(JSON.stringify(caught)).toContain('ECONNREFUSED');
+		// cairn-wb63: a connectivity-class error (ECONNREFUSED) is sanitized before
+		// it reaches the client — the raw socket/host detail must never leak here.
+		const serialized = JSON.stringify(caught);
+		expect(serialized).toContain(DEFAULT_CHAIN_ERROR_MESSAGE);
+		expect(serialized).not.toContain('ECONNREFUSED');
 	});
 });
 

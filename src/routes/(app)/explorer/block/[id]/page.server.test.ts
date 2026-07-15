@@ -23,6 +23,7 @@ vi.mock('$lib/server/chain', () => ({ getChain: () => h.chain }));
 import { db } from '$lib/server/db';
 import { setSetting } from '$lib/server/settings';
 import { load } from './+page.server';
+import { DEFAULT_CHAIN_ERROR_MESSAGE } from '$lib/server/chainErrors';
 import type { BlockDetail } from '$lib/types';
 
 function makeBlock(over: Partial<BlockDetail> = {}): BlockDetail {
@@ -115,7 +116,10 @@ describe('explorer block load() — Core RPC configured, backend throws (genuine
 
 		expect(data.coreRpcConfigured).toBe(true);
 		expect(chain.notFound).toBe(false);
-		expect(chain.error).toContain('ECONNREFUSED');
+		// cairn-wb63: a connectivity-class error (ECONNREFUSED) is sanitized before
+		// it reaches the client — the raw socket/host detail must never leak here.
+		expect(chain.error).toBe(DEFAULT_CHAIN_ERROR_MESSAGE);
+		expect(chain.error).not.toContain('ECONNREFUSED');
 		expect(chain.block).toBeNull();
 	});
 });
