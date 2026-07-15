@@ -19,7 +19,10 @@
 import { getChain } from './chain';
 import { getSetting, setSetting } from './settings';
 import { childLogger } from './logger';
-import type { ChainEpoch } from '$lib/components/heartwood/ChainStrip.svelte';
+// Imported from the plain .ts sibling (not the .svelte file directly) so
+// vanilla tsc resolves it too, not just svelte-check (cairn-dgnl) — see
+// ChainStrip.types.ts's header comment.
+import type { ChainEpoch } from '$lib/components/heartwood/ChainStrip.types';
 
 const log = childLogger('chainEpochs');
 

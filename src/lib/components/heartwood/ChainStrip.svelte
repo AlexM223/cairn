@@ -1,21 +1,10 @@
 <script module lang="ts">
-	/**
-	 * One difficulty epoch on the strip. `xStart`/`xEnd` are 0..1 fractions
-	 * of the total cumulative-duration-weighted width — the CALLER computes
-	 * these from real retarget timestamps (the Explorer lane owns that
-	 * pipeline); this component just draws the fractions it's given.
-	 */
-	export type ChainEpoch = {
-		index: number;
-		xStart: number;
-		xEnd: number;
-		/** Line alpha, spec formula 0.07 + 0.14·n(i) (+0.26 for pop rings). */
-		alpha: number;
-		/** Halving-boundary epoch (multiples of 104): cream + top triangle. */
-		isHalving: boolean;
-		/** Last ~8 epochs: the sapwood zone gets a soft warm tint. */
-		isSapwood: boolean;
-	};
+	// ChainEpoch now lives in ./ChainStrip.types.ts (cairn-dgnl) so plain tsc
+	// (not just svelte-check) can resolve it from a .ts consumer; re-exported
+	// here so this component's own import surface (`from './ChainStrip.svelte'`)
+	// is unchanged.
+	import type { ChainEpoch } from './ChainStrip.types';
+	export type { ChainEpoch };
 
 	// Deterministic pseudo-random 0..1 per index — the mock must look the
 	// same on every render (no Math.random()).
