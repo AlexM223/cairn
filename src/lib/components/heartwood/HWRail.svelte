@@ -209,10 +209,11 @@
 		align-items: center;
 		justify-content: center;
 		gap: 4px;
-		/* Spec rail-inactive tone — between --text-faint and --eyebrow-path;
-		   decorative-weight by design, the icon-label span makes the meaning
-		   visible too (cairn-vtpu — icon-only was illegible to first-timers). */
-		color: #68716a;
+		/* Inactive = cool-neutral text token (DESIGN-MANIFESTO.md §2/§5 — the
+		   one accent hue is reserved for the active item below); the
+		   icon-label span makes the meaning visible too (cairn-vtpu —
+		   icon-only was illegible to first-timers). */
+		color: var(--text-muted);
 		background: transparent;
 		transition:
 			color 120ms var(--ease),
@@ -225,7 +226,7 @@
 
 	.icon-btn.active {
 		color: var(--accent-bright);
-		background: rgba(103, 150, 201, 0.1);
+		background: var(--accent-muted);
 	}
 
 	.icon-label {
@@ -246,8 +247,12 @@
 		margin-bottom: 14px;
 	}
 
+	/* Cool signal-sheen on the epoch dial's active arc (DESIGN-MANIFESTO.md §5
+	   permits glow on the ring/dial family — it's the identity's own "signal
+	   sheen," never a warm crypto-neon button glow). Token-mixed rather than a
+	   literal rgb triplet so it can't drift from --accent again. */
 	.dial-arc {
-		filter: drop-shadow(0 0 3px rgba(103, 150, 201, 0.5));
+		filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 50%, transparent));
 	}
 
 	.dial-tip {

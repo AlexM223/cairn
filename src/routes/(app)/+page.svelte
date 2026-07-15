@@ -356,7 +356,7 @@
 								onclick={closePicker}
 							>
 								<span class="wallet-picker-name" title={w.name}>{w.name}</span>
-								<Amount sats={w.balance} size="row" />
+								<Amount sats={w.balance} size="row" price={heroPrice} />
 							</a>
 						{/each}
 					</div>
@@ -380,7 +380,7 @@
 								<li>
 									<a href={w.href} class="wallet-row">
 										<span class="wallet-row-name" title={w.name}>{w.name}</span>
-										<Amount sats={w.balance} size="row" />
+										<Amount sats={w.balance} size="row" price={heroPrice} />
 										<Icon name="chevron-right" size={14} />
 									</a>
 								</li>
@@ -558,9 +558,14 @@
 		margin-top: 18px;
 	}
 
+	/* Matches Amount.svelte's own .size-hero clamp exactly (DESIGN-MANIFESTO.md
+	   §3/§4 — this class only renders the skeleton and hide-balance glyph, so
+	   it must sit at the same size as the real value it stands in for or
+	   swapping between them reflows the hero. */
 	.hero-amount {
-		font-size: 86px;
-		line-height: 0.92;
+		font-size: clamp(40px, 6.5vw, 72px);
+		line-height: 0.95;
+		letter-spacing: -0.015em;
 		color: var(--text-hero);
 	}
 
@@ -657,7 +662,7 @@
 		display: flex;
 		align-items: center;
 		gap: 10px;
-		margin-top: 24px;
+		margin-top: 32px;
 		padding-bottom: 24px;
 		border-bottom: 1px solid var(--hairline);
 		font-size: 13.5px;
@@ -699,7 +704,7 @@
 
 	/* --- your wallets (2+ only) --- */
 	.wallet-list-section {
-		margin-top: 24px;
+		margin-top: 32px;
 		padding-bottom: 24px;
 		border-bottom: 1px solid var(--hairline);
 	}
@@ -773,7 +778,7 @@
 
 	/* --- empty-wallet nudge --- */
 	.empty-nudge-section {
-		margin-top: 24px;
+		margin-top: 32px;
 	}
 
 	.empty-nudge {
@@ -790,7 +795,7 @@
 
 	/* --- recent activity --- */
 	.recent-section {
-		margin-top: 24px;
+		margin-top: 32px;
 	}
 
 	.section-head {
@@ -848,7 +853,7 @@
 		}
 
 		.hero-amount {
-			font-size: 48px;
+			font-size: clamp(34px, 11vw, 48px);
 			line-height: 1;
 		}
 
