@@ -65,7 +65,10 @@ const CFG = {
 	electrumTlsInsecure: false,
 	socks5Host: null,
 	socks5Port: null,
-	electrumPoolSize: 1
+	electrumPoolSize: 1,
+	// cairn-10ox: getNodeInfo() now echoes the configured network instead of
+	// hardcoding 'mainnet'.
+	network: 'mainnet'
 };
 
 const WATCHED_SCRIPT = '0014' + 'bb'.repeat(20);

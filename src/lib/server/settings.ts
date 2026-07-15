@@ -1,7 +1,7 @@
 import { db } from './db';
 import { childLogger } from './logger';
 import { encryptSecret, decryptSecret, isSecretEnvelope } from './secretKey';
-import type { InstanceMode, InstanceSettings, RegistrationMode } from '$lib/types';
+import type { ChainNetwork, InstanceMode, InstanceSettings, RegistrationMode } from '$lib/types';
 
 const log = childLogger('settings');
 
@@ -22,6 +22,7 @@ const DEFAULTS: InstanceSettings = {
 	coreRpcUrl: null,
 	coreRpcUser: null,
 	coreRpcPass: null,
+	chainNetwork: 'mainnet',
 	chainProvisionedBy: null,
 	coreRpcDetected: null,
 	coreRpcProvisionedBy: null
@@ -130,6 +131,10 @@ export function getInstanceSettings(): InstanceSettings {
 	}
 	if (str('core_rpc_url')) s.coreRpcUrl = str('core_rpc_url')!;
 	if (str('core_rpc_user')) s.coreRpcUser = str('core_rpc_user')!;
+	if (str('chain_network')) {
+		const n = str('chain_network')!;
+		if (n === 'mainnet' || n === 'testnet' || n === 'regtest') s.chainNetwork = n as ChainNetwork;
+	}
 	// Lives in instance_secrets (with a legacy `settings` fallback), not the map.
 	const rpcPass = readSecretSetting('core_rpc_pass');
 	if (rpcPass) s.coreRpcPass = rpcPass;
@@ -227,6 +232,8 @@ export function getChainConfig(): {
 	coreRpcUser: string | null;
 	coreRpcPass: string | null;
 	mode: 'public' | 'custom';
+	/** See {@link ChainNetwork} — always 'mainnet' in public mode (cairn-10ox). */
+	network: ChainNetwork;
 } {
 	const s = getInstanceSettings();
 	// The SOCKS5 proxy and pool size are independent of connection mode: a
@@ -255,7 +262,11 @@ export function getChainConfig(): {
 			electrumTlsInsecure: false,
 			...tuning,
 			...coreRpc,
-			mode: 'public'
+			mode: 'public',
+			// The public default server is always mainnet — a stored chainNetwork
+			// value (left over from a prior custom regtest/testnet config) must
+			// never leak into public mode.
+			network: 'mainnet'
 		};
 	}
 	return {
@@ -265,6 +276,7 @@ export function getChainConfig(): {
 		electrumTlsInsecure: s.electrumTlsInsecure,
 		...tuning,
 		...coreRpc,
-		mode: 'custom'
+		mode: 'custom',
+		network: s.chainNetwork
 	};
 }

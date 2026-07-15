@@ -15,7 +15,7 @@ import { getChainConfig } from '../settings';
 import { ElectrumClient } from '../electrum/client';
 import { ElectrumPool } from '../electrum/pool';
 import type { ElectrumBalance, ElectrumHistoryItem } from '../electrum/client';
-import { addressToScripthash, scriptPubKeyHex } from '../bitcoin/xpub';
+import { addressToScripthash, scriptPubKeyHex, setDefaultNetwork } from '../bitcoin/xpub';
 import { MAX_FEE_RATE } from '../bitcoin/psbt';
 import { wireChainEvents, resetConnectionState } from '../chainEvents';
 import { noteProxyConfigured, resetChainHealth, resetCoreHealth, recordCoreOk, recordCoreError } from '../chainHealth';
@@ -588,6 +588,13 @@ export class ChainService {
 
 	constructor(config = getChainConfig()) {
 		this.config = config;
+		// Keep xpub.ts's default-network prefix validation in sync with whatever
+		// backend is actually configured (cairn-10ox) — every ChainService
+		// (re)construction (initial boot AND reconfigureChain() after an admin
+		// saves connection settings) re-syncs it, so a regtest/testnet operator's
+		// tpub/upub/vpub imports are accepted without every parseXpub call site
+		// needing to thread the network through by hand.
+		setDefaultNetwork(config.network);
 		// Record whether chain traffic is routed through a SOCKS5/Tor proxy, so the
 		// transport-health signal can tell users a misconfigured proxy (not the node)
 		// is the likely cause of an outage (cairn-hy8z).
@@ -1915,7 +1922,7 @@ export class ChainService {
 				serverBanner: banner,
 				tipHeight: header.height,
 				tipHash,
-				network: 'mainnet'
+				network: this.config.network
 			};
 		} catch (e) {
 			return {
@@ -1924,7 +1931,7 @@ export class ChainService {
 				server,
 				tipHeight: null,
 				tipHash: null,
-				network: 'mainnet',
+				network: this.config.network,
 				error: e instanceof Error ? e.message : String(e)
 			};
 		}

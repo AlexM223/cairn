@@ -81,12 +81,18 @@ describe('parseXpub: cross-network version-byte rejection', () => {
 		expect(isValidXpub(upub)).toBe(false);
 	});
 
-	it('rejects uprv (BIP49 testnet private) — caught by the testnet gate before the private-key gate', () => {
+	it('rejects uprv (BIP49 testnet private) — caught by the private-key gate before the network gate (cairn-10ox)', () => {
 		const uprv = withVersion(XPUB, 0x044a4e28);
-		// TESTNET_VERSIONS is checked before PRIVATE_VERSIONS in parseXpub, so a
-		// testnet PRIVATE key still gets a "testnet" message, not a "private key"
-		// one — pinning which gate fires first since both would be true.
-		expect(() => parseXpub(uprv)).toThrow(/testnet/i);
+		// The private-key gate is checked before the network gate in parseXpub, so
+		// a testnet/regtest PRIVATE key always gets the "private extended key"
+		// message rather than a network-mismatch one — pinning which gate fires
+		// first since both would be true. This is deliberate: "you pasted a
+		// private key" is the more urgent message, independent of which network
+		// backend is configured (a regtest backend must reject uprv exactly as a
+		// mainnet backend does — network-awareness never loosens the private-key
+		// gate).
+		expect(() => parseXpub(uprv)).toThrow(/private extended key/i);
+		expect(() => parseXpub(uprv, 'regtest')).toThrow(/private extended key/i);
 	});
 
 	it('rejects a mainnet ypub re-flagged with the vpub (testnet zpub-multisig-adjacent) version', () => {

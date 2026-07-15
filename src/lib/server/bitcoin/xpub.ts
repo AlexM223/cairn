@@ -1,12 +1,19 @@
 // Extended-public-key parsing, address derivation and address <-> script helpers.
-// Pure functions, no network access. Mainnet only.
+// Pure functions, no I/O. Address ENCODING (deriveAddress, addressToScriptPubKey)
+// stays mainnet-only by design — see their doc comments. Extended-key PREFIX
+// validation (parseXpub) is network-aware (cairn-10ox): it accepts SLIP-132
+// mainnet OR testnet/regtest version bytes depending on the `network` argument,
+// defaulting to whatever the configured chain backend is set to (see
+// `setDefaultNetwork` below) so callers that don't pass one explicitly still
+// validate against the right network without every call site having to import
+// settings.ts.
 
 import { HDKey } from '@scure/bip32';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { ripemd160 } from '@noble/hashes/legacy.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { createBase58check, bech32, bech32m } from '@scure/base';
-import type { ScriptType } from '$lib/types';
+import type { ChainNetwork, ScriptType } from '$lib/types';
 
 const b58check = createBase58check(sha256);
 
@@ -20,18 +27,47 @@ const PUBLIC_VERSIONS: Record<number, ScriptType> = {
 /** SLIP-132 mainnet private version bytes (rejected with a helpful error). */
 const PRIVATE_VERSIONS = new Set([0x0488ade4 /* xprv */, 0x049d7878 /* yprv */, 0x04b2430c /* zprv */]);
 
-/** Common testnet version bytes (rejected — mainnet only). */
-const TESTNET_VERSIONS = new Set([
-	0x043587cf, // tpub
-	0x04358394, // tprv
-	0x044a5262, // upub
-	0x044a4e28, // uprv
-	0x045f1cf6, // vpub
-	0x045f18bc // vprv
-]);
+/**
+ * SLIP-132 testnet/regtest public version bytes -> script type. Bitcoin has no
+ * separate regtest version-byte namespace — regtest reuses the testnet bytes —
+ * so this single table covers both networks (mirrored by isTestnetLike below).
+ */
+const TESTNET_PUBLIC_VERSIONS: Record<number, ScriptType> = {
+	0x043587cf: 'p2pkh', // tpub
+	0x044a5262: 'p2sh-p2wpkh', // upub
+	0x045f1cf6: 'p2wpkh' // vpub
+};
+
+/** SLIP-132 testnet/regtest private version bytes (rejected with a helpful error). */
+const TESTNET_PRIVATE_VERSIONS = new Set([0x04358394 /* tprv */, 0x044a4e28 /* uprv */, 0x045f18bc /* vprv */]);
+
+/** Networks that share the testnet SLIP-132 version-byte namespace. */
+function isTestnetLike(network: ChainNetwork): boolean {
+	return network === 'testnet' || network === 'regtest';
+}
 
 /** Standard BIP32 mainnet xpub version bytes. */
 const XPUB_VERSION = 0x0488b21e;
+
+/**
+ * The network parseXpub validates against when a caller doesn't pass one
+ * explicitly, kept in sync with the configured chain backend (cairn-10ox) by
+ * {@link setDefaultNetwork} — called once whenever the backend is (re)configured
+ * (see chain/index.ts's ChainService constructor). Defaults to 'mainnet' so any
+ * call site that hasn't been migrated, and every existing test, keeps its
+ * original mainnet-only behavior.
+ */
+let defaultNetwork: ChainNetwork = 'mainnet';
+
+/** Sync parseXpub's default network with the currently configured chain backend. */
+export function setDefaultNetwork(network: ChainNetwork): void {
+	defaultNetwork = network;
+}
+
+/** The network parseXpub currently defaults to (test/inspection helper). */
+export function getDefaultNetwork(): ChainNetwork {
+	return defaultNetwork;
+}
 
 export interface ParsedXpub {
 	scriptType: ScriptType;
@@ -132,16 +168,27 @@ function cachePut<V>(cache: Map<string, V>, max: number, key: string, value: V):
 }
 
 /**
- * Parse an xpub / ypub / zpub (SLIP-132, mainnet). ypub/zpub are normalized by
- * swapping the version bytes to standard xpub bytes before handing the key to
- * @scure/bip32; the original prefix determines the script type.
- * Throws a descriptive Error on anything invalid.
+ * Parse an xpub / ypub / zpub (SLIP-132). Accepts mainnet OR testnet/regtest
+ * version bytes depending on `network` (default: {@link getDefaultNetwork}, kept
+ * in sync with the configured chain backend — cairn-10ox); a key whose prefix
+ * belongs to the OTHER network family is always rejected, in both directions —
+ * this is a Bitcoin-correctness boundary, not just UX friction; a mainnet
+ * backend must never accept a testnet/regtest key and vice versa. ypub/zpub
+ * (or their testnet upub/vpub counterparts) are normalized by swapping the
+ * version bytes to standard xpub bytes before handing the key to @scure/bip32;
+ * the original prefix determines the script type. Throws a descriptive Error
+ * on anything invalid.
  */
-export function parseXpub(input: string): ParsedXpub {
+export function parseXpub(input: string, network: ChainNetwork = defaultNetwork): ParsedXpub {
 	const trimmed = input.trim();
 	if (!trimmed) throw new Error('Empty extended key');
 
-	const cached = parseCache.get(trimmed);
+	// The network is part of the cache key: the SAME string must be free to
+	// parse differently (accept vs reject) depending on which network it's
+	// validated against — e.g. a regtest admin later switching to mainnet must
+	// not have a stale "accepted" result served back for a tpub (cairn-10ox).
+	const cacheKey = network + '|' + trimmed;
+	const cached = parseCache.get(cacheKey);
 	if (cached) return cached;
 
 	let raw: Uint8Array;
@@ -159,18 +206,33 @@ export function parseXpub(input: string): ParsedXpub {
 	const version =
 		((raw[0] << 24) | (raw[1] << 16) | (raw[2] << 8) | raw[3]) >>> 0;
 
-	if (PRIVATE_VERSIONS.has(version)) {
+	if (PRIVATE_VERSIONS.has(version) || TESTNET_PRIVATE_VERSIONS.has(version)) {
 		throw new Error('This is a private extended key — import the public (xpub/ypub/zpub) version instead');
 	}
-	if (TESTNET_VERSIONS.has(version)) {
-		throw new Error('Testnet extended keys are not supported (mainnet only)');
+
+	const testnetBackend = isTestnetLike(network);
+	let scriptType: ScriptType | undefined;
+	if (testnetBackend) {
+		if (PUBLIC_VERSIONS[version]) {
+			throw new Error(
+				`Mainnet extended keys are not supported on a ${network} backend — import the testnet/regtest (tpub/upub/vpub) version instead`
+			);
+		}
+		scriptType = TESTNET_PUBLIC_VERSIONS[version];
+	} else {
+		if (TESTNET_PUBLIC_VERSIONS[version]) {
+			throw new Error('Testnet/regtest extended keys are not supported on a mainnet backend');
+		}
+		scriptType = PUBLIC_VERSIONS[version];
 	}
-	const scriptType = PUBLIC_VERSIONS[version];
 	if (!scriptType) {
 		throw new Error('Unrecognized extended key prefix');
 	}
 
 	// Normalize SLIP-132 version bytes to standard xpub bytes so HDKey accepts it.
+	// This is purely an internal representation for @scure/bip32 — it does not
+	// change which network the ORIGINAL prefix was validated against above, and
+	// address derivation stays mainnet-encoded regardless (see file header).
 	const normalized = new Uint8Array(raw);
 	normalized[0] = (XPUB_VERSION >>> 24) & 0xff;
 	normalized[1] = (XPUB_VERSION >>> 16) & 0xff;
@@ -188,7 +250,7 @@ export function parseXpub(input: string): ParsedXpub {
 
 	const fingerprint = (hdkey.fingerprint >>> 0).toString(16).padStart(8, '0');
 	const result: ParsedXpub = { scriptType, hdkey, fingerprint, depth: hdkey.depth };
-	cachePut(parseCache, PARSE_CACHE_MAX, trimmed, result);
+	cachePut(parseCache, PARSE_CACHE_MAX, cacheKey, result);
 	return result;
 }
 

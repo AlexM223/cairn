@@ -314,6 +314,15 @@ export interface FeeEstimates {
 	minFeeRate?: number;
 }
 
+/** The Bitcoin network the configured chain backend (Electrum/Core RPC) is
+ *  actually talking to. Drives xpub.ts's SLIP-132 prefix validation (cairn-10ox)
+ *  — a backend's network and the extended-key prefixes it accepts for import
+ *  must always agree, in both directions (mainnet backend rejects tpub/upub/vpub,
+ *  testnet/regtest backend rejects xpub/ypub/zpub). Defaults to 'mainnet'; an
+ *  operator pointing Cairn at a testnet/regtest node sets this explicitly via
+ *  the `chain_network` setting. */
+export type ChainNetwork = 'mainnet' | 'testnet' | 'regtest';
+
 export interface NodeInfo {
 	connected: boolean;
 	mode: 'public' | 'custom';
@@ -321,7 +330,7 @@ export interface NodeInfo {
 	serverBanner?: string;
 	tipHeight: number | null;
 	tipHash: string | null;
-	network: 'mainnet' | 'testnet';
+	network: ChainNetwork;
 	error?: string;
 }
 
@@ -528,6 +537,13 @@ export interface InstanceSettings {
 	coreRpcUrl: string | null;
 	coreRpcUser: string | null;
 	coreRpcPass: string | null;
+	/** The Bitcoin network the custom Electrum/Core RPC backend is configured
+	 *  for (cairn-10ox). Ignored in public mode, which is always 'mainnet' — the
+	 *  public default server only ever serves mainnet. Only relevant in custom
+	 *  mode: an operator pointing Cairn at a testnet or regtest node sets this so
+	 *  parseXpub (xpub.ts) accepts the matching tpub/upub/vpub prefixes instead of
+	 *  rejecting them as foreign-network keys. */
+	chainNetwork: ChainNetwork;
 	/** Provenance marker for a zero-config chain-backend connection (Umbrel
 	 *  auto-connect, docs/UMBREL-AUTOCONNECT-DESIGN.md): 'umbrel-env' when the
 	 *  Umbrel store compose's CAIRN_ELECTRUM and CAIRN_CORE_RPC env vars seeded

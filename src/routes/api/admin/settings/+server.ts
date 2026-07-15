@@ -20,7 +20,10 @@ const KEY_MAP: Record<string, string> = {
 	socks5Port: 'socks5_port',
 	coreRpcUrl: 'core_rpc_url',
 	coreRpcUser: 'core_rpc_user',
-	coreRpcPass: 'core_rpc_pass'
+	coreRpcPass: 'core_rpc_pass',
+	// Which network the custom Electrum/Core RPC backend is on (cairn-10ox) —
+	// gates xpub.ts's SLIP-132 prefix validation. Ignored in public mode.
+	chainNetwork: 'chain_network'
 };
 
 // Mirrors the validation in the admin settings form action
@@ -35,6 +38,9 @@ function validateSettings(body: Record<string, unknown>): string | null {
 
 	if ('connectionMode' in body && !['public', 'custom'].includes(String(body.connectionMode)))
 		return 'Invalid connection mode.';
+
+	if ('chainNetwork' in body && !['mainnet', 'testnet', 'regtest'].includes(String(body.chainNetwork)))
+		return 'Invalid chain network.';
 
 	if ('electrumPort' in body) {
 		const port = Number(body.electrumPort);

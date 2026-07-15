@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { createBase58check, bech32, bech32m } from '@scure/base';
@@ -9,7 +9,9 @@ import {
 	addressToScripthash,
 	isValidAddress,
 	isExplorerAddress,
-	isValidXpub
+	isValidXpub,
+	setDefaultNetwork,
+	getDefaultNetwork
 } from './xpub';
 
 const b58check = createBase58check(sha256);
@@ -91,6 +93,139 @@ describe('parseXpub', () => {
 		// Ethereum-style bogus version bytes, valid base58check otherwise.
 		const bogus = withVersion(XPUB, 0x11223344);
 		expect(() => parseXpub(bogus)).toThrow(/unrecognized/i);
+	});
+});
+
+// ── network-aware prefix validation (cairn-10ox) ────────────────────────────
+//
+// parseXpub(input, network) must accept exactly the SLIP-132 prefix family
+// that matches `network`, and reject every other family — in BOTH directions.
+// This is a Bitcoin-correctness boundary, not just UX friction: a mainnet
+// backend accepting a tpub (or vice versa) would let a wallet watch/derive
+// against the wrong chain. The matrix below is exhaustive over every
+// (network × version-byte) combination so no future edit can silently loosen
+// one direction while "fixing" the other.
+describe('parseXpub: network-aware prefix validation (cairn-10ox)', () => {
+	afterEach(() => {
+		// parseXpub's default `network` argument reads a module-level variable
+		// (setDefaultNetwork/getDefaultNetwork) kept in sync with the configured
+		// chain backend outside of tests. Any test that mutates it MUST restore
+		// 'mainnet' afterward so it can't leak into unrelated test files sharing
+		// this module instance.
+		setDefaultNetwork('mainnet');
+	});
+
+	const MAINNET_PUBLIC = [
+		{ label: 'xpub', version: 0x0488b21e, scriptType: 'p2pkh' },
+		{ label: 'ypub', version: 0x049d7cb2, scriptType: 'p2sh-p2wpkh' },
+		{ label: 'zpub', version: 0x04b24746, scriptType: 'p2wpkh' }
+	] as const;
+	const MAINNET_PRIVATE = [
+		{ label: 'xprv', version: 0x0488ade4 },
+		{ label: 'yprv', version: 0x049d7878 },
+		{ label: 'zprv', version: 0x04b2430c }
+	] as const;
+	const TESTNET_PUBLIC = [
+		{ label: 'tpub', version: 0x043587cf, scriptType: 'p2pkh' },
+		{ label: 'upub', version: 0x044a5262, scriptType: 'p2sh-p2wpkh' },
+		{ label: 'vpub', version: 0x045f1cf6, scriptType: 'p2wpkh' }
+	] as const;
+	const TESTNET_PRIVATE = [
+		{ label: 'tprv', version: 0x04358394 },
+		{ label: 'uprv', version: 0x044a4e28 },
+		{ label: 'vprv', version: 0x045f18bc }
+	] as const;
+
+	describe.each(['testnet', 'regtest'] as const)('network=%s', (network) => {
+		it.each(TESTNET_PUBLIC)('accepts $label and maps it to $scriptType', ({ label, version, scriptType }) => {
+			const key = withVersion(XPUB, version);
+			const parsed = parseXpub(key, network);
+			expect(parsed.scriptType).toBe(scriptType);
+			// Address derivation itself stays mainnet-encoded regardless of the
+			// network the PREFIX was validated against (file header) — sanity
+			// check the parsed key is otherwise usable.
+			expect(parsed.hdkey.publicKey).toBeDefined();
+			void label;
+		});
+
+		it.each(MAINNET_PUBLIC)('rejects mainnet $label as a foreign-network key', ({ version, label }) => {
+			const key = withVersion(XPUB, version);
+			expect(() => parseXpub(key, network)).toThrow(new RegExp(`mainnet.*not supported.*${network}`, 'i'));
+			void label;
+		});
+
+		it.each(TESTNET_PRIVATE)('rejects $label as a private key (private gate fires before the network gate)', ({ label, version }) => {
+			const key = withVersion(XPUB, version);
+			expect(() => parseXpub(key, network)).toThrow(/private extended key/i);
+			void label;
+		});
+
+		it.each(MAINNET_PRIVATE)(
+			'rejects mainnet $label as a private key even though it is also a foreign-network key',
+			({ label, version }) => {
+				const key = withVersion(XPUB, version);
+				expect(() => parseXpub(key, network)).toThrow(/private extended key/i);
+				void label;
+			}
+		);
+	});
+
+	describe('network=mainnet (default)', () => {
+		it.each(MAINNET_PUBLIC)('accepts $label and maps it to $scriptType', ({ version, scriptType }) => {
+			const key = withVersion(XPUB, version);
+			expect(parseXpub(key, 'mainnet').scriptType).toBe(scriptType);
+			// Omitting the network argument must behave identically — 'mainnet'
+			// is parseXpub's default.
+			expect(parseXpub(key).scriptType).toBe(scriptType);
+		});
+
+		it.each(TESTNET_PUBLIC)('rejects $label as a foreign-network key', ({ label, version }) => {
+			const key = withVersion(XPUB, version);
+			expect(() => parseXpub(key, 'mainnet')).toThrow(/testnet.*not supported.*mainnet/i);
+			expect(() => parseXpub(key)).toThrow(/testnet.*not supported.*mainnet/i);
+			void label;
+		});
+
+		it.each(MAINNET_PRIVATE)('rejects $label as a private key', ({ label, version }) => {
+			const key = withVersion(XPUB, version);
+			expect(() => parseXpub(key, 'mainnet')).toThrow(/private extended key/i);
+			void label;
+		});
+
+		it.each(TESTNET_PRIVATE)('rejects $label as a private key', ({ label, version }) => {
+			const key = withVersion(XPUB, version);
+			expect(() => parseXpub(key, 'mainnet')).toThrow(/private extended key/i);
+			void label;
+		});
+	});
+
+	it('the SAME raw key parses differently depending on the network argument (no stale cross-network cache leak)', () => {
+		// parseCache is keyed on `${network}|${trimmed}` specifically so this
+		// can never regress: a tpub string must be rejected under 'mainnet' and
+		// accepted under 'regtest', however many times each is parsed, in
+		// whichever order.
+		const tpub = withVersion(XPUB, 0x043587cf);
+		expect(() => parseXpub(tpub, 'mainnet')).toThrow(/testnet/i);
+		expect(parseXpub(tpub, 'regtest').scriptType).toBe('p2pkh');
+		expect(() => parseXpub(tpub, 'mainnet')).toThrow(/testnet/i); // still rejected after the regtest parse cached a result
+		expect(parseXpub(tpub, 'testnet').scriptType).toBe('p2pkh');
+	});
+
+	it('setDefaultNetwork changes the outcome for callers that omit the network argument', () => {
+		const tpub = withVersion(XPUB, 0x043587cf);
+		expect(getDefaultNetwork()).toBe('mainnet');
+		expect(() => parseXpub(tpub)).toThrow(/testnet/i);
+
+		setDefaultNetwork('regtest');
+		expect(getDefaultNetwork()).toBe('regtest');
+		expect(parseXpub(tpub).scriptType).toBe('p2pkh');
+
+		// A mainnet xpub, meanwhile, now becomes the foreign-network key.
+		expect(() => parseXpub(XPUB)).toThrow(/mainnet.*not supported.*regtest/i);
+
+		setDefaultNetwork('mainnet');
+		expect(parseXpub(XPUB).scriptType).toBe('p2pkh');
+		expect(() => parseXpub(tpub)).toThrow(/testnet/i);
 	});
 });
 
