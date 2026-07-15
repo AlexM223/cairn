@@ -2741,8 +2741,26 @@ losing 4-of-5 collected keys to a reload is much worse than losing a
 single-sig paste. Deliberately does NOT snapshot the in-progress "add one
 key" form (picked method, pasted text, typed fingerprint/path) — a device
 connection can't survive a reload anyway, so restoring half-entered text
-would look like resumable progress that isn't. Phase 1 explicitly scoped as
-sessionStorage-only, no server-side draft persistence. `vaultIntent.server.ts`
+would look like resumable progress that isn't. Phase 1 (sessionStorage,
+`cairn.multisig-wizard.v1`) is tab-scoped and covers only a same-tab reload
+within the hour; Phase 2 (`cairn-jy3g`) adds a genuinely server-side draft —
+`src/lib/server/multisigWizardDrafts.ts` — one `multisig_wizard_drafts` row
+per in-progress wizard (plus a `multisig_wizard_draft_keys` child table),
+owner-scoped by `user_id` on every read, committed after **every** key
+add/remove via the `draftSync` action (not just on exit) so a ceremony that
+spans hours/days or hands off to a different device doesn't lose collected
+keys. The page's `load()` in `+page.server.ts` resumes via a `?draft=N` query
+param — mirroring the send flow's `?tx=N` resume — 404ing if the draft
+doesn't exist or belongs to another user (same null-on-mismatch shape as
+`getTransaction`); the URL is kept in sync with the live `draftId` so
+reloading or reopening the link (email, notes app, another device) picks the
+wizard back up. `createMultisig` deletes the draft row on success
+(`draftAbandon` on an explicit Start-over). Only PUBLIC key material is ever
+stored — same fields the sessionStorage snapshot and page DOM already hold;
+no private-key material passes through this flow at all. The quorum-only
+opening step (before any key is added) deliberately has no draft row yet and
+stays sessionStorage-only by design — there's nothing worth a server
+round-trip until the first key lands. `vaultIntent.server.ts`
 handles server-side intent/state for the wizard. Also uses its own
 `_components/coldcardImport.ts`, `_components/deviceRead.ts` (device read
 reused per-wizard, not shared with single-sig's copy). A `custom` quorum
@@ -3929,9 +3947,10 @@ actually biting someone.
 14. **Open QA leads worth tracking as live drift, not just closed history**
     (per the 2026-07-12 issue-tracker survey): multisig UX beads
     **cairn-hla1** (multisig buried/undiscoverable on `/wallets`, the
-    `stateless` signer page has zero inbound links), **cairn-jy3g**
+    `stateless` signer page has zero inbound links), ~~**cairn-jy3g**
     (multisig wizard needs server-side draft persistence, unlike single-sig's
-    sessionStorage resume), **cairn-czi0** (`multisigScan.ts` almost entirely
+    sessionStorage resume)~~ — **shipped v0.2.32**, see §9's Multisig
+    wizard entry, **cairn-czi0** (`multisigScan.ts` almost entirely
     untested, including the spend-flow data path); the **cairn-6xxa** P1
     epic (sync/dashboard/derivation perf re-architecture, 7 dependent beads);
     and the **cairn-zoz8** epic (Esplora removal): `EsploraApi` removal +
