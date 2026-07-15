@@ -15,7 +15,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import { btcUsd } from '$lib/price';
 	import { formatBtc, formatSats, formatFiat } from '$lib/format';
-	import { SATS_PER_BTC, sanitizeDecimal, textToSats } from './amountInput';
+	import { SATS_PER_BTC, sanitizeDecimal, textToSats, isHighSpend } from './amountInput';
 
 	let {
 		sats = $bindable(0),
@@ -131,17 +131,29 @@
 
 	const overBalance = $derived(spendableSats != null && sats > spendableSats);
 
-	// The live secondary line under the number always keeps a fiat (and, in
-	// sats mode, a BTC) equivalent visible so the other denominations never
-	// disappear just because you're typing in one of them.
+	// R1 unit-slip guard (docs/UX-PSYCHOLOGY-RESEARCH-2026-07-15.md): a calm
+	// amber note — never red, never blocking — when the typed amount is a
+	// large share (>50%) of what this wallet can spend. Only meaningful below
+	// the over-balance case above, so the two notes never compete for the
+	// same line; see isHighSpend's own doc comment for the exact band.
+	const highSpend = $derived(isHighSpend(sats, spendableSats));
+
+	// The live secondary line under the number always keeps BOTH other
+	// denominations visible (R1: "never let an amount exist on screen in only
+	// one unit while editing" — the sats<->BTC swap is a 100,000,000x slip,
+	// and a further slip if fiat is misread as BTC or vice versa).
 	const secondaryLine = $derived.by(() => {
 		if (price == null) {
+			// No price loaded — nothing to convert to fiat, so just show the
+			// other Bitcoin-denominated unit.
 			return entryUnit === 'sats' ? `${formatBtc(sats)} BTC` : `${formatSats(sats)} sats`;
 		}
 		const fiatText = formatFiat((sats / SATS_PER_BTC) * price);
-		if (entryUnit === 'sats') return `≈ ${formatBtc(sats)} BTC · ${fiatText}`;
-		if (entryUnit === 'fiat') return `≈ ${formatBtc(sats)} BTC`;
-		return `≈ ${fiatText}`;
+		const btcText = `${formatBtc(sats)} BTC`;
+		const satsText = `${formatSats(sats)} sats`;
+		if (entryUnit === 'sats') return `≈ ${btcText} · ${fiatText}`;
+		if (entryUnit === 'fiat') return `≈ ${btcText} · ${satsText}`;
+		return `≈ ${satsText} · ${fiatText}`;
 	});
 </script>
 
@@ -161,7 +173,13 @@
 	{#if overBalance}
 		<p class="field-line attention">That's more than this wallet holds.</p>
 	{:else if sats > 0}
+		<!-- Compact rows are BTC-only entry (no unit cycle), so the field
+		     itself already shows BTC — the conversion line's job here is just
+		     the sats equivalent (R1: never show only one denomination). -->
 		<p class="field-line tabular muted">{formatSats(sats)} sats</p>
+		{#if highSpend}
+			<p class="field-line attention high-spend">That's most of this wallet's balance.</p>
+		{/if}
 	{/if}
 {:else}
 	<div class="amount-hero">
@@ -198,6 +216,9 @@
 			<p class="hero-sub attention">That's more than this wallet holds.</p>
 		{:else if sats > 0}
 			<p class="hero-sub tabular">{secondaryLine}</p>
+			{#if highSpend}
+				<p class="hero-sub attention high-spend">That's most of this wallet's balance.</p>
+			{/if}
 		{:else if spendableSats != null}
 			<p class="hero-sub">{formatBtc(spendableSats)} BTC spendable</p>
 		{:else}
@@ -307,6 +328,24 @@
 
 	.hero-sub.attention {
 		color: var(--attention);
+	}
+
+	/* The >50%-of-balance note (R1) appears/disappears reactively as the user
+	   types — a quiet fade instead of a hard pop-in keeps it from reading as
+	   an alarm (manifesto: animate process, never alarm). It stacks below the
+	   conversion line rather than replacing it, so both stay legible. */
+	.hero-sub.high-spend,
+	.field-line.attention.high-spend {
+		animation: attention-fade-in 150ms var(--ease) both;
+	}
+
+	@keyframes attention-fade-in {
+		from {
+			opacity: 0;
+		}
+		to {
+			opacity: 1;
+		}
 	}
 
 	.rate-anchor {
