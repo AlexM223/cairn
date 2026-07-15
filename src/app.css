@@ -1,72 +1,80 @@
 /* ============================================================
-   Cairn — "Heartwood" design system
-   Standing inside the trunk: deep wood charcoal, copper growth
-   rings, serif numerals. Grammar: hairlines not boxes, pills
-   not cards, depth from the grove field — not glow.
+   Cairn — "Heartwood" design system (evergreen identity,
+   docs/DESIGN-MANIFESTO.md)
+   Evergreen ink, warm ivory serif numerals, slate signal-blue
+   accent, growth rendered as concentric rings. Grammar: hairlines
+   not boxes, pills not cards, depth from luminance stacking — not
+   glow.
    ============================================================ */
 
 @import '@fontsource/inter/400.css';
 @import '@fontsource/inter/500.css';
 @import '@fontsource/inter/600.css';
 @import '@fontsource/inter/700.css';
-@import '@fontsource/source-serif-4/400.css';
-@import '@fontsource/source-serif-4/600.css';
-@import '@fontsource/source-serif-4/700.css';
+@import '@fontsource-variable/fraunces';
 
 :root {
-	/* Surfaces */
-	--bg: #100d0b;
-	--bg-deep: #0a0807;
-	--bg-input: #17120f;
-	--bg-strip: #14100c;
+	/* Surfaces — evergreen-ink luminance stack (a faint green-slate
+	   undertone, R<G≈B; never warm brown, never pure black, never navy). */
+	--bg: #0e1312;
+	--bg-deep: #090d0c;
+	--bg-input: #141b19;
+	--bg-strip: #111716;
 	/* Legacy surface tiers — kept for unreskinned cards/panels until their
 	   lanes land; new work uses --bg-input fills + hairline rows instead. */
-	--surface: #17120f;
-	--surface-elevated: #241c15;
-	--border: #3a2f27;
-	--border-subtle: #2e2621;
+	--surface: #141b19;
+	--surface-elevated: #1c2523;
+	/* White-alpha washes — every surface stays tonally coherent regardless
+	   of what sits under it (canvas hex-mirrors below since drawing APIs
+	   can't read CSS custom properties: --border #2b3331, --border-subtle
+	   #232a28, --hairline #1a201e). */
+	--border: rgba(255, 255, 255, 0.11);
+	--border-subtle: rgba(255, 255, 255, 0.08);
 	/* The "hairlines, not boxes" grammar: 1px row separators. */
-	--hairline: #1d1712;
-	--border-control: #2a2320;
-	--border-ghost: #3a2f27;
+	--hairline: rgba(255, 255, 255, 0.05);
+	--border-control: rgba(255, 255, 255, 0.09);
+	--border-ghost: rgba(255, 255, 255, 0.14);
 
-	/* Text
+	/* Text — warm money, cool metadata. Warmth lives in the type (the
+	   balance and primary copy); secondary/muted metadata is cool-neutral.
 	   --text-faint fails AA by design — decorative/disabled use only,
 	   never informative copy. */
-	--text: #ede4db;
-	--text-hero: #f1e7dd;
-	--text-rows: #e5dbd1;
-	--text-secondary: #a99c90;
-	--text-muted: #8b7f75;
-	--text-faint: #5e554d;
+	--text: #ece7de;
+	--text-hero: #f3efe6;
+	--text-rows: #e2ddd3;
+	--text-secondary: #9ba6a1;
+	--text-muted: #6e7975;
+	--text-faint: #49524e;
 	/* Breadcrumb eyebrow: current segment vs path segments. */
-	--eyebrow: #8f8379;
-	--eyebrow-path: #6b6058;
+	--eyebrow: #77827d;
+	--eyebrow-path: #59635f;
 
-	/* Accent — copper */
-	--accent: #e8935a;
-	--accent-hover: #efa06b;
-	--accent-pressed: #d9884f;
-	--accent-bright: #f4b486;
-	--accent-glow: #f6c89a;
-	--accent-glow-strong: #fbe1c6;
-	--accent-core: #ffe9ce;
-	--accent-dim: #7a5238;
-	--accent-dim-2: #5e3f2c;
-	--accent-muted: rgba(232, 147, 90, 0.15);
+	/* Accent — slate signal-blue. Blueprint/instrument-dial blue; action
+	   only (primary button + active nav). Green stays the growth/health
+	   semantic below — never spent on chrome. */
+	--accent: #6796c9;
+	--accent-hover: #7aa6d5;
+	--accent-pressed: #5a86ba;
+	--accent-bright: #96bbe0;
+	--accent-glow: #b6d2ea;
+	--accent-glow-strong: #d4e5f4;
+	--accent-core: #eaf3fb;
+	--accent-dim: #3f5f80;
+	--accent-dim-2: #2f475f;
+	--accent-muted: rgba(103, 150, 201, 0.15);
 	/* Border weight for accent-tinted panels that sit on --accent-muted
 	   fills. --accent-border is the default; --accent-border-strong is for
 	   intentionally-emphasized "next step" callouts. */
-	--accent-border: rgba(232, 147, 90, 0.3);
-	--accent-border-strong: rgba(232, 147, 90, 0.45);
+	--accent-border: rgba(103, 150, 201, 0.3);
+	--accent-border-strong: rgba(103, 150, 201, 0.45);
 	/* Text placed ON the accent (pill labels); ghost pill label color. */
-	--on-accent: #1a1210;
-	--on-accent-ghost: #e8c6a8;
+	--on-accent: #0b1016;
+	--on-accent-ghost: #bcd2ea;
 
-	/* Status — sage for received/connected/valid, attention (warm tan,
+	/* Status — sage for received/connected/valid, attention (warm gold,
 	   never red) for nudges AND form validation. */
-	--sage: #8aa06e;
-	--sage-muted: rgba(138, 160, 110, 0.1);
+	--sage: #83b892;
+	--sage-muted: rgba(131, 184, 146, 0.12);
 	--success: var(--sage);
 	--success-muted: var(--sage-muted);
 	/* Border weights for the quorum risk panel's lightgreen/green tiers
@@ -74,32 +82,53 @@
 	   --accent-border / --accent-border-strong above. */
 	--success-border: color-mix(in srgb, var(--success) 45%, transparent);
 	--success-border-strong: color-mix(in srgb, var(--success) 70%, transparent);
-	--attention: #d8b27a;
-	--attention-muted: rgba(216, 178, 122, 0.1);
+	--attention: #d9b47e;
+	--attention-muted: rgba(217, 180, 126, 0.1);
 	--warning: var(--attention);
 	--warning-muted: var(--attention-muted);
-	--warning-border: rgba(216, 178, 122, 0.3);
-	--warning-border-strong: rgba(216, 178, 122, 0.45);
+	--warning-border: rgba(217, 180, 126, 0.3);
+	--warning-border-strong: rgba(217, 180, 126, 0.45);
 	/* Off-spec extension: Heartwood has no red, but irrecoverable failures
 	   (broadcast rejected, invalid PSBT, API down) keep it — routine
 	   validation uses --attention instead. */
-	--error: #e0604c;
-	--error-muted: rgba(224, 96, 76, 0.14);
-	--error-border: rgba(224, 96, 76, 0.3);
+	--error: #e0664f;
+	--error-muted: rgba(224, 102, 79, 0.14);
+	--error-border: rgba(224, 102, 79, 0.3);
 	--danger: var(--error);
 	--danger-muted: var(--error-muted);
-	/* Caution — burnt-orange/salmon, sits chromatically between --attention
-	   (tan) and --error (red) for the quorum risk panel's salmon tier
-	   (cairn-do6p): more alarming than yellow, less than red, and visually
-	   distinct from both. */
-	--caution: #dd7a52;
-	--caution-muted: rgba(221, 122, 82, 0.12);
-	--caution-border: rgba(221, 122, 82, 0.3);
+	/* Caution — the last orange-adjacent hue in the palette (shift toward
+	   amber if any "orange" read survives QA), sits chromatically between
+	   --attention (gold) and --error (red) for the quorum risk panel's
+	   salmon tier (cairn-do6p): more alarming than amber, less than red. */
+	--caution: #d87a55;
+	--caution-muted: rgba(216, 122, 85, 0.12);
+	--caution-border: rgba(216, 122, 85, 0.3);
 
 	/* Typography */
 	--font-ui: 'Inter', system-ui, -apple-system, sans-serif;
-	--font-serif: 'Source Serif 4', Georgia, serif;
+	--font-serif: 'Fraunces', 'Source Serif 4', Georgia, serif;
 	--font-mono: ui-monospace, 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
+
+	/* The 5-token type scale (DESIGN-MANIFESTO.md §3). Family/weight/extras
+	   are set here; components apply size+weight+family+tracking+line-height
+	   together via the .t-* utility classes below. */
+	--t-hero-size: 56px;
+	--t-hero-weight: 440;
+	--t-hero-tracking: -0.02em;
+	--t-hero-line: 1.02;
+	--t-title-size: 22px;
+	--t-title-weight: 600;
+	--t-title-tracking: -0.01em;
+	--t-body-size: 15px;
+	--t-body-weight: 400;
+	--t-body-line: 1.5;
+	--t-label-size: 13px;
+	--t-label-weight: 500;
+	--t-micro-size: 11px;
+	--t-micro-weight: 500;
+	--t-micro-tracking: 0.09em;
+	/* One constant money weight — never flip 400/700 between sizes. */
+	--weight-money: 460;
 
 	/* Radii — pill hardware. Rows get none. */
 	--radius-pill: 26px;
@@ -114,15 +143,18 @@
 	--radius-control: 6px;
 	--radius-chip: 4px;
 
-	/* Motion */
+	/* Motion — --ease for UI micro-interactions (130ms) / panels (200ms);
+	   --ease-grow (expo-out) for the balance count-up (~900ms) and ring
+	   sweeps (~640ms) — motion that celebrates accretion, never alarm. */
 	--ease: cubic-bezier(0.25, 0.1, 0.25, 1);
+	--ease-grow: cubic-bezier(0.16, 1, 0.3, 1);
 
-	/* Explorer surface tokens (cairn-6efi.9). --text-value is the warm
+	/* Explorer surface tokens (cairn-6efi.9). --text-value is the cool
 	   "text/value" tone the explorer block rows use for heights/tx-counts
-	   (formerly the stray literal #cbbfb3); --search-fill is the barely-there
-	   wash inside the search pill. Both get remapped by the Daylight grove
-	   light theme below. */
-	--text-value: #cbbfb3;
+	   (also reused by activity/admin row values); --search-fill is the
+	   barely-there wash inside the search pill. Both get remapped by the
+	   Daylight grove light theme below. */
+	--text-value: #c2c4bd;
 	--search-fill: rgba(255, 255, 255, 0.02);
 
 	color-scheme: dark;
@@ -136,10 +168,12 @@
    properties on the explorer container cascades warm-parchment
    values to every explorer descendant WITHOUT touching the rest
    of the app (wallet/admin/etc. stay dark). App-wide light mode
-   is a separate, larger effort — deferred as follow-up.
+   is the deferred larger effort tracked as cairn-sdx5.7.
 
-   Palette: warm parchment base, umber text, copper + sage both
-   darkened to clear AA contrast on the light ground.
+   Palette: warm parchment base (DESIGN-MANIFESTO.md §2 light-mode
+   strategy), umber-evergreen ink, slate-blue + sage both darkened
+   to clear AA contrast on the light ground. Same soul, both modes:
+   the ring mark and the Fraunces balance persist.
    ============================================================ */
 @media (prefers-color-scheme: light) {
 	.explorer,
@@ -152,51 +186,58 @@
 		color-scheme: light;
 
 		/* Surfaces — warm parchment */
-		--bg: #f4efe6;
-		--bg-deep: #ece4d6;
-		--bg-input: #fbf8f2;
-		--bg-strip: #efe8db;
-		--surface: #fbf8f2;
-		--surface-elevated: #f1e9db;
-		--border: #d9cdbb;
-		--border-subtle: #e4dacb;
-		--hairline: #e6ddce;
-		--border-control: #d3c7b4;
-		--border-ghost: #d9cdbb;
+		--bg: #f3efe7;
+		--bg-deep: #e9e3d7;
+		--bg-input: #faf7f1;
+		--bg-strip: #eee9dc;
+		--surface: #faf7f1;
+		--surface-elevated: #efe7da;
+		--border: #d7cdb8;
+		--border-subtle: #e2d8c7;
+		--hairline: #e4dac9;
+		--border-control: #d1c5b0;
+		--border-ghost: #d7cdb8;
 
-		/* Text — umber, AA on parchment (--text-faint stays decorative). */
-		--text: #2c2119;
-		--text-hero: #241a12;
-		--text-rows: #3a2d22;
-		--text-secondary: #6a5c4d;
-		--text-muted: #7c6e5e;
-		--text-faint: #a2957f;
-		--eyebrow: #7c6e5e;
-		--eyebrow-path: #a2957f;
-		--text-value: #4a3c2d;
+		/* Text — umber-evergreen ink, AA on parchment (--text-faint stays
+		   decorative). */
+		--text: #1f2623;
+		--text-hero: #191f1c;
+		--text-rows: #333a36;
+		--text-secondary: #5c635e;
+		--text-muted: #6e7570;
+		--text-faint: #93998f;
+		--eyebrow: #6e7570;
+		--eyebrow-path: #93998f;
+		--text-value: #343b36;
 
-		/* Accent — copper darkened for contrast on parchment. */
-		--accent: #b0551f;
-		--accent-hover: #c2622a;
-		--accent-pressed: #9a4a1a;
-		--accent-bright: #a54e1b;
-		--accent-glow: #c26a34;
-		--accent-muted: rgba(176, 85, 31, 0.12);
-		--accent-border: rgba(176, 85, 31, 0.32);
-		--accent-border-strong: rgba(176, 85, 31, 0.48);
-		--on-accent: #fdf6ee;
-		--on-accent-ghost: #7a4420;
+		/* Accent — slate-blue darkened for contrast on parchment. */
+		--accent: #3f6ea6;
+		--accent-hover: #4a7cb5;
+		--accent-pressed: #35608f;
+		--accent-bright: #375f8a;
+		--accent-glow: #6f97c2;
+		--accent-muted: rgba(63, 110, 166, 0.12);
+		--accent-border: rgba(63, 110, 166, 0.32);
+		--accent-border-strong: rgba(63, 110, 166, 0.48);
+		--on-accent: #f7f3ea;
+		--on-accent-ghost: #2f527a;
 
-		/* Status — sage/attention darkened to read on light. */
-		--sage: #566e39;
-		--sage-muted: rgba(86, 110, 57, 0.14);
+		/* Status — sage/attention/error darkened to read on light. */
+		--sage: #3f7a56;
+		--sage-muted: rgba(63, 122, 86, 0.14);
 		--attention: #9a6f28;
 		--attention-muted: rgba(154, 111, 40, 0.12);
 		--warning-border: rgba(154, 111, 40, 0.32);
+		--error: #b6402f;
+		--error-muted: rgba(182, 64, 47, 0.14);
+		--error-border: rgba(182, 64, 47, 0.3);
+		--caution: #ad6244;
+		--caution-muted: rgba(173, 98, 68, 0.12);
+		--caution-border: rgba(173, 98, 68, 0.3);
 
-		/* Search pill wash — a faint umber tint (the white-alpha wash is
+		/* Search pill wash — a faint ink tint (the white-alpha wash is
 		   invisible on a light ground). */
-		--search-fill: rgba(44, 33, 25, 0.03);
+		--search-fill: rgba(31, 38, 35, 0.03);
 	}
 }
 
@@ -258,14 +299,21 @@ a:hover {
 	scrollbar-color: var(--border) transparent;
 }
 
-/* ---------- Typography helpers ---------- */
+/* ---------- Typography helpers ----------
+   The 5-token type scale (DESIGN-MANIFESTO.md §3): .t-hero is the balance,
+   exactly one per screen; .t-title/.t-body/.t-label/.t-micro cover
+   everything else. Existing base classes (.hero-number/.page-title/
+   .overline) are kept as the public API and now delegate to the same
+   tokens so there is exactly one source of truth for each size. */
 
-.hero-number {
+.hero-number,
+.t-hero {
 	font-family: var(--font-serif);
-	font-weight: 600;
+	font-size: var(--t-hero-size);
+	font-weight: var(--t-hero-weight);
 	font-variant-numeric: tabular-nums;
-	letter-spacing: -0.015em;
-	line-height: 1.05;
+	letter-spacing: var(--t-hero-tracking);
+	line-height: var(--t-hero-line);
 	color: var(--text);
 }
 
@@ -286,18 +334,35 @@ a:hover {
 	font-variant-numeric: tabular-nums;
 }
 
-.overline {
-	font-size: 11px;
-	font-weight: 600;
-	letter-spacing: 0.08em;
+.overline,
+.t-micro {
+	font-size: var(--t-micro-size);
+	font-weight: var(--t-micro-weight);
+	letter-spacing: var(--t-micro-tracking);
 	text-transform: uppercase;
 	color: var(--text-muted);
 }
 
-.page-title {
-	font-size: 20px;
-	font-weight: 600;
-	letter-spacing: -0.01em;
+.page-title,
+.t-title {
+	font-family: var(--font-ui);
+	font-size: var(--t-title-size);
+	font-weight: var(--t-title-weight);
+	letter-spacing: var(--t-title-tracking);
+}
+
+.t-body {
+	font-family: var(--font-ui);
+	font-size: var(--t-body-size);
+	font-weight: var(--t-body-weight);
+	line-height: var(--t-body-line);
+}
+
+.t-label {
+	font-family: var(--font-ui);
+	font-size: var(--t-label-size);
+	font-weight: var(--t-label-weight);
+	color: var(--text-secondary);
 }
 
 .truncate {
@@ -367,17 +432,20 @@ a:hover {
 	pointer-events: none;
 }
 
+/* No colored (crypto-neon) glow shadow — a restrained neutral lift only,
+   on the single primary button (DESIGN-MANIFESTO.md §4). Depth comes from
+   the field, not from glow. */
 .btn-primary {
 	background: var(--accent);
 	color: var(--on-accent);
 	font-weight: 600;
-	box-shadow: 0 4px 20px rgba(232, 147, 90, 0.25);
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
 }
 
 .btn-primary:hover:not(:disabled) {
 	background: var(--accent-hover);
 	color: var(--on-accent);
-	box-shadow: 0 6px 26px rgba(232, 147, 90, 0.32);
+	box-shadow: 0 2px 4px rgba(0, 0, 0, 0.45);
 }
 
 .btn-primary:active:not(:disabled) {
@@ -392,7 +460,7 @@ a:hover {
 	opacity: 1;
 }
 
-/* Ghost pill: the spec's "one copper primary, ghost for the rest". */
+/* Ghost pill: the spec's "one slate-blue primary, ghost for the rest". */
 .btn-secondary {
 	background: transparent;
 	border-color: var(--border-ghost);
@@ -420,13 +488,13 @@ a:hover {
 
 .btn-danger {
 	background: var(--error-muted);
-	border-color: rgba(224, 96, 76, 0.35);
+	border-color: rgba(224, 102, 79, 0.35);
 	color: var(--error);
 }
 
 .btn-danger:hover:not(:disabled) {
-	background: rgba(224, 96, 76, 0.22);
-	color: #ea7f6e;
+	background: rgba(224, 102, 79, 0.22);
+	color: #ea8571;
 }
 
 .btn-sm {
@@ -475,7 +543,7 @@ textarea.input {
 textarea.input:focus {
 	outline: none;
 	border-color: var(--accent);
-	box-shadow: 0 0 0 3px rgba(232, 147, 90, 0.12);
+	box-shadow: 0 0 0 3px rgba(103, 150, 201, 0.12);
 }
 
 /* Validation is calm amber per the "never red" rule — --error is reserved
@@ -616,7 +684,7 @@ textarea.input:focus {
 }
 
 .skeleton {
-	background: linear-gradient(100deg, var(--bg-input) 40%, #241c15 50%, var(--bg-input) 60%);
+	background: linear-gradient(100deg, var(--bg-input) 40%, var(--surface-elevated) 50%, var(--bg-input) 60%);
 	background-size: 200% 100%;
 	animation: hwShimmer 1.6s ease-in-out infinite;
 	border-radius: var(--radius-badge);

@@ -2,7 +2,7 @@
 // everything needed to reconstruct a multisig — the quorum, every key
 // (fingerprint / path / xpub), the full receive descriptor, and a large QR of the
 // exact Caravan config the JSON download emits. It is deliberately paper-first: a
-// single copper accent for the Heartwood wordmark, ring mark and rules, but the
+// single slate-blue accent for the Heartwood wordmark, ring mark and rules, but the
 // body text and the QR stay black-on-white (prints on any laser/inkjet), monospace
 // for anything a human might transcribe, and a big low-density QR that scans off a
 // printed page.
@@ -37,22 +37,23 @@ const CONTENT_W = PAGE_W - MARGIN * 2;
 const QR_SIZE = 168;
 const QR_PX = 600;
 
-// Heartwood copper accent — src/app.css `--accent: #e8935a` as a 0–255 RGB triple
-// for jsPDF's colour setters. Chrome only (wordmark, ring mark, section headings,
-// header/footer rules); body text, the key table, the descriptor and the QR
-// modules stay black-on-white so the sheet prints and scans on any device.
-const COPPER: [number, number, number] = [232, 147, 90];
+// Heartwood slate-blue accent — src/app.css `--accent: #6796c9` as a 0–255 RGB
+// triple for jsPDF's colour setters. Chrome only (wordmark, ring mark, section
+// headings, header/footer rules); body text, the key table, the descriptor and
+// the QR modules stay black-on-white so the sheet prints and scans on any
+// device.
+const ACCENT: [number, number, number] = [103, 150, 201];
 
 /**
- * Draw a simplified HeartwoodMark — three concentric, slightly-eccentric copper
- * growth rings plus a filled pith dot — as vector primitives, into a `size`-pt box
- * at (x, y). A direct reduction of the "min" detail level in
+ * Draw a simplified HeartwoodMark — three concentric, slightly-eccentric
+ * slate-blue growth rings plus a filled pith dot — as vector primitives, into a
+ * `size`-pt box at (x, y). A direct reduction of the "min" detail level in
  * src/lib/components/heartwood/HeartwoodMark.svelte (100-unit viewBox): the pith
  * sits up-left and each ring drifts down-right as it grows.
  */
 function drawHeartwoodMark(doc: jsPDF, x: number, y: number, size: number): void {
 	const s = size / 100;
-	doc.setDrawColor(COPPER[0], COPPER[1], COPPER[2]);
+	doc.setDrawColor(ACCENT[0], ACCENT[1], ACCENT[2]);
 	doc.setLineWidth(0.7);
 	for (const r of [43, 28, 15]) {
 		const t = r / 45;
@@ -61,7 +62,7 @@ function drawHeartwoodMark(doc: jsPDF, x: number, y: number, size: number): void
 		doc.ellipse(cx, cy, r * s, r * 0.955 * s, 'S');
 	}
 	// Filled pith dot.
-	doc.setFillColor(COPPER[0], COPPER[1], COPPER[2]);
+	doc.setFillColor(ACCENT[0], ACCENT[1], ACCENT[2]);
 	doc.circle(x + 49.3 * s, y + 46 * s, 5.5 * s, 'F');
 	doc.setDrawColor(0);
 }
@@ -118,11 +119,11 @@ export async function buildMultisigBackupPdf(multisig: MultisigRow): Promise<Uin
 	}
 
 	// ---------------------------------------------------------------- header
-	// Copper Heartwood ring mark + wordmark; "Wallet Backup" stays black at right.
+	// Slate-blue Heartwood ring mark + wordmark; "Wallet Backup" stays black at right.
 	drawHeartwoodMark(doc, MARGIN, y, 18);
 	doc.setFont('helvetica', 'bold');
 	doc.setFontSize(22);
-	doc.setTextColor(COPPER[0], COPPER[1], COPPER[2]);
+	doc.setTextColor(ACCENT[0], ACCENT[1], ACCENT[2]);
 	doc.text('Heartwood', MARGIN + 26, y + 16);
 	doc.setTextColor(0, 0, 0);
 	doc.setFont('helvetica', 'normal');
@@ -130,8 +131,8 @@ export async function buildMultisigBackupPdf(multisig: MultisigRow): Promise<Uin
 	doc.text('Wallet Backup', PAGE_W - MARGIN, y + 16, { align: 'right' });
 	y += 30;
 
-	// Copper rule under the wordmark.
-	doc.setDrawColor(COPPER[0], COPPER[1], COPPER[2]);
+	// Slate-blue rule under the wordmark.
+	doc.setDrawColor(ACCENT[0], ACCENT[1], ACCENT[2]);
 	doc.setLineWidth(1.2);
 	doc.line(MARGIN, y, PAGE_W - MARGIN, y);
 	doc.setDrawColor(0);
@@ -166,7 +167,7 @@ export async function buildMultisigBackupPdf(multisig: MultisigRow): Promise<Uin
 	doc.setFont('helvetica', 'bold');
 	doc.setFontSize(12);
 	ensure(18);
-	doc.setTextColor(COPPER[0], COPPER[1], COPPER[2]);
+	doc.setTextColor(ACCENT[0], ACCENT[1], ACCENT[2]);
 	doc.text('Signing keys', MARGIN, y);
 	doc.setTextColor(0, 0, 0);
 	y += 16;
@@ -214,7 +215,7 @@ export async function buildMultisigBackupPdf(multisig: MultisigRow): Promise<Uin
 	doc.setFont('helvetica', 'bold');
 	doc.setFontSize(12);
 	ensure(18);
-	doc.setTextColor(COPPER[0], COPPER[1], COPPER[2]);
+	doc.setTextColor(ACCENT[0], ACCENT[1], ACCENT[2]);
 	doc.text('Output descriptor (receive)', MARGIN, y);
 	doc.setTextColor(0, 0, 0);
 	y += 16;
@@ -253,7 +254,7 @@ export async function buildMultisigBackupPdf(multisig: MultisigRow): Promise<Uin
 	if (qrDataUrl) {
 		doc.setFont('helvetica', 'bold');
 		doc.setFontSize(12);
-		doc.setTextColor(COPPER[0], COPPER[1], COPPER[2]);
+		doc.setTextColor(ACCENT[0], ACCENT[1], ACCENT[2]);
 		doc.text('Scan to restore', MARGIN, y);
 		doc.setTextColor(0, 0, 0);
 		y += 14;
@@ -305,7 +306,7 @@ export async function buildMultisigBackupPdf(multisig: MultisigRow): Promise<Uin
 		ensure(footerBlock);
 	}
 
-	doc.setDrawColor(COPPER[0], COPPER[1], COPPER[2]);
+	doc.setDrawColor(ACCENT[0], ACCENT[1], ACCENT[2]);
 	doc.setLineWidth(1);
 	doc.line(MARGIN, y, PAGE_W - MARGIN, y);
 	doc.setDrawColor(0);

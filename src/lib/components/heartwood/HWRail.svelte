@@ -111,7 +111,7 @@
 	<svg class="dial" width="38" height="38" viewBox="0 0 34 34" aria-hidden="true">
 		<circle cx="17" cy="17" r="5" fill="none" stroke="var(--accent)" stroke-width="1.1" opacity=".45" />
 		<circle cx="17" cy="17" r="9" fill="none" stroke="var(--accent)" stroke-width="1.1" opacity=".6" />
-		<circle cx="17" cy="17" r="13.5" fill="none" stroke="#2e2620" stroke-width="1.6" />
+		<circle cx="17" cy="17" r="13.5" fill="none" stroke="var(--border-subtle)" stroke-width="1.6" />
 		<circle
 			cx="17"
 			cy="17"
@@ -212,7 +212,7 @@
 		/* Spec rail-inactive tone — between --text-faint and --eyebrow-path;
 		   decorative-weight by design, the icon-label span makes the meaning
 		   visible too (cairn-vtpu — icon-only was illegible to first-timers). */
-		color: #7a6e63;
+		color: #68716a;
 		background: transparent;
 		transition:
 			color 120ms var(--ease),
@@ -225,7 +225,7 @@
 
 	.icon-btn.active {
 		color: var(--accent-bright);
-		background: rgba(232, 147, 90, 0.1);
+		background: rgba(103, 150, 201, 0.1);
 	}
 
 	.icon-label {
@@ -247,7 +247,7 @@
 	}
 
 	.dial-arc {
-		filter: drop-shadow(0 0 3px rgba(232, 147, 90, 0.5));
+		filter: drop-shadow(0 0 3px rgba(103, 150, 201, 0.5));
 	}
 
 	.dial-tip {
@@ -267,7 +267,7 @@
 		height: 30px;
 		border: none;
 		border-radius: 50%;
-		background: linear-gradient(135deg, #b5673a, #e8935a);
+		background: linear-gradient(135deg, var(--accent-dim), var(--accent));
 		display: flex;
 		align-items: center;
 		justify-content: center;

@@ -472,7 +472,7 @@
 
 	.block-card.next {
 		border-color: var(--accent);
-		box-shadow: 0 0 24px rgba(232, 147, 90, 0.12);
+		box-shadow: 0 0 24px rgba(103, 150, 201, 0.12);
 	}
 
 	.block-head {

@@ -778,7 +778,7 @@
 		height: 56px;
 		flex-shrink: 0;
 		border-radius: 50%;
-		background: linear-gradient(135deg, #b5673a, var(--accent));
+		background: linear-gradient(135deg, var(--accent-dim), var(--accent));
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -948,7 +948,7 @@
 	.unit.active {
 		font-weight: 600;
 		color: var(--accent-bright);
-		background: rgba(232, 147, 90, 0.1);
+		background: rgba(103, 150, 201, 0.1);
 	}
 
 	@media (max-width: 900px) {
@@ -1245,7 +1245,7 @@
 		   (cairn-amyl). */
 		min-height: 44px;
 		color: var(--error);
-		border-color: rgba(224, 96, 76, 0.4);
+		border-color: rgba(224, 102, 79, 0.4);
 	}
 
 	.danger-btn:hover:not(:disabled) {

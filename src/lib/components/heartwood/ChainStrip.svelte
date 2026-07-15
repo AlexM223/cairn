@@ -58,7 +58,7 @@
 <script lang="ts">
 	/**
 	 * ChainStrip — the timechain, linearized. One vertical line per
-	 * difficulty epoch on the #14100C strip canvas, x proportional to
+	 * difficulty epoch on the #111716 strip canvas, x proportional to
 	 * cumulative epoch duration ("widths to scale — 2009 wide, 2013 tight").
 	 *
 	 * Pure presentational: no fetching, no chain math. Feed it `epochs`
@@ -127,13 +127,14 @@
 		if (!ctx) return;
 		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-		// Base: --bg-strip + a subtle warm vertical gradient.
-		ctx.fillStyle = '#14100c';
+		// Base: --bg-strip + a subtle cool vertical gradient (--border mirror
+		// fading to --bg-deep).
+		ctx.fillStyle = '#111716';
 		ctx.fillRect(0, 0, w, h);
 		const g = ctx.createLinearGradient(0, 0, 0, h);
-		g.addColorStop(0, 'rgba(59, 43, 31, 0.22)');
-		g.addColorStop(0.5, 'rgba(59, 43, 31, 0.06)');
-		g.addColorStop(1, 'rgba(10, 8, 7, 0.3)');
+		g.addColorStop(0, 'rgba(43, 51, 49, 0.22)');
+		g.addColorStop(0.5, 'rgba(43, 51, 49, 0.06)');
+		g.addColorStop(1, 'rgba(9, 13, 12, 0.3)');
 		ctx.fillStyle = g;
 		ctx.fillRect(0, 0, w, h);
 
@@ -145,7 +146,7 @@
 		if (sap.length > 0) {
 			const x0 = sap[0].xStart * w;
 			const x1 = sap[sap.length - 1].xEnd * w;
-			ctx.fillStyle = 'rgba(246, 200, 154, 0.05)';
+			ctx.fillStyle = 'rgba(182, 210, 234, 0.05)';
 			ctx.fillRect(x0, 0, x1 - x0, h);
 		}
 
@@ -156,30 +157,30 @@
 			if (isHl) {
 				// Locator: cream marker at the block's epoch.
 				ctx.globalAlpha = 1;
-				ctx.strokeStyle = '#fbe1c6';
+				ctx.strokeStyle = '#d4e5f4';
 				ctx.lineWidth = 1.4;
 				ctx.beginPath();
 				ctx.moveTo(x, padY);
 				ctx.lineTo(x, h - padY);
 				ctx.stroke();
-				drawTriangle(ctx, x, '#fbe1c6');
+				drawTriangle(ctx, x, '#d4e5f4');
 				continue;
 			}
 			// Locator mode deemphasizes everything else (incl. halvings).
 			if (m === 'full' && e.isHalving) {
 				ctx.globalAlpha = Math.min(e.alpha + 0.3, 0.9);
-				ctx.strokeStyle = '#fbe1c6';
+				ctx.strokeStyle = '#d4e5f4';
 				ctx.lineWidth = 1;
 				ctx.beginPath();
 				ctx.moveTo(x, padY);
 				ctx.lineTo(x, h - padY);
 				ctx.stroke();
 				ctx.globalAlpha = 0.85;
-				drawTriangle(ctx, x, '#fbe1c6');
+				drawTriangle(ctx, x, '#d4e5f4');
 				continue;
 			}
 			ctx.globalAlpha = m === 'locator' ? e.alpha * 0.6 : e.alpha;
-			ctx.strokeStyle = '#e8935a';
+			ctx.strokeStyle = '#6796c9';
 			ctx.lineWidth = 1;
 			ctx.beginPath();
 			ctx.moveTo(x, padY);
@@ -189,12 +190,12 @@
 		ctx.globalAlpha = 1;
 
 		// Genesis dot at the left edge.
-		ctx.fillStyle = '#e8935a';
+		ctx.fillStyle = '#6796c9';
 		ctx.beginPath();
 		ctx.arc(4, h / 2, 2.2, 0, Math.PI * 2);
 		ctx.fill();
 
-		// "Now" edge: 2px solid copper at the right edge. The pulsing dot is
+		// "Now" edge: 2px solid slate-blue at the right edge. The pulsing dot is
 		// DOM (below) — canvas pixels can't animate independently.
 		ctx.fillRect(w - 2, 0, 2, h);
 	});
@@ -224,7 +225,7 @@
 		margin-top: -2.5px;
 		border-radius: 50%;
 		background: var(--accent-glow);
-		box-shadow: 0 0 6px rgba(246, 200, 154, 0.7);
+		box-shadow: 0 0 6px rgba(182, 210, 234, 0.7);
 		pointer-events: none;
 		animation: hwPulse 2.4s ease-in-out infinite;
 	}

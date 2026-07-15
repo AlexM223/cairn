@@ -239,7 +239,7 @@
 		margin-top: 18px;
 		padding: 13px 15px;
 		background: var(--sage-muted);
-		border: 1px solid rgba(138, 160, 110, 0.3);
+		border: 1px solid rgba(131, 184, 146, 0.3);
 		border-radius: var(--radius-strip);
 	}
 

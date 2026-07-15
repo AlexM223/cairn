@@ -114,7 +114,7 @@
 		align-items: center;
 		justify-content: center;
 		padding: 40px 20px;
-		background: radial-gradient(120% 80% at 50% -10%, rgba(232, 147, 90, 0.08), transparent 60%);
+		background: radial-gradient(120% 80% at 50% -10%, rgba(103, 150, 201, 0.08), transparent 60%);
 	}
 	.sheet {
 		width: 100%;

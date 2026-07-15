@@ -1772,7 +1772,7 @@
 	}
 
 	.txt-toggle.active {
-		background: rgba(232, 147, 90, 0.1);
+		background: rgba(103, 150, 201, 0.1);
 		color: var(--accent-bright);
 	}
 

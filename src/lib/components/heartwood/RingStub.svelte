@@ -4,7 +4,7 @@
 	 * activity block events). Two partial arcs with a deliberate gap so it
 	 * reads as a growing stub, not a finished ring.
 	 *
-	 * tip = bright copper + glow + core dot · past = dim copper fading
+	 * tip = bright slate-blue + glow + core dot · past = dim slate-blue fading
 	 * outward · pending = dashed dim full circles (the ring that hasn't
 	 * formed yet).
 	 */
@@ -72,7 +72,7 @@
 	}
 
 	.tip {
-		filter: drop-shadow(0 0 3px rgba(232, 147, 90, 0.5));
+		filter: drop-shadow(0 0 3px rgba(103, 150, 201, 0.5));
 	}
 
 	.tip .core {

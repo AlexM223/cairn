@@ -52,7 +52,7 @@
 
 	.tab.active {
 		color: var(--accent-bright);
-		background: rgba(232, 147, 90, 0.1);
+		background: rgba(103, 150, 201, 0.1);
 	}
 
 	@media (max-width: 900px) {

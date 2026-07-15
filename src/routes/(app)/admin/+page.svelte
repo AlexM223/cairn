@@ -250,8 +250,8 @@
 
 	.status.healthy {
 		color: var(--sage);
-		background: rgba(138, 160, 110, 0.08);
-		border: 1px solid rgba(138, 160, 110, 0.25);
+		background: rgba(131, 184, 146, 0.08);
+		border: 1px solid rgba(131, 184, 146, 0.25);
 	}
 
 	.status.behind {
@@ -368,7 +368,7 @@
 
 	.v.small {
 		font-size: 13px;
-		color: #cbbfb3; /* spec value tone */
+		color: var(--text-value);
 	}
 
 	.v.cap {
@@ -464,7 +464,7 @@
 	.fill {
 		display: block;
 		height: 100%;
-		background: linear-gradient(90deg, #b5673a, var(--accent));
+		background: linear-gradient(90deg, var(--accent-dim), var(--accent));
 	}
 
 	/* --- footer --- */

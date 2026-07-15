@@ -450,7 +450,7 @@
 	.toggle.active {
 		font-weight: 600;
 		color: var(--accent-bright);
-		background: rgba(232, 147, 90, 0.1);
+		background: rgba(103, 150, 201, 0.1);
 	}
 
 	/* --- hero --- */
@@ -602,8 +602,7 @@
 		font-size: 16px;
 		font-weight: 600;
 		font-variant-numeric: tabular-nums;
-		/* Spec literal #CBBFB3 ("value" tone) — no token exists for it. */
-		color: #cbbfb3;
+		color: var(--text-value);
 	}
 
 	.quorum-badge {
@@ -611,7 +610,7 @@
 		font-size: 10.5px;
 		font-weight: 600;
 		color: var(--accent-bright);
-		background: rgba(232, 147, 90, 0.12);
+		background: rgba(103, 150, 201, 0.12);
 		padding: 4px 9px;
 		border-radius: var(--radius-badge);
 	}

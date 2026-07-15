@@ -31,17 +31,19 @@ export interface RenderedEmail {
 
 /** Heartwood's dark theme, hard-coded here because email clients can't read the
  *  app's CSS custom properties (Gmail et al. strip <style> blocks with var()).
- *  Resolved hex values mirror src/app.css — kept in sync by eye, not by import. */
+ *  Resolved hex values mirror src/app.css — kept in sync by eye, not by import.
+ *  --border is a translucent white-alpha wash in-app; the value below is its
+ *  resolved-hex mirror against --surface (see DESIGN-MANIFESTO.md §2). */
 const COLORS = {
-	bg: '#100d0b', // --bg (deep wood charcoal)
-	surface: '#17120f', // --surface
-	border: '#3a2f27', // --border
-	text: '#ede4db', // --text
-	textMuted: '#a99c90', // --text-secondary (body/footer copy; legible on --surface)
-	accent: '#e8935a', // --accent (Heartwood copper)
-	onAccent: '#1a1210', // --on-accent (text placed ON the copper accent)
-	warn: '#d8b27a', // --attention (warm tan — Heartwood has no orange nudge)
-	error: '#e0604c' // --error
+	bg: '#0e1312', // --bg (evergreen ink)
+	surface: '#141b19', // --surface
+	border: '#2b3331', // --border (white-alpha wash resolved against --surface)
+	text: '#ece7de', // --text
+	textMuted: '#9ba6a1', // --text-secondary (body/footer copy; legible on --surface)
+	accent: '#6796c9', // --accent (slate signal-blue)
+	onAccent: '#0b1016', // --on-accent (text placed ON the slate-blue accent)
+	warn: '#d9b47e', // --attention (warm gold — Heartwood has no orange nudge)
+	error: '#e0664f' // --error
 };
 
 /** Accent colour for the header stripe by level. */

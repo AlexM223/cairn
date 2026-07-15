@@ -237,7 +237,7 @@
 
 	.speed-row.active {
 		border-color: var(--accent);
-		background: rgba(232, 147, 90, 0.1);
+		background: rgba(103, 150, 201, 0.1);
 	}
 
 	.speed-main {

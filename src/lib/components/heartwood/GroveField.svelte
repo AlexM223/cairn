@@ -17,7 +17,7 @@
 	 *
 	 * Volumes (per spec table): whisper (Activity/Node/Settings),
 	 * present (Home/Send/Sign/Receive/Wallet/Explorer),
-	 * grove (Login/Sent/First-sync — adds the warm wood wash).
+	 * grove (Login/Sent/First-sync — adds the cool evergreen wash).
 	 *
 	 * Geometry lives entirely in CSS custom properties so the mobile variant
 	 * is a media-query override of the same gradient stack, cheap to tune.
@@ -72,63 +72,63 @@
 		--ma3: 0.27;
 		--ma4: 0.18;
 
-		/* One ring per layer: transparent N-1px → copper Npx → transparent N+3px.
-		   Rings 4 and 8 (every 4th–5th) are brighter cream epoch rings #FBE1C6.
-		   The warm wood wash sits at the bottom of the stack (grove volume only —
-		   its alphas are 0 elsewhere). */
+		/* One ring per layer: transparent N-1px → slate-blue Npx → transparent
+		   N+3px. Rings 4 and 8 (every 4th–5th) are brighter cream epoch rings
+		   #D4E5F4. The cool evergreen wash sits at the bottom of the stack
+		   (grove volume only — its alphas are 0 elsewhere). */
 		background:
 			radial-gradient(
 				circle at var(--gp-x) var(--gp-y),
 				transparent calc(var(--gr1) - 1px),
-				rgba(232, 147, 90, var(--ga1)) var(--gr1),
+				rgba(103, 150, 201, var(--ga1)) var(--gr1),
 				transparent calc(var(--gr1) + 3px)
 			),
 			radial-gradient(
 				circle at var(--gp-x) var(--gp-y),
 				transparent calc(var(--gr2) - 1px),
-				rgba(232, 147, 90, var(--ga2)) var(--gr2),
+				rgba(103, 150, 201, var(--ga2)) var(--gr2),
 				transparent calc(var(--gr2) + 3px)
 			),
 			radial-gradient(
 				circle at var(--gp-x) var(--gp-y),
 				transparent calc(var(--gr3) - 1px),
-				rgba(232, 147, 90, var(--ga3)) var(--gr3),
+				rgba(103, 150, 201, var(--ga3)) var(--gr3),
 				transparent calc(var(--gr3) + 3px)
 			),
 			radial-gradient(
 				circle at var(--gp-x) var(--gp-y),
 				transparent calc(var(--gr4) - 1px),
-				rgba(251, 225, 198, var(--ga4)) var(--gr4),
+				rgba(212, 229, 244, var(--ga4)) var(--gr4),
 				transparent calc(var(--gr4) + 3px)
 			),
 			radial-gradient(
 				circle at var(--gp-x) var(--gp-y),
 				transparent calc(var(--gr5) - 1px),
-				rgba(232, 147, 90, var(--ga5)) var(--gr5),
+				rgba(103, 150, 201, var(--ga5)) var(--gr5),
 				transparent calc(var(--gr5) + 3px)
 			),
 			radial-gradient(
 				circle at var(--gp-x) var(--gp-y),
 				transparent calc(var(--gr6) - 1px),
-				rgba(232, 147, 90, var(--ga6)) var(--gr6),
+				rgba(103, 150, 201, var(--ga6)) var(--gr6),
 				transparent calc(var(--gr6) + 3px)
 			),
 			radial-gradient(
 				circle at var(--gp-x) var(--gp-y),
 				transparent calc(var(--gr7) - 1px),
-				rgba(232, 147, 90, var(--ga7)) var(--gr7),
+				rgba(103, 150, 201, var(--ga7)) var(--gr7),
 				transparent calc(var(--gr7) + 3px)
 			),
 			radial-gradient(
 				circle at var(--gp-x) var(--gp-y),
 				transparent calc(var(--gr8) - 1px),
-				rgba(251, 225, 198, var(--ga8)) var(--gr8),
+				rgba(212, 229, 244, var(--ga8)) var(--gr8),
 				transparent calc(var(--gr8) + 3px)
 			),
 			radial-gradient(
 				circle at -18% -28%,
-				rgba(59, 43, 31, var(--gwa1)),
-				rgba(40, 27, 18, var(--gwa2)) 46%,
+				rgba(28, 37, 35, var(--gwa1)),
+				rgba(20, 27, 25, var(--gwa2)) 46%,
 				transparent 74%
 			);
 		background-repeat: no-repeat;
@@ -159,7 +159,7 @@
 		--ga6: 0.098;
 		--ga7: 0.078;
 		--ga8: 0.13;
-		/* Warm wood wash under everything. */
+		/* Cool evergreen wash under everything. */
 		--gwa1: 0.45;
 		--gwa2: 0.2;
 		--ma1: 0.4;
@@ -194,8 +194,8 @@
 		/* ~2.2px glowing core with soft falloff; peak alpha per volume. */
 		background: radial-gradient(
 			circle,
-			rgba(246, 200, 154, var(--ma, 0.2)) 0%,
-			rgba(246, 200, 154, calc(var(--ma, 0.2) * 0.5)) 42%,
+			rgba(182, 210, 234, var(--ma, 0.2)) 0%,
+			rgba(182, 210, 234, calc(var(--ma, 0.2) * 0.5)) 42%,
 			transparent 72%
 		);
 		animation: hwPulse 4.4s ease-in-out infinite;
