@@ -1,8 +1,12 @@
 <script lang="ts">
-	// Shared amount display (bead cairn-vnfs — non-send surfaces). Per the UX
-	// research spec's fiat display rule: fiat is prominent/primary whenever a
-	// price is available, BTC is the small secondary line beneath (or, for the
-	// compact `inline` size, in parentheses after). When no price is available
+	// Shared amount display (bead cairn-vnfs — non-send surfaces; ordering
+	// flipped by cairn-6ppq). Per DESIGN-MANIFESTO.md §3 (MUST): BTC/sats is
+	// the primary line BY DEFAULT, fiat — when a price is available — is a
+	// muted secondary line beneath (or, for the compact `inline` size, in
+	// parentheses after). Fiat only becomes primary when the user has
+	// explicitly opted into fiat-primary display via Settings -> Display
+	// (see `fiatPrimaryPref` in `$lib/price`, and `isFiatPrimary` in
+	// `$lib/format` for the decision itself). When no price is available
 	// (feed unset, fetch failed, still loading) it degrades to a clean BTC-only
 	// look — same typography slot, no broken/empty fiat line — so the page never
 	// looks unfinished.
@@ -12,8 +16,8 @@
 	// Pages that keep their own privacy-gated price (e.g. the dashboard's
 	// existing show/hide-fiat toggle) can pass `price` explicitly — including
 	// `null` to force the BTC-only look regardless of what the store has.
-	import { btcUsd } from '$lib/price';
-	import { formatBtc, formatSats, formatFiat, btcToFiat } from '$lib/format';
+	import { btcUsd, fiatPrimaryPref } from '$lib/price';
+	import { formatBtc, formatSats, formatFiat, btcToFiat, isFiatPrimary } from '$lib/format';
 
 	let {
 		sats,
@@ -54,7 +58,14 @@
 	const prefix = $derived(sign ? (satsValue > 0 ? '+' : satsValue < 0 ? '−' : '') : '');
 	const btcText = $derived(`${prefix}${formatBtc(Math.abs(satsValue), { trim })} BTC`);
 	const fiatText = $derived(fiatValue != null ? `${prefix}${formatFiat(fiatValue)}` : null);
-	const secondaryText = $derived(size === 'inline' ? `(${btcText})` : btcText);
+	// Sats-first by default (DESIGN-MANIFESTO.md §3 MUST); fiat only takes the
+	// primary slot when the user has explicitly chosen fiat-primary display.
+	const fiatPrimary = $derived(isFiatPrimary($fiatPrimaryPref, fiatText));
+	const primaryText = $derived(fiatPrimary ? fiatText : btcText);
+	const secondaryRaw = $derived(fiatPrimary ? btcText : fiatText);
+	const secondaryText = $derived(
+		secondaryRaw != null && size === 'inline' ? `(${secondaryRaw})` : secondaryRaw
+	);
 	const resolvedAlign = $derived(align ?? (size === 'hero' ? 'start' : 'end'));
 </script>
 
@@ -63,7 +74,7 @@
 	title="{formatSats(satsValue)} sats"
 >
 	{#if fiatText != null}
-		<span class="line primary">{fiatText}</span>
+		<span class="line primary">{primaryText}</span>
 		<span class="line secondary">{secondaryText}</span>
 	{:else}
 		<span class="line primary btc-only">{btcText}</span>

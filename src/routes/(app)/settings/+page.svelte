@@ -7,6 +7,7 @@
 	import Toasts from '$lib/components/Toasts.svelte';
 	import { toast } from '$lib/components/toast.svelte';
 	import { addPasskey, browserSupportsWebAuthn } from '$lib/passkey';
+	import { fiatPrimaryPref, setFiatPrimaryPref } from '$lib/price';
 	import type { CredentialInfo } from '$lib/types';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
@@ -154,6 +155,13 @@
 		showFiat = on;
 		localStorage.setItem('cairn.fiat', on ? 'on' : 'off');
 	}
+
+	// --- Primary display order (cairn-6ppq) ----------------------------------
+	// DESIGN-MANIFESTO.md §3 MUST rule: BTC/sats is primary everywhere by
+	// default. This durable preference (default OFF/BTC-primary) is what lets
+	// a user explicitly opt into fiat-primary instead; Amount.svelte reads the
+	// shared `fiatPrimaryPref` store directly, so flipping it here updates
+	// every Amount on the site immediately.
 
 	// Which hairline rows are expanded inline (account / passkeys / recovery /
 	// contacts-gate / about). Everything the old card layout held still lives
@@ -367,6 +375,30 @@
 			>
 		</div>
 	</div>
+
+	{#if showFiat}
+		<!-- Primary display order (cairn-6ppq): only meaningful once fiat is
+		     shown at all above. Default BTC/sats-primary per the manifesto. -->
+		<div class="hw-row static">
+			<span class="row-title">Primary display</span>
+			<div class="unit-toggle" role="group" aria-label="Primary display">
+				<button
+					type="button"
+					class="unit"
+					class:active={!$fiatPrimaryPref}
+					aria-pressed={!$fiatPrimaryPref}
+					onclick={() => setFiatPrimaryPref(false)}>BTC/sats</button
+				>
+				<button
+					type="button"
+					class="unit"
+					class:active={$fiatPrimaryPref}
+					aria-pressed={$fiatPrimaryPref}
+					onclick={() => setFiatPrimaryPref(true)}>Fiat</button
+				>
+			</div>
+		</div>
+	{/if}
 
 	<!-- Notifications -->
 	<a class="hw-row" href="/settings/notifications">

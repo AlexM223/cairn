@@ -12,10 +12,11 @@
 //
 // Client-side only: no $lib/server imports, guarded so SSR never attempts the
 // relative fetch.
-import { readable } from 'svelte/store';
+import { readable, writable } from 'svelte/store';
 import { browser } from '$app/environment';
 
 const REFRESH_MS = 60_000;
+const FIAT_PRIMARY_KEY = 'cairn.fiatPrimary';
 
 async function fetchBtcUsd(): Promise<number | null> {
 	try {
@@ -46,3 +47,22 @@ export const btcUsd = readable<number | null>(null, (set) => {
 		clearInterval(id);
 	};
 });
+
+// --- Fiat-primary display preference (cairn-6ppq) ---------------------------
+// DESIGN-MANIFESTO.md §3 MUST rule: BTC/sats is primary BY DEFAULT everywhere
+// Amount.svelte renders. Default OFF (sats-first); a user who explicitly
+// flips "Primary display" to Fiat in Settings -> Display gets that durable
+// preference persisted here (same localStorage-preference pattern as the
+// `cairn.fiat` show/hide toggle) and honored by every Amount instance,
+// overriding the default rather than being overridden by it.
+function readFiatPrimaryPref(): boolean {
+	if (!browser) return false;
+	return localStorage.getItem(FIAT_PRIMARY_KEY) === 'on';
+}
+
+export const fiatPrimaryPref = writable<boolean>(readFiatPrimaryPref());
+
+export function setFiatPrimaryPref(on: boolean): void {
+	fiatPrimaryPref.set(on);
+	if (browser) localStorage.setItem(FIAT_PRIMARY_KEY, on ? 'on' : 'off');
+}
