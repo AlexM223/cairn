@@ -82,6 +82,16 @@
 		};
 	});
 
+	// Aggregate confirmed spendable balance, fed to AmountEntry's R1 unit-slip
+	// guards (over-balance + >50%-of-balance amber note) — the multisig chain
+	// snapshot only carries a per-coin UTXO list, so this sums it the same way
+	// the single-sig send page's streamed `confirmed` total is defined. Stays
+	// null while the chain snapshot is still streaming in, matching the
+	// single-sig page's null-while-loading convention.
+	const spendableSats = $derived(
+		chain ? chain.utxos.filter((u) => u.height > 0).reduce((sum, u) => sum + u.value, 0) : null
+	);
+
 	// The send wizard is fully client-driven (device/QR signing, live fees, coin
 	// control) so its SSR output has no functional value — mirrors cairn-97gt on
 	// the single-sig page. `mounted` gates the step chain: false during SSR and
@@ -882,7 +892,7 @@
 								<AmountEntry
 									bind:sats={row.sats}
 									compact={rows.length > 1}
-									spendableSats={null}
+									{spendableSats}
 									ariaLabel={rows.length > 1 ? `Amount for recipient ${i + 1}` : 'Amount to send'}
 								/>
 							{:else}
