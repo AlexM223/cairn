@@ -64,6 +64,8 @@ import { db } from './db';
 import { registerUser } from './auth';
 import { setSetting } from './settings';
 import { getPortfolioDetail, PORTFOLIO_SCAN_TIMEOUT_MS } from './portfolio';
+import { purgeBalanceSnapshots } from './dataRetention';
+import { changesFromHorizonSeries } from '$lib/horizonDelta';
 
 // ---- fixtures -----------------------------------------------------------------
 
@@ -438,5 +440,140 @@ describe('getBalanceSeries carry-forward (cairn-ittq)', () => {
 		ins.run(userId, 999_999, '2026-01-02T00:00:00.000Z', 7_777); // deleted wallet's orphan
 
 		expect(getBalanceSeries(userId).map((p) => p.sats)).toEqual([10_000]);
+	});
+});
+
+// ---- cairn-ht11: retention purge of the backfilled horizon carry-in point -------
+//
+// BACKFILL_HORIZON_MS (396d) sits right at dataRetention's ~13-month purge
+// boundary. The one-time backfill writes a carry-in anchor at that fixed
+// instant; because the purge cutoff is a MOVING "now - 396d" window and the
+// anchor's timestamp never moves, any later sweep is guaranteed to eventually
+// sweep it — and backfillSnapshots never re-derives it (guarded by "any rows
+// exist"). Before this fix, Home's 1yr/all-time horizon would then silently
+// regress to "—" even though the wallet's real tx history (identical data
+// wallet-detail's historyFromTxDeltas already reconstructs from) still
+// reaches back far enough.
+
+describe('assemblePortfolio: horizon survives retention purge of the anchor (cairn-ht11)', () => {
+	it('falls back to tx-derived history so a purged carry-in anchor does not degrade 1yr/all-time to "—"', async () => {
+		vi.useFakeTimers();
+		try {
+			const T0 = 1_700_000_000_000;
+			vi.setSystemTime(T0);
+			const nowS = Math.floor(T0 / 1000);
+
+			makeWallet('Old Import', 'xpubOld');
+			const txs = [
+				tx(nowS - 450 * DAY, 500_000), // before the horizon → carry-in only
+				tx(nowS - 200 * DAY, -100_000), // inside the horizon, daily band
+				tx(nowS - 5 * DAY, 50_000) // recent, hourly band
+			];
+			mocks.scanWallet.mockResolvedValue(scanResult(450_000, 0, txs));
+
+			// First load backfills history, including the carry-in anchor point
+			// at the 1yr-horizon edge (~396 days back from T0).
+			const first = await getPortfolioDetail(userId);
+			expect(first.change.d365).toBe(-50_000);
+			expect(first.change.all).toBe(-50_000);
+
+			// 10 days pass and the daily retention sweep runs. The anchor's fixed
+			// timestamp (T0 - 396d) is now more than ~13 months behind the sweep's
+			// rolling cutoff (T1 - 396d), so it gets hard-deleted exactly as
+			// cairn-ht11 describes — while the newer, in-horizon points survive.
+			const T1 = T0 + 10 * DAY * 1000;
+			vi.setSystemTime(T1);
+			purgeBalanceSnapshots();
+
+			// Prove the precondition: the PERSISTED series alone can no longer
+			// honestly answer these — this is the bug, reproduced directly. d365
+			// degrades cleanly to null (its earliest surviving point, 200 days
+			// back, doesn't reach the 365-day cutoff). `all` is worse: it always
+			// reads series[0] unconditionally, so instead of "—" it silently
+			// reports change since the next-oldest SURVIVING point (400,000 at
+			// -200d) instead of the true earliest (500,000 at -450d) — flipping
+			// the sign from a real -50,000 loss to a fabricated +50,000 gain.
+			const strippedSeries = getBalanceSeries(userId);
+			const persistedOnly = changesFromHorizonSeries(strippedSeries, 450_000);
+			expect(persistedOnly.d365).toBeNull();
+			expect(persistedOnly.all).toBe(50_000);
+
+			// Second load: same wallet, same tx history, nothing new happened.
+			// Home must still show the real 1yr/all-time change — reconstructed
+			// live from the same tx data wallet-detail already trusts — not "—".
+			// (backfillSnapshots itself never reruns here: rows still exist for
+			// this wallet, so the one-time guard skips it — the read-side
+			// fallback is what recovers the number.)
+			const second = await getPortfolioDetail(userId);
+			expect(second.change.d365).toBe(-50_000);
+			expect(second.change.all).toBe(-50_000);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('still honestly reports "—" when even live tx history cannot reconstruct the balance', async () => {
+		vi.useFakeTimers();
+		try {
+			const T0 = 1_700_000_000_000;
+			vi.setSystemTime(T0);
+			const nowS = Math.floor(T0 / 1000);
+
+			makeWallet('Odd Import', 'xpubOddOld');
+			const txs = [tx(nowS - 450 * DAY, 500_000)];
+			// Scanned balance disagrees with the tx deltas — untrustworthy, must
+			// not fabricate a number even as a fallback.
+			mocks.scanWallet.mockResolvedValue(scanResult(999_000, 0, txs));
+
+			const detail = await getPortfolioDetail(userId);
+			expect(detail.change.d365).toBeNull();
+			// `all` is 0 here, not null — pre-existing, unrelated semantics: with
+			// the tx history untrustworthy, backfill is skipped entirely (see
+			// buildBackfillPoints), so the only persisted point is the current
+			// "now" tick itself; comparing a single point against itself is
+			// honestly 0, not "no data". What this test actually pins is that
+			// the untrustworthy tx data was never used to fabricate a different
+			// number for either field.
+			expect(detail.change.all).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('never omits a wallet silently: one wallet failing the tx-trust check falls back to the (possibly narrower) persisted answer for the whole total', async () => {
+		vi.useFakeTimers();
+		try {
+			const T0 = 1_700_000_000_000;
+			vi.setSystemTime(T0);
+			const nowS = Math.floor(T0 / 1000);
+
+			makeWallet('Trustworthy', 'xpubGood');
+			makeWallet('Untrustworthy', 'xpubBad');
+			mocks.scanWallet.mockImplementation((xpub: string) =>
+				Promise.resolve(
+					xpub === 'xpubGood'
+						? scanResult(500_000, 0, [tx(nowS - 450 * DAY, 500_000)])
+						: scanResult(999_000, 0, [tx(nowS - 450 * DAY, 500_000)]) // deltas don't reconcile
+				)
+			);
+
+			const first = await getPortfolioDetail(userId);
+			// Sanity: totals still include both wallets even though one's history
+			// can't be trusted for reconstruction.
+			expect(first.confirmed).toBe(1_499_000);
+
+			const T1 = T0 + 10 * DAY * 1000;
+			vi.setSystemTime(T1);
+			purgeBalanceSnapshots();
+
+			const second = await getPortfolioDetail(userId);
+			// The persisted series (post-purge) can't answer d365 for either
+			// wallet, and the tx fallback refuses to guess when ANY wallet's
+			// history fails the trust check — so this stays an honest "—"
+			// rather than a total that silently dropped one wallet's share.
+			expect(second.change.d365).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
