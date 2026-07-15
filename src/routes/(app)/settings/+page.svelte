@@ -141,6 +141,20 @@
 		localStorage.setItem('hw.unit', u);
 	}
 
+	// --- Fiat display toggle (UX redesign Phase 1, cairn-gt05.1) -------------
+	// Moved here from Home (spec §2.1 "Fiat toggle → moves to Settings →
+	// Display. Home just honors the setting."). Same `cairn.fiat` localStorage
+	// key Home's gated fiat fetch already reads (cairn-vnfs privacy seam) — no
+	// migration needed, this is just where the switch now lives.
+	let showFiat = $state(false);
+	$effect(() => {
+		showFiat = localStorage.getItem('cairn.fiat') === 'on';
+	});
+	function setFiat(on: boolean) {
+		showFiat = on;
+		localStorage.setItem('cairn.fiat', on ? 'on' : 'off');
+	}
+
 	// Which hairline rows are expanded inline (account / passkeys / recovery /
 	// contacts-gate / about). Everything the old card layout held still lives
 	// here — it just opens beneath its row now.
@@ -330,10 +344,28 @@
 		</div>
 	</div>
 
-	<!-- Fiat display: no per-user currency setting exists yet — shown, not editable. -->
+	<!-- Fiat display (UX redesign Phase 1: relocated from Home's hero toggle).
+	     No per-user currency setting exists yet, so this only switches the USD
+	     estimate on/off — same privacy-gated fetch Home already used (no price
+	     call until turned on). -->
 	<div class="hw-row static">
 		<span class="row-title">Fiat display</span>
-		<span class="row-meta">USD · shown</span>
+		<div class="unit-toggle" role="group" aria-label="Fiat display">
+			<button
+				type="button"
+				class="unit"
+				class:active={!showFiat}
+				aria-pressed={!showFiat}
+				onclick={() => setFiat(false)}>Hidden</button
+			>
+			<button
+				type="button"
+				class="unit"
+				class:active={showFiat}
+				aria-pressed={showFiat}
+				onclick={() => setFiat(true)}>USD shown</button
+			>
+		</div>
 	</div>
 
 	<!-- Notifications -->

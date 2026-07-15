@@ -1,98 +1,24 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
-	import { onNewBlock } from '$lib/liveBlocks';
-	import { triggerChainRefresh } from '$lib/chainRefresh';
 	import Icon from '$lib/components/Icon.svelte';
-	import Term from '$lib/components/Term.svelte';
+	import HeartwoodMark from '$lib/components/heartwood/HeartwoodMark.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
-	import BalanceChart from '$lib/components/portfolio/BalanceChart.svelte';
-	import AllocationBar from '$lib/components/portfolio/AllocationBar.svelte';
 	import RecentActivity from '$lib/components/portfolio/RecentActivity.svelte';
-	import Sparkline from '$lib/components/portfolio/Sparkline.svelte';
-	import SyncIndicator from '$lib/components/heartwood/SyncIndicator.svelte';
 	import Amount from '$lib/components/Amount.svelte';
-	import {
-		formatNumber,
-		formatBtc,
-		formatBytes,
-		formatSats,
-		timeAgo,
-		gatedFiatPrice
-	} from '$lib/format';
+	import { formatSats, gatedFiatPrice } from '$lib/format';
+	import { deriveHomeHealth, shouldShowRecentActivity, shouldShowWalletList } from '$lib/homeView';
 	import type { PortfolioDetail } from '$lib/types';
 
 	let { data } = $props();
 
-	// Stale-while-revalidate: the chain snapshot renders instantly from the
-	// persisted SQLite data that load() read (data.chain); the client refreshes it
-	// in the background (on mount + on every new block) and invalidate('cairn:chain')
-	// re-runs load() to pick up the fresh snapshot. `chain` mirrors data.chain but
-	// stays a mutable $state so a new-block SSE event can optimistically bump the
-	// tip before the refetch lands. Seeded from data.chain and re-synced whenever
-	// load() re-runs (the $effect below) — the initial-value capture is intended.
-	// svelte-ignore state_referenced_locally
-	let chain = $state(data.chain);
-	$effect(() => {
-		chain = data.chain;
-	});
-
-	// Background-refresh state driving the "last synced …" indicator.
-	let syncing = $state(false);
-	let syncFailed = $state(false);
-	async function refresh(force = false) {
-		if (syncing) return;
-		syncing = true;
-		const ok = await triggerChainRefresh(force);
-		syncing = false;
-		syncFailed = !ok;
-	}
-	onMount(() => {
-		void refresh();
-	});
-
-	const syncLabel = $derived(
-		syncing
-			? 'updating…'
-			: data.lastSyncedAt
-				? `synced ${timeAgo(Math.floor(data.lastSyncedAt / 1000))}`
-				: ''
-	);
-
-	// Live new-block updates refresh only the chain snapshot — the portfolio is
-	// deliberately outside the invalidation path so wallets aren't rescanned on
-	// every block.
-	let lastSeenHeight: number | null = null;
-	onMount(() =>
-		onNewBlock((height) => {
-			if (lastSeenHeight !== null && height <= lastSeenHeight) return;
-			const first = lastSeenHeight === null;
-			lastSeenHeight = height;
-			if (chain !== null && chain.tipHeight !== null) {
-				// SSE replays the current tip on connect — ignore what we already show.
-				if (height <= chain.tipHeight) return;
-				// Optimistic tip (cairn-9vav): paint the new height immediately from
-				// the SSE payload; the full snapshot (blocks/mempool/fees) refreshes in
-				// the background via the forced refresh below.
-				chain = { ...chain, tipHeight: height, tipTime: Math.floor(Date.now() / 1000) };
-				void refresh(true);
-			} else if (!first) {
-				// No snapshot yet — a new block is a good moment to retry, but the very
-				// first replay-on-connect isn't (mount already kicked a refresh).
-				void refresh(true);
-			}
-		})
-	);
-
 	// Portfolio is stale-while-revalidate, mirroring the wallets list (cairn —
-	// dashboard SWR): GET /api/portfolio is now a synchronous read of the persisted
-	// aggregate (never a live scan), so it paints instantly. On mount we read that
-	// cached aggregate, then fire ONE coalesced POST /api/portfolio/refresh (the
-	// same server-side pass the wallets list uses — most-stale-first, capped at the
-	// pool size) and, on success, refetch the now-fresh aggregate. A SyncIndicator
-	// shows the freshness, consistent with the rest of the app.
+	// dashboard SWR): GET /api/portfolio is a synchronous read of the persisted
+	// aggregate (never a live scan), so it paints instantly. On mount we read
+	// that cached aggregate, then fire ONE coalesced POST /api/portfolio/refresh
+	// (the same server-side pass the wallets list uses — most-stale-first,
+	// capped at the pool size) and, on success, refetch the now-fresh aggregate.
 	let portfolio = $state<PortfolioDetail | null>(null);
-	let portfolioSyncedAt = $state<number | null>(null);
 	let portfolioLoading = $state(false);
 	let portfolioSyncing = $state(false);
 
@@ -101,7 +27,6 @@
 		if (!res.ok) return;
 		const body = await res.json();
 		portfolio = body?.portfolio ?? null;
-		portfolioSyncedAt = body?.lastSyncedAt ?? null;
 	}
 
 	async function refreshPortfolio() {
@@ -111,7 +36,7 @@
 			const res = await fetch('/api/portfolio/refresh', { method: 'POST' });
 			if (res.ok) await loadPortfolio();
 		} catch {
-			/* keep whatever is cached — the indicator just stays stale */
+			/* keep whatever is cached — the next mount/poll catches up */
 		} finally {
 			portfolioSyncing = false;
 		}
@@ -128,7 +53,8 @@
 			});
 	});
 
-	// --- hide-balance eye toggle (7a) — persisted, hero-scoped ---
+	// --- hide-balance eye toggle — persisted, hero-scoped (spec §2.1: an
+	//     inline eye affordance on the balance row, not a competing button). ---
 	let hideBalance = $state(false);
 	onMount(() => {
 		hideBalance = localStorage.getItem('cairn.hideBalance') === '1';
@@ -139,11 +65,11 @@
 	}
 
 	// --- optional fiat estimate (privacy-first: OFF by default, no price call
-	//     until the user turns it on). Reuses the Amount component + format.ts
-	//     fiat helpers (bead cairn-vnfs seam), but keeps its own gated fetch
-	//     rather than the shared auto-refreshing $lib/price store — that store
-	//     starts fetching as soon as any component references it, which would
-	//     defeat the "no price call until opt-in" privacy contract here. ---
+	//     until the user turns it on). The toggle itself lives in Settings →
+	//     Display now (spec §2.1 "Fiat toggle → moves to Settings"); Home just
+	//     reads the same `cairn.fiat` localStorage flag and honors it — same
+	//     gated-fetch seam (cairn-vnfs), same key, so a preference set in
+	//     Settings applies here without any migration. ---
 	let showFiat = $state(false);
 	let usdPrice = $state<number | null>(null);
 	let priceTried = $state(false);
@@ -160,38 +86,22 @@
 			usdPrice = null;
 		}
 	}
-	function toggleFiat() {
-		showFiat = !showFiat;
-		localStorage.setItem('cairn.fiat', showFiat ? 'on' : 'off');
-		if (showFiat && !priceTried) void fetchPrice();
-	}
 	$effect(() => {
 		if (showFiat && !priceTried) void fetchPrice();
 	});
-	// cairn-r7si: same gate feeds the hero AND the recent-activity feed below it,
-	// so the privacy toggle covers the whole Home page, not just the hero.
+	// cairn-r7si: same gate feeds the hero AND the recent-activity feed below
+	// it, so the privacy setting covers the whole Home page, not just the hero.
 	const heroPrice = $derived(gatedFiatPrice(showFiat, usdPrice));
-
-	// Today's change (sage ▲ chip in the hero sub-line, 7a). Down is calm
-	// amber, never red.
-	const todayDelta = $derived.by(() => {
-		if (!portfolio || portfolio.change.d1 === null || portfolio.change.d1 === 0) return null;
-		const sats = portfolio.change.d1;
-		const base = portfolio.confirmed - sats;
-		const pct = base > 0 ? (sats / base) * 100 : null;
-		return { sats, pct, up: sats > 0 };
-	});
-
-	const unreachable = $derived(portfolio ? portfolio.walletCount - portfolio.scannedCount : 0);
 
 	function sendHref(s: { kind: string; id: number }): string {
 		return s.kind === 'multisig' ? `/wallets/multisig/${s.id}/send` : `/wallets/${s.id}/send`;
 	}
 
-	// Hero pills: with exactly one wallet they go straight to it. With more than
-	// one, a lightweight inline chooser lists every wallet so Send/Receive stop
-	// detouring through the full /wallets list on every click (cairn-5yz3.2) —
-	// the fallback href is kept as a no-JS/direct-link safety net.
+	// Hero pills: with exactly one wallet they go straight to it. With more
+	// than one, a lightweight inline chooser lists every wallet so Send/Receive
+	// stop detouring through the full /wallets list on every click
+	// (cairn-5yz3.2) — the fallback href is kept as a no-JS/direct-link safety
+	// net. Kept verbatim per the redesign spec (§2.1 "Stays prominent").
 	const soloWallet = $derived(
 		portfolio && portfolio.allocation.length === 1 ? portfolio.allocation[0] : null
 	);
@@ -201,9 +111,6 @@
 
 	let openPicker = $state<'send' | 'receive' | null>(null);
 	let heroActionsEl = $state<HTMLDivElement | null>(null);
-	// The picker panel itself now renders in-flow *below* hero-actions
-	// (cairn-pnps — it used to float absolutely and overlap the balance
-	// chart), so click-away has to check both elements.
 	let walletPickerEl = $state<HTMLDivElement | null>(null);
 	function togglePicker(kind: 'send' | 'receive') {
 		openPicker = openPicker === kind ? null : kind;
@@ -224,35 +131,56 @@
 		if (openPicker && e.key === 'Escape') closePicker();
 	}
 
-	// One-time orientation for new users; dismissal remembered per account.
-	const tourKey = $derived(`cairn.tour.${page.data.user?.id ?? 'anon'}`);
-	let showTour = $state(false);
-	$effect(() => {
-		showTour = localStorage.getItem(tourKey) !== 'done';
-	});
-	function dismissTour() {
-		showTour = false;
-		localStorage.setItem(tourKey, 'done');
-	}
+	// Zero-wallet State A only: the multi-panel welcome tour collapses into a
+	// single "What Heartwood does ›" expander (spec §2.1) — no more persistent
+	// dismiss-once localStorage flag, since it never shows again once a wallet
+	// exists (the whole branch is unreachable at that point).
+	let showWhatItDoes = $state(false);
 
-	// Next-block footer: 3-segment mempool bar — the share that fits the next
-	// ring (bright copper), the ~2 rings behind it (dim), and the long tail
-	// (dimmest). Track shows remaining headroom up to a 4-ring display cap.
-	const mempoolSegs = $derived.by(() => {
-		const v = chain?.mempool?.vsize ?? 0;
-		if (v <= 0) return null;
-		const BLOCK = 1_000_000; // ~1M vB per block
-		const s1 = Math.min(v, BLOCK);
-		const s2 = Math.min(Math.max(v - BLOCK, 0), 2 * BLOCK);
-		const s3 = Math.max(v - 3 * BLOCK, 0);
-		const cap = Math.max(v, 4 * BLOCK);
-		return {
-			widths: [(s1 / cap) * 100, (s2 / cap) * 100, (s3 / cap) * 100],
-			blocks: Math.max(1, Math.ceil(v / BLOCK))
+	// --- Health line (spec §2.6b) — Phase 1 ships only the one calm line on
+	//     Home; it reads the same two signals the layout's own banners already
+	//     read: unbackedWallets (layout data, already threaded through
+	//     page.data) and chain-health (polled the same way ChainHealthBanner
+	//     does — a cheap in-memory last-known signal, no fresh probe). The
+	//     full Health page (Node/Backups/Storage/Users) is Phase 3. ---
+	let chainHealthy = $state(true);
+	onMount(() => {
+		let done = false;
+		async function poll() {
+			if (done) return;
+			try {
+				const res = await fetch('/api/chain-health', { cache: 'no-store' });
+				if (res.ok) {
+					const body = await res.json();
+					chainHealthy = body?.healthy !== false;
+				}
+			} catch {
+				/* a missed poll is fine; keep the last-known state */
+			}
+		}
+		void poll();
+		const timer = setInterval(poll, 15_000);
+		return () => {
+			done = true;
+			clearInterval(timer);
 		};
 	});
+	const unbackedCount = $derived(page.data.unbackedWallets?.length ?? 0);
+	const health = $derived(deriveHomeHealth({ unbackedCount, chainHealthy }));
 
-	const sparkPoints = $derived(portfolio ? portfolio.balanceSeries.map((p) => p.sats) : []);
+	const showWalletList = $derived(portfolio ? shouldShowWalletList(portfolio.walletCount) : false);
+	const showRecentActivity = $derived(
+		portfolio ? shouldShowRecentActivity(portfolio.recentActivity.length) : false
+	);
+	// Empty-but-has-wallet (spec §2.1): a truly zero balance with no history
+	// yet gets a nudge toward Receive instead of an omitted/empty RECENT
+	// section — the first thing a brand-new funded-or-not wallet needs.
+	const isEmptyWallet = $derived(
+		portfolio !== null &&
+			portfolio.confirmed === 0 &&
+			portfolio.unconfirmed === 0 &&
+			portfolio.recentActivity.length === 0
+	);
 </script>
 
 <svelte:head>
@@ -264,72 +192,67 @@
 <div class="home">
 	<GroveField volume="present" />
 	<div class="home-body">
-		{#if showTour}
-			<section class="tour fade-in">
-				<div class="tour-head">
-					<span class="tour-title">Welcome to Heartwood</span>
-					<button class="tour-close" onclick={dismissTour} aria-label="Dismiss welcome tour">
-						<Icon name="x" size={15} />
-					</button>
-				</div>
-				<div class="tour-items">
-					<a href="/wallets" class="tour-item" onclick={dismissTour}>
-						<Icon name="wallet" size={18} />
-						<span class="tour-item-title">Wallets</span>
-						<span class="tour-item-desc">
-							Import a single-key or multisig wallet to watch balances and spend. Keys never leave
-							your devices.
-						</span>
-					</a>
-					<!-- UX Wave A: an Explorer/Mempool tour tile would be a dead link once
-					     the explorer feature flag is off (server-side requireFeature 403s
-					     /explorer/**, matching the nav's own flags.explorer !== false hide
-					     hook) — never advertise a destination the newcomer can't reach. -->
-					{#if data.flags?.explorer !== false}
-						<a href="/explorer" class="tour-item" onclick={dismissTour}>
-							<Icon name="blocks" size={18} />
-							<span class="tour-item-title">Explorer</span>
-							<span class="tour-item-desc">
-								Browse blocks, transactions, and addresses — every technical term explains itself.
-							</span>
-						</a>
-						<a href="/explorer/mempool" class="tour-item" onclick={dismissTour}>
-							<Icon name="zap" size={18} />
-							<span class="tour-item-title">Mempool</span>
-							<span class="tour-item-desc">
-								See what's waiting to confirm and what a transaction costs right now.
-							</span>
-						</a>
-					{/if}
-				</div>
-			</section>
-		{/if}
-
 		{#if !data.hasWallets && !portfolio}
-			<!-- ============================================== FIRST-RUN ONBOARD -->
-			<section class="onboard fade-in">
-				<div class="onboard-icon"><Icon name="wallet" size={26} /></div>
-				<h2 class="onboard-title">Your bitcoin, at a glance</h2>
-				<p class="onboard-copy">
-					Add a wallet and Heartwood shows your total balance, history, and allocation here — all
-					from your <em>public</em> keys. Nothing here can move your bitcoin; you sign every spend
-					on your own device.
-				</p>
+			<!-- ============================================== ZERO-WALLET STATE A -->
+			<section class="zero-state fade-in">
+				<HeartwoodMark size={40} detail="simple" />
+				<h1 class="zero-title">Welcome to Heartwood</h1>
+				<p class="zero-copy">Your keys, your node, your bitcoin.</p>
 				<a href="/wallets/new" class="btn btn-primary pill-lg">
 					<Icon name="plus" size={15} /> Add your first wallet
 				</a>
+
+				<div class="what-it-does">
+					<button
+						type="button"
+						class="what-it-does-toggle"
+						aria-expanded={showWhatItDoes}
+						onclick={() => (showWhatItDoes = !showWhatItDoes)}
+					>
+						New to this? What Heartwood does
+						<Icon name="chevron-right" size={13} />
+					</button>
+					{#if showWhatItDoes}
+						<div class="what-it-does-items fade-in">
+							<a href="/wallets" class="wid-item">
+								<Icon name="wallet" size={18} />
+								<span class="wid-title">Wallets</span>
+								<span class="wid-desc">
+									Import a single-key or multisig wallet to watch balances and spend. Keys never
+									leave your devices.
+								</span>
+							</a>
+							<!-- An Explorer/Mempool tile would be a dead link once the explorer
+							     feature flag is off (server-side requireFeature 403s
+							     /explorer/**, matching the nav's own flags.explorer !== false
+							     hide hook) — never advertise a destination the newcomer can't
+							     reach. -->
+							{#if data.flags?.explorer !== false}
+								<a href="/explorer" class="wid-item">
+									<Icon name="blocks" size={18} />
+									<span class="wid-title">Explorer</span>
+									<span class="wid-desc">
+										Browse blocks, transactions, and addresses — every technical term explains
+										itself.
+									</span>
+								</a>
+								<a href="/explorer/mempool" class="wid-item">
+									<Icon name="zap" size={18} />
+									<span class="wid-title">Mempool</span>
+									<span class="wid-desc">
+										See what's waiting to confirm and what a transaction costs right now.
+									</span>
+								</a>
+							{/if}
+						</div>
+					{/if}
+				</div>
 			</section>
 		{:else}
-			<!-- ======================================================== HERO -->
+			<!-- ========================================= FUNDED / HAS-WALLET STATE B -->
 			<header class="hero fade-in">
 				<div class="hero-eyebrow">
-					<span class="hero-label">
-						<Term
-							tip="Everything across the wallets you've imported into Heartwood — single-key and multisig. Heartwood only holds your public keys; your keys stay on your devices."
-						>
-							Total balance
-						</Term>
-					</span>
+					<span class="hero-label">Total balance</span>
 					<button
 						type="button"
 						class="eye-btn"
@@ -374,34 +297,13 @@
 						<div class="hero-amount-row">
 							<Amount sats={portfolio.confirmed} size="hero" price={heroPrice} />
 						</div>
-						<div class="hero-sub">
-							<span class="tabular">{formatSats(portfolio.confirmed)} sats</span>
-							<button
-								type="button"
-								class="fiat-toggle"
-								onclick={toggleFiat}
-								title="Show or hide a fiat estimate (off by default — no price is fetched until you turn it on)"
-							>
-								{showFiat ? 'hide fiat' : 'show fiat'}
-							</button>
-							{#if todayDelta}
-								<span class="today-chip" class:up={todayDelta.up} class:down={!todayDelta.up}>
-									{todayDelta.up ? '▲' : '▼'}
-									{#if todayDelta.pct !== null}
-										{Math.abs(todayDelta.pct) < 0.05
-											? '<0.1'
-											: Math.abs(todayDelta.pct).toFixed(1)}% today
-									{:else}
-										{formatBtc(Math.abs(todayDelta.sats))} BTC today
-									{/if}
-								</span>
-							{/if}
-							{#if portfolio.unconfirmed !== 0}
+						{#if portfolio.unconfirmed !== 0}
+							<div class="hero-sub">
 								<span class="pending-note tabular">
 									{portfolio.unconfirmed > 0 ? '+' : ''}{formatSats(portfolio.unconfirmed)} sats pending
 								</span>
-							{/if}
-						</div>
+							</div>
+						{/if}
 					{/if}
 				{/if}
 
@@ -438,8 +340,8 @@
 				{#if multiWallet && openPicker && portfolio}
 					<!-- Lightweight wallet chooser (cairn-5yz3.2) — replaces the old
 					     dumped-to-/wallets detour for 2+ wallet accounts. Rendered
-					     in-flow (not absolutely positioned) so it pushes the balance
-					     chart below it down instead of overlapping it (cairn-pnps). -->
+					     in-flow (not absolutely positioned) so it pushes content below
+					     it down instead of overlapping it (cairn-pnps). -->
 					<div
 						class="wallet-picker fade-in"
 						role="menu"
@@ -459,113 +361,57 @@
 						{/each}
 					</div>
 				{/if}
-
-				{#if portfolio || portfolioSyncing}
-					<div class="hero-sync">
-						<SyncIndicator lastSyncedAt={portfolioSyncedAt} syncing={portfolioSyncing} />
-					</div>
-				{/if}
 			</header>
 
-			{#if portfolio}
-				<!-- ================================================== THE CHART -->
-				<section class="chart-zone fade-in">
-					<div class="chart-desktop">
-						<BalanceChart series={portfolio.balanceSeries} />
-					</div>
-					{#if sparkPoints.length > 1}
-						<div class="chart-mobile">
-							<Sparkline points={sparkPoints} stretch height={96} strokeWidth={2} />
-							<div class="spark-caption">balance · full history</div>
-						</div>
-					{/if}
-				</section>
+			<!-- ==================================================== HEALTH LINE -->
+			<div class="health-line">
+				<span class="health-dot" class:ok={health.ok} class:amber={!health.ok}></span>
+				<span class="health-label">{health.label}</span>
+				<a href="/admin" class="health-details">Details <Icon name="chevron-right" size={12} /></a>
+			</div>
 
-				<!-- ============================================ ACTIVITY | WALLETS -->
-				<div class="home-grid">
-					<section class="col">
-						<div class="col-head">
-							<span class="col-title">Activity</span>
+			{#if portfolio}
+				{#if showWalletList}
+					<!-- ============================================ YOUR WALLETS (2+ only) -->
+					<section class="wallet-list-section">
+						<span class="section-eyebrow">Your wallets</span>
+						<ul class="wallet-list">
+							{#each portfolio.allocation as w (w.key)}
+								<li>
+									<a href={w.href} class="wallet-row">
+										<span class="wallet-row-name" title={w.name}>{w.name}</span>
+										<Amount sats={w.balance} size="row" />
+										<Icon name="chevron-right" size={14} />
+									</a>
+								</li>
+							{/each}
+						</ul>
+						<a href="/wallets/new" class="add-wallet-link">
+							<Icon name="plus" size={12} /> Add wallet
+						</a>
+					</section>
+				{/if}
+
+				{#if isEmptyWallet}
+					<!-- ==================================================== EMPTY NUDGE -->
+					<section class="empty-nudge-section">
+						<a href={receiveTarget} class="empty-nudge">
+							Your wallet is empty. Tap Receive to get your first bitcoin.
+							<Icon name="chevron-right" size={13} />
+						</a>
+					</section>
+				{:else if showRecentActivity}
+					<!-- ======================================================== RECENT -->
+					<section class="recent-section">
+						<div class="section-head">
+							<span class="section-eyebrow">Recent</span>
 							<a href="/activity" class="see-all">
 								All activity <Icon name="arrow-right" size={13} />
 							</a>
 						</div>
 						<RecentActivity items={portfolio.recentActivity} price={heroPrice} />
 					</section>
-
-					<section class="col">
-						<div class="col-head">
-							<span class="col-title">
-								Wallets · {portfolio.walletCount}
-								{#if unreachable > 0}
-									<span class="unreachable">· {unreachable} unreachable</span>
-								{/if}
-							</span>
-							<div class="col-head-actions">
-								<a href="/wallets/new" class="add-wallet-link">
-									<Icon name="plus" size={12} /> Add wallet
-								</a>
-								<a href="/wallets" class="see-all">All <Icon name="arrow-right" size={13} /></a>
-							</div>
-						</div>
-						<AllocationBar slices={portfolio.allocation} total={portfolio.confirmed} />
-
-						<!-- next-block footer (UX Wave A: block-explorer furniture — mempool
-						     depth, next-block fee estimate, "ring" wording — demoted off the
-						     newcomer's default surface behind the same flags.explorer hook the
-						     nav already uses. Power users / existing installs with the
-						     explorer flag on see it exactly as before.) -->
-						{#if data.flags?.explorer !== false}
-							<div class="next-block">
-								<div class="nb-head">
-									<span class="nb-label">Latest block</span>
-									{#if chain !== null && chain.tipHeight !== null}
-										<a href="/explorer/block/{chain.tipHeight}" class="nb-tip tabular">
-											{formatNumber(chain.tipHeight)} · {timeAgo(chain.tipTime)}
-										</a>
-									{:else if chain === null && !syncFailed}
-										<span class="nb-tip skeleton">000,000 · just now</span>
-									{/if}
-								</div>
-								{#if chain === null && !syncFailed}
-									<div class="nb-fee skeleton">next ring ≈ 00 sat/vB</div>
-								{:else if chain === null && syncFailed}
-									<div class="nb-error">
-										Can't reach chain data sources — check the connection in Admin → Settings.
-									</div>
-								{:else if chain !== null}
-									{#if chain.fees}
-										<div class="nb-fee">
-											next ring ≈ <span class="nb-fee-num tabular"
-												>{Math.round(chain.fees.fastest)}</span
-											> sat/vB
-										</div>
-									{/if}
-									{#if mempoolSegs}
-										<div
-											class="mempool-bar"
-											role="img"
-											aria-label="Mempool depth: about {mempoolSegs.blocks} blocks of transactions waiting"
-										>
-											<span class="seg s1" style="width: {mempoolSegs.widths[0]}%"></span>
-											<span class="seg s2" style="width: {mempoolSegs.widths[1]}%"></span>
-											<span class="seg s3" style="width: {mempoolSegs.widths[2]}%"></span>
-										</div>
-										<div class="nb-caption">
-											{formatBytes(chain.mempool?.vsize ?? 0)} waiting · ~{mempoolSegs.blocks}
-											block{mempoolSegs.blocks === 1 ? '' : 's'}
-										</div>
-									{:else if chain.mempool}
-										<div class="nb-caption">mempool is clear</div>
-									{/if}
-								{/if}
-								{#if syncLabel}
-									<div class="sync-status" class:updating={syncing}>{syncLabel}</div>
-								{/if}
-							</div>
-						{/if}
-					</section>
-				</div>
+				{/if}
 			{/if}
 		{/if}
 	</div>
@@ -586,122 +432,90 @@
 		z-index: 1;
 	}
 
-	/* --- welcome tour (hairline grammar, no card) --- */
-	.tour {
-		margin-bottom: 36px;
-		padding-bottom: 22px;
-		border-bottom: 1px solid var(--hairline);
-	}
-
-	.tour-head {
+	/* --- zero-wallet state A (spec §2.1): ring mark, headline, one button,
+	   a collapsed explainer — nothing else. --- */
+	.zero-state {
 		display: flex;
+		flex-direction: column;
 		align-items: center;
-		justify-content: space-between;
-		margin-bottom: 14px;
+		gap: 14px;
+		padding: 96px 32px 32px;
+		text-align: center;
+		max-width: 480px;
+		margin: 0 auto;
 	}
 
-	.tour-title {
+	.zero-title {
 		font-family: var(--font-serif);
-		font-size: 19px;
+		font-size: 26px;
 		font-weight: 600;
+		letter-spacing: -0.01em;
 		color: var(--text-hero);
+		margin-top: 6px;
 	}
 
-	.tour-close {
-		display: flex;
+	.zero-copy {
+		color: var(--text-secondary);
+		font-size: 14px;
+		margin-bottom: 6px;
+	}
+
+	.what-it-does {
+		margin-top: 22px;
+	}
+
+	.what-it-does-toggle {
+		display: inline-flex;
 		align-items: center;
-		justify-content: center;
-		width: 26px;
-		height: 26px;
+		gap: 5px;
 		background: none;
 		border: none;
-		border-radius: var(--radius-icon-btn);
+		font: inherit;
+		font-size: 13px;
 		color: var(--text-muted);
 		cursor: pointer;
 	}
 
-	.tour-close:hover {
-		color: var(--text);
-		background: var(--bg-input);
+	.what-it-does-toggle:hover {
+		color: var(--accent);
 	}
 
-	.tour-items {
+	.what-it-does-items {
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+		grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 		gap: 22px;
+		margin-top: 22px;
+		text-align: left;
 	}
 
-	.tour-item {
+	.wid-item {
 		display: flex;
 		flex-direction: column;
 		gap: 5px;
 		color: var(--accent);
 	}
 
-	.tour-item-title {
+	.wid-title {
 		font-size: 14px;
 		font-weight: 600;
 		color: var(--text-rows);
 	}
 
-	.tour-item:hover .tour-item-title {
+	.wid-item:hover .wid-title {
 		color: var(--accent-bright);
 	}
 
-	.tour-item-desc {
+	.wid-desc {
 		font-size: 12.5px;
 		line-height: 1.55;
 		color: var(--text-secondary);
-	}
-
-	/* --- onboarding --- */
-	.onboard {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: 14px;
-		padding: 72px 32px;
-		text-align: center;
-		max-width: 520px;
-		margin: 40px auto;
-	}
-
-	.onboard-icon {
-		width: 52px;
-		height: 52px;
-		border-radius: 50%;
-		background: var(--accent-muted);
-		color: var(--accent);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-	}
-
-	.onboard-title {
-		font-family: var(--font-serif);
-		font-size: 24px;
-		font-weight: 600;
-		letter-spacing: -0.01em;
-		color: var(--text-hero);
-	}
-
-	.onboard-copy {
-		color: var(--text-secondary);
-		font-size: 13.5px;
-		line-height: 1.65;
-		max-width: 420px;
-	}
-
-	.onboard-copy em {
-		font-style: normal;
-		color: var(--text);
-		font-weight: 500;
 	}
 
 	/* --- hero --- */
 	.hero {
 		display: flex;
 		flex-direction: column;
+		padding-top: 48px;
 	}
 
 	.hero-eyebrow {
@@ -716,11 +530,6 @@
 		letter-spacing: 0.22em;
 		text-transform: uppercase;
 		color: var(--eyebrow);
-	}
-
-	.hero-label :global(.term) {
-		text-transform: inherit;
-		letter-spacing: inherit;
 	}
 
 	.eye-btn {
@@ -768,45 +577,13 @@
 		align-items: center;
 		gap: 14px;
 		flex-wrap: wrap;
-		margin-top: 16px;
-		font-size: 15px;
+		margin-top: 10px;
+		font-size: 13px;
 		color: var(--text-secondary);
 	}
 
 	.hidden-note {
 		color: var(--text-muted);
-	}
-
-	.fiat-toggle {
-		position: relative;
-		background: none;
-		border: none;
-		padding: 0;
-		font: inherit;
-		font-size: 12.5px;
-		color: var(--text-faint);
-		cursor: pointer;
-	}
-
-	.fiat-toggle:hover {
-		color: var(--accent);
-	}
-
-	.today-chip {
-		display: inline-flex;
-		align-items: center;
-		gap: 5px;
-		font-size: 13px;
-		font-weight: 500;
-		font-variant-numeric: tabular-nums;
-	}
-
-	.today-chip.up {
-		color: var(--sage);
-	}
-
-	.today-chip.down {
-		color: var(--attention);
 	}
 
 	.pending-note {
@@ -819,7 +596,7 @@
 		position: relative;
 		display: flex;
 		gap: 12px;
-		margin-top: 30px;
+		margin-top: 32px;
 	}
 
 	.pill-lg {
@@ -830,10 +607,9 @@
 	}
 
 	/* Multi-wallet Send/Receive chooser (cairn-5yz3.2) — a quiet inline panel
-	   anchored under the pills, not a full-screen modal (this isn't an
-	   irreversible action, just a shortcut past /wallets). Renders in normal
-	   document flow (cairn-pnps) — no more `position: absolute`, so opening it
-	   pushes the balance chart down instead of floating over it. */
+	   anchored under the pills, not a full-screen modal. Renders in normal
+	   document flow (cairn-pnps) — no `position: absolute`, so opening it
+	   pushes content below it down instead of floating over it. */
 	.wallet-picker {
 		align-self: flex-start;
 		display: flex;
@@ -876,60 +652,154 @@
 		white-space: nowrap;
 	}
 
-	/* SWR freshness for the portfolio aggregate — same quiet indicator the wallets
-	   list uses, so the dashboard reads as consistent. */
-	.hero-sync {
-		margin-top: 16px;
+	/* --- health line (spec §2.6b) --- */
+	.health-line {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		margin-top: 24px;
+		padding-bottom: 24px;
+		border-bottom: 1px solid var(--hairline);
+		font-size: 13.5px;
 	}
 
-	/* --- chart --- */
-	.chart-zone {
-		margin-top: 44px;
+	.health-dot {
+		width: 8px;
+		height: 8px;
+		flex-shrink: 0;
+		border-radius: 50%;
 	}
 
-	.chart-mobile {
-		display: none;
+	.health-dot.ok {
+		background: var(--sage);
 	}
 
-	.spark-caption {
-		font-size: 10.5px;
-		color: var(--eyebrow-path);
-		padding: 6px 18px 0;
+	.health-dot.amber {
+		background: var(--attention);
 	}
 
-	/* --- activity | wallets grid --- */
-	.home-grid {
-		display: grid;
-		grid-template-columns: 1.5fr 1fr;
-		gap: 64px;
-		margin-top: 46px;
-		align-items: start;
-	}
-
-	.home-grid .col {
+	.health-label {
+		flex: 1;
 		min-width: 0;
+		color: var(--text-secondary);
 	}
 
-	.col-head {
+	.health-details {
+		display: inline-flex;
+		align-items: center;
+		gap: 2px;
+		font-size: 12.5px;
+		color: var(--text-muted);
+		white-space: nowrap;
+	}
+
+	.health-details:hover {
+		color: var(--accent);
+	}
+
+	/* --- your wallets (2+ only) --- */
+	.wallet-list-section {
+		margin-top: 24px;
+		padding-bottom: 24px;
+		border-bottom: 1px solid var(--hairline);
+	}
+
+	.section-eyebrow {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.22em;
+		text-transform: uppercase;
+		color: var(--eyebrow);
+	}
+
+	.wallet-list {
+		list-style: none;
+		margin: 14px 0 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.wallet-row {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 11px 0;
+		color: inherit;
+		border-bottom: 1px solid var(--hairline);
+	}
+
+	.wallet-list li:last-child .wallet-row {
+		border-bottom: none;
+	}
+
+	.wallet-row:hover .wallet-row-name {
+		color: var(--accent);
+	}
+
+	.wallet-row-name {
+		flex: 1;
+		min-width: 0;
+		font-size: 14px;
+		font-weight: 500;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		color: var(--text-rows);
+	}
+
+	.wallet-row :global(.hw-amount) {
+		flex-shrink: 0;
+	}
+
+	.wallet-row :global(svg) {
+		flex-shrink: 0;
+		color: var(--text-faint);
+	}
+
+	.add-wallet-link {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		margin-top: 10px;
+		font-size: 12.5px;
+		font-weight: 500;
+		color: var(--text-muted);
+	}
+
+	.add-wallet-link:hover {
+		color: var(--accent);
+	}
+
+	/* --- empty-wallet nudge --- */
+	.empty-nudge-section {
+		margin-top: 24px;
+	}
+
+	.empty-nudge {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 14px;
+		color: var(--text-secondary);
+	}
+
+	.empty-nudge:hover {
+		color: var(--accent);
+	}
+
+	/* --- recent activity --- */
+	.recent-section {
+		margin-top: 24px;
+	}
+
+	.section-head {
 		display: flex;
 		align-items: baseline;
 		justify-content: space-between;
 		gap: 12px;
 		padding-bottom: 12px;
 		border-bottom: 1px solid var(--hairline);
-	}
-
-	.col-title {
-		font-size: 17px;
-		font-weight: 600;
-		color: var(--text-hero);
-		letter-spacing: -0.01em;
-	}
-
-	.unreachable {
-		font-size: 12px;
-		font-weight: 500;
-		color: var(--attention);
 	}
 
 	.see-all {
@@ -945,121 +815,7 @@
 		color: var(--accent);
 	}
 
-	.col-head-actions {
-		display: flex;
-		align-items: center;
-		gap: 16px;
-	}
-
-	.add-wallet-link {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		font-size: 12.5px;
-		font-weight: 500;
-		color: var(--text-muted);
-		white-space: nowrap;
-	}
-
-	.add-wallet-link:hover {
-		color: var(--accent);
-	}
-
-	/* --- next-block footer --- */
-	.next-block {
-		margin-top: 26px;
-		padding-top: 16px;
-		border-top: 1px solid var(--hairline);
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-	}
-
-	.nb-head {
-		display: flex;
-		align-items: baseline;
-		justify-content: space-between;
-		gap: 12px;
-	}
-
-	.nb-label {
-		font-size: 11px;
-		font-weight: 600;
-		letter-spacing: 0.22em;
-		text-transform: uppercase;
-		color: var(--eyebrow);
-	}
-
-	.nb-tip {
-		font-size: 12px;
-		color: var(--text-muted);
-	}
-
-	.nb-tip:hover {
-		color: var(--accent);
-	}
-
-	.nb-fee {
-		font-size: 13.5px;
-		color: var(--text-secondary);
-	}
-
-	.nb-fee-num {
-		font-family: var(--font-serif);
-		font-size: 17px;
-		font-weight: 600;
-		color: var(--text-rows);
-	}
-
-	.nb-error {
-		font-size: 12.5px;
-		line-height: 1.5;
-		color: var(--attention);
-	}
-
-	.mempool-bar {
-		display: flex;
-		width: 100%;
-		height: 6px;
-		border-radius: 999px;
-		overflow: hidden;
-		background: var(--bg-input);
-	}
-
-	.seg {
-		display: block;
-		height: 100%;
-	}
-
-	.seg.s1 {
-		background: var(--accent);
-	}
-
-	.seg.s2 {
-		background: var(--accent-dim);
-	}
-
-	.seg.s3 {
-		background: var(--accent-dim-2);
-	}
-
-	.nb-caption {
-		font-size: 11.5px;
-		color: var(--eyebrow-path);
-	}
-
-	/* SWR freshness indicator: muted when idle, copper while a refresh is in flight. */
-	.sync-status {
-		font-size: 11px;
-		color: var(--text-faint);
-		font-variant-numeric: tabular-nums;
-	}
-
-	.sync-status.updating {
-		color: var(--accent);
-	}
-
-	/* ================================================= mobile (8a, ≤900px) */
+	/* ================================================= mobile (≤900px) */
 	@media (max-width: 900px) {
 		.home {
 			margin: -20px -18px -48px;
@@ -1067,20 +823,23 @@
 			min-height: 0;
 		}
 
-		/* Touch-target batch (cairn-uxdev batch 2, item 3): both toggles keep
-		   their visual size, but get an invisible ::after that extends the
+		/* Touch-target batch (cairn-uxdev batch 2, item 3): the eye toggle keeps
+		   its visual size, but gets an invisible ::after that extends the
 		   actual hit area to the ~44px guideline. */
-		.eye-btn::after,
-		.fiat-toggle::after {
+		.eye-btn::after {
 			content: '';
 			position: absolute;
 			inset: -9px;
 		}
 
+		.zero-state {
+			padding: 56px 20px 24px;
+		}
+
 		.hero {
 			align-items: center;
 			text-align: center;
-			margin-top: 10px;
+			padding-top: 10px;
 		}
 
 		.hero-amount-row {
@@ -1095,7 +854,7 @@
 
 		.hero-sub {
 			justify-content: center;
-			margin-top: 12px;
+			margin-top: 10px;
 			font-size: 12.5px;
 			gap: 10px;
 		}
@@ -1117,31 +876,7 @@
 			max-width: none;
 		}
 
-		/* Edge-to-edge sparkline replaces the full chart. */
-		.chart-zone {
-			margin-top: 30px;
-		}
-
-		.chart-desktop {
-			display: none;
-		}
-
-		.chart-mobile {
-			display: block;
-			margin: 0 -18px;
-		}
-
-		.home-grid {
-			grid-template-columns: 1fr;
-			gap: 34px;
-			margin-top: 34px;
-		}
-
-		.col-title {
-			font-size: 14.5px;
-		}
-
-		.tour-items {
+		.what-it-does-items {
 			gap: 16px;
 		}
 	}
