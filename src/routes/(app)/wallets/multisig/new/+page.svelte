@@ -3,6 +3,7 @@
 	import { deserialize, applyAction } from '$app/forms';
 	import { page } from '$app/state';
 	import { browser } from '$app/environment';
+	import { replaceState } from '$app/navigation';
 	import { safeAction } from '$lib/safeAction';
 	import Icon from '$lib/components/Icon.svelte';
 	import Banner from '$lib/components/Banner.svelte';
@@ -37,8 +38,18 @@
 	import QrKeyImport from './_components/QrKeyImport.svelte';
 	import { PROACTIVE_PASSPHRASE_NOTE } from '../_components/keyCheckCopy';
 	import { classifyQuorum, type QuorumRisk, type QuorumTier } from './_components/quorumRisk';
+	import type { WizardDraftRow } from '$lib/server/multisigWizardDrafts';
 
 	let { data } = $props();
+
+	// Server-side wizard draft (cairn-jy3g, Phase 2 of cairn-1u41): the id of
+	// the per-user draft row this session is writing to, seeded from a
+	// ?draft=N resume (+page.server.ts's load()) if that's how this page was
+	// reached. null until the FIRST key is committed (see queueDraftSync) —
+	// no draft row is created for the education/quorum-only phase.
+	// svelte-ignore state_referenced_locally — intentional per-load seed,
+	// same pattern as the send flow's `savedAddresses`.
+	let draftId = $state<number | null>(data.resumeDraft?.id ?? null);
 
 	// Hand-off from the single-sig wizard (multisig-import UX): a file it
 	// detected as a multisig config, stashed here so it survives the
@@ -499,6 +510,9 @@
 			// untouched imported config — restore the mandatory backup gate.
 			configImported = false;
 			resetKeyForm();
+			// Server-side per-key commit (cairn-jy3g): a physical device ceremony
+			// just happened — persist it now, not on exit.
+			queueDraftSync();
 			return true;
 		} finally {
 			adding = false;
@@ -613,6 +627,9 @@
 		// Editing the key set means this no longer matches an imported config file,
 		// so it's now a from-scratch build → its backup becomes mandatory again.
 		configImported = false;
+		// Server-side per-key commit (cairn-jy3g): keep the draft's key list in
+		// sync with a removal too, not just an add.
+		queueDraftSync();
 	}
 
 	// --- same-seed detection (cairn-h4l) ---
@@ -782,7 +799,10 @@
 					source: configImported ? 'imported' : 'created',
 					startingAddressIndex: String(configImported ? importedStartIndex : 0),
 					// '' when the vault-mode question was never asked (imports).
-					collaborative: vaultMode === null ? '' : String(vaultMode === 'collaborative')
+					collaborative: vaultMode === null ? '' : String(vaultMode === 'collaborative'),
+					// The `create` action deletes this draft server-side on success —
+					// its job (surviving until the wallet exists) is done (cairn-jy3g).
+					draftId: draftId !== null ? String(draftId) : ''
 				},
 				"Couldn't create the wallet — your keys are still here, try again."
 			);
@@ -792,6 +812,18 @@
 			}
 			createdId = res.data.multisigId;
 			step = 'done';
+			// The server already deleted the draft row; drop the local id + URL
+			// param too so a later visit never offers a resume of a finished vault.
+			draftId = null;
+			try {
+				const url = new URL(window.location.href);
+				if (url.searchParams.has('draft')) {
+					url.searchParams.delete('draft');
+					replaceState(url, {});
+				}
+			} catch {
+				/* pre-hydration or blocked — harmless */
+			}
 		} finally {
 			creating = false;
 		}
@@ -885,6 +917,89 @@
 		}
 	});
 
+	// --------------------------------- server-side draft persistence (cairn-jy3g)
+	//
+	// Phase 2 of cairn-1u41: the sessionStorage snapshot above only survives a
+	// same-tab reload within the hour. This complements it with a server-side
+	// draft — one row per in-progress wizard, committed after EVERY key
+	// add/remove (queueDraftSync is called from submitKey/removeKey/
+	// goToReview above), resumable via ?draft=N from any tab or device. See
+	// src/lib/server/multisigWizardDrafts.ts and the `draftSync` action in
+	// +page.server.ts.
+
+	/** Keeps ?draft= in the URL in sync so a reload (or sharing the link with
+	 *  yourself — email, notes app) resumes the same draft. Mirrors the send
+	 *  flow's syncTxParam. */
+	function syncDraftParam(id: number) {
+		try {
+			const url = new URL(window.location.href);
+			if (url.searchParams.get('draft') === String(id)) return;
+			url.searchParams.set('draft', String(id));
+			replaceState(url, {});
+		} catch {
+			/* pre-hydration or blocked — the draft still exists server-side */
+		}
+	}
+
+	/** Serializes overlapping calls (two keys added in quick succession
+	 *  shouldn't race two draftSync POSTs, which could otherwise both try to
+	 *  CREATE a fresh draft and end up with two rows). Each call waits for the
+	 *  previous one to settle before firing — a short delay well within the
+	 *  time a real device ceremony takes. */
+	let draftSyncChain: Promise<void> = Promise.resolve();
+	function queueDraftSync() {
+		draftSyncChain = draftSyncChain.then(syncDraft, syncDraft);
+	}
+
+	async function syncDraft(): Promise<void> {
+		if (!browser) return;
+		// Nothing worth a server row until there's a real key to lose — the
+		// education/quorum-only phase stays sessionStorage-only (cairn-jy3g:
+		// "commit after each key", not on every quorum-stepper click).
+		if (keys.length === 0 && draftId === null) return;
+		const res = await callAction<{ draftId: number }>(
+			'draftSync',
+			{
+				draftId: draftId !== null ? String(draftId) : '',
+				name: multisigName,
+				threshold: String(threshold),
+				totalKeys: String(totalKeys),
+				scriptType,
+				vaultMode: vaultMode ?? '',
+				step,
+				configImported: String(configImported),
+				importedStartIndex: String(importedStartIndex),
+				keys: JSON.stringify($state.snapshot(keys))
+			},
+			''
+		);
+		// Best-effort: a failed background sync never blocks the wizard — the
+		// sessionStorage snapshot still covers same-tab reload, and the next
+		// key add/remove retries.
+		if (!res.ok) return;
+		draftId = res.data.draftId;
+		syncDraftParam(draftId);
+	}
+
+	/** Abandons the server draft (Start over) so a later visit doesn't offer a
+	 *  resume of work the user just explicitly discarded. Fire-and-forget +
+	 *  owner-scoped + idempotent server-side, so it never blocks the local
+	 *  reset even if the request fails. */
+	function abandonDraft() {
+		if (draftId === null) return;
+		void callAction('draftAbandon', { draftId: String(draftId) }, '');
+		draftId = null;
+		try {
+			const url = new URL(window.location.href);
+			if (url.searchParams.has('draft')) {
+				url.searchParams.delete('draft');
+				replaceState(url, {});
+			}
+		} catch {
+			/* pre-hydration or blocked — harmless, the draft delete still went out */
+		}
+	}
+
 	/** The escape hatch on the resume note: forget the snapshot, start clean. */
 	function startOver() {
 		resumed = false;
@@ -910,6 +1025,7 @@
 		} catch {
 			// Already reset in memory; a stale snapshot will age out.
 		}
+		abandonDraft();
 	}
 
 	/** Clears any in-flight resume snapshot before an explicit exit — the Cancel
@@ -941,6 +1057,11 @@
 	function goToReview() {
 		advanceTo('review');
 		void loadPreview();
+		// Persist the step advance too (cairn-jy3g) — a reload while reviewing
+		// should resume ON Review, not back at the last key added. A no-op if no
+		// draft exists yet (an all-imported vault can reach Review with zero
+		// wizard-added keys; that resume is still fully covered by sessionStorage).
+		queueDraftSync();
 	}
 
 	// Entering the Keys step — first time, via a forward move, or via the on-screen
@@ -950,6 +1071,53 @@
 	function advanceToKeys() {
 		resetKeyForm();
 		advanceTo('keys');
+	}
+
+	/**
+	 * Applies a server-side draft (cairn-jy3g, `?draft=N` resume) to local
+	 * wizard state — the server-persisted counterpart of the sessionStorage
+	 * restore branch below. A draft only ever exists once the wizard reached
+	 * `threshold`/`totalKeys` (createWizardDraft always carries them, defaults
+	 * 2-of-3 if a draft was somehow synced before the quorum step — can't
+	 * happen via the UI, but keeps this defensive), so those reconstruct the
+	 * preset the quorum step displays: an exact 2-of-3 / 3-of-5 match resumes
+	 * onto that preset card, anything else onto 'custom' with the stored M/N.
+	 */
+	function applyResumeDraft(draft: WizardDraftRow) {
+		if (draft.threshold === 2 && draft.totalKeys === 3) {
+			preset = '2of3';
+		} else if (draft.threshold === 3 && draft.totalKeys === 5) {
+			preset = '3of5';
+		} else {
+			preset = 'custom';
+			customM = draft.threshold;
+			customN = draft.totalKeys;
+		}
+		scriptType = draft.scriptType;
+		keys = draft.keys.map((k) => ({
+			name: k.name,
+			category: k.category,
+			deviceType: k.deviceType,
+			xpub: k.xpub,
+			fingerprint: k.fingerprint,
+			path: k.path
+		}));
+		vaultMode = draft.vaultMode;
+		configImported = draft.configImported;
+		importedStartIndex = draft.importedStartIndex;
+		multisigName = draft.name;
+		// Only resume onto a step this reconstructed state actually supports —
+		// Review/Confirm need every quorum slot filled, same clamp
+		// parseSavedMultisigProgress applies to a sessionStorage snapshot.
+		const validSteps = STEPS.map((s) => s.key).filter((k): k is StepKey => k !== 'done');
+		let resumedStep = (validSteps.includes(draft.step as StepKey) ? draft.step : 'keys') as StepKey;
+		if ((resumedStep === 'review' || resumedStep === 'confirm') && keys.length !== draft.totalKeys) {
+			resumedStep = 'keys';
+		}
+		step = resumedStep;
+		resumed = true;
+		if (vaultMode !== null) void refreshKnownKeys(vaultMode);
+		if (step === 'review') void loadPreview();
 	}
 
 	/** In-app Back button: retreat one step in place (not a history operation).
@@ -992,6 +1160,12 @@
 				await handleImport();
 				if (!importError) advanceTo('keys');
 			})();
+		} else if (data.resumeDraft) {
+			// An explicit ?draft=N navigation (cairn-jy3g) — takes priority over
+			// the sessionStorage snapshot below: the user (or a link they saved)
+			// deliberately asked for THIS draft, which may be newer than, or from
+			// a different tab/device than, whatever sessionStorage holds.
+			applyResumeDraft(data.resumeDraft);
 		} else if (savedProgress && hasMeaningfulMultisigProgress(savedProgress)) {
 			step = savedProgress.step;
 			preset = savedProgress.preset;

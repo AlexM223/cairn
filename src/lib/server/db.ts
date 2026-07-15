@@ -1318,3 +1318,49 @@ db.exec(`
 		cached_at INTEGER NOT NULL  -- epoch milliseconds
 	);
 `);
+
+// Multisig wizard drafts (cairn-jy3g, Phase 2 of cairn-1u41): server-side
+// per-key persistence for the create-multisig wizard, resumable via
+// ?draft=N — mirroring the send flow's ?tx=N draft resume (transactions
+// table). Phase 1 (wizardProgress.ts) only covers a same-tab reload within
+// the hour via sessionStorage; this covers a ceremony spanning hours/days or
+// switching devices. Committed after EVERY key add/remove, not just on
+// exit — see syncWizardDraft in src/lib/server/multisigWizardDrafts.ts. Only
+// PUBLIC key material is ever stored (xpub/fingerprint/path/label/category/
+// deviceType) — never private key material, of which this flow handles none.
+// multisig_wizard_draft_keys has a REAL foreign key to its one parent (unlike
+// the polymorphic wallet_kind/wallet_id child tables above), so ON DELETE
+// CASCADE alone covers both draft deletion and the user-deletion cascade —
+// no trigger wiring needed.
+db.exec(`
+	CREATE TABLE IF NOT EXISTS multisig_wizard_drafts (
+		id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id               INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		name                  TEXT NOT NULL DEFAULT '',
+		threshold             INTEGER NOT NULL DEFAULT 2,
+		total_keys            INTEGER NOT NULL DEFAULT 3,
+		script_type           TEXT NOT NULL DEFAULT 'p2wsh',
+		vault_mode            TEXT,                          -- 'collaborative' | 'personal' | NULL
+		step                  TEXT NOT NULL DEFAULT 'keys',  -- wizard position at last commit
+		config_imported       INTEGER NOT NULL DEFAULT 0,
+		imported_start_index  INTEGER NOT NULL DEFAULT 0,
+		created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+	);
+	CREATE INDEX IF NOT EXISTS idx_multisig_wizard_drafts_user ON multisig_wizard_drafts(user_id);
+
+	CREATE TABLE IF NOT EXISTS multisig_wizard_draft_keys (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		draft_id    INTEGER NOT NULL REFERENCES multisig_wizard_drafts(id) ON DELETE CASCADE,
+		position    INTEGER NOT NULL,
+		name        TEXT NOT NULL,
+		category    TEXT NOT NULL,
+		device_type TEXT,
+		xpub        TEXT NOT NULL,
+		fingerprint TEXT NOT NULL,
+		path        TEXT NOT NULL,
+		created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		UNIQUE (draft_id, position)
+	);
+	CREATE INDEX IF NOT EXISTS idx_multisig_wizard_draft_keys_draft ON multisig_wizard_draft_keys(draft_id);
+`);
