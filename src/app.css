@@ -158,87 +158,215 @@
 	--search-fill: rgba(255, 255, 255, 0.02);
 
 	color-scheme: dark;
+
+	/* ----------------------------------------------------------------
+	   "Daylight grove" light palette (DESIGN-MANIFESTO.md §2 light-mode
+	   strategy) — the canonical light VALUES, defined once here as their
+	   own --light-* custom properties so the two activation rules below
+	   (OS preference vs. explicit Settings choice, cairn-sdx5.7) each
+	   just reassign the live token names to these, instead of forking
+	   the palette in two places. Warm parchment base, umber-evergreen
+	   ink, slate-blue + sage both darkened to clear AA contrast on the
+	   light ground. Same soul, both modes: the ring mark and the
+	   Fraunces balance persist.
+	   ---------------------------------------------------------------- */
+	--light-bg: #f3efe7;
+	--light-bg-deep: #e9e3d7;
+	--light-bg-input: #faf7f1;
+	--light-bg-strip: #eee9dc;
+	--light-surface: #faf7f1;
+	--light-surface-elevated: #efe7da;
+	--light-border: #d7cdb8;
+	--light-border-subtle: #e2d8c7;
+	--light-hairline: #e4dac9;
+	--light-border-control: #d1c5b0;
+	--light-border-ghost: #d7cdb8;
+
+	--light-text: #1f2623;
+	--light-text-hero: #191f1c;
+	--light-text-rows: #333a36;
+	--light-text-secondary: #5c635e;
+	--light-text-muted: #6e7570;
+	--light-text-faint: #93998f;
+	--light-eyebrow: #6e7570;
+	--light-eyebrow-path: #93998f;
+	--light-text-value: #343b36;
+
+	--light-accent: #3f6ea6;
+	--light-accent-hover: #4a7cb5;
+	--light-accent-pressed: #35608f;
+	--light-accent-bright: #375f8a;
+	--light-accent-glow: #6f97c2;
+	/* --accent-glow-strong / --accent-core / --accent-dim* have no manifesto
+	   light values (light-mode rollout is new territory the manifesto didn't
+	   table row-by-row) — derived here (cairn-sdx5.7) by continuing the
+	   dark-ramp's *logic*, not its literal lightness direction: in dark mode
+	   "more emphasis" moves toward white (bg is black); in light mode "more
+	   emphasis" moves toward ink (bg is parchment), so the ramp inverts.
+	   --accent-glow-strong is the deepest/most saturated tier (stronger than
+	   --accent-bright) for the send-review hero border; --accent-core is the
+	   ring's innermost, most-emphasized point, pushed all the way to a deep
+	   ink-blue for max contrast on parchment; --accent-dim/-dim-2 fade
+	   *toward the light bg* (lighter/washed), mirroring how the dark tiers
+	   fade toward the dark bg (darker/washed). */
+	--light-accent-glow-strong: #2f5b8f;
+	--light-accent-core: #1f3a54;
+	--light-accent-dim: #9fbfdc;
+	--light-accent-dim-2: #c3d8e9;
+	--light-accent-muted: rgba(63, 110, 166, 0.12);
+	--light-accent-border: rgba(63, 110, 166, 0.32);
+	--light-accent-border-strong: rgba(63, 110, 166, 0.48);
+	--light-on-accent: #f7f3ea;
+	--light-on-accent-ghost: #2f527a;
+
+	--light-sage: #3f7a56;
+	--light-sage-muted: rgba(63, 122, 86, 0.14);
+	--light-attention: #9a6f28;
+	--light-attention-muted: rgba(154, 111, 40, 0.12);
+	--light-warning-border: rgba(154, 111, 40, 0.32);
+	/* Derived: dark goes --warning-border .3 alpha → --warning-border-strong
+	   .45 alpha (a +.15 bump); applied to the light --attention rgb triple. */
+	--light-warning-border-strong: rgba(154, 111, 40, 0.48);
+	--light-error: #b6402f;
+	--light-error-muted: rgba(182, 64, 47, 0.14);
+	--light-error-border: rgba(182, 64, 47, 0.3);
+	--light-caution: #ad6244;
+	--light-caution-muted: rgba(173, 98, 68, 0.12);
+	--light-caution-border: rgba(173, 98, 68, 0.3);
+
+	/* Search pill wash — a faint ink tint (the white-alpha wash is
+	   invisible on a light ground). */
+	--light-search-fill: rgba(31, 38, 35, 0.03);
 }
 
 /* ============================================================
-   "Daylight grove" — light theme for EXPLORER surfaces only
-   (cairn-6efi.9). The app has no theme toggle, so this rides
-   the OS-level prefers-color-scheme and is deliberately scoped
-   to the explorer page roots: redefining these inherited custom
-   properties on the explorer container cascades warm-parchment
-   values to every explorer descendant WITHOUT touching the rest
-   of the app (wallet/admin/etc. stay dark). App-wide light mode
-   is the deferred larger effort tracked as cairn-sdx5.7.
+   App-wide light mode (cairn-sdx5.7) — promotes the "Daylight
+   grove" palette above from Explorer-only page-root classes to
+   every screen. Two activation paths, same --light-* values:
 
-   Palette: warm parchment base (DESIGN-MANIFESTO.md §2 light-mode
-   strategy), umber-evergreen ink, slate-blue + sage both darkened
-   to clear AA contrast on the light ground. Same soul, both modes:
-   the ring mark and the Fraunces balance persist.
+   (a) OS preference, when the user has made no explicit choice
+       in Settings → Display (:root:not([data-theme])) — a light
+       system with an explicit dark override stays dark.
+   (b) an explicit `data-theme="light"` attribute set by the
+       Settings theme toggle (src/routes/(app)/settings/+page.svelte)
+       and mirrored onto <html> before first paint by the inline
+       script in src/app.html, so there is no flash of the wrong
+       theme on load.
+
+   `data-theme="dark"` is the explicit-dark counterpart: it simply
+   matches neither activation rule, so the default :root (dark)
+   values stand — no separate override block needed.
    ============================================================ */
 @media (prefers-color-scheme: light) {
-	.explorer,
-	.addr-page,
-	.block-page,
-	.tx-page,
-	.mempool-page,
-	.diff-page,
-	.blocks-page {
+	:root:not([data-theme]) {
 		color-scheme: light;
+		--bg: var(--light-bg);
+		--bg-deep: var(--light-bg-deep);
+		--bg-input: var(--light-bg-input);
+		--bg-strip: var(--light-bg-strip);
+		--surface: var(--light-surface);
+		--surface-elevated: var(--light-surface-elevated);
+		--border: var(--light-border);
+		--border-subtle: var(--light-border-subtle);
+		--hairline: var(--light-hairline);
+		--border-control: var(--light-border-control);
+		--border-ghost: var(--light-border-ghost);
 
-		/* Surfaces — warm parchment */
-		--bg: #f3efe7;
-		--bg-deep: #e9e3d7;
-		--bg-input: #faf7f1;
-		--bg-strip: #eee9dc;
-		--surface: #faf7f1;
-		--surface-elevated: #efe7da;
-		--border: #d7cdb8;
-		--border-subtle: #e2d8c7;
-		--hairline: #e4dac9;
-		--border-control: #d1c5b0;
-		--border-ghost: #d7cdb8;
+		--text: var(--light-text);
+		--text-hero: var(--light-text-hero);
+		--text-rows: var(--light-text-rows);
+		--text-secondary: var(--light-text-secondary);
+		--text-muted: var(--light-text-muted);
+		--text-faint: var(--light-text-faint);
+		--eyebrow: var(--light-eyebrow);
+		--eyebrow-path: var(--light-eyebrow-path);
+		--text-value: var(--light-text-value);
 
-		/* Text — umber-evergreen ink, AA on parchment (--text-faint stays
-		   decorative). */
-		--text: #1f2623;
-		--text-hero: #191f1c;
-		--text-rows: #333a36;
-		--text-secondary: #5c635e;
-		--text-muted: #6e7570;
-		--text-faint: #93998f;
-		--eyebrow: #6e7570;
-		--eyebrow-path: #93998f;
-		--text-value: #343b36;
+		--accent: var(--light-accent);
+		--accent-hover: var(--light-accent-hover);
+		--accent-pressed: var(--light-accent-pressed);
+		--accent-bright: var(--light-accent-bright);
+		--accent-glow: var(--light-accent-glow);
+		--accent-glow-strong: var(--light-accent-glow-strong);
+		--accent-core: var(--light-accent-core);
+		--accent-dim: var(--light-accent-dim);
+		--accent-dim-2: var(--light-accent-dim-2);
+		--accent-muted: var(--light-accent-muted);
+		--accent-border: var(--light-accent-border);
+		--accent-border-strong: var(--light-accent-border-strong);
+		--on-accent: var(--light-on-accent);
+		--on-accent-ghost: var(--light-on-accent-ghost);
 
-		/* Accent — slate-blue darkened for contrast on parchment. */
-		--accent: #3f6ea6;
-		--accent-hover: #4a7cb5;
-		--accent-pressed: #35608f;
-		--accent-bright: #375f8a;
-		--accent-glow: #6f97c2;
-		--accent-muted: rgba(63, 110, 166, 0.12);
-		--accent-border: rgba(63, 110, 166, 0.32);
-		--accent-border-strong: rgba(63, 110, 166, 0.48);
-		--on-accent: #f7f3ea;
-		--on-accent-ghost: #2f527a;
+		--sage: var(--light-sage);
+		--sage-muted: var(--light-sage-muted);
+		--attention: var(--light-attention);
+		--attention-muted: var(--light-attention-muted);
+		--warning-border: var(--light-warning-border);
+		--warning-border-strong: var(--light-warning-border-strong);
+		--error: var(--light-error);
+		--error-muted: var(--light-error-muted);
+		--error-border: var(--light-error-border);
+		--caution: var(--light-caution);
+		--caution-muted: var(--light-caution-muted);
+		--caution-border: var(--light-caution-border);
 
-		/* Status — sage/attention/error darkened to read on light. */
-		--sage: #3f7a56;
-		--sage-muted: rgba(63, 122, 86, 0.14);
-		--attention: #9a6f28;
-		--attention-muted: rgba(154, 111, 40, 0.12);
-		--warning-border: rgba(154, 111, 40, 0.32);
-		--error: #b6402f;
-		--error-muted: rgba(182, 64, 47, 0.14);
-		--error-border: rgba(182, 64, 47, 0.3);
-		--caution: #ad6244;
-		--caution-muted: rgba(173, 98, 68, 0.12);
-		--caution-border: rgba(173, 98, 68, 0.3);
-
-		/* Search pill wash — a faint ink tint (the white-alpha wash is
-		   invisible on a light ground). */
-		--search-fill: rgba(31, 38, 35, 0.03);
+		--search-fill: var(--light-search-fill);
 	}
+}
+
+:root[data-theme='light'] {
+	color-scheme: light;
+	--bg: var(--light-bg);
+	--bg-deep: var(--light-bg-deep);
+	--bg-input: var(--light-bg-input);
+	--bg-strip: var(--light-bg-strip);
+	--surface: var(--light-surface);
+	--surface-elevated: var(--light-surface-elevated);
+	--border: var(--light-border);
+	--border-subtle: var(--light-border-subtle);
+	--hairline: var(--light-hairline);
+	--border-control: var(--light-border-control);
+	--border-ghost: var(--light-border-ghost);
+
+	--text: var(--light-text);
+	--text-hero: var(--light-text-hero);
+	--text-rows: var(--light-text-rows);
+	--text-secondary: var(--light-text-secondary);
+	--text-muted: var(--light-text-muted);
+	--text-faint: var(--light-text-faint);
+	--eyebrow: var(--light-eyebrow);
+	--eyebrow-path: var(--light-eyebrow-path);
+	--text-value: var(--light-text-value);
+
+	--accent: var(--light-accent);
+	--accent-hover: var(--light-accent-hover);
+	--accent-pressed: var(--light-accent-pressed);
+	--accent-bright: var(--light-accent-bright);
+	--accent-glow: var(--light-accent-glow);
+	--accent-glow-strong: var(--light-accent-glow-strong);
+	--accent-core: var(--light-accent-core);
+	--accent-dim: var(--light-accent-dim);
+	--accent-dim-2: var(--light-accent-dim-2);
+	--accent-muted: var(--light-accent-muted);
+	--accent-border: var(--light-accent-border);
+	--accent-border-strong: var(--light-accent-border-strong);
+	--on-accent: var(--light-on-accent);
+	--on-accent-ghost: var(--light-on-accent-ghost);
+
+	--sage: var(--light-sage);
+	--sage-muted: var(--light-sage-muted);
+	--attention: var(--light-attention);
+	--attention-muted: var(--light-attention-muted);
+	--warning-border: var(--light-warning-border);
+	--warning-border-strong: var(--light-warning-border-strong);
+	--error: var(--light-error);
+	--error-muted: var(--light-error-muted);
+	--error-border: var(--light-error-border);
+	--caution: var(--light-caution);
+	--caution-muted: var(--light-caution-muted);
+	--caution-border: var(--light-caution-border);
+
+	--search-fill: var(--light-search-fill);
 }
 
 /* ---------- Base ---------- */

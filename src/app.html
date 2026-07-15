@@ -6,6 +6,24 @@
 		<meta name="theme-color" content="#0e1312" />
 		<link rel="manifest" href="/manifest.json" />
 		<link rel="apple-touch-icon" href="/icons/icon-192.png" />
+		<script>
+			// Apply any explicit Settings → Display theme choice (cairn-sdx5.7)
+			// before the stylesheet paints, so there is no flash of the wrong
+			// theme. No stored value (or 'system') leaves data-theme unset —
+			// src/app.css's @media (prefers-color-scheme: light) block then
+			// drives the OS-level choice. Runs synchronously, before
+			// %sveltekit.head% inserts the stylesheet link.
+			(function () {
+				try {
+					var t = localStorage.getItem('hw.theme');
+					if (t === 'dark' || t === 'light') {
+						document.documentElement.setAttribute('data-theme', t);
+					}
+				} catch (e) {
+					/* storage blocked (private mode etc.) — fall back to prefers-color-scheme */
+				}
+			})();
+		</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">
