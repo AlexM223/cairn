@@ -111,7 +111,7 @@ describe('portfolioSnapshot persistence', () => {
 			recentActivity: [],
 			balanceSeries: [],
 			sparklines: {},
-			change: { d1: null, d7: null, d30: null }
+			change: { d1: null, d30: null, d365: null, all: null }
 		};
 		writePortfolioSnapshot(userId, detail, 1_700_000_000_000);
 		const row = readPortfolioSnapshot(userId);

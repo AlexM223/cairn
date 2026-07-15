@@ -496,8 +496,10 @@ export interface PortfolioDetail {
 	balanceSeries: BalancePoint[];
 	/** Per-wallet balance history, keyed by AllocationSlice.key; oldest first. */
 	sparklines: Record<string, number[]>;
-	/** Net sats change vs the snapshot nearest 1d / 7d / 30d ago; null if none. */
-	change: { d1: number | null; d7: number | null; d30: number | null };
+	/** Net sats change vs the snapshot nearest 1d / 30d / 1yr / all-time ago
+	 *  (DESIGN-MANIFESTO.md multi-horizon MUST); null per-horizon if no
+	 *  snapshot reaches back that far. See `$lib/horizonDelta`. */
+	change: { d1: number | null; d30: number | null; d365: number | null; all: number | null };
 }
 
 export interface InstanceSettings {

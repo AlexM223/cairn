@@ -6,8 +6,10 @@
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import RecentActivity from '$lib/components/portfolio/RecentActivity.svelte';
 	import Amount from '$lib/components/Amount.svelte';
+	import BalanceHorizons from '$lib/components/portfolio/BalanceHorizons.svelte';
 	import { formatSats, gatedFiatPrice } from '$lib/format';
 	import { deriveHomeHealth, shouldShowRecentActivity, shouldShowWalletList } from '$lib/homeView';
+	import { buildHorizonRows } from '$lib/horizonDelta';
 	import type { PortfolioDetail } from '$lib/types';
 
 	let { data } = $props();
@@ -181,6 +183,16 @@
 			portfolio.unconfirmed === 0 &&
 			portfolio.recentActivity.length === 0
 	);
+
+	// Multi-horizon balance delta (DESIGN-MANIFESTO.md MUST — cairn-d326, R6):
+	// 1d / 30d / 1yr / all-time shown together, never a single naked delta.
+	// Suppressed while the balance itself is hidden — a delta figure leaks
+	// wealth-change magnitude even with the total masked, which defeats the
+	// point of the privacy gesture (F1: fewer evaluation events, hidden or not).
+	// Not rendered for a zero-balance wallet — there is nothing to have changed.
+	const horizonRows = $derived(
+		portfolio && !isEmptyWallet ? buildHorizonRows(portfolio.change, portfolio.confirmed) : null
+	);
 </script>
 
 <svelte:head>
@@ -302,6 +314,11 @@
 								<span class="pending-note tabular">
 									{portfolio.unconfirmed > 0 ? '+' : ''}{formatSats(portfolio.unconfirmed)} sats pending
 								</span>
+							</div>
+						{/if}
+						{#if horizonRows}
+							<div class="hero-horizons">
+								<BalanceHorizons rows={horizonRows} />
 							</div>
 						{/if}
 					{/if}
@@ -589,6 +606,12 @@
 
 	.hidden-note {
 		color: var(--text-muted);
+	}
+
+	/* Multi-horizon delta row (cairn-d326, R6) — quiet, beneath the hero, above
+	   the Send/Receive pills; never a lone delta (DESIGN-MANIFESTO.md MUST). */
+	.hero-horizons {
+		margin-top: 18px;
 	}
 
 	.pending-note {

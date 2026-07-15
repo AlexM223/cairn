@@ -379,8 +379,10 @@ describe('backfill through getPortfolioDetail (cairn-ittq)', () => {
 		expect(detail.balanceSeries[0]).toEqual({ t: nowS - 20 * DAY, sats: 100_000 });
 		expect(detail.balanceSeries[1]).toEqual({ t: nowS - 10 * DAY, sats: 75_000 });
 		// Lookback changes work on day one.
-		expect(detail.change.d7).toBe(0);
+		expect(detail.change.d1).toBe(0);
 		expect(detail.change.d30).toBeNull(); // history starts 20d ago
+		expect(detail.change.d365).toBeNull();
+		expect(detail.change.all).toBe(-25_000); // vs the earliest backfilled point (100,000 sats)
 
 		const countAfterFirst = (
 			db.prepare('SELECT COUNT(*) AS c FROM balance_snapshots WHERE user_id = ?').get(userId) as {
