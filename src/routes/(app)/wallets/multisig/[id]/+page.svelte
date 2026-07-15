@@ -16,8 +16,10 @@
 	import QuorumArc from '$lib/components/heartwood/QuorumArc.svelte';
 	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
 	import WalletStepChart from '../../[id]/_components/WalletStepChart.svelte';
+	import BalanceHorizons from '$lib/components/portfolio/BalanceHorizons.svelte';
 	import { copyToClipboard } from '$lib/clipboard';
-	import { formatBtc, formatSats, timeAgo, truncateMiddle } from '$lib/format';
+	import { formatBtc, formatSats, gatedFiatPrice, timeAgo, truncateMiddle } from '$lib/format';
+	import { buildHorizonRows, changesFromHorizonSeries, historyFromTxDeltas } from '$lib/horizonDelta';
 	import KeyHealthRow from '../_components/KeyHealthRow.svelte';
 	import AddressScriptDetails from '../_components/AddressScriptDetails.svelte';
 	import MultisigCollaborators from '../_components/MultisigCollaborators.svelte';
@@ -48,6 +50,41 @@
 	const maturingTotal = $derived(scan.maturingTotal ?? 0);
 	// 0 when there's no scan yet — only ever rendered inside `{#if detail}` below.
 	const available = $derived(detail ? detail.balance.confirmed - maturingTotal : 0);
+
+	// --- lazy fiat snapshot (cairn-d326, R6 / F1) — see the single-sig detail
+	//     page's identical block for the full rationale: mirrors Home's
+	//     privacy-gated, fetch-once-per-navigation pattern instead of the
+	//     Amount default's live-ticking $btcUsd store.
+	let showFiat = $state(false);
+	let usdPrice = $state<number | null>(null);
+	let priceTried = $state(false);
+	onMount(() => {
+		showFiat = localStorage.getItem('cairn.fiat') === 'on';
+	});
+	async function fetchPrice() {
+		priceTried = true;
+		try {
+			const res = await fetch('/api/price');
+			const body = res.ok ? await res.json() : null;
+			usdPrice = body?.usd ?? null;
+		} catch {
+			usdPrice = null;
+		}
+	}
+	$effect(() => {
+		if (showFiat && !priceTried) void fetchPrice();
+	});
+	const heroPrice = $derived(gatedFiatPrice(showFiat, usdPrice));
+
+	// --- multi-horizon balance delta (cairn-d326, R6) — see the single-sig
+	//     detail page's identical block for the full rationale.
+	const horizonRows = $derived.by(() => {
+		if (!detail || detail.balance.confirmed === 0) return null;
+		const history = historyFromTxDeltas(detail.history, detail.balance.confirmed);
+		if (history === null) return null;
+		const change = changesFromHorizonSeries(history, detail.balance.confirmed);
+		return buildHorizonRows(change, detail.balance.confirmed);
+	});
 
 	// Advanced expander on the receive panel: derivation path is power-user
 	// detail, collapsed by default (never persisted — always resets closed).
@@ -462,7 +499,7 @@
 
 			{#if detail}
 				<div class="hw-hero">
-					<Amount sats={available} size="hero" />
+					<Amount sats={available} size="hero" price={heroPrice} />
 				</div>
 				<p class="hw-hero-sub">
 					<span class="tabular">{formatSats(available)} sats</span>
@@ -479,6 +516,11 @@
 						· <Amount sats={maturingTotal} size="inline" /> maturing —
 						<a href="#mining-rewards">mining rewards not yet spendable</a>
 					</p>
+				{/if}
+				{#if horizonRows}
+					<div class="hw-hero-horizons">
+						<BalanceHorizons rows={horizonRows} />
+					</div>
 				{/if}
 			{:else if scanLoading}
 				<!-- Balance streams in from the server scan — skeleton until it lands. -->
@@ -1312,6 +1354,12 @@
 	.hw-hero-sub.hw-maturing a {
 		color: inherit;
 		text-decoration: underline;
+	}
+
+	/* Multi-horizon delta row (cairn-d326, R6) — see the single-sig detail
+	   page's identical block. */
+	.hw-hero-horizons {
+		margin-top: 18px;
 	}
 
 	.hw-pills {

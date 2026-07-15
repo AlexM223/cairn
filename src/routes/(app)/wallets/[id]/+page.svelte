@@ -17,8 +17,10 @@
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
 	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
 	import WalletStepChart from './_components/WalletStepChart.svelte';
+	import BalanceHorizons from '$lib/components/portfolio/BalanceHorizons.svelte';
 	import { copyToClipboard } from '$lib/clipboard';
-	import { formatBtc, formatFeeRate, formatSats, timeAgo, truncateMiddle } from '$lib/format';
+	import { formatBtc, formatFeeRate, formatSats, gatedFiatPrice, timeAgo, truncateMiddle } from '$lib/format';
+	import { buildHorizonRows, changesFromHorizonSeries, historyFromTxDeltas } from '$lib/horizonDelta';
 	import { SCRIPT_TYPE_LABELS, WALLET_DEVICE_LABELS, walletTypeLabel } from '../labels';
 	import {
 		OFFICIAL_SUPPORT_URLS,
@@ -58,6 +60,51 @@
 	// the live scan drops them from the balance, so these amber rows reconcile the
 	// vanished amount the user briefly saw "on its way".
 	const cancelledTxs = $derived(data.cancelledTxs ?? []);
+
+	// --- lazy fiat snapshot (cairn-d326, R6 / F1) ---------------------------
+	// The hero used to fall through to Amount's default `price` prop, which
+	// subscribes to the shared $btcUsd store and live-ticks every 60s — every
+	// tick is a fresh loss-aversion evaluation event even without color or
+	// motion (DESIGN-MANIFESTO.md motion MUST). Mirrors Home's own pattern
+	// exactly: privacy-gated (off unless the user opted into `cairn.fiat`),
+	// fetched once per mount/navigation, then held steady for the rest of the
+	// visit — no interval. Passed explicitly to the hero Amount so it stops
+	// resolving through the live store.
+	let showFiat = $state(false);
+	let usdPrice = $state<number | null>(null);
+	let priceTried = $state(false);
+	onMount(() => {
+		showFiat = localStorage.getItem('cairn.fiat') === 'on';
+	});
+	async function fetchPrice() {
+		priceTried = true;
+		try {
+			const res = await fetch('/api/price');
+			const body = res.ok ? await res.json() : null;
+			usdPrice = body?.usd ?? null;
+		} catch {
+			usdPrice = null;
+		}
+	}
+	$effect(() => {
+		if (showFiat && !priceTried) void fetchPrice();
+	});
+	const heroPrice = $derived(gatedFiatPrice(showFiat, usdPrice));
+
+	// --- multi-horizon balance delta (cairn-d326, R6) ------------------------
+	// This page has no balance_snapshots history wired to its loader, but the
+	// scan already carries every confirmed tx delta — the same data
+	// WalletStepChart reconstructs its line from. historyFromTxDeltas rebuilds
+	// an honest point-in-time series from that (returns null if the deltas
+	// can't be trusted to reconcile with the scanned balance, in which case no
+	// horizons render rather than show a number that could contradict it).
+	const horizonRows = $derived.by(() => {
+		if (!scan || scan.confirmed === 0) return null;
+		const history = historyFromTxDeltas(scan.txs, scan.confirmed);
+		if (history === null) return null;
+		const change = changesFromHorizonSeries(history, scan.confirmed);
+		return buildHorizonRows(change, scan.confirmed);
+	});
 
 	let syncing = $state(false);
 	// A refresh failure while we have NOTHING cached surfaces as the scan-error
@@ -569,7 +616,7 @@
 
 			{#if scan}
 				<div class="hw-hero">
-					<Amount sats={available} size="hero" />
+					<Amount sats={available} size="hero" price={heroPrice} />
 				</div>
 				<p class="hw-hero-sub">
 					<span class="tabular">{formatSats(available)} sats</span>
@@ -584,6 +631,11 @@
 						· <Amount sats={maturingTotal} size="inline" /> maturing —
 						<a href="#mining-rewards">mining rewards not yet spendable</a>
 					</p>
+				{/if}
+				{#if horizonRows}
+					<div class="hw-hero-horizons">
+						<BalanceHorizons rows={horizonRows} />
+					</div>
 				{/if}
 			{:else if loading}
 				<div class="hw-hero">
@@ -1612,6 +1664,12 @@
 	.hw-hero-sub.hw-maturing a {
 		color: inherit;
 		text-decoration: underline;
+	}
+
+	/* Multi-horizon delta row (cairn-d326, R6) — quiet, beneath the hero's
+	   sub-lines. Never a lone delta (DESIGN-MANIFESTO.md MUST). */
+	.hw-hero-horizons {
+		margin-top: 18px;
 	}
 
 	.hw-pills {

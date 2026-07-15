@@ -12,6 +12,7 @@ import { scanMultisig, type MultisigScanResult } from './multisigScan';
 import { listMultisigs, type MultisigRow } from './wallets/multisig';
 import { getChain } from './chain';
 import { childLogger } from './logger';
+import { changesFromHorizonSeries } from '$lib/horizonDelta';
 import type {
 	AllocationSlice,
 	BalancePoint,
@@ -375,25 +376,14 @@ export function getSparklines(userId: number): Record<string, number[]> {
 }
 
 /**
- * Net change vs the snapshot nearest each lookback window. For "N days ago" we
- * take the most recent snapshot at or before that instant; null when no
- * snapshot reaches that far back.
+ * Net change vs the snapshot nearest each lookback window (1d / 30d / 1yr /
+ * all-time — DESIGN-MANIFESTO.md's multi-horizon MUST). Thin wrapper: the
+ * actual cutoff-walk logic lives in the shared, client-safe
+ * `$lib/horizonDelta` module so the wallet-detail page's client-derived
+ * (tx-based) horizons are computed identically.
  */
-function changesFromSeries(
-	series: BalancePoint[],
-	currentTotal: number
-): { d1: number | null; d7: number | null; d30: number | null } {
-	const nowS = Math.floor(Date.now() / 1000);
-	const at = (days: number): number | null => {
-		const cutoff = nowS - days * 86400;
-		let value: number | null = null;
-		for (const p of series) {
-			if (p.t <= cutoff) value = p.sats; // series is oldest-first
-			else break;
-		}
-		return value === null ? null : currentTotal - value;
-	};
-	return { d1: at(1), d7: at(7), d30: at(30) };
+function changesFromSeries(series: BalancePoint[], currentTotal: number) {
+	return changesFromHorizonSeries(series, currentTotal);
 }
 
 // ------------------------------------------------------------------ aggregate
