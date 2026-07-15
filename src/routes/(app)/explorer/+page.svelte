@@ -643,6 +643,23 @@
 					</span>
 				</div>
 			{:else}
+				<!-- Pending/mempool block is the NEXT block to be mined, so it belongs at
+				     the TOP of the list, above every confirmed block (cairn-lynf).
+				     `pending` is already gated to the tip view (data.before === null),
+				     so this never appears on paged/older history — only ever above the
+				     newest confirmed block. -->
+				{#if pending}
+					<div class="ring-row pending-row">
+						<RingStub state="pending" size={17} />
+						<span class="row-headcol">
+							<span class="row-height pending-label">pending</span>
+						</span>
+						<span class="ringbar-spacer" aria-hidden="true"></span>
+						<span class="row-meta">{pending.meta}</span>
+						<span class="row-txs tabular">{pending.txs}</span>
+						<span class="row-size tabular">{pending.size}</span>
+					</div>
+				{/if}
 				{#each blocks as block, i (block.hash)}
 					<a href="/explorer/block/{block.height}" class="ring-row link">
 						<RingStub
@@ -679,18 +696,6 @@
 						</span>
 					</a>
 				{/each}
-				{#if pending}
-					<div class="ring-row pending-row">
-						<RingStub state="pending" size={17} />
-						<span class="row-headcol">
-							<span class="row-height pending-label">pending</span>
-						</span>
-						<span class="ringbar-spacer" aria-hidden="true"></span>
-						<span class="row-meta">{pending.meta}</span>
-						<span class="row-txs tabular">{pending.txs}</span>
-						<span class="row-size tabular">{pending.size}</span>
-					</div>
-				{/if}
 			{/if}
 
 			{#if newerUrl || (olderUrl && blocks.length > 0)}
