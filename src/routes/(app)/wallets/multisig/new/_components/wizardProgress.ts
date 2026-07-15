@@ -245,3 +245,23 @@ export function hasMeaningfulMultisigProgress(p: WizardProgress): boolean {
 		p.multisigName.trim() !== ''
 	);
 }
+
+/**
+ * Secondary sub-progress fraction for the "Add keys" step (cairn-hla1,
+ * symptom b). That step is a single dot on the wizard's top-level 6-item
+ * progress bar, but internally it's an N-deep sub-wizard — one screen per
+ * cosigner key (method -> read/paste/import -> repeat) — so for a 5-of-7
+ * wallet the bar's "step 3 of 6" hides 7+ screens behind one label. Each
+ * sub-screen is already well-labeled ("Add key 2 of 5"), so orientation
+ * exists once you're there; what's missing is the effort being visible from
+ * the top-level bar too. Returns null before the quorum (and so totalKeys)
+ * is chosen — there's nothing to show yet.
+ */
+export function keysStepSubLabel(
+	quorumValid: boolean,
+	keysLength: number,
+	totalKeys: number
+): string | null {
+	if (!quorumValid) return null;
+	return `${keysLength}/${totalKeys}`;
+}

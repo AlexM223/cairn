@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
 	parseSavedMultisigProgress,
 	hasMeaningfulMultisigProgress,
+	keysStepSubLabel,
 	WIZARD_PROGRESS_KEY,
 	WIZARD_PROGRESS_MAX_AGE_MS,
 	type WizardProgress
@@ -321,5 +322,25 @@ describe('cairn-pwo1: a mid-Keys-step snapshot is resumable (wiring invariant)',
 		);
 		expect(pristine).not.toBeNull();
 		expect(hasMeaningfulMultisigProgress(pristine!)).toBe(false);
+	});
+});
+
+// cairn-hla1 (symptom b): the "Add keys" step's secondary sub-progress
+// fraction shown on the wizard's top-level step bar.
+describe('keysStepSubLabel', () => {
+	it('is null before a quorum is chosen — nothing to show yet', () => {
+		expect(keysStepSubLabel(false, 0, 0)).toBeNull();
+	});
+
+	it('reads 0/N with no keys added yet', () => {
+		expect(keysStepSubLabel(true, 0, 3)).toBe('0/3');
+	});
+
+	it('tracks partial progress for a large custom quorum', () => {
+		expect(keysStepSubLabel(true, 4, 7)).toBe('4/7');
+	});
+
+	it('reads N/N once every key is added', () => {
+		expect(keysStepSubLabel(true, 5, 5)).toBe('5/5');
 	});
 });
