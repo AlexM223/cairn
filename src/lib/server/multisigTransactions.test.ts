@@ -340,6 +340,50 @@ describe('sentMultisigRecipientAddresses (R2 first-send signal)', () => {
 	});
 });
 
+// R1/R2/R3 interaction verification (multisig mirror of the single-sig block
+// in transactions.test.ts): attachMultisigSignature always leaves status
+// 'awaiting_signature' — even once quorum is fully met — until an actual
+// broadcast happens (multisigTransactions.ts:461). That is exactly the row
+// shape a Confirm-step grace-window cancel() leaves behind (cancel is pure
+// client-side state and never calls the broadcast API), so this exercises the
+// real end-to-end lifecycle rather than just the status-string unit test above.
+describe('sentMultisigRecipientAddresses × broadcast grace window lifecycle (R1/R2/R3 interaction)', () => {
+	it('a quorum-complete transaction cancelled at the grace window (never broadcast) does not mark the address known', async () => {
+		const { userId, multisigId } = await seedMultisig('msiggracecancel@example.com');
+		const { txId, psbt } = await seedDraft(userId, multisigId);
+		const first = attachMultisigSignature(userId, multisigId, txId, signWith(psbt, 0))!;
+		const second = attachMultisigSignature(
+			userId,
+			multisigId,
+			txId,
+			signWith(first.transaction.psbt, 1)
+		)!;
+		expect(second.transaction.status).toBe('awaiting_signature'); // full quorum, still unbroadcast
+
+		expect(sentMultisigRecipientAddresses(userId, multisigId)).toEqual([]);
+	});
+
+	it('broadcasting that same quorum-complete row marks the address known immediately — even before any confirmation', async () => {
+		const { userId, multisigId } = await seedMultisig('msiggracefire@example.com');
+		const { txId, psbt } = await seedDraft(userId, multisigId);
+		const first = attachMultisigSignature(userId, multisigId, txId, signWith(psbt, 0))!;
+		attachMultisigSignature(userId, multisigId, txId, signWith(first.transaction.psbt, 1));
+
+		broadcastMock.mockImplementationOnce((rawHex: string) =>
+			Promise.resolve(Transaction.fromRaw(hexToBytes(rawHex), { disableScriptCheck: true }).id)
+		);
+
+		const { transaction } = await broadcastMultisigTransaction(userId, multisigId, txId);
+		expect(transaction.status).toBe('completed');
+
+		// Same contract as the single-sig mirror: 'completed' is set the instant
+		// broadcast succeeds, with no separate "confirmed" status anywhere in
+		// this module, so an unconfirmed-but-broadcast send already counts as
+		// known — no confirmation wait exists anywhere in this path.
+		expect(sentMultisigRecipientAddresses(userId, multisigId)).toEqual([RECIPIENT]);
+	});
+});
+
 // ── coin reservation (cairn QA R7 B4 — multisig mirror) ─────────────────────
 //
 // buildMultisigDraft must exhibit the exact same fix as buildDraft

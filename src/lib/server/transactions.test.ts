@@ -597,6 +597,55 @@ describe('sentRecipientAddresses (R2 first-send signal)', () => {
 	});
 });
 
+// R1/R2/R3 interaction verification (stacked send-flow features, orchestrator
+// verify pass): the grace window (R3, broadcastGrace.ts) is armed only after a
+// fully-signed draft reaches Confirm; cancelling it is pure client-side state
+// (BroadcastGrace.cancel() touches nothing about the saved row — see that
+// file's own doc comment) and the page never calls the broadcast API for a
+// cancel. These pin the two halves of the resulting "known address" (R2)
+// contract end-to-end through the real broadcastTransaction() path, not just
+// the status-string unit test above.
+describe('sentRecipientAddresses × broadcast grace window lifecycle (R1/R2/R3 interaction)', () => {
+	it('a fully-signed draft that reached Confirm but was cancelled at the grace window (never broadcast) does not mark the address known', async () => {
+		const { userId, walletId } = await seedWallet('gracecancel@example.com');
+		const signed = await signedPsbt();
+		// Mirrors what attachSignedPsbt's PATCH leaves behind: status
+		// 'awaiting_signature', fully signed, never broadcast — exactly the row
+		// shape a grace-window cancel() leaves in place (cancel makes no API call).
+		db.prepare(
+			`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate)
+			 VALUES (?, 'awaiting_signature', ?, ?, 30000, 200, 5)`
+		).run(walletId, signed, RECIPIENT);
+
+		expect(sentRecipientAddresses(userId, walletId)).toEqual([]);
+	});
+
+	it('broadcasting that same row (grace window elapses / "Send now") marks the address known immediately — even before any confirmation', async () => {
+		const { userId, walletId } = await seedWallet('gracefire@example.com');
+		const signed = await signedPsbt();
+		const txId = Number(
+			db
+				.prepare(
+					`INSERT INTO transactions (wallet_id, status, psbt, recipient, amount, fee, fee_rate)
+					 VALUES (?, 'awaiting_signature', ?, ?, 30000, 200, 5)`
+				)
+				.run(walletId, signed, RECIPIENT).lastInsertRowid
+		);
+		const expectedTxid = Transaction.fromPSBT(base64.decode(signed));
+		expectedTxid.finalize();
+		broadcastMock.mockResolvedValueOnce(expectedTxid.id);
+
+		const { transaction } = await broadcastTransaction(userId, walletId, txId);
+		expect(transaction.status).toBe('completed');
+
+		// status flips to 'completed' the instant broadcast() returns — there is
+		// no separate "confirmed" status anywhere in this table/module, so this
+		// also pins that an unconfirmed-but-broadcast send correctly counts as
+		// "known" without waiting on any confirmation.
+		expect(sentRecipientAddresses(userId, walletId)).toEqual([RECIPIENT]);
+	});
+});
+
 describe('normalizePsbt', () => {
 	it('round-trips a valid PSBT in base64 and hex forms', async () => {
 		const valid = await signedPsbt();

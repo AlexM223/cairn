@@ -100,6 +100,21 @@ describe('shouldVerifyRecipient', () => {
 			})
 		).toBe(false);
 	});
+
+	// SendReviewCard's needsRecipientCheck is a $derived.by over the CURRENT
+	// amount/recipients props, not latched when Review first renders — a
+	// cancel-from-grace-window → back-and-edit → rebuild-with-a-lower-amount
+	// round trip feeds a fresh amountSats into this same pure function on the
+	// next Review render. Pin that recomputing with a lower amount for the
+	// SAME address correctly flips the verdict off, and a later higher-amount
+	// recompute flips it back on — nothing here is sticky across calls.
+	it('recomputes independently per call — an edited-down amount on a later call no longer trips it, and back up trips it again', () => {
+		const highAmount = { ...base, amountSats: 200_000 };
+		const loweredBelowThreshold = { ...base, amountSats: 5_000 };
+		expect(shouldVerifyRecipient(highAmount)).toBe(true);
+		expect(shouldVerifyRecipient(loweredBelowThreshold)).toBe(false);
+		expect(shouldVerifyRecipient(highAmount)).toBe(true);
+	});
 });
 
 describe('addressTail / matchesAddressTail', () => {
