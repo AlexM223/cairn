@@ -18,7 +18,7 @@
 		truncateMiddle,
 		chunkString
 	} from '$lib/format';
-	import { summarySentence } from './sendCopy';
+	import { summarySentence, feeContextClause } from './sendCopy';
 	// R2 (docs/UX-PSYCHOLOGY-RESEARCH-2026-07-15.md): stake-triggered recipient
 	// verification. Pure trigger/match logic lives in recipientVerify.ts —
 	// this component only wires it to the card's own props/state.
@@ -130,6 +130,12 @@
 		if (amountSats <= 0) return null;
 		return (feeSats / amountSats) * 100;
 	});
+
+	// R7 (docs/UX-PSYCHOLOGY-RESEARCH-2026-07-15.md ~L300): the primary fee
+	// row's muted %-of-payment clause, anchoring the fee against the payment
+	// rather than zero. null (unflattering fraction, or unknown/zero amount)
+	// means the clause is simply omitted — the raw % stays in Details below.
+	const feeContext = $derived(feeContextClause(feeSats, amountSats));
 
 	const recipientText = $derived.by(() => {
 		if (isBatch || recipients.length === 0) return '';
@@ -281,6 +287,9 @@
 			<span class="core-val">
 				<Amount sats={feeSats} size="inline" />
 				<span class="arrival">· arrives in {arrivalWords}</span>
+				{#if feeContext != null}
+					<span class="arrival">· {feeContext}</span>
+				{/if}
 			</span>
 		</div>
 		<div class="core-row total">
