@@ -132,7 +132,7 @@ chain-data facade that talks to the Bitcoin backends.
 ### Layers, top to bottom
 
 ```
-Browser (Svelte 5 runes, Heartwood dark-only CSS, HW drivers in src/lib/hw/*)
+Browser (Svelte 5 runes, Heartwood evergreen CSS — dark default + light mode, HW drivers in src/lib/hw/*)
    │  fetch / form actions (?/action via safeAction) / SSE (/api/events, /api/notifications/stream)
    ▼
 SvelteKit edge: src/hooks.server.ts  handle()
@@ -2529,12 +2529,18 @@ polling/fetch (e.g. `ChainHealthBanner` polls `/api/chain-health`,
 
 ### Svelte components (`src/lib/components`)
 
-Flat top-level components: `Amount` (renders a BTC/sats value plus its live
-fiat equivalent from `$lib/price` wherever a price is available; used
-app-wide including the stateless multisig flow, single-sig send, explorer
-address history, and the wallet unconfirmed-incoming line — PSBT
-"verify against your device" panels, fee/change/input breakdown line items,
-and `BalanceChart` axis labels stay BTC/sats-only by design),
+Flat top-level components: `Amount` (renders a BTC/sats value as the
+**primary** line, with its live fiat equivalent from `$lib/price` — when a
+price is available — as a muted **secondary** line beneath, sats-first by
+default per `docs/DESIGN-MANIFESTO.md` §3's MUST rule; a user can flip the
+default via Settings → Display's fiat-primary toggle, persisted to
+`localStorage` as `cairn.fiatPrimary` and read through the shared
+`fiatPrimaryPref` store in `$lib/price` — `isFiatPrimary()` in `$lib/format`
+makes the actual primary/secondary decision. Used app-wide including the
+stateless multisig flow, single-sig send, explorer address history, and the
+wallet unconfirmed-incoming line — PSBT "verify against your device" panels,
+fee/change/input breakdown line items, and `BalanceChart` axis labels stay
+BTC/sats-only by design),
 `AnnouncementBanner`, `Banner` (persistent inline
 error/status banner — contrast with toasts below), `CopyText`,
 `CoreRpcRequiredNotice`, `DevicePicker` (grid of signing-device tiles, gated
@@ -2926,25 +2932,41 @@ internals, guided wizards" philosophy:
 ## 10. Client: Heartwood Design System
 
 `src/app.css` is the single global stylesheet, self-described in its header
-comment: "Standing inside the trunk: deep wood charcoal, copper growth
-rings, serif numerals. Grammar: hairlines not boxes, pills not cards, depth
-from the grove field — not glow." Reading that comment is the fastest way to
-internalize the visual language before touching any component.
+comment: "Cairn — 'Heartwood' design system (evergreen identity,
+docs/DESIGN-MANIFESTO.md). Evergreen ink, warm ivory serif numerals, slate
+signal-blue accent, growth rendered as concentric rings. Grammar: hairlines
+not boxes, pills not cards, depth from luminance stacking — not glow."
+Reading that comment (and `docs/DESIGN-MANIFESTO.md` itself — the canonical
+visual-doctrine source; where a component disagrees with the manifesto, the
+component is wrong) is the fastest way to internalize the visual language
+before touching any component. This supersedes the earlier v0.1.9 "copper"
+identity (warm-brown base, copper-orange accent, Source Serif 4) — the
+**evergreen identity** (epic cairn-sdx5) below is current.
 
-Theming is CSS custom properties on `:root`, **dark-only**
-(`color-scheme: dark`, no light theme toggle):
+Theming is CSS custom properties on `:root`, **app-wide light mode shipped**
+(cairn-sdx5.7): dark is still the default (`color-scheme: dark` on `:root`),
+but a `light` block (mirrored under both `@media (prefers-color-scheme:
+light)` and an explicit `:root[data-theme='light']` override) supplies a
+parchment-toned equivalent for every token below. Settings → Display exposes
+a three-way **System / Dark / Light** choice, persisted to `localStorage` as
+`hw.theme` (`'dark' | 'light'`, absent/`'system'` = honor the OS via
+`prefers-color-scheme`) and applied via `data-theme` on `<html>` with no page
+reload. `src/app.html` carries a synchronous pre-paint inline script that
+reads `hw.theme` and sets `data-theme` before the stylesheet paints, so there
+is no flash of the wrong theme — guarded by
+`src/lib/themeBootstrap.test.ts`.
 
 | Group | Variables | Notes |
 |---|---|---|
-| Surfaces | `--bg` (#100d0b), `--bg-deep`, `--bg-input`, `--bg-strip` | legacy tiers `--surface`/`--surface-elevated` kept only for not-yet-reskinned cards — new work uses `--bg-input` fills + hairline rows instead of boxed cards |
+| Surfaces | `--bg` (#0e1312, evergreen-ink), `--bg-deep`, `--bg-input`, `--bg-strip` | legacy tiers `--surface`/`--surface-elevated` kept only for not-yet-reskinned cards — new work uses `--bg-input` fills + hairline rows instead of boxed cards; light-mode equivalents are a warm parchment base, not an inverted dark palette |
 | Borders | `--border`, `--border-subtle`, `--hairline`, `--border-control`, `--border-ghost` | `--hairline` = the 1px row separators that give the "hairlines not boxes" grammar its name |
 | Text | `--text`, `--text-hero`, `--text-rows`, `--text-secondary`, `--text-muted`, `--text-faint` | `--text-faint` is **explicitly documented as failing AA contrast by design** — decorative/disabled only, never informative copy |
 | Breadcrumb | `--eyebrow`/`--eyebrow-path` | used by `EyebrowBreadcrumb` |
-| Accent | `--accent` (#e8935a family: hover/pressed/bright/glow/glow-strong/core), `--accent-dim`/`--accent-dim-2`, `--accent-muted`, `--accent-border`/`--accent-border-strong`, `--on-accent`/`--on-accent-ghost` | copper |
-| Status | `--sage` (success/received/connected/valid), `--attention` (warm tan — nudges AND form validation), `--caution`/`--caution-muted`/`--caution-border` (burnt-orange, #dd7a52 — sits between `--attention` and `--error`; backs the multisig quorum-risk panel's salmon "Loose" tier so it reads as its own tier distinct from the red "Risky" one, not just a bolder border on the same red), `--error`/`--danger` (red, #e0604c) | "never red for routine states"; red is reserved for irrecoverable failures only — an explicitly-called-out "off-spec extension: Heartwood has no red" otherwise |
-| Typography | `--font-ui` (Inter), `--font-serif` (Source Serif 4, used for `.hero-number`), `--font-mono` | the "serif numerals" branding element |
+| Accent | `--accent` (#6796c9, slate signal-blue family: hover/pressed/bright/glow/glow-strong/core), `--accent-dim`/`--accent-dim-2`, `--accent-muted`, `--accent-border`/`--accent-border-strong`, `--on-accent`/`--on-accent-ghost` | the manifesto's deliberate resolution of the "Heartwood green" ambiguity: **slate-blue is the accent** (the one thing you can act on); **green is reserved for growth/success semantics only** (`--sage`), never used as the interactive accent |
+| Status | `--sage` (success/received/connected/valid/growth), `--attention` (warm tan — nudges AND form validation), `--caution`/`--caution-muted`/`--caution-border` (burnt-orange — sits between `--attention` and `--error`; backs the multisig quorum-risk panel's salmon "Loose" tier so it reads as its own tier distinct from the red "Risky" one, not just a bolder border on the same red), `--error`/`--danger` (red) | "never red for routine states"; red is reserved for irrecoverable failures only — an explicitly-called-out "off-spec extension: Heartwood has no red" otherwise |
+| Typography | `--font-ui` (Inter), `--font-serif` (Fraunces Variable, optical size ~440 weight for `.hero-number` — deliberately lighter than the spec's locked 56/600, which reads too heavy on a variable display serif for one calm numeral; falls back to Source Serif 4 / Georgia), `--font-mono` | the "serif living balance" branding element — no other finance product sets a live balance in an editorial serif |
 | Radii | `--radius-pill` (26px), `--radius-toggle`, `--radius-status-pill`, `--radius-icon-btn`, `--radius-badge`, `--radius-strip` | pill-first; legacy `--radius-card`/`--radius-control`/`--radius-chip` kept as literal fallbacks for unreskinned components |
-| Motion | `hwPulse`, `hwBlink`, `hwSweepOnce`, `hwGrow`, `hwShimmer`, `hwSpin`, `hwBreathe` | raw `@keyframes` primitives; components set their own duration/timing at the call site; all neutralized under `@media (prefers-reduced-motion: reduce)` |
+| Motion | `hwPulse`, `hwBlink`, `hwSweepOnce`, `hwGrow`, `hwShimmer`, `hwSpin`, `hwBreathe` | raw `@keyframes` primitives; components set their own duration/timing at the call site; all neutralized under `@media (prefers-reduced-motion: reduce)`; growth/confirmation motion is deliberately **growth-only** (rings fill, nothing recoils) |
 
 Shared utility classes: `.btn`/`.btn-primary`/`.btn-secondary`/`.btn-ghost`/
 `.btn-danger`/`.btn-sm` (decorative button contents like a loading spinner
@@ -2970,8 +2992,21 @@ visualization), `HeartwoodMark` (the logo).
 - Never reach for red (`--error`/`--danger`) for a routine validation state
   — that's `--attention`'s job. Red means "this genuinely failed and can't
   be silently retried."
-- There is no light theme to keep in sync — don't add one without a
-  deliberate design decision, since `color-scheme: dark` is hardcoded.
+- Green is the growth/success semantic (`--sage`) only — never repurpose it
+  as an interactive accent; that's `--accent` (slate-blue)'s job.
+- Both dark and light now need to be kept in sync for any new/changed
+  token — `color-scheme: dark` is no longer hardcoded, so a token added only
+  to `:root` without a `light`-block counterpart will look designed in dark
+  and wrong in light.
+- Canvas-drawn motifs (`BurialRings`/`RingStub`/`QuorumArc`/`EpochDial` and
+  similar `<canvas>`-based components) read their colors at draw time, not
+  via live CSS variable inheritance — a known open gap (`cairn-w0ee`) is that
+  some of these were not yet audited for redrawing correctly on a live theme
+  switch. Check on any new canvas motif; don't assume it Just Works with the
+  System/Dark/Light toggle.
+- `docs/DESIGN-MANIFESTO.md` is the canonical visual-doctrine source (color,
+  type, layout, interaction, the money-behavior MUST rules) — read it before
+  any UI work, and treat a component that disagrees with it as the bug.
 
 ---
 
@@ -3837,8 +3872,11 @@ bearing surprises worth remembering while working in each area):**
 - **`--text-faint` is documented as intentionally failing WCAG AA** — do
   not use it for any copy that conveys information, only decorative/
   disabled affordances (§10).
-- **The Heartwood system is dark-only** (`color-scheme: dark` hardcoded);
-  there is no light-theme variable set to maintain (§10).
+- **The Heartwood system ships both dark (default) and light modes**
+  (cairn-sdx5.7) — `color-scheme: dark` is no longer hardcoded; a new token
+  needs a `light`-block counterpart or it silently keeps its dark value in
+  light mode (§10). Canvas-drawn ring/arc motifs are the known gap
+  (`cairn-w0ee`, §10).
 - **`preview_click`-style bare-selector clicks are unreliable on multi-
   button Cairn pages** — relevant if writing browser-driven tests/
   automation against these pages, not itself a client-code finding.
@@ -4890,8 +4928,10 @@ backups, clear house-standard errors, **never red for routine states**, working 
      nag.
 
 ### 21.7 Global UX invariants (spot-check on any page)
-   - ✅ Dark-only Heartwood theme renders consistently; `--text-faint` is never used for
-     information-bearing copy (it deliberately fails AA — decorative/disabled only).
+   - ✅ Heartwood evergreen theme renders consistently in both Dark and Light
+     (Settings → Display; System/Dark/Light, no flash of the wrong theme on load);
+     `--text-faint` is never used for information-bearing copy (it deliberately
+     fails AA — decorative/disabled only).
    - ✅ Routine validation + nudges are `--attention` (warm tan); `--error` red appears only
      for irrecoverable failures (broadcast rejected, invalid PSBT, node unreachable).
    - ✅ A `ChainHealthBanner` / `SyncBanner` appears only when actually relevant (silent
