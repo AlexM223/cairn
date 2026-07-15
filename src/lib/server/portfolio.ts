@@ -12,7 +12,12 @@ import { scanMultisig, type MultisigScanResult } from './multisigScan';
 import { listMultisigs, type MultisigRow } from './wallets/multisig';
 import { getChain } from './chain';
 import { childLogger } from './logger';
-import { changesFromHorizonSeries } from '$lib/horizonDelta';
+import {
+	changesFromHorizonSeries,
+	historyFromTxDeltas,
+	type HorizonChange,
+	type HorizonSeriesPoint
+} from '$lib/horizonDelta';
 import type {
 	AllocationSlice,
 	BalancePoint,
@@ -386,6 +391,100 @@ function changesFromSeries(series: BalancePoint[], currentTotal: number) {
 	return changesFromHorizonSeries(series, currentTotal);
 }
 
+/**
+ * Merge several already-carry-forward-summed per-wallet series (oldest first)
+ * into one cross-wallet total series, in memory — the same "latest known
+ * value per key, summed at every distinct timestamp" carry-forward
+ * `getBalanceSeries` does over DB rows, just applied to in-memory points
+ * instead. Exported for direct testing.
+ */
+export function mergeWalletSeries(perWallet: HorizonSeriesPoint[][]): HorizonSeriesPoint[] {
+	const tagged: { t: number; sats: number; w: number }[] = [];
+	perWallet.forEach((series, w) => {
+		for (const p of series) tagged.push({ t: p.t, sats: p.sats, w });
+	});
+	tagged.sort((a, b) => a.t - b.t);
+
+	const latest = new Array<number>(perWallet.length).fill(0);
+	const out: HorizonSeriesPoint[] = [];
+	const emit = (t: number) => out.push({ t, sats: latest.reduce((a, b) => a + b, 0) });
+	let current: number | null = null;
+	for (const p of tagged) {
+		if (current !== null && p.t !== current) emit(current);
+		current = p.t;
+		latest[p.w] = p.sats;
+	}
+	if (current !== null) emit(current);
+	return out;
+}
+
+/**
+ * Recompute d365/all from each scanned wallet's live confirmed-tx history —
+ * the exact `historyFromTxDeltas` derivation the wallet-detail page already
+ * relies on for its own (unpersisted) multi-horizon view (see
+ * `$lib/horizonDelta`'s module doc) — and prefer that over the persisted
+ * balance_snapshots-derived values for those two fields specifically. d1/d30
+ * pass through unchanged.
+ *
+ * Why this is needed (cairn-ht11): `getBalanceSeries` reads from
+ * balance_snapshots, and the one-time backfill (`buildBackfillPoints`)
+ * synthesizes a single carry-in point at the 1yr-horizon edge so a wallet
+ * imported with older history still has SOMETHING there. But
+ * `BACKFILL_HORIZON_MS` sits right at dataRetention's ~13-month purge
+ * boundary, so that fixed-in-time carry-in point is guaranteed to fall out of
+ * the retention window on some later sweep — and since the backfill only
+ * ever runs once per wallet (guarded by "any rows exist"), the anchor is
+ * never rewritten afterward. The persisted series then starts more recently
+ * than it should for 1yr/all-time.
+ *
+ * That's not just a "1yr regresses to null" problem: `all` always reads
+ * `series[0]`, so once the true earliest point is purged, `all` silently
+ * reports the change since whatever the next-oldest SURVIVING row happens to
+ * be — a wrong number (it can even flip sign), not an honest "no data". Only
+ * d365's cutoff-walk can degrade cleanly to null; `all` can't, so both need
+ * the live reconstruction, not just a null-fill.
+ *
+ * d1/d30 are never exposed to this: retention always keeps the last 30 days
+ * at full hourly resolution, so the persisted values for those stay accurate
+ * regardless of how the >30-day history ages.
+ *
+ * Deliberately does NOT touch the retention purge itself or persist anything:
+ * dataRetention's ~13-month cap on stored balance_snapshots rows is a
+ * privacy-motivated policy (2026-07-06 data audit), and it should keep
+ * dropping old rows exactly as documented. This only patches the READ side so
+ * a purge can never make Home show a horizon that contradicts what's still
+ * honestly reconstructable from data every wallet page already trusts. Falls
+ * back to the persisted d365/all (rather than guessing) when even the live
+ * tx history can't reconstruct a trustworthy total — one wallet's tx data
+ * failing the honesty check (missing timestamps, deltas that don't reconcile
+ * with its scanned balance) makes the CROSS-wallet total untrustworthy too,
+ * so the whole reconstruction is skipped rather than silently omitting that
+ * wallet's share.
+ */
+function changeWithTxFallback(
+	change: HorizonChange,
+	scanned: AggregateInput[],
+	currentTotal: number
+): HorizonChange {
+	if (scanned.length === 0) return change;
+
+	const perWallet: HorizonSeriesPoint[][] = [];
+	for (const w of scanned) {
+		const series = historyFromTxDeltas(w.txs, w.confirmed);
+		if (series === null) return change;
+		perWallet.push(series);
+	}
+
+	const txSeries = mergeWalletSeries(perWallet);
+	const txChange = changesFromHorizonSeries(txSeries, currentTotal);
+	return {
+		d1: change.d1,
+		d30: change.d30,
+		d365: txChange.d365,
+		all: txChange.all
+	};
+}
+
 // ------------------------------------------------------------------ aggregate
 
 /**
@@ -496,7 +595,7 @@ export function assemblePortfolio(
 		recentActivity: activity.slice(0, 10),
 		balanceSeries,
 		sparklines: getSparklines(userId),
-		change: changesFromSeries(balanceSeries, confirmed)
+		change: changeWithTxFallback(changesFromSeries(balanceSeries, confirmed), scanned, confirmed)
 	};
 }
 
