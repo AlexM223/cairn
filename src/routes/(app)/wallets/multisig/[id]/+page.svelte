@@ -15,6 +15,7 @@
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
 	import QuorumArc from '$lib/components/heartwood/QuorumArc.svelte';
 	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
+	import { canOfferSpeedUp } from '$lib/shared/speedUp';
 	import WalletStepChart from '../../[id]/_components/WalletStepChart.svelte';
 	import BalanceHorizons from '$lib/components/portfolio/BalanceHorizons.svelte';
 	import { copyToClipboard } from '$lib/clipboard';
@@ -213,7 +214,10 @@
 
 	async function openSpeedUp(txid: string) {
 		const inflow = speedUpByTxid[txid];
-		if (!inflow) return;
+		// cairn-iare: re-check eligibility (a CPFP-only inflow with an
+		// unresolvable parent fee is deterministically unbumpable) so a stale
+		// deep link or a race with the next background sync is a silent no-op.
+		if (!inflow || !canOfferSpeedUp(inflow)) return;
 		speedUpError = null;
 		speedUpTxid = txid;
 		const saved =
@@ -868,7 +872,7 @@
 											· network fee <Amount sats={tx.fee} size="inline" />
 										{/if}
 									</span>
-									{#if tx.height <= 0 && speedUpByTxid[tx.txid] && data.role !== 'viewer'}
+									{#if tx.height <= 0 && speedUpByTxid[tx.txid] && data.role !== 'viewer' && canOfferSpeedUp(speedUpByTxid[tx.txid])}
 										{#if speedUpTxid === tx.txid}
 											<form
 												class="bump-form"

@@ -232,6 +232,33 @@ describe('detectUnconfirmedInflows (stuck-tx detection §4, cairn-u9ob.2)', () =
 		// defaults our own tx to RBF-capable rather than the costlier CPFP.
 		expect(inflow.action).toBe('rbf');
 	});
+
+	// cairn-iare: the wallet-detail "Speed up" control used to render the
+	// button + rate input for a CPFP-only tx even when the parent's fee was
+	// unresolvable — a submit would always fail with 'parent_fee_unknown'
+	// (feeBump.ts's executeCpfpDraft). detectUnconfirmedInflows now surfaces
+	// that up front so the UI can hide the control instead.
+	it('flags parentFeeUnknown when a successful lookup returns fee: null', async () => {
+		const THEIRS = '22'.repeat(32);
+		getTxMock.mockResolvedValue({ confirmed: false, rbf: false, vsize: 200, fee: null });
+		const [inflow] = await detectUnconfirmedInflows([coin(THEIRS, 0, 0)], new Set());
+		expect(inflow.action).toBe('cpfp');
+		expect(inflow.parentFeeUnknown).toBe(true);
+	});
+
+	it('does not flag parentFeeUnknown when the fee resolves normally', async () => {
+		const THEIRS = '33'.repeat(32);
+		getTxMock.mockResolvedValue({ confirmed: false, rbf: false, vsize: 200, fee: 500 });
+		const [inflow] = await detectUnconfirmedInflows([coin(THEIRS, 0, 0)], new Set());
+		expect(inflow.parentFeeUnknown).toBe(false);
+	});
+
+	it('does not flag parentFeeUnknown on a transient lookup failure (still worth a submit-time retry)', async () => {
+		const OURS = '44'.repeat(32);
+		getTxMock.mockRejectedValue(new Error('backend down'));
+		const [inflow] = await detectUnconfirmedInflows([coin(OURS, 0, 0)], new Set([OURS]));
+		expect(inflow.parentFeeUnknown).toBe(false);
+	});
 });
 
 describe('buildCpfpDraft', () => {

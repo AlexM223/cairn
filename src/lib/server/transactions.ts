@@ -190,6 +190,22 @@ export interface UnconfirmedInflow {
 	 * that no longer signals RBF — e.g. externally-built change).
 	 */
 	action: 'rbf' | 'cpfp';
+	/**
+	 * True when the parent's own network fee could NOT be resolved (Core
+	 * returned fee: null — some prevout couldn't be decorated, see
+	 * toTxDetailFromCore in chain/index.ts). executeCpfpDraft's CPFP fee math
+	 * (feeBump.ts) needs this value and always throws CpfpError
+	 * 'parent_fee_unknown' when it's missing — deterministically, not a
+	 * transient failure, since the same lookup runs again at submit time and
+	 * would return the same null. Only meaningful when `action` is 'cpfp'
+	 * (RBF replacement never reads the parent's fee); the caller uses this to
+	 * hide the CPFP "Speed up" affordance entirely for this tx rather than
+	 * offer a control that's guaranteed to fail with an apology (cairn-iare).
+	 * A lookup that fails outright (network/RPC hiccup, caught below) is a
+	 * DIFFERENT, transient case — left false here so the control still shows
+	 * and a retry at submit time gets a fair shot.
+	 */
+	parentFeeUnknown: boolean;
 }
 
 /**
@@ -227,10 +243,15 @@ export async function detectUnconfirmedInflows(
 		// which Cairn always builds with RBF_SEQUENCE set (§0), so default those to
 		// RBF-capable rather than needlessly steering them to the costlier CPFP.
 		let signalsRbf = ours;
+		// cairn-iare: only a SUCCESSFUL lookup that comes back with fee === null
+		// means CPFP is deterministically impossible for this tx (see the field
+		// doc above) — a failed lookup is transient and must not set this.
+		let parentFeeUnknown = false;
 		try {
 			const detail = await chain.getTx(txid);
 			if (detail.confirmed) continue; // raced a confirmation — no longer stuck
 			signalsRbf = detail.rbf;
+			parentFeeUnknown = detail.fee == null;
 		} catch {
 			/* keep the fallback above */
 		}
@@ -241,7 +262,8 @@ export async function detectUnconfirmedInflows(
 			signalsRbf,
 			ourValueSats: agg.value,
 			vouts: agg.vouts.sort((a, b) => a - b),
-			action: ours && signalsRbf ? 'rbf' : 'cpfp'
+			action: ours && signalsRbf ? 'rbf' : 'cpfp',
+			parentFeeUnknown
 		});
 	}
 	return out;

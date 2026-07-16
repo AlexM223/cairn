@@ -118,6 +118,7 @@ function inflow(over: Partial<UnconfirmedInflow> & { txid: string }): Unconfirme
 		ourValueSats: 5000,
 		vouts: [0],
 		action: 'rbf',
+		parentFeeUnknown: false,
 		...over
 	};
 }
@@ -177,6 +178,18 @@ describe('txOwnership — speedUpWallet (cairn-cqch)', () => {
 		expect(result!.speedUpWallet!.kind).toBe('wallet');
 		expect(result!.speedUpWallet!.id).toBe(walletId);
 		expect(result!.speedUpWallet!.href).toBe(`/wallets/${walletId}`);
+	});
+
+	it('is null for a CPFP-only inflow whose parent fee is unknown (cairn-iare — deterministically unbumpable, don\'t link to a dead control)', () => {
+		const uid = freshUid('Owned CPFP Fee Unknown');
+		const txid = 'c1'.padEnd(64, '0');
+		seedWallet(uid, {
+			txs: [walletTx({ txid, height: 0 })],
+			speedUp: [inflow({ txid, action: 'cpfp', parentFeeUnknown: true })]
+		});
+
+		const result = txOwnership(uid, mkTx({ txid }));
+		expect(result!.speedUpWallet).toBeNull();
 	});
 
 	it('surfaces the owning multisig (owner role) when its snapshot flags the tx as eligible', () => {
