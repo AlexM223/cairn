@@ -25,16 +25,30 @@ describe('moneyOrBtc', () => {
 
 describe('sendCtaLabel', () => {
 	it('labels the review CTA with the total leaving the wallet', () => {
-		expect(sendCtaLabel(100_000, 64_700, 'review')).toBe('Send $64.70');
+		expect(sendCtaLabel(100_000, 64_700, 'review', true)).toBe('Send $64.70');
 	});
 
 	it('labels the confirm CTA with a broadcast verb', () => {
-		expect(sendCtaLabel(100_000, 64_700, 'confirm')).toBe('Broadcast — $64.70');
+		expect(sendCtaLabel(100_000, 64_700, 'confirm', true)).toBe('Broadcast — $64.70');
 	});
 
 	// Fiat-hidden mode carries through to the button copy too.
 	it('falls back to BTC in the label when no price is available', () => {
-		expect(sendCtaLabel(100_000, null, 'review')).toBe('Send 0.001 BTC');
-		expect(sendCtaLabel(100_000, null, 'confirm')).toBe('Broadcast — 0.001 BTC');
+		expect(sendCtaLabel(100_000, null, 'review', true)).toBe('Send 0.001 BTC');
+		expect(sendCtaLabel(100_000, null, 'confirm', true)).toBe('Broadcast — 0.001 BTC');
+	});
+
+	// cairn-r494 central enforcement: Settings -> Display "Fiat display: Hidden"
+	// must win even when a live price IS known, same as Amount.svelte's
+	// resolveAmountPrice(). The CTA falls back to the BTC/sats-only label.
+	describe('when fiatVisible is false', () => {
+		it('renders BTC even though a price is known', () => {
+			expect(sendCtaLabel(100_000, 64_700, 'review', false)).toBe('Send 0.001 BTC');
+			expect(sendCtaLabel(100_000, 64_700, 'confirm', false)).toBe('Broadcast — 0.001 BTC');
+		});
+
+		it('still renders BTC when no price is known either', () => {
+			expect(sendCtaLabel(100_000, null, 'review', false)).toBe('Send 0.001 BTC');
+		});
 	});
 });

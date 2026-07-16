@@ -17,12 +17,20 @@ export function moneyOrBtc(sats: number, btcUsd: number | null): string {
 
 /** The primary send/broadcast button label, carrying the total that leaves the
  *  wallet so "did the fee come out of my amount or on top?" is never a question.
- *  review → "Send $250.42"  ·  confirm → "Broadcast — $250.42". */
+ *  review → "Send $250.42"  ·  confirm → "Broadcast — $250.42".
+ *
+ *  `fiatVisible` gates the fiat rendering the same way Amount.svelte's
+ *  resolveAmountPrice() does (cairn-r494 central enforcement): when the
+ *  Settings -> Display "Fiat display" toggle is Hidden, the CTA falls back to
+ *  the BTC/sats-only label regardless of whether a live price is known. This
+ *  does not touch AmountEntry's fiat-entry input mode, which stays exempt by
+ *  design (an input the user actively typed fiat into isn't a display readout). */
 export function sendCtaLabel(
 	totalSats: number,
 	btcUsd: number | null,
-	mode: 'review' | 'confirm'
+	mode: 'review' | 'confirm',
+	fiatVisible: boolean
 ): string {
-	const money = moneyOrBtc(totalSats, btcUsd);
+	const money = moneyOrBtc(totalSats, fiatVisible ? btcUsd : null);
 	return mode === 'review' ? `Send ${money}` : `Broadcast — ${money}`;
 }

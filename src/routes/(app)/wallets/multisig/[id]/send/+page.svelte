@@ -22,7 +22,7 @@
 	import BroadcastGraceControl from '$lib/components/send/BroadcastGraceControl.svelte';
 	import { sendCtaLabel } from '$lib/components/send/sendMoney';
 	import { arrivalWords, type FeeChoiceKey } from '$lib/components/send/sendCopy';
-	import { btcUsd } from '$lib/price';
+	import { btcUsd, fiatVisible } from '$lib/price';
 	import { scrollToTop } from '$lib/scrollToTop';
 	import type { ConstructedMultisigPsbt, MultisigSigningProgress } from '$lib/server/bitcoin/multisigPsbt';
 	// Signing-mass estimator: the pure constants + math live in the shared
@@ -1118,7 +1118,7 @@
 					onclick={() => (step = 'sign')}
 					disabled={!reviewRecipientVerified}
 				>
-					{sendCtaLabel(review.amount + review.fee, $btcUsd, 'review')}
+					{sendCtaLabel(review.amount + review.fee, $btcUsd, 'review', $fiatVisible)}
 					<Icon name="arrow-right" size={15} />
 				</button>
 			</div>
@@ -1533,7 +1533,7 @@
 					<Icon name="chevron-left" size={15} /> Back
 				</button>
 				<BroadcastGraceControl
-					label={sendCtaLabel(review.amount + review.fee, $btcUsd, 'confirm')}
+					label={sendCtaLabel(review.amount + review.fee, $btcUsd, 'confirm', $fiatVisible)}
 					disabled={broadcasting}
 					onbroadcast={() => void broadcast()}
 					bind:counting={graceCounting}
