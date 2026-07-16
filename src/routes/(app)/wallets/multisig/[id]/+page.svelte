@@ -16,6 +16,7 @@
 	import QuorumArc from '$lib/components/heartwood/QuorumArc.svelte';
 	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
 	import { canOfferSpeedUp } from '$lib/shared/speedUp';
+	import { shouldShowNetworkFee } from '$lib/shared/txRow';
 	import WalletStepChart from '../../[id]/_components/WalletStepChart.svelte';
 	import BalanceHorizons from '$lib/components/portfolio/BalanceHorizons.svelte';
 	import { copyToClipboard } from '$lib/clipboard';
@@ -868,8 +869,10 @@
 										<a href="/explorer/tx/{tx.txid}" class="mono hw-tx-link"
 											>{truncateMiddle(tx.txid, 8, 8)}</a
 										>
-										{#if tx.fee != null}
-											· network fee <Amount sats={tx.fee} size="inline" />
+										{#if shouldShowNetworkFee(tx)}
+											<!-- cairn-jcwb: only break out the fee for outgoing rows — see
+											     the single-sig wallet detail page for the full rationale. -->
+											· network fee <Amount sats={tx.fee ?? 0} size="inline" />
 										{/if}
 									</span>
 									{#if tx.height <= 0 && speedUpByTxid[tx.txid] && data.role !== 'viewer' && canOfferSpeedUp(speedUpByTxid[tx.txid])}

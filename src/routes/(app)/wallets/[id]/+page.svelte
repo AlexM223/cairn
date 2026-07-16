@@ -17,6 +17,7 @@
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
 	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
 	import { canOfferSpeedUp } from '$lib/shared/speedUp';
+	import { shouldShowNetworkFee } from '$lib/shared/txRow';
 	import WalletStepChart from './_components/WalletStepChart.svelte';
 	import BalanceHorizons from '$lib/components/portfolio/BalanceHorizons.svelte';
 	import { copyToClipboard } from '$lib/clipboard';
@@ -984,8 +985,16 @@
 										· <a href={`/explorer/tx/${tx.txid}`} class="mono hw-tx-link"
 											>{truncateMiddle(tx.txid, 8, 8)}</a
 										>
-										{#if tx.fee != null}
-											· network fee <Amount sats={tx.fee} size="inline" />
+										{#if shouldShowNetworkFee(tx)}
+											<!-- cairn-jcwb: the fee is the WHOLE tx's network fee (every
+											     input/output, not just ours — see gapLimitScanner's
+											     txDeltaFromRaw). For an outgoing tx it's genuinely part of
+											     what left this wallet, worth breaking out. For an incoming
+											     (received) tx it's the SENDER's cost, unrelated to what this
+											     wallet got — showing it here just put a second, unlabeled
+											     amount next to "Received" that competed with the real
+											     figure on the right (tx.delta). -->
+											· network fee <Amount sats={tx.fee ?? 0} size="inline" />
 										{/if}
 										{#if !labels[tx.txid] && editingTxid !== tx.txid}
 											<button
