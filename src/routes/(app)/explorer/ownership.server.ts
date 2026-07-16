@@ -23,6 +23,7 @@ import { db } from '$lib/server/db';
 import { listWalletRows } from '$lib/server/wallets';
 import { readWalletSnapshot, readMultisigSnapshot } from '$lib/server/walletSync';
 import { multisigAccessRole } from '$lib/server/multisigShares';
+import { canOfferSpeedUp } from '$lib/shared/speedUp';
 import type { TxDetail } from '$lib/types';
 
 /** A wallet the viewing user has access to, plus the route back to its detail page. */
@@ -192,7 +193,11 @@ function buildIndex(userId: number): UserWalletIndex {
 			}
 		}
 		for (const s of snap.speedUp) {
-			if (!speedUp.has(s.txid)) speedUp.set(s.txid, ref);
+			// cairn-iare: don't offer the "Speed this up" CTA for a tx whose only
+			// eligible action (CPFP) is deterministically unbuildable — it would
+			// send the viewer to a wallet-detail page with no control there to
+			// find, since the wallet-detail page applies this same check.
+			if (!speedUp.has(s.txid) && canOfferSpeedUp(s)) speedUp.set(s.txid, ref);
 		}
 	}
 
@@ -222,7 +227,9 @@ function buildIndex(userId: number): UserWalletIndex {
 		// don't offer the explorer CTA either.
 		if (multisigAccessRole(userId, m.id) !== 'viewer') {
 			for (const s of snap.speedUp) {
-				if (!speedUp.has(s.txid)) speedUp.set(s.txid, ref);
+				// cairn-iare: see the single-sig loop above — skip a deterministically
+				// unbuildable CPFP-only inflow rather than link to a dead control.
+				if (!speedUp.has(s.txid) && canOfferSpeedUp(s)) speedUp.set(s.txid, ref);
 			}
 		}
 	}
