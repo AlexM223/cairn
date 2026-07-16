@@ -16,8 +16,14 @@
 	// Pages that keep their own privacy-gated price (e.g. the dashboard's
 	// existing show/hide-fiat toggle) can pass `price` explicitly — including
 	// `null` to force the BTC-only look regardless of what the store has.
-	import { btcUsd, fiatPrimaryPref } from '$lib/price';
-	import { formatBtc, formatSats, formatFiat, btcToFiat, isFiatPrimary } from '$lib/format';
+	//
+	// Regardless of what a call site passes, the Settings -> Display "Fiat
+	// display: Hidden" toggle (`fiatVisible`, cairn-r494) always wins: this is
+	// the single central place that setting is enforced, so no call site —
+	// present or future — can leak a dollar figure by forgetting to gate
+	// itself. See `resolveAmountPrice` in `$lib/format` for the precedence.
+	import { btcUsd, fiatPrimaryPref, fiatVisible } from '$lib/price';
+	import { formatBtc, formatSats, formatFiat, btcToFiat, isFiatPrimary, resolveAmountPrice } from '$lib/format';
 
 	let {
 		sats,
@@ -51,7 +57,7 @@
 
 	const satsValue = $derived(sats ?? Math.round((btc ?? 0) * 1e8));
 	const btcValue = $derived(satsValue / 1e8);
-	const effectivePrice = $derived(price === undefined ? $btcUsd : price);
+	const effectivePrice = $derived(resolveAmountPrice($fiatVisible, price, $btcUsd));
 	const fiatValue = $derived(
 		effectivePrice != null ? btcToFiat(Math.abs(btcValue), effectivePrice) : null
 	);

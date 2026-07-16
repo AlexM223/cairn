@@ -125,6 +125,36 @@ export function gatedFiatPrice(showFiat: boolean, usdPrice: number | null): numb
 	return showFiat ? usdPrice : null;
 }
 
+/**
+ * Central enforcement point for the Settings -> Display "Fiat display:
+ * Hidden / USD shown" toggle (cairn-r494). Amount.svelte is the only place a
+ * fiat figure ever reaches the screen, so this is where the setting is
+ * enforced — not at each of Amount's ~20 call sites. Before this, only the
+ * three page heroes (Home, wallet-detail, multisig-detail) remembered to
+ * compute their own gated `price` via `gatedFiatPrice()`; every other call
+ * site (tx rows, fee lines, address balances, …) passed no `price` at all and
+ * fell through to Amount's default live `$btcUsd` subscription, which had no
+ * idea the setting existed — a dollar figure could always leak through simply
+ * by a call site forgetting to gate itself.
+ *
+ * `fiatVisible` wins unconditionally: when false this returns `null` (forcing
+ * the BTC-only look) even if a call site explicitly passed a non-null
+ * `price` — "Hidden" must mean hidden regardless of what any one call site
+ * thinks it knows, not just when a call site remembers to ask nicely. Only
+ * when `fiatVisible` is true does the normal price resolution apply: an
+ * explicit `price` prop (including an explicit `null`, e.g. a hero's own
+ * not-yet-loaded snapshot) wins over the live store; omitting `price`
+ * entirely (`undefined`) falls back to the shared live-ticking store.
+ */
+export function resolveAmountPrice(
+	fiatVisible: boolean,
+	explicitPrice: number | null | undefined,
+	liveStorePrice: number | null
+): number | null {
+	if (!fiatVisible) return null;
+	return explicitPrice === undefined ? liveStorePrice : explicitPrice;
+}
+
 /** 1234.5 -> "$1,234.50"; large amounts compact to "$1.2M" etc. */
 export function formatFiat(usd: number): string {
 	const abs = Math.abs(usd);

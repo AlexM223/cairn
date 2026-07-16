@@ -7,7 +7,7 @@
 	import Toasts from '$lib/components/Toasts.svelte';
 	import { toast } from '$lib/components/toast.svelte';
 	import { addPasskey, browserSupportsWebAuthn } from '$lib/passkey';
-	import { fiatPrimaryPref, setFiatPrimaryPref } from '$lib/price';
+	import { fiatPrimaryPref, setFiatPrimaryPref, fiatVisible, setFiatVisible } from '$lib/price';
 	import type { CredentialInfo } from '$lib/types';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
@@ -144,16 +144,16 @@
 
 	// --- Fiat display toggle (UX redesign Phase 1, cairn-gt05.1) -------------
 	// Moved here from Home (spec §2.1 "Fiat toggle → moves to Settings →
-	// Display. Home just honors the setting."). Same `cairn.fiat` localStorage
-	// key Home's gated fiat fetch already reads (cairn-vnfs privacy seam) — no
-	// migration needed, this is just where the switch now lives.
-	let showFiat = $state(false);
-	$effect(() => {
-		showFiat = localStorage.getItem('cairn.fiat') === 'on';
-	});
+	// Display. Home just honors the setting."). Backed by the shared
+	// `fiatVisible` store (`$lib/price`, cairn-r494) rather than a
+	// component-local copy of the `cairn.fiat` localStorage read: Amount.svelte
+	// now enforces this setting centrally on every money readout app-wide, so
+	// flipping the toggle here must update that shared store immediately —
+	// not just this page's own local state — or a same-session SPA navigation
+	// to another page would still see the stale pre-toggle value.
+	const showFiat = $derived($fiatVisible);
 	function setFiat(on: boolean) {
-		showFiat = on;
-		localStorage.setItem('cairn.fiat', on ? 'on' : 'off');
+		setFiatVisible(on);
 	}
 
 	// --- Theme (Settings → Display "Theme" row, cairn-sdx5.7) ----------------

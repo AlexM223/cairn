@@ -14,7 +14,8 @@ import {
 	formatFiat,
 	gatedFiatPrice,
 	isFiatPrimary,
-	chunkString
+	chunkString,
+	resolveAmountPrice
 } from './format';
 
 describe('formatBtc', () => {
@@ -250,6 +251,40 @@ describe('gatedFiatPrice', () => {
 
 	it('stays null (not a fake $0) while the toggle is on but the price has not loaded yet', () => {
 		expect(gatedFiatPrice(true, null)).toBeNull();
+	});
+});
+
+describe('resolveAmountPrice', () => {
+	// cairn-r494: Amount.svelte's central enforcement point for Settings ->
+	// Display's "Fiat display: Hidden" toggle. Reproduces the wallet-detail
+	// leak — tx-row/fee/address Amount instances pass no `price` prop at all
+	// — and asserts the fix holds for every combination of inputs.
+	it('is BTC-only when hidden, even though a call site passed no price (the exact wallet-detail leak)', () => {
+		expect(resolveAmountPrice(false, undefined, 65_000)).toBeNull();
+	});
+
+	it('is BTC-only when hidden even if a call site explicitly passed a loaded price — Hidden wins regardless of price prop', () => {
+		expect(resolveAmountPrice(false, 65_000, 65_000)).toBeNull();
+	});
+
+	it('is BTC-only when hidden even if a call site explicitly passed null already', () => {
+		expect(resolveAmountPrice(false, null, 65_000)).toBeNull();
+	});
+
+	it('falls back to the live store price when visible and no explicit price was passed (the default call-site shape)', () => {
+		expect(resolveAmountPrice(true, undefined, 65_000)).toBe(65_000);
+	});
+
+	it('honors an explicit price prop over the live store when visible (hero snapshot pattern)', () => {
+		expect(resolveAmountPrice(true, 70_000, 65_000)).toBe(70_000);
+	});
+
+	it('honors an explicit null price when visible — a hero whose own snapshot has not loaded yet stays BTC-only, not a fake fallback to the live store', () => {
+		expect(resolveAmountPrice(true, null, 65_000)).toBeNull();
+	});
+
+	it('stays null when visible but neither an explicit price nor the live store has a value yet', () => {
+		expect(resolveAmountPrice(true, undefined, null)).toBeNull();
 	});
 });
 

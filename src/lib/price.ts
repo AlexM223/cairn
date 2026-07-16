@@ -66,3 +66,35 @@ export function setFiatPrimaryPref(on: boolean): void {
 	fiatPrimaryPref.set(on);
 	if (browser) localStorage.setItem(FIAT_PRIMARY_KEY, on ? 'on' : 'off');
 }
+
+// --- Fiat visibility preference (cairn-r494) ---------------------------------
+// Settings -> Display's "Fiat display: Hidden / USD shown" toggle, persisted
+// under the same `cairn.fiat` localStorage key Home/wallet-detail heroes
+// already read for their own privacy-gated snapshot fetch (cairn-r7si,
+// cairn-d326). Those three heroes each compute their own gated price and pass
+// it explicitly to Amount via the `price` prop — but every *other* Amount call
+// site app-wide (tx rows, fee lines, address balances, etc.) previously fell
+// through to Amount's default, which subscribes to the raw live-ticking
+// `$btcUsd` store with zero awareness of this setting, leaking fiat on the
+// wallet-detail pages whenever it was set to Hidden.
+//
+// Amount.svelte now reads this store directly and is the single, central
+// enforcement point (`resolveAmountPrice` in `$lib/format`): whatever a call
+// site passes or doesn't pass as `price`, a Hidden setting always wins. Every
+// setter of the `cairn.fiat` key (currently just the Settings page) must call
+// `setFiatVisible` rather than writing localStorage directly, so this store —
+// and every Amount subscribed to it — updates immediately, including across
+// client-side navigation within the same session.
+const FIAT_VISIBLE_KEY = 'cairn.fiat';
+
+function readFiatVisible(): boolean {
+	if (!browser) return false;
+	return localStorage.getItem(FIAT_VISIBLE_KEY) === 'on';
+}
+
+export const fiatVisible = writable<boolean>(readFiatVisible());
+
+export function setFiatVisible(on: boolean): void {
+	fiatVisible.set(on);
+	if (browser) localStorage.setItem(FIAT_VISIBLE_KEY, on ? 'on' : 'off');
+}

@@ -8,7 +8,7 @@
 	import type { Snippet } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import Amount from '$lib/components/Amount.svelte';
-	import { btcUsd } from '$lib/price';
+	import { btcUsd, fiatVisible } from '$lib/price';
 	import {
 		formatSats,
 		formatFeeRate,
@@ -144,10 +144,13 @@
 
 	// The amount string for the summary sentence: "$250.00 (0.0031 BTC)" when a
 	// price is known, else "0.0031 BTC". Display-only text (Amount.svelte owns
-	// every visual money readout).
+	// every visual money readout) — this hand-rolled string is a bare
+	// formatFiat call site, so it must honor the Settings -> Display "Fiat
+	// display: Hidden" toggle itself rather than relying on Amount's central
+	// gate (cairn-r494) the way every other money readout on this card does.
 	const amountText = $derived.by(() => {
 		const btc = `${formatBtc(amountSats)} BTC`;
-		if ($btcUsd == null) return btc;
+		if (!$fiatVisible || $btcUsd == null) return btc;
 		return `${formatFiat((amountSats / SATS_PER_BTC) * $btcUsd)} (${btc})`;
 	});
 
@@ -172,10 +175,11 @@
 	// Fiat suffix for Details-expander money rows (change/total-input/per-UTXO):
 	// muted "· $12.34" alongside the sats value, matching the fee-pct suffix
 	// style already in the fee-rate row. Degrades to null (sats-only, no
-	// broken/empty fiat text) when no price is available — same rule Amount.svelte
-	// applies everywhere else money is shown.
+	// broken/empty fiat text) when no price is available, or when the user has
+	// set Fiat display to Hidden (cairn-r494) — same central-gate rule
+	// Amount.svelte applies everywhere else money is shown.
 	function fiatSuffix(sats: number): string | null {
-		if ($btcUsd == null) return null;
+		if (!$fiatVisible || $btcUsd == null) return null;
 		return formatFiat(btcToFiat(sats / SATS_PER_BTC, $btcUsd));
 	}
 
