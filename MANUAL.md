@@ -1260,6 +1260,19 @@ two prior parallel implementations during the dedup refactor.
 - `BumpError`/`CpfpError` are typed error classes with closed `code` unions
   the UI branches on.
 
+**Offering the Speed up control (`src/lib/shared/speedUp.ts`, `canOfferSpeedUp()`,
+cairn-iare):** when a CPFP target's `parent_fee_unknown` case (above — some
+prevout wasn't decorated, so the parent's own fee genuinely can't be
+computed) is deterministic rather than transient, a retry at submit time
+hits the exact same lookup and fails the exact same way. Both wallet-detail
+pages and the explorer tx-detail "Speed this up" CTA now call this one
+pure predicate before rendering the button/rate input at all, so the
+control simply isn't offered for an unconfirmed inflow it can never
+service — no more broken affordance sitting next to its own
+"can't be computed" apology after a failed submit. RBF replacement never
+reads the parent's fee, so `canOfferSpeedUp` always returns true for it;
+RBF eligibility is unaffected by this gate.
+
 `transactions.ts` re-exports `BumpError`, `CpfpError`, `cpfpChildFee` from
 `feeBump.ts` "so existing importers... keep working unchanged" — a shim
 comment documenting the refactor's compatibility surface.
@@ -2493,7 +2506,7 @@ Pages under `(app)`:
 | `activity/+page.svelte` | user activity feed |
 | `wallets/+page.svelte` | wallet list |
 | `wallets/new/+page.svelte` | single-sig add-wallet wizard (§9.4) |
-| `wallets/[id]/+page.svelte` | single-sig wallet detail — **available-vs-maturing split** (`cairn-oae1.3`): Electrum's `confirmed` balance counts an immature coinbase (mining reward) output as spendable, but the send engine's `selectSpendCandidates` refuses to spend it (§ above) — showing the raw Electrum figure as "available" was misleading. `walletSync.ts`'s snapshot now carries a `maturingTotal` field (sum of coinbase-UTXO value not yet mature at the snapshot's `tipHeight`, computed by `sumImmatureCoinbase()`); the hero balance renders `scan.confirmed - maturingTotal` as the honest available figure, with a secondary "· N maturing — mining rewards not yet spendable" line (only shown when `maturingTotal > 0`) linking to the `#mining-rewards` anchor on the `MiningRewards` card below. `scan.confirmed` itself is UNCHANGED in the snapshot (still the full net-worth total the portfolio aggregate / list-view summaries rely on) — the split is a display-layer computation, not a data-model change. Same split applied to `wallets/multisig/[id]/+page.svelte` below. |
+| `wallets/[id]/+page.svelte` | single-sig wallet detail — **available-vs-maturing split** (`cairn-oae1.3`): Electrum's `confirmed` balance counts an immature coinbase (mining reward) output as spendable, but the send engine's `selectSpendCandidates` refuses to spend it (§ above) — showing the raw Electrum figure as "available" was misleading. `walletSync.ts`'s snapshot now carries a `maturingTotal` field (sum of coinbase-UTXO value not yet mature at the snapshot's `tipHeight`, computed by `sumImmatureCoinbase()`); the hero balance renders `scan.confirmed - maturingTotal` as the honest available figure, with a secondary "· N maturing — mining rewards not yet spendable" line (only shown when `maturingTotal > 0`) linking to the `#mining-rewards` anchor on the `MiningRewards` card below. `scan.confirmed` itself is UNCHANGED in the snapshot (still the full net-worth total the portfolio aggregate / list-view summaries rely on) — the split is a display-layer computation, not a data-model change. Same split applied to `wallets/multisig/[id]/+page.svelte` below. **Tx row coherence (`src/lib/shared/txRow.ts`, `cairn-jcwb`, v0.2.33):** `shouldShowNetworkFee()` only breaks out the row's "network fee" meta line when `delta < 0` — on a received (`delta >= 0`) row the fee is the *sender's* cost, not this wallet's, and showing it right next to "Received" read as a second, competing figure on the same row (DESIGN-MANIFESTO's "one hero number, never a competing figure" rule at row scope); an outgoing row still shows it since the fee genuinely came out of this wallet alongside the recipient amount. **Speed up control gating (`src/lib/shared/speedUp.ts`, `canOfferSpeedUp()`, `cairn-iare`, v0.2.33):** the inline Speed up button/rate input on an unconfirmed inflow is only rendered when `canOfferSpeedUp()` returns true — false only for the deterministic CPFP `parent_fee_unknown` case (§ shared fee-bump engine above), where a retry can never succeed because the same prevout-decoration lookup runs again at submit time; RBF replacement never reads the parent's fee so it's never gated off by this. Same predicate reused by the explorer tx-detail "Speed this up" CTA (`ownership.server.ts`) so all three surfaces can't drift apart on when to offer a control that's guaranteed to fail. Same tx-row helpers apply to `wallets/multisig/[id]/+page.svelte` below. |
 | `wallets/[id]/send/+page.svelte` | single-sig send flow (§9.4) — the eyebrow's "available" figure and the max-amount client validation both come from `+page.server.ts`'s streamed `live.confirmed`, which now has immature-coinbase value folded out (`live.maturingTotal` carries the excluded sum) so client-side validation agrees with what the build engine will actually accept (`cairn-oae1.3`); a "Plus N from a mining reward still maturing" hint appears under the amount field when `maturingTotal > 0` |
 | `wallets/multisig/new/+page.svelte` | multisig creation wizard (§9.4) |
 | `wallets/multisig/[id]/+page.svelte` | multisig vault detail — same available-vs-maturing split as the single-sig detail page above (`MultisigSnapshot.maturingTotal`, `cairn-oae1.3`) |
@@ -2546,6 +2559,33 @@ store — so the fiat secondary line there updates only on navigation, never
 mid-view (F1: a live-repainting number is a fresh loss-aversion evaluation
 event every tick; `cairn-d326`, v0.2.27). Every other `Amount` call site
 (explorer, send review, activity, etc.) is unaffected and still live-ticks.
+
+**Fiat display: Hidden, centrally enforced (`cairn-r494`, v0.2.33):**
+Settings → Display also has a "Fiat display: Hidden / USD shown" toggle,
+persisted as `cairn.fiat` and read through a new shared `fiatVisible` store
+in `$lib/price` (companion to `fiatPrimaryPref` above — separate concerns:
+one picks which line leads, the other decides whether a fiat line renders
+at all). Before this fix only the 3 page heroes (Home, both wallet-detail
+pages) computed their own gated price and passed it explicitly; every other
+`Amount` call site — tx rows, fee lines, address balances, maturing/
+unconfirmed inline amounts, the two bare `formatFiat` calls in
+`SendReviewCard` — fell through to the raw live `$btcUsd` store with no
+awareness of the setting and leaked fiat on wallet-detail pages regardless.
+`Amount.svelte` now resolves its price through `resolveAmountPrice()`
+(`$lib/format`) as the single enforcement point: `fiatVisible` false always
+wins, even overriding an explicit `price` prop passed by a hero. Every
+setter of the `cairn.fiat` key must go through `setFiatVisible()` rather
+than writing `localStorage` directly (Settings does), so the store — and
+every mounted `Amount` — updates live across client-side navigation within
+the same session, no reload required. The send flow's CTA button label
+(`sendCtaLabel`/`moneyOrBtc`, `$lib/components/send/sendMoney.ts` — a plain
+string, not a rendered `Amount`, so it can't subscribe to the store itself)
+takes the same `fiatVisible` boolean as an explicit 4th argument from its
+two call sites (`cairn-9y49`) so "Send $x.xx" / "Broadcast — $x.xx" also
+falls back to a BTC/sats-only label when hidden. `AmountEntry`'s
+fiat-entry input mode is deliberately exempt — an amount the user is
+actively typing in fiat isn't a display readout the setting governs.
+
 Used app-wide including the
 stateless multisig flow, single-sig send, explorer address history, and the
 wallet unconfirmed-incoming line — PSBT "verify against your device" panels,
