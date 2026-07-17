@@ -2877,9 +2877,20 @@ exact order, first match wins:
    empty — a wallet needs an `xpub` to be payout-eligible) — a blocking
    "you need a wallet first" card linking to `/wallets`; the wallet
    selector itself is suppressed rather than shown empty.
-5. `!view.connection` (the user has never enabled mining, so
-   `ensureMiningPrefs`/a `mining_id` doesn't exist yet for them) — the
-   "Enable mining" onboarding card.
+5. `!view.connection` — the user currently has mining turned off, whether
+   they've never enabled it (no `mining_id` minted yet) or they enabled it
+   once and later disabled it (`prefs.enabled === false`) — the "Enable
+   mining" onboarding card. `getUserMiningView` requires **both**
+   `prefs.miningId` and `prefs.enabled` to build `connection` (`cairn-p10q`,
+   v0.2.34): a `mining_id`, once minted, is permanent (`ensureMiningPrefs`
+   never clears it on disable), so gating on its mere existence made this
+   state unreachable again after a user's first-ever enable — the page kept
+   rendering a live-looking connection card and "Turn off mining" button
+   with dead credentials. Past `earnings.blocksFound` still render below the
+   onboarding card in this state (blocks are historical fact, independent of
+   whether mining is currently on); the live worker list stays gated behind
+   `connection` since a disabled user's miner can't authorize against the
+   Stratum auth table anyway. Re-enabling reuses the same `mining_id`.
 6. Otherwise: the full dashboard (hero, connection card, payout wallet,
    worker list, earnings, odds). A connected-but-workerless state (mining
    enabled, `mining_id` exists, no miner has ever connected) is **not** a
