@@ -342,6 +342,16 @@ export class MiningAggregates {
 		for (const s of this.workers.values()) this.pruneWindow(s);
 	}
 
+	/** Test-only: current rolling-window entry count for a worker. */
+	windowSizeForTest(userId: number, worker: string): number {
+		return this.workers.get(keyOf(userId, worker))?.window.length ?? 0;
+	}
+
+	/** Test-only: count of open (not-yet-flushed) minute buckets. */
+	openBucketCountForTest(): number {
+		return this.buckets.size;
+	}
+
 	/** Drop all in-memory state (engine stop / tests). Does NOT touch the DB. */
 	reset(): void {
 		this.workers.clear();

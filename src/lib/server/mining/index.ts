@@ -316,7 +316,7 @@ function allTimeBest(userId: number): number {
  * most one per user per day. Only fires once a baseline exists (the first-ever
  * best just seeds the baseline silently).
  */
-function maybeBestShareNotify(e: ShareEvent): void {
+export function maybeBestShareNotify(e: ShareEvent): void {
 	const d = e.difficulty;
 	if (!Number.isFinite(d) || d <= 0) return;
 	const baseline = allTimeBest(e.userId);
@@ -341,7 +341,7 @@ function maybeBestShareNotify(e: ShareEvent): void {
 
 // -------------------------------------------------------------- block hooks
 
-async function handleBlockAccepted(
+export async function handleBlockAccepted(
 	solve: SolveEvent,
 	blockHash: string,
 	coinbaseTxid: string
@@ -432,7 +432,7 @@ async function handleBlockAccepted(
 	}
 }
 
-function handleBlockRejected(solve: SolveEvent, reason: string): void {
+export function handleBlockRejected(solve: SolveEvent, reason: string): void {
 	log.error({ height: solve.height, reason }, 'BLOCK REJECTED by bitcoind');
 	try {
 		// A rejected solve has no accepted block hash; store a synthetic unique key
