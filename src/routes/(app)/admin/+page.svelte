@@ -201,6 +201,11 @@
 		<a class="row-action" href="/admin/settings">Change</a>
 	</div>
 	<div class="kv">
+		<span class="k">Mining</span>
+		<span class="v">Solo pool for this instance's users</span>
+		<a class="row-action" href="/admin/mining">Manage</a>
+	</div>
+	<div class="kv">
 		<span class="k">Config backup</span>
 		{#if backupStale}
 			<span class="v stale"><span class="dot-badge amber"></span>{backupLabel}</span>

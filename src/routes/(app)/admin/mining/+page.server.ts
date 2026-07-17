@@ -1,0 +1,131 @@
+import { fail } from '@sveltejs/kit';
+import { getAdminMiningView } from '$lib/server/mining/readModels';
+import {
+	reconfigureMiningEngine,
+	startMiningEngine,
+	stopMiningEngine
+} from '$lib/server/mining';
+import { getSetting, setSetting } from '$lib/server/settings';
+import { childLogger } from '$lib/server/logger';
+import { DEGRADED_ADMIN_MINING_VIEW, type MiningBind } from '$lib/components/mining/adminMiningView';
+import type { Actions, PageServerLoad } from './$types';
+
+const log = childLogger('admin-mining');
+
+// Admin guard: identical to every other /admin/** route
+// (src/routes/(app)/admin/+layout.server.ts already redirects non-admins
+// before this ever loads, but every action below re-checks explicitly — the
+// same belt-and-suspenders convention as admin/settings/+page.server.ts's
+// `resetInstance` action.)
+function requireAdmin(locals: App.Locals) {
+	return locals.user?.isAdmin === true;
+}
+
+const MINING_BINDS: readonly MiningBind[] = ['loopback', 'lan', 'all'];
+
+export const load: PageServerLoad = async () => {
+	// The mining engine/read-model module is being built in the same wave
+	// (cairn-vn43) — wrap in try/catch so a not-yet-landed module or a live
+	// read failure degrades to a calm "nothing running" view instead of a
+	// 500 (this route's contract, mirrors admin/settings' defensive loads).
+	try {
+		const view = await getAdminMiningView();
+		return { view };
+	} catch (e) {
+		log.warn({ err: e }, 'getAdminMiningView() failed — serving degraded view');
+		return { view: DEGRADED_ADMIN_MINING_VIEW };
+	}
+};
+
+export const actions: Actions = {
+	save: async ({ request, locals }) => {
+		if (!requireAdmin(locals)) return fail(403, { error: 'Admin access required.' });
+		const form = await request.formData();
+
+		const enabled = form.get('enabled') === 'on';
+
+		const bind = String(form.get('bind') ?? 'loopback');
+		if (!MINING_BINDS.includes(bind as MiningBind))
+			return fail(400, { error: 'Invalid bind option.' });
+
+		const port = Number(form.get('port'));
+		if (!Number.isInteger(port) || port < 1 || port > 65535)
+			return fail(400, { error: 'Stratum port must be between 1 and 65535.' });
+
+		const shareDifficulty = Number(form.get('shareDifficulty'));
+		if (!Number.isFinite(shareDifficulty) || shareDifficulty <= 0)
+			return fail(400, { error: 'Share difficulty must be greater than 0.' });
+
+		const vardiffEnabled = form.get('vardiffEnabled') === 'on';
+
+		const vardiffTargetPerMin = Number(form.get('vardiffTargetPerMin'));
+		if (!Number.isFinite(vardiffTargetPerMin) || vardiffTargetPerMin < 1 || vardiffTargetPerMin > 60)
+			return fail(400, {
+				error: 'Vardiff target must be between 1 and 60 shares per minute.'
+			});
+
+		// Pool tag is embedded in the coinbase scriptSig — plain ASCII only, and
+		// capped well under scriptSig space (mirrors the ~24-byte cap other solo
+		// pools use for a BIP34-height-plus-tag coinbase).
+		const poolTag = String(form.get('poolTag') ?? '').trim();
+		if (poolTag.length > 24) return fail(400, { error: 'Pool tag must be 24 characters or fewer.' });
+		// eslint-disable-next-line no-control-regex -- deliberately matching printable ASCII only
+		if (!/^[\x20-\x7e]*$/.test(poolTag))
+			return fail(400, { error: 'Pool tag must be plain ASCII text.' });
+
+		setSetting('mining_enabled', enabled ? 'true' : 'false');
+		setSetting('mining_bind', bind);
+		setSetting('mining_stratum_port', String(port));
+		setSetting('mining_share_difficulty', String(shareDifficulty));
+		setSetting('mining_vardiff_enabled', vardiffEnabled ? 'true' : 'false');
+		setSetting('mining_vardiff_target_rate', String(vardiffTargetPerMin));
+		setSetting('mining_pool_tag', poolTag);
+
+		try {
+			await reconfigureMiningEngine();
+		} catch (e) {
+			log.error({ err: e }, 'reconfigureMiningEngine() failed after settings save');
+			return fail(500, { error: 'Settings saved, but the mining engine failed to restart with them.' });
+		}
+
+		return { saved: true };
+	},
+
+	/**
+	 * Quick start/stop from the engine health panel — flips only mining_enabled
+	 * (the settings form's other fields are untouched) and drives the engine
+	 * directly, rather than a full reconfigure, so a stopped engine starts
+	 * fast and a bad config elsewhere doesn't block a plain stop.
+	 */
+	startStop: async ({ locals }) => {
+		if (!requireAdmin(locals)) return fail(403, { error: 'Admin access required.' });
+
+		const enabling = getSetting('mining_enabled') !== 'true';
+		setSetting('mining_enabled', enabling ? 'true' : 'false');
+
+		try {
+			if (enabling) await startMiningEngine();
+			else await stopMiningEngine();
+		} catch (e) {
+			log.error({ err: e }, 'startMiningEngine/stopMiningEngine failed');
+			return fail(500, {
+				error: enabling
+					? 'Could not start the mining engine — check the fatal errors below.'
+					: 'Could not stop the mining engine cleanly.'
+			});
+		}
+
+		return { toggled: true };
+	},
+
+	restart: async ({ locals }) => {
+		if (!requireAdmin(locals)) return fail(403, { error: 'Admin access required.' });
+		try {
+			await reconfigureMiningEngine();
+		} catch (e) {
+			log.error({ err: e }, 'reconfigureMiningEngine() failed on manual restart');
+			return fail(500, { error: 'Restart failed — check the fatal errors below.' });
+		}
+		return { restarted: true };
+	}
+};

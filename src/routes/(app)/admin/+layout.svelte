@@ -16,6 +16,7 @@
 			{ href: '/admin/users', label: 'Users', teamOnly: true },
 			{ href: '/admin/invites', label: 'Invites', teamOnly: true },
 			{ href: '/admin/settings', label: 'Settings' },
+			{ href: '/admin/mining', label: 'Mining' },
 			{ href: '/admin/feature-flags', label: 'Feature flags' },
 			{ href: '/admin/notifications', label: 'Notifications' },
 			{ href: '/admin/announcements', label: 'Announcements' },
