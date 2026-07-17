@@ -25,6 +25,13 @@ description: >-
   Chain backend: Heartwood connects to your own Electrum server or Bitcoin Core
   RPC. Configure this under Settings → Chain Backend after logging in; no
   external services are contacted.
+
+
+  Solo mining: point a Bitaxe or small ASIC at your own node under Heartwood's
+  built-in Stratum V1 pool (Mining tab) — any user on the instance can mine
+  under their own opaque mining ID, and a found block pays that miner's own
+  wallet in full, non-custodially. Requires Bitcoin Core RPC (the bitcoin
+  app) to be installed and connected.
 releaseNotes: >-
   This release adds risk warnings and dollar amounts to make wallets easier
   to read at a glance: multisig wallets now show a plain-language risk panel
@@ -38,11 +45,15 @@ releaseNotes: >-
   release also hardens transaction correctness: stricter SIGHASH_ALL
   enforcement, validated cosigner finalization, and corrected handling of
   transactions that get replaced or double-spent, backed by a substantially
-  larger automated test suite. Full changelog:
+  larger automated test suite. It also adds a built-in solo-mining pool
+  (Mining tab): point a Bitaxe or small ASIC at your own node and, on the
+  rare win, the full block reward pays directly into your own wallet — no
+  custody, no fees, no pooling of rewards across users. Full changelog:
   https://github.com/AlexM223/cairn/releases/tag/v0.2.17
 developer: Alex Martinez
 website: https://github.com/AlexM223/cairn
-dependencies: []
+dependencies:
+  - bitcoin
 repo: https://github.com/AlexM223/cairn
 support: https://github.com/AlexM223/cairn/issues
 port: 3211

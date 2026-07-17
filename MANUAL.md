@@ -1705,6 +1705,17 @@ standalone migration on a live funds DB).
 | `backup_reminders` | per-user dismissal timestamp for the periodic backup nudge |
 | `wallet_backups` | one row per wallet once its config file has been downloaded |
 
+**Mining (multi-user solo pool, epic `cairn-vn43`)**
+
+| Table | Purpose |
+|---|---|
+| `mining_prefs` | one row per user: `mining_id` (`hw_` + 8 lowercase hex, UNIQUE — the Stratum username token), `enabled`, `payout_wallet_id` (nullable FK, `ON DELETE SET NULL`) |
+| `mining_workers` | durable per-`(user_id, worker_name)` mirror (UNIQUE pair) of cumulative counters: `shares_accepted`/`shares_stale`/`shares_rejected`, `sum_weight` (TEXT, arbitrary-precision accumulation), `best_share_diff`, `hashrate_est`, `current_diff`, `last_share_at` — the engine's in-memory state is authoritative for "now" figures; this table is the 15s-flushed backing store, the source of the all-time-best baseline, and what survives a restart |
+| `mining_stats` | one row per closed 1-minute bucket, per worker, plus one pool-wide row per bucket (`user_id`/`worker_name` both NULL) feeding the admin hashrate chart; `round_id` is reserved-NULL, an unused future split-mode seam; pruned past 7 days on an hourly sweep |
+| `mining_blocks` | one row per submitted block, accepted or rejected (`submit_result` — `'accepted'` or `'rejected:<reason>'`); `block_hash` is UNIQUE, so a rejected solve gets a synthetic `rejected:<height>:<nonceHex>:<epochMs>` key rather than colliding; `payout_address`/`coinbase_value_sats`/`wallet_id` record exactly what that block paid and to whom |
+
+Only the in-process mining engine bridge (`src/lib/server/mining/aggregates.ts`) writes `mining_workers`/`mining_stats`, and only inside one batched transaction on a 15s timer — **never per-share** — per the `cairn-xlrm` sync-SQLite-blocks-the-event-loop hazard (§ above; see § "Mining engine" below for the full lifecycle). `mining_blocks` is written once, synchronously, from the block-accepted/rejected callback — a rare enough event (once per found/rejected block) that it doesn't need batching.
+
 ### Secret encryption (`secretKey.ts` / `instance_secrets`)
 
 A 32-byte **instance key** is generated on first use and written to
@@ -2329,6 +2340,142 @@ lifecycle note below), `keyHealth.ts` (key_health_due, daily scan),
 `auth.ts`/`recovery.ts` (security_* events, admin_new_signup,
 admin_invite_used) — all started/wired from `hooks.server.ts`'s `init()`.
 
+### Mining engine (`src/lib/server/mining/`, epic `cairn-vn43`)
+
+**Doctrine: multi-user solo, not a sidecar.** `docs/MINING-POOL-SCOPE.md`
+originally scoped this as a single-user "Tessera-solo sidecar" (one instance
+= one operator = one payout address, engine as a separate process/
+container). A 2026-07-17 doctrine pivot (see the epic's pivot comment)
+changed this to **multi-user solo, in-process**: any user on the instance
+can point a miner at the one Stratum listener under their own opaque mining
+ID; the engine builds each authenticated connection's job with a coinbase
+paying **that miner's own wallet**; the finder keeps the full reward. No
+splitting, no pooled payout, no custody of anyone else's funds — shares are
+tracked for stats only. This stays entirely inside the hard legal gate
+`cairn-vn43.14` (any future reward-splitting/pooled/raffle mode needs legal
+review first); it is explicitly not that mode.
+
+**Lifecycle.** `hooks.server.ts`'s `init()` calls `startMiningEngine()`
+(`src/lib/server/mining/index.ts`) — best-effort, never throws. It's a
+no-op unless **all three** gates hold: the `mining` feature flag is on
+instance-wide, the operator has turned mining on in settings
+(`mining_enabled`), and a Bitcoin Core RPC backend is configured
+(`getblocktemplate`/`submitblock` are Core-only — no Electrum path exists
+for mining). There is **no separate child process or second container** —
+`cairn-vn43.12`'s dev-mode child-process supervisor is obsolete; the engine
+(`MiningPool` in `miningPool.ts`, wrapping a `TipPoller` + `StratumServer` +
+serialized tip/solve event queue) runs inside the same Node process as the
+rest of Heartwood. `/admin/mining`'s settings-save action calls
+`reconfigureMiningEngine()` (full stop, re-read settings, start) so a
+config change takes effect without a process restart; its quick
+start/stop action flips only `mining_enabled` and drives the engine
+directly. A durable shutdown flush is registered once, directly on
+`process.once('SIGTERM'/'SIGINT')`, separately from `server.mjs`'s own
+signal handling — `server.mjs` runs in a different module graph (it only
+imports the built `handler.js`) and has no live handle to the engine
+singleton, so it can't `await` a clean stop itself.
+
+**`authTable.ts` — the hot-path authorization snapshot.** The Stratum
+socket data handler calls `AuthProvider.resolve(miningId)` synchronously,
+with **zero I/O** — it's a plain `Map` lookup. All the real work (reading
+`mining_prefs`, resolving each user's payout wallet, peeking a receive
+address, which can touch the chain backend) happens off that path in
+`refreshAuthTable()`, which builds a fresh `Map` and atomically swaps it in
+— a `resolve()` racing a rebuild always sees either the complete old or
+complete new snapshot, never a half-built one. One user's failure (missing
+wallet, unencodable address, a chain hiccup) is logged and that user is
+skipped; it never aborts the rebuild or drops every other miner. Triggers:
+engine start (built **before** the Stratum listener opens, so the first
+connecting miner already resolves), a 60s timer, and the `onPrefsChanged()`
+hook fired by every `mining_prefs` mutation (enable/disable, payout-wallet
+change, ID regeneration) — so a disabled or re-pointed miner stops/starts
+being authorized within one refresh cycle, never inline on the hot path.
+
+**Aggregates cadence (`aggregates.ts`) — and why it's 15s-batched, not
+per-share.** Every accepted/rejected share updates **only in-memory** state
+(per-worker counters, a rolling hashrate window, open 1-minute buckets).
+Exactly one batched SQLite transaction every 15s (an unref'd timer) flushes
+the deltas into `mining_workers` and appends every now-closed 1-minute
+bucket into `mining_stats`. This mirrors the `cairn-xlrm` rationale
+documented in §6 (Database) and §4: `node:sqlite`'s `DatabaseSync` is fully
+synchronous and blocks Node's one event-loop thread for the query's
+duration — a share can arrive many times a second from a real ASIC, so a
+per-share DB write would reintroduce the exact contention hazard that was
+already root-caused as rapid-navigation stutter elsewhere in the app. The
+live "now" values the UI shows (current hashrate, share counts) always come
+straight from this module's in-memory state, fresh to the last share; the
+DB mirror exists purely for durability, the admin hashrate series, and the
+all-time best-share baseline. A final synchronous flush runs on
+`stopMiningEngine()` and again from the SIGTERM/SIGINT handler above, so a
+clean shutdown never loses the last <15s of shares.
+
+**Block-accepted payout wiring (`handleBlockAccepted`, `index.ts`).** On an
+ACCEPTED `submitblock` result: (a) `nextReceiveAddress(userId, walletId)`
+advances the finder's receive cursor **exactly once** — the address that
+block just paid must never be handed out again; the job's payout address
+came from `peekReceiveAddress()` (peek-hold, doesn't advance the cursor) so
+every rebuilt job between blocks reused the same stable address without
+burning the gap limit. (b) A `mining_blocks` row is inserted
+(`submit_result = 'accepted'`); the `block_hash UNIQUE` constraint makes a
+duplicate callback (should never happen) a swallowed no-op rather than a
+throw. (c) Two `mining_block_found` notifications fire: one to the finder
+(`level: 'success'`, deep-links to `/mining`, "the full reward pays your
+wallet — spendable after 100 confirmations"), one to every admin
+(`level: 'info'`, `userId: null`, deep-links to `/admin/mining`). (d) An
+activity-feed row is recorded. A REJECTED result instead logs loudly and
+inserts a `mining_blocks` row with a synthetic unique `block_hash` (§6) and
+`submit_result = 'rejected:<reason>'` — a stale solve racing a fresh tip is
+an expected, non-fatal condition, not an invariant violation.
+
+**Settings keys (`mining_*`, plain `settings` kv, read fresh every call —
+see `settings.ts`'s module note, same never-cache-at-module-scope
+convention as the chain config):**
+
+| Key | Default | Meaning |
+|---|---|---|
+| `mining_enabled` | `false` | operator on/off switch, independent of the `mining` feature flag |
+| `mining_bind` | `loopback` | tri-state `loopback`\|`lan`\|`all` — resolves to bind host `127.0.0.1` (loopback) or `0.0.0.0` (lan/all); the tri-state exists purely to drive honest UI copy about LAN exposure, no actual interface detection is attempted |
+| `mining_stratum_port` | `3333` | Stratum V1 TCP listen port |
+| `mining_share_difficulty` | `0.5` | starting/floor share difficulty — deliberately low so a sub-TH/s Bitaxe-class miner submits its first share promptly; vardiff (when enabled) ratchets a connection up from here within about a minute |
+| `mining_vardiff_enabled` | `true` | whether per-connection variable difficulty is active |
+| `mining_vardiff_target_rate` | `6` | vardiff target, shares per minute per connection |
+| `mining_pool_tag` | `Heartwood` | ASCII tag embedded in the coinbase scriptSig after the BIP34 height push; capped at 24 printable-ASCII characters, validated server-side on save |
+
+**Notification types + quiet-hours behavior.** Three `mining_*` entries in
+`NOTIFICATION_EVENT_TYPES` (`notifyTypes.ts`):
+
+| Type | Level | Trigger |
+|---|---|---|
+| `mining_block_found` | `success` (finder) / `info` (admin broadcast) | a submitted block was ACCEPTED by bitcoind |
+| `mining_worker_offline` | `warn` | a worker that had ≥10 min of established share history goes >5 min silent; one notification per offline episode (resuming clears the episode so a later silence notifies again); multiple newly-offline workers for one user in the same 60s scan collapse into a single notification |
+| `mining_best_share` | `info` | a new all-time-best share difficulty that is at least **double** the previous stored best (a genuine milestone, not every incremental new max); throttled to at most one per user per day; the very first-ever best just seeds the baseline silently, no notification |
+
+Quiet hours (`quietHours.ts`, §8 above) apply **by level**, not per-call: a
+`success`/`info` send (`mining_block_found`'s admin copy, `mining_best_share`)
+is deferred to the window's end when the recipient has quiet hours enabled;
+`warn` (`mining_worker_offline`) and `error` still deliver through the
+window if the recipient's `urgentOverride` is on (the default). This is a
+deliberate consequence of the existing level-based quiet-hours rule, not a
+mining-specific special case — documented here rather than adding a
+per-notification urgency override. **In-app delivery is never affected** by
+quiet hours regardless of level — it's a browsable `events`-table list, not
+a push; only external channels (email/telegram/ntfy/nostr/webhook) defer.
+
+**Identity contract.** `ensureMiningPrefs(userId)` mints a `mining_id` of
+the form `hw_` + 8 lowercase hex characters (4 random bytes) on first
+touch, retried on the astronomically-unlikely `UNIQUE` collision. The
+Stratum `mining.authorize` username is `<miningId>` or
+`<miningId>.<workerName>` (default worker name applied when the suffix is
+absent); the password parameter is **completely ignored** — the read
+models report it back to the UI as the literal string `'x'`, matching the
+zero-password convention most solo/Stratum tooling already expects.
+`regenerateMiningId(userId)` rotates the token (e.g. the user believes it
+leaked); the **old** token keeps resolving until the next `authTable`
+refresh (≤60s, or instantly via the `onPrefsChanged()` hook this action
+itself fires) and then stops — any miner firmware still authorizing with
+the stale id is rejected `UNAUTHORIZED` and must be reconfigured with the
+new one. There is no way to "undo" a regenerate; the old id is gone.
+
 ### Backup & restore (`src/lib/server/backup.ts`)
 
 An encrypted, passphrase-protected export/import of the whole instance
@@ -2516,6 +2663,7 @@ Pages under `(app)`:
 | `explorer/address/[address]`, `explorer/block/[id]`, `explorer/tx/[txid]` | detail pages — `explorer/block/[id]` shows a block-level "Yours in this ring" callout AND (cairn-6efi.12) a per-row sage "Yours" pip on any transaction in the paginated tx list that touches the viewer's own wallets, via `ownership.server.ts`'s memoized, viewer-scoped `ownedTxids()`/`ownedTxsInBlock()` — zero extra chain calls, same privacy boundary (viewer's own wallets only) as the index's `ownedBlockHeights()` pip. **`explorer/tx/[txid]` also renders a BlueWallet-style block-context section** (`BlockContext.svelte` under the status row): a confirmation badge ("6+ confirmations" green at ≥6, paired with the burial-rings glyph), a tappable 1–3 block row (prev/confirmed/next with dates, the tx's position marker inside the confirmed block, each block linking to `explorer/block/[height]`), and a plain-language confirmation summary. Streamed via `loadTxDetails` as `blockContext` (never blocks first paint) from `ChainService.getTxBlockContext` and progressive-enhancement aware — `none` (connecting), `basic` (Electrum-only: dates + position + summary, no Core nag; a quiet admin-only hint offers Core for block sizes), `full` (Core adds block tx-count/size/fullness). Pure copy/badge logic in `blockContext.ts` (`summaryLine`/`confirmationBadge`); one block glyph is `MiniBlock.svelte`. Also exposed standalone at `GET /api/tx/[txid]/block-context`. Because `getTx` now falls back to Electrum (above), this page works on a pure-Electrum Umbrel with no Core RPC. See docs/TX-BLOCK-CONTEXT-DESIGN.md. **"Total in" degrades honestly**: an unconfirmed (mempool) tx has no resolved prevout values, so each input shows "—" and the `txTotalIn()` helper (`txTotals.ts`) reports `known:false` when *any* input value is unknown — the total then renders "—" too, never a misleading "0.00 BTC" summing of unknowns (cairn-zmym), matching how the fee already degrades. |
 | `explorer/mempool/+page.svelte`, `explorer/mempool/blocks/+page.svelte` | mempool visualizer |
 | `explorer/difficulty` | difficulty chart |
+| `mining/+page.svelte` | this user's own solo-mining dashboard (§ "Mining engine" above, § "Mining dashboard client" below) — flag-gated (`mining`), scoped entirely to the viewing user by `getUserMiningView` |
 | `recovery-setup/+page.svelte` | post-signup recovery/backup setup flow |
 | `settings/+page.svelte` | general settings |
 | `settings/contacts` | address book |
@@ -2523,6 +2671,7 @@ Pages under `(app)`:
 | `settings/notifications` | per-user notification prefs incl. SMTP |
 | `settings/tokens` | API tokens |
 | `admin/+layout.svelte` + `admin/+page.svelte` | node/admin home |
+| `admin/mining/+page.svelte` | operator's cross-user solo-mining dashboard: engine health/start-stop-restart, pool-wide hashrate hero + chart, per-miner + per-user breakdowns, blocks-found ledger, engine settings form (§ "Mining engine" above, § "Mining dashboard client" below) |
 | `admin/activity`, `admin/announcements`, `admin/backup`, `admin/feature-flags`, `admin/invites`, `admin/logs`, `admin/notifications`, `admin/referral-settings`, `admin/settings`, `admin/users[/[id]]` | admin-only surfaces; the nav link itself is hidden (not just gated) for non-admins |
 | `vaults/{new,[id],[id]/send,stateless}` + `_components` | **empty scaffolding only** — `git ls-files` returns zero tracked files under any of these dirs. Mirrors the `wallets` tree in shape (list → `[id]` → send) but nothing is implemented. Any hit on `/vaults*` (bare or with a path) is 301-redirected to the equivalent `/wallets` (or `/wallets/multisig`) route by `hooks.server.ts:505-516` before it would ever reach these directories — see §7 and the Part II route note. Don't start building real `/vaults` pages without checking scope first. |
 
@@ -2673,6 +2822,125 @@ shared live under `wallets/[id]/send/_components/` (`ColdCardSigner`,
 `QrSigner`, `JadeQrSigner`, `DeviceCard`, `CoinControl`,
 `RecipientCombobox`) and `wallets/multisig/[id]/send/_components/
 MultisigFileSigner.svelte`.
+
+**`mining/`** (epic `cairn-vn43`) — split into the user-facing dashboard and
+the admin-facing operator view:
+- User dashboard (`/mining`): `MiningHero` (hashrate now/24h),
+  `MiningConnectionCard` (host/port/username/password setup card),
+  `MiningPayoutWallet` (payout-wallet picker, eligible wallets only),
+  `MiningWorkersList`, `MiningEarnings` (blocks found + matured/pending
+  sats), `MiningOddsPanel` (honest measured-hashrate solo odds),
+  `MiningOnboarding` (the flag-off/no-wallet/engine-stopped/not-enabled
+  empty states, one component with a `kind` prop rather than four separate
+  ones).
+- Admin dashboard (`/admin/mining`): `AdminEngineHealth`, `AdminPoolHero`
+  (pool-wide hashrate), `AdminHashrateChart` (24h series from `mining_stats`
+  pool rows), `AdminMinersTable` (every live connection), `AdminUserBreakdown`
+  (per-user share of pool hashrate), `AdminBlocksLedger`,
+  `AdminPoolSettingsForm`. `adminMiningView.ts` holds the shared
+  `AdminMiningView` type + `DEGRADED_ADMIN_MINING_VIEW` fallback constant
+  used when the read model throws.
+
+### Mining dashboard client (`/mining`, `/admin/mining`)
+
+**Polling model.** Both pages server-load a full view once, then poll a
+matching JSON endpoint on a **10s interval**, paused whenever
+`document.hidden` (`document.addEventListener('visibilitychange', ...)`)
+and resumed with an immediate poll-then-restart on becoming visible again —
+same idle-tab-friendly pattern used elsewhere in the app (e.g. `SyncBanner`'s
+backoff poll, though this one is a fixed interval, not backoff, since the
+underlying data is cheap to compute and doesn't need degrade-on-failure
+behavior). `/mining` replaces its whole local `view` object with the poll
+response; `/admin/mining` merges only the **volatile** fields (`engine`,
+`pool`, `hashrateSeries`, `miners`, `userBreakdown`, `blocks`) into local
+state and deliberately excludes `settings` from the merge, so a poll tick
+landing mid-edit never clobbers what the admin is typing into the settings
+form below — that form seeds its own local state once from the initial load
+and manages its own save independently. A failed poll tick is silently
+swallowed on both pages (best-effort — keep showing the last good view
+rather than flashing an error over a routine transient fetch failure); the
+next tick catches up.
+
+**Empty-state precedence (`/mining`, `cairn-vn43.24`)** — checked in this
+exact order, first match wins:
+1. `loadError` — `getUserMiningView` threw server-side; degrades to an
+   inert dashboard with an honest "Mining data is temporarily unavailable"
+   banner, never a blank page or a misreported "pool isn't running" state.
+2. `engine.status === 'core_missing'` — Bitcoin Core RPC isn't configured
+   at all; reuses `CoreRpcRequiredNotice.svelte` as-is (the same component
+   every other Core-only feature uses).
+3. `engine.status === 'stopped'` — the flag is on and Core is configured,
+   but the operator hasn't turned mining on in `/admin/mining` (or it
+   crashed) — "Mining isn't running yet — your operator hasn't started the
+   pool yet."
+4. No eligible payout wallet (`view.wallets.filter(w => w.eligible)` is
+   empty — a wallet needs an `xpub` to be payout-eligible) — a blocking
+   "you need a wallet first" card linking to `/wallets`; the wallet
+   selector itself is suppressed rather than shown empty.
+5. `!view.connection` (the user has never enabled mining, so
+   `ensureMiningPrefs`/a `mining_id` doesn't exist yet for them) — the
+   "Enable mining" onboarding card.
+6. Otherwise: the full dashboard (hero, connection card, payout wallet,
+   worker list, earnings, odds). A connected-but-workerless state (mining
+   enabled, `mining_id` exists, no miner has ever connected) is **not** a
+   separate empty state — `MiningConnectionCard` itself carries a
+   "waiting for your first share…" hint alongside the setup fields, since
+   the connection card already is the primary thing to show there.
+
+**Admin runbook (`/admin/mining`).** Enabling the pool for the first time
+requires the `mining` feature flag on instance-wide (`/admin/feature-flags`
+— it ships `defaultEnabled: true` but soft-launch-defaults to off on fresh
+installs via `miningDefaultMigration.ts`, mirroring `explorer`'s pattern)
+**and** the admin turning it on here: either the quick start/stop toggle
+on `AdminEngineHealth` (flips only `mining_enabled`, fast — doesn't touch
+the rest of the settings form) or a full `AdminPoolSettingsForm` save
+(validates port 1-65535, share difficulty > 0, vardiff target 1-60/min,
+pool tag ≤24 printable-ASCII chars, then calls `reconfigureMiningEngine()`
+— a full stop/re-read-settings/start). **Bind/LAN exposure**: the `bind`
+selector is tri-state (`loopback`/`lan`/`all`) and defaults to
+loopback-only — copy on this field should make plain that `lan`/`all`
+opens the raw Stratum TCP port to every device on the local network with
+no additional authentication beyond the per-user mining ID (there's no
+password check), so it should only be widened deliberately, e.g. to reach
+a Bitaxe on the same LAN. **Reading the dashboard**: `AdminEngineHealth`
+shows listening state, bind/port, last-template-age (a stale
+`getblocktemplate` for more than a tip interval usually means Core RPC
+trouble — `coreRpc: 'down'`), and any accumulated `fatalErrors` (invariant
+violations from the engine's serialized event queue — these should be
+empty in normal operation; a non-empty list is worth investigating, not
+routine noise). `AdminPoolHero`/`AdminHashrateChart` show pool-wide
+hashrate now/24h from live aggregates plus a 24h series built from
+`mining_stats`' pool rows (`user_id IS NULL`). `AdminMinersTable` lists
+every currently-live Stratum connection by user/worker/hashrate/difficulty/
+last-share-age; `AdminUserBreakdown` collapses that to one row per user with
+their share of pool hashrate; `AdminBlocksLedger` lists every block this
+instance's engine has ever submitted (accepted or rejected) across all
+users, newest first, with live confirmation counts and maturity status.
+
+**User guide (`/mining`).** Connecting a Bitaxe or small ASIC: point its
+Stratum configuration at this instance's address, the port shown on
+`MiningConnectionCard` (the admin-configured `mining_stratum_port`, `3333`
+by default), and a username of `<miningId>.<workerName>` — the
+`workerName` suffix is optional (a default is applied if omitted) but
+naming each physical device distinctly (e.g. `hw_a1b2c3d4.bitaxe1`) is what
+makes the worker list and offline notifications useful once more than one
+device is connected; the password field is ignored by the engine entirely
+and the UI shows the literal placeholder `x`. **Honest odds framing**: the
+odds panel computes solo probability from the user's own **measured**
+current hashrate against the network's current `getnetworkhashps` — not a
+theoretical device spec — so it degrades gracefully (shows nothing) rather
+than a misleading number when no miner has connected yet or the network
+hashrate call fails. **Payout wallet**: any of the user's own wallets with
+an `xpub` is eligible; the payout address itself comes from
+`peekReceiveAddress()` and is held stable across job rebuilds — it only
+advances (via `nextReceiveAddress()`) the moment a block is actually found,
+so nothing is "reserved" or burned by mining alone. **Maturity**: a found
+block's reward is a coinbase output and needs the standard 100 confirmations
+before it's spendable — `MiningEarnings` and the wallet-detail
+`MiningRewards` card both show the maturing countdown; `/mining`'s own
+`earnings.totalPendingSats`/`totalMaturedSats` split mirrors the same
+`coinbaseMaturity()` logic used everywhere else immature coinbase value is
+displayed (§ above).
 
 ### Stores / client state
 
@@ -3678,12 +3946,25 @@ Both trees are currently ignored/untracked in the private working tree too
 
 ### Mining forced-solve regtest harness (`cairn-vn43.2`, part of CI)
 
-Required gate for the (not-yet-built) solo-mining feature — see
-`docs/MINING-POOL-SCOPE.md` (epic `cairn-vn43`, "Tessera-solo sidecar", the
-extraction of the real engine is `cairn-vn43.1` and hasn't landed yet). The
-one code path that must be flawless is *template → job → solved share →
-`submitblock` → the block actually confirmed on-chain*, since it only fires
-for real once every ~15,000–35,000 years of home hashrate.
+Required gate for the solo-mining feature — see `docs/MINING-POOL-SCOPE.md`
+(epic `cairn-vn43`; the doctrine pivoted 2026-07-17 from a single-user
+"Tessera-solo sidecar" to **multi-user solo, in-process** — see § "Mining
+engine" above for the built architecture). The one code path that must be
+flawless is *template → job → solved share → `submitblock` → the block
+actually confirmed on-chain*, since it only fires for real once every
+~15,000–35,000 years of home hashrate.
+
+**Note on scope, as of this writing:** the real engine (`src/lib/server/
+mining/{miningPool,stratum,job,wire,tipPoller}.ts`) has since landed
+(`cairn-vn43.1`) and is what actually runs in the app. This specific
+harness, described below, still deliberately exercises its own **standalone**
+reference coinbase/block builder (`soloBlockBuilder.mjs`) rather than the
+real engine's `job.ts`/`miningPool.ts` — that repoint (point the harness at
+the real job builder and, ideally, drive it through an actual Stratum TCP
+connection rather than calling `getblocktemplate`/`submitblock` directly)
+is tracked as follow-up work on `cairn-vn43.2` (still open, P1), not done
+by this bead. See Part II § "Mining pool (multi-user solo) QA matrix" for
+QA coverage of the real, in-process engine.
 
 - **`scripts/mining/soloBlockBuilder.mjs`** — pure, no-I/O solo coinbase/
   block construction: BIP34 height push, BIP141 witness commitment, PoW
@@ -5071,6 +5352,96 @@ an honest "no data", and could even flip sign.
 - **PASS:** 1yr/all-time stay accurate (or degrade honestly) across a
   retention purge; no sign flip, no silently-wrong "change since a random
   surviving row" figure.
+
+### 20.18 Mining pool (multi-user solo) QA matrix `[emulator]` — epic `cairn-vn43`
+
+Covers the in-process, multi-user solo engine (§8 "Mining engine" and §9
+"Mining dashboard client" in Part I). As of this writing a QA wave is
+actively adding dedicated scripts for this feature under `scripts/qa/` in
+parallel with this doc update — check `ls scripts/qa/mining*` (or
+`scripts/qa/*mining*`) for the actual current filenames/flags before
+running anything below; treat the names here as the planned shape, not a
+guarantee of the exact filename:
+
+1. **Forced-solve harness against the real engine.** The existing
+   `npm run mining:forced-solve-harness` (§13, `scripts/mining/
+   forcedSolveHarness.mjs`) exercises `getblocktemplate`/`submitblock`
+   directly against a **standalone reference** coinbase builder, not the
+   in-process engine's own `job.ts`/`miningPool.ts` — that gap is the
+   documented follow-up on `cairn-vn43.2`. A QA-wave script in this
+   generation (planned name along the lines of `scripts/qa/mining-
+   forced-solve*.mjs`) is expected to close that gap by driving a real
+   Stratum TCP client through `mining.subscribe`/`mining.authorize`/
+   `mining.submit` against the actual `MiningPool`, on regtest, and verify
+   the resulting block on-chain (main-chain, ≥100 confs once matured, paid
+   sats == `coinbasevalue`, paid to the connecting miner's own payout
+   script — not a fixed/shared address).
+   - **PASS:** forced solves against the live engine confirm on-chain with
+     the correct per-miner payout, same invariants as §13's harness.
+2. **Load test.** A companion script (planned name along the lines of
+   `scripts/qa/mining-load-test*.mjs`, likely flags for miner/worker count,
+   target share rate, and duration) should open many concurrent Stratum
+   connections under distinct `mining_id`s and submit shares at a sustained
+   rate, then check: the 15s aggregate flush keeps up without unbounded
+   memory growth (§8's rolling-window prune/cap), no per-share DB writes
+   occur (watch for `mining_workers`/`mining_stats` write volume — it
+   should track the 15s cadence, not the share rate), and the admin
+   dashboard's live figures stay consistent with what was actually
+   submitted.
+   - **PASS:** sustained multi-miner load doesn't degrade unrelated app
+     requests (the `cairn-xlrm` sync-SQLite hazard this design is built to
+     avoid), and post-run aggregate totals reconcile with shares sent.
+3. **Flag-gate on/off.** With the `mining` feature flag off instance-wide
+   (`/admin/feature-flags`): `/mining` and `/admin/mining` both render their
+   flag-off empty state (`FeatureDisabled`-style, per `requireFeature`'s
+   convention) regardless of `mining_enabled`, and `startMiningEngine()`
+   never opens the Stratum port even if a stale `mining_enabled=true`
+   setting is present from before the flag was turned off — the flag gate
+   is checked first in `doStart()` and wins over the settings toggle.
+   Turning the flag back on does **not** auto-start the engine by itself;
+   the operator's `mining_enabled` setting (and a running Core RPC) still
+   govern whether the pool actually listens.
+   - **PASS:** flag off ⇒ both routes dark and the port never opens, no
+     matter what `mining_enabled` says; flag on alone ⇒ still requires the
+     separate operator toggle to actually start listening.
+4. **Empty-state matrix (`/mining`).** Walk the precedence list in §9
+   "Mining dashboard client" top to bottom with a fresh user: no wallet yet
+   → engine stopped → not enabled → (with a wallet + enabled + engine
+   running) full dashboard with a "waiting for your first share" hint on
+   `MiningConnectionCard` before any miner has connected.
+   - **PASS:** each state renders distinctly and in the documented
+     precedence order; a user is never shown a blank/broken page for any
+     combination of (has-wallet, engine-running, mining-enabled).
+5. **Multi-user isolation.** With two distinct users (A and B) both
+   enabled and each running a simulated miner under their own `mining_id`:
+   confirm `GET /api/mining/me` for A never includes B's worker names,
+   hashrate, shares, or blocks (and vice versa) — `getUserMiningView` scopes
+   every query to the caller's own `userId`; this has a dedicated security
+   test in `readModels.test.ts`, but re-verify at the HTTP layer too, not
+   just unit level. Confirm `GET /api/admin/mining` (admin-only, 403 for a
+   plain user) correctly shows **both** users' workers/blocks in the
+   pool-wide view and attributes each to the right `userName`.
+   - **PASS:** zero cross-user leakage on the per-user endpoint; the admin
+     endpoint correctly attributes both users' activity and is unreachable
+     by non-admins.
+6. **Regenerate-ID caveat.** From `/mining`, use "regenerate" to rotate a
+   user's `mining_id` while a simulated miner is actively connected/
+   submitting shares under the **old** id.
+   - **Expected:** the old id keeps resolving (shares keep being accepted)
+     until the next `authTable` refresh — driven by the same
+     `onPrefsChanged()` hook the regenerate action fires, so in practice
+     this can flip within moments rather than the full 60s timer period,
+     but don't assume it's synchronous with the button click. Once the
+     snapshot rebuilds, any connection still authorizing with the old id is
+     rejected `UNAUTHORIZED` and must reconnect with the new
+     `<miningId>.<worker>` shown on the (now-updated) connection card.
+     There is no grace period and no way to recover the old id once
+     rotated — don't file this as a bug if a miner configured with the old
+     id goes dark after a regenerate; that's the intended behavior.
+   - **PASS:** old id stops working within one refresh cycle, not
+     immediately-and-silently-broken (some in-flight shares under the old
+     id before the refresh should still land) and not indefinitely valid
+     either.
 
 ---
 

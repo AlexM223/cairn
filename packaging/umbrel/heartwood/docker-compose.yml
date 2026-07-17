@@ -16,6 +16,15 @@ services:
       # Raw host port for hardware-wallet signing (needs an HTTPS secure context
       # that app_proxy's plain HTTP cannot provide). host 4488 -> container 3443.
       - "4488:3443"
+      # Raw host port for the solo-mining Stratum V1 listener (epic cairn-vn43,
+      # multi-user in-process engine — no second container). app_proxy is
+      # HTTP-only and can't proxy a raw TCP Stratum connection, so this port is
+      # published directly, same mechanism as the 4488:3443 mapping above.
+      # Only reachable at all when the operator enables mining AND sets bind to
+      # lan/all in /admin/mining (default bind is loopback-only, in which case
+      # this published port has nothing listening behind it). Must match the
+      # mining_stratum_port setting (default 3333) if that's ever changed.
+      - "3333:3333"
     volumes:
       - ${APP_DATA_DIR}/data:/data
     environment:

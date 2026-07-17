@@ -6,6 +6,67 @@
 
 ---
 
+## DOCTRINE UPDATE — 2026-07-17: pivot to multi-user solo, as built
+
+**This supersedes the single-user "Tessera-solo sidecar" plan below.** The
+rest of this document is kept for history — it explains the reasoning that
+led here and most of it (raffle-dead, non-custodial, peek-hold payout,
+Stratum V1, forced-solve gate) still holds — but the **sidecar/second-
+process architecture and the single-payout-address framing are no longer
+what shipped.**
+
+**What actually got built (epic `cairn-vn43`):**
+
+- **In-process, not a sidecar.** The engine (`MiningPool` in
+  `src/lib/server/mining/miningPool.ts`, wrapping a `TipPoller` +
+  `StratumServer` + a serialized tip/solve event queue) runs **inside the
+  same Heartwood Node process**, started/stopped from `hooks.server.ts`.
+  There is no second container, no separate pool-runner process, and no
+  HTTP stats-bridge protocol between two processes — `cairn-vn43.12`'s
+  dev-mode child-process supervisor is obsolete. This resolves Open
+  question areas around the engine/Heartwood process boundary in favor of
+  the simpler shape; Umbrel packaging (`cairn-vn43.11`) follows suit —
+  it just publishes the Stratum port on the existing web service/container,
+  the same mechanism already used for the `4488:3443` HTTPS port, rather
+  than adding a second container.
+- **Multi-user solo, not single-payout-address.** Any authenticated user on
+  the instance can enable mining and point a miner at the one shared
+  Stratum listener under their own opaque per-user identity (`mining_id`,
+  `hw_` + 8 hex, username `<miningId>.<workerName>`, password ignored). The
+  engine resolves the connecting miner's identity at `mining.authorize`
+  time (`authTable.ts`, a synchronous in-memory snapshot rebuilt off the
+  hot path) and builds **that connection's own job** with a coinbase paying
+  **that miner's own wallet** — not one instance-wide payout address.
+- **Per-connection coinbase, not a shared job.** Where a traditional solo
+  setup has one job template shared by every connected device, this engine
+  personalizes the payout script per authenticated connection (still off
+  one shared `getblocktemplate`/tip — the fee/transaction-set portion of
+  the template is shared; only the coinbase payout output differs per
+  miner). A found block still pays **the finding connection's own wallet
+  in full** — no splitting, no aggregation, no pooled treasury at any point.
+- **Identity contract**, replacing the sidecar plan's bearer-token engine
+  API: `mining_prefs` (per-user `mining_id`/`enabled`/`payout_wallet_id`),
+  `mining_workers`/`mining_stats` (durable low-rate aggregates, 15s-batched
+  — never per-share, per the `cairn-xlrm` sync-SQLite hazard), `mining_blocks`
+  (one row per submitted block, accepted or rejected). Full detail in
+  `MANUAL.md` § "Mining engine" and § "Mining dashboard client".
+
+**The hard legal gate (`cairn-vn43.14`) still stands, unchanged, and this
+design was deliberately reviewed against it:** no reward-splitting, no
+pooled/PPS/PPLNS payout, no custody of one user's coins by another or by
+the operator. Each miner mines directly to their own wallet's own address;
+the operator's instance only ever brokers *whose* address goes into *whose*
+connection's job — it never touches, holds, or redirects value between
+users. This is still solo mining, just with more than one solo miner
+sharing one Stratum listener and one `getblocktemplate` poll loop; it is
+explicitly **not** the raffle/PPS/PPLNS mode the gate exists to block, and
+nothing about the multi-user pivot narrows or removes that gate.
+
+Everything from here down is the original single-user-sidecar scoping
+document, unchanged, kept for the historical reasoning trail.
+
+---
+
 ## Executive summary
 
 Heartwood gets a first-party **solo mining** feature: a "Mining" tab where a home user points a Bitaxe/small ASIC at their own node and, in the astronomically rare win, receives the full coinbase directly into their Heartwood wallet. Architecture = **"Tessera-solo sidecar"**: a solo-only mining engine extracted from Alex's existing Tessera codebase (`C:\dev\raffle`), running as its OWN process (second container on Umbrel, child process in dev), with Heartwood providing config, payout addresses, stats UI, and notifications. Solo-only, non-custodial, Stratum V1. The raffle layer is NOT ported.
