@@ -33,7 +33,7 @@
 		workers: {
 			name: string;
 			online: boolean;
-			lastShareAgoSec: number;
+			lastShareAgoSec: number | null;
 			hashrate: { now: number; h1: number; h24: number };
 			shares: { accepted: number; stale: number; rejected: number };
 			bestShareDifficulty: number;
@@ -48,10 +48,11 @@
 		earnings: {
 			blocksFound: {
 				height: number;
-				txid: string;
+				txid: string | null;
 				vout: number;
 				reward: number;
-				foundAt: number;
+				/** ISO timestamp string, as stored — not unix seconds. */
+				foundAt: string;
 				status: 'maturing' | 'mature' | 'rejected';
 			}[];
 			totalMaturedSats: number;

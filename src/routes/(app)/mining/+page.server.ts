@@ -26,7 +26,7 @@ export const load: PageServerLoad = async (event) => {
 	const user = requireFeature(event, 'mining');
 
 	try {
-		const view = getUserMiningView(user.id);
+		const view = await getUserMiningView(user.id);
 		return { view, loadError: null as string | null };
 	} catch (e) {
 		// getUserMiningView can fail (DB hiccup, or worker A's read model still

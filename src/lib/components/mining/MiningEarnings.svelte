@@ -24,10 +24,12 @@
 	}: {
 		blocksFound: {
 			height: number;
-			txid: string;
+			/** Null if the coinbase txid wasn't recorded (e.g. a rejected submit). */
+			txid: string | null;
 			vout: number;
 			reward: number;
-			foundAt: number;
+			/** ISO timestamp string, as stored — not unix seconds. */
+			foundAt: string;
 			status: 'maturing' | 'mature' | 'rejected';
 		}[];
 		totalMaturedSats: number;
@@ -35,6 +37,12 @@
 	} = $props();
 
 	const rows = $derived([...blocksFound].sort((a, b) => b.height - a.height));
+
+	/** foundAt is an ISO string; timeAgo() takes unix seconds. */
+	function foundAgo(foundAt: string): string {
+		const ms = Date.parse(foundAt);
+		return Number.isFinite(ms) ? timeAgo(Math.floor(ms / 1000)) : '';
+	}
 </script>
 
 <section class="card card-pad earnings-card">
@@ -60,17 +68,24 @@
 		</p>
 	{:else}
 		<ul class="block-list">
-			{#each rows as row (`${row.txid}:${row.vout}`)}
+			{#each rows as row (`${row.height}:${row.vout}`)}
 				<li class="block-row">
 					<div class="block-head">
-						<a class="block-link" href={`/explorer/tx/${row.txid}`}>
-							<Icon name="blocks" size={13} />
-							Block {formatSats(row.height)}
-						</a>
+						{#if row.txid}
+							<a class="block-link" href={`/explorer/tx/${row.txid}`}>
+								<Icon name="blocks" size={13} />
+								Block {formatSats(row.height)}
+							</a>
+						{:else}
+							<span class="block-link">
+								<Icon name="blocks" size={13} />
+								Block {formatSats(row.height)}
+							</span>
+						{/if}
 						<span class="block-amount"><Amount sats={row.reward} size="inline" /></span>
 					</div>
 					<div class="block-meta">
-						<span class="block-when">{timeAgo(row.foundAt)}</span>
+						<span class="block-when">{foundAgo(row.foundAt)}</span>
 						{#if row.status === 'mature'}
 							<span class="status-chip mature">
 								<Icon name="check" size={12} />

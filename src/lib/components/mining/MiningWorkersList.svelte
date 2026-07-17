@@ -12,7 +12,9 @@
 	// Duration formatter (mirrors $lib/format's timeAgo bucketing, but takes a
 	// plain "seconds ago" duration directly rather than a timestamp to diff
 	// against — lastShareAgoSec is already a duration off the server).
-	function formatAgo(sec: number): string {
+	function formatAgo(sec: number | null): string {
+		// null = connected but hasn't submitted a share yet.
+		if (sec === null) return 'no shares yet';
 		if (sec < 5) return 'just now';
 		if (sec < 60) return `${Math.floor(sec)}s ago`;
 		if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
@@ -26,7 +28,7 @@
 		workers: {
 			name: string;
 			online: boolean;
-			lastShareAgoSec: number;
+			lastShareAgoSec: number | null;
 			hashrate: { now: number; h1: number; h24: number };
 			shares: { accepted: number; stale: number; rejected: number };
 			bestShareDifficulty: number;
