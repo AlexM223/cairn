@@ -29,6 +29,7 @@ import { startBackupHealthWatcher } from '$lib/server/backupHealth';
 import { startScheduledBackupWatcher } from '$lib/server/backup';
 import { startPortfolioWarm } from '$lib/server/portfolioWarm';
 import { startRetentionSweep } from '$lib/server/dataRetention';
+import { startMiningEngine } from '$lib/server/mining';
 import { startFirstSync } from '$lib/server/syncStatus';
 import { migratePlaintextSecretsAtRest } from '$lib/server/secretsMigration';
 import { migrateInstanceMode } from '$lib/server/instanceModeMigration';
@@ -301,6 +302,16 @@ async function init(): Promise<void> {
 		startScheduledBackupWatcher();
 	} catch (e) {
 		errLog.error({ err: e }, 'scheduled backup watcher start failed');
+	}
+	// Solo mining engine (epic cairn-vn43): a no-op unless the `mining` flag is on
+	// instance-wide, the operator enabled it in settings, AND Bitcoin Core RPC is
+	// configured. startMiningEngine() itself never throws (it records fatals
+	// internally); the try/catch here matches the other watchers' best-effort
+	// contract and swallows an unexpected import/synchronous failure.
+	try {
+		void startMiningEngine();
+	} catch (e) {
+		errLog.error({ err: e }, 'mining engine start failed');
 	}
 
 	// Startup config summary (Wave 1 / log-request.md §5): today's boot output

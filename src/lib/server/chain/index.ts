@@ -1995,6 +1995,16 @@ export function reconfigureChain(): void {
 	// Tip + fee-estimate TTL caches are per-backend too — clear them so a server
 	// switch never serves a value fetched from the old backend (cairn-vknb.5).
 	resetChainCaches();
+
+	// The mining engine binds to the (now-swapped) Bitcoin Core RPC client and
+	// derives payout addresses on the active network, so a chain reconfigure must
+	// restart it against the fresh backend (epic cairn-vn43). Dynamic import to
+	// avoid a static cycle (mining/index.ts imports getChain from here); fire-and-
+	// forget and best-effort — a mining restart failure must never break a chain
+	// settings save.
+	void import('../mining')
+		.then((m) => m.reconfigureMiningEngine())
+		.catch((e) => log.warn({ err: e }, 'mining engine reconfigure failed'));
 }
 
 // ---------------------------------------------------------------- test helpers
