@@ -106,6 +106,31 @@ describe('getUserMiningView isolation', () => {
 		expect(view.wallets.length).toBeGreaterThan(0);
 		expect(view.wallets[0]).toHaveProperty('eligible');
 	});
+
+	it('hides connection once a previously-enabled user disables mining, but keeps earnings (cairn-p10q)', async () => {
+		ensureMiningPrefs(alice);
+		setPayoutWallet(alice, aliceWallet);
+		setUserMiningEnabled(alice, true);
+		const enabledView = await getUserMiningView(alice);
+		const mintedMiningId = enabledView.connection!.miningId;
+		recordBlock(alice, aliceWallet, 840000, '312500000');
+
+		setUserMiningEnabled(alice, false);
+		const disabledView = await getUserMiningView(alice);
+
+		// The onboarding "not-enabled" state must be reachable again — a minted
+		// mining_id from a prior enable must not keep `connection` truthy.
+		expect(disabledView.connection).toBeNull();
+		// Past blocks are historical fact; they stay visible even while disabled.
+		expect(disabledView.earnings.blocksFound.map((b) => b.height)).toEqual([840000]);
+		expect(disabledView.earnings.totalMaturedSats).toBe(312500000);
+
+		// Re-enabling must reuse the same mining_id rather than minting a new one.
+		setUserMiningEnabled(alice, true);
+		const reenabledView = await getUserMiningView(alice);
+		expect(reenabledView.connection).not.toBeNull();
+		expect(reenabledView.connection!.miningId).toBe(mintedMiningId);
+	});
 });
 
 describe('getAdminMiningView', () => {

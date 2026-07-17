@@ -146,6 +146,16 @@
 		<MiningOnboarding kind="no-wallet" />
 	{:else if !view.connection}
 		<MiningOnboarding kind="not-enabled" />
+		{#if view.earnings.blocksFound.length > 0}
+			<!-- Past blocks are historical fact even while mining is turned off;
+			     only the live connection/workers UI is gated on being enabled
+			     (cairn-p10q). -->
+			<MiningEarnings
+				blocksFound={view.earnings.blocksFound}
+				totalMaturedSats={view.earnings.totalMaturedSats}
+				totalPendingSats={view.earnings.totalPendingSats}
+			/>
+		{/if}
 	{:else}
 		<MiningHero hashrateNow={view.totals.hashrateNow} hashrate24h={view.totals.hashrate24h} />
 

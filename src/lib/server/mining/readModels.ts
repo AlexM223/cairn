@@ -125,9 +125,15 @@ export async function getUserMiningView(userId: number): Promise<UserMiningView>
 	const now = Date.now();
 	const tipHeight = await safeTipHeight();
 
-	// connection
+	// connection — requires BOTH a minted id AND the user currently having
+	// mining turned on. A miningId is permanent once minted (ensureMiningPrefs
+	// never clears it), so gating on miningId alone made the "disabled" state
+	// unreachable in the UI after a user's first-ever enable (cairn-p10q): the
+	// live-looking connection card and "Turn off mining" button would keep
+	// rendering with dead credentials forever. prefs.enabled is what actually
+	// tracks whether this user is opted in right now.
 	let connection: UserMiningView['connection'] = null;
-	if (prefs?.miningId) {
+	if (prefs?.miningId && prefs.enabled) {
 		connection = {
 			miningId: prefs.miningId,
 			workerFormat: `${prefs.miningId}.<workerName>`,
