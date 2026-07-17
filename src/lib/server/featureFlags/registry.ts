@@ -229,6 +229,21 @@ export const FEATURE_FLAGS: FeatureFlagDef[] = [
 
 	// upcoming — features not built yet; the flag ships with the epic, not after
 	{
+		key: 'mining',
+		category: 'upcoming',
+		label: 'Mining pool',
+		description:
+			'Solo-mining: point a miner at this instance under an opaque per-user mining ID; a found block pays the finder\'s own wallet in full. Off = the /mining surface and stratum listener stay dark. See epic cairn-vn43.',
+		// Same soft-launch shape as 'explorer' (see explorerDefaultMigration.ts's
+		// sibling, miningDefaultMigration.ts): fresh installs default this off so
+		// a brand-new self-hoster isn't confronted with a stratum-port setup card
+		// before they've even added a wallet. Not an admin restriction, so this
+		// deliberately avoids "disabled by your administrator" phrasing.
+		userMessage:
+			"Mining isn't enabled on this instance. An admin can turn it on under Admin → Feature flags.",
+		defaultEnabled: true
+	},
+	{
 		key: 'batch_transactions',
 		category: 'upcoming',
 		label: 'Batch transactions',

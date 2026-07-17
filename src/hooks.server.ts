@@ -33,6 +33,7 @@ import { startFirstSync } from '$lib/server/syncStatus';
 import { migratePlaintextSecretsAtRest } from '$lib/server/secretsMigration';
 import { migrateInstanceMode } from '$lib/server/instanceModeMigration';
 import { migrateExplorerDefault } from '$lib/server/explorerDefaultMigration';
+import { migrateMiningDefault } from '$lib/server/miningDefaultMigration';
 import { migrateDropEsploraUrl } from '$lib/server/esploraUrlMigration';
 import { ensureDefaultAgreementVersion } from '$lib/server/disclosures';
 import { httpsExternalPort } from '$lib/server/httpsPort';
@@ -138,6 +139,17 @@ async function init(): Promise<void> {
 		migrateExplorerDefault();
 	} catch (e) {
 		errLog.error({ err: e }, 'explorer default migration failed');
+	}
+
+	// Same soft-launch shape, same "genuinely new install" test, for the
+	// solo-mining flag (epic cairn-vn43). Order-independent relative to the
+	// explorer migration (each only touches its own feature_flags row) but
+	// must, like it, run before bootstrapAdminFromEnv() below. Idempotent;
+	// never throws.
+	try {
+		migrateMiningDefault();
+	} catch (e) {
+		errLog.error({ err: e }, 'mining default migration failed');
 	}
 
 	// Drop the dead `esplora_url` settings row left by installs upgraded from a
