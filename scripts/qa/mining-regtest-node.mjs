@@ -1,0 +1,172 @@
+// Throwaway regtest bitcoind harness for the mining QA drivers.
+//
+// Independently authored (MIT, this repo) — a minimal spawn + JSON-RPC 1.0
+// client, deliberately NOT vendored from Tessera's GPL-3.0 e2e. Prefers a local
+// bitcoind binary; falls back to `docker run bitcoin/bitcoin`. Brings up a fresh
+// datadir on a high RPC port (18xxx) so it never collides with any other regtest
+// stack, waits for RPC readiness, and tears down cleanly.
+import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
+
+const RPC_USER = 'heartwoodqa';
+const RPC_PASS = 'heartwoodqa';
+const DEFAULT_RPC_PORT = 18443;
+const CANDIDATE_BINARIES = [
+	process.env.BITCOIND_PATH,
+	'C:\\Program Files\\Bitcoin\\daemon\\bitcoind.exe',
+	'/usr/bin/bitcoind',
+	'/usr/local/bin/bitcoind'
+].filter(Boolean);
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+export function findBitcoind() {
+	for (const c of CANDIDATE_BINARIES) if (existsSync(c)) return c;
+	return null;
+}
+
+/** True when SOME regtest bitcoind backend is obtainable (binary or docker). */
+export async function bitcoindAvailable() {
+	if (findBitcoind()) return true;
+	return dockerAvailable();
+}
+
+function dockerAvailable() {
+	return new Promise((resolve) => {
+		const p = spawn('docker', ['version', '--format', '{{.Server.Version}}'], { stdio: 'ignore' });
+		p.on('error', () => resolve(false));
+		p.on('exit', (code) => resolve(code === 0));
+	});
+}
+
+class Rpc {
+	constructor(url) {
+		this.url = url;
+		this.auth = 'Basic ' + Buffer.from(`${RPC_USER}:${RPC_PASS}`).toString('base64');
+		this.id = 1;
+	}
+	async call(method, params = []) {
+		const res = await fetch(this.url, {
+			method: 'POST',
+			headers: { Authorization: this.auth, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ jsonrpc: '1.0', id: this.id++, method, params })
+		});
+		const text = await res.text();
+		let env;
+		try {
+			env = JSON.parse(text);
+		} catch {
+			throw new Error(`RPC ${method}: HTTP ${res.status} non-JSON: ${text.slice(0, 200)}`);
+		}
+		if (env.error) throw new Error(`RPC ${method} failed (${env.error.code}): ${env.error.message}`);
+		return env.result;
+	}
+}
+
+/** Spawn a local bitcoind into a fresh datadir. Returns { rpc, stop }. */
+async function startLocal(binary, port) {
+	const datadir = path.join(os.tmpdir(), `heartwood-mining-regtest-${process.pid}-${Date.now()}`);
+	rmSync(datadir, { recursive: true, force: true });
+	mkdirSync(datadir, { recursive: true });
+	const args = [
+		'-regtest',
+		`-datadir=${datadir}`,
+		`-rpcport=${port}`,
+		`-rpcuser=${RPC_USER}`,
+		`-rpcpassword=${RPC_PASS}`,
+		'-server=1',
+		'-listen=0',
+		'-fallbackfee=0.0001'
+	];
+	const proc = spawn(binary, args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+	let stderrTail = '';
+	proc.stderr?.on('data', (c) => (stderrTail = (stderrTail + c).slice(-4096)));
+	let exited = false;
+	proc.on('exit', () => (exited = true));
+	const rpc = new Rpc(`http://127.0.0.1:${port}/`);
+	const deadline = Date.now() + 30_000;
+	let lastErr = '';
+	while (Date.now() < deadline) {
+		if (exited) throw new Error(`bitcoind exited during startup. stderr:\n${stderrTail}`);
+		try {
+			await rpc.call('getblockcount');
+			return {
+				rpc,
+				async stop() {
+					if (!exited) {
+						await rpc.call('stop').catch(() => {});
+						for (let i = 0; i < 40 && !exited; i++) await sleep(150);
+						if (!exited) proc.kill();
+					}
+					for (let i = 0; i < 24; i++) {
+						try {
+							rmSync(datadir, { recursive: true, force: true });
+							if (!existsSync(datadir)) break;
+						} catch {
+							/* Windows holds the datadir lock briefly after exit — retry */
+						}
+						await sleep(300);
+					}
+				}
+			};
+		} catch (e) {
+			lastErr = e.message;
+			await sleep(200);
+		}
+	}
+	proc.kill();
+	throw new Error(`bitcoind RPC not ready in 30s (last: ${lastErr})`);
+}
+
+/** Spawn a dockerized bitcoind. Returns { rpc, stop }. */
+async function startDocker(port) {
+	const name = `heartwood-mining-regtest-${process.pid}`;
+	const img = process.env.BITCOIND_IMAGE ?? 'bitcoin/bitcoin:28.0';
+	const runArgs = [
+		'run', '--rm', '-d', '--name', name,
+		'-p', `127.0.0.1:${port}:${port}`,
+		...(process.env.DOCKER_DNS ? ['--dns', process.env.DOCKER_DNS] : []),
+		img,
+		'-regtest', `-rpcport=${port}`, '-rpcbind=0.0.0.0', '-rpcallowip=0.0.0.0/0',
+		`-rpcuser=${RPC_USER}`, `-rpcpassword=${RPC_PASS}`, '-server=1', '-fallbackfee=0.0001'
+	];
+	await new Promise((resolve, reject) => {
+		const p = spawn('docker', runArgs, { stdio: 'ignore' });
+		p.on('error', reject);
+		p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`docker run exited ${code}`))));
+	});
+	const rpc = new Rpc(`http://127.0.0.1:${port}/`);
+	const deadline = Date.now() + 40_000;
+	let lastErr = '';
+	while (Date.now() < deadline) {
+		try {
+			await rpc.call('getblockcount');
+			return {
+				rpc,
+				async stop() {
+					await new Promise((res) => spawn('docker', ['rm', '-f', name], { stdio: 'ignore' }).on('exit', res));
+				}
+			};
+		} catch (e) {
+			lastErr = e.message;
+			await sleep(400);
+		}
+	}
+	await new Promise((res) => spawn('docker', ['rm', '-f', name], { stdio: 'ignore' }).on('exit', res));
+	throw new Error(`dockerized bitcoind RPC not ready in 40s (last: ${lastErr})`);
+}
+
+/** Bring up a regtest node (local binary preferred, docker fallback). */
+export async function startRegtestNode(opts = {}) {
+	const port = opts.port ?? DEFAULT_RPC_PORT;
+	const binary = findBitcoind();
+	if (binary) {
+		return { kind: 'local', binary, ...(await startLocal(binary, port)) };
+	}
+	if (await dockerAvailable()) {
+		return { kind: 'docker', ...(await startDocker(port)) };
+	}
+	throw new Error('no regtest bitcoind available (no local binary, no docker)');
+}
