@@ -410,6 +410,27 @@ export class CoreRpcClient {
 	}
 
 	/**
+	 * Block template for mining (solo mining engine, cairn-vn43). `rules` declares
+	 * the soft-forks the caller understands; segwit is required to get a
+	 * `default_witness_commitment` for the coinbase. Needs wallet-independent GBT
+	 * access on a fully-synced, non-pruned node.
+	 */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- spec contract: caller consumes the decoded GBT shape
+	getBlockTemplate(rules: string[] = ['segwit']): Promise<any> {
+		return this.call('getblocktemplate', [{ rules }]);
+	}
+
+	/**
+	 * Submit a fully-assembled block (hex). Core returns null on ACCEPTANCE, or a
+	 * rejection-reason string (e.g. 'inconclusive', 'duplicate', 'high-hash').
+	 * Normalized so a bare acceptance is always `null`.
+	 */
+	async submitBlock(hexBlock: string): Promise<string | null> {
+		const result = await this.call<string | null | undefined>('submitblock', [hexBlock]);
+		return result ?? null;
+	}
+
+	/**
 	 * Lightweight reachability probe for an admin "test connection" action. Never
 	 * throws — always resolves, reporting `{ ok: false, error }` when the node is
 	 * unreachable, still warming up, or rejecting auth.
