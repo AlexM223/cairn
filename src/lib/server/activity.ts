@@ -196,7 +196,13 @@ export const USER_FEED_TYPES: ReadonlySet<string> = new Set([
 	'account_recovery',
 	'account_recovery_codes_set',
 	'account_recovery_phrase_set',
-	'admin_break_glass'
+	'admin_break_glass',
+	// Solo mining (epic cairn-vn43): a miner's own wins/misses, never another
+	// user's — the engine only ever raises these against the mining_prefs
+	// owner whose coinbase was involved.
+	'mining_block_found',
+	'mining_worker_offline',
+	'mining_best_share'
 ]);
 
 /** Whether an event type is shown in the simplified per-user activity feed. */

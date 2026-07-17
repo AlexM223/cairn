@@ -31,7 +31,10 @@ export const NOTIFICATION_EVENT_TYPES = [
 	'security_failed_login', // N failed login attempts against one account (ties into rateLimit.ts)
 	'security_new_passkey', // a new passkey (or recovery credential) was added to an account
 	'security_password_changed', // an account's password was changed (cairn-5gpv.5)
-	'security_new_device' // a session was created from an unrecognized device (cairn-5gpv.6)
+	'security_new_device', // a session was created from an unrecognized device (cairn-5gpv.6)
+	'mining_block_found', // this user's own miner found a block — full reward pays their wallet (cairn-vn43)
+	'mining_worker_offline', // one of this user's mining workers stopped submitting shares
+	'mining_best_share' // a new personal-best share difficulty milestone (cairn-vn43)
 ] as const;
 
 export type NotificationEventType = (typeof NOTIFICATION_EVENT_TYPES)[number];
