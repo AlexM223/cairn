@@ -14,7 +14,7 @@ function makeEvent(overrides: Record<string, unknown> = {}): any {
 	};
 }
 
-async function statusOf(fn: () => Promise<unknown>): Promise<number> {
+async function statusOf(fn: () => unknown): Promise<number> {
 	try {
 		await fn();
 	} catch (e) {
