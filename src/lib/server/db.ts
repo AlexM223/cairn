@@ -1364,3 +1364,67 @@ db.exec(`
 	);
 	CREATE INDEX IF NOT EXISTS idx_multisig_wizard_draft_keys_draft ON multisig_wizard_draft_keys(draft_id);
 `);
+
+// Solo-mining (epic cairn-vn43, doctrine pivot to MULTI-USER solo — each
+// authenticated miner connection gets its own coinbase paying ITS OWN
+// wallet address; the block finder keeps the full reward; shares are
+// tracked here for stats ONLY, never for splitting a reward (hard legal
+// gate cairn-vn43.14 — do not add any column or table that aggregates
+// value owed across users). The in-process engine is the only writer of
+// mining_workers/mining_stats (batched, low-rate — per-share state stays
+// in-memory in the engine; see cairn-xlrm hazard note on wallet-sync
+// node:sqlite contention). mining_stats.round_id is reserved-NULL: a
+// future split-mode seam, unused by anything in the MVP.
+db.exec(`
+	CREATE TABLE IF NOT EXISTS mining_prefs (
+		user_id          INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+		mining_id        TEXT UNIQUE,
+		enabled          INTEGER NOT NULL DEFAULT 0,
+		payout_wallet_id INTEGER REFERENCES wallets(id) ON DELETE SET NULL,
+		updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+	);
+
+	CREATE TABLE IF NOT EXISTS mining_workers (
+		id               INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		worker_name      TEXT NOT NULL,
+		shares_accepted  INTEGER NOT NULL DEFAULT 0,
+		shares_stale     INTEGER NOT NULL DEFAULT 0,
+		shares_rejected  INTEGER NOT NULL DEFAULT 0,
+		sum_weight       TEXT NOT NULL DEFAULT '0',
+		best_share_diff  REAL NOT NULL DEFAULT 0,
+		hashrate_est     REAL NOT NULL DEFAULT 0,
+		current_diff     REAL NOT NULL DEFAULT 0,
+		last_share_at    TEXT,
+		UNIQUE (user_id, worker_name)
+	);
+	CREATE INDEX IF NOT EXISTS idx_mining_workers_user ON mining_workers(user_id);
+
+	CREATE TABLE IF NOT EXISTS mining_stats (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		bucket_start TEXT NOT NULL,
+		user_id      INTEGER REFERENCES users(id) ON DELETE CASCADE,
+		worker_name  TEXT,
+		round_id     INTEGER, -- reserved-NULL; future split-mode seam, unused today
+		shares       INTEGER NOT NULL DEFAULT 0,
+		sum_weight   TEXT NOT NULL DEFAULT '0',
+		hashrate_est REAL NOT NULL DEFAULT 0
+	);
+	CREATE INDEX IF NOT EXISTS idx_mining_stats_bucket ON mining_stats(bucket_start);
+	CREATE INDEX IF NOT EXISTS idx_mining_stats_user ON mining_stats(user_id, bucket_start);
+
+	CREATE TABLE IF NOT EXISTS mining_blocks (
+		id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+		height              INTEGER NOT NULL,
+		block_hash          TEXT NOT NULL UNIQUE,
+		coinbase_txid       TEXT,
+		user_id             INTEGER REFERENCES users(id) ON DELETE SET NULL,
+		worker_name         TEXT,
+		wallet_id           INTEGER REFERENCES wallets(id) ON DELETE SET NULL,
+		payout_address      TEXT NOT NULL,
+		coinbase_value_sats TEXT NOT NULL,
+		found_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		submit_result       TEXT NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_mining_blocks_user ON mining_blocks(user_id);
+`);
