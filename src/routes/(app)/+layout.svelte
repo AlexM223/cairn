@@ -31,15 +31,20 @@
 		...(flags.explorer !== false ? [{ href: '/explorer', label: 'Explorer', icon: 'explorer' }] : []),
 		{ href: '/wallets', label: 'Wallets', icon: 'wallet' },
 		{ href: '/activity', label: 'Activity', icon: 'activity' },
+		...(flags.mining !== false ? [{ href: '/mining', label: 'Mining', icon: 'flame' }] : []),
 		...(data.user.isAdmin ? [{ href: '/admin', label: 'Node', icon: 'server' }] : []),
 		{ href: '/settings', label: 'Settings', icon: 'settings' }
 	]);
 
 	// Mobile tab row shows only the four tab destinations — Node & Settings are
 	// reached through the avatar menu on mobile (Heartwood responsive spec).
+	// Mining (cairn-vn43.5) joins that avatar-menu group rather than taking a
+	// fifth tab slot — it's an occasional-use surface, same reasoning as Node.
 	const tabs = $derived(
 		nav
-			.filter((item) => item.href !== '/settings' && item.href !== '/admin')
+			.filter(
+				(item) => item.href !== '/settings' && item.href !== '/admin' && item.href !== '/mining'
+			)
 			.map(({ href, label }) => ({ href, label }))
 	);
 
