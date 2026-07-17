@@ -14,7 +14,7 @@
 	import { enhance } from '$app/forms';
 	import Icon from '$lib/components/Icon.svelte';
 	import CoreRpcRequiredNotice from '$lib/components/CoreRpcRequiredNotice.svelte';
-	import { agoLabel, formatUptime, type AdminMiningEngineView } from './adminMiningView';
+	import { agoLabel, bindLabel, formatUptime, type AdminMiningEngineView } from './adminMiningView';
 
 	let {
 		engine,
@@ -84,7 +84,11 @@
 			</div>
 			<div class="stat">
 				<span class="stat-k">Listening on</span>
-				<span class="stat-v mono tabular">{engine.bind}:{engine.stratumPort}</span>
+				<span class="stat-v mono tabular">port {engine.stratumPort}</span>
+			</div>
+			<div class="stat">
+				<span class="stat-k">Network exposure</span>
+				<span class="stat-v">{bindLabel(engine.bind)}</span>
 			</div>
 			<div class="stat">
 				<span class="stat-k">Last block template</span>

@@ -25,7 +25,7 @@
 	<CairnChart
 		{series}
 		height={140}
-		xFormat={(v) => timeAgo(v)}
+		xFormat={(v) => timeAgo(Math.floor(v / 1000))}
 		yFormat={(v) => formatHashrate(v)}
 		ariaLabel="Pool hashrate over time"
 	/>

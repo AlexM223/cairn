@@ -20,11 +20,18 @@ export interface AdminMiningEngineView {
 	status: MiningEngineStatus;
 	coreRpc: CoreRpcState;
 	uptimeSec: number;
-	bind: string;
+	bind: MiningBind;
 	stratumPort: number;
 	/** Seconds since the last getblocktemplate refresh, or null if never. */
 	lastTemplateAgoSec: number | null;
 	fatalErrors: string[];
+}
+
+/** Friendly label for the engine's configured network exposure. */
+export function bindLabel(bind: MiningBind): string {
+	if (bind === 'loopback') return 'this device only';
+	if (bind === 'lan') return 'this network (LAN)';
+	return 'any network';
 }
 
 export interface AdminMiningPoolView {
@@ -37,7 +44,7 @@ export interface AdminMiningPoolView {
 }
 
 export interface AdminMiningHashratePoint {
-	/** Unix seconds. */
+	/** Unix milliseconds (matches `Date.parse()`/`Date.now()` — NOT seconds). */
 	t: number;
 	/** H/s. */
 	hashrate: number;
@@ -69,8 +76,8 @@ export interface AdminBlockRow {
 	foundByName: string;
 	/** Sats. */
 	reward: number;
-	/** Unix seconds. */
-	foundAt: number;
+	/** ISO datetime string (DB `found_at` column — NOT a unix-seconds number). */
+	foundAt: string;
 	confirmations: number;
 	status: MiningBlockStatus;
 }
@@ -125,7 +132,7 @@ export const DEGRADED_ADMIN_MINING_VIEW: AdminMiningView = {
 		status: 'core_missing',
 		coreRpc: 'unconfigured',
 		uptimeSec: 0,
-		bind: '127.0.0.1',
+		bind: 'loopback',
 		stratumPort: 3333,
 		lastTemplateAgoSec: null,
 		fatalErrors: []

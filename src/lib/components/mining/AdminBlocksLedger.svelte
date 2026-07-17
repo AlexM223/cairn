@@ -12,6 +12,12 @@
 
 	let { blocks }: { blocks: AdminBlockRow[] } = $props();
 
+	/** `foundAt` is the DB's ISO datetime string — formatDateTime wants unix seconds. */
+	function foundAtLabel(iso: string): string {
+		const ms = Date.parse(iso);
+		return Number.isFinite(ms) ? formatDateTime(Math.floor(ms / 1000)) : '—';
+	}
+
 	const CHIP_CLASS: Record<AdminBlockRow['status'], string> = {
 		maturing: 'badge-warning',
 		mature: 'badge-success',
@@ -54,7 +60,7 @@
 							<td class="num tabular">{formatNumber(b.height)}</td>
 							<td>{b.foundByName}</td>
 							<td class="num tabular" title="{formatSats(b.reward)} sats">{formatSats(b.reward)} sats</td>
-							<td class="tabular">{formatDateTime(b.foundAt)}</td>
+							<td class="tabular">{foundAtLabel(b.foundAt)}</td>
 							<td class="num tabular">{formatNumber(b.confirmations)}</td>
 							<td><span class="badge {CHIP_CLASS[b.status]}">{CHIP_LABEL[b.status]}</span></td>
 						</tr>
