@@ -15,6 +15,7 @@
  */
 import { db } from '../db';
 import { childLogger } from '../logger';
+import { publish as livePublish } from '../liveHub';
 import { estimateHashrate } from '$lib/shared/hashrate';
 import type { ShareEvent, RejectEvent } from './types';
 
@@ -237,10 +238,11 @@ export class MiningAggregates {
 	 * to mining_stats. Never throws (logs and rolls back on error).
 	 */
 	flush(now = Date.now()): void {
+		let changedUsers = new Set<number>();
 		try {
 			db.exec('BEGIN');
 			try {
-				this.flushWorkers();
+				changedUsers = this.flushWorkers();
 				this.flushClosedBuckets(now);
 				db.exec('COMMIT');
 			} catch (e) {
@@ -252,9 +254,25 @@ export class MiningAggregates {
 			return;
 		}
 		this.maybeSweepRetention(now);
+		// Live nudges (docs/LIVE-UPDATES-DESIGN.md §2/§3.4): after a SUCCESSFUL flush,
+		// nudge every user whose buckets changed this pass to refetch their mining
+		// view, plus one broadcast-admin pool nudge. Nudge-only (empty payload): the
+		// client re-derives from its own endpoints (/api/mining/me, /api/admin/mining)
+		// rather than trusting an inline figure. publish() never reads SQLite and is a
+		// no-op when nobody's connected, so this is free on an idle instance and runs
+		// OUTSIDE the DB transaction above.
+		this.publishNudges(changedUsers);
 	}
 
-	private flushWorkers(): void {
+	/** Fan the post-flush mining nudges (see flush()). No-op when nothing changed. */
+	private publishNudges(changedUsers: Set<number>): void {
+		if (changedUsers.size === 0) return;
+		for (const userId of changedUsers) livePublish('mining', { userId }, {});
+		livePublish('mining:pool', { admin: true }, {});
+	}
+
+	private flushWorkers(): Set<number> {
+		const changed = new Set<number>();
 		const upsert = db.prepare(
 			`INSERT INTO mining_workers
 			   (user_id, worker_name, shares_accepted, shares_stale, shares_rejected,
@@ -277,6 +295,10 @@ export class MiningAggregates {
 			const dR = s.sharesRejected - s.flushed.rejected;
 			const dW = s.sumDifficulty - s.flushed.sumDifficulty;
 			if (dA === 0 && dS === 0 && dR === 0 && dW === 0 && s.lastShareAtMs === null) continue;
+			// Only a user with genuinely new share activity this flush is nudged —
+			// an already-flushed idle worker still writes its row (hashrate decay,
+			// last_share_at) but must not re-nudge every 15s forever.
+			if (dA !== 0 || dS !== 0 || dR !== 0 || dW !== 0) changed.add(s.userId);
 			const hashrateNow = this.windowHashrate(s, WIN_NOW_SEC, now);
 			upsert.run(
 				s.userId,
@@ -295,6 +317,7 @@ export class MiningAggregates {
 			s.flushed.rejected = s.sharesRejected;
 			s.flushed.sumDifficulty = s.sumDifficulty;
 		}
+		return changed;
 	}
 
 	private flushClosedBuckets(now: number): void {

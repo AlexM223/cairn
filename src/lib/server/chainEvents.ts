@@ -22,6 +22,9 @@ const log = childLogger('electrum');
 // still reported.
 let connected: boolean | null = null;
 let lastBlockHeight = 0;
+// ms epoch when the current tip was first seen — feeds the `health` frame's
+// tipAgeMs without a fresh query (docs/LIVE-UPDATES-DESIGN.md §2).
+let lastBlockAtMs: number | null = null;
 
 // admin_server_health debounce (§3): the Electrum client flaps and retries with
 // backoff, so a bare 'disconnect' listener would spam. Instead, when the
@@ -38,6 +41,21 @@ function clearOutageTimer(): void {
 		clearTimeout(outageTimer);
 		outageTimer = null;
 	}
+}
+
+/**
+ * Publish a broadcast `health` frame (docs/LIVE-UPDATES-DESIGN.md §2). Lean by
+ * design — every field is already in hand here, no new query. The client treats
+ * it as a nudge to re-read the authoritative /api/chain-health union verdict
+ * (Core coverage / neverConfigured / proxy), which the electrum-only signal here
+ * can't reconstruct on its own.
+ */
+function publishHealth(electrum: 'up' | 'down'): void {
+	livePublish('health', { broadcast: true }, {
+		electrum,
+		tipHeight: lastBlockHeight,
+		tipAgeMs: lastBlockAtMs === null ? null : Date.now() - lastBlockAtMs
+	});
 }
 
 /** Attach activity/logging listeners to a freshly built Electrum client. */
@@ -69,6 +87,7 @@ export function wireChainEvents(electrum: ElectrumPool): void {
 		}
 		if (connected === true) return;
 		connected = true;
+		publishHealth('up');
 		log.info({ server }, 'connected');
 		recordActivity({
 			type: 'network_up',
@@ -100,6 +119,7 @@ export function wireChainEvents(electrum: ElectrumPool): void {
 		}
 		if (connected === false) return;
 		connected = false;
+		publishHealth('down');
 		log.warn({ server }, 'connection lost');
 		recordActivity({
 			type: 'network_down',
@@ -115,6 +135,7 @@ export function wireChainEvents(electrum: ElectrumPool): void {
 		// of a height is a real "new block".
 		if (header.height <= lastBlockHeight) return;
 		lastBlockHeight = header.height;
+		lastBlockAtMs = Date.now();
 		// A new block means the cached tip (ChainService.getTip) is stale — drop it
 		// now so the next lookup reflects the new height without waiting out the
 		// 10-minute TTL ceiling (cairn-vknb.5).

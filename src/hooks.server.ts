@@ -30,6 +30,7 @@ import { startScheduledBackupWatcher } from '$lib/server/backup';
 import { startPortfolioWarm } from '$lib/server/portfolioWarm';
 import { startRetentionSweep } from '$lib/server/dataRetention';
 import { startMiningEngine } from '$lib/server/mining';
+import { startLiveTickers } from '$lib/server/liveTickers';
 import { startFirstSync } from '$lib/server/syncStatus';
 import { migratePlaintextSecretsAtRest } from '$lib/server/secretsMigration';
 import { migrateInstanceMode } from '$lib/server/instanceModeMigration';
@@ -314,6 +315,16 @@ async function init(): Promise<void> {
 		errLog.error({ err: e }, 'mining engine start failed');
 	}
 
+	// Shared process-level tickers (docs/LIVE-UPDATES-DESIGN.md §3.4) — today the
+	// 5s mempool sampler behind the broadcast `mempool` topic. Unref'd and dormant
+	// until a live connection actually wants the topic, so it's a no-op cost on an
+	// idle instance; never throws.
+	try {
+		startLiveTickers();
+	} catch (e) {
+		errLog.error({ err: e }, 'live tickers start failed');
+	}
+
 	// Startup config summary (Wave 1 / log-request.md §5): today's boot output
 	// only logs FAILURES of each step above, never a positive confirmation of
 	// which env actually took effect — on a logs-only Umbrel deployment that's
@@ -416,8 +427,8 @@ function redactPath(pathname: string): string {
 // JadeQrSigner.svelte). No route calls out to a third-party origin at
 // fetch/XHR/EventSource/WebSocket time (referral/support links in
 // referrals.ts are plain `<a>` navigations, not fetched by the page, and the
-// /api/events + /api/notifications/stream SSE streams are same-origin
-// `EventSource` calls) — so `connect-src 'self'` is sufficient and
+// single /api/live multiplexed SSE stream is a same-origin `EventSource`
+// call) — so `connect-src 'self'` is sufficient and
 // hardware-wallet communication (WebUSB/WebHID) is unaffected either way,
 // since those are browser-mediated device transports, not network requests
 // subject to connect-src. `frame-ancestors 'none'` is the modern, CSP-level

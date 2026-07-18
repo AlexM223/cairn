@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { onNewBlock } from '$lib/liveBlocks';
+	import { mempoolStats } from '$lib/live/mempoolStats.svelte';
 	import { triggerChainRefresh } from '$lib/chainRefresh';
 	import Icon from '$lib/components/Icon.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
@@ -21,8 +22,14 @@
 	// background exactly like every other explorer page, and invalidate()s this
 	// load to pick up the fresh data.
 	let snap = $derived(data.mempool);
-	const projected = $derived(snap?.projected ?? null);
-	const histogram = $derived(snap?.histogram ?? null);
+	// Live mempool payload (docs/LIVE-UPDATES-DESIGN.md §4.2): the treemap is drawn
+	// purely from the fee histogram + projected next-blocks, both of which arrive
+	// in the `mempool` frame in the exact shapes synthesizeBlocks() consumes — so
+	// overlay them for an instant update, falling back to the server snapshot
+	// before the first frame lands.
+	const live = $derived(mempoolStats.stats);
+	const projected = $derived(live?.mempoolBlocks ?? snap?.projected ?? null);
+	const histogram = $derived(live?.feeHistogram ?? snap?.histogram ?? null);
 	const tipHeight = $derived(snap?.tipHeight ?? null);
 
 	let syncing = $state(false);

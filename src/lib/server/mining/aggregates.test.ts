@@ -3,7 +3,13 @@
 // mining_stats. No per-share DB writes (cairn-xlrm) — everything accumulates in
 // memory and lands in ONE transaction per flush.
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// Wave 3 (docs/LIVE-UPDATES-DESIGN.md §3.4): flush() publishes live mining
+// nudges. Spy on liveHub.publish so the flush tests can assert the scopes.
+const publishMock = vi.fn();
+vi.mock('../liveHub', () => ({ publish: (...a: unknown[]) => publishMock(...a) }));
+
 import { db } from '../db';
 import { registerUser } from '../auth';
 import { setSetting } from '../settings';
@@ -161,5 +167,42 @@ describe('flush', () => {
 		expect(db.prepare('SELECT COUNT(*) AS n FROM mining_stats').get()).toEqual({ n: 0 });
 		// Still buffered in memory as an open bucket.
 		expect(agg.openBucketCountForTest()).toBe(1);
+	});
+});
+
+describe('flush live nudges (Wave 3, §3.4)', () => {
+	it('nudges each changed user + a broadcast-admin pool frame after a successful flush', () => {
+		publishMock.mockClear();
+		const agg = new MiningAggregates();
+		agg.recordShare(share('bitaxe', 100));
+		agg.flush();
+
+		const mining = publishMock.mock.calls.filter((c) => c[0] === 'mining');
+		expect(mining.length).toBe(1);
+		expect(mining[0][1]).toEqual({ userId }); // user-scoped to the miner
+		expect(mining[0][2]).toEqual({}); // nudge-only
+
+		const pool = publishMock.mock.calls.filter((c) => c[0] === 'mining:pool');
+		expect(pool.length).toBe(1);
+		expect(pool[0][1]).toEqual({ admin: true }); // admin-broadcast scope
+		expect(pool[0][2]).toEqual({});
+	});
+
+	it('emits no nudge when a flush had no share activity', () => {
+		const agg = new MiningAggregates();
+		agg.flush(); // nothing recorded this pass
+		publishMock.mockClear();
+		agg.flush();
+		expect(publishMock).not.toHaveBeenCalled();
+	});
+
+	it('does not re-nudge an idle worker on a subsequent no-activity flush', () => {
+		const agg = new MiningAggregates();
+		agg.recordShare(share('w', 50));
+		agg.flush(); // real delta → nudges
+		publishMock.mockClear();
+		agg.flush(); // no new shares → no delta → no nudge
+		expect(publishMock.mock.calls.filter((c) => c[0] === 'mining').length).toBe(0);
+		expect(publishMock.mock.calls.filter((c) => c[0] === 'mining:pool').length).toBe(0);
 	});
 });

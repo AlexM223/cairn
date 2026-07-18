@@ -10,7 +10,7 @@
 // SSE events are dispatched to the topic's handler set.
 //
 // Reconnect/visibility/stale hardening is the same pattern proven in
-// sseReconnect.ts and liveBlocks.ts — reconnect when the tab is foregrounded if
+// liveBlocks.ts — reconnect when the tab is foregrounded if
 // the connection is dead or has gone quiet (mobile app-switch kills SSE while
 // backgrounded and native retry is unreliable), and a watchdog that proactively
 // reconnects after a silent period. SSR-safe: every entry point no-ops when

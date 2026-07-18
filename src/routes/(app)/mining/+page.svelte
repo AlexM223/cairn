@@ -8,6 +8,8 @@
 	import { onMount } from 'svelte';
 	import { enhance } from '$app/forms';
 	import { page } from '$app/state';
+	import { subscribe } from '$lib/live/liveClient';
+	import { debounced } from '$lib/live/walletEvents';
 	import Icon from '$lib/components/Icon.svelte';
 	import CoreRpcRequiredNotice from '$lib/components/CoreRpcRequiredNotice.svelte';
 	import { toast } from '$lib/components/toast.svelte';
@@ -71,15 +73,13 @@
 
 	// Live-refreshed mirror of the server-loaded view. Reset whenever the
 	// server load reruns (e.g. after a form action's `update()`), then kept
-	// current in between by the /api/mining/me poll below.
+	// current in between by the live `mining` nudge below.
 	let view = $state<MiningView>(data.view);
 	$effect(() => {
 		view = data.view;
 	});
 
-	let pollTimer: ReturnType<typeof setInterval> | undefined;
-
-	async function pollOnce() {
+	async function refetch() {
 		try {
 			const res = await fetch('/api/mining/me');
 			if (!res.ok) return;
@@ -90,27 +90,22 @@
 		}
 	}
 
-	function startPolling() {
-		stopPolling();
-		pollTimer = setInterval(pollOnce, 10_000);
-	}
-	function stopPolling() {
-		if (pollTimer) clearInterval(pollTimer);
-		pollTimer = undefined;
-	}
 	function onVisibilityChange() {
-		if (document.hidden) stopPolling();
-		else {
-			pollOnce();
-			startPolling();
-		}
+		if (!document.hidden) void refetch();
 	}
 
 	onMount(() => {
-		startPolling();
+		// Invalidate-driven (docs/LIVE-UPDATES-DESIGN.md §4.2, §5): the 10s poll is
+		// gone. The user-scoped `mining` nudge (fired on each aggregates flush and
+		// immediately on a block-found) triggers a debounced refetch of the same
+		// endpoint; a burst collapses into one reload. Foreground still refetches so
+		// a tab that was backgrounded when a nudge fired catches up on return.
+		const nudged = debounced(() => void refetch());
+		const unsub = subscribe('mining', () => nudged());
 		document.addEventListener('visibilitychange', onVisibilityChange);
 		return () => {
-			stopPolling();
+			nudged.cancel();
+			unsub();
 			document.removeEventListener('visibilitychange', onVisibilityChange);
 		};
 	});

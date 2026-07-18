@@ -2,7 +2,8 @@
 // relevant events only (see listUserFeed), no server internals or other users'
 // events. Used by the /activity page's auto-refresh. The full operational log
 // lives at /api/admin/activity (admin-only).
-// Note: /api/events is a separate SSE stream of new blocks — unrelated to this.
+// Note: the /api/live multiplexed SSE stream carries new-block/notification
+// frames — unrelated to this feed endpoint.
 
 import { json, requireUser } from '$lib/server/api';
 import { listUserFeed } from '$lib/server/activity';

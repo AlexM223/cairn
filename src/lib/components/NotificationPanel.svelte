@@ -3,15 +3,15 @@
 	// docs/NOTIFICATION-PLAN.md). Lives in the (app) sidebar next to the user
 	// chip. Shows an unread badge, and on click drops a panel listing recent
 	// notifications with the same level-based icon/colour treatment the
-	// /activity page uses. A live SSE stream (/api/notifications/stream) keeps
-	// the badge fresh without polling; the panel list is fetched on open.
+	// /activity page uses. The `notification` topic on the single /api/live SSE
+	// stream keeps the badge fresh without polling; the panel list is fetched on open.
 	//
 	// Read model is instance-wide (a single events.read_at column) — see the API
 	// route. "Mark all read" clears every visible unread row for this user.
 
 	import Icon from '$lib/components/Icon.svelte';
 	import { timeAgo } from '$lib/format';
-	import { createResilientEventSource } from '$lib/sseReconnect';
+	import { subscribe } from '$lib/live/liveClient';
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 
@@ -179,31 +179,24 @@
 	}
 
 	onMount(() => {
-		// Prime the badge, then subscribe to the live push.
-		//
-		// This component is mounted once in the persistent sidebar for the
-		// whole session, so its SSE connection has to survive indefinitely —
-		// including mobile OSes silently killing a backgrounded EventSource,
-		// which the browser's native auto-reconnect doesn't reliably recover
-		// from once the tab is foregrounded again. createResilientEventSource
-		// (cairn-pk85) ports the same visibility/staleness reconnect
-		// hardening liveBlocks.ts uses for the new-block stream. SSR-safe:
-		// it no-ops if called outside the browser, but onMount only runs
-		// client-side anyway.
+		// Prime the badge, then subscribe to the live `notification` topic on the
+		// single multiplexed /api/live stream (docs/LIVE-UPDATES-DESIGN.md §5 —
+		// transport swap only, behaviour identical). liveClient owns the one
+		// EventSource plus all the visibility/staleness reconnect hardening this
+		// panel needs (it's mounted once in the persistent sidebar for the whole
+		// session, so its subscription must survive mobile app-switching). SSR-safe:
+		// subscribe() no-ops off the browser, but onMount only runs client-side.
 		void load();
 
-		const unsubscribeStream = createResilientEventSource('/api/notifications/stream', {
-			eventName: 'notification',
-			onMessage: (ev) => {
-				try {
-					const data = JSON.parse(ev.data as string) as { unread?: unknown };
-					if (typeof data.unread === 'number') unread = data.unread;
-				} catch {
-					// Ignore a malformed frame.
-				}
-				// If the panel is open, refresh the list too so new rows appear.
-				if (open) void load();
+		const unsubscribeStream = subscribe('notification', (ev) => {
+			try {
+				const data = JSON.parse(ev.data as string) as { unread?: unknown };
+				if (typeof data.unread === 'number') unread = data.unread;
+			} catch {
+				// Ignore a malformed frame.
 			}
+			// If the panel is open, refresh the list too so new rows appear.
+			if (open) void load();
 		});
 
 		document.addEventListener('click', onDocClick);

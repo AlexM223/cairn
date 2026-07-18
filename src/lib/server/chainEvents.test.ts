@@ -15,10 +15,14 @@ import type { ElectrumPool } from './electrum/pool';
 const recordActivityMock = vi.fn();
 const invalidateTipCacheMock = vi.fn();
 const notifyMock = vi.fn();
+const publishMock = vi.fn();
 
 vi.mock('./activity', () => ({ recordActivity: (...a: unknown[]) => recordActivityMock(...a) }));
 vi.mock('./chain/cache', () => ({ invalidateTipCache: (...a: unknown[]) => invalidateTipCacheMock(...a) }));
 vi.mock('./notifications', () => ({ notify: (...a: unknown[]) => notifyMock(...a) }));
+// Wave 3 (docs/LIVE-UPDATES-DESIGN.md §2): connect/disconnect publish a broadcast
+// `health` frame (and the header path a `block` frame). Spy on liveHub.publish.
+vi.mock('./liveHub', () => ({ publish: (...a: unknown[]) => publishMock(...a) }));
 
 import { wireChainEvents, resetConnectionState } from './chainEvents';
 
@@ -268,5 +272,62 @@ describe('header: invalidateTipCache + new_block only on a strictly-higher heigh
 
 		expect(invalidateTipCacheMock).not.toHaveBeenCalled();
 		expect(recordActivityMock).not.toHaveBeenCalled();
+	});
+});
+
+describe('health frames (Wave 3, §2): broadcast on real connect/disconnect transitions', () => {
+	function healthFrames(): { scope: unknown; data: Record<string, unknown> }[] {
+		return publishMock.mock.calls
+			.filter((c) => c[0] === 'health')
+			.map((c) => ({ scope: c[1], data: c[2] as Record<string, unknown> }));
+	}
+
+	it('publishes a broadcast `up` frame on the first connect', () => {
+		const pool = makePool();
+		wireChainEvents(pool as unknown as ElectrumPool);
+		pool.emit('connect');
+
+		const frames = healthFrames();
+		expect(frames).toHaveLength(1);
+		expect(frames[0].scope).toEqual({ broadcast: true });
+		expect(frames[0].data).toMatchObject({ electrum: 'up' });
+		expect(typeof frames[0].data.tipHeight).toBe('number');
+	});
+
+	it('publishes a broadcast `down` frame on the disconnect transition', () => {
+		const pool = makePool();
+		wireChainEvents(pool as unknown as ElectrumPool);
+		pool.emit('connect');
+		publishMock.mockClear();
+
+		pool.emit('disconnect');
+		const frames = healthFrames();
+		expect(frames).toHaveLength(1);
+		expect(frames[0].scope).toEqual({ broadcast: true });
+		expect(frames[0].data).toMatchObject({ electrum: 'down' });
+	});
+
+	it('does NOT re-publish health on a replayed connect while already connected', () => {
+		const pool = makePool();
+		wireChainEvents(pool as unknown as ElectrumPool);
+		pool.emit('connect');
+		publishMock.mockClear();
+
+		pool.emit('connect'); // resubscribe replay
+		expect(healthFrames()).toHaveLength(0);
+	});
+
+	it('carries the last-seen tip height (and a numeric tipAgeMs) once a header has arrived', () => {
+		const pool = makePool();
+		wireChainEvents(pool as unknown as ElectrumPool);
+		const h = freshHeight();
+		pool.emit('header', header(h));
+		publishMock.mockClear();
+
+		pool.emit('connect');
+		const frame = healthFrames().find((f) => f.data.electrum === 'up');
+		expect(frame).toBeDefined();
+		expect(frame!.data.tipHeight).toBe(h);
+		expect(typeof frame!.data.tipAgeMs).toBe('number');
 	});
 });

@@ -67,6 +67,18 @@ export function connectionCount(): number {
 }
 
 /**
+ * How many live connections currently want the heavy `mempool` topic. The
+ * mempool ticker (liveTickers.ts) reads this to stay dormant — no chain read,
+ * no frame — whenever nobody is subscribed, so an idle instance pays nothing
+ * for the 5s tick.
+ */
+export function mempoolSubscriberCount(): number {
+	let n = 0;
+	for (const conn of connections) if (conn.wantsMempool) n++;
+	return n;
+}
+
+/**
  * Fan a fully-built payload out to every connection the scope entitles. The
  * frame is serialized exactly once. A no-op when there are no connections, so
  * publishers never pay for JSON.stringify on an idle process.

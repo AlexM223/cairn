@@ -9,6 +9,7 @@
 	import BalanceHorizons from '$lib/components/portfolio/BalanceHorizons.svelte';
 	import { formatSats, gatedFiatPrice } from '$lib/format';
 	import { onWalletEvent, debounced } from '$lib/live/walletEvents';
+	import { chainHealth } from '$lib/live/chainHealth.svelte';
 	import { deriveHomeHealth, shouldShowRecentActivity, shouldShowWalletList } from '$lib/homeView';
 	import { buildHorizonRows } from '$lib/horizonDelta';
 	import type { PortfolioDetail } from '$lib/types';
@@ -163,28 +164,11 @@
 	//     page.data) and chain-health (polled the same way ChainHealthBanner
 	//     does — a cheap in-memory last-known signal, no fresh probe). The
 	//     full Health page (Node/Backups/Storage/Users) is Phase 3. ---
-	let chainHealthy = $state(true);
-	onMount(() => {
-		let done = false;
-		async function poll() {
-			if (done) return;
-			try {
-				const res = await fetch('/api/chain-health', { cache: 'no-store' });
-				if (res.ok) {
-					const body = await res.json();
-					chainHealthy = body?.healthy !== false;
-				}
-			} catch {
-				/* a missed poll is fine; keep the last-known state */
-			}
-		}
-		void poll();
-		const timer = setInterval(poll, 15_000);
-		return () => {
-			done = true;
-			clearInterval(timer);
-		};
-	});
+	// Live off the shared chain-health store (docs/LIVE-UPDATES-DESIGN.md §5) —
+	// the 15s poll is gone; the store seeds once and re-reads on each `health`
+	// nudge. Treat "not yet loaded" (null) as healthy so the line stays calm
+	// until the first verdict lands, matching the old poll's initial default.
+	const chainHealthy = $derived(chainHealth.health?.healthy !== false);
 	const unbackedCount = $derived(page.data.unbackedWallets?.length ?? 0);
 	const health = $derived(deriveHomeHealth({ unbackedCount, chainHealthy }));
 

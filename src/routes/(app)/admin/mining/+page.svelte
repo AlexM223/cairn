@@ -5,14 +5,19 @@
 	 * pool's live hashrate as the hero number, per-miner and per-user
 	 * breakdowns, the blocks-found ledger, and the engine's own config form.
 	 *
-	 * Live refresh: polls GET /api/admin/mining every 10s (paused while the
-	 * tab is hidden) and merges the volatile fields (engine/pool/
+	 * Live refresh (docs/LIVE-UPDATES-DESIGN.md §4.2, §5): the 10s poll is gone.
+	 * The admin-broadcast `mining:pool` nudge (fired on each aggregates flush and
+	 * immediately on a block-found) triggers a debounced refetch of
+	 * GET /api/admin/mining, merging the volatile fields (engine/pool/
 	 * hashrateSeries/miners/userBreakdown/blocks) into local state — `settings`
-	 * is deliberately excluded from the merge so a poll never clobbers fields
+	 * is deliberately excluded from the merge so a refetch never clobbers fields
 	 * the admin is mid-editing in the settings form below (that form seeds its
 	 * own local state once from the initial load and manages saves itself).
+	 * Foreground still refetches so a backgrounded tab catches up on return.
 	 */
 	import { onMount } from 'svelte';
+	import { subscribe } from '$lib/live/liveClient';
+	import { debounced } from '$lib/live/walletEvents';
 	import Banner from '$lib/components/Banner.svelte';
 	import AdminEngineHealth from '$lib/components/mining/AdminEngineHealth.svelte';
 	import AdminPoolHero from '$lib/components/mining/AdminPoolHero.svelte';
@@ -53,7 +58,8 @@
 			}
 		}
 
-		const timer = setInterval(poll, 10_000);
+		const nudged = debounced(() => void poll());
+		const unsub = subscribe('mining:pool', () => nudged());
 		function onVisible() {
 			if (!document.hidden) void poll();
 		}
@@ -61,7 +67,8 @@
 
 		return () => {
 			stopped = true;
-			clearInterval(timer);
+			nudged.cancel();
+			unsub();
 			document.removeEventListener('visibilitychange', onVisible);
 		};
 	});

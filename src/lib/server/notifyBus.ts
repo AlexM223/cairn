@@ -1,9 +1,10 @@
 // In-process event bus for live in-app notification delivery (Unit 2, §2.1 of
 // docs/NOTIFICATION-PLAN.md). notify() (notifications.ts) emits on this bus
-// after writing the in-app `events` row, and the SSE endpoint
-// (src/routes/api/notifications/stream/+server.ts) subscribes to push a live
-// unread-count nudge to the connected browser — the same shape the block-tip
-// SSE stream (api/events) uses for new blocks, but for notifications.
+// after writing the in-app `events` row, and liveHub's notifyBus bridge
+// (src/lib/server/liveHub.ts, §3.2) subscribes to push a live unread-count
+// `notification` frame to the connected browser over the single multiplexed
+// /api/live stream (docs/LIVE-UPDATES-DESIGN.md) — the same stream that carries
+// `block` frames for new blocks, just a different named topic.
 //
 // Deliberately tiny and side-effect-free beyond the emitter itself: it must not
 // import db.ts or anything stateful, so both the producer and the consumer can

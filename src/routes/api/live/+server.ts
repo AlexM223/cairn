@@ -1,8 +1,8 @@
 // GET /api/live — the single multiplexed Server-Sent Events stream
 // (docs/LIVE-UPDATES-DESIGN.md §1). One EventSource per browser tab carries
-// every named topic the connecting user is entitled to. This replaces the
-// per-topic /api/events and /api/notifications/stream endpoints, which remain as
-// thin shims during the migration window (retired at the end of Wave 3).
+// every named topic the connecting user is entitled to. This replaced — and, as
+// of Wave 3, fully retired — the per-topic /api/events (block tips) and
+// /api/notifications/stream (unread badge) endpoints.
 //
 // Connection lifecycle reuses the battle-tested skeleton from /api/events:
 // ReadableStream + 25s heartbeat + idempotent cleanup on cancel/abort.

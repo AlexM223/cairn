@@ -21,6 +21,7 @@
 import { MiningPool } from './miningPool';
 import { getAuthTable, refreshAuthTable } from './authTable';
 import { MiningAggregates } from './aggregates';
+import { publish as livePublish } from '../liveHub';
 import { readMiningSettings } from './settings';
 import { networkFor } from './address';
 import type { MiningEngineConfig, SolveEvent, ShareEvent, RejectEvent, EngineStatus } from './types';
@@ -416,6 +417,16 @@ export async function handleBlockAccepted(
 		});
 	} catch (e) {
 		log.warn({ err: e }, 'block-found admin notify failed');
+	}
+
+	// Immediate live nudge (docs/LIVE-UPDATES-DESIGN.md §2/§3.4): block-found is
+	// out of band — nudge the finder and admins now rather than waiting for the
+	// next aggregates flush. Nudge-only; the client refetches its own view.
+	try {
+		livePublish('mining', { userId: solve.userId }, {});
+		livePublish('mining:pool', { admin: true }, {});
+	} catch (e) {
+		log.warn({ err: e }, 'block-found live nudge failed');
 	}
 
 	// (d) Activity feed.

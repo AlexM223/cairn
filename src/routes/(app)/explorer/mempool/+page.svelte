@@ -2,6 +2,8 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { onNewBlock } from '$lib/liveBlocks';
+	import { mempoolStats } from '$lib/live/mempoolStats.svelte';
+	import { debounced } from '$lib/live/walletEvents';
 	import { triggerChainRefresh } from '$lib/chainRefresh';
 	import Icon from '$lib/components/Icon.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
@@ -53,10 +55,18 @@
 	// real "this backend doesn't provide it" degrade, shown as plain copy.
 	const firstLoad = $derived(snap === null && !syncFailed);
 	const neverSynced = $derived(snap === null);
+	// Live mempool payload (docs/LIVE-UPDATES-DESIGN.md §4.2): the `mempool` frame
+	// carries the fee histogram and the projected next-blocks view in the exact
+	// shapes this page renders, so overlay those directly for an instant update
+	// (falling back to the server snapshot before the first frame). The counters
+	// and the heavier server-recomputed fields (fee estimates, backlog trend,
+	// total waiting fees) are NOT in the frame — those come from the snapshot,
+	// which a debounced tag-scoped reload refreshes on each nudge (below).
+	const live = $derived(mempoolStats.stats);
 	const summary = $derived(snap?.summary ?? null);
 	const fees = $derived(snap?.fees ?? null);
-	const histogram = $derived(snap?.histogram ?? null);
-	const projected = $derived(snap?.projected ?? null);
+	const histogram = $derived(live?.feeHistogram ?? snap?.histogram ?? null);
+	const projected = $derived(live?.mempoolBlocks ?? snap?.projected ?? null);
 	const trend = $derived(snap?.trend ?? null);
 	const chainError = $derived(snap?.error ?? null);
 	// Hard error: a stored error, or the first refresh failing before anything was
@@ -72,6 +82,15 @@
 			void refresh(true);
 		})
 	);
+
+	// A `mempool` nudge means the histogram/projection just changed (overlaid live
+	// above). Debounce-refresh the snapshot too so the counters, fee estimates and
+	// backlog trend it also renders stay consistent with the overlaid panels.
+	const nudgeRefresh = debounced(() => void refresh(true));
+	$effect(() => {
+		if (live?.updatedAt === undefined) return; // no frame yet
+		nudgeRefresh();
+	});
 
 	// A full block holds ~1M vB; how many block-fulls are waiting right now.
 	const blocksWorth = $derived(summary ? summary.vsize / 1_000_000 : 0);

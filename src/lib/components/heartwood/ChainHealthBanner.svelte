@@ -29,9 +29,9 @@
 	 * that WAS configured (custom, or Umbrel auto-connected) and has since gone
 	 * unreachable still gets the real warning-styled "can't reach it" banner.
 	 */
-	import { onMount } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import type { ChainHealth } from '$lib/server/chainHealth';
+	import { chainHealth } from '$lib/live/chainHealth.svelte';
 
 	// Whether the viewer can act on this — only admins get the settings link.
 	// hasSnapshot (cairn-6efi QA P1-a, ported from explorer/heartwood-wave2):
@@ -43,10 +43,9 @@
 	let { isAdmin = false, hasSnapshot = false }: { isAdmin?: boolean; hasSnapshot?: boolean } =
 		$props();
 
-	// A background health signal, not a progress bar — poll slowly.
-	const POLL_MS = 15_000;
-
-	let health = $state<ChainHealth | null>(null);
+	// Live transport health off the shared store (docs/LIVE-UPDATES-DESIGN.md §5):
+	// no more 15s poll — the store seeds once and re-reads on each `health` nudge.
+	const health = $derived<ChainHealth | null>(chainHealth.health);
 
 	const unhealthy = $derived(health !== null && !health.healthy);
 
@@ -88,24 +87,6 @@
 		}`;
 	}
 
-	onMount(() => {
-		let done = false;
-		async function poll(): Promise<void> {
-			if (done) return;
-			try {
-				const res = await fetch('/api/chain-health', { cache: 'no-store' });
-				if (res.ok) health = (await res.json()) as ChainHealth;
-			} catch {
-				// A missed poll is fine; the next tick catches up.
-			}
-		}
-		void poll(); // reflect current state immediately, don't wait a full interval
-		const timer = setInterval(poll, POLL_MS);
-		return () => {
-			done = true;
-			clearInterval(timer);
-		};
-	});
 </script>
 
 {#if unhealthy && health}
