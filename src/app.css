@@ -157,6 +157,20 @@
 	--text-value: #c2c4bd;
 	--search-fill: rgba(255, 255, 255, 0.02);
 
+	/* Desktop layout (docs/DESKTOP-LAYOUT-DESIGN.md §2) — shell widths + the two
+	   content measures. Only two measures exist app-wide: --measure-reading is a
+	   hard cap at every tier (line length never grows past comfort), --measure-data
+	   is the one measure allowed to widen further at >=1600px (--measure-data-wide).
+	   The gutter doubles as the .page-grid hero/rail gap and general lane-to-chrome
+	   breathing room. */
+	--sidebar-w: 236px;
+	--sidebar-w-wide: 248px;
+	--rail-w: 280px;
+	--lane-gutter: 56px;
+	--measure-reading: 780px;
+	--measure-data: 1180px;
+	--measure-data-wide: 1320px;
+
 	color-scheme: dark;
 
 	/* ----------------------------------------------------------------
@@ -953,4 +967,55 @@ textarea.input:focus {
 .grow {
 	flex: 1;
 	min-width: 0;
+}
+
+/* ---------- Desktop lanes (docs/DESKTOP-LAYOUT-DESIGN.md §2.2) ----------
+   The two content measures, centered. On any viewport narrower than the cap
+   these are inert (width:100% already governs), so mobile (<900px, always well
+   under either measure) is untouched — the lane classes only bite once the
+   viewport exceeds the measure. --measure-reading never widens; --measure-data
+   is the sole measure that gains room at the widest tier. */
+
+.lane-reading {
+	max-width: var(--measure-reading);
+	margin-inline: auto;
+}
+
+.lane-data {
+	max-width: var(--measure-data);
+	margin-inline: auto;
+}
+
+@media (min-width: 1600px) {
+	.lane-data {
+		max-width: var(--measure-data-wide);
+	}
+}
+
+/* Asymmetric hero + quiet-rail grid (§3.1). Single column by default; the rail
+   column only appears at the desktop tier so it never squeezes a narrow lane. */
+.page-grid {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	gap: var(--lane-gutter);
+}
+
+@media (min-width: 1160px) {
+	.page-grid {
+		grid-template-columns: minmax(0, 1fr) var(--rail-w);
+	}
+}
+
+/* Quiet secondary column: metadata typography in cool tones — never a second
+   hero, never a primary button (§3.1 / DESIGN-MANIFESTO.md §9.2). */
+.quiet-rail {
+	font-size: var(--t-label-size);
+	color: var(--text-secondary);
+}
+
+/* Opts a section out of both measures — for the handful of elements meant to
+   run edge-to-edge inside an otherwise measured page (ChainStrip, fee bands). */
+.full-bleed {
+	width: 100%;
+	max-width: none;
 }

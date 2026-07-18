@@ -6,7 +6,7 @@
 	import AnnouncementBanner from '$lib/components/AnnouncementBanner.svelte';
 	import SyncBanner from '$lib/components/heartwood/SyncBanner.svelte';
 	import ChainHealthBanner from '$lib/components/heartwood/ChainHealthBanner.svelte';
-	import HWRail from '$lib/components/heartwood/HWRail.svelte';
+	import HWSidebar from '$lib/components/heartwood/HWSidebar.svelte';
 	import MobileTopBar from '$lib/components/heartwood/MobileTopBar.svelte';
 	import MobileTabRow from '$lib/components/heartwood/MobileTabRow.svelte';
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
@@ -66,6 +66,35 @@
 		page.url.pathname === '/explorer' || page.url.pathname.startsWith('/explorer/')
 	);
 
+	// Route → content lane (docs/DESKTOP-LAYOUT-DESIGN.md §2/§4). Two measures
+	// only: `reading` (calm, single-decision, forms, wizards, send flows) caps
+	// narrow; `data` (dense, tabular — explorer/activity/admin/wallets/mining)
+	// fills wide. Applied as a class on <main>; on mobile both measures exceed
+	// the viewport so the class is inert (the <900 shell is untouched). Pages
+	// keep their own internal caps until each page's later wave lands — this
+	// only sets the outer lane.
+	function laneFor(pathname: string): 'reading' | 'data' {
+		// Reading first — these win over the broader `/wallets` data catch below.
+		if (pathname === '/' || pathname === '/recovery-setup') return 'reading';
+		if (pathname.startsWith('/settings')) return 'reading';
+		if (pathname.endsWith('/send')) return 'reading'; // send flows
+		if (
+			pathname === '/wallets/new' ||
+			pathname.startsWith('/wallets/multisig/new') ||
+			pathname.startsWith('/wallets/multisig/stateless')
+		)
+			return 'reading'; // wallet-creation wizards
+		// Data lanes.
+		if (pathname.startsWith('/explorer')) return 'data';
+		if (pathname === '/activity') return 'data';
+		if (pathname.startsWith('/admin')) return 'data';
+		if (pathname.startsWith('/wallets') || pathname.startsWith('/vaults')) return 'data';
+		if (pathname.startsWith('/mining')) return 'data';
+		// Fallback: tab (list) pages read as data, flow (back-circle) pages as reading.
+		return isTabRoute(pathname) ? 'data' : 'reading';
+	}
+	const lane = $derived(laneFor(page.url.pathname));
+
 	// Persistent "back up your wallet(s)" banner. A lost config can mean lost
 	// funds, so it shows until resolved (server-tracked), dismissible only for the
 	// current session so it returns on the next visit until backups are done.
@@ -97,7 +126,7 @@
 </script>
 
 <div class="shell">
-	<HWRail navItems={nav} user={data.user} operatorName={data.operatorName ?? null} />
+	<HWSidebar navItems={nav} user={data.user} operatorName={data.operatorName ?? null} />
 
 	<div class="content">
 		<NavProgress />
@@ -116,7 +145,7 @@
 			</div>
 		{/if}
 
-		<main class="main" aria-busy={$navigating ? 'true' : 'false'}>
+		<main class="main lane-{lane}" aria-busy={$navigating ? 'true' : 'false'}>
 			<!-- Instance-wide chain-transport health (cairn-hy8z). Always mounted;
 			     renders nothing until the Electrum pool / SOCKS5 proxy is unhealthy,
 			     then warns that balances may be stale and (for admins) links to the
@@ -199,12 +228,14 @@
 		flex-direction: column;
 	}
 
-	/* Heartwood desktop content column: max-width 940 centered. (Dense pages —
-	   Activity/Node/Settings — narrow further to 760 in their own lanes.) */
+	/* Content column. The global 940px cap is gone (cairn-md1k.1); the centered
+	   lane is now set per route by the .lane-reading / .lane-data class applied
+	   above (docs/DESKTOP-LAYOUT-DESIGN.md §2). On mobile both measures exceed
+	   the viewport, so the lane classes are inert and the column stays full-width
+	   as before. */
 	.main {
 		flex: 1;
 		width: 100%;
-		max-width: 940px;
 		margin: 0 auto;
 		padding: 54px 52px 44px;
 	}
