@@ -532,3 +532,29 @@ Author the full app-wide light token set now under `:root[data-theme="light"]` +
 Warm-brown base → evergreen ink. Copper-orange accent → slate signal-blue. Olive sage → clean
 grove-green promoted to *the* growth color. Source Serif 4 → Fraunces (hero only). Warm accent-glow
 shadow → cool restrained lift. Everything else is preserved and recolored.
+
+---
+
+## 9. Desktop widening rules
+
+Companion doctrine to `docs/DESKTOP-LAYOUT-DESIGN.md` (the layout spec that widens the shell and
+content lanes past the phone frame the app was originally designed in). These six rules are the
+identity-level constraints that layout work must not violate; the layout document carries the
+breakpoints, tokens, and per-page specs.
+
+1. **The field widens, the hero stays singular.** Surplus width becomes margin and quiet secondary
+   columns — never a second `--t-hero` number, never a second `.btn-primary`.
+2. **Secondary columns whisper.** A quiet rail carries metadata in `--t-label` / `--t-micro` and cool
+   tones; anything that starts competing with the hero belongs one tap down instead.
+3. **Reading lanes cap; data lanes fill.** Two measures only — roughly 780px for reading, 1180px/1320px
+   for data. Calm, single-decision, single-flow screens never exceed reading measure. Dense screens
+   fill the data measure and stack rows; they never tile into cards.
+4. **Asymmetry over symmetry.** Offset grids — hero plus rail, two-thirds plus one-third — read as
+   editorial. A centered pair of equal-weight cards is the sales-floor tile in disguise, just with the
+   count changed from many down to two.
+5. **The rail grew; it did not become a dashboard.** The sidebar is the icon rail with its labels
+   revealed and air added around it — nothing more. Active nav remains the single accent touch it
+   always was; no nested widgets, no embedded search, no promotional content in the sidebar.
+6. **Density stays in bordered glass.** Every dense cluster — tables, UTXO panels, metric grids — lives
+   inside one instrument panel floating in whitespace. Density loose on a calm surface is the failure
+   mode this whole document exists to prevent.
