@@ -4,6 +4,8 @@
 	import { invalidate } from '$app/navigation';
 	import { onNewBlock } from '$lib/liveBlocks';
 	import { triggerChainRefresh } from '$lib/chainRefresh';
+	import { mempoolStats } from '$lib/live/mempoolStats.svelte';
+	import { debounced } from '$lib/live/walletEvents';
 	import Icon from '$lib/components/Icon.svelte';
 	import Banner from '$lib/components/Banner.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
@@ -80,7 +82,26 @@
 	// history path `chain` is always populated (a live fetch), so this is false.
 	const loading = $derived(chain === null && !syncFailed && data.before === null);
 	const blocks = $derived(chain?.blocks ?? []);
-	const mempool = $derived(chain?.mempool ?? null);
+
+	// Live mempool payload (docs/LIVE-UPDATES-DESIGN.md §4.2, cairn-102c): the
+	// `mempool` frame carries count/vsize (plus the projection used by `upcoming`
+	// below) straight off the wire on every tick — payload-driven, no fetch. Reads
+	// of `mempool.txCount`/`vsize` below (hero live-line, rail, mobile net-footer,
+	// the pending dashed row) all prefer the live values once a frame has landed,
+	// falling back to the load-time snapshot before the first one so there's never
+	// a flash of empty. `totalFees` isn't in the frame, so it always comes from
+	// the snapshot.
+	const live = $derived(mempoolStats.stats);
+	const mempool = $derived.by(() => {
+		const snap = chain?.mempool ?? null;
+		if (!live || (live.count === null && live.vsizeVb === null)) return snap;
+		if (!snap) return null;
+		return {
+			txCount: live.count ?? snap.txCount,
+			vsize: live.vsizeVb ?? snap.vsize,
+			totalFees: snap.totalFees
+		};
+	});
 	const chainError = $derived(chain?.chainError ?? null);
 	// Error banner: a live paged-fetch error, or the very-first snapshot refresh
 	// failing before anything was ever persisted.
@@ -150,6 +171,27 @@
 		};
 	});
 
+	// cairn-102c: a `mempool` frame nudge means the count/vsize/projection just
+	// changed — already overlaid live above (`mempool`, `upcoming`). But `nextFee`
+	// below and the difficulty rail read chain.fees/chain.difficulty, heavier
+	// server-recomputed fields the frame doesn't carry (docs/LIVE-UPDATES-DESIGN.md
+	// §4.2) — those need a real snapshot refresh to stay current between blocks.
+	// The frame can tick every 5s, so a plain trailing debounce (the mempool
+	// page's own `nudgeRefresh` pattern) would refresh far too often here; add a
+	// hard floor on top so this fires at most once per 30s.
+	let lastMempoolNudge = 0;
+	const MEMPOOL_NUDGE_MIN_MS = 30_000;
+	const nudgeChainRefresh = debounced(() => {
+		const now = Date.now();
+		if (now - lastMempoolNudge < MEMPOOL_NUDGE_MIN_MS) return;
+		lastMempoolNudge = now;
+		void refresh(true);
+	}, 2000);
+	$effect(() => {
+		if (live?.updatedAt === undefined) return; // no frame yet
+		nudgeChainRefresh();
+	});
+
 	// ---- hero sub-line (5e): forming ring · next-ring fee · mempool · difficulty ----
 
 	const EPOCH = 2016;
@@ -200,9 +242,14 @@
 	// section and the /explorer/mempool/blocks treemap already read; no new
 	// data pipeline. Hidden (not an error) when the backend has no projection
 	// or on the paged history view.
+	//
+	// cairn-102c: the live `mempool` frame's own `mempoolBlocks` field is the
+	// exact same MempoolBlockProjection[] shape these chips render (medianFee /
+	// feeRange / nTx), so it's overlaid directly here — same payload-driven
+	// idiom as the mempool page's `projected`, no invalidate needed.
 	const upcoming = $derived.by(() => {
 		if (data.before !== null) return null;
-		const mb = chain?.mempoolBlocks;
+		const mb = live?.mempoolBlocks ?? chain?.mempoolBlocks;
 		if (!mb || mb.length === 0) return null;
 		return mb.slice(0, 4);
 	});
