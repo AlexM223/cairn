@@ -30,6 +30,7 @@ import { createMultisigDeriver } from './bitcoin/multisig';
 import { GAP_LIMIT } from './bitcoin/gapLimitScanner';
 import { toMultisigConfig, type MultisigRow, type MultisigKeyRow } from './wallets/multisig';
 import { notify } from './notifications';
+import { publish as livePublish } from './liveHub';
 import { verifyTxInclusion, parseBlockHeader, blockHash, meetsTarget, bitsToTarget } from './bitcoin/spv';
 import type { BlockHeader } from './bitcoin/spv';
 import { childLogger } from './logger';
@@ -923,6 +924,14 @@ async function handleScripthashChange(scripthash: string): Promise<void> {
 					detail: { txid, amountSats: receivedSats, walletId: w.walletId, walletKind: w.kind },
 					link
 				});
+				// Live frame (Wave 2, LIVE-UPDATES-DESIGN.md §3.4): every field is already
+				// in hand here — no new DB read on the publish path (§3.1 invariant).
+				// User-scoped; the client debounces it into a tag-scoped reload.
+				livePublish(
+					'wallet',
+					{ userId: w.userId },
+					{ walletKind: w.kind, walletId: w.walletId, txid, event: 'received', amountSats: receivedSats }
+				);
 
 				const threshold = largeThresholdSats(w.userId);
 				if (threshold !== null && receivedSats >= threshold) {
@@ -941,6 +950,11 @@ async function handleScripthashChange(scripthash: string): Promise<void> {
 						},
 						link
 					});
+					livePublish(
+						'wallet',
+						{ userId: w.userId },
+						{ walletKind: w.kind, walletId: w.walletId, txid, event: 'large', amountSats: receivedSats }
+					);
 				}
 			} else {
 				// A new txid we couldn't value (detail fetch failed, or it's a spend
@@ -955,6 +969,13 @@ async function handleScripthashChange(scripthash: string): Promise<void> {
 					detail: { txid, walletId: w.walletId, walletKind: w.kind },
 					link
 				});
+				// Unvalued receive path — amountSats omitted (§3.4: publish what's cheaply
+				// in hand, add no queries). Still a `received` nudge so the tx list reloads.
+				livePublish(
+					'wallet',
+					{ userId: w.userId },
+					{ walletKind: w.kind, walletId: w.walletId, txid, event: 'received' }
+				);
 			}
 		}
 	} finally {
@@ -1109,6 +1130,13 @@ async function reconcileDisappeared(row: PendingTxidRow): Promise<void> {
 		userId: row.user_id,
 		address: ''
 	};
+	// Live frame (Wave 2, §3.4): the vanished inbound's amount is already on the
+	// row; no txid (the tx no longer exists on-chain). Client reloads the wallet.
+	livePublish(
+		'wallet',
+		{ userId: row.user_id },
+		{ walletKind: row.wallet_kind, walletId: row.wallet_id, event: 'replaced', amountSats: amount }
+	);
 	notify({
 		type: 'tx_replaced',
 		userId: row.user_id,
@@ -1207,6 +1235,19 @@ async function handleNewBlock(): Promise<void> {
 				},
 				link: walletLink(w)
 			});
+			// Live frame (Wave 2, §3.4): amount comes from the tracked row already
+			// in hand for this scan — no new DB read. Client debounces into a reload.
+			livePublish(
+				'wallet',
+				{ userId: row.user_id },
+				{
+					walletKind: row.wallet_kind,
+					walletId: row.wallet_id,
+					txid: row.txid,
+					event: 'confirmed',
+					amountSats: row.amount_sats ?? undefined
+				}
+			);
 		} catch (e) {
 			// Not-found ⇒ the tx may have vanished (double-spend / RBF'd away): confirm
 			// it and reconcile. Any other error (connect/transient) is left for a later

@@ -8,6 +8,7 @@
 	import Amount from '$lib/components/Amount.svelte';
 	import BalanceHorizons from '$lib/components/portfolio/BalanceHorizons.svelte';
 	import { formatSats, gatedFiatPrice } from '$lib/format';
+	import { onWalletEvent, debounced } from '$lib/live/walletEvents';
 	import { deriveHomeHealth, shouldShowRecentActivity, shouldShowWalletList } from '$lib/homeView';
 	import { buildHorizonRows } from '$lib/horizonDelta';
 	import type { PortfolioDetail } from '$lib/types';
@@ -53,6 +54,23 @@
 				portfolioLoading = false;
 				void refreshPortfolio();
 			});
+	});
+
+	// Live wallet frames (Wave 2, LIVE-UPDATES-DESIGN.md §4.2/§5): a payment on ANY
+	// of the user's wallets nudges Home's aggregate to re-sync so balances update
+	// live. Home's portfolio is client-fetch SWR (GET /api/portfolio), not a
+	// SvelteKit depends()/invalidate tag, so the invalidate-driven strategy here is
+	// a debounced refreshPortfolio() (the same coalesced re-scan mount fires) rather
+	// than invalidate(). Debounced ~800ms so a block touching many addresses across
+	// wallets collapses to one aggregate refresh.
+	onMount(() => {
+		if (!data.hasWallets) return;
+		const kick = debounced(() => void refreshPortfolio());
+		const off = onWalletEvent(() => kick());
+		return () => {
+			kick.cancel();
+			off();
+		};
 	});
 
 	// --- hide-balance eye toggle — persisted, hero-scoped (spec §2.1: an

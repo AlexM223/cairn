@@ -5,6 +5,7 @@
 	import { onNewBlock } from '$lib/liveBlocks';
 	import { confirmationsFor } from '$lib/confirmations';
 	import { tipHeight as liveTip } from '$lib/live/tipHeight.svelte';
+	import { onWalletEvent, debounced } from '$lib/live/walletEvents';
 	import Icon from '$lib/components/Icon.svelte';
 	import Amount from '$lib/components/Amount.svelte';
 	import Banner from '$lib/components/Banner.svelte';
@@ -157,6 +158,23 @@
 			void refresh();
 		})
 	);
+
+	// Live wallet frames (Wave 2, LIVE-UPDATES-DESIGN.md §4.2/§5): a payment
+	// received/confirmed/replaced on THIS wallet triggers a debounced re-scan so
+	// balance, tx list and badges update live — no poll. Debounced ~800ms so a
+	// block touching many of this wallet's addresses collapses to one refresh.
+	// Filtered to this wallet's (kind, id); frames for the user's other wallets
+	// are ignored here.
+	onMount(() => {
+		const kick = debounced(() => void refresh());
+		const off = onWalletEvent((e) => {
+			if (e.walletKind === 'wallet' && e.walletId === data.wallet.id) kick();
+		});
+		return () => {
+			kick.cancel();
+			off();
+		};
+	});
 
 	// How the wallet describes itself: "Trezor wallet" when a device is on
 	// record, otherwise just "Wallet" — never "watch-only", since it can always

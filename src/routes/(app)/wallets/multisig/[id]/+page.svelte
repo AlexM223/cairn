@@ -3,6 +3,9 @@
 	import { enhance } from '$app/forms';
 	import { afterNavigate, goto, invalidate, replaceState } from '$app/navigation';
 	import { onNewBlock } from '$lib/liveBlocks';
+	import { confirmationsFor } from '$lib/confirmations';
+	import { tipHeight as liveTip } from '$lib/live/tipHeight.svelte';
+	import { onWalletEvent, debounced } from '$lib/live/walletEvents';
 	import Icon from '$lib/components/Icon.svelte';
 	import Amount from '$lib/components/Amount.svelte';
 	import Banner from '$lib/components/Banner.svelte';
@@ -140,6 +143,24 @@
 			void refresh();
 		})
 	);
+
+	// Live wallet frames (Wave 2, LIVE-UPDATES-DESIGN.md §4.2/§5): a payment
+	// received/confirmed/replaced on THIS multisig triggers a debounced re-scan so
+	// balance, tx list and badges update live — no poll. Debounced ~800ms so a
+	// block touching many of this vault's addresses collapses to one refresh.
+	// Filtered to this multisig's (kind, id); frames for the user's other wallets
+	// are ignored here. (Pending-cosigner nudges via the notification topic are
+	// Wave 1's badge path; §5 lists them but the transport already exists.)
+	onMount(() => {
+		const kick = debounced(() => void refresh());
+		const off = onWalletEvent((e) => {
+			if (e.walletKind === 'multisig' && e.walletId === data.multisig.id) kick();
+		});
+		return () => {
+			kick.cancel();
+			off();
+		};
+	});
 
 	let createdDismissed = $state(false);
 
@@ -299,7 +320,14 @@
 	 *  still shows a confirmed tx as sealed rather than lying "no rings yet". */
 	function confirmationsOf(height: number): number {
 		if (height <= 0) return 0;
-		if (tipHeight > 0) return Math.max(1, tipHeight - height + 1);
+		// Prefer whichever tip is further along: the load-time snapshot tip
+		// (scan.tipHeight, refreshed by refresh() on the block SSE) or the live tip
+		// rune, which climbs immediately on a new block without waiting for the
+		// re-scan. Route through the single confirmationsFor() source (Wave 2 /
+		// LIVE-UPDATES-DESIGN.md §4.3) so multisig agrees with single-sig at every
+		// instant instead of maintaining its own confirmation math.
+		const bestTip = Math.max(tipHeight, liveTip.height);
+		if (bestTip > 0) return Math.max(1, confirmationsFor(height, bestTip));
 		return 6;
 	}
 

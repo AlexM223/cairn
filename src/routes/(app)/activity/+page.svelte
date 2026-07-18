@@ -1,4 +1,7 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
+	import { onWalletEvent, debounced } from '$lib/live/walletEvents';
+	import { subscribe as liveSubscribe } from '$lib/live/liveClient';
 	import Icon from '$lib/components/Icon.svelte';
 	import Amount from '$lib/components/Amount.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
@@ -33,7 +36,6 @@
 	// this page still shows fresh server data.
 	let fetched = $state<ActivityEvent[] | null>(null);
 	const events = $derived(fetched ?? data.events);
-	let auto = $state(false);
 	let refreshing = $state(false);
 	let onlyAlerts = $state(false);
 
@@ -135,10 +137,29 @@
 		}
 	}
 
-	$effect(() => {
-		if (!auto) return;
-		const t = setInterval(refresh, 10_000);
-		return () => clearInterval(t);
+	// Live feed (Wave 2, LIVE-UPDATES-DESIGN.md §4.3/§5): the feed is not a
+	// first-class stream — it re-derives its view from the `wallet` and
+	// `notification` frames it already receives (§2 note: no `activity` topic). The
+	// 10s poll is removed; instead a wallet payment or any notification nudges a
+	// debounced re-fetch of the same /api/activity list the poll refreshed.
+	// Debounced ~800ms so a block firing several frames at once = one re-fetch.
+	onMount(() => {
+		const kick = debounced(() => void refresh());
+		const offWallet = onWalletEvent(() => kick());
+		const offNotify = liveSubscribe('notification', () => kick());
+		// Return-to-tab safety net: SSE frames that arrived while the tab was
+		// backgrounded aren't replayed (§1.2 — no replay buffer), so a foreground
+		// re-fetch reconciles anything missed. Cheap: one /api/activity read.
+		const onVisible = () => {
+			if (!document.hidden) kick();
+		};
+		document.addEventListener('visibilitychange', onVisible);
+		return () => {
+			kick.cancel();
+			offWallet();
+			offNotify();
+			document.removeEventListener('visibilitychange', onVisible);
+		};
 	});
 
 	// ---------------------------------------------------------- row rendering
@@ -288,10 +309,6 @@
 			>
 				Needs a look
 			</button>
-			<label class="ctrl auto" title="Refresh every 10 seconds">
-				<input type="checkbox" bind:checked={auto} />
-				Auto-refresh
-			</label>
 			<button type="button" class="ctrl" onclick={refresh} disabled={refreshing}>
 				{#if refreshing}<span class="spinner"></span>{:else}<Icon name="refresh" size={13} />{/if}
 				Refresh
@@ -506,12 +523,6 @@
 
 	.ctrl.on {
 		color: var(--attention);
-	}
-
-	.auto input {
-		accent-color: var(--accent);
-		cursor: pointer;
-		margin: 0;
 	}
 
 	.ctrl .spinner {
