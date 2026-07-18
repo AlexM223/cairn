@@ -11,6 +11,7 @@ import type { ElectrumPool } from './electrum/pool';
 import { recordActivity } from './activity';
 import { invalidateTipCache } from './chain/cache';
 import { notify } from './notifications';
+import { publish as livePublish } from './liveHub';
 import { childLogger } from './logger';
 import { formatNumber } from '$lib/format';
 
@@ -118,6 +119,12 @@ export function wireChainEvents(electrum: ElectrumPool): void {
 		// now so the next lookup reflects the new height without waiting out the
 		// 10-minute TTL ceiling (cairn-vknb.5).
 		invalidateTipCache();
+		// Single process-level block fan-out (docs/LIVE-UPDATES-DESIGN.md §3.3):
+		// this ONE listener publishes the `block` frame to every /api/live
+		// connection via liveHub, instead of each connection attaching its own
+		// 'header' listener. Header handling gets cheaper as clients grow, not more
+		// expensive. Payload built once; publish() is a no-op when nobody's connected.
+		livePublish('block', { broadcast: true }, { height: header.height });
 		log.debug({ height: header.height }, 'new block');
 		recordActivity({
 			type: 'new_block',

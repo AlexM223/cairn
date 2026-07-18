@@ -3,6 +3,8 @@
 	import { enhance } from '$app/forms';
 	import { afterNavigate, goto, invalidate, replaceState } from '$app/navigation';
 	import { onNewBlock } from '$lib/liveBlocks';
+	import { confirmationsFor } from '$lib/confirmations';
+	import { tipHeight as liveTip } from '$lib/live/tipHeight.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import Amount from '$lib/components/Amount.svelte';
 	import Banner from '$lib/components/Banner.svelte';
@@ -434,7 +436,14 @@
 	 *  still shows a confirmed tx as sealed rather than lying "no rings yet". */
 	function confirmationsOf(height: number): number {
 		if (height <= 0) return 0;
-		if (tipHeight > 0) return Math.max(1, tipHeight - height + 1);
+		// Prefer whichever tip is further along: the load-time snapshot tip
+		// (chainData.tipHeight, refreshed by refresh() on the block SSE) or the live
+		// tip rune, which climbs immediately on a new block without waiting for the
+		// re-scan (cairn-wmty.1). Route through the single confirmationsFor() source.
+		const bestTip = Math.max(tipHeight, liveTip.height);
+		if (bestTip > 0) return Math.max(1, confirmationsFor(height, bestTip));
+		// Unknown tip (scan hiccup) still shows a confirmed tx as sealed rather than
+		// lying "no rings yet".
 		return 6;
 	}
 

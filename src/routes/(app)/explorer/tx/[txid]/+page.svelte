@@ -15,6 +15,8 @@
 	import { confirmationProgress } from '$lib/components/heartwood/burialRingsLabel';
 	import BlockContext from '$lib/components/heartwood/BlockContext.svelte';
 	import CoreRpcRequiredNotice from '$lib/components/CoreRpcRequiredNotice.svelte';
+	import { confirmationsFor } from '$lib/confirmations';
+	import { tipHeight } from '$lib/live/tipHeight.svelte';
 	import { txPageTitle } from './txTitle';
 	import { txTotalIn } from './txTotals';
 	import { feeOutlook } from '$lib/bitcoin';
@@ -150,8 +152,8 @@
 	// NOT confirmed (including the honest richness:'none' "couldn't reach your
 	// node" case) always wins as 0/unconfirmed — never let a stale
 	// tx.confirmed=true leak a snapshot count through it.
-	const confCount = $derived(
-		blockCtx
+	const confCount = $derived.by(() => {
+		const base = blockCtx
 			? blockCtx.confirmed
 				? (blockCtx.confirmations ?? 0)
 				: 0
@@ -159,8 +161,20 @@
 				? tx.confirmed
 					? tx.confirmations
 					: 0
-				: 0
-	);
+				: 0;
+		// Live increment (cairn-wmty.1): once the streamed block context has landed
+		// with a known inclusion height and the shared live tip rune has moved past
+		// the load-time count, recompute confirmations from the live tip through the
+		// single confirmationsFor() source — so the count climbs the instant a block
+		// lands, without a reload. max() keeps a reorg-shrunk live value from ever
+		// dropping the authoritative snapshot count; before blockCtx lands (no known
+		// height) the existing fallback order is untouched.
+		const txHeight = blockCtx?.confirmed ? (blockCtx.height ?? null) : null;
+		if (txHeight != null && txHeight > 0) {
+			return Math.max(base, confirmationsFor(txHeight, tipHeight.height));
+		}
+		return base;
+	});
 
 	// Plain-language burial-ring label for confCount, computed once so the
 	// progress suffix below can check for redundancy against it.
