@@ -133,7 +133,7 @@ chain-data facade that talks to the Bitcoin backends.
 
 ```
 Browser (Svelte 5 runes, Heartwood evergreen CSS — dark default + light mode, HW drivers in src/lib/hw/*)
-   │  fetch / form actions (?/action via safeAction) / SSE (/api/events, /api/notifications/stream)
+   │  fetch / form actions (?/action via safeAction) / SSE (single multiplexed /api/live stream)
    ▼
 SvelteKit edge: src/hooks.server.ts  handle()
    │  await initReady (gate) → locals.user + locals.flags → access gates → CSP/headers → request log
@@ -2593,10 +2593,24 @@ routes.
 
 **`(app)` — main authenticated shell.** Layout: `src/routes/(app)/+layout.svelte`.
 Wraps every authenticated page with:
-- `HWRail` (desktop left rail nav — 92px wide, each icon carries a persistent
-  always-on text label underneath it, no hover-to-reveal) / `MobileTopBar` +
-  `MobileTabRow` (mobile),
-  switching on `isTabRoute()` — tab pages are `/`, `/wallets`, `/vaults`,
+- Three shell tiers (`docs/DESKTOP-LAYOUT-DESIGN.md` is canonical; where this
+  section and that doc disagree, the doc wins): `MobileTopBar` + `MobileTabRow`
+  below 900px (frozen, byte-identical to the pre-widening app — not a target
+  for revision); the compact 92px icon-only `HWRail` from 901–1159px (icons +
+  tiny always-on labels, unchanged markup); the full labeled `HWSidebar`
+  (`src/lib/components/heartwood/HWSidebar.svelte`) at 1160px and up — 236px
+  wide, widening to 248px at ≥1600px. `HWSidebar` stacks mark+wordmark, one
+  40px nav row per destination (left-aligned icon+label, active state = accent
+  pill + accent icon/label + 2px left-edge marker, hover = quiet
+  `--text-secondary` wash, no accent), then a bottom cluster pinned via
+  `margin-top: auto` (epoch dial + sync readout, notifications bell as a
+  right-anchored popover, account row as a popover). It is user-collapsible
+  (chevron toggle collapses it to the icon-only rail look) with state
+  persisted to `localStorage('hw.sidebar.collapsed')`, read post-hydration
+  only per the Svelte 5 effect/onMount ordering hazard. Breakpoints are
+  exclusive min-widths (901/1160/1600px) so no viewport satisfies two tiers
+  at once. Route tiering still
+  switches on `isTabRoute()` — tab pages are `/`, `/wallets`, `/vaults`,
   `/activity`, `/explorer/**`; everything else is a "flow" page and gets a
   `BackCircle` header instead (wallet/vault detail, send/sign wizards,
   `/settings/**`, `/admin/**`, `/recovery-setup`). `/vaults` is classified as
@@ -2642,8 +2656,18 @@ Wraps every authenticated page with:
   browsers/devices).
 - `maybeRedirectToSecure()` fires in `onMount` to auto-hop returning users to
   the HTTPS listener (§9.7 below).
-- Desktop content column caps at `max-width: 940px` (settings/activity/admin
-  narrow further to 760px in their own pages).
+- The old single global `max-width: 940px` cap (with per-page caps narrowing
+  further to 760/660/640/680px on settings/activity/admin/mining/wallet/send)
+  is gone. Only two content measures exist anywhere in the app now:
+  `--measure-reading` (780px, hard cap at every tier — Home, Send, Receive,
+  Settings, admin config forms, wizards) and `--measure-data` (1180px,
+  1320px at ≥1600px — Explorer, block/tx/address detail, mempool, activity,
+  admin tables, wallet-detail tx list, mining dashboard), applied via the
+  `.lane-reading` / `.lane-data` utility classes. Dense pages generally pair
+  their lane with a `.page-grid` + `.quiet-rail` secondary column (280px,
+  cool-toned metadata typography) rather than widening the hero content
+  itself — see `docs/DESKTOP-LAYOUT-DESIGN.md` for the full per-page lane
+  mapping and the quiet-rail pattern.
 
 Pages under `(app)`:
 
@@ -2686,8 +2710,10 @@ progress page, distinct from the in-layout `SyncBanner`); `logout/+page.server.t
 (logout action only, no UI).
 
 **`api/`** — the ~100-endpoint JSON tree covered in §8, consumed by client
-polling/fetch (e.g. `ChainHealthBanner` polls `/api/chain-health`,
-`SyncBanner` polls `/api/sync`).
+polling/fetch/live-stream (e.g. `ChainHealthBanner` is payload-driven off the
+`health` topic on `/api/live` — poll removed, see `docs/LIVE-UPDATES-DESIGN.md`
+— while `SyncBanner` still polls `/api/sync` via its own backoff poll, since
+first-sync progress isn't part of the live-updates design).
 
 ### Svelte components (`src/lib/components`)
 
@@ -2843,23 +2869,27 @@ the admin-facing operator view:
 
 ### Mining dashboard client (`/mining`, `/admin/mining`)
 
-**Polling model.** Both pages server-load a full view once, then poll a
-matching JSON endpoint on a **10s interval**, paused whenever
-`document.hidden` (`document.addEventListener('visibilitychange', ...)`)
-and resumed with an immediate poll-then-restart on becoming visible again —
-same idle-tab-friendly pattern used elsewhere in the app (e.g. `SyncBanner`'s
-backoff poll, though this one is a fixed interval, not backoff, since the
-underlying data is cheap to compute and doesn't need degrade-on-failure
-behavior). `/mining` replaces its whole local `view` object with the poll
-response; `/admin/mining` merges only the **volatile** fields (`engine`,
-`pool`, `hashrateSeries`, `miners`, `userBreakdown`, `blocks`) into local
-state and deliberately excludes `settings` from the merge, so a poll tick
-landing mid-edit never clobbers what the admin is typing into the settings
-form below — that form seeds its own local state once from the initial load
-and manages its own save independently. A failed poll tick is silently
-swallowed on both pages (best-effort — keep showing the last good view
-rather than flashing an error over a routine transient fetch failure); the
-next tick catches up.
+**Live refresh model (`docs/LIVE-UPDATES-DESIGN.md` §4.2/§5) — the old 10s
+poll is gone.** Both pages server-load a full view once, then subscribe to
+the multiplexed `/api/live` stream via `$lib/live/liveClient`'s `subscribe()`
+— `/mining` on the user-scoped `mining` topic, `/admin/mining` on the
+admin-only `mining:pool` topic. Both topics carry an empty-payload **nudge**
+(fired on each `~15s` aggregates flush, plus immediately on a block-found),
+debounced client-side (`$lib/live/walletEvents`'s `debounced()`), and the
+nudge triggers a refetch of the same JSON endpoint each page used to poll
+(`GET /api/mining/me`, `GET /api/admin/mining`) rather than trusting an
+inline payload. `/mining` replaces its whole local `view` object with the
+refetch response; `/admin/mining` merges only the **volatile** fields
+(`engine`, `pool`, `hashrateSeries`, `miners`, `userBreakdown`, `blocks`)
+into local state and deliberately excludes `settings` from the merge, so a
+refetch landing mid-edit never clobbers what the admin is typing into the
+settings form below — that form seeds its own local state once from the
+initial load and manages its own save independently. Both pages also
+refetch immediately on `visibilitychange` becoming visible again, so a
+backgrounded tab catches up on return even if it missed a nudge. A failed
+refetch is silently swallowed on both pages (best-effort — keep showing the
+last good view rather than flashing an error over a routine transient fetch
+failure); the next nudge catches up.
 
 **Empty-state precedence (`/mining`, `cairn-vn43.24`)** — checked in this
 exact order, first match wins:
@@ -2976,10 +3006,20 @@ module scope and exports plain functions/getters — not a store object with
   never silently replaced by a fake zero — `lastSyncedAt` wins over
   `refreshFailed` ("that's the whole point of stale-while-revalidate").
 - **`src/lib/chainRefresh.ts`**, **`src/lib/liveBlocks.ts`** — client
-  polling/SSE-style helpers for chain-tip refresh (`onNewBlock` is imported
-  by the send page to refresh fee estimates on a new block).
-- **`src/lib/sseReconnect.ts`** — reconnect-with-backoff helper, backing
-  `/api/events` SSE consumers.
+  chain-tip refresh helpers (`onNewBlock` is imported by the send page to
+  refresh fee estimates on a new block); transport is the single
+  multiplexed `/api/live` stream via `src/lib/live/liveClient.ts`, not a
+  dedicated `/api/events` `EventSource` — see `docs/LIVE-UPDATES-DESIGN.md`.
+- **`src/lib/live/liveClient.ts`** — owns the one `EventSource` per tab
+  (reusing the same reconnect/visibility/stale-watchdog logic the old
+  per-endpoint helpers had), dispatches named SSE events (`block`,
+  `mempool`, `health`, `wallet`, `notification`, `mining`, `mining:pool`)
+  into per-topic Svelte 5 rune stores under `src/lib/live/`
+  (`tipHeight.svelte.ts`, `mempoolStats.svelte.ts`, `chainHealth.svelte.ts`).
+  Components call its `subscribe(topic, handler)` rather than constructing
+  or holding an `EventSource` themselves. `/api/events` and
+  `/api/notifications/stream` are retired — every consumer now goes through
+  `/api/live`.
 - **`src/lib/mempoolViz.ts`** — pure layout/geometry helpers for the mempool
   visualizer (unit-tested separately from the `explorer/mempool` page).
 - **`src/lib/secureRedirect.ts`** — manages a `sessionStorage` flag
