@@ -82,13 +82,6 @@
 		tx && !tx.confirmed && tx.feeRate !== null && fees ? feeOutlook(tx.feeRate, fees) : null
 	);
 
-	// Explicit "N of 6" tally alongside the plain-language burial-ring label
-	// (cairn-cqch) — null once fully buried (6+), matching burialRingsLabel's
-	// own cap there.
-	const progress = $derived(
-		tx ? confirmationProgress(tx.confirmed ? tx.confirmations : 0) : null
-	);
-
 	// "Speed this up" CTA (cairn-cqch): only for an unconfirmed tx the viewer
 	// owns AND that the wallet-detail page's own eligibility check (already
 	// computed server-side by detectUnconfirmedInflows, read straight off the
@@ -145,6 +138,44 @@
 			fee: tx.fee ?? raw.fee,
 			feeRate: tx.feeRate ?? raw.feeRate
 		};
+	});
+
+	// Single confirmation-count source (cairn-1n11): the BlockContext badge
+	// (BlockContext.svelte) already derives its glyph/badge count as
+	// `ctx?.confirmed ? (ctx.confirmations ?? 0) : 0` — mirror that exactly here
+	// once blockCtx (streamed, "always fresh, never cached" per
+	// BlockContext.confirmations) has landed, so the status line below and the
+	// badge can never disagree at any instant. Before it lands, fall back to the
+	// load-time tx snapshot, same as before. A blockCtx that reports the tx as
+	// NOT confirmed (including the honest richness:'none' "couldn't reach your
+	// node" case) always wins as 0/unconfirmed — never let a stale
+	// tx.confirmed=true leak a snapshot count through it.
+	const confCount = $derived(
+		blockCtx
+			? blockCtx.confirmed
+				? (blockCtx.confirmations ?? 0)
+				: 0
+			: tx
+				? tx.confirmed
+					? tx.confirmations
+					: 0
+				: 0
+	);
+
+	// Plain-language burial-ring label for confCount, computed once so the
+	// progress suffix below can check for redundancy against it.
+	const confLabel = $derived(burialRingsLabel(confCount));
+
+	// Explicit confirmation-count tally alongside the plain-language burial-ring
+	// label (cairn-cqch) — null once fully buried (6+), matching
+	// burialRingsLabel's own cap there. Since confirmationProgress no longer adds
+	// an "of 6" denominator (cairn-fadz), its text is now identical to
+	// confLabel's for every confirming count (1–5) — showing both would read as
+	// a literal duplicate ("1 confirmation · 1 confirmation"), so only render it
+	// when it actually adds something confLabel didn't already say.
+	const progress = $derived.by(() => {
+		const p = confirmationProgress(confCount);
+		return p && p !== confLabel ? p : null;
 	});
 
 	// Per-row script disclosures and the raw-hex viewer; reset on navigation
@@ -267,13 +298,13 @@
 		<!-- Status: the burial glyph owns confirmation depth. -->
 		<section class="status fade-in">
 			<BurialRings
-				confirmations={tx.confirmed ? tx.confirmations : 0}
+				confirmations={confCount}
 				direction={tx.confirmed ? 'in' : 'out'}
 				size={30}
 			/>
 			<div class="status-text">
 				<span class="status-label" class:sealed={tx.confirmed}>
-					{burialRingsLabel(tx.confirmed ? tx.confirmations : 0)}
+					{confLabel}
 					{#if progress}
 						<span class="status-progress">· {progress}</span>
 					{/if}

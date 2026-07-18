@@ -41,26 +41,35 @@ describe('burialRingsLabel', () => {
 	});
 });
 
-// Explicit "N of 6" progress text (cairn-cqch): the burial-ring label alone
-// ("2 confirmations") doesn't say how far along a still-confirming tx is
-// toward Cairn's 6-confirmation "buried" threshold. This is the literal
-// tally shown alongside it on the explorer tx-detail page.
+// Explicit confirmation-count progress text (cairn-cqch): the literal tally
+// shown alongside the burial-ring label on the explorer tx-detail page. No
+// hardcoded "of 6" denominator (cairn-fadz) — plain count language only.
 describe('confirmationProgress', () => {
-	it('0 confirmations reads as "0 of 6 confirmations"', () => {
-		expect(confirmationProgress(0)).toBe('0 of 6 confirmations');
+	it('0 confirmations reads as "0 confirmations"', () => {
+		expect(confirmationProgress(0)).toBe('0 confirmations');
 	});
 
 	it('negative/invalid confirmations clamp to 0, like the label', () => {
-		expect(confirmationProgress(-1)).toBe('0 of 6 confirmations');
+		expect(confirmationProgress(-1)).toBe('0 confirmations');
 	});
 
-	it('1-5 confirmations report the literal count out of 6', () => {
-		expect(confirmationProgress(1)).toBe('1 of 6 confirmations');
-		expect(confirmationProgress(5)).toBe('5 of 6 confirmations');
+	it('1 confirmation is singular', () => {
+		expect(confirmationProgress(1)).toBe('1 confirmation');
 	});
 
-	it('6+ confirmations has nothing further to add — null, not "6 of 6" or "97 of 6"', () => {
+	it('2-5 confirmations are plural, plain "N confirmations"', () => {
+		expect(confirmationProgress(2)).toBe('2 confirmations');
+		expect(confirmationProgress(5)).toBe('5 confirmations');
+	});
+
+	it('6+ confirmations has nothing further to add — null, not "6 confirmations" or "97 confirmations"', () => {
 		expect(confirmationProgress(6)).toBeNull();
 		expect(confirmationProgress(97)).toBeNull();
+	});
+
+	it('never mentions a denominator', () => {
+		for (const n of [0, 1, 2, 5]) {
+			expect(confirmationProgress(n)).not.toMatch(/of \d/);
+		}
 	});
 });
