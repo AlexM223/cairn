@@ -609,6 +609,12 @@
 		{/if}
 
 		<!-- ==================================================== latest rings -->
+		<!-- Desktop (>=1160px): the recent-blocks list takes the 2/3 lane and a
+		     quiet rail carries the network summary (docs/DESKTOP-LAYOUT-DESIGN.md
+		     §4 Explorer home). Below that the rail is display:none and the list is
+		     full-width, with the mobile net-footer carrying the same summary —
+		     mobile untouched. -->
+		<div class="rings-layout">
 		<section class="rings">
 			<div class="rings-head fade-in">
 				<span class="rings-title">
@@ -715,6 +721,47 @@
 				</div>
 			{/if}
 		</section>
+
+		<!-- Quiet network-summary rail (desktop only). Built from the same snapshot
+		     data the hero live-line and mobile net-footer already use — no new
+		     client wiring (a follow-up bead owns live mempool frames). -->
+		<aside class="explorer-rail quiet-rail" aria-label="Network summary">
+			{#if mempool}
+				<div class="rail-block">
+					<span class="rail-eyebrow">Mempool</span>
+					<span class="rail-value tabular">
+						{mempoolVMb !== null && mempoolVMb >= 10
+							? Math.round(mempoolVMb)
+							: (mempoolVMb ?? 0).toFixed(1)} vMB
+					</span>
+					<span class="rail-sub tabular">{formatNumber(mempool.txCount)} tx waiting</span>
+					<a href="/explorer/mempool" class="rail-link">Open mempool →</a>
+				</div>
+			{/if}
+			{#if nextFee !== null}
+				<div class="rail-block">
+					<span class="rail-eyebrow">Next ring fee</span>
+					<span class="rail-value tabular">{nextFee} <span class="rail-unit">sat/vB</span></span>
+				</div>
+			{/if}
+			{#if diffLine}
+				<div class="rail-block">
+					<span class="rail-eyebrow">Difficulty</span>
+					<span class="rail-value tabular">{diffLine.text}</span>
+					{#if diffLine.days !== null}
+						<span class="rail-sub">retarget in ≈ {diffLine.days} day{diffLine.days === 1 ? '' : 's'}</span>
+					{/if}
+					<a href="/explorer/difficulty" class="rail-link">Difficulty history →</a>
+				</div>
+			{/if}
+			{#if syncLabel}
+				<div class="rail-block">
+					<span class="rail-eyebrow">Node</span>
+					<span class="rail-sub" class:updating={syncing}>{syncLabel}</span>
+				</div>
+			{/if}
+		</aside>
+		</div>
 
 		<!-- mobile network footer (8f) -->
 		{#if mempool || diffLine}
@@ -1166,6 +1213,81 @@
 	/* --- latest rings --- */
 	.rings {
 		margin-top: 40px;
+	}
+
+	/* 2/3 + 1/3 split at the desktop tier; the rail is hidden below it and the
+	   list runs full-width (mobile keeps the net-footer summary). */
+	.explorer-rail {
+		display: none;
+	}
+
+	@media (min-width: 1160px) {
+		.rings-layout {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) var(--rail-w);
+			gap: var(--lane-gutter);
+			align-items: start;
+		}
+
+		.explorer-rail {
+			display: flex;
+			flex-direction: column;
+			gap: 26px;
+			margin-top: 40px;
+			position: sticky;
+			top: 24px;
+		}
+
+		.rail-block {
+			display: flex;
+			flex-direction: column;
+			gap: 3px;
+			padding-bottom: 22px;
+			border-bottom: 1px solid var(--hairline);
+		}
+
+		.rail-block:last-child {
+			border-bottom: none;
+			padding-bottom: 0;
+		}
+
+		.rail-eyebrow {
+			font-size: 11px;
+			font-weight: 600;
+			letter-spacing: 0.14em;
+			text-transform: uppercase;
+			color: var(--eyebrow-path);
+		}
+
+		.rail-value {
+			font-family: var(--font-serif);
+			font-size: 22px;
+			font-weight: 600;
+			color: var(--text-value);
+		}
+
+		.rail-unit {
+			font-family: var(--font-ui);
+			font-size: 12px;
+			font-weight: 400;
+			color: var(--text-muted);
+		}
+
+		.rail-sub {
+			font-size: 12.5px;
+			color: var(--text-muted);
+		}
+
+		.rail-sub.updating {
+			color: var(--accent);
+		}
+
+		.rail-link {
+			margin-top: 4px;
+			font-size: 12.5px;
+			font-weight: 500;
+			color: var(--accent);
+		}
 	}
 
 	.rings-head {

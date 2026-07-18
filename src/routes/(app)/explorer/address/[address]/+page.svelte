@@ -390,6 +390,12 @@
 			</section>
 		{/if}
 
+		<!-- Desktop (>=1160px): transaction history + a quiet rail carrying the
+		     QR, totals, count and first/last-seen (docs/DESKTOP-LAYOUT-DESIGN.md §4
+		     Address). Below that the rail is display:none and the inline QR / stat
+		     line / meta dates carry the same data — mobile untouched. -->
+		<div class="addr-layout">
+		<div class="addr-main">
 		<section class="txs">
 			<div class="txs-head fade-in">
 				<span class="txs-title">History</span>
@@ -509,6 +515,60 @@
 				{/if}
 			{/if}
 		</section>
+		</div>
+
+		{#if info}
+			<aside class="addr-rail quiet-rail" aria-label="Address details">
+				{#if data.qr}
+					<div class="rail-qr">
+						<img src={data.qr} alt="QR code for address {data.address}" width="132" height="132" />
+						<span class="hint">Scan to copy address</span>
+					</div>
+				{/if}
+				<div class="rail-block">
+					<span class="rail-eyebrow">Transactions</span>
+					<span class="rail-value tabular">{formatNumber(info.txCount)}</span>
+				</div>
+				{#if info.totalReceived !== null}
+					<div class="rail-block">
+						<span class="rail-eyebrow">Total received</span>
+						<span class="rail-value-sm tabular"><Amount sats={info.totalReceived} size="inline" /></span>
+					</div>
+				{/if}
+				{#if info.totalSent !== null && info.totalSent > 0}
+					<div class="rail-block">
+						<span class="rail-eyebrow">Total sent</span>
+						<span class="rail-value-sm tabular"><Amount sats={info.totalSent} size="inline" /></span>
+					</div>
+				{/if}
+				{#if info.unconfirmedBalance !== 0}
+					<div class="rail-block">
+						<span class="rail-eyebrow">Pending</span>
+						<span class="rail-value-sm tabular">
+							<Amount
+								sats={info.unconfirmedBalance}
+								size="inline"
+								sign
+								direction={info.unconfirmedBalance > 0 ? 'in' : 'out'}
+							/>
+						</span>
+					</div>
+				{/if}
+				{#if firstSeen}
+					<div class="rail-block">
+						<span class="rail-eyebrow">First seen</span>
+						<span class="rail-value-sm" title={formatDateTime(firstSeen)}>{timeAgo(firstSeen)}</span>
+					</div>
+				{/if}
+				{#if lastSeen}
+					<div class="rail-block">
+						<span class="rail-eyebrow">Last active</span>
+						<span class="rail-value-sm" title={formatDateTime(lastSeen)}>{timeAgo(lastSeen)}</span>
+					</div>
+				{/if}
+			</aside>
+		{/if}
+		</div>
 
 		<div class="explain">
 			<HowItWorks id="address">
@@ -848,6 +908,86 @@
 
 	.explain {
 		margin-top: 40px;
+	}
+
+	/* --- desktop rail (>=1160px) --- */
+	.addr-rail {
+		display: none;
+	}
+
+	@media (min-width: 1160px) {
+		.addr-layout {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) var(--rail-w);
+			gap: var(--lane-gutter);
+			align-items: start;
+		}
+
+		.addr-main {
+			min-width: 0;
+		}
+
+		/* The QR, stat line, and hero first/last-seen move into the rail on
+		   desktop — hide their inline copies so nothing shows twice. */
+		.head-wrap .qr,
+		.stat-line,
+		.meta .meta-date {
+			display: none;
+		}
+
+		.addr-rail {
+			display: flex;
+			flex-direction: column;
+			gap: 20px;
+			position: sticky;
+			top: 24px;
+		}
+
+		.rail-qr {
+			display: flex;
+			flex-direction: column;
+			align-items: flex-start;
+			gap: 8px;
+			padding-bottom: 20px;
+			border-bottom: 1px solid var(--hairline);
+		}
+
+		.rail-qr img {
+			border-radius: var(--radius-control);
+		}
+
+		.addr-rail .rail-block {
+			display: flex;
+			flex-direction: column;
+			gap: 3px;
+			padding-bottom: 18px;
+			border-bottom: 1px solid var(--hairline);
+		}
+
+		.addr-rail .rail-block:last-child {
+			border-bottom: none;
+			padding-bottom: 0;
+		}
+
+		.rail-eyebrow {
+			font-size: 10.5px;
+			font-weight: 600;
+			letter-spacing: 0.12em;
+			text-transform: uppercase;
+			color: var(--eyebrow-path);
+		}
+
+		.rail-value {
+			font-family: var(--font-serif);
+			font-size: 22px;
+			font-weight: 600;
+			color: var(--text-value);
+		}
+
+		.rail-value-sm {
+			font-size: 14px;
+			color: var(--text-value);
+		}
 	}
 
 	@media (max-width: 900px) {

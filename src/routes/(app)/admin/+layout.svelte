@@ -47,13 +47,21 @@
 			<EyebrowBreadcrumb path={['Node']} current={currentTab?.label} />
 		</div>
 
-		<nav class="admin-nav" aria-label="Admin sections">
-			{#each tabs as tab (tab.href)}
-				<a href={tab.href} class="toggle" class:active={isActive(tab.href)}>{tab.label}</a>
-			{/each}
-		</nav>
+		<!-- Desktop (>=1160px) lays the section list out as a 200px vertical
+		     sub-nav to the left of the content; the laptop tier (901-1159) and
+		     mobile keep today's horizontal toggle row (docs/DESKTOP-LAYOUT-DESIGN.md
+		     §4 Admin). Same routes, same active grammar — a chrome swap only. -->
+		<div class="admin-body">
+			<nav class="admin-nav" aria-label="Admin sections">
+				{#each tabs as tab (tab.href)}
+					<a href={tab.href} class="toggle" class:active={isActive(tab.href)}>{tab.label}</a>
+				{/each}
+			</nav>
 
-		{@render children()}
+			<div class="admin-main">
+				{@render children()}
+			</div>
+		</div>
 	</div>
 </div>
 
@@ -62,16 +70,54 @@
 		position: relative;
 	}
 
-	/* Dense pages narrow to the spec's 760px column inside the shell's 940. */
+	/* The 760px cap is gone (docs/DESKTOP-LAYOUT-DESIGN.md §2): admin content
+	   now fills the data measure set by the shell's lane-data on /admin, so
+	   tables use the room they're given. Config subpages keep their own
+	   reading-width forms. */
 	.admin-content {
 		position: relative;
 		z-index: 1;
-		max-width: 760px;
-		margin: 0 auto;
 	}
 
 	.admin-eyebrow {
 		margin-bottom: 16px;
+	}
+
+	.admin-main {
+		min-width: 0;
+	}
+
+	/* Desktop (>=1160): 200px vertical sub-nav + content. Below that the body is
+	   a plain block and the nav stays the horizontal toggle row it is today. */
+	@media (min-width: 1160px) {
+		.admin-body {
+			display: grid;
+			grid-template-columns: 200px minmax(0, 1fr);
+			gap: 48px;
+			align-items: start;
+		}
+
+		.admin-nav {
+			flex-direction: column;
+			flex-wrap: nowrap;
+			gap: 2px;
+			margin-bottom: 0;
+			position: sticky;
+			top: 24px;
+		}
+
+		.admin-nav .toggle {
+			display: block;
+			width: 100%;
+			padding: 8px 12px;
+			border-radius: var(--radius-control);
+		}
+
+		/* Accent marker on the active row's left edge, echoing the shell
+		   sidebar's active grammar (§1.1). */
+		.admin-nav .toggle.active {
+			box-shadow: inset 2px 0 0 var(--accent-bright);
+		}
 	}
 
 	/* Text-toggle grammar (the spec's tab row): active = bright copper on a

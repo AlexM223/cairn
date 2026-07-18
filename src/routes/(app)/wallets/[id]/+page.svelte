@@ -638,6 +638,11 @@
 			</div>
 		{/if}
 
+		<!-- Desktop (>=1160px): reading-measure balance hero + a quiet rail
+		     (type, address, backup status) per docs/DESKTOP-LAYOUT-DESIGN.md §4
+		     Wallet detail. Below that the rail is display:none and the hero stacks
+		     exactly as today (mobile untouched). -->
+		<div class="wallet-top">
 		<!-- ------------------------------------------- eyebrow + hero -->
 		<header class="hw-head">
 			<div class="hw-eyebrow">
@@ -726,6 +731,42 @@
 				<SyncIndicator lastSyncedAt={data.lastSyncedAt} {syncing} />
 			</div>
 		</header>
+
+		<aside class="wallet-rail quiet-rail" aria-label="Wallet details">
+			<div class="rail-block">
+				<span class="rail-eyebrow">Type</span>
+				<span class="rail-value-sm">{SCRIPT_TYPE_LABELS[data.wallet.scriptType]}</span>
+				<span class="rail-sub">{walletKind}</span>
+			</div>
+			<div class="rail-block">
+				<span class="rail-eyebrow">Signs with</span>
+				<span class="rail-value-sm">
+					{#if data.wallet.deviceType && data.wallet.deviceType !== 'file'}
+						{WALLET_DEVICE_LABELS[data.wallet.deviceType]}
+					{:else}
+						Your device
+					{/if}
+				</span>
+				<span class="rail-sub mono">{truncateMiddle(data.wallet.xpub, 10, 8)}</span>
+			</div>
+			{#if receive}
+				<div class="rail-block">
+					<span class="rail-eyebrow">Receive address</span>
+					<span class="rail-value-sm mono rail-addr">{truncateMiddle(receive.address, 12, 10)}</span>
+					<a href="#receive" class="rail-link-inline">Show QR →</a>
+				</div>
+			{/if}
+			<div class="rail-block">
+				<span class="rail-eyebrow">Backup</span>
+				{#if backupDone}
+					<span class="rail-value-sm rail-ok">Backed up</span>
+				{:else}
+					<span class="rail-value-sm rail-warn">Not backed up</span>
+					<a href="#backup" class="rail-link-inline">Download config →</a>
+				{/if}
+			</div>
+		</aside>
+		</div>
 
 		{#if helpDevice}
 			<!-- Official device help (cairn-4161): a quiet expandable near the device
@@ -1645,6 +1686,84 @@
 		z-index: 1;
 		display: flex;
 		flex-direction: column;
+	}
+
+	/* Desktop (>=1160px): balance hero (reading measure) + quiet detail rail.
+	   Below that the rail is display:none and the hero column stacks as today. */
+	.wallet-rail {
+		display: none;
+	}
+
+	@media (min-width: 1160px) {
+		.wallet-top {
+			display: grid;
+			grid-template-columns: minmax(0, var(--measure-reading)) var(--rail-w);
+			gap: var(--lane-gutter);
+			align-items: start;
+		}
+
+		/* The type/xpub sign-note moves into the rail on desktop. */
+		.wallet-top .hw-sign-note {
+			display: none;
+		}
+
+		.wallet-rail {
+			display: flex;
+			flex-direction: column;
+			gap: 20px;
+			padding-top: 44px;
+			min-width: 0;
+		}
+
+		.wallet-rail .rail-block {
+			display: flex;
+			flex-direction: column;
+			gap: 3px;
+			padding-bottom: 18px;
+			border-bottom: 1px solid var(--hairline);
+			min-width: 0;
+		}
+
+		.wallet-rail .rail-block:last-child {
+			border-bottom: none;
+			padding-bottom: 0;
+		}
+
+		.wallet-rail .rail-eyebrow {
+			font-size: 10.5px;
+			font-weight: 600;
+			letter-spacing: 0.12em;
+			text-transform: uppercase;
+			color: var(--eyebrow-path);
+		}
+
+		.wallet-rail .rail-value-sm {
+			font-size: 14px;
+			color: var(--text-value);
+		}
+
+		.wallet-rail .rail-sub {
+			font-size: 12px;
+			color: var(--text-muted);
+		}
+
+		.wallet-rail .rail-addr {
+			word-break: break-all;
+		}
+
+		.wallet-rail .rail-ok {
+			color: var(--sage);
+		}
+
+		.wallet-rail .rail-warn {
+			color: var(--warning);
+		}
+
+		.wallet-rail .rail-link-inline {
+			font-size: 12.5px;
+			font-weight: 500;
+			color: var(--accent);
+		}
 	}
 
 	.banner-dismiss:focus-visible {

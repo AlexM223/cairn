@@ -391,6 +391,12 @@
 			</span>
 		</section>
 
+		<!-- Desktop (>=1160px): the flow/detail column plus a quiet metadata rail
+		     (docs/DESKTOP-LAYOUT-DESIGN.md §4 Tx detail). Below that the rail is
+		     display:none and the inline serif metrics stay stacked in place —
+		     mobile untouched. -->
+		<div class="tx-layout">
+		<div class="tx-main">
 		<!-- Block context: where this tx sits in the chain (BlueWallet-style). Streamed
 		     like the other supplementary details; null ctx renders the skeleton. -->
 		<BlockContext ctx={blockCtx} isAdmin={data.isAdmin} />
@@ -738,6 +744,62 @@
 				{/if}
 			</section>
 		{/if}
+		</div>
+
+		<aside class="tx-rail quiet-rail" aria-label="Transaction details">
+			<div class="rail-block">
+				<span class="rail-eyebrow">Confirmations</span>
+				<span class="rail-value tabular">{confCount >= 6 ? '6+' : confCount}</span>
+				<span class="rail-sub">{confLabel}</span>
+			</div>
+			{#if tx.confirmed && tx.blockHeight !== null}
+				<div class="rail-block">
+					<span class="rail-eyebrow">In block</span>
+					<a href="/explorer/block/{tx.blockHeight}" class="rail-value-sm tabular rail-link-inline">
+						{formatNumber(tx.blockHeight)}
+					</a>
+					{#if tx.blockTime !== null}
+						<span class="rail-sub" title={formatDateTime(tx.blockTime)}>{timeAgo(tx.blockTime)}</span>
+					{/if}
+				</div>
+			{/if}
+			<div class="rail-block">
+				<span class="rail-eyebrow">Fee</span>
+				<span class="rail-value-sm tabular">
+					{#if tx.fee !== null}{formatSats(tx.fee)} sats{:else}—{/if}
+				</span>
+				{#if tx.feeRate !== null}
+					<span class="rail-sub tabular">{formatFeeRate(tx.feeRate)}</span>
+				{/if}
+			</div>
+			<div class="rail-block">
+				<span class="rail-eyebrow">Size</span>
+				<span class="rail-value-sm tabular">{formatBytes(tx.size)}</span>
+				<span class="rail-sub tabular">{formatNumber(tx.vsize)} vB · {formatNumber(tx.weight)} WU</span>
+			</div>
+			<div class="rail-block">
+				<span class="rail-eyebrow">Version · locktime</span>
+				<span class="rail-value-sm tabular">{tx.version} · {formatNumber(tx.locktime)}</span>
+			</div>
+			{#if tx.segwit || tx.rbf || cpfpActive}
+				<div class="rail-block">
+					<span class="rail-eyebrow">Status</span>
+					<span class="rail-badges">
+						{#if tx.segwit}<span class="badge badge-neutral">SegWit</span>{/if}
+						{#if tx.rbf && !tx.confirmed}<span class="badge badge-warning">Replaceable</span>
+						{:else if tx.rbf}<span class="badge badge-neutral">RBF</span>{/if}
+						{#if cpfpActive && cpfp && tx.feeRate !== null}
+							{#if cpfp.effectiveFeeRate > tx.feeRate}
+								<span class="badge badge-success">CPFP</span>
+							{:else}
+								<span class="badge badge-warning">Fee package</span>
+							{/if}
+						{/if}
+					</span>
+				</div>
+			{/if}
+		</aside>
+		</div>
 
 		<div class="explain">
 			<HowItWorks id="tx">
@@ -1298,6 +1360,86 @@
 
 	.explain {
 		margin-top: 36px;
+	}
+
+	/* --- desktop metadata rail (>=1160px) --- */
+	.tx-rail {
+		display: none;
+	}
+
+	@media (min-width: 1160px) {
+		.tx-layout {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) var(--rail-w);
+			gap: var(--lane-gutter);
+			align-items: start;
+		}
+
+		.tx-main {
+			min-width: 0;
+		}
+
+		/* The inline serif metrics move into the rail on desktop. */
+		.tx-main .metrics {
+			display: none;
+		}
+
+		.tx-rail {
+			display: flex;
+			flex-direction: column;
+			gap: 20px;
+			position: sticky;
+			top: 24px;
+		}
+
+		.tx-rail .rail-block {
+			display: flex;
+			flex-direction: column;
+			gap: 3px;
+			padding-bottom: 18px;
+			border-bottom: 1px solid var(--hairline);
+			min-width: 0;
+		}
+
+		.tx-rail .rail-block:last-child {
+			border-bottom: none;
+			padding-bottom: 0;
+		}
+
+		.rail-eyebrow {
+			font-size: 10.5px;
+			font-weight: 600;
+			letter-spacing: 0.12em;
+			text-transform: uppercase;
+			color: var(--eyebrow-path);
+		}
+
+		.rail-value {
+			font-family: var(--font-serif);
+			font-size: 24px;
+			font-weight: 600;
+			color: var(--text-value);
+		}
+
+		.rail-value-sm {
+			font-size: 14px;
+			color: var(--text-value);
+		}
+
+		.tx-rail .rail-sub {
+			font-size: 12px;
+			color: var(--text-muted);
+		}
+
+		.rail-link-inline {
+			color: var(--accent);
+		}
+
+		.rail-badges {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 6px;
+		}
 	}
 
 	@media (max-width: 900px) {

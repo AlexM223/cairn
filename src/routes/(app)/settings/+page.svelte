@@ -231,8 +231,23 @@
 		</div>
 	{/if}
 
+	<!-- Desktop (>=1160px) sets a page-local left section nav beside the content;
+	     the anchor jumps land on the existing rows (no new routes). Below that the
+	     nav is display:none and the rows stack exactly as today (mobile untouched).
+	     docs/DESKTOP-LAYOUT-DESIGN.md §4 Settings. -->
+	<div class="settings-body">
+		<nav class="settings-nav" aria-label="Settings sections">
+			<a href="#set-account">Account</a>
+			<a href="#set-display">Display</a>
+			<a href="#set-notifications">Notifications</a>
+			<a href="#set-security">Security</a>
+			<a href="#set-advanced">Advanced</a>
+			<a href="#set-about">About</a>
+		</nav>
+
+		<div class="settings-content">
 	<!-- Profile row -->
-	<div class="profile-row">
+	<div class="profile-row" id="set-account">
 		<div class="avatar" aria-hidden="true">{avatarInitial}</div>
 		<div class="profile-meta">
 			<div class="profile-name">{user.displayName}</div>
@@ -381,7 +396,7 @@
 	     No per-user currency setting exists yet, so this only switches the USD
 	     estimate on/off — same privacy-gated fetch Home already used (no price
 	     call until turned on). -->
-	<div class="hw-row static">
+	<div class="hw-row static" id="set-display">
 		<span class="row-title">Fiat display</span>
 		<div class="unit-toggle" role="group" aria-label="Fiat display">
 			<button
@@ -426,14 +441,14 @@
 	{/if}
 
 	<!-- Notifications -->
-	<a class="hw-row" href="/settings/notifications">
+	<a class="hw-row" href="/settings/notifications" id="set-notifications">
 		<span class="row-title">Notifications</span>
 		<span class="row-meta">in-app + your channels</span>
 		<span class="chev"><Icon name="chevron-right" size={14} /></span>
 	</a>
 
 	<!-- Passkeys (expands: full management, add/rename/remove) -->
-	<button type="button" class="hw-row" aria-expanded={!!open.passkeys} onclick={() => toggleRow('passkeys')}>
+	<button type="button" class="hw-row" id="set-security" aria-expanded={!!open.passkeys} onclick={() => toggleRow('passkeys')}>
 		<span class="row-title">Passkeys</span>
 		<span class="row-meta">{passkeys.length} active</span>
 		<span class="chev" class:down={open.passkeys}><Icon name="chevron-right" size={14} /></span>
@@ -603,7 +618,7 @@
 	{/if}
 
 	<!-- Devices & sessions -->
-	<a class="hw-row" href="/settings/devices">
+	<a class="hw-row" href="/settings/devices" id="set-advanced">
 		<span class="row-title">Devices &amp; sessions</span>
 		<span class="row-meta">where you're signed in</span>
 		<span class="chev"><Icon name="chevron-right" size={14} /></span>
@@ -655,7 +670,7 @@
 	</div>
 
 	<!-- About -->
-	<button type="button" class="hw-row" aria-expanded={!!open.about} onclick={() => toggleRow('about')}>
+	<button type="button" class="hw-row" id="set-about" aria-expanded={!!open.about} onclick={() => toggleRow('about')}>
 		<span class="row-title">About</span>
 		<span class="row-meta">not a custodian</span>
 		<span class="chev" class:down={open.about}><Icon name="chevron-right" size={14} /></span>
@@ -765,6 +780,8 @@
 			</form>
 		{/if}
 	</section>
+		</div>
+	</div>
 </div>
 
 <Modal
@@ -791,8 +808,55 @@
 	.hw-page {
 		position: relative;
 		z-index: 1;
-		max-width: 660px;
+		max-width: var(--measure-reading);
 		margin: 0 auto;
+	}
+
+	/* Section anchors: offset the jump so the sticky chrome doesn't cover the
+	   landed row. */
+	.settings-content :where([id^='set-']) {
+		scroll-margin-top: 24px;
+	}
+
+	/* Desktop (>=1160): page-local left section nav + reading-measure content.
+	   Below that the nav is hidden and the content stacks exactly as today. */
+	.settings-nav {
+		display: none;
+	}
+
+	@media (min-width: 1160px) {
+		.settings-body {
+			display: grid;
+			grid-template-columns: 150px minmax(0, 1fr);
+			gap: 48px;
+			align-items: start;
+		}
+
+		.settings-nav {
+			display: flex;
+			flex-direction: column;
+			gap: 2px;
+			position: sticky;
+			top: 24px;
+		}
+
+		.settings-nav a {
+			padding: 7px 12px;
+			border-radius: var(--radius-control);
+			font-size: 13.5px;
+			font-weight: 500;
+			color: var(--text-secondary);
+			transition: color 120ms var(--ease), background 120ms var(--ease);
+		}
+
+		.settings-nav a:hover {
+			color: var(--text);
+			background: var(--surface);
+		}
+
+		.settings-content {
+			min-width: 0;
+		}
 	}
 
 	/* This page composes its own mobile flow header (back circle + centered

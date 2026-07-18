@@ -519,6 +519,11 @@
 			</div>
 		{/if}
 
+		<!-- Desktop (>=1160px): reading-measure balance hero + a quiet rail led by
+		     a smaller QuorumArc and the cosigner roster (docs/DESKTOP-LAYOUT-DESIGN.md
+		     §4 Wallet detail — multisig). Below that the rail is display:none and the
+		     hero stacks exactly as today (mobile untouched). -->
+		<div class="wallet-top">
 		<!-- ------------------------------------------- eyebrow + hero (5d) -->
 		<header class="hw-head">
 			<div class="hw-eyebrow">
@@ -610,6 +615,47 @@
 				<SyncIndicator lastSyncedAt={data.lastSyncedAt} {syncing} />
 			</div>
 		</header>
+
+		<aside class="wallet-rail quiet-rail" aria-label="Wallet details">
+			<div class="rail-block rail-quorum">
+				<QuorumArc total={data.multisig.keys.length} collected={data.multisig.threshold} size={44} />
+				<div class="rail-quorum-text">
+					<span class="rail-value-sm">{data.multisig.threshold} of {data.multisig.keys.length}</span>
+					<span class="rail-sub">keys required to spend</span>
+				</div>
+			</div>
+			<div class="rail-block">
+				<span class="rail-eyebrow">Cosigners</span>
+				<ul class="rail-roster">
+					{#each data.multisig.keys as key (key.id)}
+						<li class="rail-roster-row">
+							<span class="rail-roster-name">{key.name || 'Unnamed key'}</span>
+						</li>
+					{/each}
+				</ul>
+			</div>
+			<div class="rail-block">
+				<span class="rail-eyebrow">Type</span>
+				<span class="rail-value-sm">{MULTISIG_SCRIPT_LABELS[data.multisig.scriptType]}</span>
+			</div>
+			{#if receive}
+				<div class="rail-block">
+					<span class="rail-eyebrow">Receive address</span>
+					<span class="rail-value-sm mono rail-addr">{truncateMiddle(receive.address, 12, 10)}</span>
+					<a href="#receive" class="rail-link-inline">Show QR →</a>
+				</div>
+			{/if}
+			<div class="rail-block">
+				<span class="rail-eyebrow">Backup</span>
+				{#if backupDone}
+					<span class="rail-value-sm rail-ok">Backed up</span>
+				{:else}
+					<span class="rail-value-sm rail-warn">Not backed up</span>
+					<a href="#backup" class="rail-link-inline">Export config →</a>
+				{/if}
+			</div>
+		</aside>
+		</div>
 
 		{#if staleKeys.length > 0 && !nudgeDismissed}
 			<!-- Stale-key nudge: calm amber over a hairline, never a warning box. -->
@@ -1328,6 +1374,111 @@
 		z-index: 1;
 		display: flex;
 		flex-direction: column;
+	}
+
+	/* Desktop (>=1160px): balance hero (reading measure) + quiet detail rail led
+	   by the QuorumArc and cosigner roster. Below that the rail is display:none
+	   and the hero column stacks as today. */
+	.wallet-rail {
+		display: none;
+	}
+
+	@media (min-width: 1160px) {
+		.wallet-top {
+			display: grid;
+			grid-template-columns: minmax(0, var(--measure-reading)) var(--rail-w);
+			gap: var(--lane-gutter);
+			align-items: start;
+		}
+
+		/* The QuorumArc sign-note moves into the rail on desktop. */
+		.wallet-top .hw-sign-note {
+			display: none;
+		}
+
+		.wallet-rail {
+			display: flex;
+			flex-direction: column;
+			gap: 20px;
+			padding-top: 44px;
+			min-width: 0;
+		}
+
+		.wallet-rail .rail-block {
+			display: flex;
+			flex-direction: column;
+			gap: 3px;
+			padding-bottom: 18px;
+			border-bottom: 1px solid var(--hairline);
+			min-width: 0;
+		}
+
+		.wallet-rail .rail-block:last-child {
+			border-bottom: none;
+			padding-bottom: 0;
+		}
+
+		.rail-quorum {
+			flex-direction: row;
+			align-items: center;
+			gap: 14px;
+		}
+
+		.rail-quorum-text {
+			display: flex;
+			flex-direction: column;
+			gap: 2px;
+		}
+
+		.wallet-rail .rail-eyebrow {
+			font-size: 10.5px;
+			font-weight: 600;
+			letter-spacing: 0.12em;
+			text-transform: uppercase;
+			color: var(--eyebrow-path);
+		}
+
+		.wallet-rail .rail-value-sm {
+			font-size: 14px;
+			color: var(--text-value);
+		}
+
+		.wallet-rail .rail-sub {
+			font-size: 12px;
+			color: var(--text-muted);
+		}
+
+		.rail-roster {
+			list-style: none;
+			margin: 4px 0 0;
+			padding: 0;
+			display: flex;
+			flex-direction: column;
+			gap: 6px;
+		}
+
+		.rail-roster-name {
+			font-size: 13px;
+			color: var(--text-rows);
+		}
+
+		.wallet-rail .rail-addr {
+			word-break: break-all;
+		}
+
+		.wallet-rail .rail-ok {
+			color: var(--sage);
+		}
+
+		.wallet-rail .rail-warn {
+			color: var(--warning);
+		}
+
+		.wallet-rail .rail-link-inline {
+			font-size: 12.5px;
+			font-weight: 500;
+			color: var(--accent);
+		}
 	}
 
 	/* --- eyebrow + hero --- */

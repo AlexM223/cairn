@@ -425,6 +425,12 @@
 			{/if}
 		</section>
 
+		<!-- Desktop (>=1160px): transaction list + a quiet metadata rail
+		     (docs/DESKTOP-LAYOUT-DESIGN.md §4 Block detail). Below that the rail is
+		     display:none and the inline "Header detail" panel carries the same
+		     fields — mobile untouched. -->
+		<div class="block-layout">
+		<div class="block-main">
 		<!-- ============================================= largest passages -->
 		{#if passages.length > 0}
 			<section class="passages fade-in">
@@ -519,6 +525,64 @@
 				</div>
 			{/if}
 		</section>
+		</div>
+
+		<aside class="block-rail quiet-rail" aria-label="Block details">
+			<div class="rail-block">
+				<span class="rail-eyebrow">Hash</span>
+				<span class="rail-value-sm mono"><CopyText value={block.hash} truncate={14} /></span>
+			</div>
+			<div class="rail-block">
+				<span class="rail-eyebrow">Timestamp</span>
+				<span class="rail-value-sm tabular">{formatDateTime(block.time)}</span>
+				<span class="rail-sub">{timeAgo(block.time)}</span>
+			</div>
+			{#if block.miner}
+				<div class="rail-block">
+					<span class="rail-eyebrow">Miner</span>
+					<span class="rail-value-sm">{block.miner}</span>
+				</div>
+			{/if}
+			<div class="rail-block">
+				<span class="rail-eyebrow">Size</span>
+				<span class="rail-value-sm tabular">{block.size === null ? '—' : formatBytes(block.size)}</span>
+				{#if block.weight !== null}
+					<span class="rail-sub tabular">{formatNumber(block.weight)} WU</span>
+				{/if}
+			</div>
+			{#if block.totalFees !== null}
+				<div class="rail-block">
+					<span class="rail-eyebrow">Total fees</span>
+					<span class="rail-value-sm tabular" title="{formatSats(block.totalFees)} sats">
+						{formatBtc(block.totalFees)} BTC
+					</span>
+					{#if block.medianFee !== null}
+						<span class="rail-sub tabular">median {formatFeeRate(block.medianFee)}</span>
+					{/if}
+				</div>
+			{/if}
+			<div class="rail-block">
+				<span class="rail-eyebrow">Difficulty</span>
+				<span class="rail-value-sm tabular">{difficultyText}</span>
+			</div>
+			<div class="rail-block">
+				<span class="rail-eyebrow">Merkle root</span>
+				<span class="rail-value-sm mono"><CopyText value={block.merkleRoot} truncate={12} /></span>
+			</div>
+			<div class="rail-block">
+				<span class="rail-eyebrow">Bits · version</span>
+				<span class="rail-value-sm mono">{block.bits} · 0x{block.version.toString(16)}</span>
+			</div>
+			{#if block.prevHash}
+				<div class="rail-block">
+					<span class="rail-eyebrow">Previous block</span>
+					<a href="/explorer/block/{block.prevHash}" class="rail-value-sm mono rail-link-inline">
+						{truncateMiddle(block.prevHash, 12, 12)}
+					</a>
+				</div>
+			{/if}
+		</aside>
+		</div>
 		{/if}
 
 		<div class="explain">
@@ -1064,6 +1128,76 @@
 
 	.explain {
 		margin-top: 40px;
+	}
+
+	/* --- desktop metadata rail (>=1160px) --- */
+	.block-rail {
+		display: none;
+	}
+
+	@media (min-width: 1160px) {
+		.block-layout {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) var(--rail-w);
+			gap: var(--lane-gutter);
+			align-items: start;
+		}
+
+		.block-main {
+			min-width: 0;
+		}
+
+		/* The "Header detail" collapsible is redundant with the rail on desktop —
+		   the rail shows the same fields, always open. */
+		.more {
+			display: none;
+		}
+
+		.block-rail {
+			display: flex;
+			flex-direction: column;
+			gap: 20px;
+			position: sticky;
+			top: 24px;
+		}
+
+		.block-rail .rail-block {
+			display: flex;
+			flex-direction: column;
+			gap: 3px;
+			padding-bottom: 18px;
+			border-bottom: 1px solid var(--hairline);
+			min-width: 0;
+		}
+
+		.block-rail .rail-block:last-child {
+			border-bottom: none;
+			padding-bottom: 0;
+		}
+
+		.rail-eyebrow {
+			font-size: 10.5px;
+			font-weight: 600;
+			letter-spacing: 0.12em;
+			text-transform: uppercase;
+			color: var(--eyebrow-path);
+		}
+
+		.rail-value-sm {
+			font-size: 13.5px;
+			color: var(--text-value);
+			min-width: 0;
+			word-break: break-all;
+		}
+
+		.block-rail .rail-sub {
+			font-size: 12px;
+			color: var(--text-muted);
+		}
+
+		.rail-link-inline {
+			color: var(--accent);
+		}
 	}
 
 	/* ================================================= mobile (≤900px) */
