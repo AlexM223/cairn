@@ -112,6 +112,19 @@
 
 	const eligibleWallets = $derived(view.wallets.filter((w) => w.eligible));
 
+	// True only in the live-dashboard branch below (mirrors that {:else}'s exact
+	// conditions). Drives the desktop layout: onboarding/disabled/error states
+	// stay a calm reading-measure column; the running dashboard widens to the
+	// data lane and splits into a workers-list main + a panel rail at >=1160
+	// (docs/DESKTOP-LAYOUT-DESIGN.md §4 Mining).
+	const isDashboard = $derived(
+		!data.loadError &&
+			view.engine.status !== 'core_missing' &&
+			view.engine.status !== 'stopped' &&
+			eligibleWallets.length > 0 &&
+			!!view.connection
+	);
+
 	let disabling = $state(false);
 	function actionError(result: { type: string; data?: Record<string, unknown> }, key: string): string | null {
 		if (result.type !== 'failure') return null;
@@ -126,7 +139,7 @@
 
 <Toasts />
 
-<div class="page-shell stack">
+<div class="page-shell stack" class:is-dashboard={isDashboard}>
 	{#if data.loadError}
 		<div class="empty-state load-error-panel">
 			<Icon name="alert-triangle" size={20} />
@@ -152,30 +165,47 @@
 			/>
 		{/if}
 	{:else}
-		<MiningHero hashrateNow={view.totals.hashrateNow} hashrate24h={view.totals.hashrate24h} />
+		<div class="mining-hero-wrap">
+			<MiningHero hashrateNow={view.totals.hashrateNow} hashrate24h={view.totals.hashrate24h} />
+		</div>
 
-		<div class="grid stack">
-			<MiningConnectionCard
-				miningId={view.connection.miningId}
-				workerFormat={view.connection.workerFormat}
-				password={view.connection.password}
-				stratumPort={view.engine.stratumPort}
-				hasWorkers={view.workers.length > 0}
-			/>
+		<!-- Desktop (>=1160px): workers hairline list in the main column, the pool/
+		     payout/earnings/odds panels in a right-hand rail. DOM order is kept
+		     exactly (connection · payout · workers · earnings · odds) so the mobile
+		     single-column stack is byte-identical; grid placement alone repositions
+		     them at desktop. -->
+		<div class="mining-layout">
+			<div class="mining-col mining-col-connection">
+				<MiningConnectionCard
+					miningId={view.connection.miningId}
+					workerFormat={view.connection.workerFormat}
+					password={view.connection.password}
+					stratumPort={view.engine.stratumPort}
+					hasWorkers={view.workers.length > 0}
+				/>
+			</div>
 
-			<MiningPayoutWallet payout={view.payout} wallets={view.wallets} />
+			<div class="mining-col mining-col-payout">
+				<MiningPayoutWallet payout={view.payout} wallets={view.wallets} />
+			</div>
 
 			{#if view.workers.length > 0}
-				<MiningWorkersList workers={view.workers} />
+				<div class="mining-col mining-col-workers">
+					<MiningWorkersList workers={view.workers} />
+				</div>
 			{/if}
 
-			<MiningEarnings
-				blocksFound={view.earnings.blocksFound}
-				totalMaturedSats={view.earnings.totalMaturedSats}
-				totalPendingSats={view.earnings.totalPendingSats}
-			/>
+			<div class="mining-col mining-col-earnings">
+				<MiningEarnings
+					blocksFound={view.earnings.blocksFound}
+					totalMaturedSats={view.earnings.totalMaturedSats}
+					totalPendingSats={view.earnings.totalPendingSats}
+				/>
+			</div>
 
-			<MiningOddsPanel odds={view.odds} hashrateNow={view.totals.hashrateNow} />
+			<div class="mining-col mining-col-odds">
+				<MiningOddsPanel odds={view.odds} hashrateNow={view.totals.hashrateNow} />
+			</div>
 		</div>
 
 		<form
@@ -201,15 +231,76 @@
 </div>
 
 <style>
+	/* Calm default: onboarding, disabled, and error states are single-decision
+	   screens and stay at reading measure (the old 640 cap is removed per
+	   docs/DESKTOP-LAYOUT-DESIGN.md §2). On mobile this cap is inert. */
 	.page-shell {
-		max-width: 640px;
+		max-width: var(--measure-reading);
 		margin: 0 auto;
 		padding: 0 16px 48px;
 		gap: 24px;
 	}
 
-	.grid {
+	/* The running dashboard is a data surface — let it fill the data lane that
+	   the layout already caps <main> to (1180 / 1320), so the workers list and
+	   the panel rail have room. Only widens at the desktop tier. */
+	@media (min-width: 1160px) {
+		.page-shell.is-dashboard {
+			max-width: none;
+		}
+	}
+
+	/* Hero stays a calm reading-measure band even when the dashboard around it
+	   fills the data lane. */
+	.mining-hero-wrap {
+		max-width: var(--measure-reading);
+	}
+
+	/* Mobile / laptop: a plain stack (same as the old `.grid.stack`). */
+	.mining-layout {
+		display: flex;
+		flex-direction: column;
 		gap: 16px;
+	}
+
+	/* Desktop: workers list on the left, panels stacked in a right rail. DOM
+	   order is connection · payout · workers · earnings · odds; explicit grid
+	   placement moves workers to column 1 and the rest to column 2 without
+	   touching the mobile DOM order. */
+	@media (min-width: 1160px) {
+		.mining-layout {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) var(--rail-w);
+			column-gap: var(--lane-gutter);
+			row-gap: 20px;
+			align-items: start;
+		}
+
+		.mining-col-workers {
+			grid-column: 1;
+			grid-row: 1 / span 4;
+			min-width: 0;
+		}
+
+		.mining-col-connection {
+			grid-column: 2;
+			grid-row: 1;
+		}
+
+		.mining-col-payout {
+			grid-column: 2;
+			grid-row: 2;
+		}
+
+		.mining-col-earnings {
+			grid-column: 2;
+			grid-row: 3;
+		}
+
+		.mining-col-odds {
+			grid-column: 2;
+			grid-row: 4;
+		}
 	}
 
 	.load-error-panel,

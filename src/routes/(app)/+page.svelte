@@ -264,6 +264,12 @@
 			</section>
 		{:else}
 			<!-- ========================================= FUNDED / HAS-WALLET STATE B -->
+			<!-- Desktop (>=1160px): a reading-measure hero column + a quiet rail
+			     (docs/DESKTOP-LAYOUT-DESIGN.md §4 Home). Below 1160 the rail is
+			     display:none and its contents (horizons, wallets-at-a-glance) render
+			     inline in the main column — mobile untouched. -->
+			<div class="home-grid">
+			<div class="home-main">
 			<header class="hero fade-in">
 				<div class="hero-eyebrow">
 					<span class="hero-label">Total balance</span>
@@ -432,6 +438,56 @@
 					</section>
 				{/if}
 			{/if}
+			</div>
+
+			<!-- ============================================= QUIET RAIL (>=1160) -->
+			<aside class="home-rail quiet-rail" aria-label="Portfolio detail">
+				{#if portfolio}
+					{#if horizonRows}
+						<div class="rail-section">
+							<span class="rail-eyebrow">Change</span>
+							<BalanceHorizons rows={horizonRows} />
+						</div>
+					{/if}
+					{#if showWalletList}
+						<div class="rail-section">
+							<span class="rail-eyebrow">Your wallets</span>
+							<ul class="rail-wallets">
+								{#each portfolio.allocation as w (w.key)}
+									<li>
+										<a href={w.href} class="rail-wallet-row">
+											<span class="rail-wallet-name" title={w.name}>{w.name}</span>
+											<Amount sats={w.balance} size="row" price={heroPrice} />
+										</a>
+									</li>
+								{/each}
+							</ul>
+							<a href="/wallets/new" class="rail-add-wallet">
+								<Icon name="plus" size={12} /> Add wallet
+							</a>
+						</div>
+					{/if}
+					<div class="rail-section">
+						<span class="rail-eyebrow">Network</span>
+						<span class="rail-sync">
+							<span class="health-dot" class:ok={chainHealthy} class:amber={!chainHealthy}></span>
+							{chainHealthy ? 'Chain healthy' : 'Reconnecting…'}
+						</span>
+					</div>
+					{#if unbackedCount > 0}
+						<div class="rail-section">
+							<span class="rail-eyebrow">Backup</span>
+							<a href="/wallets" class="rail-backup-nudge">
+								{unbackedCount === 1
+									? '1 wallet needs a backup'
+									: `${unbackedCount} wallets need a backup`}
+								<Icon name="chevron-right" size={12} />
+							</a>
+						</div>
+					{/if}
+				{/if}
+			</aside>
+			</div>
 		{/if}
 	</div>
 </div>
@@ -843,6 +899,141 @@
 
 	.see-all:hover {
 		color: var(--accent);
+	}
+
+	/* --- desktop quiet rail (>=1160px) — hidden by default so tablet/mobile
+	   keep the single-column flow they already had. --- */
+	.home-rail {
+		display: none;
+	}
+
+	@media (min-width: 1160px) {
+		/* Home is a reading page, but a reading page WITH a rail needs room for
+		   both the 780px hero and the 280px rail. The layout caps main at
+		   --measure-reading for the '/' route; widen it (only when Home is the
+		   page) to exactly hero + gutter + rail so the hero stays at reading
+		   measure and the surplus becomes the rail, not a wider paragraph. */
+		:global(main.lane-reading:has(.home)) {
+			max-width: calc(var(--measure-reading) + var(--lane-gutter) + var(--rail-w));
+		}
+
+		.home-grid {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) var(--rail-w);
+			gap: var(--lane-gutter);
+			align-items: start;
+		}
+
+		.home-main {
+			min-width: 0;
+		}
+
+		/* The multi-horizon deltas and the wallets-at-a-glance list move into the
+		   rail on desktop; their inline copies in the hero column hide so nothing
+		   is shown twice. */
+		.home-main .hero-horizons,
+		.home-main .wallet-list-section {
+			display: none;
+		}
+
+		.home-rail {
+			display: flex;
+			flex-direction: column;
+			gap: 24px;
+			position: sticky;
+			top: 24px;
+		}
+
+		.home-rail .rail-section {
+			display: flex;
+			flex-direction: column;
+			gap: 10px;
+			padding-bottom: 22px;
+			border-bottom: 1px solid var(--hairline);
+		}
+
+		.home-rail .rail-section:last-child {
+			border-bottom: none;
+			padding-bottom: 0;
+		}
+
+		.rail-eyebrow {
+			font-size: 10.5px;
+			font-weight: 600;
+			letter-spacing: 0.12em;
+			text-transform: uppercase;
+			color: var(--eyebrow-path);
+		}
+
+		.rail-wallets {
+			list-style: none;
+			margin: 0;
+			padding: 0;
+			display: flex;
+			flex-direction: column;
+		}
+
+		.rail-wallet-row {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 10px;
+			padding: 8px 0;
+			border-bottom: 1px solid var(--hairline);
+			color: inherit;
+		}
+
+		.rail-wallets li:last-child .rail-wallet-row {
+			border-bottom: none;
+		}
+
+		.rail-wallet-name {
+			min-width: 0;
+			font-size: 12.5px;
+			font-weight: 500;
+			color: var(--text-rows);
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+
+		.rail-wallet-row :global(.hw-amount) {
+			flex-shrink: 0;
+		}
+
+		.rail-wallet-row:hover .rail-wallet-name {
+			color: var(--accent);
+		}
+
+		.rail-add-wallet {
+			display: inline-flex;
+			align-items: center;
+			gap: 4px;
+			margin-top: 8px;
+			font-size: 12px;
+			font-weight: 500;
+			color: var(--text-muted);
+		}
+
+		.rail-add-wallet:hover {
+			color: var(--accent);
+		}
+
+		.rail-sync {
+			display: inline-flex;
+			align-items: center;
+			gap: 8px;
+			font-size: 13px;
+			color: var(--text-secondary);
+		}
+
+		.rail-backup-nudge {
+			display: inline-flex;
+			align-items: center;
+			gap: 4px;
+			font-size: 12.5px;
+			color: var(--attention);
+		}
 	}
 
 	/* ================================================= mobile (≤900px) */

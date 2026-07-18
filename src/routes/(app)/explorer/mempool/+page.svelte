@@ -271,8 +271,7 @@
 				</section>
 			{/if}
 
-			<div class="columns">
-				<!-- What should I pay? — independent panel (fee estimates). -->
+			<!-- What should I pay? — independent panel (fee estimates). -->
 				{#if tiers.length}
 					<section class="section">
 						<div class="section-head">
@@ -335,7 +334,6 @@
 						</p>
 					{/if}
 				</section>
-			</div>
 
 			<!-- Backlog trend — own panel. -->
 			{#if trendSeries}
@@ -585,26 +583,14 @@
 		border-radius: var(--radius-control);
 	}
 
-	.columns {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: 0 48px;
-		align-items: start;
-	}
-
-	.columns > section {
-		min-width: 0;
-	}
-
-	@media (max-width: 860px) {
-		.columns {
-			grid-template-columns: 1fr;
-		}
-	}
-
+	/* Fee distribution (FeeWeather) now runs the full data measure rather than a
+	   half-width grid cell (docs/DESKTOP-LAYOUT-DESIGN.md §4 Mempool). The
+	   tier list ("What should I pay?") is a short list, so it caps at reading
+	   measure instead of stretching sparsely across the full width. */
 	.tier-list {
 		display: flex;
 		flex-direction: column;
+		max-width: var(--measure-reading);
 	}
 
 	.tier {

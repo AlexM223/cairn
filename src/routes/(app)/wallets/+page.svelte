@@ -800,6 +800,41 @@
 		flex-shrink: 0;
 	}
 
+	/* --- desktop (>=1160px): richer, aligned columns ---
+	   The hairline list stays a list (never a tile grid, per §3.2). At data
+	   measure each row's trailing block goes horizontal so last-activity and
+	   balance read as two aligned columns beside the name+type/m-of-n block
+	   (docs/DESKTOP-LAYOUT-DESIGN.md §4 Wallet list). CSS-only — the row markup,
+	   the live refresh, and the mobile layout are untouched. */
+	@media (min-width: 1160px) {
+		.wallet-row {
+			gap: 32px;
+			padding: 18px 2px;
+		}
+
+		.row-right {
+			flex-direction: row-reverse;
+			align-items: baseline;
+			gap: 28px;
+		}
+
+		.row-right :global(.hw-amount) {
+			min-width: 150px;
+			text-align: right;
+		}
+
+		.row-btc {
+			min-width: 150px;
+			text-align: right;
+		}
+
+		.row-when {
+			min-width: 132px;
+			text-align: right;
+			font-size: 12px;
+		}
+	}
+
 	/* --- mobile (≤900px, tab page) --- */
 
 	@media (max-width: 900px) {

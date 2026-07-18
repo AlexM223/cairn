@@ -236,6 +236,22 @@
 	const nodeFloor = $derived(chain?.fees?.minFeeRate ?? 1);
 	const canBuild = $derived(rowsValid && feeRate >= nodeFloor);
 
+	// --- running-summary rail (desktop >=1160, docs/DESKTOP-LAYOUT-DESIGN.md §4
+	//     Send). A READ-ONLY reflection of the wizard's own state — no new logic.
+	//     Same shape as the single-sig send rail; `spendableSats` is the multisig
+	//     balance source. ---
+	const summaryAmountSats = $derived(
+		review?.amount ?? (isMax ? (spendableSats ?? 0) : rows.reduce((s, r) => s + r.sats, 0))
+	);
+	const summaryRecipient = $derived(review?.recipient ?? rows[0]?.address ?? '');
+	const summaryRecipientCount = $derived(review?.recipients?.length ?? rows.length);
+	const summaryFeeSats = $derived<number | null>(review?.fee ?? null);
+	const summaryRemainingSats = $derived(
+		spendableSats != null
+			? Math.max(0, spendableSats - summaryAmountSats - (summaryFeeSats ?? 0))
+			: null
+	);
+
 	let building = $state(false);
 	let buildError = $state<string | null>(null);
 
@@ -844,6 +860,14 @@
 
 	<!-- Gate the whole client-driven wizard behind `mounted` so the server ships
 	     only the shell + skeleton (cairn-97gt). load() stays server-side. -->
+	<!-- Desktop (>=1160px): the wizard step column stays at reading measure with a
+	     persistent running-summary rail beside it (docs/DESKTOP-LAYOUT-DESIGN.md §4
+	     Send). Below 1160 the rail is display:none and the step column is the single
+	     column it always was. Only layout containers are added; the step chain,
+	     cosigner/signer components and sticky footers inside `.send-main` are
+	     unchanged. -->
+	<div class="send-layout">
+	<div class="send-main">
 	{#if mounted}
 	<!-- ============================================================ CREATE -->
 	{#if step === 'create'}
@@ -1611,6 +1635,54 @@
 		</section>
 	{/if}
 	</div>
+
+	{#if mounted && step !== 'sent'}
+		<!-- ===================================== running-summary rail (>=1160) -->
+		<aside class="send-summary quiet-rail" aria-label="Send summary">
+			<span class="summary-eyebrow">This send</span>
+			<div class="summary-block">
+				<span class="summary-label">Amount</span>
+				<span class="summary-value tabular">{formatBtc(summaryAmountSats)} BTC</span>
+				{#if $fiatVisible && $btcUsd != null}
+					<span class="summary-sub tabular">
+						≈ {((summaryAmountSats / SATS_PER_BTC) * $btcUsd).toLocaleString(undefined, {
+							style: 'currency',
+							currency: 'USD',
+							maximumFractionDigits: 0
+						})}
+					</span>
+				{/if}
+			</div>
+			<div class="summary-block">
+				<span class="summary-label">To</span>
+				{#if summaryRecipient}
+					<span class="summary-value mono">
+						{truncateMiddle(summaryRecipient, 8, 6)}{#if summaryRecipientCount > 1}
+							<span class="summary-more">+{summaryRecipientCount - 1} more</span>
+						{/if}
+					</span>
+				{:else}
+					<span class="summary-value muted">not set yet</span>
+				{/if}
+			</div>
+			<div class="summary-block">
+				<span class="summary-label">Fee</span>
+				<span class="summary-value tabular">
+					{#if summaryFeeSats != null}{formatSats(summaryFeeSats)} sats · {/if}{formatFeeRate(
+						feeRate
+					)}
+				</span>
+			</div>
+			<div class="summary-block">
+				<span class="summary-label">Remaining</span>
+				<span class="summary-value tabular">
+					{summaryRemainingSats != null ? `${formatBtc(summaryRemainingSats)} BTC` : '—'}
+				</span>
+			</div>
+		</aside>
+	{/if}
+	</div>
+	</div>
 </div>
 
 <Toasts />
@@ -1625,10 +1697,13 @@
 		min-height: 100%;
 	}
 
+	/* The old 680px cap is removed (docs/DESKTOP-LAYOUT-DESIGN.md §2). The step
+	   column keeps a reading measure via the .send-layout grid below; on
+	   mobile/laptop this is a single centered column exactly as before. */
 	.page-content {
 		position: relative;
 		z-index: 1;
-		max-width: 680px;
+		max-width: var(--measure-reading);
 		margin: 0 auto;
 	}
 
@@ -1638,6 +1713,96 @@
 		justify-content: space-between;
 		gap: 14px;
 		margin-bottom: 26px;
+	}
+
+	/* --- desktop running-summary rail (>=1160px) — hidden by default so the
+	   mobile/laptop single-column wizard is untouched. --- */
+	.send-summary {
+		display: none;
+	}
+
+	@media (min-width: 1160px) {
+		/* A reading page with a rail needs room for the ~720px step column plus the
+		   280px rail; widen <main> (only for the send page) to step + gutter + rail
+		   so the step column stays at reading measure and the surplus is the rail. */
+		:global(main.lane-reading:has(.send-page)) {
+			max-width: calc(720px + var(--lane-gutter) + var(--rail-w));
+		}
+
+		.page-content {
+			max-width: none;
+		}
+
+		.send-layout {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) var(--rail-w);
+			gap: var(--lane-gutter);
+			align-items: start;
+		}
+
+		.send-main {
+			min-width: 0;
+		}
+
+		.send-summary {
+			display: flex;
+			flex-direction: column;
+			gap: 18px;
+			position: sticky;
+			top: 24px;
+			padding: 20px;
+			border: 1px solid var(--hairline);
+			border-radius: var(--radius-control);
+			background: var(--surface);
+		}
+
+		.summary-eyebrow {
+			font-size: 10.5px;
+			font-weight: 600;
+			letter-spacing: 0.14em;
+			text-transform: uppercase;
+			color: var(--eyebrow-path);
+		}
+
+		.summary-block {
+			display: flex;
+			flex-direction: column;
+			gap: 4px;
+			padding-bottom: 16px;
+			border-bottom: 1px solid var(--hairline);
+		}
+
+		.summary-block:last-child {
+			border-bottom: none;
+			padding-bottom: 0;
+		}
+
+		.summary-label {
+			font-size: 11px;
+			font-weight: 600;
+			letter-spacing: 0.02em;
+			color: var(--text-muted);
+		}
+
+		.summary-value {
+			font-size: 14px;
+			color: var(--text-value);
+			word-break: break-all;
+		}
+
+		.summary-value.muted {
+			color: var(--text-faint);
+		}
+
+		.summary-sub {
+			font-size: 12px;
+			color: var(--text-muted);
+		}
+
+		.summary-more {
+			font-size: 11.5px;
+			color: var(--text-muted);
+		}
 	}
 
 	/* Placeholder for the AtTipPill while the streamed tip is in flight — same

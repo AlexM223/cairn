@@ -273,6 +273,13 @@
 <div class="activity">
 	<GroveField volume="whisper" />
 	<div class="activity-body">
+		<!-- Desktop (>=1160px): the feed fills the data measure with a quiet filter
+		     rail on the right (docs/DESKTOP-LAYOUT-DESIGN.md §4 Activity). The inline
+		     toggles/controls are hidden at >=1160 and mirrored in the rail; below
+		     1160 the rail is display:none and the inline filters render exactly as
+		     before — mobile/laptop untouched. -->
+		<div class="activity-layout">
+		<div class="activity-main">
 		<!-- eyebrow + filter toggles (5f header row) -->
 		<div class="head fade-in">
 			<span class="eyebrow">Activity</span>
@@ -404,12 +411,51 @@
 				</ul>
 			{/each}
 		{/if}
+		</div>
+
+		<!-- =============================================== quiet filter rail -->
+		<aside class="activity-rail quiet-rail" aria-label="Filter activity">
+			<div class="rail-group">
+				<span class="rail-eyebrow">Show</span>
+				<div class="rail-toggles" role="group" aria-label="Filter activity">
+					{#each [{ v: 'all', l: 'All' }, { v: 'wallets', l: 'Wallets' }, { v: 'node', l: 'Node' }] as opt (opt.v)}
+						<button
+							type="button"
+							class="rail-toggle"
+							class:active={filter === opt.v}
+							aria-pressed={filter === opt.v}
+							onclick={() => (filter = opt.v as Filter)}
+						>
+							{opt.l}
+						</button>
+					{/each}
+				</div>
+			</div>
+			<div class="rail-group">
+				<span class="rail-eyebrow">Controls</span>
+				<button
+					type="button"
+					class="rail-ctrl"
+					class:on={onlyAlerts}
+					onclick={() => (onlyAlerts = !onlyAlerts)}
+					aria-pressed={onlyAlerts}
+				>
+					Needs a look
+				</button>
+				<button type="button" class="rail-ctrl" onclick={refresh} disabled={refreshing}>
+					{#if refreshing}<span class="spinner"></span>{:else}<Icon name="refresh" size={13} />{/if}
+					Refresh
+				</button>
+			</div>
+		</aside>
+		</div>
 	</div>
 </div>
 
 <style>
-	/* Whisper-volume grove bleeds to the shell's padding edges; the 760px column
-	   (spec: dense pages) centers inside. */
+	/* Whisper-volume grove bleeds to the shell's padding edges; the content fills
+	   the data lane the layout caps <main> to (the old 760px cap is removed per
+	   docs/DESKTOP-LAYOUT-DESIGN.md §2). */
 	.activity {
 		position: relative;
 		margin: -54px -52px -44px;
@@ -420,8 +466,132 @@
 	.activity-body {
 		position: relative;
 		z-index: 1;
-		max-width: 760px;
-		margin: 0 auto;
+	}
+
+	/* --- desktop filter rail (>=1160px) — hidden by default so mobile/laptop
+	   keep the inline filters and the single-column feed unchanged. --- */
+	.activity-rail {
+		display: none;
+	}
+
+	@media (min-width: 1160px) {
+		.activity-layout {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) var(--rail-w);
+			gap: var(--lane-gutter);
+			align-items: start;
+		}
+
+		.activity-main {
+			min-width: 0;
+		}
+
+		/* Filters move into the rail on desktop — hide the inline copies. */
+		.activity-main .toggles,
+		.activity-main .controls {
+			display: none;
+		}
+
+		.activity-rail {
+			display: flex;
+			flex-direction: column;
+			gap: 26px;
+			position: sticky;
+			top: 24px;
+		}
+
+		.rail-group {
+			display: flex;
+			flex-direction: column;
+			align-items: flex-start;
+			gap: 10px;
+		}
+
+		.rail-eyebrow {
+			font-size: 10.5px;
+			font-weight: 600;
+			letter-spacing: 0.12em;
+			text-transform: uppercase;
+			color: var(--eyebrow-path);
+		}
+
+		.rail-toggles {
+			display: flex;
+			flex-direction: column;
+			align-self: stretch;
+			gap: 2px;
+		}
+
+		.rail-toggle {
+			background: none;
+			border: none;
+			padding: 7px 12px;
+			border-radius: var(--radius-badge);
+			font-family: var(--font-ui);
+			font-size: 13px;
+			font-weight: 500;
+			color: var(--eyebrow-path);
+			text-align: left;
+			cursor: pointer;
+			transition:
+				color 120ms var(--ease),
+				background 120ms var(--ease);
+		}
+
+		.rail-toggle:hover {
+			color: var(--text-secondary);
+		}
+
+		.rail-toggle.active {
+			font-weight: 600;
+			color: var(--accent-bright);
+			background: rgba(103, 150, 201, 0.1);
+		}
+
+		.rail-ctrl {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			background: none;
+			border: none;
+			padding: 0;
+			font-family: var(--font-ui);
+			font-size: 12.5px;
+			color: var(--text-faint);
+			cursor: pointer;
+			white-space: nowrap;
+			transition: color 120ms var(--ease);
+		}
+
+		.rail-ctrl:hover:not(:disabled) {
+			color: var(--text-secondary);
+		}
+
+		.rail-ctrl:disabled {
+			cursor: default;
+		}
+
+		.rail-ctrl.on {
+			color: var(--attention);
+		}
+
+		.rail-ctrl .spinner {
+			width: 12px;
+			height: 12px;
+			border-width: 1.5px;
+		}
+
+		/* Rows gain a wider gutter and an aligned trailing column at data measure
+		   so amounts/times line up down the feed. */
+		.event {
+			gap: 20px;
+		}
+
+		.amount,
+		.when {
+			min-width: 150px;
+			text-align: right;
+		}
 	}
 
 	/* --- header: eyebrow + toggle grammar --- */
