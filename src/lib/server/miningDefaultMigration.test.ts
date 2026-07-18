@@ -1,7 +1,8 @@
-// Epic cairn-vn43 — migrateMiningDefault() must land mining=off for a
-// genuinely fresh/no-user install and never touch an install that already
-// has a user, mirroring explorerDefaultMigration.test.ts's shape for the
-// analogous soft-launch decision.
+// Epic cairn-vn43 / cairn-guvu — migrateMiningDefault() must land mining=off
+// whenever the `mining` feature_flags row is absent, on BOTH a fresh install and
+// an upgrade from a version that predates the feature (users already present, no
+// row yet). It must never touch a row that already exists — whether written by a
+// prior run of this migration or by an admin explicitly toggling the flag.
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { db } from './db';
@@ -29,18 +30,21 @@ describe('migrateMiningDefault', () => {
 		expect(isFeatureEnabled('mining', null)).toBe(false);
 	});
 
+	it('defaults mining off on an UPGRADED install (users present, no mining row yet) — cairn-guvu', async () => {
+		// The regression: an install upgrading from a pre-mining version already
+		// has >=1 user but no `mining` row. The old userCount()===0 gate skipped
+		// it, leaving the registry default `true` and exposing the mining UI.
+		await registerUser({ email: 'a@example.com', password: PASSWORD, displayName: 'A' });
+		migrateMiningDefault();
+		expect(getGlobalFlags().get('mining')).toBe(false);
+		expect(isFeatureEnabled('mining', null)).toBe(false);
+	});
+
 	it('writes the row exactly once — a single feature_flags row for the key', () => {
 		migrateMiningDefault();
 		migrateMiningDefault();
 		const rows = db.prepare('SELECT * FROM feature_flags WHERE key = ?').all('mining');
 		expect(rows.length).toBe(1);
-	});
-
-	it('never disables mining for an install that already has a user', async () => {
-		await registerUser({ email: 'a@example.com', password: PASSWORD, displayName: 'A' });
-		migrateMiningDefault();
-		expect(getGlobalFlags().has('mining')).toBe(false); // no row written at all
-		expect(isFeatureEnabled('mining', null)).toBe(true); // registry default, untouched
 	});
 
 	it('is idempotent — running again after users appear never re-derives the decision', async () => {
@@ -52,12 +56,20 @@ describe('migrateMiningDefault', () => {
 		expect(isFeatureEnabled('mining', null)).toBe(false);
 	});
 
-	it('never overwrites a feature_flags row that already exists for any reason', () => {
-		// e.g. a restored config / provisioning script set this before any user
-		// existed — a system write, hence updatedBy: null.
+	it('never overwrites an existing enabled row (operator explicitly turned mining on)', () => {
+		// e.g. an admin/provisioning script enabled mining before this migration
+		// runs — a system write, hence updatedBy: null. Must survive untouched.
 		setGlobalFlag('mining', true, null);
 		migrateMiningDefault();
 		expect(isFeatureEnabled('mining', null)).toBe(true);
+	});
+
+	it('never overwrites an existing disabled row (already decided off)', () => {
+		setGlobalFlag('mining', false, null);
+		migrateMiningDefault();
+		const rows = db.prepare('SELECT * FROM feature_flags WHERE key = ?').all('mining');
+		expect(rows.length).toBe(1);
+		expect(isFeatureEnabled('mining', null)).toBe(false);
 	});
 
 	it('an admin turning the flag back on afterwards is honored immediately (power-user re-enable path)', async () => {

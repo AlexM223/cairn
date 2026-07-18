@@ -163,4 +163,87 @@ describe('GET /api/live', () => {
 		await expect(reader.cancel()).resolves.toBeUndefined();
 		expect(connectionCount()).toBe(before);
 	});
+
+	// --- Electrum-down resilience (cairn-yc87) -------------------------------
+
+	it('keeps the stream OPEN when tip prime fails: nudges health degraded, still primes notification, still registers', async () => {
+		const electrum = makeElectrum();
+		electrum.headersSubscribe.mockRejectedValue(new Error('connect timed out'));
+		chainMocks.getChain.mockReturnValue({ electrum });
+
+		const before = connectionCount();
+		const res = await GET(makeEvent());
+		const reader = res.body!.getReader();
+		await vi.advanceTimersByTimeAsync(0);
+
+		// First frame: a degraded `health` nudge (NOT an error frame, NOT a close).
+		const first = await reader.read();
+		expect(first.done).toBe(false);
+		expect(decode(first.value)).toBe(
+			`event: health\ndata: ${JSON.stringify({ electrum: 'down', tipHeight: 0, tipAgeMs: null })}\n\n`
+		);
+
+		// Second frame: the unread prime still flows — it's Electrum-independent.
+		const second = await reader.read();
+		expect(decode(second.value)).toBe(
+			`event: notification\ndata: ${JSON.stringify({ unread: 4 })}\n\n`
+		);
+
+		// The connection is registered with the hub despite the failed prime, so
+		// hub-fanned frames (block/health/notification/mempool/...) reach it once
+		// Electrum recovers.
+		expect(connectionCount()).toBe(before + 1);
+
+		await reader.cancel();
+	});
+
+	it('does NOT end the stream on tip prime failure — heartbeat still pings', async () => {
+		const electrum = makeElectrum();
+		electrum.headersSubscribe.mockRejectedValue(new Error('ECONNREFUSED'));
+		chainMocks.getChain.mockReturnValue({ electrum });
+
+		const res = await GET(makeEvent());
+		const reader = res.body!.getReader();
+		await vi.advanceTimersByTimeAsync(0);
+		await reader.read(); // health degraded nudge
+		await reader.read(); // notification prime
+
+		// Advance to the heartbeat. Background tip-retries in this window fail
+		// silently (no frame), so the next readable frame is the ping — proving
+		// the connection is still open, not reconnect-looping.
+		await vi.advanceTimersByTimeAsync(25_000);
+		const { done, value } = await reader.read();
+		expect(done).toBe(false);
+		expect(decode(value)).toBe(': ping\n\n');
+
+		await reader.cancel();
+	});
+
+	it('background retry recovers: emits the tip block frame and a health-up nudge once Electrum comes back', async () => {
+		const electrum = makeElectrum();
+		// Fail the connect-time prime, then succeed on the first background retry.
+		electrum.headersSubscribe
+			.mockRejectedValueOnce(new Error('connect timed out'))
+			.mockResolvedValue({ height: 200, hex: '00'.repeat(80) });
+		chainMocks.getChain.mockReturnValue({ electrum });
+
+		const res = await GET(makeEvent());
+		const reader = res.body!.getReader();
+		await vi.advanceTimersByTimeAsync(0);
+		await reader.read(); // health degraded nudge
+		await reader.read(); // notification prime
+
+		// First retry fires at TIP_RETRY_MIN_MS (5s) and succeeds.
+		await vi.advanceTimersByTimeAsync(5_000);
+
+		const block = await reader.read();
+		expect(decode(block.value)).toBe(`event: block\ndata: ${JSON.stringify({ height: 200 })}\n\n`);
+
+		const recovered = await reader.read();
+		expect(decode(recovered.value)).toBe(
+			`event: health\ndata: ${JSON.stringify({ electrum: 'up', tipHeight: 0, tipAgeMs: null })}\n\n`
+		);
+
+		await reader.cancel();
+	});
 });

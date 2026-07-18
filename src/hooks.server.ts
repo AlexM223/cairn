@@ -143,11 +143,12 @@ async function init(): Promise<void> {
 		errLog.error({ err: e }, 'explorer default migration failed');
 	}
 
-	// Same soft-launch shape, same "genuinely new install" test, for the
-	// solo-mining flag (epic cairn-vn43). Order-independent relative to the
-	// explorer migration (each only touches its own feature_flags row) but
-	// must, like it, run before bootstrapAdminFromEnv() below. Idempotent;
-	// never throws.
+	// Same soft-launch shape for the solo-mining flag (epic cairn-vn43), but
+	// gated purely on whether a `mining` feature_flags row exists — so the flag
+	// defaults off on both fresh installs AND upgrades that predate the feature
+	// (cairn-guvu). Order-independent relative to the explorer migration (each
+	// only touches its own row) AND to bootstrapAdminFromEnv() (the row check
+	// doesn't depend on user count). Idempotent; never throws.
 	try {
 		migrateMiningDefault();
 	} catch (e) {
