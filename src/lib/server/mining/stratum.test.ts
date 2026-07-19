@@ -658,6 +658,57 @@ describe('vardiff runaway ceiling', () => {
 
 // ---------------------------------------------------------------------------
 
+describe('vardiff floor clamp (the per-port ASIC-floor guarantee)', () => {
+	it('never announces a difficulty below the floor under a sustained low-rate (halving) regime', async () => {
+		// The ASIC listener is a StratumServer whose shareDifficulty IS its high
+		// floor; vardiff must never drop a connection below it. Mirror the ceiling
+		// test's cheap-mining trick (floor == maxDifficulty == DIFF) with a target
+		// rate so high the measured rate is always below it → vardiff always wants
+		// to HALVE, and the floor clamp must pin it back on every adjustment.
+		const M = makeMiner('vd-floor');
+		let clock = 2_000_000;
+		const FLOOR = DIFF;
+		const h = await startHarness(
+			{
+				vardiff: {
+					targetSharesPerMin: 100_000, // always above the measured rate → always wants to halve
+					maxDifficulty: DIFF,
+					adjustIntervalMs: 1000,
+					windowMs: 60_000,
+					now: () => clock
+				}
+			},
+			[M]
+		);
+		try {
+			const built = stubJob('vd-floor-job');
+			h.server.setJob(built);
+			const { client, en1 } = await h.miner(M);
+			const pHex = Buffer.from(M.payoutScript).toString('hex');
+			const nt = built.job.ntimeHex;
+			for (let i = 0; i < 25; i++) {
+				clock += 1500; // cross the adjust interval every share
+				const en2 = (0x2000 + i).toString(16).padStart(8, '0');
+				const nonce = findNonce('vd-floor-job', pHex, en1, en2, nt, (v) => v <= SHARE_TARGET);
+				const r = await client.request('mining.submit', [M.miningId, 'vd-floor-job', en2, nt, nonce]);
+				expect(r.result).toBe(true);
+			}
+			// Every announced difficulty (including the initial announce) stays at/above the floor.
+			const announced = client.log.filter((l) => l.method === 'mining.set_difficulty');
+			expect(announced.length).toBeGreaterThan(0);
+			for (const n of announced) {
+				expect(n.params[0] as number).toBeGreaterThanOrEqual(FLOOR);
+			}
+			// The connection's reported difficulty is pinned exactly at the floor.
+			expect(h.server.connections()[0]!.difficulty).toBe(FLOOR);
+		} finally {
+			await h.stop();
+		}
+	}, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+
 describe('framing and hardening', () => {
 	it('destroys the connection when the line buffer overflows (16 KiB, no newline)', async () => {
 		const h = await startHarness();
