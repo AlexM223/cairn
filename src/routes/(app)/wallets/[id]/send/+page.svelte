@@ -116,7 +116,12 @@
 	// --- resume: derive the starting step from the saved row's lifecycle ------
 	function initialStep(): StepKey {
 		if (!resumeTx) return 'create';
-		if (resumeTx.status === 'completed') return 'sent';
+		// A superseded original was genuinely broadcast, then replaced by a
+		// fee-bump — it is done, not an editable draft. Route it the same as
+		// 'completed' rather than falling through to 'review', which would
+		// silently offer to rebuild/re-sign a transaction the network has
+		// already been told to reject in favor of the replacement.
+		if (resumeTx.status === 'completed' || resumeTx.status === 'superseded') return 'sent';
 		if (resumeTx.status === 'awaiting_signature') {
 			// Signed enough to broadcast? jump to Confirm, else stay on Sign.
 			return resumeComplete ? 'confirm' : 'sign';

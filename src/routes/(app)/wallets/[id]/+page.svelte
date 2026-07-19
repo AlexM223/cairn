@@ -1446,13 +1446,17 @@
 														id="bump-rate-{tx.id}"
 														class="input bump-input"
 														type="number"
-														min="1"
+														min={Math.max(1, tx.feeRate)}
 														step="any"
 														bind:value={bumpRate}
 														disabled={bumping}
 													/>
 													<span class="hint">sat/vB</span>
-													<button class="btn btn-primary btn-sm" type="submit" disabled={bumping}>
+													<button
+														class="btn btn-primary btn-sm"
+														type="submit"
+														disabled={bumping || !(Number(bumpRate) > tx.feeRate)}
+													>
 														{#if bumping}<span class="spinner"></span>{/if}
 														Bump
 													</button>
@@ -1464,6 +1468,12 @@
 													>
 														Cancel
 													</button>
+													{#if bumpRate !== '' && !(Number(bumpRate) > tx.feeRate)}
+														<span class="hint bump-floor-hint">
+															Must be above {formatFeeRate(tx.feeRate)} — the original's rate — for
+															the network to accept the replacement.
+														</span>
+													{/if}
 												</form>
 											{:else}
 												<button
