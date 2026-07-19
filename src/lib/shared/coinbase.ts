@@ -44,6 +44,43 @@ export function isImmatureCoinbase(height: number, tipHeight: number): boolean {
 }
 
 /**
+ * Display-side maturity classification of one CONFIRMED coin — the single
+ * shared answer to "may this coin be presented as spendable?" (cairn-8lwa6 /
+ * 25ges / e176o / i0d0q root cause: maturity was never modeled as a
+ * first-class state, so every surface re-derived it differently and the
+ * display path failed OPEN where the send path failed closed).
+ *
+ *   - 'spendable'  — a regular coin, or a coinbase output past COINBASE_MATURITY.
+ *   - 'maturing'   — a DEFINITE coinbase output not yet mature (or tip unknown:
+ *                    over-reporting "maturing" is safe; under-reporting isn't).
+ *   - 'unverified' — coinbase-ness could not be established ('unknown', e.g.
+ *                    the funding tx was unfetchable) AND the coin is young
+ *                    enough that IF it were coinbase it would be immature (or
+ *                    the tip is unknown). Mirrors the send path's guard
+ *                    (`selectSpendCandidates`, psbt.ts): fail CLOSED on
+ *                    presentation — an unverifiable young coin must never
+ *                    silently render as plain spendable money.
+ *
+ * Caller contract: only pass CONFIRMED coins (height > 0). Unconfirmed coins
+ * live in the separate `unconfirmed` bucket and are never part of a confirmed
+ * balance, so classifying them here would double-count.
+ */
+export type MaturityClass = 'spendable' | 'maturing' | 'unverified';
+
+export function classifyCoinMaturity(
+	coinbase: boolean | 'unknown' | undefined,
+	height: number,
+	tipHeight: number
+): MaturityClass {
+	if (coinbase === true) return isImmatureCoinbase(height, tipHeight) ? 'maturing' : 'spendable';
+	if (coinbase === false) return 'spendable';
+	// 'unknown' (or never annotated): old enough that even a coinbase would have
+	// matured → provably spendable regardless; otherwise unverifiable.
+	if (tipHeight > 0 && !isImmatureCoinbase(height, tipHeight)) return 'spendable';
+	return 'unverified';
+}
+
+/**
  * Human ETA for `blocksRemaining` blocks at ~10 min/block (cairn-oae1.4), e.g.
  * "~9.7 hours" for 58 blocks, "~10 minutes" for 1 block. 1-decimal hours once
  * the wait crosses an hour; whole minutes below that — a bare rounded-up hour

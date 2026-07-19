@@ -502,6 +502,16 @@ export interface AggregateInput {
 	href: string;
 	confirmed: number;
 	unconfirmed: number;
+	/** Immature-coinbase slice of `confirmed` (snapshot `maturingTotal`) — so the
+	 *  Home hero can exclude not-yet-spendable sats exactly like the wallet
+	 *  detail page does (cairn-25ges). */
+	maturingTotal: number;
+	/** Unverifiable-maturity slice of `confirmed` (snapshot `unverifiedTotal`,
+	 *  cairn-8lwa6). */
+	unverifiedTotal: number;
+	/** Coinbase txids belonging to this wallet (its coinbase UTXOs), used to tag
+	 *  recent-activity rows as "Mining reward" (cairn-i0d0q). */
+	miningTxids?: string[];
 	txs: { txid: string; height: number; time: number | null; delta: number }[];
 }
 
@@ -526,9 +536,28 @@ export function assemblePortfolio(
 ): PortfolioDetail {
 	let confirmed = 0;
 	let unconfirmed = 0;
+	let maturingTotal = 0;
+	let unverifiedTotal = 0;
 	const allocation: AllocationSlice[] = [];
 	const activity: PortfolioActivity[] = [];
 	const snapshotEntries: { kind: WalletKind; id: number; balance: number }[] = [];
+
+	// Mining-reward identity for the activity feed (cairn-i0d0q): the coinbase
+	// txids of blocks THIS instance's pool found for this user, plus each
+	// wallet's own coinbase UTXOs (covers rewards mined elsewhere). Best-effort —
+	// a lookup hiccup just renders generic "Received" rows, never breaks Home.
+	const miningTxids = new Set<string>();
+	try {
+		const rows = db
+			.prepare(
+				'SELECT coinbase_txid FROM mining_blocks WHERE user_id = ? AND coinbase_txid IS NOT NULL'
+			)
+			.all(userId) as { coinbase_txid: string }[];
+		for (const r of rows) miningTxids.add(r.coinbase_txid);
+	} catch {
+		/* mining tables unavailable — fine */
+	}
+	for (const w of scanned) for (const t of w.miningTxids ?? []) miningTxids.add(t);
 
 	for (const w of scanned) {
 		// First-ever scan of this wallet: derive its balance history from the
@@ -540,6 +569,8 @@ export function assemblePortfolio(
 		}
 		confirmed += w.confirmed;
 		unconfirmed += w.unconfirmed;
+		maturingTotal += w.maturingTotal;
+		unverifiedTotal += w.unverifiedTotal;
 		const key = `${w.kind}-${w.id}`;
 		allocation.push({
 			key,
@@ -560,7 +591,10 @@ export function assemblePortfolio(
 				direction: tx.delta >= 0 ? 'in' : 'out',
 				sats: Math.abs(tx.delta),
 				time: tx.time,
-				confirmations: confirmationsOf(tx.height, tipHeight)
+				confirmations: confirmationsOf(tx.height, tipHeight),
+				// Only an INBOUND row can be a mining reward (cairn-i0d0q); spending
+				// a matured reward is an ordinary send.
+				...(tx.delta >= 0 && miningTxids.has(tx.txid) ? { isMiningReward: true } : {})
 			});
 		}
 	}
@@ -591,6 +625,8 @@ export function assemblePortfolio(
 		scannedCount: scanned.length,
 		confirmed,
 		unconfirmed,
+		maturingTotal,
+		unverifiedTotal,
 		allocation,
 		recentActivity: activity.slice(0, 10),
 		balanceSeries,
@@ -682,6 +718,12 @@ export async function getPortfolioDetail(userId: number): Promise<PortfolioDetai
 			href: w.href,
 			confirmed: w.scan.confirmed,
 			unconfirmed: w.scan.unconfirmed,
+			// Live scans carry no per-UTXO coinbase annotation (that's the snapshot
+			// pipeline's job) — this path only feeds the warm/test flows; the
+			// request-serving aggregate comes from walletSync.buildPortfolioAggregate,
+			// which reads the snapshots' real maturing/unverified figures.
+			maturingTotal: 0,
+			unverifiedTotal: 0,
 			txs: w.scan.txs
 		});
 	}

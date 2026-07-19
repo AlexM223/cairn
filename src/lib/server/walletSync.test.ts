@@ -705,6 +705,33 @@ describe('doWalletScan coinbase bucketing — QA finding F2 regression lock', ()
 		// would have put this coin here. Strict `=== true` must exclude it.
 		expect(snap!.coinbaseUtxos).toEqual([]);
 		expect(snap!.maturingTotal).toBe(0);
+		// cairn-8lwa6: the DISPLAY path must fail closed like the send path — a
+		// YOUNG (51-conf) coin whose coinbase-ness couldn't be verified is counted
+		// as "still being verified", never silently presented as plain spendable.
+		expect(snap!.unverifiedTotal).toBe(150_000_000);
+	});
+
+	it("cairn-8lwa6: an OLD unverifiable coin (past COINBASE_MATURITY confs) is provably spendable — unverifiedTotal 0", async () => {
+		const { userId, walletId } = await seedWallet();
+		// 100+ confs at tip 900_050: even IF it were coinbase it would be mature.
+		stubOneConfirmedUtxo('ab'.repeat(32), 150_000_000, 800_000);
+		getTxHexMock.mockRejectedValue(new Error('electrum: connection reset'));
+
+		const snap = await refreshWalletSnapshot(userId, walletId, { force: true });
+		expect(snap).not.toBeNull();
+		expect(snap!.coinbaseUtxos).toEqual([]);
+		expect(snap!.unverifiedTotal).toBe(0);
+	});
+
+	it('cairn-8lwa6: definite coinbase and definite non-coinbase coins never count as unverified', async () => {
+		const { userId, walletId } = await seedWallet();
+		stubOneConfirmedUtxo('12'.repeat(32), 5_000_000_000, 900_000); // young immature coinbase
+		getTxHexMock.mockResolvedValue(coinbaseRawHex());
+
+		const snap = await refreshWalletSnapshot(userId, walletId, { force: true });
+		expect(snap).not.toBeNull();
+		expect(snap!.maturingTotal).toBe(5_000_000_000); // definite → maturing bucket
+		expect(snap!.unverifiedTotal).toBe(0); // not the unverified bucket
 	});
 
 	// cairn-zdgt: a single refresh must fetch the wallet's UTXO set ONCE. The

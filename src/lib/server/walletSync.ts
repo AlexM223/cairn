@@ -60,7 +60,7 @@ import { ownMultisigTxids } from './multisigTransactions';
 import { listSharedMultisigs } from './multisigShares';
 import { assemblePortfolio, type AggregateInput } from './portfolio';
 import { writePortfolioSnapshot } from './portfolioSnapshot';
-import { coinbaseMaturity } from '$lib/shared/coinbase';
+import { coinbaseMaturity, classifyCoinMaturity } from '$lib/shared/coinbase';
 
 const log = childLogger('wallet-sync');
 
@@ -162,6 +162,22 @@ function toSnapshotUtxos(utxos: SpendableUtxo[]): SnapshotUtxo[] {
  *  list summaries rely on). Zero when there's no coinbase or the tip is unknown
  *  (tipHeight 0 reads every coinbase height as immature, which is safe — it just
  *  means the maturing figure over-reports until the tip resolves, never under). */
+/** Sum of CONFIRMED coin value whose coinbase-ness is UNVERIFIABLE and which is
+ *  young enough that it could be an immature coinbase (cairn-8lwa6). The display
+ *  path must fail closed exactly like the send path already does: a 1-conf
+ *  50 BTC coin whose funding tx can't be fetched (no-txindex Core, degraded
+ *  electrs) used to render as plain spendable with no maturing line and no
+ *  error. Unconfirmed coins (height <= 0) are skipped — they're already
+ *  reported in the separate `unconfirmed` bucket, never in `confirmed`. */
+function sumUnverifiedMaturity(utxos: SpendableUtxo[], tipHeight: number): number {
+	let total = 0;
+	for (const u of utxos) {
+		if (u.height <= 0) continue;
+		if (classifyCoinMaturity(u.coinbase, u.height, tipHeight) === 'unverified') total += u.value;
+	}
+	return total;
+}
+
 function sumImmatureCoinbase(coinbaseUtxos: CoinbaseUtxo[], tipHeight: number): number {
 	let total = 0;
 	for (const u of coinbaseUtxos) {
@@ -201,6 +217,11 @@ export interface WalletSnapshot {
 	 *  `scan.confirmed` a wallet doesn't actually hold spendable yet (cairn-oae1.3).
 	 *  `scan.confirmed` itself is UNCHANGED (still the full net-worth total). */
 	maturingTotal: number;
+	/** Sum of CONFIRMED coin value whose coinbase-ness couldn't be verified and
+	 *  which is young enough to be an immature coinbase (cairn-8lwa6) — presented
+	 *  as "still being verified", never as plain spendable. Optional: snapshots
+	 *  written before this field parse with it `undefined` (treated as 0). */
+	unverifiedTotal?: number;
 	speedUp: UnconfirmedInflow[];
 	scanError: string | null;
 }
@@ -228,6 +249,8 @@ export interface MultisigSnapshot {
 	/** Sum of `coinbaseUtxos` value not yet mature at `tipHeight` — see the
 	 *  single-sig WalletSnapshot field of the same name (cairn-oae1.3). */
 	maturingTotal: number;
+	/** See the single-sig WalletSnapshot field of the same name (cairn-8lwa6). */
+	unverifiedTotal?: number;
 	speedUp: UnconfirmedInflow[];
 	scanError: string | null;
 }
@@ -838,6 +861,7 @@ async function doWalletScan(userId: number, row: WalletRow): Promise<WalletSnaps
 		spendableUtxos: toSnapshotUtxos(utxos),
 		tipHeight,
 		maturingTotal: sumImmatureCoinbase(coinbaseUtxos, tipHeight),
+		unverifiedTotal: sumUnverifiedMaturity(utxos, tipHeight),
 		speedUp,
 		scanError: null
 	};
@@ -947,6 +971,7 @@ async function doMultisigScan(userId: number, multisig: MultisigRow): Promise<Mu
 		spendableUtxos: toSnapshotUtxos(detail.utxos),
 		tipHeight,
 		maturingTotal: sumImmatureCoinbase(coinbaseUtxos, tipHeight),
+		unverifiedTotal: sumUnverifiedMaturity(detail.utxos, tipHeight),
 		speedUp,
 		scanError: null
 	};
@@ -1197,6 +1222,9 @@ export function buildPortfolioAggregate(userId: number): void {
 			href: `/wallets/${row.id}`,
 			confirmed: scan.confirmed,
 			unconfirmed: scan.unconfirmed,
+			maturingTotal: stored.snapshot.maturingTotal ?? 0,
+			unverifiedTotal: stored.snapshot.unverifiedTotal ?? 0,
+			miningTxids: stored.snapshot.coinbaseUtxos.map((u) => u.txid),
 			txs: scan.txs
 		});
 	}
@@ -1214,6 +1242,9 @@ export function buildPortfolioAggregate(userId: number): void {
 			href: `/wallets/multisig/${row.id}`,
 			confirmed: detail.balance.confirmed,
 			unconfirmed: detail.balance.unconfirmed,
+			maturingTotal: stored.snapshot.maturingTotal ?? 0,
+			unverifiedTotal: stored.snapshot.unverifiedTotal ?? 0,
+			miningTxids: stored.snapshot.coinbaseUtxos.map((u) => u.txid),
 			txs: detail.history
 		});
 	}

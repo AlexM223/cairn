@@ -7,6 +7,7 @@ import { getAddressLabels } from '$lib/server/addressLabels';
 import { isBackedUp } from '$lib/server/backups';
 import { readWalletSnapshot, EMPTY_WALLET_SNAPSHOT } from '$lib/server/walletSync';
 import { listReplacedInbound } from '$lib/server/addressWatcher';
+import { db } from '$lib/server/db';
 import { requireUser } from '$lib/server/api';
 import { childLogger } from '$lib/server/logger';
 import { sanitizeChainError } from '$lib/server/chainErrors';
@@ -27,6 +28,23 @@ function walletId(param: string): number {
 	const id = Number(param);
 	if (!Number.isInteger(id) || id <= 0) error(404, 'Wallet not found');
 	return id;
+}
+
+/** Coinbase txids of blocks this instance's pool found with this wallet as the
+ *  payout target (cairn-i0d0q) — the durable "this was a mining reward" record
+ *  that survives the reward being spent. Best-effort: a lookup failure just
+ *  means generic "Received" labels, never a broken page. */
+function poolCoinbaseTxidsFor(userId: number, walletId: number): string[] {
+	try {
+		const rows = db
+			.prepare(
+				'SELECT coinbase_txid FROM mining_blocks WHERE user_id = ? AND wallet_id = ? AND coinbase_txid IS NOT NULL'
+			)
+			.all(userId, walletId) as { coinbase_txid: string }[];
+		return rows.map((r) => r.coinbase_txid);
+	} catch {
+		return [];
+	}
 }
 
 export const load: PageServerLoad = ({ params, locals, url, depends }) => {
@@ -74,7 +92,12 @@ export const load: PageServerLoad = ({ params, locals, url, depends }) => {
 		// (cairn-a2p1). The live scan naturally drops them from the balance + tx
 		// list, so we surface them here as amber "cancelled" rows to reconcile the
 		// vanished amount for the user.
-		cancelledTxs: listReplacedInbound('wallet', id)
+		cancelledTxs: listReplacedInbound('wallet', id),
+		// Coinbase txids of pool-found blocks paid to THIS wallet (cairn-i0d0q):
+		// lets the tx feed label a reward "Mining reward" even after it's spent
+		// (when it no longer appears in coinbaseUtxos). Cheap local read,
+		// best-effort.
+		poolCoinbaseTxids: poolCoinbaseTxidsFor(userId, id)
 	};
 };
 

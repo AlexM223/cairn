@@ -65,8 +65,18 @@
 	// spendable — `maturingTotal` is that slice, so the headline can show what's
 	// actually available separately from what's still cooling down.
 	const maturingTotal = $derived(scan.maturingTotal ?? 0);
+	// cairn-8lwa6: confirmed value whose coinbase-ness couldn't be verified while
+	// young enough to be immature coinbase — fails CLOSED on presentation,
+	// mirroring the single-sig detail page and the send-path guard.
+	const unverifiedTotal = $derived(scan.unverifiedTotal ?? 0);
 	// 0 when there's no scan yet — only ever rendered inside `{#if detail}` below.
-	const available = $derived(detail ? detail.balance.confirmed - maturingTotal : 0);
+	const available = $derived(
+		detail ? detail.balance.confirmed - maturingTotal - unverifiedTotal : 0
+	);
+	// Mining-reward identity for the tx feed (cairn-i0d0q). Pool payouts only
+	// target single-sig wallets, so the durable pool record doesn't apply here —
+	// unspent coinbase UTXOs are the whole signal.
+	const miningTxids = $derived(new Set((scan.coinbaseUtxos ?? []).map((u) => u.txid)));
 
 	// First-deposit confidence (cairn-gt05.6, F17): mirrors the single-sig
 	// wallet detail page's identical flags — see
@@ -584,6 +594,13 @@
 						<a href="#mining-rewards">mining rewards not yet spendable</a>
 					</p>
 				{/if}
+				{#if unverifiedTotal > 0}
+					<!-- cairn-8lwa6: honest fail-closed line — see the single-sig page. -->
+					<p class="hw-hero-sub hw-maturing">
+						· <Amount sats={unverifiedTotal} size="inline" /> still being verified — not counted
+						as spendable yet
+					</p>
+				{/if}
 				{#if hasIncomingPending}
 					<!-- Self-updating pending note (cairn-gt05.6, F17): answers "did it
 					     arrive" once, from the node's own data — removes the reason to
@@ -1021,7 +1038,13 @@
 							<div class="hw-tx-row">
 								<BurialRings confirmations={conf} direction={tx.delta >= 0 ? 'in' : 'out'} size={30} />
 								<div class="hw-tx-main">
-									<span class="hw-tx-title">{tx.delta >= 0 ? 'Received' : 'Sent'}</span>
+									<span class="hw-tx-title"
+									>{tx.delta >= 0
+										? miningTxids.has(tx.txid)
+											? 'Mining reward'
+											: 'Received'
+										: 'Sent'}</span
+								>
 									<span class="hw-tx-meta">
 										{conf === 0 && tx.delta >= 0 ? 'confirming now' : burialRingsLabel(conf)}
 										·

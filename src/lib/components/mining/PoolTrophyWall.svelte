@@ -60,9 +60,10 @@
 						</span>
 						<span class="block-when">{foundAgo(row.foundAt)}</span>
 						{#if row.status === 'mature'}
+							<!-- "Matured", not "Spendable" (cairn-e176o) — see MiningEarnings. -->
 							<span class="status-chip mature">
 								<Icon name="check" size={12} />
-								Spendable
+								Matured
 							</span>
 						{:else if row.status === 'maturing'}
 							<span class="status-chip maturing">

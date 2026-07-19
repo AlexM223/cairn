@@ -12,6 +12,8 @@
 		sats: number;
 		time: number | null;
 		confirmations: number;
+		/** Inbound coinbase reward — rendered "Mining reward" (cairn-i0d0q). */
+		isMiningReward?: boolean;
 	};
 
 	let {
@@ -45,7 +47,13 @@
 					/>
 
 					<span class="mid">
-						<span class="title">{item.direction === 'in' ? 'Received' : 'Sent'}</span>
+						<span class="title"
+						>{item.direction === 'in'
+							? item.isMiningReward
+								? 'Mining reward'
+								: 'Received'
+							: 'Sent'}</span
+					>
 						<span class="meta">
 							<span class="truncate">{item.walletName}</span>
 							<span class="sep">·</span>

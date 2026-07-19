@@ -51,14 +51,16 @@ function writeWalletSnapshot(
 	confirmed: number,
 	unconfirmed: number,
 	txs: WalletTx[],
-	tipHeight = 250
+	tipHeight = 250,
+	extra: Partial<Pick<WalletSnapshot, 'maturingTotal' | 'unverifiedTotal' | 'coinbaseUtxos'>> = {}
 ): void {
 	const snap: WalletSnapshot = {
 		scan: { addresses: [], txs, confirmed, unconfirmed },
 		receive: null,
-		coinbaseUtxos: [],
+		coinbaseUtxos: extra.coinbaseUtxos ?? [],
 		tipHeight,
-		maturingTotal: 0,
+		maturingTotal: extra.maturingTotal ?? 0,
+		unverifiedTotal: extra.unverifiedTotal,
 		speedUp: [],
 		scanError: null
 	};
@@ -79,9 +81,21 @@ function aggInput(
 	name: string,
 	confirmed: number,
 	unconfirmed = 0,
-	txs: AggregateInput['txs'] = []
+	txs: AggregateInput['txs'] = [],
+	extra: Partial<Pick<AggregateInput, 'maturingTotal' | 'unverifiedTotal' | 'miningTxids'>> = {}
 ): AggregateInput {
-	return { kind: 'wallet', id, name, href: `/wallets/${id}`, confirmed, unconfirmed, txs };
+	return {
+		kind: 'wallet',
+		id,
+		name,
+		href: `/wallets/${id}`,
+		confirmed,
+		unconfirmed,
+		maturingTotal: extra.maturingTotal ?? 0,
+		unverifiedTotal: extra.unverifiedTotal ?? 0,
+		miningTxids: extra.miningTxids,
+		txs
+	};
 }
 
 beforeEach(async () => {
@@ -147,6 +161,59 @@ describe('assemblePortfolio (cache-first: builds the aggregate without scanning)
 		expect(mocks.scanMultisig).not.toHaveBeenCalled();
 	});
 
+	// cairn-25ges / cairn-8lwa6: Home must not read higher than the wallet pages —
+	// the aggregate carries the immature-coinbase and unverified-maturity slices
+	// so the hero can exclude them exactly like wallet detail does.
+	it('sums maturingTotal and unverifiedTotal across wallets (cairn-25ges, cairn-8lwa6)', () => {
+		const a = makeWallet('A', 'xpubA');
+		const b = makeWallet('B', 'xpubB');
+		const detail = assemblePortfolio(userId, 2, 250, [
+			aggInput(a, 'A', 5_000_000_000, 0, [], { maturingTotal: 5_000_000_000 }),
+			aggInput(b, 'B', 300_000, 0, [], { unverifiedTotal: 100_000 })
+		]);
+		expect(detail.confirmed).toBe(5_000_300_000); // full net worth, unchanged
+		expect(detail.maturingTotal).toBe(5_000_000_000);
+		expect(detail.unverifiedTotal).toBe(100_000);
+	});
+
+	// cairn-i0d0q: an inbound coinbase reward is tagged so the Home feed renders
+	// "Mining reward" instead of a generic "Received"; spending it stays untagged.
+	it('tags inbound mining-reward activity rows, from both pool records and coinbase UTXOs', () => {
+		const a = makeWallet('A', 'xpubA');
+		const POOL_TXID = 'f'.repeat(64);
+		const CB_TXID = 'e'.repeat(64);
+		const PLAIN_TXID = 'd'.repeat(64);
+		// Durable pool record (mining_blocks) for this user.
+		db.prepare(
+			`INSERT INTO mining_blocks (user_id, wallet_id, height, block_hash, coinbase_txid, coinbase_value_sats, payout_address, submit_result, found_at)
+			 VALUES (?, ?, 101, ?, ?, '5000000000', 'bcrt1qpayout', 'accepted', '2026-07-19T00:00:00Z')`
+		).run(userId, a, 'b'.repeat(64), POOL_TXID);
+
+		const detail = assemblePortfolio(
+			userId,
+			1,
+			250,
+			[
+				aggInput(
+					a,
+					'A',
+					10_000_000_000,
+					0,
+					[
+						tx(POOL_TXID, 5_000_000_000, 101, 1_700_000_100),
+						tx(CB_TXID, 5_000_000_000, 120, 1_700_000_200),
+						tx(PLAIN_TXID, -1_000, 130, 1_700_000_300) // outbound — never tagged
+					],
+					{ miningTxids: [CB_TXID] } // wallet's own coinbase UTXO (non-pool)
+				)
+			]
+		);
+		const byTxid = new Map(detail.recentActivity.map((r) => [r.txid, r]));
+		expect(byTxid.get(POOL_TXID)?.isMiningReward).toBe(true);
+		expect(byTxid.get(CB_TXID)?.isMiningReward).toBe(true);
+		expect(byTxid.get(PLAIN_TXID)?.isMiningReward).toBeUndefined();
+	});
+
 	it('records a balance tick only when every wallet was scanned (no partial dips)', () => {
 		const a = makeWallet('A', 'xpubA');
 		const b = makeWallet('B', 'xpubB');
@@ -189,6 +256,34 @@ describe('buildPortfolioAggregate (refresh pass persists from per-wallet snapsho
 		expect(row!.detail.allocation.map((s) => s.balance)).toEqual([250_000, 100_000]);
 		// Built from persisted snapshots — never from a live scan.
 		expect(mocks.scanWallet).not.toHaveBeenCalled();
+	});
+
+	// cairn-25ges / cairn-8lwa6 / cairn-i0d0q: the refresh pass must thread the
+	// snapshots' maturity slices and coinbase txids into the persisted aggregate
+	// Home serves — this is the exact wiring whose absence made Home read higher
+	// than the wallet pages.
+	it('threads maturingTotal, unverifiedTotal and coinbase txids from snapshots into the aggregate', () => {
+		const a = makeWallet('A', 'xpubA');
+		const CB = 'e'.repeat(64);
+		writeWalletSnapshot(
+			a,
+			5_000_100_000,
+			0,
+			[tx(CB, 5_000_000_000, 240, 1_700_000_000)],
+			250,
+			{
+				maturingTotal: 5_000_000_000,
+				unverifiedTotal: 77_000,
+				coinbaseUtxos: [{ txid: CB, vout: 0, value: 5_000_000_000, height: 240 }]
+			}
+		);
+
+		buildPortfolioAggregate(userId);
+
+		const row = readPortfolioSnapshot(userId)!;
+		expect(row.detail.maturingTotal).toBe(5_000_000_000);
+		expect(row.detail.unverifiedTotal).toBe(77_000);
+		expect(row.detail.recentActivity[0].isMiningReward).toBe(true);
 	});
 
 	it('counts a never-synced wallet toward walletCount but not scannedCount', () => {
