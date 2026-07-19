@@ -14,12 +14,13 @@
 // a real session/user) is never reached, and no fuller SvelteKit locals stub
 // is required.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { HDKey } from '@scure/bip32';
 import { bech32, bech32m, createBase58check } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha2.js';
 import type { RequestEvent } from '@sveltejs/kit';
 import { constructPsbt, PsbtError, type SpendableUtxo } from './psbt';
+import { setDefaultNetwork } from './xpub';
 import {
 	constructMultisigPsbt,
 	type MultisigConstructParams,
@@ -86,6 +87,21 @@ const COMMON = {
 	changeIndex: 0,
 	origin: { fingerprint: '73c5da0a', path: "m/84'/0'/0'" }
 };
+
+/** Re-encode a mainnet zpub with vpub (testnet/regtest p2wpkh) version bytes —
+ *  same key bytes, different SLIP-132 prefix, used by the network-aware
+ *  recipient validation tests below (cairn-xqnn7) since parseXpub itself
+ *  rejects a mainnet zpub outright once setDefaultNetwork('regtest') is in
+ *  effect (cairn-10ox network-aware prefix validation). */
+function withVpubVersion(extendedKey: string): string {
+	const raw = new Uint8Array(b58check.decode(extendedKey));
+	const VPUB_VERSION = 0x045f1cf6;
+	raw[0] = (VPUB_VERSION >>> 24) & 0xff;
+	raw[1] = (VPUB_VERSION >>> 16) & 0xff;
+	raw[2] = (VPUB_VERSION >>> 8) & 0xff;
+	raw[3] = VPUB_VERSION & 0xff;
+	return b58check.encode(raw);
+}
 
 function utxo(value: number, opts: Partial<SpendableUtxo> = {}): SpendableUtxo {
 	return {
@@ -477,6 +493,47 @@ describe('malformed / wrong-network addresses are rejected cleanly via isValidAd
 			msBuild({ recipients: [{ address: '', amount: 10_000 }] }),
 			'invalid_recipient'
 		);
+	});
+});
+
+// cairn-xqnn7: validateRecipientsAndFeeRate validates via isValidAddress(r.address)
+// with no explicit network argument, so it follows xpub.ts's module-level
+// defaultNetwork — the same value chain/index.ts syncs to the instance's
+// configured Bitcoin network via setDefaultNetwork. Every case above exercises
+// only the mainnet default; this flips it to confirm a regtest-configured
+// instance now ACCEPTS its own bcrt1 recipients (previously rejected
+// unconditionally as "not a valid Bitcoin address") and REJECTS a mainnet
+// recipient as a network mismatch instead.
+describe('network-aware recipient validation follows setDefaultNetwork (cairn-xqnn7)', () => {
+	afterEach(() => {
+		// defaultNetwork is a module-level singleton shared by every test in
+		// this file — must restore 'mainnet' so it can't leak into the
+		// mainnet-only cases above/below.
+		setDefaultNetwork('mainnet');
+	});
+
+	// NOTE: a full accept-path test (constructPsbt succeeding end-to-end for a
+	// bcrt1 recipient) is deliberately NOT included here — it fails downstream
+	// of recipient validation, inside @scure/btc-signer's tx.addOutputAddress,
+	// because psbt.ts hardcodes the mainnet `NETWORK` constant for actual PSBT
+	// construction (see its `import { ... NETWORK } from '@scure/btc-signer'`
+	// and every addOutputAddress/p2wpkh call site). That's a real gap but it's
+	// in psbt.ts, which cairn-xqnn7 never touched — out of scope for this
+	// fix's test coverage; flagged separately rather than silently masked here.
+	it('rejects a mainnet (bc1...) recipient as a network mismatch once the instance is configured for regtest', async () => {
+		setDefaultNetwork('regtest');
+		const err = await expectPlainRejection(
+			constructPsbt({
+				...COMMON,
+				xpub: withVpubVersion(ZPUB),
+				changeAddress: reencodeBech32(CHANGE_0, 'bcrt'),
+				utxos: [utxo(60_000, { address: reencodeBech32(RECEIVE_0, 'bcrt') })],
+				recipients: [{ address: RECIPIENT_P2WPKH, amount: 10_000 }],
+				feeRate: 5
+			}),
+			'invalid_recipient'
+		);
+		expect(err.message.toLowerCase()).toContain('valid bitcoin address');
 	});
 });
 

@@ -70,6 +70,27 @@
 	const SATS_PER_BTC = 100_000_000;
 	// svelte-ignore state_referenced_locally — per-navigation constant
 	const walletId = data.wallet.id;
+	// This instance's configured Bitcoin network (cairn-xqnn7) — gates which
+	// recipient-address SHAPE looksLikeAddress accepts, so Review isn't
+	// disabled for a legitimate bcrt1/tb1 destination on a regtest/testnet
+	// instance (the server always re-validates authoritatively regardless).
+	// svelte-ignore state_referenced_locally — per-navigation constant
+	const network = data.network;
+	// The wrong-network banner used to hardcode "this wallet uses regular
+	// Bitcoin (mainnet)" — always true before cairn-xqnn7 since the instance
+	// was always mainnet in practice. Now it names WHICHEVER network doesn't
+	// match this wallet's shape, and only fires when the address is a KNOWN
+	// OTHER network's shape (an 'unknown'/'empty' shape is handled by the
+	// plain invalid-address message instead).
+	const expectedShape: 'mainnet' | 'testnet' = network === 'mainnet' ? 'mainnet' : 'testnet';
+	function wrongNetworkMessage(address: string): string | null {
+		const shape = classifyRecipientAddress(address);
+		if (shape !== 'mainnet' && shape !== 'testnet') return null;
+		if (shape === expectedShape) return null;
+		return shape === 'testnet'
+			? 'That looks like a test-network address — this wallet uses regular Bitcoin (mainnet).'
+			: 'That looks like a regular Bitcoin (mainnet) address — this wallet uses a test network.';
+	}
 
 	// The saved row load guarantees resume.transaction is non-null (it 404s
 	// otherwise), but its inferred type still admits null — pin it here. Load
@@ -192,8 +213,10 @@
 
 	// ------------------------------------------------------------- CREATE step
 	// Basic client-side shape check — the server does authoritative validation.
-	// looksLikeAddress stays mainnet-only (unchanged contract); classify also
-	// recognises test-network shapes so we can say so instead of calling a valid
+	// looksLikeAddress is gated on this instance's `network` (cairn-xqnn7) so a
+	// regtest/testnet instance accepts its own bcrt1/tb1-shaped addresses
+	// instead of only ever accepting mainnet shapes; classify also recognises
+	// test-network shapes so we can say so instead of calling a valid
 	// testnet/regtest address "garbage" (cairn-a8n7).
 
 	// --------------------------------------------------- consolidation handoff
@@ -217,7 +240,7 @@
 		);
 		if (coinKeys.length === 0) return null;
 		const to = page.url.searchParams.get('to')?.trim() ?? null;
-		return { coinKeys, to: to && looksLikeAddress(to) ? to : null };
+		return { coinKeys, to: to && looksLikeAddress(to, network) ? to : null };
 	}
 	// svelte-ignore state_referenced_locally — per-navigation constant
 	const consolidateParams = readConsolidateParams();
@@ -337,7 +360,7 @@
 	const isMax = $derived(amountMode === 'max' && rows.length === 1);
 	const rowsValid = $derived(
 		rows.every((r) => {
-			if (r.address.trim().length === 0 || !looksLikeAddress(r.address)) return false;
+			if (r.address.trim().length === 0 || !looksLikeAddress(r.address, network)) return false;
 			if (isMax) return true;
 			return r.sats > 0;
 		})
@@ -951,8 +974,15 @@
 			<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
 				{#if scanError}
 					<Banner variant="error">
-						Couldn't reach your node to load spendable coins. Check that your
-						node is running and reachable, then try again in a moment.
+						<!-- cairn-xqnn7: scanError already carries a specific, UI-safe
+						     message (server-side sanitizeChainError collapses genuine
+						     connectivity failures to generic wording but passes an
+						     application-level problem — e.g. this wallet's key not
+						     matching this server's network — through as-is). Rendering a
+						     hardcoded "can't reach your node" string here regardless of
+						     content was itself the bug: a wallet/key mismatch read to the
+						     user as a node-connectivity problem that didn't exist. -->
+						{scanError}
 					</Banner>
 				{/if}
 
@@ -1020,7 +1050,7 @@
 							id={`recipient-${row.key}`}
 							bind:value={row.address}
 							saved={savedAddresses}
-							invalid={row.address.length > 0 && !looksLikeAddress(row.address)}
+							invalid={row.address.length > 0 && !looksLikeAddress(row.address, network)}
 							ondelete={deleteSavedAddress}
 							currentAmountText={row.sats > 0 ? String(row.sats) : ''}
 							onamount={(sats) => {
@@ -1028,14 +1058,11 @@
 								row.sats = sats;
 							}}
 						/>
-						{#if classifyRecipientAddress(row.address) === 'testnet'}
-							<p class="field-line attention">
-								That looks like a test-network address — this wallet uses regular Bitcoin
-								(mainnet).
-							</p>
-						{:else if row.address.length > 0 && !looksLikeAddress(row.address)}
+						{#if wrongNetworkMessage(row.address)}
+							<p class="field-line attention">{wrongNetworkMessage(row.address)}</p>
+						{:else if row.address.length > 0 && !looksLikeAddress(row.address, network)}
 							<p class="field-line attention">That doesn't look like a Bitcoin address yet.</p>
-						{:else if looksLikeAddress(row.address)}
+						{:else if looksLikeAddress(row.address, network)}
 							<p class="field-line sage">
 								<Icon name="check" size={12} strokeWidth={2.5} /> Valid Bitcoin address
 							</p>
@@ -1062,19 +1089,16 @@
 										id={`recipient-${row.key}`}
 										bind:value={row.address}
 										saved={savedAddresses}
-										invalid={row.address.length > 0 && !looksLikeAddress(row.address)}
+										invalid={row.address.length > 0 && !looksLikeAddress(row.address, network)}
 										ondelete={deleteSavedAddress}
 										currentAmountText={row.sats > 0 ? String(row.sats) : ''}
 										onamount={(sats) => {
 											row.sats = sats;
 										}}
 									/>
-									{#if classifyRecipientAddress(row.address) === 'testnet'}
-										<p class="field-line attention">
-											That looks like a test-network address — this wallet uses regular
-											Bitcoin (mainnet).
-										</p>
-									{:else if row.address.length > 0 && !looksLikeAddress(row.address)}
+									{#if wrongNetworkMessage(row.address)}
+										<p class="field-line attention">{wrongNetworkMessage(row.address)}</p>
+									{:else if row.address.length > 0 && !looksLikeAddress(row.address, network)}
 										<p class="field-line attention">
 											That doesn't look like a Bitcoin address yet.
 										</p>

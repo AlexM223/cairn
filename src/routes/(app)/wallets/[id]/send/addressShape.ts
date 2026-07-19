@@ -1,3 +1,5 @@
+import type { ChainNetwork } from '$lib/types';
+
 export type AddressShape = 'empty' | 'mainnet' | 'testnet' | 'unknown';
 
 // Mainnet only — the authoritative check still happens server-side, this is a
@@ -26,5 +28,16 @@ export function classifyRecipientAddress(input: string): AddressShape {
 	return 'unknown';
 }
 
-/** True only for well-shaped mainnet addresses (unchanged legacy contract). */
-export const looksLikeAddress = (a: string) => classifyRecipientAddress(a) === 'mainnet';
+/**
+ * True when `a` is well-shaped for `network` (cairn-xqnn7). Regtest and
+ * testnet/signet addresses share one bech32/legacy shape (both classify as
+ * 'testnet' — Bitcoin itself has no separate regtest address namespace), so a
+ * regtest-configured instance also accepts 'testnet'-shaped input here; the
+ * server is always the authoritative check either way. Defaults to 'mainnet'
+ * — the original, unchanged contract — for any caller that doesn't (yet) pass
+ * the instance's network.
+ */
+export function looksLikeAddress(a: string, network: ChainNetwork = 'mainnet'): boolean {
+	const shape = classifyRecipientAddress(a);
+	return network === 'mainnet' ? shape === 'mainnet' : shape === 'testnet';
+}

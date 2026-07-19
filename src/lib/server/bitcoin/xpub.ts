@@ -1,12 +1,15 @@
 // Extended-public-key parsing, address derivation and address <-> script helpers.
-// Pure functions, no I/O. Address ENCODING (deriveAddress, addressToScriptPubKey)
-// stays mainnet-only by design — see their doc comments. Extended-key PREFIX
-// validation (parseXpub) is network-aware (cairn-10ox): it accepts SLIP-132
-// mainnet OR testnet/regtest version bytes depending on the `network` argument,
-// defaulting to whatever the configured chain backend is set to (see
-// `setDefaultNetwork` below) so callers that don't pass one explicitly still
-// validate against the right network without every call site having to import
-// settings.ts.
+// Pure functions, no I/O. Address ENCODING (deriveAddress) and DECODING
+// (addressToScriptPubKey / isValidAddress) are network-aware (cairn-xqnn7),
+// exactly like extended-key PREFIX validation (parseXpub, cairn-10ox): every
+// one of these accepts an explicit `network` argument and otherwise defaults
+// to whatever the configured chain backend is set to (see `setDefaultNetwork`
+// below), so callers that don't pass one explicitly still encode/validate
+// against the right network without every call site having to import
+// settings.ts. Before cairn-xqnn7 this file derived/accepted mainnet `bc1…`
+// addresses ONLY, regardless of the instance's configured network — that's
+// what made a regtest/testnet instance render unusable receive addresses and
+// reject legitimate same-network send destinations.
 
 import { HDKey } from '@scure/bip32';
 import { sha256 } from '@noble/hashes/sha2.js';
@@ -44,6 +47,37 @@ const TESTNET_PRIVATE_VERSIONS = new Set([0x04358394 /* tprv */, 0x044a4e28 /* u
 /** Networks that share the testnet SLIP-132 version-byte namespace. */
 function isTestnetLike(network: ChainNetwork): boolean {
 	return network === 'testnet' || network === 'regtest';
+}
+
+/**
+ * Address-level (NOT extended-key) network parameters: the bech32 HRP and
+ * base58check version bytes a network's OWN addresses use — as opposed to the
+ * SLIP-132 xpub/ypub/zpub version-byte tables above, which describe extended
+ * KEYS. Regtest has no separate address namespace of its own either — it
+ * reuses testnet's base58/WIF version bytes, same as it reuses testnet's
+ * SLIP-132 extended-key bytes — so only the bech32 HRP (`bcrt` vs `tb`)
+ * distinguishes a regtest address from a testnet one. Exported so multisig.ts
+ * can build the same network parameters for @scure/btc-signer's payment
+ * builders (p2wsh/p2sh) instead of keeping its own copy that could drift.
+ */
+export function networkParams(network: ChainNetwork): {
+	bech32: string;
+	pubKeyHash: number;
+	scriptHash: number;
+	wif: number;
+} {
+	if (network === 'mainnet') return { bech32: 'bc', pubKeyHash: 0x00, scriptHash: 0x05, wif: 0x80 };
+	if (network === 'testnet') return { bech32: 'tb', pubKeyHash: 0x6f, scriptHash: 0xc4, wif: 0xef };
+	return { bech32: 'bcrt', pubKeyHash: 0x6f, scriptHash: 0xc4, wif: 0xef }; // regtest
+}
+
+/** Plain-language network name for user-facing copy — never raw terms like
+ *  "HRP" or "version bytes" (per docs/DESIGN-MANIFESTO.md). Mirrors the
+ *  existing send-flow wording ("this wallet uses regular Bitcoin (mainnet)"). */
+export function networkLabel(network: ChainNetwork): string {
+	if (network === 'mainnet') return 'regular Bitcoin (mainnet)';
+	if (network === 'testnet') return 'a test network (testnet)';
+	return 'a test network (regtest)';
 }
 
 /** Standard BIP32 mainnet xpub version bytes. */
@@ -256,20 +290,29 @@ export function parseXpub(input: string, network: ChainNetwork = defaultNetwork)
 
 /**
  * Derive the address at m/<change>/<index> relative to the account xpub.
- * Path label is relative to the account key, e.g. "m/0/12".
+ * Path label is relative to the account key, e.g. "m/0/12". `network`
+ * (cairn-xqnn7) controls the address ENCODING only — bech32 HRP and
+ * base58check version byte — never which key/pubkey is derived; it defaults
+ * to {@link getDefaultNetwork}, kept in sync with the configured chain
+ * backend, so existing callers that don't pass one explicitly now render the
+ * instance's actual network instead of always mainnet.
  */
 export function deriveAddress(
 	parsed: ParsedXpub,
 	change: 0 | 1,
-	index: number
+	index: number,
+	network: ChainNetwork = defaultNetwork
 ): { address: string; path: string } {
 	if (!Number.isInteger(index) || index < 0 || index >= 0x80000000) {
 		throw new Error(`Invalid derivation index: ${index}`);
 	}
 	const path = `m/${change}/${index}`;
+	const net = networkParams(network);
 
-	// Warm path: a previously derived address for this exact (key, change, index) — no EC.
-	const cacheKey = addrKeyPrefix(parsed) + '|' + change + '|' + index;
+	// Warm path: a previously derived address for this exact (key, change, index,
+	// network) — no EC. `network` is part of the key so the SAME xpub never serves
+	// a cached mainnet address back for a regtest lookup or vice versa.
+	const cacheKey = network + '|' + addrKeyPrefix(parsed) + '|' + change + '|' + index;
 	const cachedAddr = addrCache.get(cacheKey);
 	if (cachedAddr !== undefined) return { address: cachedAddr, path };
 
@@ -282,7 +325,7 @@ export function deriveAddress(
 	switch (parsed.scriptType) {
 		case 'p2pkh': {
 			const payload = new Uint8Array(21);
-			payload[0] = 0x00;
+			payload[0] = net.pubKeyHash;
 			payload.set(pkh, 1);
 			address = b58check.encode(payload);
 			break;
@@ -294,14 +337,14 @@ export function deriveAddress(
 			redeem[1] = 0x14;
 			redeem.set(pkh, 2);
 			const payload = new Uint8Array(21);
-			payload[0] = 0x05;
+			payload[0] = net.scriptHash;
 			payload.set(hash160(redeem), 1);
 			address = b58check.encode(payload);
 			break;
 		}
 		case 'p2wpkh': {
 			const words = [0, ...bech32.toWords(pkh)];
-			address = bech32.encode('bc', words);
+			address = bech32.encode(net.bech32, words);
 			break;
 		}
 		default:
@@ -312,21 +355,34 @@ export function deriveAddress(
 }
 
 /**
- * Decode a mainnet address to its scriptPubKey bytes.
- * Supports base58check P2PKH ("1…") / P2SH ("3…") and bech32/bech32m
- * segwit v0 ("bc1q…") / v1 ("bc1p…"). Throws on invalid input.
+ * Decode an address to its scriptPubKey bytes, validating it against `network`
+ * (cairn-xqnn7; default: {@link getDefaultNetwork}, kept in sync with the
+ * configured chain backend). Supports base58check P2PKH ("1…"/"m…"/"n…") /
+ * P2SH ("3…"/"2…") and bech32/bech32m segwit v0 ("bc1q…"/"tb1q…"/"bcrt1q…") /
+ * v1 ("bc1p…"/…). An address whose HRP or version byte belongs to a DIFFERENT
+ * network throws a plain-language network-mismatch error rather than being
+ * silently rejected as merely "invalid" — this is what lets the send flow and
+ * wallet import tell a user "this address is for a different network" instead
+ * of a generic parse failure.
  */
-export function addressToScriptPubKey(address: string): Uint8Array {
+export function addressToScriptPubKey(address: string, network: ChainNetwork = defaultNetwork): Uint8Array {
 	const addr = address.trim();
 	if (!addr) throw new Error('Empty address');
+	const net = networkParams(network);
+	const mismatch = () =>
+		new Error(`This address doesn't match this wallet's network — this wallet uses ${networkLabel(network)}.`);
 
-	if (/^bc1/i.test(addr)) {
-		// bech32 requires all-lower or all-upper; the decoder enforces the rest.
+	// Bech32/bech32m addresses across ALL networks share the same shape
+	// (`<hrp>1...`); every known Bitcoin HRP is checked here so a wrong-network
+	// bech32 address is recognized as such (mismatch()) rather than falling
+	// through to the base58 branch and failing with a confusing decode error.
+	if (/^(bc|tb|bcrt)1/i.test(addr)) {
 		let version: number;
 		let program: Uint8Array;
+		let prefix: string;
 		try {
-			const dec = bech32.decode(addr as `bc1${string}`);
-			if (dec.prefix !== 'bc') throw new Error('Wrong network prefix');
+			const dec = bech32.decode(addr as `${string}1${string}`);
+			prefix = dec.prefix;
 			version = dec.words[0];
 			if (version !== 0) throw new Error('Segwit v1+ must use bech32m');
 			program = bech32.fromWords(dec.words.slice(1));
@@ -334,15 +390,16 @@ export function addressToScriptPubKey(address: string): Uint8Array {
 			// Not valid bech32 (or not v0) — try bech32m for segwit v1+.
 			let dec;
 			try {
-				dec = bech32m.decode(addr as `bc1${string}`);
+				dec = bech32m.decode(addr as `${string}1${string}`);
 			} catch {
 				throw new Error('Invalid bech32 address');
 			}
-			if (dec.prefix !== 'bc') throw new Error('Invalid address: wrong network prefix');
+			prefix = dec.prefix;
 			version = dec.words[0];
 			if (version < 1 || version > 16) throw new Error('Invalid segwit version');
 			program = bech32m.fromWords(dec.words.slice(1));
 		}
+		if (prefix !== net.bech32) throw mismatch();
 
 		if (version === 0) {
 			if (program.length !== 20 && program.length !== 32) {
@@ -374,7 +431,7 @@ export function addressToScriptPubKey(address: string): Uint8Array {
 	const version = payload[0];
 	const h = payload.subarray(1);
 
-	if (version === 0x00) {
+	if (version === net.pubKeyHash) {
 		// P2PKH: OP_DUP OP_HASH160 PUSH20 <h> OP_EQUALVERIFY OP_CHECKSIG
 		const script = new Uint8Array(25);
 		script[0] = 0x76;
@@ -385,7 +442,7 @@ export function addressToScriptPubKey(address: string): Uint8Array {
 		script[24] = 0xac;
 		return script;
 	}
-	if (version === 0x05) {
+	if (version === net.scriptHash) {
 		// P2SH: OP_HASH160 PUSH20 <h> OP_EQUAL
 		const script = new Uint8Array(23);
 		script[0] = 0xa9;
@@ -394,7 +451,12 @@ export function addressToScriptPubKey(address: string): Uint8Array {
 		script[22] = 0x87;
 		return script;
 	}
-	throw new Error('Unknown address version byte (mainnet only)');
+	// A recognized base58 version byte for a DIFFERENT network (e.g. a mainnet
+	// "1…"/"3…" address decoded against a regtest wallet) is a network
+	// mismatch, not a generically "unknown" address.
+	const other = network === 'mainnet' ? networkParams('regtest') : networkParams('mainnet');
+	if (version === other.pubKeyHash || version === other.scriptHash) throw mismatch();
+	throw new Error('Unknown address version byte');
 }
 
 /** Human-readable bech32 prefixes the explorer accepts, across every network. */
@@ -476,30 +538,29 @@ export function isExplorerAddress(s: string): boolean {
  * The scriptPubKey of an address, as lowercase hex.
  *
  * Used to attribute on-chain transaction outputs/inputs to a wallet by SCRIPT
- * rather than by address string. The script is network-independent (a P2WPKH is
- * `0014<hash>` whether the address reads `bc1…` or `bcrt1…`), so this matches
- * correctly even when the explorer reports a different network's encoding than
- * Cairn's mainnet-only derivation produces — which is why the balance (computed
- * from the same script via the scripthash) is right while a naive address-string
- * comparison would miss every match.
+ * rather than by address string — the script itself is network-independent (a
+ * P2WPKH is `0014<hash>` whether the address reads `bc1…` or `bcrt1…`), but
+ * `network` (cairn-xqnn7; default: {@link getDefaultNetwork}) still gates which
+ * address STRINGS are accepted here, so a foreign-network address can't be
+ * silently matched in — see {@link addressToScriptPubKey}.
  */
-export function scriptPubKeyHex(address: string): string {
-	return bytesToHex(addressToScriptPubKey(address));
+export function scriptPubKeyHex(address: string, network: ChainNetwork = defaultNetwork): string {
+	return bytesToHex(addressToScriptPubKey(address, network));
 }
 
 /**
  * Electrum scripthash: sha256(scriptPubKey) with the byte order reversed, hex-encoded.
  */
-export function addressToScripthash(address: string): string {
-	const script = addressToScriptPubKey(address);
+export function addressToScripthash(address: string, network: ChainNetwork = defaultNetwork): string {
+	const script = addressToScriptPubKey(address, network);
 	const hash = sha256(script);
 	hash.reverse();
 	return bytesToHex(hash);
 }
 
-export function isValidAddress(s: string): boolean {
+export function isValidAddress(s: string, network: ChainNetwork = defaultNetwork): boolean {
 	try {
-		addressToScriptPubKey(s);
+		addressToScriptPubKey(s, network);
 		return true;
 	} catch {
 		return false;

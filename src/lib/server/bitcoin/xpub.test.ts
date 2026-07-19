@@ -268,6 +268,48 @@ describe('deriveAddress', () => {
 	});
 });
 
+// cairn-xqnn7: deriveAddress's ENCODING (bech32 HRP / base58check version byte)
+// is network-aware — before this fix it hardcoded mainnet bytes regardless of
+// the instance's configured network, so a regtest/testnet instance rendered
+// unusable `bc1…` receive addresses. These are minimal regression tests, not
+// full vectors — see addressToScriptPubKey's own network-aware block below for
+// the matching decode-side coverage.
+describe('deriveAddress: network-aware encoding (cairn-xqnn7)', () => {
+	it('encodes a p2wpkh address with the right HRP per network, same witness program as mainnet', () => {
+		const parsed = parseXpub(ZPUB);
+		const mainnet = deriveAddress(parsed, 0, 0);
+		const regtest = deriveAddress(parsed, 0, 0, 'regtest');
+		const testnet = deriveAddress(parsed, 0, 0, 'testnet');
+		expect(regtest.address.startsWith('bcrt1q')).toBe(true);
+		expect(testnet.address.startsWith('tb1q')).toBe(true);
+		expect(regtest.path).toBe('m/0/0');
+		// Same underlying witness program across networks — only the HRP differs.
+		const mainnetDec = bech32.decode(mainnet.address as `bc1${string}`);
+		const regtestDec = bech32.decode(regtest.address as `${string}1${string}`);
+		const testnetDec = bech32.decode(testnet.address as `${string}1${string}`);
+		expect(regtestDec.words).toEqual(mainnetDec.words);
+		expect(testnetDec.words).toEqual(mainnetDec.words);
+	});
+
+	it('does not cross-cache addresses derived for different networks at the same (key, change, index)', () => {
+		const parsed = parseXpub(ZPUB);
+		const mainnet = deriveAddress(parsed, 0, 5);
+		const regtest = deriveAddress(parsed, 0, 5, 'regtest');
+		expect(regtest.address).not.toBe(mainnet.address);
+		// Repeated calls still agree (the warm cache hit is also network-keyed).
+		expect(deriveAddress(parsed, 0, 5, 'regtest').address).toBe(regtest.address);
+		expect(deriveAddress(parsed, 0, 5).address).toBe(mainnet.address);
+	});
+
+	it('encodes p2pkh (BIP44 xpub) and p2sh-p2wpkh (BIP49 ypub) under regtest/testnet version bytes', () => {
+		// regtest reuses testnet's base58 version bytes: 0x6f (p2pkh) / 0xc4 (p2sh).
+		const p2pkh = deriveAddress(parseXpub(XPUB), 0, 0, 'regtest');
+		const p2shP2wpkh = deriveAddress(parseXpub(YPUB), 0, 0, 'regtest');
+		expect(b58check.decode(p2pkh.address)[0]).toBe(0x6f);
+		expect(b58check.decode(p2shP2wpkh.address)[0]).toBe(0xc4);
+	});
+});
+
 // The memoization added for cairn-8ubd must be invisible to correctness: same key +
 // index → same address (warm hit), and nothing leaks across keys or script types.
 describe('derivation memoization (cairn-8ubd)', () => {
@@ -421,6 +463,45 @@ describe('addressToScriptPubKey', () => {
 	});
 });
 
+// cairn-xqnn7: addressToScriptPubKey now validates the address against an
+// explicit `network` argument (default: mainnet) instead of only ever
+// accepting `bc1…`/mainnet base58 — and a RECOGNIZED address for a DIFFERENT
+// network throws a plain-language mismatch message rather than a generic
+// "invalid"/"unknown version byte" error (this is what lets the send flow and
+// wallet import say "this address is for a different network").
+describe('addressToScriptPubKey: network-aware validation (cairn-xqnn7)', () => {
+	it('accepts a regtest bech32 address under network="regtest" (same script as its mainnet encoding) and rejects it under "mainnet"', () => {
+		const parsed = parseXpub(ZPUB);
+		const bcrt1 = deriveAddress(parsed, 0, 0, 'regtest').address;
+		const bc1 = deriveAddress(parsed, 0, 0).address;
+		expect(bytesToHex(addressToScriptPubKey(bcrt1, 'regtest'))).toBe(
+			bytesToHex(addressToScriptPubKey(bc1, 'mainnet'))
+		);
+		expect(() => addressToScriptPubKey(bcrt1, 'mainnet')).toThrow(/doesn't match this wallet's network/i);
+		expect(() => addressToScriptPubKey(bcrt1)).toThrow(/doesn't match this wallet's network/i); // default is mainnet
+	});
+
+	it('accepts a mainnet bech32 address under "mainnet" and rejects it as a network mismatch under "regtest"/"testnet"', () => {
+		const bc1 = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4';
+		expect(() => addressToScriptPubKey(bc1, 'regtest')).toThrow(/doesn't match this wallet's network/i);
+		expect(() => addressToScriptPubKey(bc1, 'testnet')).toThrow(/doesn't match this wallet's network/i);
+	});
+
+	it('base58 p2pkh: a mainnet address is a network mismatch (not a generic "unknown version byte") under regtest', () => {
+		const mainnetP2pkh = '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa';
+		expect(() => addressToScriptPubKey(mainnetP2pkh, 'regtest')).toThrow(/doesn't match this wallet's network/i);
+	});
+
+	it('a testnet/regtest base58 address is accepted under both "testnet" and "regtest" (they share version bytes)', () => {
+		const testnetP2pkh = createBase58check(sha256).encode(
+			Uint8Array.from([0x6f, ...Array(20).fill(1)])
+		);
+		expect(() => addressToScriptPubKey(testnetP2pkh, 'testnet')).not.toThrow();
+		expect(() => addressToScriptPubKey(testnetP2pkh, 'regtest')).not.toThrow();
+		expect(() => addressToScriptPubKey(testnetP2pkh, 'mainnet')).toThrow(/doesn't match this wallet's network/i);
+	});
+});
+
 describe('addressToScripthash', () => {
 	it('computes the Electrum scripthash of the genesis address (byte-reversed sha256)', () => {
 		expect(addressToScripthash('1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa')).toBe(
@@ -452,6 +533,14 @@ describe('isValidAddress', () => {
 		['not an address', false]
 	])('%j -> %s', (input, expected) => {
 		expect(isValidAddress(input)).toBe(expected);
+	});
+
+	it('accepts a regtest address only when network="regtest" is passed, not under the mainnet default (cairn-xqnn7)', () => {
+		const bcrt1 = deriveAddress(parseXpub(ZPUB), 0, 0, 'regtest').address;
+		expect(isValidAddress(bcrt1)).toBe(false); // default network is mainnet
+		expect(isValidAddress(bcrt1, 'mainnet')).toBe(false);
+		expect(isValidAddress(bcrt1, 'regtest')).toBe(true);
+		expect(isValidAddress(bcrt1, 'testnet')).toBe(false); // 'bcrt' HRP is regtest-only, distinct from testnet's 'tb'
 	});
 });
 

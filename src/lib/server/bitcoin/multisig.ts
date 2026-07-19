@@ -36,11 +36,12 @@
 // PSBT construction for multisig spends is a later integration; the
 // bip32Derivation ingredients it will need come from multisigKeyDerivations().
 
-import { p2ms, p2wsh, p2sh, NETWORK } from '@scure/btc-signer';
+import { p2ms, p2wsh, p2sh } from '@scure/btc-signer';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { createBase58check } from '@scure/base';
 import type { HDKey } from '@scure/bip32';
-import { parseXpub } from './xpub';
+import type { ChainNetwork } from '$lib/types';
+import { parseXpub, getDefaultNetwork, networkParams } from './xpub';
 
 /** One cosigner key. The xpub is the BIP-48 account-level key; fingerprint and
  *  path describe its origin from the master seed (what signers match on). */
@@ -622,13 +623,18 @@ function childPubkeys(
  * witnessScript for the wsh forms, redeemScript for the sh forms (both for
  * p2sh-p2wsh).
  */
-export function deriveMultisigAddress(config: MultisigConfig, chain: 0 | 1, index: number): MultisigAddress {
+export function deriveMultisigAddress(
+	config: MultisigConfig,
+	chain: 0 | 1,
+	index: number,
+	network: ChainNetwork = getDefaultNetwork()
+): MultisigAddress {
 	const resolved = resolveMultisig(config);
 	const scriptType = multisigScriptType(config);
 	const sorted = childPubkeys(resolved, chain, index)
 		.map((c) => c.pubkey)
 		.sort(compareBytes);
-	return assembleMultisigAddress(config.threshold, sorted, scriptType);
+	return assembleMultisigAddress(config.threshold, sorted, scriptType, network);
 }
 
 /**
@@ -636,17 +642,24 @@ export function deriveMultisigAddress(config: MultisigConfig, chain: 0 | 1, inde
  * script form: p2ms → p2wsh / sh(wsh) / bare sh. The single source of truth for the
  * money-critical script assembly, shared by {@link deriveMultisigAddress} (which
  * re-validates its config per call) and {@link createMultisigDeriver} (which resolves
- * once). `sorted` MUST already be in BIP-67 order.
+ * once). `sorted` MUST already be in BIP-67 order. `network` (cairn-xqnn7)
+ * controls the address ENCODING only — the p2ms script itself never changes —
+ * and defaults to {@link getDefaultNetwork}, kept in sync with the configured
+ * chain backend, matching {@link deriveAddress}'s same default in xpub.ts so a
+ * multisig receive address and a single-sig one always render for the same
+ * network without every call site threading it through by hand.
  */
 function assembleMultisigAddress(
 	threshold: number,
 	sorted: Uint8Array[],
-	scriptType: MultisigScriptType
+	scriptType: MultisigScriptType,
+	network: ChainNetwork = getDefaultNetwork()
 ): MultisigAddress {
 	const ms = p2ms(threshold, sorted);
+	const net = networkParams(network);
 
 	if (scriptType === 'p2wsh') {
-		const payment = p2wsh(ms, NETWORK);
+		const payment = p2wsh(ms, net);
 		if (!payment.address || !payment.witnessScript) {
 			throw new MultisigError('Address construction failed.', 'derivation_failed');
 		}
@@ -657,7 +670,7 @@ function assembleMultisigAddress(
 		};
 	}
 	if (scriptType === 'p2sh-p2wsh') {
-		const payment = p2sh(p2wsh(ms, NETWORK), NETWORK);
+		const payment = p2sh(p2wsh(ms, net), net);
 		if (!payment.address || !payment.redeemScript || !payment.witnessScript) {
 			throw new MultisigError('Address construction failed.', 'derivation_failed');
 		}
@@ -669,7 +682,7 @@ function assembleMultisigAddress(
 		};
 	}
 	// Legacy p2sh: the p2ms script IS the redeemScript; no witness data at all.
-	const payment = p2sh(ms, NETWORK);
+	const payment = p2sh(ms, net);
 	if (!payment.address || !payment.redeemScript) {
 		throw new MultisigError('Address construction failed.', 'derivation_failed');
 	}
@@ -699,7 +712,10 @@ export interface MultisigDeriver {
  * between the two (both route through {@link assembleMultisigAddress}); the factory only
  * removes redundant *re*-work when the SAME config is derived many times.
  */
-export function createMultisigDeriver(config: MultisigConfig): MultisigDeriver {
+export function createMultisigDeriver(
+	config: MultisigConfig,
+	network: ChainNetwork = getDefaultNetwork()
+): MultisigDeriver {
 	const resolved = resolveMultisig(config); // parse every cosigner + validate, ONCE
 	const scriptType = multisigScriptType(config);
 	const threshold = config.threshold;
@@ -736,7 +752,7 @@ export function createMultisigDeriver(config: MultisigConfig): MultisigDeriver {
 					return pubkey;
 				})
 				.sort(compareBytes);
-			return assembleMultisigAddress(threshold, sorted, scriptType);
+			return assembleMultisigAddress(threshold, sorted, scriptType, network);
 		}
 	};
 }

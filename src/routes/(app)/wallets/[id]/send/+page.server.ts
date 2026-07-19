@@ -12,6 +12,7 @@ import type { UnconfirmedTrust, CoinbaseStatus } from '$lib/server/bitcoin/psbt'
 import { summarizePsbt, type PsbtSummary } from '$lib/server/bitcoin/psbt';
 import { getReferralBuyUrls } from '$lib/server/referrals';
 import { getChain } from '$lib/server/chain';
+import { getChainConfig } from '$lib/server/settings';
 import { sendSnapshot } from '$lib/server/walletSync';
 import { coinbaseMaturity } from '$lib/shared/coinbase';
 import type { FeeEstimates } from '$lib/types';
@@ -263,6 +264,13 @@ export const load: PageServerLoad = async (event) => {
 			scriptType: row.script_type,
 			deviceType: row.device_type ?? null
 		},
+		// This instance's configured Bitcoin network (cairn-xqnn7) — cheap,
+		// synchronous, no Electrum round-trip. The client's recipient-address
+		// shape check (addressShape.ts) needs this to accept the RIGHT
+		// network's addresses: it used to hardcode "mainnet-shaped only", which
+		// rejected legitimate bcrt1/tb1 destinations on a regtest/testnet
+		// instance and disabled Review for a perfectly valid send.
+		network: getChainConfig().network,
 		resume,
 		// The user's address book seeds the recipient autocomplete. User-scoped,
 		// small, and cheap to load alongside the page. Gated on the address_book
