@@ -65,6 +65,17 @@
 	const isExplorer = $derived(
 		page.url.pathname === '/explorer' || page.url.pathname.startsWith('/explorer/')
 	);
+	// Mining (cairn-5e2k): a primary dashboard section (it's in the sidebar
+	// nav, not a drill-down flow), but per the comment above it deliberately
+	// doesn't take a 5th mobile tab slot. Without its own top bar it fell
+	// through to the flow-page branch below — Back-circle only, no way to
+	// reach any other section, a dead end whenever the page was opened
+	// directly (bookmark, notification, reload). It gets the same top bar as
+	// the tab pages (Home link + account menu) so it's always one tap from
+	// the rest of the app, without joining the bottom tab row.
+	const isMining = $derived(
+		page.url.pathname === '/mining' || page.url.pathname.startsWith('/mining/')
+	);
 
 	// Route → content lane (docs/DESKTOP-LAYOUT-DESIGN.md §2/§4). Two measures
 	// only: `reading` (calm, single-decision, forms, wizards, send flows) caps
@@ -135,8 +146,18 @@
 				variant={isExplorer ? 'search' : 'dial'}
 				user={data.user}
 				operatorName={data.operatorName ?? null}
+				showMining={flags.mining !== false}
 			/>
 			<MobileTabRow {tabs} />
+		{:else if isMining}
+			<!-- cairn-5e2k: standard tab-page top bar (Home link + account menu)
+			     without the bottom tab row — see isMining comment above. -->
+			<MobileTopBar
+				variant="dial"
+				user={data.user}
+				operatorName={data.operatorName ?? null}
+				showMining={flags.mining !== false}
+			/>
 		{:else}
 			<!-- Flow pages: back circle only. The centered eyebrow + spacer row is
 			     composed by each flow page as its lane lands (cairn-koy4.5/6). -->

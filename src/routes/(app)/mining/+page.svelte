@@ -5,7 +5,7 @@
 	 * getUserMiningView; this page never renders another user's workers,
 	 * shares, or found blocks.
 	 */
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { enhance } from '$app/forms';
 	import { page } from '$app/state';
 	import { subscribe } from '$lib/live/liveClient';
@@ -74,7 +74,7 @@
 	// Live-refreshed mirror of the server-loaded view. Reset whenever the
 	// server load reruns (e.g. after a form action's `update()`), then kept
 	// current in between by the live `mining` nudge below.
-	let view = $state<MiningView>(data.view);
+	let view = $state<MiningView>(untrack(() => data.view));
 	$effect(() => {
 		view = data.view;
 	});

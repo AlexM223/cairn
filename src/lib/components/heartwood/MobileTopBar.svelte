@@ -1,16 +1,19 @@
 <script lang="ts">
-	// Heartwood mobile top bar (<=900px, tab pages only): mark + wordmark on the
-	// left; on the right an at-tip dial pill placeholder (or a search icon on
-	// Explorer, per spec) and the avatar menu. Node & Settings live behind the
-	// avatar menu on mobile — the tab row below never shows them.
+	// Heartwood mobile top bar (<=900px, tab pages + mining, cairn-5e2k): mark +
+	// wordmark on the left; on the right an at-tip dial pill placeholder (or a
+	// search icon on Explorer, per spec) and the avatar menu. Mining, Node &
+	// Settings live behind the avatar menu on mobile — the tab row below never
+	// shows them.
 	let {
 		variant = 'dial',
 		user,
-		operatorName = null
+		operatorName = null,
+		showMining = false
 	}: {
 		variant?: 'dial' | 'search';
 		user: { displayName: string; email: string; isAdmin: boolean };
 		operatorName?: string | null;
+		showMining?: boolean;
 	} = $props();
 
 	// Heartwood mark, detail="simple" — inlined (shared HeartwoodMark component
@@ -117,6 +120,11 @@
 						<div class="menu-name truncate">{user.displayName}</div>
 						<div class="menu-email truncate">{user.email}</div>
 					</div>
+					{#if showMining}
+						<a href="/mining" class="menu-item" role="menuitem" onclick={() => (menuOpen = false)}>
+							Mining
+						</a>
+					{/if}
 					<a href="/settings" class="menu-item" role="menuitem" onclick={() => (menuOpen = false)}>
 						Settings
 					</a>
