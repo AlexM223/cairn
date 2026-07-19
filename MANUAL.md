@@ -630,11 +630,18 @@ of `ElectrumClient.subscribeScripthash()`. Started once from
 - On each new block (`'header'`) → `handleNewBlock()`: re-checks every
   pending (`confirmed=0`) `notified_txids` row's confirmation count against
   `CONFIRM_THRESHOLD = 1`, firing `tx_confirmed` once crossed.
-- Refreshed every `REFRESH_INTERVAL_MS = 5min` (`refreshWatches()`) to pick
-  up newly created wallets — this is **poll-based, not a creation hook**,
-  deliberately, to avoid an import cycle with the wallet layer. A brand-new
-  wallet is not watched instantly; don't "fix" this by adding a redundant
-  creation hook (§15).
+- Refreshed every `REFRESH_INTERVAL_MS = 5min` (`refreshWatches()`) as the
+  periodic backstop. **As of `cairn-0tvez` (`343c9f5`), `createWallet`/
+  `createMultisig` also call `refreshWatches()` immediately after insert**
+  (guarded by `getWatcherScanProgress().started` so unit tests and the
+  pre-boot window never open real Electrum sockets) — a brand-new wallet is
+  subscribed at creation time, not left waiting for the next 5-minute sweep.
+  The periodic pass still exists as a safety net (e.g. a watcher restart).
+  Companion fix in the same bead: `doWalletScan`/`doMultisigScan`
+  (`walletSync.ts`) no longer persist an **empty** snapshot for a wallet the
+  watcher isn't yet subscribed to, and both `/refresh` routes now pass
+  `{force:true}`, so a freshly funded wallet can't get stuck showing a
+  stale/never-updated "0.00 BTC" on its own detail page (§20.7).
 
 **`notified_txids` lifecycle (`cairn-a2p1`)**: each tracked row carries a
 `status` and an `amount_sats`. States: `'pending'` — an unconfirmed inbound
@@ -1049,25 +1056,22 @@ fee = vsize × feeRate, `amount = totalIn - fee`.
 **RBF replacement** (`exactInputs: true`) spends every provided coin
 verbatim (guaranteeing conflict with the original), keeps the same
 recipients/amounts, and takes the entire fee increase from change; it
-rejects if change would drop below `DUST_SATS` (546) rather than pulling in
-new inputs to cover a bigger fee — the code deliberately refuses rather than
-silently changing what the user reviewed.
+rejects if change would drop below `dustThreshold(changeAddress)` (the
+per-script-type floor below) rather than pulling in new inputs to cover a
+bigger fee — the code deliberately refuses rather than silently changing
+what the user reviewed.
 
-**Known gap (`cairn-ykk6`, open): plain recipient amounts have NO pre-flight
-dust check.** `DUST_SATS = 546` is only enforced on the two paths above —
-the send-max sweep result and the RBF change-output floor. A plain
-recipient amount (e.g. `amount: 100`) has no equivalent check at
-`constructPsbt`/`constructMultisigPsbt` time: the draft builds and persists
-silently, and the dust output only ever fails much later, at broadcast,
-via the network's mempool relay policy — a confusing, late failure instead
-of an immediate, clear one. Found (not fixed) during the `cairn-9v9g`
-send-flow boundary-matrix work and pinned in "KNOWN GAP" `describe()`
-blocks in `src/lib/server/bitcoin/sendBoundaryMatrix.test.ts` and
-`src/lib/server/sendBoundaryDraft.test.ts` so a future fix can't land
-without those tests being updated. A correct fix needs
-per-destination-script-type dust thresholds (via `outputVsize()` —
-P2SH/P2WPKH/P2TR outputs have different dust floors), applied at
-draft-build time for plain sends, not just the sweep/RBF paths.
+**Dust threshold is per-script-type and consistent everywhere (`cairn-7ld60`,
+fixed `2be1902`, v0.2.40).** `dustThreshold(address)` (P2WPKH 294, P2WSH/
+P2TR 330, P2PKH 546, P2SH 540) is the single source of truth: the
+user-facing pre-flight check (`validateRecipientsAndFeeRate`, "This amount
+is too small to send.") and all three downstream coin-selection sites —
+send-max sweep, RBF-replacement change floor, and normal-selection change —
+now call it against the actual destination/change address. Previously the
+three downstream sites compared against a flat legacy `DUST_SATS = 546`
+constant (now removed), which wrongly held e.g. a 300-sat P2WPKH change
+output to the higher P2PKH ceiling. Standard P2PKH behavior is unchanged;
+P2WPKH/P2WSH/P2TR sends now correctly use their own lower dust floor.
 
 **`nonWitnessUtxo` deferral (perf).** For segwit inputs (not p2pkh/p2tr),
 fetching each candidate's full previous transaction is deferred until
@@ -1355,6 +1359,27 @@ the `multisigs` row plus all N `multisig_keys` rows are written inside one
 back rather than leaving a row whose stored key count disagrees with reality.
 All three are **create-only** (import round-trips an existing on-chain wallet
 untouched), mirroring the path gate's create-vs-import split.
+
+**Broken-config resilience after a chain-network change (`cairn-zltwz`,
+fixed `add8679`+`2323ab2`, v0.2.40).** An operator flipping the instance's
+configured Bitcoin network (e.g. mainnet→regtest, or vice versa) used to
+leave any already-created multisig wallet whose keys were encoded for the
+OLD network in a hard-broken state, two ways: (a) `addressWatcher.ts`'s
+multisig enumeration called `createMultisigDeriver(config)` **outside** its
+own try/catch, so one network-mismatched multisig's throw aborted watch
+registration for **every** multisig after it in iteration order, not just
+the bad one — now wrapped in a per-wallet try/catch that logs and skips
+just the offending wallet. (b) the wallet-detail page's `load()`
+(`wallets/multisig/[id]/+page.server.ts`) called
+`multisigToDescriptor(toMultisigConfig(multisig))` unconditionally, so a
+`MultisigError` (thrown by `resolveKey`, which already correctly detects
+the network mismatch) escaped uncaught as a raw 500 instead of a friendly
+message — now caught, returning `descriptor: null` + a plain-language
+`descriptorError` that `+page.svelte` renders as a warning banner near the
+top of the page instead of crashing. `resolveKey` itself needed no network
+threading — it already defaulted to the current
+`getDefaultNetwork()`/`setDefaultNetwork()` value, which is exactly why it
+correctly detected the mismatch in the first place.
 
 **Descriptor import/export**: `multisigToDescriptor()` / `parseDescriptor()`.
 Byte-compatible with Bastion's format (`[fp/48h/0h/0h/2h]xpub/0/*`, lowercase
@@ -2286,7 +2311,23 @@ disappeared before confirming, double-spent or RBF'd-away; level `warn`,
 `admin_restore`, `admin_server_health`, `admin_user_disabled`,
 `admin_settings_changed`, `admin_recovery_code_minted`,
 `security_failed_login`, `security_new_passkey`,
-`security_password_changed`, `security_new_device`.
+`security_password_changed`, `security_new_device`, `multisig_removed`,
+`cosigner_left`, `mining_block_found`, `mining_worker_offline`,
+`mining_best_share` — 25 types total.
+
+**Registry/settings-UI coverage gap closed (`cairn-di3qn`, fixed `8355a3f`,
+v0.2.40).** The three `mining_*` types were emitted (`src/lib/server/
+mining/index.ts`) but had no `DEFAULT_PREFERENCES` entry, so
+`enabledExternalChannels()` always resolved an empty default set and no UI
+path existed to ever save an override — mining notifications were
+permanently in-app-only. `multisig_removed`/`cosigner_left` were fully
+wired server-side but had no row in Settings → Notifications' `GROUPS`
+catalogue, so users couldn't see or manage them. All 5 now have
+`DEFAULT_PREFERENCES` entries and Settings UI rows (`mining_*` in a new
+"Mining" group, the multisig pair filled into the existing "Wallet
+activity" group) — all 25 canonical types are now covered in both
+`DEFAULT_PREFERENCES` and the Settings UI, enforced by a regression test
+asserting `NOTIFICATION_EVENT_TYPES == Object.keys(DEFAULT_PREFERENCES)`.
 
 **Channels**: `inapp` (baseline, never flagged — an in-app notification IS
 an `events` row with `read_at`), `email`, `telegram`, `ntfy`, `nostr`,
@@ -3415,6 +3456,24 @@ in BTC. `summaryUnitAmount()` now reads `$unitPref` the same way the hero
 field does, so the summary rail agrees with whatever unit the user actually
 typed in.
 
+**Remaining unit-drift surfaces closed (`cairn-fbgl1`+`cairn-hgg7t`, fixed
+`c299fc3`+`a13d2cd`, v0.2.40).** `Amount.svelte` itself never read
+`unitPref` at all — it always rendered a hardcoded `formatBtc(...)+' BTC'`
+primary line. A shared `formatUnitAmount(sats, unit, opts)` helper
+(`$lib/format.ts`) is now the single source of truth for BTC-vs-sats display
+text; `Amount.svelte` reads `$unitPref` through it, which fixes every
+surface that renders through `<Amount>` for free: Home's "TOTAL BALANCE"
+hero + recent-activity rows, both wallet-detail heroes, and the
+single-sig/multisig "In progress" draft rows. Two remaining hardcoded call
+sites that bypass `<Amount>` entirely were fixed as a direct follow-up: the
+send page's "Verify on device" review card (now calls the page's existing
+`summaryUnitAmount()` wrapper around the same helper) and the multisig
+wallet-detail pending-balance note (now renders `<Amount>` with
+`sign`/`direction` props instead of a hand-rolled `+`/`-` prefix, matching
+its single-sig sibling verbatim). `send/+page.svelte`'s own
+`summaryUnitAmount` above was refactored to delegate to the same shared
+helper too, so the two families of call sites can't drift apart again.
+
 **Unit-slip guards (R1, `cairn-9nvo`, v0.2.27).** A live secondary line under
 the amount always keeps the OTHER Bitcoin-denominated unit (and fiat, when a
 price is known) visible while typing — e.g. typing in sats shows "≈ 0.0031
@@ -3679,15 +3738,35 @@ debugging — they're independent decisions with independent code paths.
 
 `src/lib/server/bitcoin/xpub.ts`'s `parseXpub()` accepts xpub/ypub/zpub
 (SLIP-132 version bytes), normalizes to standard xpub bytes, and always
-rejects private keys. Prefix validation is otherwise network-aware
-(`cairn-10ox`): `parseXpub(input, network)` accepts mainnet OR
-testnet/regtest SLIP-132 bytes (tpub/upub/vpub) depending on the network
-argument, defaulting to whatever `chain_network` is currently configured
-(`setDefaultNetwork()`, resynced on every `ChainService` construction/
-reconfigure) — so a regtest/testnet operator can import their own signer's
-exported keys, while a mainnet-configured instance still rejects
-testnet/regtest prefixes symmetrically. Address ENCODING
-(`deriveAddress`/`addressToScriptPubKey`) stays mainnet-only regardless. HW
+rejects private keys. Prefix validation is network-aware (`cairn-10ox`):
+`parseXpub(input, network)` accepts mainnet OR testnet/regtest SLIP-132
+bytes (tpub/upub/vpub) depending on the network argument, defaulting to
+whatever `chain_network` is currently configured (`setDefaultNetwork()`,
+resynced on every `ChainService` construction/reconfigure) — so a
+regtest/testnet operator can import their own signer's exported keys, while
+a mainnet-configured instance still rejects testnet/regtest prefixes
+symmetrically.
+
+**Address ENCODING is now network-aware too (`cairn-xqnn7`+`cairn-czm9p`,
+`eaaf0b2`+`9c43b53`, v0.2.40 headline).** Before this fix, `deriveAddress`/
+`addressToScriptPubKey`/`isValidAddress`/`scriptPubKeyHex`/
+`addressToScripthash` (and the multisig equivalents in `multisig.ts`)
+always encoded/validated against **mainnet** regardless of `chain_network`
+— a regtest/testnet instance rendered unusable `bc1…` receive addresses and
+rejected legitimate same-network send destinations, and `constructPsbt`/
+`constructMultisigPsbt` (`psbt.ts`/`multisigPsbt.ts`) built every output via
+`@scure/btc-signer`'s hardcoded mainnet `NETWORK` constant even after
+validation had been made network-aware, so a regtest/testnet send could
+pass pre-flight and still fail downstream in construction. Both are now
+threaded through the same `networkParams(network ?? getDefaultNetwork())`
+resolution, matching prefix validation's existing default. A recognized
+address for the WRONG network throws a plain-language network-mismatch
+error instead of a generic "invalid"/"unknown version byte" message.
+`summarizePsbt`/`addressFromScript` are network-aware too, so resuming a
+regtest/testnet draft renders `bcrt1…`/`tb1…` addresses instead of silently
+re-encoding them as mainnet. Net effect: a regtest/testnet Cairn instance
+now has full first-class GUI send/receive/import/scan support — see §16.5
+for the (now obsolete) old funding workaround. HW
 drivers (`src/lib/hw/common.ts`) implement single-sig BIP-44/49/
 84 account-path derivation (`singleSigAccountPathIndexes`) and read the
 account xpub + master fingerprint at connect time, both required for
@@ -4410,13 +4489,16 @@ actually biting someone.
    separate question of the Umbrel/App-Store **operational identity** (app
    ID, listing) is genuinely undecided, not settled — open decision
    `cairn-koy4.13`, blocked on Alex (§1).
-9. **Watcher registration is poll-based (5-minute `refreshWatches()`), not
-   event-driven** — a newly created wallet is not watched instantly; it
-   picks up on the next 5-minute sweep. This is a deliberate choice (avoids
-   an import cycle between `addressWatcher.ts` and the wallet layer), not a
-   bug, but it's surprising enough that someone will eventually propose
-   adding a redundant creation hook. Don't — the poll-based design is on
-   purpose (§4).
+9. **(Historical, fixed `cairn-0tvez`/`343c9f5`, v0.2.40) Watcher
+   registration used to be poll-only (5-minute `refreshWatches()`)** — a
+   newly created wallet wasn't watched instantly, and (the sharper bug)
+   `walletSync.ts` could persist a permanently-empty snapshot for a wallet
+   funded before its first subscription ever landed, so the wallet's own
+   detail page could show a stale "0.00 BTC" indefinitely with no self-heal.
+   `createWallet`/`createMultisig` now call `refreshWatches()` synchronously
+   at creation and the sync layer never persists an empty snapshot for an
+   unwatched wallet; the 5-minute pass remains as a periodic backstop, not
+   the only path to being watched (§4).
 10. **`safeAction` is NOT app-wide.** Exactly 2 call sites today (both
     wizards' `preview` action) — "no silent form/action failures" is a
     wizard-specific guarantee, not a blanket one across the app. Most forms
@@ -4649,27 +4731,35 @@ The only supported way to exercise real signing + broadcast without mainnet fund
 - **Cleanup:** `docker compose -p vault-e2e down`. If default-port leftovers from
   `.hw-emu-test/` collide: `docker rm -f cairn-trezor-emu cairn-speculos hwtest-bitcoind hwtest-electrs`.
 
-### 16.5 Funding a Cairn wallet on regtest — the scriptPubKey bridge `[emulator]`
-**Critical constraint (grounded):** address ENCODING is **mainnet-only** — Cairn's
-`deriveAddress()`/`addressToScriptPubKey()` always produce `bc1…`/`3…`/`1…` mainnet
-address strings, regardless of `chain_network`. (`parseXpub()`'s *prefix* validation is
-network-aware since `cairn-10ox` — see §"Single-sig derivation" — but that only governs
-which SLIP-132 xpub prefixes are accepted for import, not what address strings get
-derived.) A regtest `bitcoind` will not `sendtoaddress` a mainnet bech32 string. But the watcher and
-scanner attribute inbound value by **scriptPubKey membership, not address string**
-(cairn-v13r/j6fv). So fund via the scriptPubKey, not the displayed address:
-1. In Cairn, get the wallet's descriptor: `GET /api/wallets/{id}/descriptor` (single-sig)
-   or `/api/wallets/{id}/config` / the multisig Caravan/descriptor export.
-2. Import that descriptor **watch-only** into a Core regtest wallet
-   (`importdescriptors`), then `getnewaddress`/`deriveaddresses` from Core to obtain the
-   `bcrt1…` address that shares the **same scriptPubKey** as Cairn's `bc1…` at that index.
-3. `sendtoaddress` regtest coins to that `bcrt1…` address; `generatetoaddress 1` to confirm.
-4. Cairn's watcher/scan matches by scriptPubKey and credits the deposit.
-- **PASS:** balance appears in `/wallets/{id}` and a `tx_received` then `tx_confirmed`
-  fires (subject to the ≤5-min watcher-refresh lag for a newly created wallet — see §20.4).
-- This is why fully-GUI receive testing on regtest has friction: the displayed address
-  can't be pasted into regtest tooling directly. On **mainnet** the GUI receive→fund path
-  is direct (real sats). Prefer the vault-e2e module-level harness for regtest signing.
+### 16.5 Funding a Cairn wallet on regtest — direct GUI path `[emulator]`
+**Current behavior (v0.2.40+, `cairn-xqnn7`+`cairn-czm9p`):** a regtest- or
+testnet-configured instance now derives and renders addresses in the
+**correct** network encoding (`bcrt1…`/`tb1…`, not mainnet `bc1…`), and
+`constructPsbt`/`constructMultisigPsbt` build every output against that same
+network. So the GUI receive→fund path works exactly like mainnet:
+1. In Cairn, open the wallet's receive address (`/wallets/{id}` or
+   `/wallets/multisig/{id}`) — it now renders as a real, node-acceptable
+   `bcrt1…`/`tb1…` address.
+2. `bitcoin-cli -regtest sendtoaddress <that address> <amount>`;
+   `generatetoaddress 1 <any address>` to confirm.
+3. Cairn's watcher subscribes new wallets' addresses immediately at
+   creation (§4/§20.7), so the deposit is picked up promptly rather than
+   waiting on the periodic sweep.
+- **PASS:** balance appears in `/wallets/{id}` and a `tx_received` then
+  `tx_confirmed` fires without needing to leave the GUI.
+
+**Historical workaround (obsolete, pre-v0.2.40):** address encoding used to
+be hardcoded mainnet regardless of `chain_network`, so a regtest `bitcoind`
+would reject the displayed `bc1…` address outright. The old workaround
+(still valid background if you ever need to fund a scriptPubKey Cairn
+itself can't yet render, e.g. an unsupported script type) was to import the
+wallet's descriptor **watch-only** into a Core regtest wallet
+(`importdescriptors`), `deriveaddresses` the `bcrt1…` address sharing the
+same scriptPubKey as Cairn's index, and fund that instead — the watcher/
+scanner have always attributed inbound value by **scriptPubKey membership,
+not address string** (`cairn-v13r`/`j6fv`), which is what made the bridge
+work at all. Prefer the direct GUI path above for normal QA now; fall back
+to the vault-e2e module-level harness for regtest signing scenarios.
 
 ### 16.6 Creating test users
 - **First user = admin** automatically (`isFirstUser`). Signup at `/signup`
@@ -4927,7 +5017,8 @@ Precondition: a broadcast, still-unconfirmed tx with a change output.
    - **Assertions to verify:** (a) every input still signals RBF (`sequence <
      0xfffffffe`); (b) new fee ≥ `originalFee + replacementVsize` (BIP-125 rule 4);
      (c) **no new inputs** are added — the whole increase comes from change; if change
-     would drop below `DUST_SATS` (546) the bump is **refused** with a clear message;
+     would drop below `dustThreshold(changeAddress)` (per-script-type floor — P2WPKH 294,
+     P2WSH/P2TR 330, P2PKH 546, P2SH 540, `cairn-7ld60`) the bump is **refused** with a clear message;
      (d) a **changeless** original cannot be bumped (no fee headroom) — expected refusal.
 2. Sign + broadcast the replacement.
    - **Expected:** replacement → `completed`; the **original row flips
@@ -5308,15 +5399,21 @@ was ever stored).
 - **PASS:** the send resumes at the lifecycle-correct step after reload (unlike wizards,
   this resume is DB-backed, not sessionStorage).
 
-### 20.7 Newly-created wallet watch lag `[emulator]` — expected-fail / verify current behavior
+### 20.7 Newly-created wallet watch lag `[emulator]` — fixed, verify current behavior
 1. Create a wallet, fund it immediately (16.5), mine a block.
-   - **Documented behavior:** watcher registration is **poll-based** — `refreshWatches()`
-     runs every `REFRESH_INTERVAL_MS = 5 min`, NOT a creation hook (avoids an import cycle).
-     So a deposit to a brand-new wallet may **not** notify until the next refresh (up to
-     ~5 min). This is by design, not a bug (Part I §15 gotcha #9).
-- **PASS (verify current behavior):** the deposit is eventually credited and
-  `tx_received`/`tx_confirmed` fire within ~one refresh interval. Record the actual lag.
-  Do not assert instant notification on a just-created wallet.
+   - **Current behavior (`cairn-0tvez`, fixed `343c9f5`, v0.2.40):**
+     `createWallet`/`createMultisig` call `refreshWatches()` synchronously at
+     creation, so the wallet's addresses are subscribed before you even
+     finish the funding step — no more waiting on the 5-minute
+     `REFRESH_INTERVAL_MS` periodic pass for a brand-new wallet. The sync
+     layer also no longer persists an empty snapshot for a not-yet-watched
+     wallet, which previously could make a freshly funded wallet's own
+     detail page show a permanently stale "0.00 BTC" (Part I §15 gotcha #9,
+     historical).
+- **PASS:** the deposit is credited and `tx_received`/`tx_confirmed` fire
+  promptly (seconds, not minutes) after creation+funding+confirmation. If you
+  observe multi-minute lag on a fresh wallet, that's a regression — file it,
+  don't assume it's expected.
 
 ### 20.8 Large-wallet perf sanity `[emulator or mainnet]`
 1. Use a wallet with substantial address history; open `/wallets`, `/`, and a wallet
@@ -6035,6 +6132,17 @@ the explorer as an ordinary feature with a healthy Electrum+Core backend.
    a txid, a block height, a block hash, and an address in turn.
    - **Expected:** each resolves to the correct detail page; an invalid/garbage
      query shows a friendly "not found," not a raw error or blank page.
+   - **Complete-but-nonexistent case (`cairn-ioeg5`, fixed `ef9de6e`, v0.2.40):**
+     type a syntactically valid, 64-hex-char txid that doesn't exist. The
+     backend (`classifySearch()`) always honestly returned
+     `{type:'unknown',redirect:null}` for this — the bug was frontend-only:
+     the live-suggestion dropdown kept showing the generic "keep typing —
+     height, hash, txid, or address" hint even for a complete, definitively-
+     unknown query, a dead end with no signal. `isCompleteSearchCandidate()`
+     (`$lib/searchShape.ts`, sharing regexes with the backend so the two
+     surfaces can't disagree) now distinguishes "still typing" from
+     "complete and confirmed not found" in both the live-suggestion dropdown
+     and the Explorer index's inline search form.
 3. Visit `/explorer/mempool` and `/explorer/mempool/blocks`, and `/explorer/
    difficulty`.
    - **Expected:** mempool summary and projected-block view render (Core-gated per
