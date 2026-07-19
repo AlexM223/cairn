@@ -10,7 +10,7 @@ describe('arrivalWords', () => {
 	it('gives a concrete duration for each named speed', () => {
 		expect(arrivalWords('priority')).toBe('about 10 minutes');
 		expect(arrivalWords('standard')).toBe('about 30 minutes');
-		expect(arrivalWords('economy')).toBe('an hour or more');
+		expect(arrivalWords('economy')).toBe('a few hours');
 	});
 
 	// A custom sat/vB has no honest tier→duration mapping, so it must read as a

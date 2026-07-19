@@ -11,7 +11,6 @@
 	import QuorumArc from '$lib/components/heartwood/QuorumArc.svelte';
 	import BurialRings from '$lib/components/heartwood/BurialRings.svelte';
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
-	import AtTipPill from '$lib/components/heartwood/AtTipPill.svelte';
 	import Term from '$lib/components/Term.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
@@ -854,13 +853,10 @@
 		<span class="flow-spacer"></span>
 	</header>
 
+	<!-- gt05.2 / spec §2.3: no AtTipPill on Send surfaces — chain-sync is a
+	     Health concern, never a per-send one. -->
 	<div class="eyebrow-row">
 		<EyebrowBreadcrumb path={[data.multisig.name]} current={crumbCurrent} />
-		{#if chain}
-			<AtTipPill height={chain.tipHeight} />
-		{:else}
-			<span class="skeleton tip-skeleton" aria-hidden="true">at tip · 000,000</span>
-		{/if}
 	</div>
 
 	<!-- Gate the whole client-driven wizard behind `mounted` so the server ships
@@ -1826,19 +1822,6 @@
 			font-size: 11.5px;
 			color: var(--text-muted);
 		}
-	}
-
-	/* Placeholder for the AtTipPill while the streamed tip is in flight — same
-	   footprint as the pill so the eyebrow row doesn't reflow when it resolves. */
-	.tip-skeleton {
-		display: inline-flex;
-		align-items: center;
-		padding: 5px 12px;
-		font-family: var(--font-ui);
-		font-size: 11.5px;
-		font-weight: 500;
-		line-height: 1.4;
-		white-space: nowrap;
 	}
 
 	/* Fee-rate placeholder inside a toggle while estimates stream in. */

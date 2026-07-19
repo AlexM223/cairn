@@ -4,6 +4,8 @@
 // emptiness, Health-line state) are unit-testable without mounting a
 // component — mirrors portfolioViewState.ts's pattern.
 
+import { deriveHealth } from './health';
+
 /**
  * The wallet list only renders on Home when there's more than one wallet
  * (spec §2.1 A/B rationale: one wallet gets the clean Muun-style hero with no
@@ -39,16 +41,12 @@ export interface HomeHealth {
 }
 
 /**
- * Minimal Health-line derivation for Home (spec §2.6b). Phase 1 ships only
- * this one calm line — the full Health page (Node/Backups/Storage/Users) is
- * Phase 3. It reads the same two signals the layout's own banners already
- * read (unbackedWallets, chain-health), so there is nothing new to compute;
- * Phase 3's fuller object can extend this without changing the shape Home
- * already consumes.
+ * The Health line for Home (spec §2.6b), now a thin wrapper over the shared
+ * Phase 3 Health object ($lib/health.ts) so Home's line, the layout banners,
+ * and the admin Health page all read the SAME derivation — one truth, three
+ * altitudes. The shape Home consumes is unchanged from Phase 1.
  */
 export function deriveHomeHealth({ unbackedCount, chainHealthy }: HomeHealthInput): HomeHealth {
-	const issueCount = Math.max(0, unbackedCount) + (chainHealthy ? 0 : 1);
-	return issueCount === 0
-		? { ok: true, label: 'Health · All good', issueCount }
-		: { ok: false, label: `Health · ${issueCount} needs attention`, issueCount };
+	const h = deriveHealth({ unbackedCount, chainHealthy });
+	return { ok: h.ok, label: h.homeLabel, issueCount: h.issueCount };
 }

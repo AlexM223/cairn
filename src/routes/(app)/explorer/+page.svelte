@@ -9,9 +9,11 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import Banner from '$lib/components/Banner.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
+	import Term from '$lib/components/Term.svelte';
+	import FeeRate from '$lib/components/FeeRate.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
-	import { TIMECHAIN_TIP } from '$lib/termGlosses';
+	import { TIMECHAIN_TIP, RING_TIP, NO_REORG_TIP, VMB_TIP } from '$lib/termGlosses';
 	import ChainStrip from '$lib/components/heartwood/ChainStrip.svelte';
 	import RingStub from '$lib/components/heartwood/RingStub.svelte';
 	import FormingRing from '$lib/components/heartwood/FormingRing.svelte';
@@ -216,20 +218,28 @@
 	});
 
 	// Dashed pending row: the projected next block when the backend offers it,
-	// else a rough sketch from the mempool summary.
+	// else a rough sketch from the mempool summary. The fee rate is structured
+	// (not a preformatted string) so the row renders it through the shared
+	// FeeRate component — glossed like every other rate on this page.
 	const pending = $derived.by(() => {
 		if (data.before !== null) return null;
 		const nb = chain?.nextBlock;
 		if (nb) {
 			return {
-				meta: `projected next · ${nb.feeRange[0]} sat/vB floor`,
+				label: 'projected next',
+				rate: nb.feeRange[0],
+				rateSuffix: 'floor',
+				approx: false,
 				txs: `~${formatNumber(nb.nTx)} tx`,
 				size: formatBytes(nb.vsize)
 			};
 		}
 		if (mempool && mempool.txCount > 0) {
 			return {
-				meta: nextFee !== null ? `no rings yet · ≈ ${nextFee} sat/vB to make it` : 'no rings yet',
+				label: 'not in a block yet',
+				rate: nextFee,
+				rateSuffix: 'to make it',
+				approx: true,
 				txs: `${formatNumber(mempool.txCount)} tx waiting`,
 				size: formatBytes(Math.min(mempool.vsize, 1_000_000))
 			};
@@ -266,10 +276,6 @@
 	const poolFoundSet = $derived(new Set(data.poolFoundHashes ?? []));
 	// "~N BTC moved" from total_out (sats) — extracted to $lib/format as
 	// formatMovedBtc so its render-guard hardening (cairn-6efi.11) is unit-tested.
-	function feeRangeLabel(range: [number, number] | null): string | null {
-		if (!range) return null;
-		return `${range[0]}–${range[1]} sat/vB`;
-	}
 	// Pool copy: "Likely X" for a coinbase-derived identification (Core path). Null
 	// (nothing rendered) when no pool is known — never a wrong guess.
 	function poolLabel(block: BlockSummary): string | null {
@@ -528,11 +534,21 @@
 			</div>
 		{/if}
 
-		{#if showError}
+		{#if showError && blocks.length > 0 && !data.disconnected}
+			<!-- Chain source unreachable but a persisted snapshot still renders below
+			     (spec §2.5 node-status): never a "can't reach the network" banner
+			     beside a full block list — one quiet line, once. When the shared
+			     node-trust signal also reads disconnected, the explorer layout's own
+			     snapshot caption already says exactly this, so skip the duplicate. -->
+			<div class="stale-note fade-in" role="status">
+				Showing your last saved snapshot — this page will catch up when your node answers.
+			</div>
+		{:else if showError && blocks.length === 0}
 			<!-- Calm, plain-language disconnected state (cairn-obg6) — no raw
 			     technical error text, no alarm tone (Banner's non-error variants
 			     render role="status", not "alert"): losing the chain source is
-			     expected/recoverable, not a crisis. -->
+			     expected/recoverable, not a crisis. Only rendered when there is
+			     genuinely nothing to show — never beside chain data (spec §2.5). -->
 			<div class="chain-error fade-in">
 				<Banner variant="warning">
 					<span class="chain-error-text">
@@ -573,10 +589,12 @@
 							{formatNumber(tipHeight)}
 						</span>
 					{/key}
-					<span class="hero-sub">blocks · not one removed</span>
+					<span class="hero-sub">
+						blocks · <Term tip={NO_REORG_TIP}>every block still stands</Term>
+					</span>
 				{:else if loading}
 					<span class="hero-number hero-height skeleton">000,000</span>
-					<span class="hero-sub">blocks · not one removed</span>
+					<span class="hero-sub">blocks · every block still stands</span>
 				{:else}
 					<!-- Genuinely disconnected, not just loading (cairn-obg6) — a fake
 					     "000,000" placeholder used to sit here indefinitely, implying
@@ -589,17 +607,22 @@
 			<div class="live-line tabular">
 				{#if forming}
 					<span>
-						ring {formatNumber(forming.ring)} forming — {formatNumber(forming.into)} of 2,016
+						<Term tip={RING_TIP}>difficulty period</Term>
+						{formatNumber(forming.ring)} · block {formatNumber(forming.into)} of 2,016
 					</span>
 				{/if}
 				{#if nextFee !== null}
 					<span class="dot" aria-hidden="true">·</span>
-					<span>next ring ≈ <span class="fee">{nextFee} sat/vB</span></span>
+					<span>next block ≈ <span class="fee"><FeeRate rate={nextFee} /></span></span>
 				{/if}
 				{#if mempoolVMb !== null}
 					<span class="dot desk" aria-hidden="true">·</span>
-					<a href="/explorer/mempool" class="line-link desk">
-						mempool {mempoolVMb >= 10 ? Math.round(mempoolVMb) : mempoolVMb.toFixed(1)} vMB
+					<a
+						href="/explorer/mempool"
+						class="line-link desk"
+						title="Virtual megabytes of pending transactions"
+					>
+						mempool · {mempoolVMb >= 10 ? Math.round(mempoolVMb) : mempoolVMb.toFixed(1)} MB waiting
 					</a>
 				{/if}
 				{#if diffLine}
@@ -636,11 +659,9 @@
 					{/if}
 					{#each upcoming ?? [] as block, i (i)}
 						<div class="upcoming-chip" class:next={i === 0} style:--depth={i}>
-							<span class="chip-eta">{i === 0 ? 'next ring' : `~${(i + 1) * 10} min`}</span>
+							<span class="chip-eta">{i === 0 ? 'next block' : `~${(i + 1) * 10} min`}</span>
 							<span class="chip-fee tabular">{formatFeeRate(block.medianFee)}</span>
-							<span class="chip-range tabular">
-								{block.feeRange[0]}–{block.feeRange[1]} sat/vB
-							</span>
+							<span class="chip-range tabular"><FeeRate range={block.feeRange} /></span>
 						</div>
 					{/each}
 				</div>
@@ -655,7 +676,9 @@
 					<div class="strip-caption">
 						<span>2009 · genesis</span>
 						<span class="cap-mid">
-							{formatNumber(strip.epochCount)} rings — one per difficulty epoch · widths to scale
+							<Term tip={RING_TIP}
+								>{formatNumber(strip.epochCount)} ring{strip.epochCount === 1 ? '' : 's'}</Term
+							> — one per difficulty period · widths to scale
 						</span>
 						<span class="cap-now">now</span>
 					</div>
@@ -665,10 +688,9 @@
 					<div class="strip-caption">
 						<span>2009</span>
 						<span class="cap-mid">
-							{formatNumber(strip.epochCount)} rings · {Math.max(
-								1,
-								new Date().getFullYear() - 2009
-							)} years
+							<Term tip={RING_TIP}
+								>{formatNumber(strip.epochCount)} ring{strip.epochCount === 1 ? '' : 's'}</Term
+							> · {Math.max(1, new Date().getFullYear() - 2009)} years
 						</span>
 						<span class="cap-now">now</span>
 					</div>
@@ -729,7 +751,11 @@
 							<span class="row-height pending-label">pending</span>
 						</span>
 						<span class="ringbar-spacer" aria-hidden="true"></span>
-						<span class="row-meta">{pending.meta}</span>
+						<span class="row-meta">
+							{pending.label}{#if pending.rate !== null}
+								· <FeeRate rate={pending.rate} approx={pending.approx} />
+								{pending.rateSuffix}{/if}
+						</span>
 						<span class="row-txs tabular">{pending.txs}</span>
 						<span class="row-size tabular">{pending.size}</span>
 					</div>
@@ -763,8 +789,8 @@
 						<RingBar fullness={block.fullness} medianFee={block.medianFee} width={40} />
 						<span class="row-meta">
 							{timeAgo(block.time)}{#if !poolFoundSet.has(block.hash) && poolLabel(block)} ·
-								<span class="row-pool">{poolLabel(block)}</span>{/if}{#if feeRangeLabel(block.feeRange)}
-								· <span class="row-detail">{feeRangeLabel(block.feeRange)}</span>{/if}{#if formatMovedBtc(block.total_out)}
+								<span class="row-pool">{poolLabel(block)}</span>{/if}{#if block.feeRange}
+								· <span class="row-detail"><FeeRate range={block.feeRange} /></span>{/if}{#if formatMovedBtc(block.total_out)}
 								· <span class="row-detail">{formatMovedBtc(block.total_out)}</span>{/if}
 						</span>
 						<span class="row-txs tabular">
@@ -801,11 +827,13 @@
 		<aside class="explorer-rail quiet-rail" aria-label="Network summary">
 			{#if mempool}
 				<div class="rail-block">
-					<span class="rail-eyebrow">Mempool</span>
+					<span class="rail-eyebrow">Mempool size</span>
 					<span class="rail-value tabular">
-						{mempoolVMb !== null && mempoolVMb >= 10
-							? Math.round(mempoolVMb)
-							: (mempoolVMb ?? 0).toFixed(1)} vMB
+						<Term tip={VMB_TIP}>
+							{mempoolVMb !== null && mempoolVMb >= 10
+								? Math.round(mempoolVMb)
+								: (mempoolVMb ?? 0).toFixed(1)} MB
+						</Term>
 					</span>
 					<span class="rail-sub tabular">{formatNumber(mempool.txCount)} tx waiting</span>
 					<a href="/explorer/mempool" class="rail-link">Open mempool →</a>
@@ -813,8 +841,8 @@
 			{/if}
 			{#if nextFee !== null}
 				<div class="rail-block">
-					<span class="rail-eyebrow">Next ring fee</span>
-					<span class="rail-value tabular">{nextFee} <span class="rail-unit">sat/vB</span></span>
+					<span class="rail-eyebrow">Next block fee</span>
+					<span class="rail-value tabular"><FeeRate rate={nextFee} /></span>
 				</div>
 			{/if}
 			{#if diffLine}
@@ -841,9 +869,9 @@
 			<div class="net-footer">
 				<span>
 					{#if mempool}
-						mempool {mempoolVMb !== null && mempoolVMb >= 10
+						mempool · {mempoolVMb !== null && mempoolVMb >= 10
 							? Math.round(mempoolVMb)
-							: (mempoolVMb ?? 0).toFixed(1)} vMB · {formatNumber(mempool.txCount)} tx
+							: (mempoolVMb ?? 0).toFixed(1)} MB waiting · {formatNumber(mempool.txCount)} tx
 					{/if}
 				</span>
 				<span>
@@ -860,7 +888,9 @@
 					<strong>The blockchain is a public ledger anyone can inspect</strong>, and this explorer
 					is your window into it. Every ~10 minutes miners seal a new block of transactions onto the
 					end of the chain — like a tree adding a growth ring, each one is permanent and never
-					removed. The list above shows the newest blocks first, fading back into the deep history
+					removed. That's why Heartwood draws the chain as <strong>rings</strong>: every 2,016
+					blocks (about two weeks) makes one difficulty period, and each one becomes a ring in the
+					strip above. The list shows the newest blocks first, fading back into the deep history
 					below.
 				</p>
 				<p>
@@ -1061,6 +1091,14 @@
 
 	.chain-error {
 		margin-top: 14px;
+	}
+
+	/* One quiet stale-snapshot line (spec §2.5) — the honest replacement for a
+	   "node unreachable" banner beside a full block list. */
+	.stale-note {
+		margin-top: 14px;
+		font-size: 12.5px;
+		color: var(--text-muted);
 	}
 
 	.chain-error-text strong {
@@ -1339,7 +1377,8 @@
 			color: var(--text-value);
 		}
 
-		.rail-unit {
+		/* The FeeRate unit stays small/UI-font inside the big serif rail value. */
+		.rail-value :global(.fr-unit) {
 			font-family: var(--font-ui);
 			font-size: 12px;
 			font-weight: 400;

@@ -354,7 +354,7 @@
 				<div class="stat">
 					<span class="stat-label">
 						<Term
-							tip="Pending change from transactions with no rings yet. It becomes part of the balance once they take their first ring."
+							tip="Pending change from transactions not yet in a block. It becomes part of the balance once they confirm."
 							>Pending</Term
 						>
 					</span>
@@ -458,8 +458,8 @@
 										{#if tx.height === 0}
 											<span
 												class="badge badge-warning"
-												title="Waiting in the mempool — no rings yet."
-												>no rings yet</span
+												title="Waiting in the mempool — not yet in a block."
+												>pending</span
 											>
 										{:else}
 											<span class="text-muted" title={formatDateTime(tx.time)}>{timeAgo(tx.time)}</span>

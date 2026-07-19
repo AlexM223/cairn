@@ -9,22 +9,32 @@
 	// mode rather than shown-but-disabled (docs/SOLO-MODE-UMBREL-AUTOADMIN-PLAN.md
 	// Part 2). The routes themselves 404 via assertTeamMode() regardless of this
 	// list, so this is purely "don't advertise a tab that 404s."
-	const tabs = $derived(
+	//
+	// The old flat 12-tab strip is collapsed (UX redesign Phase 3, cairn-gt05.3,
+	// docs/UX-REDESIGN-SPEC.md §2.6a): only the frequently-visited sections stay
+	// as tabs. Feature flags / Notification delivery / Announcements / Referrals /
+	// Logs / Backup keep their ROUTES (nothing is deleted) but are reached
+	// through the Health page's "Instance settings ›" section and contextual
+	// links instead of a permanent tab row. `inStrip: false` keeps them in this
+	// list purely so the eyebrow below can still name the section when one of
+	// those routes is opened directly.
+	const sections = $derived(
 		[
-			{ href: '/admin', label: 'Overview' },
+			{ href: '/admin', label: 'Health' },
 			{ href: '/admin/activity', label: 'Activity' },
 			{ href: '/admin/users', label: 'Users', teamOnly: true },
 			{ href: '/admin/invites', label: 'Invites', teamOnly: true },
 			{ href: '/admin/settings', label: 'Settings' },
 			{ href: '/admin/mining', label: 'Mining' },
-			{ href: '/admin/feature-flags', label: 'Feature flags' },
-			{ href: '/admin/notifications', label: 'Notification delivery' },
-			{ href: '/admin/announcements', label: 'Announcements' },
-			{ href: '/admin/referral-settings', label: 'Referrals' },
-			{ href: '/admin/logs', label: 'Logs' },
-			{ href: '/admin/backup', label: 'Backup' }
+			{ href: '/admin/feature-flags', label: 'Feature flags', inStrip: false },
+			{ href: '/admin/notifications', label: 'Notification delivery', inStrip: false },
+			{ href: '/admin/announcements', label: 'Announcements', inStrip: false },
+			{ href: '/admin/referral-settings', label: 'Referrals', inStrip: false },
+			{ href: '/admin/logs', label: 'Logs', inStrip: false },
+			{ href: '/admin/backup', label: 'Backup', inStrip: false }
 		].filter((tab) => !tab.teamOnly || data.instanceMode === 'team')
 	);
+	const tabs = $derived(sections.filter((s) => s.inStrip !== false));
 
 	function isActive(href: string): boolean {
 		if (href === '/admin') return page.url.pathname === '/admin';
@@ -36,7 +46,9 @@
 	// (the app shell already renders the back circle for /admin/** on mobile).
 	// Matches the app-shell nav label (Node -> Health, cairn-vxbk) — this
 	// in-page eyebrow was the gap that rename left behind (cairn-3hwc8).
-	const currentTab = $derived(tabs.find((t) => t.href !== '/admin' && isActive(t.href)) ?? null);
+	// Looked up against ALL sections (not just strip tabs) so a directly-opened
+	// collapsed route (e.g. /admin/logs) still names itself.
+	const currentTab = $derived(sections.find((t) => t.href !== '/admin' && isActive(t.href)) ?? null);
 </script>
 
 <!-- Whisper-volume grove field behind the whole admin surface. The wrapper is

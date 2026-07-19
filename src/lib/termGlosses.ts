@@ -31,3 +31,24 @@ export const TIMECHAIN_TIP =
 // Admin > Mining engine + pool-settings jargon (cairn-b55a5).
 export const STRATUM_TIP =
 	'Stratum is the protocol miners speak to a pool — it hands out work and collects the shares they find.';
+
+// Explorer de-jargon pass (UX-REDESIGN-SPEC.md §2.5 + §4 glossary, cairn-gt05.4).
+
+// The raw fee-rate unit, kept on the surface beside a plain-language time via
+// the shared FeeRate component (src/lib/components/FeeRate.svelte).
+export const SAT_VB_TIP =
+	"sat/vB is Bitcoin's fee price: satoshis paid per virtual byte of transaction size. Miners fill blocks highest-rate-first, so a higher rate confirms sooner.";
+
+// "vMB" is dead as a surface label ("mempool size · N MB waiting"); the real
+// unit survives one tap down here.
+export const VMB_TIP =
+	"Virtual megabytes of pending transactions — the mempool's size measured the same way block space is priced.";
+
+// "ring" survives as the glossed Heartwood identity term; the default surface
+// label is "difficulty period" (spec §2.5 — metaphor glossed once, never deleted).
+export const RING_TIP =
+	"Every 2,016 blocks (about two weeks) the network retunes how hard mining is — one difficulty period. Heartwood draws each one as a ring, like a tree's growth rings.";
+
+// "not one removed" is dead as a surface label ("every block still stands").
+export const NO_REORG_TIP =
+	'No blocks have been reorganized out — the chain your node follows has only ever grown.';

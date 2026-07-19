@@ -1,17 +1,23 @@
 <script lang="ts">
 	// Heartwood mobile text-tab row (<=900px, tab pages): the toggle grammar —
 	// active slate-blue-bright on an accent tint, inactive path-tone text pills.
+	// Shows the same three primaries as the desktop rail (spec §2.7).
 	import { page } from '$app/state';
+	import { isNavActive } from '$lib/nav';
+	import { viewport } from '$lib/viewport.svelte';
 
 	let { tabs }: { tabs: { href: string; label: string }[] } = $props();
 
 	function isActive(href: string): boolean {
-		if (href === '/') return page.url.pathname === '/';
-		return page.url.pathname === href || page.url.pathname.startsWith(href + '/');
+		return isNavActive(href, page.url.pathname);
 	}
 </script>
 
-<nav class="tab-row" aria-label="Sections">
+<!-- Labeled "Main" (not "Sections"): at any breakpoint exactly ONE nav landmark
+     is exposed, and it is always the main nav — this row on mobile, the rail on
+     desktop, where this row is display:none AND aria-hidden (spec §2.7
+     duplicate-landmark fix). -->
+<nav class="tab-row" aria-label="Main" aria-hidden={viewport.isMobile ? undefined : 'true'}>
 	{#each tabs as tab (tab.href)}
 		<a
 			href={tab.href}

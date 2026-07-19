@@ -12,8 +12,17 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import { timeAgo } from '$lib/format';
 	import { subscribe } from '$lib/live/liveClient';
+	import { notifUnread } from '$lib/live/notifUnread.svelte';
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
+
+	// Nav rewrite (cairn-gt05.4, spec §2.7): the standalone bell left the shell
+	// chrome — the unread badge lives on the account avatar (via the shared
+	// notifUnread cell) and the panel opens from the account menu's
+	// "Notifications" entry. `variant="external"` renders NO trigger of its own:
+	// the parent binds `open` and passes the avatar as `anchor` so the top-layer
+	// panel pins to it. The legacy `variant="bell"` trigger is kept intact for
+	// any future standalone mount.
 
 	// Mirrors the server's ActivityEvent (kept local so this client component
 	// never imports a $lib/server module), plus the readAt field.
@@ -28,9 +37,20 @@
 		readAt: string | null;
 	};
 
-	let unread = $state(0);
+	let {
+		variant = 'bell',
+		anchor = null,
+		open = $bindable(false)
+	}: {
+		/** 'bell' renders the classic bell trigger; 'external' renders none. */
+		variant?: 'bell' | 'external';
+		/** Element the top-layer panel pins to in external mode (the avatar). */
+		anchor?: HTMLElement | null;
+		/** Bindable in external mode so the account menu can open the panel. */
+		open?: boolean;
+	} = $props();
+
 	let items = $state<Notification[]>([]);
-	let open = $state(false);
 	let loading = $state(false);
 	let panelEl = $state<HTMLDivElement | null>(null);
 	let bellEl = $state<HTMLButtonElement | null>(null);
@@ -50,8 +70,9 @@
 	 *  top bar's top-anchored one (cairn-vjjc4) — same @900px breakpoint the
 	 *  rest of the mobile shell (HWSidebar/MobileTopBar) switches on. */
 	function positionPanel() {
-		if (!popEl || !bellEl) return;
-		const rect = bellEl.getBoundingClientRect();
+		const trigger = variant === 'external' ? anchor : bellEl;
+		if (!popEl || !trigger) return;
+		const rect = trigger.getBoundingClientRect();
 		// Clamp so the 320px panel never leaves the viewport on narrow screens.
 		const left = Math.max(8, Math.min(rect.left, window.innerWidth - 320 - 8));
 		popEl.style.left = `${left}px`;
@@ -150,7 +171,7 @@
 			if (res.ok) {
 				const body = (await res.json()) as { notifications: Notification[]; unread: number };
 				items = body.notifications;
-				unread = body.unread;
+				notifUnread.count = body.unread;
 			}
 		} catch {
 			// Transient — keep whatever we last had.
@@ -159,14 +180,19 @@
 		}
 	}
 
-	async function toggle() {
+	function toggle() {
 		open = !open;
-		if (open) await load();
 	}
+
+	// Fetch the list whenever the panel opens, whichever trigger opened it (the
+	// bell's toggle or the account menu's Notifications entry).
+	$effect(() => {
+		if (open) void load();
+	});
 
 	async function markAllRead() {
 		// Optimistic: clear locally, then persist. A failure re-syncs on next open.
-		unread = 0;
+		notifUnread.count = 0;
 		items = items.map((n) => ({ ...n, readAt: n.readAt ?? new Date().toISOString() }));
 		try {
 			const res = await fetch('/api/notifications', {
@@ -176,7 +202,7 @@
 			});
 			if (res.ok) {
 				const body = (await res.json()) as { unread: number };
-				unread = body.unread;
+				notifUnread.count = body.unread;
 			}
 		} catch {
 			// Best-effort — the badge re-derives on the next load.
@@ -187,7 +213,13 @@
 		if (!open) return;
 		// The popover is still a DOM descendant of .notif (top layer doesn't
 		// reparent), so one containment check covers bell + panel in both modes.
+		// (External openers — the account menu's Notifications entry — call
+		// stopPropagation so their opening click never reaches this handler.)
 		if (panelEl && !panelEl.contains(e.target as Node)) open = false;
+	}
+
+	function onDocKeydown(e: KeyboardEvent) {
+		if (e.key === 'Escape') open = false;
 	}
 
 	onMount(() => {
@@ -203,7 +235,7 @@
 		const unsubscribeStream = subscribe('notification', (ev) => {
 			try {
 				const data = JSON.parse(ev.data as string) as { unread?: unknown };
-				if (typeof data.unread === 'number') unread = data.unread;
+				if (typeof data.unread === 'number') notifUnread.count = data.unread;
 			} catch {
 				// Ignore a malformed frame.
 			}
@@ -212,35 +244,43 @@
 		});
 
 		document.addEventListener('click', onDocClick);
+		document.addEventListener('keydown', onDocKeydown);
 		return () => {
 			unsubscribeStream();
 			document.removeEventListener('click', onDocClick);
+			document.removeEventListener('keydown', onDocKeydown);
 		};
 	});
 </script>
 
 <div class="notif" bind:this={panelEl}>
-	<button
-		type="button"
-		class="bell"
-		bind:this={bellEl}
-		class:has-unread={unread > 0}
-		aria-label={unread > 0 ? `Notifications (${unread} unread)` : 'Notifications'}
-		aria-haspopup="true"
-		aria-expanded={open}
-		onclick={toggle}
-	>
-		<Icon name="activity" size={17} />
-		{#if unread > 0}
-			<span class="notif-badge" aria-hidden="true">{unread > 99 ? '99+' : unread}</span>
-		{/if}
-	</button>
+	{#if variant === 'bell'}
+		<button
+			type="button"
+			class="bell"
+			bind:this={bellEl}
+			class:has-unread={notifUnread.count > 0}
+			aria-label={notifUnread.count > 0
+				? `Notifications (${notifUnread.count} unread)`
+				: 'Notifications'}
+			aria-haspopup="true"
+			aria-expanded={open}
+			onclick={toggle}
+		>
+			<Icon name="activity" size={17} />
+			{#if notifUnread.count > 0}
+				<span class="notif-badge" aria-hidden="true"
+					>{notifUnread.count > 99 ? '99+' : notifUnread.count}</span
+				>
+			{/if}
+		</button>
+	{/if}
 
 	{#if open}
 		<div class="notif-panel" role="dialog" aria-label="Notifications" bind:this={popEl} popover="manual">
 			<div class="panel-head">
 				<span class="panel-title">Notifications</span>
-				{#if unread > 0}
+				{#if notifUnread.count > 0}
 					<button type="button" class="mark-read" onclick={markAllRead}>Mark all read</button>
 				{/if}
 			</div>

@@ -210,7 +210,8 @@
 		<span class="overline">Projected adjustment</span>
 		<span class="hero-number hero-pct tabular skeleton">+0.00%</span>
 		<p class="hero-sentence skeleton">
-			Based on how fast blocks have arrived this epoch, difficulty is expected to change soon.
+			Based on how fast blocks have arrived this difficulty period, difficulty is expected to
+			change soon.
 		</p>
 	</section>
 	<section class="stats fade-in">
@@ -231,7 +232,7 @@
 				{signedPercent(projected)}
 			</span>
 			<p class="hero-sentence">
-				Based on how fast blocks have arrived this epoch,
+				Based on how fast blocks have arrived this difficulty period,
 				<Term
 					tip="A number encoding how hard it is to find a valid block hash. Higher difficulty = more hashing needed per block."
 					>difficulty</Term
@@ -246,18 +247,18 @@
 		{/if}
 	</section>
 
-	<!-- Epoch progress -->
+	<!-- Difficulty-period progress -->
 	<section class="section fade-in">
 		<div class="section-head">
 			<Icon name="clock" size={17} />
-			<span class="card-title">Epoch progress</span>
+			<span class="card-title">This difficulty period</span>
 		</div>
 		<div>
 			<div class="progress-labels">
 				<span class="tabular">
 					{formatNumber(info.blocksIntoEpoch)} of
 					<Term
-						tip="One difficulty epoch. 2,016 blocks at exactly 10 minutes each is two weeks; the retarget multiplies difficulty by (two weeks ÷ actual time taken), clamped to 4x either direction."
+						tip="One difficulty period (an 'epoch'). 2,016 blocks at exactly 10 minutes each is two weeks; the retarget multiplies difficulty by (two weeks ÷ actual time taken), clamped to 4x either direction."
 						>2,016 blocks</Term
 					>
 				</span>
@@ -312,10 +313,10 @@
 			<span class="overline">
 				Average
 				<Term
-					tip="Average spacing between blocks so far this epoch. Faster than 10 minutes means more hashrate than difficulty accounts for — the next retarget will push difficulty up to compensate."
+					tip="Average spacing between blocks so far this difficulty period. Faster than 10 minutes means more hashrate than difficulty accounts for — the next retarget will push difficulty up to compensate."
 					>block time</Term
 				>
-				this epoch
+				this period
 			</span>
 			{#if info.avgBlockTimeSeconds != null}
 				<span class="hero-number stat-hero tabular">{minSec(info.avgBlockTimeSeconds)}</span>
@@ -373,7 +374,7 @@
 			/>
 			<span class="hint">
 				Each bar is one retarget — the network correcting for hashrate that joined or left
-				during the epoch.
+				during that difficulty period.
 			</span>
 		</section>
 	{:else if history === null}

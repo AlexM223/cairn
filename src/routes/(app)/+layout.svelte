@@ -12,8 +12,27 @@
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
 	import NavProgress from '$lib/components/heartwood/NavProgress.svelte';
 	import { maybeRedirectToSecure } from '$lib/secureRedirect';
+	import { PRIMARY_NAV, accountMenuLinks } from '$lib/nav';
+	import { deriveHealth } from '$lib/health';
+	import { chainHealth as liveChainHealth } from '$lib/live/chainHealth.svelte';
 
 	let { data, children } = $props();
+
+	// THE shared Health object (UX redesign Phase 3, cairn-gt05.3, spec §2.6b):
+	// the exact deriveHealth() Home's health line and the admin Health page
+	// call, fed this layout's altitude of inputs — live chain-transport health
+	// (falling back to the SSR seed before hydration's first nudge lands) and
+	// the unbacked-wallet list this load already threads. The banners below
+	// render FROM this object's duty statuses — ChainHealthBanner is the node
+	// duty's voice, the backup nudge is the backups duty's voice — so banner,
+	// Home line, and Health page can never tell different stories about the
+	// same signal (one truth, three altitudes).
+	const layoutHealth = $derived(
+		deriveHealth({
+			chainHealthy: (liveChainHealth.health ?? data.chainHealth ?? null)?.healthy ?? null,
+			unbackedCount: data.unbackedWallets?.length ?? 0
+		})
+	);
 
 	// Returning users who already accepted the self-signed cert land on the
 	// secure address automatically (cairn-6uff); everyone else stays put and
@@ -22,31 +41,16 @@
 		void maybeRedirectToSecure(data.httpsPort ?? null);
 	});
 
-	// A feature the user has no access to at all is absent from the nav (not shown
-	// disabled) — same pattern as the admin-only Node entry. The server-side gate
-	// (requireFeature) is the real boundary; hiding the link is the courtesy.
+	// Primary nav (spec §2.7, cairn-gt05.4): exactly three destinations, the
+	// same set on the desktop rail and the mobile tab row. Everything else —
+	// Explorer, Mining, Health, Settings, Notifications — reaches the app
+	// through the account menu. A feature the user has no access to is absent
+	// from that menu (not shown disabled); the server-side gate (requireFeature
+	// / admin auth) is the real boundary, hiding the link is the courtesy.
 	const flags = $derived(data.flags ?? {});
-	const nav = $derived([
-		{ href: '/', label: 'Home', icon: 'dashboard' },
-		...(flags.explorer !== false ? [{ href: '/explorer', label: 'Explorer', icon: 'explorer' }] : []),
-		{ href: '/wallets', label: 'Wallets', icon: 'wallet' },
-		{ href: '/activity', label: 'Activity', icon: 'activity' },
-		...(flags.mining !== false ? [{ href: '/mining', label: 'Mining', icon: 'flame' }] : []),
-		...(data.user.isAdmin ? [{ href: '/admin', label: 'Health', icon: 'server' }] : []),
-		{ href: '/settings', label: 'Settings', icon: 'settings' }
-	]);
-
-	// Mobile tab row shows only the four tab destinations — Node & Settings are
-	// reached through the avatar menu on mobile (Heartwood responsive spec).
-	// Mining (cairn-vn43.5) joins that avatar-menu group rather than taking a
-	// fifth tab slot — it's an occasional-use surface, same reasoning as Node.
-	const tabs = $derived(
-		nav
-			.filter(
-				(item) => item.href !== '/settings' && item.href !== '/admin' && item.href !== '/mining'
-			)
-			.map(({ href, label }) => ({ href, label }))
-	);
+	const nav = PRIMARY_NAV;
+	const tabs = PRIMARY_NAV.map(({ href, label }) => ({ href, label }));
+	const menuEntries = $derived(accountMenuLinks({ isAdmin: data.user.isAdmin, flags }));
 
 	// Heartwood mobile shell, tab vs flow (verified against src/routes/(app)):
 	// - Tab pages (top bar + text-tab row): `/`, `/explorer/**` (block/tx/address
@@ -193,7 +197,7 @@
 </script>
 
 <div class="shell">
-	<HWSidebar navItems={nav} user={data.user} operatorName={data.operatorName ?? null} />
+	<HWSidebar navItems={nav} {menuEntries} user={data.user} operatorName={data.operatorName ?? null} />
 
 	<div class="content">
 		<NavProgress />
@@ -202,7 +206,7 @@
 				variant={isExplorer ? 'search' : 'dial'}
 				user={data.user}
 				operatorName={data.operatorName ?? null}
-				showMining={flags.mining !== false}
+				{menuEntries}
 			/>
 			<MobileTabRow {tabs} />
 		{:else if isMining}
@@ -212,7 +216,7 @@
 				variant="dial"
 				user={data.user}
 				operatorName={data.operatorName ?? null}
-				showMining={flags.mining !== false}
+				{menuEntries}
 			/>
 		{:else}
 			<!-- Flow pages: back circle only. The centered eyebrow + spacer row is
@@ -250,7 +254,11 @@
 				     filtered by flag, expiry and this user's dismissals. -->
 				<AnnouncementBanner {announcement} />
 			{/each}
-			{#if nudge && !backupDismissed}
+			{#if nudge && !backupDismissed && layoutHealth.backups.status === 'attention'}
+				<!-- The backups duty's banner voice: getDueBackupNudge() still owns
+				     WHEN it's due (the gt05.5 decaying cadence and variant copy are
+				     unchanged); the Health object's backups status is the WHETHER —
+				     the same amber verdict Home's line and the Health page show. -->
 				<div class="backup-banner" role="status">
 					<Icon name="alert-triangle" size={16} />
 					<span class="grow">

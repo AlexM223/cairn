@@ -441,6 +441,23 @@ export function setWalletDevice(
 }
 
 /**
+ * Rename a wallet (cairn-gt05.2 — the /wallets/[id]/settings subpage). Trivial
+ * reversible action per the friction ladder: no confirmation, just a bounded
+ * non-empty name. Returns false when the name is empty/blank or the wallet
+ * doesn't exist / isn't owned by userId.
+ */
+export function renameWallet(userId: number, id: number, name: string): boolean {
+	const trimmed = String(name ?? '')
+		.trim()
+		.slice(0, 60);
+	if (trimmed.length === 0) return false;
+	const res = db
+		.prepare('UPDATE wallets SET name = ? WHERE id = ? AND user_id = ?')
+		.run(trimmed, id, userId);
+	return res.changes > 0;
+}
+
+/**
  * cairn-vop2: deleteWallet's cascade (transactions.wallet_id ON DELETE CASCADE)
  * doesn't share deleteTransaction's per-row broadcast guard (cairn-up0q), so a
  * whole-wallet delete could otherwise erase a transaction mid-broadcast — the

@@ -17,6 +17,7 @@
 	import BreathingCounter from '$lib/components/heartwood/BreathingCounter.svelte';
 	import PendingBand from '$lib/components/heartwood/PendingBand.svelte';
 	import Term from '$lib/components/Term.svelte';
+	import FeeRate from '$lib/components/FeeRate.svelte';
 	import { formatNumber, formatBtc, formatBytes, formatFeeRate, timeAgo } from '$lib/format';
 
 	let { data } = $props();
@@ -116,14 +117,14 @@
 					{
 						rate: fees.fastest,
 						label: 'Fastest',
-						context: 'to make the very next ring (~10 minutes)'
+						context: 'to make the very next block (~10 minutes)'
 					},
 					{
 						rate: fees.halfHour,
 						label: 'Half hour',
-						context: 'to take a ring within about 30 minutes'
+						context: 'to be in a block within about 30 minutes'
 					},
-					{ rate: fees.hour, label: 'Hour', context: 'to take a ring within about an hour' },
+					{ rate: fees.hour, label: 'Hour', context: 'to be in a block within about an hour' },
 					{
 						rate: fees.economy,
 						label: 'Economy',
@@ -166,12 +167,12 @@
 					<span class="hero-number hero-count">
 						<BreathingCounter value={summary.txCount} display={formatNumber(summary.txCount)} />
 					</span>
-					<span class="hero-sub">transactions waiting · no rings yet</span>
+					<span class="hero-sub">transactions waiting for a block</span>
 				</div>
 				<div class="stat-line tabular">
 					<span>
 						<Term
-							tip="The combined virtual size of everything waiting. A ring segment fits about 1 million virtual bytes, so this backlog is roughly {blocksWorth.toFixed(1)} rings deep."
+							tip="The combined virtual size of everything waiting. A block fits about 1 million virtual bytes, so this backlog is roughly {blocksWorth.toFixed(1)} blocks deep."
 						>
 							<span class="stat-num">
 								<BreathingCounter
@@ -183,7 +184,7 @@
 						backlog
 					</span>
 					<span class="sep" aria-hidden="true">·</span>
-					<span>≈ <span class="stat-num">{blocksWorth.toFixed(1)}</span> rings worth</span>
+					<span>≈ <span class="stat-num">{blocksWorth.toFixed(1)}</span> blocks' worth</span>
 					<span class="sep" aria-hidden="true">·</span>
 					<span>
 						<span class="stat-num fees">{formatBtc(summary.totalFees)}</span> BTC in waiting fees
@@ -192,10 +193,10 @@
 			{:else if firstLoad}
 				<div class="hero-row" aria-busy="true" aria-label="Loading mempool">
 					<span class="hero-number hero-count skeleton">00,000</span>
-					<span class="hero-sub">transactions waiting · no rings yet</span>
+					<span class="hero-sub">transactions waiting for a block</span>
 				</div>
 				<div class="stat-line tabular">
-					<span class="stat-num skeleton">000 MB backlog · 0.0 rings · 0.000 BTC</span>
+					<span class="stat-num skeleton">000 MB backlog · 0.0 blocks · 0.000 BTC</span>
 				</div>
 			{:else if !showError}
 				<!-- Snapshot exists but carries no mempool summary: honest degrade, not a
@@ -224,13 +225,13 @@
 			     nothing when you have none. -->
 			<PendingBand pending={data.pending} />
 
-			<!-- Projected next rings — independent panel. -->
+			<!-- Projected next blocks — independent panel. -->
 			{#if projected && projected.length > 0}
 				<section class="section fade-in">
 					<div class="section-head">
-						<span class="section-title">Projected next rings</span>
+						<span class="section-title">Projected next blocks</span>
 						<Term
-							tip="A simulation of the blocks miners would assemble from the current mempool, greedily taking the highest fee rates first. Your transaction lands in the first projected ring whose fee range it beats."
+							tip="A simulation of the blocks miners would assemble from the current mempool, greedily taking the highest fee rates first. Your transaction lands in the first projected block whose fee range it beats."
 						>
 							<span class="hint">how is this known?</span>
 						</Term>
@@ -243,9 +244,7 @@
 							<div class="proj-block" style:--depth={i}>
 								<span class="proj-eta">~{(i + 1) * 10} min</span>
 								<span class="proj-fee tabular">{formatFeeRate(block.medianFee)}</span>
-								<span class="proj-range tabular">
-									{block.feeRange[0]}–{block.feeRange[1]} sat/vB
-								</span>
+								<span class="proj-range tabular"><FeeRate range={block.feeRange} /></span>
 								<span class="proj-meta">
 									{formatNumber(block.nTx)} txs · {formatBtc(block.totalFees)} BTC fees
 								</span>
@@ -256,7 +255,7 @@
 			{:else if neverSynced}
 				<section class="section fade-in" aria-busy="true">
 					<div class="section-head">
-						<span class="section-title skeleton">Projected next rings</span>
+						<span class="section-title skeleton">Projected next blocks</span>
 					</div>
 					<div class="proj-row">
 						{#each [0, 1, 2, 3, 4, 5] as i (i)}
@@ -280,15 +279,14 @@
 						<div class="tier-list">
 							{#each tiers as tier (tier.label)}
 								<div class="tier">
-									<span class="tier-rate tabular">{Math.round(tier.rate)}</span>
-									<span class="tier-unit">sat/vB</span>
+									<span class="tier-rate"><FeeRate rate={tier.rate} /></span>
 									<span class="tier-context">{tier.context}</span>
 								</div>
 							{/each}
 						</div>
 						<p class="hint tier-note">
 							Rates move with demand — a quiet Sunday mempool can clear at 1 sat/vB while a busy
-							day pushes the next ring past 100.
+							day pushes the next block past 100.
 						</p>
 					</section>
 				{:else if neverSynced}
@@ -318,7 +316,7 @@
 					<div class="section-head">
 						<span class="section-title">Fee distribution</span>
 						<Term
-							tip="How the waiting transactions are spread across fee rates, by virtual size. A tall ridge near the left means cheap transactions dominate; weight to the right means a bidding war. The dashed marker is roughly what the next ring is paying."
+							tip="How the waiting transactions are spread across fee rates, by virtual size. A tall ridge near the left means cheap transactions dominate; weight to the right means a bidding war. The dashed marker is roughly what the next block is paying."
 						>
 							<span class="hint">what am I seeing?</span>
 						</Term>
@@ -350,8 +348,8 @@
 				</section>
 			{:else if projected === null && !neverSynced}
 				<p class="hint degrade-note">
-					Projected rings and history need a mempool fee histogram from your Electrum server, which
-					this server didn't provide.
+					Projected blocks and history need a mempool fee histogram from your Electrum server,
+					which this server didn't provide.
 				</p>
 			{/if}
 		{/if}
@@ -366,8 +364,9 @@
 				<p>
 					Block space is scarce (about 1 MB of virtual bytes every ten minutes), so miners fill
 					blocks with the highest-paying transactions first. That turns the mempool into a
-					<strong>fee auction</strong>: the more you pay per virtual byte, the sooner you take a
-					ring. When the mempool empties, even 1 sat/vB confirms quickly.
+					<strong>fee auction</strong>: the more you pay per virtual byte, the sooner your
+					transaction makes it into a block. When the mempool empties, even 1 sat/vB confirms
+					quickly.
 				</p>
 			</HowItWorks>
 		</div>
@@ -609,15 +608,17 @@
 		font-family: var(--font-serif);
 		font-size: 22px;
 		font-weight: 600;
-		min-width: 48px;
-		text-align: right;
+		min-width: 100px;
 		color: var(--text-rows);
+		white-space: nowrap;
 	}
 
-	.tier-unit {
+	/* The FeeRate unit stays small/UI-font beside the big serif rate. */
+	.tier-rate :global(.fr-unit) {
+		font-family: var(--font-ui);
 		font-size: 11.5px;
+		font-weight: 400;
 		color: var(--text-muted);
-		min-width: 44px;
 	}
 
 	.tier-context {

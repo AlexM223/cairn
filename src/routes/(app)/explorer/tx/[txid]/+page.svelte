@@ -4,6 +4,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import Term from '$lib/components/Term.svelte';
+	import FeeRate from '$lib/components/FeeRate.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
@@ -27,7 +28,6 @@
 		formatBytes,
 		timeAgo,
 		formatDateTime,
-		formatFeeRate,
 		truncateMiddle
 	} from '$lib/format';
 
@@ -337,9 +337,8 @@
 							</span>
 						{/if}
 					{:else}
-						broadcast but not yet in a block{outlook
-							? ` — at ${formatFeeRate(tx.feeRate)}, ${outlook}`
-							: ''}
+						broadcast but not yet in a block{#if outlook}
+							— at <FeeRate rate={tx.feeRate} />, {outlook}{/if}
 					{/if}
 				</span>
 			</div>
@@ -362,13 +361,13 @@
 				{/if}
 				{#if tx.rbf && !tx.confirmed}
 					<Term
-						tip="This transaction signals replace-by-fee (BIP125): the sender can rebroadcast it with a higher fee if it's taking too long to confirm. Treat it as tentative until it takes a ring."
+						tip="This transaction signals replace-by-fee (BIP125): the sender can rebroadcast it with a higher fee if it's taking too long to confirm. Treat it as tentative until it's in a block."
 					>
 						<span class="badge badge-warning">Replaceable</span>
 					</Term>
 				{:else if tx.rbf}
 					<Term
-						tip="While it had no rings, this transaction signalled replace-by-fee (BIP125), letting the sender bump the fee. Now that it's buried, that no longer matters."
+						tip="While it was unconfirmed, this transaction signalled replace-by-fee (BIP125), letting the sender bump the fee. Now that it's buried under confirmations, that no longer matters."
 					>
 						<span class="badge badge-neutral">RBF</span>
 					</Term>
@@ -407,7 +406,7 @@
 				<div class="rbf-head">
 					<span class="section-eyebrow">
 						<Term
-							tip="Replace-by-fee: the sender rebroadcast this payment with a higher fee to speed it up. Every version conflicts with the others by spending the same inputs, so only one can ever take a ring."
+							tip="Replace-by-fee: the sender rebroadcast this payment with a higher fee to speed it up. Every version conflicts with the others by spending the same inputs, so only one can ever confirm."
 							>Replacement history</Term
 						>
 					</span>
@@ -475,11 +474,11 @@
 					{/if}
 				</span>
 				{#if tx.feeRate !== null}
-					<span class="hint tabular">{formatFeeRate(tx.feeRate)}</span>
+					<span class="hint tabular"><FeeRate rate={tx.feeRate} /></span>
 				{/if}
 				{#if cpfpActive && cpfp}
 					<span class="hint cpfp-hint">
-						effective <span class="tabular">{formatFeeRate(cpfp.effectiveFeeRate)}</span> via CPFP
+						effective <FeeRate rate={cpfp.effectiveFeeRate} /> via CPFP
 						{#if cpfp.descendants[0]}
 							— child
 							<a href="/explorer/tx/{cpfp.descendants[0]}" class="mono">
@@ -769,13 +768,18 @@
 					{#if tx.fee !== null}{formatSats(tx.fee)} sats{:else}—{/if}
 				</span>
 				{#if tx.feeRate !== null}
-					<span class="rail-sub tabular">{formatFeeRate(tx.feeRate)}</span>
+					<span class="rail-sub tabular"><FeeRate rate={tx.feeRate} /></span>
 				{/if}
 			</div>
 			<div class="rail-block">
 				<span class="rail-eyebrow">Size</span>
 				<span class="rail-value-sm tabular">{formatBytes(tx.size)}</span>
-				<span class="rail-sub tabular">{formatNumber(tx.vsize)} vB · {formatNumber(tx.weight)} WU</span>
+				<span class="rail-sub tabular">
+					<Term
+						tip="Raw size is the serialized bytes; virtual size (vB) discounts SegWit witness data to a quarter weight. Fees are priced per virtual byte, which is why SegWit transactions are cheaper."
+						>{formatNumber(tx.vsize)} vB · {formatNumber(tx.weight)} WU</Term
+					>
+				</span>
 			</div>
 			<div class="rail-block">
 				<span class="rail-eyebrow">Version · locktime</span>
