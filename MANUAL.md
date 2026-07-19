@@ -626,10 +626,23 @@ of `ElectrumClient.subscribeScripthash()`. Started once from
 - On a `'scripthash'` change event → `handleScripthashChange()`: fetches
   history, diffs new txids against the `notified_txids` table, fires
   `tx_received` (+ `tx_large` above a per-user threshold) for genuinely new
-  inbound txids.
+  inbound txids. **The claim and the notification writes commit as one
+  SQLite transaction** (`withTransaction`, `cairn-fzqpe`): a process crash
+  between "mark txid notified" and "enqueue the notification" rolls the
+  claim back, so the next scripthash event retries instead of leaving a
+  claimed-but-never-sent alert suppressed forever.
 - On each new block (`'header'`) → `handleNewBlock()`: re-checks every
   pending (`confirmed=0`) `notified_txids` row's confirmation count against
-  `CONFIRM_THRESHOLD = 1`, firing `tx_confirmed` once crossed.
+  `CONFIRM_THRESHOLD = 1`, firing `tx_confirmed` once crossed and stamping
+  `confirmed_height` with the tip at that moment. **Recently-confirmed rows
+  stay in the scan for a `REORG_RECHECK_DEPTH = 6`-block window**
+  (`cairn-ieilg`): a payment reorged out *after* firing `tx_confirmed` is
+  still reconciled through `reconcileDisappeared` — status `'replaced'`,
+  forced balance refresh, and a correcting `tx_replaced` titled "Confirmed
+  payment reversed" (distinct from the pre-confirmation "Incoming payment
+  cancelled"). Rows deeper than the window, and legacy/baselined rows
+  (`confirmed_height` NULL), are never re-checked. Regression:
+  `addressWatcherReorg.test.ts`, `dbTransaction.test.ts`.
 - Refreshed every `REFRESH_INTERVAL_MS = 5min` (`refreshWatches()`) as the
   periodic backstop. **As of `cairn-0tvez` (`343c9f5`), `createWallet`/
   `createMultisig` also call `refreshWatches()` immediately after insert**

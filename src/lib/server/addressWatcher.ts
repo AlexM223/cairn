@@ -23,7 +23,7 @@
 // Started once from hooks.server.ts. It pins the ElectrumClient it starts with
 // (like the SSE endpoint) and re-attaches on reconfigureChain via refreshWatches.
 
-import { db } from './db';
+import { db, withTransaction } from './db';
 import { getChain } from './chain/index';
 import { parseXpub, deriveAddress, addressToScripthash, scriptPubKeyHex } from './bitcoin/xpub';
 import { createMultisigDeriver } from './bitcoin/multisig';
@@ -60,6 +60,17 @@ const WATCH_WINDOW = 30;
 // (config.confirmations) later — for now this is the default from §3 ([1,6],
 // we fire on the first: 1 confirmation).
 const CONFIRM_THRESHOLD = 1;
+
+// cairn-ieilg: with CONFIRM_THRESHOLD = 1, a payment can fire tx_confirmed and
+// then be REORGED OUT one block later — and a row excluded from the block scan
+// the moment confirmed=1 would keep its stale "Payment received" (and the
+// inflated balance) forever. So recently-confirmed rows stay in the scan for a
+// bounded window: any 'notified' row whose confirmed_height is within this many
+// blocks of the current tip is still re-checked, and a disappearance routes
+// through the same reconcileDisappeared correction as an unconfirmed vanish.
+// 6 blocks ≈ the conventional "settled" depth; deeper reorgs are chain-level
+// emergencies no per-wallet watcher can honestly paper over.
+const REORG_RECHECK_DEPTH = 6;
 
 // How often to re-enumerate wallets and pick up newly created ones. See
 // startAddressWatcher for why this is a poll rather than a wallet-creation hook.
@@ -930,21 +941,74 @@ async function handleScripthashChange(scripthash: string): Promise<void> {
 			// First sighting (or a pending→notified transition, cairn-a2p1) wins; an
 			// already-notified/duplicate row suppresses (guards the reconnect re-emit
 			// race). receivedSats===0 keeps any prior tracked amount (COALESCE).
-			if (!claimReceived(w, txid, receivedSats > 0 ? receivedSats : null)) continue;
-
+			//
+			// cairn-fzqpe: the claim and the notification writes (in-app activity row
+			// + external queue rows, all synchronous SQLite inside notify()) commit as
+			// ONE transaction. Previously the claim committed first, so a process
+			// crash in the microseconds before notify() ran left the txid permanently
+			// 'notified' with no alert ever recorded anywhere — a silently lost
+			// payment notification (alreadyNotified suppresses every retry). Rolling
+			// the claim back on a crash means the next scripthash event simply
+			// re-claims and re-notifies. notify()'s internal per-stage catches
+			// (cairn-s0p5) still apply: a stage FAILURE never throws, so it never
+			// rolls back the claim — only a process death mid-unit does.
 			const label = walletLabel(w);
 			const link = walletLink(w);
+			let wasLarge = false;
+			const claimed = withTransaction(() => {
+				if (!claimReceived(w, txid, receivedSats > 0 ? receivedSats : null)) return false;
 
+				if (receivedSats > 0) {
+					notify({
+						type: 'tx_received',
+						userId: w.userId,
+						level: 'success',
+						title: 'Payment received',
+						body: `${formatBtc(receivedSats)} received to ${label}.`,
+						detail: { txid, amountSats: receivedSats, walletId: w.walletId, walletKind: w.kind },
+						link
+					});
+					const threshold = largeThresholdSats(w.userId);
+					if (threshold !== null && receivedSats >= threshold) {
+						wasLarge = true;
+						notify({
+							type: 'tx_large',
+							userId: w.userId,
+							level: 'info',
+							title: 'Large payment received',
+							body: `${formatBtc(receivedSats)} received to ${label} — above your large-transaction threshold.`,
+							detail: {
+								txid,
+								amountSats: receivedSats,
+								thresholdSats: threshold,
+								walletId: w.walletId,
+								walletKind: w.kind
+							},
+							link
+						});
+					}
+				} else {
+					// A new txid we couldn't value (detail fetch failed, or it's a spend
+					// with no output back to us). Record it so we don't loop, but only
+					// surface a generic "activity" note for inbound-looking history.
+					notify({
+						type: 'tx_received',
+						userId: w.userId,
+						level: 'info',
+						title: 'New wallet activity',
+						body: `A new transaction touched ${label}.`,
+						detail: { txid, walletId: w.walletId, walletKind: w.kind },
+						link
+					});
+				}
+				return true;
+			});
+			if (!claimed) continue;
+
+			// In-memory / best-effort side effects stay OUTSIDE the transaction: a
+			// live nudge can't be rolled back, and none of them belong to the
+			// claim+enqueue atomicity contract.
 			if (receivedSats > 0) {
-				notify({
-					type: 'tx_received',
-					userId: w.userId,
-					level: 'success',
-					title: 'Payment received',
-					body: `${formatBtc(receivedSats)} received to ${label}.`,
-					detail: { txid, amountSats: receivedSats, walletId: w.walletId, walletKind: w.kind },
-					link
-				});
 				// cairn-gt05.5: an unbacked wallet that just took real money is the
 				// highest-value backup-nudge escalation — re-nudge now rather than
 				// waiting out a decay window that can run to 90 days. Best-effort and
@@ -959,24 +1023,7 @@ async function handleScripthashChange(scripthash: string): Promise<void> {
 					{ userId: w.userId },
 					{ walletKind: w.kind, walletId: w.walletId, txid, event: 'received', amountSats: receivedSats }
 				);
-
-				const threshold = largeThresholdSats(w.userId);
-				if (threshold !== null && receivedSats >= threshold) {
-					notify({
-						type: 'tx_large',
-						userId: w.userId,
-						level: 'info',
-						title: 'Large payment received',
-						body: `${formatBtc(receivedSats)} received to ${label} — above your large-transaction threshold.`,
-						detail: {
-							txid,
-							amountSats: receivedSats,
-							thresholdSats: threshold,
-							walletId: w.walletId,
-							walletKind: w.kind
-						},
-						link
-					});
+				if (wasLarge) {
 					livePublish(
 						'wallet',
 						{ userId: w.userId },
@@ -984,18 +1031,6 @@ async function handleScripthashChange(scripthash: string): Promise<void> {
 					);
 				}
 			} else {
-				// A new txid we couldn't value (detail fetch failed, or it's a spend
-				// with no output back to us). Record it so we don't loop, but only
-				// surface a generic "activity" note for inbound-looking history.
-				notify({
-					type: 'tx_received',
-					userId: w.userId,
-					level: 'info',
-					title: 'New wallet activity',
-					body: `A new transaction touched ${label}.`,
-					detail: { txid, walletId: w.walletId, walletKind: w.kind },
-					link
-				});
 				// Unvalued receive path — amountSats omitted (§3.4: publish what's cheaply
 				// in hand, add no queries). Still a `received` nudge so the tx list reloads.
 				livePublish(
@@ -1046,6 +1081,11 @@ interface PendingTxidRow {
 	txid: string;
 	status: string | null;
 	amount_sats: number | null;
+	/** 1 once tx_confirmed has fired. Rows re-checked within the reorg window
+	 *  (cairn-ieilg) arrive here with confirmed = 1. */
+	confirmed: number;
+	/** Chain-tip height when `confirmed` flipped to 1; NULL on legacy rows. */
+	confirmed_height: number | null;
 }
 
 /** A tx-not-found style error from ChainService.getTx — the tx is neither in a
@@ -1164,12 +1204,18 @@ async function reconcileDisappeared(row: PendingTxidRow): Promise<void> {
 		{ userId: row.user_id },
 		{ walletKind: row.wallet_kind, walletId: row.wallet_id, event: 'replaced', amountSats: amount }
 	);
+	// A row that had already fired tx_confirmed (reorg-window re-check,
+	// cairn-ieilg) disappeared AFTER confirming — say so honestly rather than
+	// pretending it "never confirmed".
+	const wasConfirmed = row.confirmed === 1;
 	notify({
 		type: 'tx_replaced',
 		userId: row.user_id,
 		level: 'warn',
-		title: 'Incoming payment cancelled',
-		body: `A payment of ${formatBtc(amount)} to ${walletLabel(w)} was cancelled before it confirmed. Your balance has been updated.`,
+		title: wasConfirmed ? 'Confirmed payment reversed' : 'Incoming payment cancelled',
+		body: wasConfirmed
+			? `A payment of ${formatBtc(amount)} to ${walletLabel(w)} was removed from the chain in a reorganization. Your balance has been updated.`
+			: `A payment of ${formatBtc(amount)} to ${walletLabel(w)} was cancelled before it confirmed. Your balance has been updated.`,
 		// No txid (the tx no longer exists on-chain — a deep link would 404) and no
 		// amountSats key (the amount is stated in the body; a bare +amount in the
 		// feed's amount column would misread as a receipt). link goes to the wallet.
@@ -1215,13 +1261,22 @@ async function handleNewBlock(): Promise<void> {
 	if (!state.baselined) return;
 	let pending: PendingTxidRow[];
 	try {
+		// Two populations (cairn-ieilg): the not-yet-confirmed rows (the original
+		// scan), plus RECENTLY-confirmed 'notified' rows still inside the reorg
+		// window — those exist purely so a post-confirmation reorg-out is caught
+		// and reconciled instead of leaving a stale "Payment received" forever.
+		// Legacy confirmed rows (confirmed_height NULL — incl. every baselined
+		// row, which also has status NULL) are never re-checked.
 		pending = db
 			.prepare(
-				`SELECT id, wallet_kind, wallet_id, user_id, txid, status, amount_sats
+				`SELECT id, wallet_kind, wallet_id, user_id, txid, status, amount_sats,
+				        confirmed, confirmed_height
 				   FROM notified_txids
-				  WHERE confirmed = 0 AND (status IS NULL OR status IN ('pending', 'notified'))`
+				  WHERE (confirmed = 0 AND (status IS NULL OR status IN ('pending', 'notified')))
+				     OR (confirmed = 1 AND status = 'notified'
+				         AND confirmed_height IS NOT NULL AND confirmed_height > ?)`
 			)
-			.all() as unknown as PendingTxidRow[];
+			.all(state.tipHeight - REORG_RECHECK_DEPTH) as unknown as PendingTxidRow[];
 	} catch (e) {
 		log.error({ err: e }, 'confirmation scan query failed');
 		return;
@@ -1229,11 +1284,20 @@ async function handleNewBlock(): Promise<void> {
 	if (pending.length === 0) return;
 
 	const chain = getChain();
-	const markConfirmed = db.prepare('UPDATE notified_txids SET confirmed = 1 WHERE id = ?');
+	const markConfirmed = db.prepare(
+		'UPDATE notified_txids SET confirmed = 1, confirmed_height = ? WHERE id = ?'
+	);
 
 	for (const row of pending) {
 		try {
 			const tx = await chain.getTx(row.txid);
+
+			// Reorg-window re-check of an already-confirmed row (cairn-ieilg): the tx
+			// is still fetchable, so nothing disappeared. If it slid back into the
+			// mempool (reorged but re-broadcastable) it will simply re-confirm; the
+			// already-sent tx_confirmed is not re-fired either way.
+			if (row.confirmed === 1) continue;
+
 			if (!tx.confirmed || tx.confirmations < CONFIRM_THRESHOLD) continue;
 
 			// A 'pending' row hasn't surfaced as "received" yet — leave tx_confirmed to
@@ -1241,7 +1305,7 @@ async function handleNewBlock(): Promise<void> {
 			// (firing tx_received), so the user never sees "confirmed" before "received".
 			if (row.status === 'pending') continue;
 
-			markConfirmed.run(row.id);
+			markConfirmed.run(state.tipHeight, row.id);
 			const w: Watched = {
 				kind: row.wallet_kind,
 				walletId: row.wallet_id,

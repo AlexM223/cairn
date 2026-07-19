@@ -33,7 +33,9 @@ function baseProps(bind: Bind) {
 let mounted: Record<string, unknown> | undefined;
 
 function renderCard(bind: Bind, opts?: { isAdmin?: boolean; asicPort?: { port: number; shareDifficulty: number } }) {
-	page.url = new URL('http://minerbox.local:3000/mining');
+	// Plain URL vs SvelteKit's route-literal-typed `pathname` — runtime shape is
+	// identical; the cast only satisfies the generated union type.
+	page.url = new URL('http://minerbox.local:3000/mining') as typeof page.url;
 	page.data = { user: opts?.isAdmin ? { isAdmin: true } : { isAdmin: false } };
 
 	const target = document.body.appendChild(document.createElement('div'));
