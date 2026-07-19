@@ -68,6 +68,14 @@
 	// 0 when there's no scan yet — only ever rendered inside `{#if detail}` below.
 	const available = $derived(detail ? detail.balance.confirmed - maturingTotal : 0);
 
+	// First-deposit confidence (cairn-gt05.6, F17): mirrors the single-sig
+	// wallet detail page's identical flags — see
+	// docs/UX-BACKUP-NUDGE-AND-FIRST-DEPOSIT-SPEC.md §B.
+	const neverFunded = $derived(
+		!!detail && available === 0 && detail.history.length === 0 && detail.balance.unconfirmed === 0
+	);
+	const hasIncomingPending = $derived(!!detail && detail.balance.unconfirmed > 0);
+
 	// --- lazy fiat snapshot (cairn-d326, R6 / F1) — see the single-sig detail
 	//     page's identical block for the full rationale: mirrors Home's
 	//     privacy-gated, fetch-once-per-navigation pattern instead of the
@@ -567,6 +575,26 @@
 						<a href="#mining-rewards">mining rewards not yet spendable</a>
 					</p>
 				{/if}
+				{#if hasIncomingPending}
+					<!-- Self-updating pending note (cairn-gt05.6, F17): answers "did it
+					     arrive" once, from the node's own data — removes the reason to
+					     leave for a third-party explorer. Auto-clears via the /api/live
+					     re-scan the moment balance.unconfirmed returns to 0. -->
+					<div class="hw-pending-note">
+						<strong>Your payment is on its way in.</strong>
+						<p>
+							Your node has seen it — <Amount
+								sats={detail.balance.unconfirmed}
+								size="inline"
+								sign
+								direction="in"
+							/> arriving. It'll be spendable once the network confirms it, usually within an hour.
+							You don't need to do anything: this page updates itself, and it'll appear in your
+							activity as soon as it confirms — no need to check anywhere else, this is your own
+							node telling you.
+						</p>
+					</div>
+				{/if}
 				{#if horizonRows}
 					<div class="hw-hero-horizons">
 						<BalanceHorizons rows={horizonRows} />
@@ -807,6 +835,16 @@
 								deposit, cross-check this address in another tool (Sparrow can open your backup
 								file) — two tools agreeing proves the wallet is built from your keys alone.
 							</p>
+							{#if neverFunded}
+								<!-- Mechanism-fact confidence line (cairn-gt05.6, F17) — answers
+								     "is this really mine" for a never-funded wallet's first
+								     receive view, without reassurance-theater. -->
+								<p class="hw-caption">
+									This address belongs to your wallet. Anything sent to it is controlled only by
+									your keys — nobody else can move it. You can share it or reuse this flow as
+									often as you like.
+								</p>
+							{/if}
 							<div class="disclosure hw-receive-advanced">
 								<button
 									type="button"
@@ -976,7 +1014,7 @@
 								<div class="hw-tx-main">
 									<span class="hw-tx-title">{tx.delta >= 0 ? 'Received' : 'Sent'}</span>
 									<span class="hw-tx-meta">
-										{burialRingsLabel(conf)}
+										{conf === 0 && tx.delta >= 0 ? 'confirming now' : burialRingsLabel(conf)}
 										·
 										<!-- /explorer/tx/[txid] is exempt from the explorer flag
 										     (cairn-5yz3.3 — tx detail, not chain browsing), so this
@@ -1582,6 +1620,29 @@
 	.hw-hero-sub.hw-maturing a {
 		color: inherit;
 		text-decoration: underline;
+	}
+
+	/* Self-updating first-deposit-pending note (cairn-gt05.6) — surface-neutral,
+	   no new color/token; calm status, never a modal or a spinner-wall. */
+	.hw-pending-note {
+		margin-top: 16px;
+		max-width: 620px;
+		padding: 14px 16px;
+		border-radius: var(--radius-card);
+		background: var(--surface-elevated);
+		font-size: 13px;
+		line-height: 1.6;
+		color: var(--text-secondary);
+	}
+
+	.hw-pending-note strong {
+		display: block;
+		margin-bottom: 4px;
+		color: var(--text);
+	}
+
+	.hw-pending-note p {
+		margin: 0;
 	}
 
 	/* Multi-horizon delta row (cairn-d326, R6) — see the single-sig detail
