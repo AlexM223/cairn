@@ -1,9 +1,11 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { HDKey } from '@scure/bip32';
-import { base64 } from '@scure/base';
+import { base64, base58check } from '@scure/base';
+import { sha256 } from '@noble/hashes/sha2.js';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
 import { Transaction, NETWORK } from '@scure/btc-signer';
 import { deriveMultisigAddress, type MultisigConfig, type MultisigKeyDescriptor } from './multisig';
+import { setDefaultNetwork } from './xpub';
 import { summarizePsbt, RBF_SEQUENCE, PsbtError, type SpendableUtxo } from './psbt';
 import {
 	constructMultisigPsbt,
@@ -276,6 +278,102 @@ describe('constructMultisigPsbt (p2wsh)', () => {
 			address: DEST_P2WSH // a p2wsh address, but not THIS multisig's script
 		};
 		await expect(build2of3({ utxos: [foreign] })).rejects.toThrow(/does not match this multisig/);
+	});
+});
+
+// ── network threading (cairn-xqnn7 follow-up) ───────────────────────────────
+//
+// Same bug as constructPsbt (psbt.ts): constructMultisigPsbt built every
+// output via @scure/btc-signer's mainnet-only NETWORK constant, so a
+// regtest/testnet multisig's own bcrt1/tb1 receive/change addresses failed
+// downstream in Transaction.addOutputAddress even though address derivation
+// (deriveMultisigAddress) was already network-aware.
+describe('constructMultisigPsbt: network threading (cairn-xqnn7 follow-up)', () => {
+	afterEach(() => setDefaultNetwork('mainnet'));
+
+	const b58 = base58check(sha256);
+	/** Re-encode a mainnet extended key with different SLIP-132 version bytes
+	 *  (mirrors xpub.test.ts's withVersion helper) — key RESOLUTION (resolveKey,
+	 *  multisig.ts) validates each cosigner xpub against the configured chain
+	 *  backend too, so a regtest multisig config needs regtest-versioned (vpub)
+	 *  cosigner keys, not just a regtest address-encoding request. */
+	function withVersion(extendedKey: string, version: number): string {
+		const raw = new Uint8Array(b58.decode(extendedKey));
+		raw[0] = (version >>> 24) & 0xff;
+		raw[1] = (version >>> 16) & 0xff;
+		raw[2] = (version >>> 8) & 0xff;
+		raw[3] = version & 0xff;
+		return b58.encode(raw);
+	}
+	const REGTEST_MULTISIG_2OF3: TestConfig = {
+		threshold: 2,
+		keys: MULTISIG_2OF3.keys.map((k) => ({ ...k, xpub: withVersion(k.xpub, 0x045f1cf6) })),
+		scriptType: 'p2wsh'
+	};
+
+	it('builds a regtest multisig PSBT with bcrt1 inputs/outputs under a regtest chain backend (no explicit network param)', async () => {
+		setDefaultNetwork('regtest');
+		const receive0 = deriveMultisigAddress(REGTEST_MULTISIG_2OF3, 0, 0).address;
+		const change0 = deriveMultisigAddress(REGTEST_MULTISIG_2OF3, 1, 0).address;
+		const recipient = deriveMultisigAddress(REGTEST_MULTISIG_2OF3, 0, 1).address;
+		expect(receive0.startsWith('bcrt1q')).toBe(true);
+		expect(change0.startsWith('bcrt1q')).toBe(true);
+
+		const utxo: SpendableUtxo = {
+			txid: '11'.repeat(32),
+			vout: 0,
+			value: 200_000,
+			height: 800_000,
+			address: receive0,
+			chain: 0,
+			index: 0
+		};
+		const draft = await constructMultisigPsbt({
+			config: REGTEST_MULTISIG_2OF3,
+			utxos: [utxo],
+			recipients: [{ address: recipient, amount: 50_000 }],
+			feeRate: 5,
+			changeIndex: 0
+		});
+		expect(draft.recipient).toBe(recipient);
+		expect(draft.change?.address).toBe(change0);
+
+		const summary = summarizePsbt(draft.psbtBase64, 2);
+		expect(summary.outputs.some((o) => o.address === recipient)).toBe(true);
+		expect(summary.outputs.some((o) => o.address === change0)).toBe(true);
+	});
+
+	it('an explicit params.network="regtest" builds bcrt1 outputs when the chain backend is also regtest', async () => {
+		setDefaultNetwork('regtest');
+		const receive0 = deriveMultisigAddress(REGTEST_MULTISIG_2OF3, 0, 0, 'regtest').address;
+		const change0 = deriveMultisigAddress(REGTEST_MULTISIG_2OF3, 1, 0, 'regtest').address;
+		const recipient = deriveMultisigAddress(REGTEST_MULTISIG_2OF3, 0, 1, 'regtest').address;
+
+		const utxo: SpendableUtxo = {
+			txid: '11'.repeat(32),
+			vout: 0,
+			value: 200_000,
+			height: 800_000,
+			address: receive0,
+			chain: 0,
+			index: 0
+		};
+		const draft = await constructMultisigPsbt({
+			config: REGTEST_MULTISIG_2OF3,
+			utxos: [utxo],
+			recipients: [{ address: recipient, amount: 50_000 }],
+			feeRate: 5,
+			changeIndex: 0,
+			network: 'regtest'
+		});
+		expect(draft.recipient.startsWith('bcrt1')).toBe(true);
+		expect(draft.change?.address.startsWith('bcrt1')).toBe(true);
+	});
+
+	it('mainnet multisig construction is unchanged: bc1 recipient/change, network omitted', async () => {
+		const draft = await build2of3({});
+		expect(draft.recipient.startsWith('bc1')).toBe(true);
+		expect(draft.change?.address.startsWith('bc1')).toBe(true);
 	});
 });
 

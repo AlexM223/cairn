@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { HDKey } from '@scure/bip32';
 import { base64, base58check } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
 import { Transaction, NETWORK, Address, OutScript, p2wpkh, SigHash } from '@scure/btc-signer';
-import { addressToScriptPubKey, parseXpub, deriveAddress } from './xpub';
+import { addressToScriptPubKey, parseXpub, deriveAddress, setDefaultNetwork } from './xpub';
 import {
 	constructPsbt,
 	summarizePsbt,
@@ -201,6 +201,128 @@ describe('constructPsbt', () => {
 		for (let i = 0; i < tx.outputsLength; i++) {
 			expect(tx.getOutput(i).bip32Derivation ?? []).toHaveLength(0);
 		}
+	});
+});
+
+// ── network threading (cairn-xqnn7 follow-up) ───────────────────────────────
+//
+// cairn-xqnn7 (eaaf0b2) made address derivation/validation (xpub.ts) network-
+// aware, but constructPsbt itself still built every output via @scure/btc-
+// signer's own NETWORK constant (bech32 'bc', mainnet-only) — so a regtest/
+// testnet instance passed pre-flight recipient validation (which IS network-
+// aware) only to blow up downstream in Transaction.addOutputAddress, which
+// re-decodes the address string against whatever network object it's given
+// and throws when a bcrt1/tb1 address doesn't match a mainnet 'bc' HRP. These
+// tests build a REAL PSBT end-to-end under each network and assert both the
+// construction succeeds and the resulting addresses round-trip through
+// summarizePsbt correctly — not just that validation accepts the input.
+describe('constructPsbt: network threading (cairn-xqnn7 follow-up)', () => {
+	afterEach(() => setDefaultNetwork('mainnet'));
+
+	const b58 = base58check(sha256);
+	/** Re-encode a mainnet extended key with different SLIP-132 version bytes
+	 *  (mirrors xpub.test.ts's withVersion helper) — lets the same underlying
+	 *  ZPRV test vector serve as a regtest/testnet vpub. */
+	function withVersion(extendedKey: string, version: number): string {
+		const raw = new Uint8Array(b58.decode(extendedKey));
+		raw[0] = (version >>> 24) & 0xff;
+		raw[1] = (version >>> 16) & 0xff;
+		raw[2] = (version >>> 8) & 0xff;
+		raw[3] = version & 0xff;
+		return b58.encode(raw);
+	}
+	const VPUB = withVersion(ZPUB, 0x045f1cf6); // regtest/testnet vpub (BIP84, p2wpkh)
+
+	it('builds a regtest PSBT with bcrt1 inputs/outputs when the chain backend is configured as regtest (no explicit network param — matches real call sites)', async () => {
+		setDefaultNetwork('regtest');
+		const parsed = parseXpub(VPUB);
+		const receive0 = deriveAddress(parsed, 0, 0).address;
+		const change0 = deriveAddress(parsed, 1, 0).address;
+		const recipient = deriveAddress(parsed, 0, 1).address;
+		expect(receive0.startsWith('bcrt1q')).toBe(true);
+		expect(change0.startsWith('bcrt1q')).toBe(true);
+
+		const draft = await constructPsbt({
+			xpub: VPUB,
+			utxos: [
+				{ txid: '11'.repeat(32), vout: 0, value: 60_000, height: 800_000, address: receive0, chain: 0, index: 0 }
+			],
+			recipients: [{ address: recipient, amount: 30_000 }],
+			feeRate: 5,
+			changeAddress: change0,
+			changeIndex: 0,
+			origin: { fingerprint: parsed.fingerprint, path: "m/84'/0'/0'" }
+		});
+		expect(draft.recipient).toBe(recipient);
+		expect(draft.change?.address).toBe(change0);
+
+		// summarizePsbt must render the SAME bcrt1 addresses back, not silently
+		// re-encode outputs as mainnet bc1 (addressFromScript's own NETWORK bug).
+		const summary = summarizePsbt(draft.psbtBase64);
+		expect(summary.outputs.some((o) => o.address === recipient)).toBe(true);
+		expect(summary.outputs.some((o) => o.address === change0)).toBe(true);
+	});
+
+	it('an explicit params.network="regtest" builds bcrt1 outputs when the chain backend is also regtest', async () => {
+		// Recipient validation (validateRecipientsAndFeeRate → isValidAddress)
+		// reads the module-level default network, not params.network — so the
+		// chain backend must be configured to match; this test isolates
+		// ConstructParams.network's own effect on OUTPUT ENCODING.
+		setDefaultNetwork('regtest');
+		const parsed = parseXpub(VPUB, 'regtest');
+		const receive0 = deriveAddress(parsed, 0, 0, 'regtest').address;
+		const change0 = deriveAddress(parsed, 1, 0, 'regtest').address;
+		const recipient = deriveAddress(parsed, 0, 1, 'regtest').address;
+
+		const draft = await constructPsbt({
+			xpub: VPUB,
+			utxos: [
+				{ txid: '11'.repeat(32), vout: 0, value: 60_000, height: 800_000, address: receive0, chain: 0, index: 0 }
+			],
+			recipients: [{ address: recipient, amount: 30_000 }],
+			feeRate: 5,
+			changeAddress: change0,
+			changeIndex: 0,
+			network: 'regtest'
+		});
+		expect(draft.recipient.startsWith('bcrt1')).toBe(true);
+		expect(draft.change?.address.startsWith('bcrt1')).toBe(true);
+	});
+
+	it('builds a testnet PSBT with tb1 inputs/outputs under a testnet chain backend', async () => {
+		setDefaultNetwork('testnet');
+		const parsed = parseXpub(VPUB);
+		const receive0 = deriveAddress(parsed, 0, 0).address;
+		const change0 = deriveAddress(parsed, 1, 0).address;
+		const recipient = deriveAddress(parsed, 0, 1).address;
+		expect(receive0.startsWith('tb1q')).toBe(true);
+
+		const draft = await constructPsbt({
+			xpub: VPUB,
+			utxos: [
+				{ txid: '11'.repeat(32), vout: 0, value: 60_000, height: 800_000, address: receive0, chain: 0, index: 0 }
+			],
+			recipients: [{ address: recipient, amount: 30_000 }],
+			feeRate: 5,
+			changeAddress: change0,
+			changeIndex: 0
+		});
+		expect(draft.recipient).toBe(recipient);
+		expect(draft.change?.address).toBe(change0);
+	});
+
+	it('mainnet construction is unchanged: bc1 recipient/change, default network omitted', async () => {
+		const draft = await constructPsbt({
+			...COMMON,
+			recipients: [{ address: RECIPIENT, amount: 30_000 }],
+			feeRate: 10
+		});
+		expect(draft.recipient).toBe(RECIPIENT);
+		expect(draft.recipient.startsWith('bc1')).toBe(true);
+		expect(draft.change?.address.startsWith('bc1')).toBe(true);
+
+		const summary = summarizePsbt(draft.psbtBase64);
+		expect(summary.outputs.some((o) => o.address === RECIPIENT)).toBe(true);
 	});
 });
 

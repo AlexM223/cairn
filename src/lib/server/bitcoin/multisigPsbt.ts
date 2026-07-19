@@ -9,7 +9,7 @@
 // multisigPsbtProgress, the single progress authority every endpoint shares, so
 // the UI can never disagree with the actual signature state.
 
-import { Transaction, p2ms, p2sh, p2wsh, Script, NETWORK } from '@scure/btc-signer';
+import { Transaction, p2ms, p2sh, p2wsh, Script } from '@scure/btc-signer';
 import { base64 } from '@scure/base';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
 import {
@@ -26,8 +26,9 @@ import {
 	type SpendableUtxo,
 	type RecipientSpec
 } from './psbt';
-import { addressToScriptPubKey } from './xpub';
+import { addressToScriptPubKey, getDefaultNetwork, networkParams } from './xpub';
 import { signingMassFromFetchedParents, type SigningMass } from './signingMass';
+import type { ChainNetwork } from '$lib/types';
 
 /** The only sighash flag Cairn accepts on a co-signer signature: SIGHASH_ALL —
  *  the whole-transaction commitment. Enforced in combineMultisigPsbts. */
@@ -183,6 +184,15 @@ export interface MultisigConstructParams {
 	minFeeRate?: number;
 	/** Change-chain index the change output derives at (chain 1). */
 	changeIndex: number;
+	/**
+	 * The network to encode/decode addresses against (cairn-xqnn7 follow-up),
+	 * matching psbt.ts's ConstructParams.network. Defaults to
+	 * {@link getDefaultNetwork}, kept in sync with the configured chain
+	 * backend, so a regtest/testnet multisig's own bcrt1/tb1 addresses
+	 * construct correctly instead of failing against @scure/btc-signer's
+	 * mainnet-only NETWORK constant.
+	 */
+	network?: ChainNetwork;
 	/** Raw prev-tx fetch — REQUIRED for legacy p2sh multisigs (nonWitnessUtxo);
 	 *  attached alongside witnessUtxo for segwit multisigs when available. */
 	fetchRawTx?: (txid: string) => Promise<string>;
@@ -230,20 +240,21 @@ function toBigInt(sats: number): bigint {
 function multisigScripts(
 	threshold: number,
 	sortedPubkeys: Uint8Array[],
-	scriptType: MultisigScriptType
+	scriptType: MultisigScriptType,
+	net: ReturnType<typeof networkParams>
 ): { scriptPubKey: Uint8Array; witnessScript?: Uint8Array; redeemScript?: Uint8Array } {
 	const ms = p2ms(threshold, sortedPubkeys);
 	if (scriptType === 'p2wsh') {
-		const w = p2wsh(ms, NETWORK);
+		const w = p2wsh(ms, net);
 		return { scriptPubKey: w.script, witnessScript: ms.script };
 	}
 	if (scriptType === 'p2sh-p2wsh') {
-		const w = p2wsh(ms, NETWORK);
-		const s = p2sh(w, NETWORK);
+		const w = p2wsh(ms, net);
+		const s = p2sh(w, net);
 		// The p2sh redeem script IS the p2wsh output script (OP_0 PUSH32 <hash>).
 		return { scriptPubKey: s.script, witnessScript: ms.script, redeemScript: w.script };
 	}
-	const s = p2sh(ms, NETWORK);
+	const s = p2sh(ms, net);
 	return { scriptPubKey: s.script, redeemScript: ms.script };
 }
 
@@ -261,6 +272,11 @@ export async function constructMultisigPsbt(params: MultisigConstructParams): Pr
 	const scriptType = config.scriptType;
 	const threshold = config.threshold;
 	const keyCount = config.keys.length;
+	// See MultisigConstructParams.network: the network every address in this
+	// build is encoded/decoded against, defaulting to the configured chain
+	// backend — matches deriveMultisigAddress's own default (multisig.ts).
+	const network = params.network ?? getDefaultNetwork();
+	const net = networkParams(network);
 
 	// Recipient/fee validation and coin eligibility + coinbase maturity are the
 	// shared spend rules in psbt.ts (validateRecipientsAndFeeRate /
@@ -281,8 +297,8 @@ export async function constructMultisigPsbt(params: MultisigConstructParams): Pr
 		const key = `${chain}/${index}`;
 		const hit = derivationCache.get(key);
 		if (hit) return hit;
-		const derived = deriveMultisigAddress(config, chain, index) as DerivedMultisigAddress;
-		const scripts = multisigScripts(threshold, derived.sortedPubkeys, scriptType);
+		const derived = deriveMultisigAddress(config, chain, index, network) as DerivedMultisigAddress;
+		const scripts = multisigScripts(threshold, derived.sortedPubkeys, scriptType, net);
 		// Guard against a config/script-type mismatch: the coin's scriptPubKey
 		// must be exactly what this multisig's keys produce at this path. A failure
 		// here means the address library and this builder disagree (e.g. a p2sh
@@ -402,7 +418,7 @@ export async function constructMultisigPsbt(params: MultisigConstructParams): Pr
 		}
 		const tx = new Transaction();
 		for (const u of spendable) tx.addInput(await buildInput(u));
-		tx.addOutputAddress(recipient, toBigInt(amount), NETWORK);
+		tx.addOutputAddress(recipient, toBigInt(amount), net);
 		return {
 			psbtBase64: base64.encode(tx.toPSBT()),
 			fee,
@@ -438,7 +454,12 @@ export async function constructMultisigPsbt(params: MultisigConstructParams): Pr
 	const recipientsVsize = recipients.reduce((s, r) => s + outputVsize(r.address), 0);
 
 	// The change output derives on the multisig's change chain at changeIndex.
-	const changeDerived = deriveMultisigAddress(config, 1, params.changeIndex) as DerivedMultisigAddress;
+	const changeDerived = deriveMultisigAddress(
+		config,
+		1,
+		params.changeIndex,
+		network
+	) as DerivedMultisigAddress;
 	const changeAddress = changeDerived.address;
 	const changeVsize = outputVsize(changeAddress);
 
@@ -521,7 +542,7 @@ export async function constructMultisigPsbt(params: MultisigConstructParams): Pr
 				bytesToHex(addressToScriptPubKey(b.address))
 			)
 	);
-	for (const o of outs) tx.addOutputAddress(o.address, toBigInt(o.value), NETWORK);
+	for (const o of outs) tx.addOutputAddress(o.address, toBigInt(o.value), net);
 
 	// Mark the change output with ALL N key derivations plus its scripts:
 	// hardware wallets use these to verify change pays back to the same M-of-N

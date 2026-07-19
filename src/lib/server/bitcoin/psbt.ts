@@ -6,17 +6,17 @@
 // deliberately independent of Bitcoin Core's wallet RPCs, because the
 // default deployment has no Core node behind it.
 
-import { Transaction, p2wpkh, Address, OutScript, Script, NETWORK } from '@scure/btc-signer';
+import { Transaction, p2wpkh, Address, OutScript, Script } from '@scure/btc-signer';
 import { base64 } from '@scure/base';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
-import { parseXpub, addressToScriptPubKey, isValidAddress } from './xpub';
+import { parseXpub, addressToScriptPubKey, isValidAddress, getDefaultNetwork, networkParams } from './xpub';
 import {
 	signingMassFromFetchedParents,
 	preferLowMassOrder,
 	type SigningMass
 } from './signingMass';
 import { coinbaseMaturity, isImmatureCoinbase } from '$lib/shared/coinbase';
-import type { ScriptType } from '$lib/types';
+import type { ChainNetwork, ScriptType } from '$lib/types';
 
 /** A spendable output attributed to a wallet-derived address. */
 export interface SpendableUtxo {
@@ -86,6 +86,16 @@ export interface ConstructParams {
 	minFeeRate?: number;
 	changeAddress: string;
 	changeIndex: number;
+	/**
+	 * The network to encode/decode addresses against (cairn-xqnn7 follow-up):
+	 * bech32 HRP and base58check version bytes for every output this call
+	 * builds AND for validating `recipients`/`changeAddress` against. Defaults
+	 * to {@link getDefaultNetwork}, kept in sync with the configured chain
+	 * backend, so a regtest/testnet instance's own bcrt1/tb1 addresses
+	 * construct correctly instead of failing against @scure/btc-signer's
+	 * mainnet-only NETWORK constant.
+	 */
+	network?: ChainNetwork;
 	/** When present, BIP32 derivation info is embedded so signers can match keys. */
 	origin?: KeyOrigin | null;
 	/** Raw prev-tx fetch, required for legacy (p2pkh) inputs only. */
@@ -529,6 +539,10 @@ export function selectSpendCandidates(
  */
 export async function constructPsbt(params: ConstructParams): Promise<ConstructedPsbt> {
 	const { feeRate } = params;
+	// See ConstructParams.network: the network every address in this build is
+	// encoded/decoded against, defaulting to the configured chain backend.
+	const network = params.network ?? getDefaultNetwork();
+	const net = networkParams(network);
 
 	const { sendMax } = validateRecipientsAndFeeRate(params.recipients, feeRate, params.minFeeRate);
 
@@ -657,7 +671,7 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 			// over the full candidate set.
 			if (scriptType === 'p2sh-p2wpkh') {
 				// Redeem script = the wrapped v0 keyhash program.
-				input.redeemScript = p2wpkh(child.publicKey, NETWORK).script;
+				input.redeemScript = p2wpkh(child.publicKey, net).script;
 			}
 		}
 
@@ -716,7 +730,7 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 
 		const tx = new Transaction();
 		for (const input of inputs) tx.addInput(input);
-		tx.addOutputAddress(recipient, toBigInt(amount), NETWORK);
+		tx.addOutputAddress(recipient, toBigInt(amount), net);
 		return {
 			psbtBase64: base64.encode(tx.toPSBT()),
 			fee,
@@ -801,7 +815,7 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 					bytesToHex(addressToScriptPubKey(b.address))
 				)
 		);
-		for (const o of outs) tx.addOutputAddress(o.address, toBigInt(o.value), NETWORK);
+		for (const o of outs) tx.addOutputAddress(o.address, toBigInt(o.value), net);
 		changeExpected = true;
 	} else {
 		// ----------------------------------------------- normal coin selection
@@ -906,7 +920,7 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 					bytesToHex(addressToScriptPubKey(b.address))
 				)
 		);
-		for (const o of outs) tx.addOutputAddress(o.address, toBigInt(o.value), NETWORK);
+		for (const o of outs) tx.addOutputAddress(o.address, toBigInt(o.value), net);
 		changeExpected = hasChangeSel;
 	}
 
@@ -989,12 +1003,20 @@ export interface PsbtSummary {
 	complete: boolean;
 }
 
-/** Best-effort address for a scriptPubKey; null for non-standard scripts. */
-export function addressFromScript(script: Uint8Array): string | null {
+/**
+ * Best-effort address for a scriptPubKey; null for non-standard scripts.
+ * `network` (cairn-xqnn7 follow-up) controls the rendered address's bech32
+ * HRP / base58check version byte and defaults to {@link getDefaultNetwork} —
+ * a regtest PSBT's outputs now render as bcrt1… instead of always bc1….
+ */
+export function addressFromScript(
+	script: Uint8Array,
+	network: ChainNetwork = getDefaultNetwork()
+): string | null {
 	try {
 		// btc-signer's OutScript union and Address's expected input differ only
 		// in ArrayBuffer generics — safe to bridge.
-		return Address(NETWORK).encode(OutScript.decode(script) as never);
+		return Address(networkParams(network)).encode(OutScript.decode(script) as never);
 	} catch {
 		return null;
 	}
@@ -1019,15 +1041,23 @@ export function addressFromScript(script: Uint8Array): string | null {
  * attribution (irrelevant here — this summary never reports per-signer
  * detail) — just a raw per-input signature count against the threshold,
  * finalized inputs always counting as met.
+ *
+ * `network` (cairn-xqnn7 follow-up) controls how output scripts render as
+ * addresses (see {@link addressFromScript}) and defaults to
+ * {@link getDefaultNetwork}.
  */
-export function summarizePsbt(psbtBase64: string, threshold = 1): PsbtSummary {
+export function summarizePsbt(
+	psbtBase64: string,
+	threshold = 1,
+	network: ChainNetwork = getDefaultNetwork()
+): PsbtSummary {
 	const tx = Transaction.fromPSBT(base64.decode(psbtBase64.trim()));
 	const outputs: PsbtSummary['outputs'] = [];
 	let change: PsbtSummary['change'] = null;
 	for (let i = 0; i < tx.outputsLength; i++) {
 		const out = tx.getOutput(i);
 		outputs.push({
-			address: out.script ? addressFromScript(out.script) : null,
+			address: out.script ? addressFromScript(out.script, network) : null,
 			value: Number(out.amount ?? 0n)
 		});
 		// constructPsbt marks the change output with the wallet's derivation
