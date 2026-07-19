@@ -3,8 +3,11 @@ import { getAdminMiningView } from '$lib/server/mining/readModels';
 import {
 	reconfigureMiningEngine,
 	startMiningEngine,
-	stopMiningEngine
+	stopMiningEngine,
+	miningEngineStatus,
+	miningFatalErrors
 } from '$lib/server/mining';
+import { readMiningSettings } from '$lib/server/mining/settings';
 import { getSetting, setSetting } from '$lib/server/settings';
 import { childLogger } from '$lib/server/logger';
 import { DEGRADED_ADMIN_MINING_VIEW, type MiningBind } from '$lib/components/mining/adminMiningView';
@@ -22,6 +25,26 @@ function requireAdmin(locals: App.Locals) {
 }
 
 const MINING_BINDS: readonly MiningBind[] = ['loopback', 'lan', 'all'];
+
+/**
+ * Honest post-reconfigure verdict (v0.2.42 QA): doStart() deliberately never
+ * throws — a listen failure (port already in use, etc.) lands in the fatal
+ * list and leaves the engine stopped — so `await reconfigureMiningEngine()`
+ * resolving is NOT proof the engine came back. When settings say the engine
+ * should be running but it isn't, surface the newest fatal error instead of a
+ * false success. Null = genuinely fine (running, or intentionally off).
+ */
+function engineFailedToStart(): string | null {
+	const s = readMiningSettings();
+	const status = miningEngineStatus();
+	if (!s.enabled) return null; // stopped on purpose
+	if (status.coreRpc === 'unconfigured') return null; // can't run yet — separate notice
+	if (status.running) return null;
+	const fatals = miningFatalErrors();
+	return fatals.length > 0
+		? `The mining engine failed to start: ${fatals[fatals.length - 1]}`
+		: 'The mining engine failed to start — check the fatal errors panel.';
+}
 
 export const load: PageServerLoad = async () => {
 	// The mining engine/read-model module is being built in the same wave
@@ -104,6 +127,10 @@ export const actions: Actions = {
 			log.error({ err: e }, 'reconfigureMiningEngine() failed after settings save');
 			return fail(500, { error: 'Settings saved, but the mining engine failed to restart with them.' });
 		}
+		{
+			const startError = engineFailedToStart();
+			if (startError) return fail(500, { error: `Settings saved, but ${startError}` });
+		}
 
 		return { saved: true };
 	},
@@ -142,6 +169,11 @@ export const actions: Actions = {
 		} catch (e) {
 			log.error({ err: e }, 'reconfigureMiningEngine() failed on manual restart');
 			return fail(500, { error: 'Restart failed — check the fatal errors below.' });
+		}
+		{
+			// reconfigure resolving is not proof of life — see engineFailedToStart.
+			const startError = engineFailedToStart();
+			if (startError) return fail(500, { error: startError });
 		}
 		return { restarted: true };
 	}

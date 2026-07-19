@@ -165,6 +165,17 @@
 		<CoreRpcRequiredNotice feature="Mining" isAdmin={page.data.user?.isAdmin ?? false} />
 	{:else if view.engine.status === 'stopped'}
 		<MiningOnboarding kind="engine-stopped" />
+		{#if view.earnings.blocksFound.length > 0}
+			<!-- Past blocks are historical fact even while the pool is stopped —
+			     same cairn-p10q doctrine as the not-enabled branch below. Found in
+			     v0.2.42 QA: this branch used to swallow a user's entire earnings
+			     history ("Mining isn't running yet" over 625M pending sats). -->
+			<MiningEarnings
+				blocksFound={view.earnings.blocksFound}
+				totalMaturedSats={view.earnings.totalMaturedSats}
+				totalPendingSats={view.earnings.totalPendingSats}
+			/>
+		{/if}
 	{:else if eligibleWallets.length === 0}
 		<MiningOnboarding kind="no-wallet" />
 	{:else if !view.connection}

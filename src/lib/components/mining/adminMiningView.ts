@@ -25,6 +25,8 @@ export interface AdminMiningEngineView {
 	/** Seconds since the last getblocktemplate refresh, or null if never. */
 	lastTemplateAgoSec: number | null;
 	fatalErrors: string[];
+	/** Per-listener breakdown (standard + optional ASIC port, cairn-pz8v5). */
+	listeners: { role: 'standard' | 'asic'; port: number; connections: number }[];
 }
 
 /** Friendly label for the engine's configured network exposure. */
@@ -139,7 +141,8 @@ export const DEGRADED_ADMIN_MINING_VIEW: AdminMiningView = {
 		bind: 'loopback',
 		stratumPort: 3333,
 		lastTemplateAgoSec: null,
-		fatalErrors: []
+		fatalErrors: [],
+		listeners: []
 	},
 	pool: {
 		connectedWorkers: 0,

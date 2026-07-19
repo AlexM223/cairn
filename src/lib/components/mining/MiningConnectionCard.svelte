@@ -67,10 +67,19 @@
 		<span class="card-title grow">Connect your miner</span>
 	</div>
 
-	<p class="intro">
-		Point your Bitaxe, ASIC, or other miner at this address. Once it connects, its shares will
-		start showing up below.
-	</p>
+	{#if isOpen}
+		<p class="intro">
+			Point your Bitaxe, ASIC, or other miner at this address. Once it connects, its shares will
+			start showing up below.
+		</p>
+	{:else}
+		<!-- No "…at this address" while the address is deliberately hidden for a
+		     loopback-only pool — the intro contradicted the notice below (v0.2.42 QA). -->
+		<p class="intro">
+			Your miner credentials are ready. Once the pool is reachable from your network, point your
+			Bitaxe, ASIC, or other miner at it and its shares will start showing up below.
+		</p>
+	{/if}
 
 	{#if !isOpen}
 		<div class="access-notice">

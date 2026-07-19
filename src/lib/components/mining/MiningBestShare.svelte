@@ -35,11 +35,20 @@
 		return `${fixed}%`;
 	}
 
-	const pctText = $derived(
+	const pct = $derived(
 		networkDifficulty != null && networkDifficulty > 0
-			? formatPct((bestShareEver / networkDifficulty) * 100)
+			? (bestShareEver / networkDifficulty) * 100
 			: null
 	);
+	const pctText = $derived(pct !== null ? formatPct(pct) : null);
+	/**
+	 * On regtest (and any chain whose difficulty is below the share floor) the
+	 * best share can EXCEED network difficulty — the honest reading is "that
+	 * share was good enough to find a block", not an absurd
+	 * "11,462,193,971% of the way" (caught in v0.2.42 browser QA). Mainnet
+	 * never hits this branch.
+	 */
+	const clearedBar = $derived(pct !== null && pct >= 100);
 </script>
 
 {#if bestShareEver > 0}
@@ -50,7 +59,9 @@
 			<span class="best-value tabular">{formatNumber(bestShareEver)}</span>
 		</div>
 
-		{#if pctText}
+		{#if clearedBar}
+			<p class="best-context">That share was good enough to find a block.</p>
+		{:else if pctText}
 			<p class="best-context">That share was {pctText} of the way to finding a block.</p>
 		{/if}
 	</section>

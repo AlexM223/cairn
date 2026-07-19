@@ -105,7 +105,10 @@
 								Maturing
 							</span>
 						{:else}
-							<span class="status-chip rejected" title="This block was reorganized out of the chain and its reward never confirmed.">
+							<!-- status 'rejected' = the submit was refused by the network
+							     (submit_result 'rejected…'), NOT a reorg — the old tooltip
+							     claimed the wrong failure mode (v0.2.42 QA). -->
+							<span class="status-chip rejected" title="The network didn't accept this block, so its reward doesn't count.">
 								Not counted
 							</span>
 						{/if}

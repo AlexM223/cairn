@@ -89,7 +89,15 @@
 			</div>
 			<div class="stat">
 				<span class="stat-k">Listening on</span>
-				<span class="stat-v mono tabular">port {engine.stratumPort}</span>
+				<!-- Both bound listeners when the ASIC port is on (cairn-pz8v5) — showing
+				     only the standard port under-reported what the engine has open. -->
+				{#if (engine.listeners ?? []).length > 1}
+					<span class="stat-v mono tabular"
+						>ports {engine.listeners.map((l) => l.port).join(' + ')}</span
+					>
+				{:else}
+					<span class="stat-v mono tabular">port {engine.stratumPort}</span>
+				{/if}
 			</div>
 			<div class="stat">
 				<span class="stat-k">Network exposure</span>
