@@ -106,6 +106,21 @@
 		)
 	);
 
+	// Multisig-shape detection on the paste path (cairn-kqjck): the upload path
+	// (handleRestoreFile / handleColdcardFile) already runs detectMultisigConfig()
+	// on file contents and shows the "This looks like a multisig wallet" hand-off
+	// card via `multisigDetected`. This mirrors it for text typed/pasted straight
+	// into the Key step's paste field, so a Caravan/descriptor/policy-text blob
+	// gets the same friendly redirect instead of a generic "could not be read"
+	// parse error. Only owns `multisigDetected` while the paste method is active —
+	// pickMethod()/backToMethods() clear it on the way in/out so a stale
+	// detection from a different source never lingers under the wrong method.
+	$effect(() => {
+		if (method !== 'paste') return;
+		const det = detectMultisigConfig(xpubInput);
+		multisigDetected = det.isMultisig ? { text: xpubInput, m: det.m, n: det.n } : null;
+	});
+
 	// ------------------------------------------- progress survives page reloads
 	//
 	// Everything above is ephemeral component state, so a full-page reload used
@@ -194,6 +209,7 @@
 		createError = null;
 		restoreNote = null;
 		restoreError = null;
+		multisigDetected = null;
 		planShared = false;
 		sharedKeyNotice = null;
 		try {
@@ -294,6 +310,10 @@
 		method = m;
 		deviceError = null;
 		previewError = null;
+		// Entering a fresh method clears any detection left over from a
+		// different source (e.g. a paste-detected multisig blob shouldn't
+		// still show under Trezor after the user backs out and re-picks it).
+		multisigDetected = null;
 		// The BitBox02 firmware has no legacy (BIP-44) single-sig account; if the
 		// user had Legacy selected from another device, fall back to a supported one.
 		if (m === 'bitbox02' && !bitbox02SupportsScriptType(deviceScriptType)) {
@@ -305,6 +325,7 @@
 		stopQrScan();
 		method = null;
 		deviceError = null;
+		multisigDetected = null;
 	}
 
 	// A device/file/QR read produced a key: validate it server-side (deriving the
@@ -725,21 +746,23 @@
 						<div class="restore-msg multisig-detected" role="status">
 							{#if page.data.flags?.multisig_create !== false}
 								<p class="md-title">
-									This looks like a multisig wallet{detected.m && detected.n
+									<Icon name="alert-triangle" size={14} />
+									This looks like a shared-wallet setup{detected.m && detected.n
 										? ` (${detected.m}-of-${detected.n})`
 										: ''}.
+									<span class="md-jargon">(multisig)</span>
 								</p>
 								<p class="md-body">
-									Multisig wallets are guarded by several keys and set up in their own guided
-									flow. Heartwood will carry this file over and fill in the keys for you.
+									Shared wallets need more than one key to spend and are set up in their own
+									guided flow. Heartwood will carry this over and fill in the keys for you.
 								</p>
 								<div class="row" style="gap: 8px">
 									<button
 										type="button"
-										class="btn btn-primary btn-sm"
+										class="btn btn-secondary btn-sm"
 										onclick={() => handoffToMultisig(detected.text)}
 									>
-										Set up multisig wallet
+										Set up as a shared wallet
 									</button>
 									<button
 										type="button"
@@ -750,7 +773,10 @@
 									</button>
 								</div>
 							{:else}
-								<p class="md-title">This looks like a multisig wallet.</p>
+								<p class="md-title">
+									<Icon name="alert-triangle" size={14} />
+									This looks like a shared-wallet setup.
+								</p>
 								<FeatureDisabled
 									message="Creating multisig wallets has been disabled by your administrator."
 								/>
@@ -1058,9 +1084,20 @@
 										changeDevice = false;
 										advanceStep(1);
 									} else if (result.type === 'failure') {
-										previewError =
-											(result.data as { error?: string } | undefined)?.error ??
-											'That key could not be read.';
+										// Defense-in-depth (cairn-kqjck): the server mirrors the
+										// client's reactive detectMultisigConfig() check, so a
+										// client that bypassed the effect above (or raced it)
+										// still lands on the friendly hand-off card instead of a
+										// generic parse-error banner.
+										const data = result.data as
+											| { error?: string; multisig?: boolean; m?: number; n?: number }
+											| undefined;
+										if (data?.multisig) {
+											multisigDetected = { text: xpubInput, m: data.m, n: data.n };
+											previewError = null;
+										} else {
+											previewError = data?.error ?? 'That key could not be read.';
+										}
 									} else {
 										await applyAction(result);
 									}
@@ -1156,12 +1193,18 @@
 								{/if}
 							</div>
 
-							<div>
-								<button class="btn btn-primary" disabled={validating || !xpubInput.trim()}>
-									{#if validating}<span class="spinner"></span>{/if}
-									Validate key
-								</button>
-							</div>
+							{#if !multisigDetected}
+								<!-- Hidden rather than disabled once a multisig/Caravan/policy
+								     blob is detected (cairn-kqjck): validating single-key would
+								     just fail, and the card below is the one primary action —
+								     no second .btn-primary competing for attention on screen. -->
+								<div>
+									<button class="btn btn-primary" disabled={validating || !xpubInput.trim()}>
+										{#if validating}<span class="spinner"></span>{/if}
+										Validate key
+									</button>
+								</div>
+							{/if}
 						</form>
 					{/if}
 
@@ -1170,21 +1213,23 @@
 						<div class="restore-msg multisig-detected" role="status">
 							{#if page.data.flags?.multisig_create !== false}
 								<p class="md-title">
-									This looks like a multisig wallet{detected.m && detected.n
+									<Icon name="alert-triangle" size={14} />
+									This looks like a shared-wallet setup{detected.m && detected.n
 										? ` (${detected.m}-of-${detected.n})`
 										: ''}.
+									<span class="md-jargon">(multisig)</span>
 								</p>
 								<p class="md-body">
-									Multisig wallets are guarded by several keys and set up in their own guided
-									flow. Heartwood will carry this file over and fill in the keys for you.
+									Shared wallets need more than one key to spend and are set up in their own
+									guided flow. Heartwood will carry this over and fill in the keys for you.
 								</p>
 								<div class="row" style="gap: 8px">
 									<button
 										type="button"
-										class="btn btn-primary btn-sm"
+										class="btn btn-secondary btn-sm"
 										onclick={() => handoffToMultisig(detected.text)}
 									>
-										Set up multisig wallet
+										Set up as a shared wallet
 									</button>
 									<button
 										type="button"
@@ -1195,7 +1240,10 @@
 									</button>
 								</div>
 							{:else}
-								<p class="md-title">This looks like a multisig wallet.</p>
+								<p class="md-title">
+									<Icon name="alert-triangle" size={14} />
+									This looks like a shared-wallet setup.
+								</p>
 								<FeatureDisabled
 									message="Creating multisig wallets has been disabled by your administrator."
 								/>
@@ -1727,20 +1775,37 @@
 		line-height: 1.55;
 	}
 
-	/* Detected-multisig hand-off card (multisig-import UX) */
+	/* Detected-multisig hand-off card (multisig-import UX, cairn-kqjck: gold
+	   needs-attention styling — this state redirects the user off the current
+	   form, so it reads as more than a passive info hint; never red, since
+	   nothing is destructive here. */
 	.multisig-detected {
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
 		padding: 12px 14px;
-		background: var(--bg);
-		border: 1px solid var(--border-subtle);
+		background: var(--attention-muted);
+		border: 1px solid var(--warning-border);
 		border-radius: var(--radius-control);
 	}
 
 	.md-title {
+		display: flex;
+		align-items: center;
+		gap: 6px;
 		font-weight: 600;
-		color: var(--text);
+		color: var(--attention);
+	}
+
+	.md-title :global(svg) {
+		flex-shrink: 0;
+		color: var(--attention);
+	}
+
+	.md-jargon {
+		font-weight: 400;
+		font-size: 11.5px;
+		color: var(--text-muted);
 	}
 
 	.md-body {

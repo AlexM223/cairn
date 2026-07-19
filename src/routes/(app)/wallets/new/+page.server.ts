@@ -6,6 +6,7 @@ import { getReferralBuyUrls } from '$lib/server/referrals';
 import { parseKeyOriginInput, normalizeFingerprint } from '$lib/hw/keyOrigin';
 import { rememberPrefetchedSharedKey, DeviceKeyError } from '$lib/server/deviceKeys';
 import { requireFeature, requireUser } from '$lib/server/api';
+import { detectMultisigConfig } from './_components/multisigDetect';
 import type { Actions, PageServerLoad } from './$types';
 
 // Server-side mirror of the wizard's device-card gating (cairn-cl13): a
@@ -73,6 +74,17 @@ export const actions: Actions = {
 				path: parsedInput.path
 			};
 		} catch (e) {
+			// Defense-in-depth (cairn-kqjck): mirror the client's reactive
+			// detectMultisigConfig() check server-side, so a client that skipped
+			// or bypassed the JS check (a hand-crafted POST, or JS disabled)
+			// still gets routed to the friendly multisig hand-off instead of a
+			// generic "could not be read" error. Check the raw pasted text, not
+			// the key-origin-stripped xpub — a Caravan/descriptor/policy blob
+			// rarely parses as a key origin in the first place.
+			const det = detectMultisigConfig(raw);
+			if (det.isMultisig) {
+				return fail(400, { error: friendlyXpubError(e), multisig: true, m: det.m, n: det.n });
+			}
 			return fail(400, { error: friendlyXpubError(e) });
 		}
 	},
