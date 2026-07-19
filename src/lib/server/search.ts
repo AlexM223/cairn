@@ -77,15 +77,30 @@ export async function classifySearch(q: string): Promise<SearchResult> {
 			return { type: 'block-hash', redirect: `/explorer/block/${hex}`, query };
 		}
 		const chain = getChain();
-		const TX = Symbol('tx-miss');
+		const NOT_FOUND = Symbol('tx-not-found');
+		const OTHER_ERROR = Symbol('tx-other-error');
 		const tx = await withBudget(
-			chain.getTx(hex).catch(() => TX),
+			chain.getTx(hex).catch((e) => (isNotFoundError(e) ? NOT_FOUND : OTHER_ERROR)),
 			deadline,
-			TX
+			// Budget exhaustion / timeout: preserve prior behavior and fall through
+			// to the block lookup below rather than routing to a page we couldn't
+			// confirm exists.
+			NOT_FOUND
 		);
-		if (tx !== TX) return { type: 'tx', redirect: `/explorer/tx/${hex}`, query };
-		// Not a known tx (or unreachable/timed out) — fall through to block lookup
-		// with whatever budget remains.
+		if (tx !== NOT_FOUND && tx !== OTHER_ERROR) {
+			return { type: 'tx', redirect: `/explorer/tx/${hex}`, query };
+		}
+		if (tx === OTHER_ERROR) {
+			// getTx failed for a reason OTHER than "no such tx" — e.g. a
+			// misconfigured/verbose-unsupported Electrum backend or an unconfigured
+			// Core RPC (cairn-37gfa). The leading-zeros check above already ruled
+			// this hex out as a block hash, so it's still txid-shaped: route to the
+			// tx page, which renders its own honest "needs a Bitcoin Core node" /
+			// error notice, instead of misreporting a syntactically valid txid as
+			// unclassifiable.
+			return { type: 'tx', redirect: `/explorer/tx/${hex}`, query };
+		}
+		// Not a known tx — fall through to block lookup with whatever budget remains.
 		const BLK = Symbol('block-miss');
 		const block = await withBudget(
 			chain.getBlock(hex).catch(() => BLK),

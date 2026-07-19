@@ -91,6 +91,54 @@ describe('classifySearch — 64-hex ids', () => {
 		const res = await classifySearch(TXID_LIKE);
 		expect(res).toEqual({ type: 'unknown', redirect: null, query: TXID_LIKE });
 	});
+
+	// Regression coverage for cairn-37gfa: a syntactically valid txid must route
+	// to the tx page even when the backend can't confirm it exists — e.g. a
+	// public Electrum server (Blockstream's included) rejecting verbose calls,
+	// or an unconfigured Core RPC. Only a genuine "not found" should fall
+	// through to the block-hash lookup below.
+	describe('cairn-37gfa — non-not-found getTx errors still route to tx', () => {
+		it('routes to tx (not unknown) when getTx fails with an Electrum verbose-unsupported error', async () => {
+			mockChain.getTx.mockRejectedValue(
+				new Error('verbose transactions are currently unsupported')
+			);
+			const res = await classifySearch(TXID_LIKE);
+			expect(res.type).toBe('tx');
+			expect(res.redirect).toBe(`/explorer/tx/${TXID_LIKE}`);
+			// Must not have fallen through to a block-hash lookup.
+			expect(mockChain.getBlock).not.toHaveBeenCalled();
+		});
+
+		it('routes to tx even when the block-hash fallback would have resolved', async () => {
+			// Guards against a regression that keeps trying getBlock() as a
+			// fallback for ANY getTx error instead of only genuine misses.
+			mockChain.getTx.mockRejectedValue(new Error('verbose transactions are currently unsupported'));
+			mockChain.getBlock.mockResolvedValue({ hash: TXID_LIKE });
+			const res = await classifySearch(TXID_LIKE);
+			expect(res.type).toBe('tx');
+			expect(mockChain.getBlock).not.toHaveBeenCalled();
+		});
+
+		it('still falls through to block-hash / unknown on a genuine not-found error', async () => {
+			mockChain.getTx.mockRejectedValue(new Error('Transaction not found'));
+			const res = await classifySearch(TXID_LIKE);
+			expect(res.type).toBe('unknown');
+			expect(mockChain.getBlock).toHaveBeenCalledWith(TXID_LIKE);
+		});
+
+		it('reproduces the bead: real mainnet txid misrouted against a verbose-unsupported Electrum backend', async () => {
+			const reproTxid = '68f71dcb03ce2f7c7034d89c86ea61dbdbc52f4c2b486aa78fe760a4072db3e0';
+			mockChain.getTx.mockRejectedValue(
+				new Error('verbose transactions are currently unsupported')
+			);
+			const res = await classifySearch(reproTxid);
+			expect(res).toEqual({
+				type: 'tx',
+				redirect: `/explorer/tx/${reproTxid}`,
+				query: reproTxid
+			});
+		});
+	});
 });
 
 describe('classifySearch — addresses and garbage', () => {
