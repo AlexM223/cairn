@@ -3071,7 +3071,9 @@ hand-crafted POST can't bypass a disabled flag. `DevicePicker` itself is used on
 the Finish step's "change signing device" sub-flow. Also uses
 `_components/deviceRead.ts` for the actual WebUSB/WebHID reads,
 `_components/coldcardImport.ts` for ColdCard file parsing,
-`_components/multisigDetect.ts` to catch a multisig config uploaded here and
+`_components/multisigDetect.ts` to catch a multisig config — uploaded *or
+pasted* (paste path added `cairn-kqjck`, mirrors the file-upload detection,
+with a server-side fallback in the `preview` action's catch branch) — and
 hand off to the multisig wizard instead. Verify step: shows derived
 addresses for the validated xpub (server round-trip via `safeAction`, action
 `preview`). Finish step: name the wallet, confirm device, create. Key origin
