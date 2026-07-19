@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
 	import { formatNumber, truncateMiddle } from '$lib/format';
+	import { isCompleteSearchCandidate } from '$lib/searchShape';
 	import type { SearchResult } from '$lib/types';
 
 	// Persistent explorer search pill (cairn-6efi.9). One component, two shapes:
@@ -92,6 +93,14 @@
 				return null;
 		}
 	});
+
+	// A complete-length candidate (full height or 64-hex hash/txid) that the
+	// backend classified as unknown is a definitive miss, not incomplete
+	// input — show an honest "not found" state instead of the generic "keep
+	// typing" hint, which otherwise dead-ends the search (cairn-ioeg5).
+	const liveNotFound = $derived(
+		liveResult !== null && !liveResult.redirect && isCompleteSearchCandidate(liveResult.query)
+	);
 </script>
 
 <form
@@ -125,6 +134,10 @@
 					<Icon name="arrow-right" size={13} />
 					<span>{liveLabel}</span>
 				</a>
+			{:else if liveNotFound}
+				<span class="live-unknown">
+					We couldn't find that. Double-check the ID, or it may not have reached the network yet.
+				</span>
 			{:else}
 				<span class="live-unknown">keep typing — height, hash, txid, or address</span>
 			{/if}

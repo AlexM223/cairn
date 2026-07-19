@@ -3,6 +3,7 @@
 import { getChain } from './chain';
 import { CoreRpcError } from './bitcoinCore/client';
 import { isExplorerAddress } from './bitcoin/xpub';
+import { HEIGHT_RE, HEX64_RE } from '$lib/searchShape';
 import type { SearchResult } from '$lib/types';
 
 /**
@@ -21,9 +22,6 @@ export function chainErrorMessage(e: unknown): string {
 	if (e instanceof Error && e.message) return e.message;
 	return 'Could not reach chain data sources';
 }
-
-const HEIGHT_RE = /^\d{1,9}$/;
-const HEX64_RE = /^[0-9a-fA-F]{64}$/;
 
 /**
  * Total wall-clock budget for a whole classify pass. A 64-hex query can chain a
