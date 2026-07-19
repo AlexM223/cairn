@@ -1620,14 +1620,17 @@ append-only sequence:
    the old `UNIQUE` constraint shape is detected (SQLite can't `ALTER` a
    constraint, so it renames-old/creates-new/copies/drops).
 
-**Cross-table cleanup via triggers, not app code.** Seven "polymorphic child"
+**Cross-table cleanup via triggers, not app code.** Eight "polymorphic child"
 tables (`balance_snapshots`, `wallet_backups`, `address_labels`,
 `backup_missing_notified`, `notified_txids`, `wallet_snapshots`,
-`scripthash_status`) key off a `(wallet_kind, wallet_id)` pair rather than a real
-FK (SQLite has no polymorphic FK). Two triggers, `trg_wallets_delete_children`
-and `trg_multisigs_delete_children`, sweep all seven whenever a
-`wallets`/`multisigs` row is deleted — covering both direct `DELETE`s and
-cascaded user deletion. They're defined with `DROP TRIGGER IF EXISTS` +
+`scripthash_status`, `backup_nudges`) key off a `(wallet_kind, wallet_id)` pair
+rather than a real FK (SQLite has no polymorphic FK). Two triggers,
+`trg_wallets_delete_children` and `trg_multisigs_delete_children`, sweep all
+eight whenever a `wallets`/`multisigs` row is deleted — covering both direct
+`DELETE`s and cascaded user deletion. `backup_nudges` joined this scheme late
+(`cairn-o0dhu`) — it shipped in v0.2.41 without being wired into either
+trigger, so its rows were silently orphaned (never swept on wallet/multisig
+deletion) until the fix. They're defined with `DROP TRIGGER IF EXISTS` +
 `CREATE TRIGGER` (not `IF NOT EXISTS`) specifically so edits to the trigger
 body actually redeploy to existing DBs. `deleteCascade.test.ts` introspects
 the DB and fails loudly if a new `(wallet_kind, wallet_id)` table is ever
@@ -2467,6 +2470,42 @@ hook fired by every `mining_prefs` mutation (enable/disable, payout-wallet
 change, ID regeneration) — so a disabled or re-pointed miner stops/starts
 being authorized within one refresh cycle, never inline on the hot path.
 
+**Dual Stratum listeners (`cairn-pz8v5`).** `MiningPool` binds a SECOND
+high-floor Stratum listener for ASIC-class hardware whenever
+`mining_asic_port_enabled` (default `true`) is on — same engine, same job
+pipeline, same per-connection coinbase/auth/vardiff mechanism as the
+standard listener; the only differences are the bind port
+(`mining_asic_stratum_port`, default `3334`, one above the standard `3333`)
+and the difficulty floor (`mining_asic_share_difficulty`, default `65536`,
+vs the standard port's `0.5`). Rationale: an S19/S21-class ASIC pointed at
+the low-floor standard port would flood the share tracker with trivially
+easy shares, so big machines get their own high-floor lane. Both listeners
+are wired identically in `makeServerOpts` and a solve from either lands on
+the same serialized event queue against the same `jobsById` map, so which
+port found the block is irrelevant to assembly. `status()`'s `EngineStatus`
+now carries `listeners: [{role: 'standard'|'asic', port, connections}]` for
+per-listener detail; `connections`/`minerCount` stay **combined** across
+both listeners (readModels counts distinct users from the combined array).
+`start()` fails cleanly if the ASIC port can't bind (busy, or same as the
+standard port): it closes the standard listener it already opened and
+re-throws, so `doStart()` records a fatal rather than leaving a half-open
+engine with only one listener live. The admin settings form rejects an
+ASIC port equal to the main Stratum port at save time (`+page.server.ts`).
+Post-reconfigure honesty: `doStart()` never throws (fatals are recorded,
+engine stays stopped), so the admin `?/save` and `?/restart` actions verify
+`miningEngineStatus().running` afterwards and fail with the newest fatal
+error when settings say the engine should be running but it isn't — a
+resolved `reconfigureMiningEngine()` alone is NOT proof of life (v0.2.42).
+
+**Known limitation (ASIC port, v0.2.42):** the Stratum server answers
+`mining.configure` (BIP-320 version-rolling negotiation) with error 20
+"unknown method". Real ASIC firmware — exactly the hardware the 3334 port
+targets — commonly sends `mining.configure` on connect; most firmware
+degrades gracefully and mines without version-rolling, but a tolerant
+response + a hardware-compat pass is tracked as a P2 (filed by the
+2026-07-19 QA session). Mention this in support threads before blaming a
+miner's config.
+
 **Aggregates cadence (`aggregates.ts`) — and why it's 15s-batched, not
 per-share.** Every accepted/rejected share updates **only in-memory** state
 (per-worker counters, a rolling hashrate window, open 1-minute buckets).
@@ -2510,12 +2549,15 @@ convention as the chain config):**
 | Key | Default | Meaning |
 |---|---|---|
 | `mining_enabled` | `false` | operator on/off switch, independent of the `mining` feature flag |
-| `mining_bind` | `loopback` | tri-state `loopback`\|`lan`\|`all` — resolves to bind host `127.0.0.1` (loopback) or `0.0.0.0` (lan/all); the tri-state exists purely to drive honest UI copy about LAN exposure, no actual interface detection is attempted |
-| `mining_stratum_port` | `3333` | Stratum V1 TCP listen port |
+| `mining_bind` | `loopback` everywhere except a `CAIRN_PLATFORM=umbrel` boot, where it's `all` | tri-state `loopback`\|`lan`\|`all` — resolves to bind host `127.0.0.1` (loopback) or `0.0.0.0` (lan/all); the tri-state exists purely to drive honest UI copy about LAN exposure, no actual interface detection is attempted. `CAIRN_PLATFORM=umbrel` is set ONLY by the store package's compose (never a bare-metal install) — a container's loopback bind is unreachable from any miner outside the container (`cairn-bm7c2`), so `defaultBind()` (`settings.ts`) keys the *default* off it. An explicit admin-saved value always wins over this platform default. The store compose must also publish the `3333`/`3334` host ports for either default to actually reach a miner — tracked `cairn-kgj7a`, not yet shipped in the store repo. |
+| `mining_stratum_port` | `3333` | Stratum V1 TCP listen port (standard/low-floor listener) |
 | `mining_share_difficulty` | `0.5` | starting/floor share difficulty — deliberately low so a sub-TH/s Bitaxe-class miner submits its first share promptly; vardiff (when enabled) ratchets a connection up from here within about a minute |
 | `mining_vardiff_enabled` | `true` | whether per-connection variable difficulty is active |
 | `mining_vardiff_target_rate` | `6` | vardiff target, shares per minute per connection |
 | `mining_pool_tag` | `Heartwood` | ASCII tag embedded in the coinbase scriptSig after the BIP34 height push; capped at 24 printable-ASCII characters, validated server-side on save |
+| `mining_asic_port_enabled` | `true` | whether the second, high-floor Stratum listener for ASIC-class hardware runs (`cairn-pz8v5`) |
+| `mining_asic_stratum_port` | `3334` | Stratum V1 TCP listen port for the ASIC listener; admin save rejects a value equal to `mining_stratum_port` |
+| `mining_asic_share_difficulty` | `65536` | starting/floor share difficulty for the ASIC listener — high enough that an S19/S21-class machine doesn't swamp the share tracker |
 
 **Notification types + quiet-hours behavior.** Three `mining_*` entries in
 `NOTIFICATION_EVENT_TYPES` (`notifyTypes.ts`):
@@ -3032,13 +3074,19 @@ the admin-facing operator view:
   `AdminMiningView` type + `DEGRADED_ADMIN_MINING_VIEW` fallback constant
   used when the read model throws.
 
-### Mining dashboard client (`/mining`, `/admin/mining`)
+### Mining dashboard client (`/mining`, `/admin/mining`, `/mining/pool`)
 
 **Live refresh model (`docs/LIVE-UPDATES-DESIGN.md` §4.2/§5) — the old 10s
-poll is gone.** Both pages server-load a full view once, then subscribe to
+poll is gone.** Pages server-load a full view once, then subscribe to
 the multiplexed `/api/live` stream via `$lib/live/liveClient`'s `subscribe()`
-— `/mining` on the user-scoped `mining` topic, `/admin/mining` on the
-admin-only `mining:pool` topic. Both topics carry an empty-payload **nudge**
+— `/mining` on the user-scoped `mining` topic; `/admin/mining` and the new
+`/mining/pool` both subscribe to the same `mining:pool` topic. `mining:pool`
+is **no longer admin-only** (`cairn-et38g`) — it's broadcast to every
+connected client (`liveHub.ts`'s `{broadcast: true}` publish option), since
+the pool stats it nudges are now genuinely public (any signed-in user, not
+just admins). `/admin/mining` still refetches the admin-gated
+`GET /api/admin/mining`; `/mining/pool` refetches the new, separately
+feature-gated `GET /api/mining/pool`. Both topics carry an empty-payload **nudge**
 (fired on each `~15s` aggregates flush, plus immediately on a block-found),
 debounced client-side (`$lib/live/walletEvents`'s `debounced()`), and the
 nudge triggers a refetch of the same JSON endpoint each page used to poll
@@ -3123,6 +3171,33 @@ their share of pool hashrate; `AdminBlocksLedger` lists every block this
 instance's engine has ever submitted (accepted or rejected) across all
 users, newest first, with live confirmation counts and maturity status.
 
+**Public pool stats page (`/mining/pool`, `cairn-et38g`).** Feature-gated on
+`mining` like `/mining` itself (`requireFeature`, any signed-in user — not
+admin-only), and reads `GET /api/mining/pool` → `getPublicPoolView()`
+(`readModels.ts`). Shows: pool hashrate now/24h plus a 24h chart (same
+pool-scoped `mining_stats` rows the admin chart reads); miners online; a
+best-share "High scores" leaderboard (`cairn-192dr`, no pot, bragging rights
+only) — per-user best share difficulty, durable DB best
+(`mining_workers.best_share_diff`) overlaid with live session bests, top
+10, ranked; and a blocks-found trophy wall (newest first, all finders, name
++ reward + found-at + maturity status) with finder display names — the
+same names the admin view already shows, since a Heartwood instance is a
+private multi-user install and the trophy wall is the point. Genuinely
+sensitive admin-only material (settings, per-connection difficulty, fatal
+errors, per-user share percentages) stays on `/admin/mining` behind
+`requireAdmin` and is never exposed here.
+
+**Best-share-ever card (`/mining`, "Your closest call so far",
+`cairn-20k25`).** Rendered when `view.totals.bestShareEver > 0`: shows the
+user's own all-time-best share difficulty plus a "N% of the way to a block"
+context line, derived by comparing that share difficulty against
+`UserMiningView.networkDifficulty` — an approximate network difficulty
+computed from the node's network hashrate estimate (`D ≈ H · 600 / 2^32`,
+same formula `getPublicPoolView()` uses), so no second chain call is needed
+beyond the one already fetching hashrate. Null/absent when the node can't
+report a network hashrate — degrades to showing nothing rather than a
+misleading percentage.
+
 **User guide (`/mining`).** Connecting a Bitaxe or small ASIC: point its
 Stratum configuration at this instance's address, the port shown on
 `MiningConnectionCard` (the admin-configured `mining_stratum_port`, `3333`
@@ -3131,8 +3206,24 @@ by default), and a username of `<miningId>.<workerName>` — the
 naming each physical device distinctly (e.g. `hw_a1b2c3d4.bitaxe1`) is what
 makes the worker list and offline notifications useful once more than one
 device is connected; the password field is ignored by the engine entirely
-and the UI shows the literal placeholder `x`. **Honest odds framing**: the
-odds panel computes solo probability from the user's own **measured**
+and the UI shows the literal placeholder `x`.
+
+**Connection-card address display.** **Honest loopback state
+(`cairn-bm7c2`):** when `mining_bind` resolves to loopback, the card no
+longer prints a copyable address at all (a copy-paste address that only
+ever works from the host machine is a dishonest affordance) — it states
+the pool is only reachable from this computer, with an admin-only link to
+`/admin/mining` to open it to the LAN. **Dual-port display
+(`cairn-pz8v5`):** when the ASIC listener is on, the card prints TWO
+addresses side by side with plain-language labels — "Small miners (Bitaxe,
+USB sticks)" → the standard port, "Big machines (Antminer-class)" → the
+ASIC port — plus a line explaining big machines get a separate lane so
+their flood of work doesn't drown out the small ones; with the ASIC
+listener off it falls back to the single "Pool address" field as before.
+Neither address block renders while loopback-only, regardless of ASIC-port
+state.
+
+**Honest odds framing**: the odds panel computes solo probability from the user's own **measured**
 current hashrate against the network's current `getnetworkhashps` — not a
 theoretical device spec — so it degrades gracefully (shows nothing) rather
 than a misleading number when no miner has connected yet or the network
@@ -3147,6 +3238,26 @@ before it's spendable — `MiningEarnings` and the wallet-detail
 `earnings.totalPendingSats`/`totalMaturedSats` split mirrors the same
 `coinbaseMaturity()` logic used everywhere else immature coinbase value is
 displayed (§ above).
+
+**Explorer pool-found attribution (`cairn-r1hca`).** This instance's own
+pool finding a block is celebrated on the explorer, distinct from the
+generic third-party "Likely {pool}" identification `src/lib/server/
+chain/pools.ts`'s `identifyPool()` does from a coinbase scriptSig/payout-
+address match against the vendored `known-pools.json` table (that path
+only ever renders a POSITIVE id — an unknown coinbase shows nothing, never
+a guess). Block detail (`/explorer/block/[id]`) calls
+`getPoolBlockAttribution(blockHash, viewerUserId)` (`readModels.ts`) — a
+chain-free local `mining_blocks` lookup, accepted submits only (a rejected/
+reorged-out submit is not "our block" on the active chain) — and renders
+`PoolFoundBanner.svelte`, a growth-green (`--sage`/`--sage-muted`) one-shot
+celebration: **"You found this block"** for the finder themself (with a
+link to their payout wallet — `walletId` is only ever exposed to the
+finder, null for everyone else), or **"Found by this pool — {name}"**
+otherwise. The explorer index (`/explorer`) instead does this per-row for
+its whole visible block list via `listPoolFoundBlockHashes()` — a single
+membership-set query, no per-row DB hit — and renders a "Found here" chip
+that **overrides** the generic "Likely {pool}" meta-line label for that
+row (the code comment is explicit: never both, the pip beats the guess).
 
 ### Stores / client state
 
@@ -4091,9 +4202,12 @@ touches a live regtest node.
 
 ### `vitest.config.ts`
 
-Aliases `$lib` → `src/lib` and `$env/dynamic/private` →
-`src/tests/env-stub.ts`. `test.include: ['src/**/*.test.ts']`,
-`setupFiles: ['src/tests/setup.ts']`.
+Two `test.projects` entries (`cairn-et5a0`, see §13 Tests below for the
+full rationale): a `node` project (`$lib`/`$env/dynamic/private` aliases,
+`include: ['src/**/*.test.ts', 'scripts/**/*.test.mjs']`,
+`setupFiles: ['src/tests/setup.ts']`) and a `dom` project
+(`include: ['src/**/*.dom.test.ts']`, `environment: 'jsdom'`, real Svelte
+compiler + `conditions: ['browser']`) for component-mount tests.
 
 ### Custom production server: `server.mjs`
 
@@ -4158,6 +4272,21 @@ source they cover, under both `src/lib/server/**` and `src/routes/**` (e.g.
 `src/tests/setup.ts` / `src/tests/env-stub.ts` form a dedicated support
 directory. `npm run check` also runs `svelte-check` for type errors
 separately from Vitest.
+
+**Two Vitest projects (`cairn-et5a0`).** `vitest.config.ts` defines
+`test.projects: [...]` rather than a single flat config: a **`node`**
+project (the historical setup, unchanged — `src/**/*.test.ts` +
+`scripts/**/*.test.mjs`, `src/tests/env-stub.ts` aliasing
+`$env/dynamic/private`, `src/tests/setup.ts`) and a new **`dom`** project
+(`src/**/*.dom.test.ts`, `environment: 'jsdom'`, the real
+`@sveltejs/vite-plugin-svelte` compiler with `runes: true`, module
+resolution forced through `conditions: ['browser']` so `mount()` from
+`'svelte'` is the actual client runtime — the server build has no `mount`
+export). The `dom` project exists for Svelte component **mount** tests —
+node-environment tests can't exercise a real mount at all, which is exactly
+what let the duplicate-`each`-key bug (`cairn-et5a0`, `/mining` hydration
+blanking silently) go uncaught. `npm test` runs both projects; to run just
+the new one, `npx vitest run --project dom`.
 
 **CI**: `.github/workflows/ci.yml` — on every push/PR: checkout, Node 22,
 `npm ci`, `npm run check`, `npm test` (the `test` job); a second,
