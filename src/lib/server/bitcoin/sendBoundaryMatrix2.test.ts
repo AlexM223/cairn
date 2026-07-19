@@ -286,8 +286,13 @@ describe('boundary: sweep-to-dust result across varied input counts and fee rate
 		{ n: 5, feeRate: 3 }
 	];
 
+	// Sweep dust ceiling for the P2WPKH recipient these cases send to: 294
+	// (per-script-type dustThreshold, cairn-7ld60 — previously the flat legacy
+	// 546, which 2be1902 replaced; the fixtures here were updated to match).
+	const P2WPKH_DUST = 294;
+
 	for (const { n, feeRate } of CASES) {
-		it(`single-sig: ${n} input(s) at ${feeRate} sat/vB — sweep landing exactly at the dust ceiling (546) rejects, one sat above (547) succeeds`, async () => {
+		it(`single-sig: ${n} input(s) at ${feeRate} sat/vB — sweep landing exactly at the p2wpkh dust ceiling (294) rejects, one sat above (295) succeeds`, async () => {
 			const vsize = 11 + n * 68 + 31; // TX_OVERHEAD + n*p2wpkh-input + one p2wpkh recipient output
 			const fee = Math.ceil(vsize * feeRate);
 
@@ -306,7 +311,7 @@ describe('boundary: sweep-to-dust result across varied input counts and fee rate
 			await expectPlainRejection(
 				constructPsbt({
 					...COMMON,
-					utxos: makeUtxos(fee + 546),
+					utxos: makeUtxos(fee + P2WPKH_DUST),
 					recipients: [{ address: RECIPIENT_P2WPKH, amount: 'max' }],
 					feeRate
 				}),
@@ -315,11 +320,11 @@ describe('boundary: sweep-to-dust result across varied input counts and fee rate
 
 			const draft = await constructPsbt({
 				...COMMON,
-				utxos: makeUtxos(fee + 547),
+				utxos: makeUtxos(fee + P2WPKH_DUST + 1),
 				recipients: [{ address: RECIPIENT_P2WPKH, amount: 'max' }],
 				feeRate
 			});
-			expect(draft.amount).toBe(547);
+			expect(draft.amount).toBe(P2WPKH_DUST + 1);
 			expect(draft.change).toBeNull();
 			expect(draft.inputs).toHaveLength(n);
 		});

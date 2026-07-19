@@ -412,25 +412,29 @@ describe('buildDraft / buildMultisigDraft: balance short by exactly 1 sat', () =
 // ═══════════════════════════════════════════════════════════ 4. SWEEP / DUST
 
 describe('buildDraft / buildMultisigDraft: sweep result at the dust boundary', () => {
-	it('single-sig: sweep result of exactly 546 sats rejects; 547 succeeds, no change', async () => {
+	it('single-sig: sweep result of exactly 294 sats (p2wpkh dust ceiling) rejects; 295 succeeds, no change', async () => {
 		// vsize = 11 + 68 (1 input) + 31 (1 sweep output) = 110; fee at 1 sat/vB = 110.
+		// Dust ceiling is the per-script-type dustThreshold of the P2WPKH RECIPIENT
+		// (294), not the flat legacy 546 — cairn-7ld60 / 2be1902 made the sweep
+		// path consistent with the pre-flight; fixture updated to match.
 		const feeRate = 1;
 		const fee = 110;
+		const dust = 294;
 
 		const { userId, walletId } = await seedWallet('sweep@example.com');
-		wireSingleCoinWallet(fee + 546);
+		wireSingleCoinWallet(fee + dust);
 		await expectPlainRejection(
 			buildDraft(userId, walletId, { recipients: [{ address: RECIPIENT, amount: 'max' }], feeRate }),
 			'insufficient_funds'
 		);
 		expect(listTransactions(userId, walletId)).toEqual([]);
 
-		wireSingleCoinWallet(fee + 547);
+		wireSingleCoinWallet(fee + dust + 1);
 		const { draft, details } = await buildDraft(userId, walletId, {
 			recipients: [{ address: RECIPIENT, amount: 'max' }],
 			feeRate
 		});
-		expect(draft.amount).toBe(547);
+		expect(draft.amount).toBe(dust + 1);
 		expect(details.change).toBeNull();
 	});
 

@@ -882,7 +882,7 @@ db.exec(`
 // address_labels, backup_missing_notified, and notified_txids all key off a
 // (wallet_kind, wallet_id) pair rather than a real foreign key — SQLite has no
 // polymorphic FK, so ON DELETE CASCADE can never reach them on its own. The two
-// triggers below sweep all five whenever a wallets or multisigs row goes,
+// triggers below sweep every such child whenever a wallets or multisigs row goes,
 // covering every delete path in one place: deleteWallet()/deleteMultisig() (a
 // direct DELETE) AND user deletion (wallets.user_id/multisigs.user_id cascade
 // via a real FK — SQLite still fires a table's AFTER DELETE triggers when a row
@@ -910,6 +910,7 @@ db.exec(`
 		DELETE FROM notified_txids WHERE wallet_kind = 'wallet' AND wallet_id = OLD.id;
 		DELETE FROM wallet_snapshots WHERE wallet_kind = 'wallet' AND wallet_id = OLD.id;
 		DELETE FROM scripthash_status WHERE wallet_kind = 'wallet' AND wallet_id = OLD.id;
+		DELETE FROM backup_nudges WHERE wallet_kind = 'wallet' AND wallet_id = OLD.id;
 	END;
 
 	DROP TRIGGER IF EXISTS trg_multisigs_delete_children;
@@ -921,6 +922,7 @@ db.exec(`
 		DELETE FROM notified_txids WHERE wallet_kind = 'multisig' AND wallet_id = OLD.id;
 		DELETE FROM wallet_snapshots WHERE wallet_kind = 'multisig' AND wallet_id = OLD.id;
 		DELETE FROM scripthash_status WHERE wallet_kind = 'multisig' AND wallet_id = OLD.id;
+		DELETE FROM backup_nudges WHERE wallet_kind = 'multisig' AND wallet_id = OLD.id;
 	END;
 `);
 
@@ -996,6 +998,23 @@ db.exec(`
 		stakes_bucket INTEGER NOT NULL DEFAULT 0, -- highest stakes tier seen so far (0 NEW / 1 MULTI / 2 FUNDED)
 		PRIMARY KEY (user_id, wallet_kind, wallet_id)
 	);
+`);
+
+// backup_nudges joined the polymorphic delete-cascade scheme late (it shipped
+// in v0.2.41 WITHOUT trigger coverage — caught by deleteCascade.test.ts's
+// introspective sweep, fixed alongside the trigger bodies above). Its rows key
+// off (wallet_kind, wallet_id) like the other swept children, so: (a) the two
+// triggers above now include it (safe even though this CREATE TABLE runs after
+// the trigger DDL — SQLite resolves trigger body references at fire time, and
+// by any fire time this table exists); (b) this one-time-in-spirit purge clears
+// rows orphaned by wallet/multisig deletes that happened while the gap was
+// live. It sits HERE rather than in the purge loop above because that loop runs
+// before this CREATE TABLE on a fresh database. Same NULL-safe NOT IN shape as
+// the main purge (both parent ids are non-null INTEGER PRIMARY KEYs).
+db.exec(`
+	DELETE FROM backup_nudges
+	 WHERE (wallet_kind = 'wallet' AND wallet_id NOT IN (SELECT id FROM wallets))
+	    OR (wallet_kind = 'multisig' AND wallet_id NOT IN (SELECT id FROM multisigs))
 `);
 
 // Collaborative custody (see docs/COLLABORATIVE-CUSTODY-PLAN.md). Single-instance
