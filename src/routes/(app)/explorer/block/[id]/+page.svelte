@@ -5,6 +5,7 @@
 	import Banner from '$lib/components/Banner.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import Term from '$lib/components/Term.svelte';
+	import FeeRate from '$lib/components/FeeRate.svelte';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import ExplorerSearch from '$lib/components/heartwood/ExplorerSearch.svelte';
@@ -25,7 +26,6 @@
 		formatBytes,
 		timeAgo,
 		formatDateTime,
-		formatFeeRate,
 		truncateMiddle
 	} from '$lib/format';
 	import type { TxDetail } from '$lib/types';
@@ -333,7 +333,7 @@
 					<div class="yours-head">
 						<span class="yours-pip" aria-hidden="true"></span>
 						<span class="yours-title"
-							>Yours in this ring{yours.length > 1 ? ` · ${yours.length}` : ''}</span
+							>Yours in this block{yours.length > 1 ? ` · ${yours.length}` : ''}</span
 						>
 					</div>
 					<div class="yours-list">
@@ -393,7 +393,7 @@
 									>Median fee</Term
 								>
 							</span>
-							<span class="kv-value tabular">{formatFeeRate(block.medianFee)}</span>
+							<span class="kv-value tabular"><FeeRate rate={block.medianFee} /></span>
 						</div>
 					{/if}
 					<div class="kv-row">
@@ -511,18 +511,17 @@
 							{tx.vin.length} input{tx.vin.length === 1 ? '' : 's'} → {tx.vout.length}
 							output{tx.vout.length === 1 ? '' : 's'}
 							{#if tx.vin.some((v) => v.coinbase)}
-								<span
-									class="badge badge-accent"
-									title="The special first transaction of every block: it has no inputs and creates new bitcoin — the miner's reward (subsidy plus all fees in this block)."
+								<Term
+									tip="The special first transaction of every block: it has no inputs and creates new bitcoin — the miner's reward (subsidy plus all fees in this block)."
 								>
-									Coinbase
-								</span>
+									<span class="badge badge-accent">Coinbase</span>
+								</Term>
 							{/if}
 						</span>
 						<span class="tx-value tabular" title="{formatSats(valueOut(tx))} sats">
 							{formatBtc(valueOut(tx))} BTC
 						</span>
-						<span class="tx-fee tabular">{formatFeeRate(tx.feeRate)}</span>
+						<span class="tx-fee tabular"><FeeRate rate={tx.feeRate} /></span>
 					</div>
 				{/each}
 			{/if}
@@ -576,7 +575,7 @@
 						{formatBtc(block.totalFees)} BTC
 					</span>
 					{#if block.medianFee !== null}
-						<span class="rail-sub tabular">median {formatFeeRate(block.medianFee)}</span>
+						<span class="rail-sub tabular">median <FeeRate rate={block.medianFee} /></span>
 					{/if}
 				</div>
 			{/if}

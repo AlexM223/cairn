@@ -159,7 +159,7 @@
 </script>
 
 <svelte:head>
-	<title>Next rings — Heartwood</title>
+	<title>Next blocks — Heartwood</title>
 </svelte:head>
 
 <div class="blocks-page">
@@ -181,8 +181,8 @@
 
 <div class="head fade-in">
 	<div>
-		<EyebrowBreadcrumb path={['Explorer', 'Mempool']} current="Next rings" />
-		<h1 class="page-title">Next rings</h1>
+		<EyebrowBreadcrumb path={['Explorer', 'Mempool']} current="Next blocks" />
+		<h1 class="page-title">Next blocks</h1>
 	</div>
 	<span
 		class="live"
@@ -250,7 +250,7 @@
 			<div class="block-card" class:next={i === 0} style:--depth={i}>
 				<div class="block-head">
 					{#if i === 0}
-						<span class="next-label"><Icon name="zap" size={12} /> Next ring</span>
+						<span class="next-label"><Icon name="zap" size={12} /> Next block</span>
 					{:else}
 						<span class="eta">~{(i + 1) * 10} min</span>
 					{/if}
