@@ -25,13 +25,16 @@ const RPC_PASS = 'heartwoodqa';
 // finds anything free still doesn't collide with the box's normal regtest node.
 const FREE_PORT_RANGE_START = 18453;
 const FREE_PORT_RANGE_ATTEMPTS = 200;
-const CANDIDATE_BINARIES = [
-	process.env.BITCOIND_PATH,
-	'C:\\Program Files\\Bitcoin\\daemon\\bitcoind.exe',
-	'/usr/bin/bitcoind',
-	'/usr/local/bin/bitcoind'
-].filter(Boolean);
+const CANDIDATE_BINARIES = /** @type {string[]} */ (
+	[
+		process.env.BITCOIND_PATH,
+		'C:\\Program Files\\Bitcoin\\daemon\\bitcoind.exe',
+		'/usr/bin/bitcoind',
+		'/usr/local/bin/bitcoind'
+	].filter(Boolean)
+);
 
+/** @param {number} ms */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function findBitcoind() {
@@ -56,6 +59,7 @@ function dockerAvailable() {
 /** True if `port` can be bound on 127.0.0.1 right now (best-effort — TOCTOU race
  *  with whatever binds it next is inherent to any free-port probe; the caller
  *  retries startup on bind failure via bitcoind's own RPC-readiness poll). */
+/** @param {number} port */
 function isPortFree(port) {
 	return new Promise((resolve) => {
 		const srv = createServer();
@@ -91,11 +95,16 @@ export async function resolveRegtestPort() {
 }
 
 class Rpc {
+	/** @param {string} url */
 	constructor(url) {
 		this.url = url;
 		this.auth = 'Basic ' + Buffer.from(`${RPC_USER}:${RPC_PASS}`).toString('base64');
 		this.id = 1;
 	}
+	/**
+	 * @param {string} method
+	 * @param {unknown[]} params
+	 */
 	async call(method, params = []) {
 		const res = await fetch(this.url, {
 			method: 'POST',
@@ -114,7 +123,11 @@ class Rpc {
 	}
 }
 
-/** Spawn a local bitcoind into a fresh datadir. Returns { rpc, stop }. */
+/**
+ * Spawn a local bitcoind into a fresh datadir. Returns { rpc, stop }.
+ * @param {string} binary
+ * @param {number} port
+ */
 async function startLocal(binary, port) {
 	const datadir = path.join(os.tmpdir(), `heartwood-mining-regtest-${process.pid}-${Date.now()}`);
 	rmSync(datadir, { recursive: true, force: true });
@@ -161,7 +174,7 @@ async function startLocal(binary, port) {
 				}
 			};
 		} catch (e) {
-			lastErr = e.message;
+			lastErr = e instanceof Error ? e.message : String(e);
 			await sleep(200);
 		}
 	}
@@ -169,7 +182,10 @@ async function startLocal(binary, port) {
 	throw new Error(`bitcoind RPC not ready in 30s (last: ${lastErr})`);
 }
 
-/** Spawn a dockerized bitcoind. Returns { rpc, stop }. */
+/**
+ * Spawn a dockerized bitcoind. Returns { rpc, stop }.
+ * @param {number} port
+ */
 async function startDocker(port) {
 	const name = `heartwood-mining-regtest-${process.pid}`;
 	const img = process.env.BITCOIND_IMAGE ?? 'bitcoin/bitcoin:28.0';
@@ -181,11 +197,13 @@ async function startDocker(port) {
 		'-regtest', `-rpcport=${port}`, '-rpcbind=0.0.0.0', '-rpcallowip=0.0.0.0/0',
 		`-rpcuser=${RPC_USER}`, `-rpcpassword=${RPC_PASS}`, '-server=1', '-fallbackfee=0.0001'
 	];
-	await new Promise((resolve, reject) => {
+	/** @type {Promise<void>} */
+	const dockerRun = new Promise((resolve, reject) => {
 		const p = spawn('docker', runArgs, { stdio: 'ignore' });
 		p.on('error', reject);
 		p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`docker run exited ${code}`))));
 	});
+	await dockerRun;
 	const rpc = new Rpc(`http://127.0.0.1:${port}/`);
 	const deadline = Date.now() + 40_000;
 	let lastErr = '';
@@ -199,7 +217,7 @@ async function startDocker(port) {
 				}
 			};
 		} catch (e) {
-			lastErr = e.message;
+			lastErr = e instanceof Error ? e.message : String(e);
 			await sleep(400);
 		}
 	}
@@ -207,9 +225,12 @@ async function startDocker(port) {
 	throw new Error(`dockerized bitcoind RPC not ready in 40s (last: ${lastErr})`);
 }
 
-/** Bring up a regtest node (local binary preferred, docker fallback). Picks a
- *  free RPC port unless $CAIRN_QA_REGTEST_PORT or opts.port pins one, so this
- *  never collides with a developer's own long-running shared regtest node. */
+/**
+ * Bring up a regtest node (local binary preferred, docker fallback). Picks a
+ * free RPC port unless $CAIRN_QA_REGTEST_PORT or opts.port pins one, so this
+ * never collides with a developer's own long-running shared regtest node.
+ * @param {{ port?: number }} [opts]
+ */
 export async function startRegtestNode(opts = {}) {
 	const port = opts.port ?? (await resolveRegtestPort());
 	const binary = findBitcoind();
