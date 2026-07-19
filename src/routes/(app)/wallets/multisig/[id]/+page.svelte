@@ -24,7 +24,7 @@
 	import WalletStepChart from '../../[id]/_components/WalletStepChart.svelte';
 	import BalanceHorizons from '$lib/components/portfolio/BalanceHorizons.svelte';
 	import { copyToClipboard } from '$lib/clipboard';
-	import { formatBtc, formatSats, gatedFiatPrice, timeAgo, truncateMiddle } from '$lib/format';
+	import { formatSats, gatedFiatPrice, timeAgo, truncateMiddle } from '$lib/format';
 	import { buildHorizonRows, changesFromHorizonSeries, historyFromTxDeltas } from '$lib/horizonDelta';
 	import KeyHealthRow from '../_components/KeyHealthRow.svelte';
 	import AddressScriptDetails from '../_components/AddressScriptDetails.svelte';
@@ -573,9 +573,8 @@
 					<span class="tabular">{formatSats(available)} sats</span>
 					{#if detail.balance.unconfirmed !== 0}
 						<span class="hw-pending">
-							· {detail.balance.unconfirmed > 0 ? '+' : ''}{formatBtc(
-								detail.balance.unconfirmed
-							)} BTC on its way
+							· <Amount sats={detail.balance.unconfirmed} size="inline" sign direction="in" /> on its
+							way
 						</span>
 					{/if}
 				</p>

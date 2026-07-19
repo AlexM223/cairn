@@ -1510,7 +1510,7 @@
 								</div>
 								<div class="verify-row">
 									<span class="verify-key">Amount</span>
-									<span class="verify-val tabular">{formatBtc(review.amount)} BTC</span>
+									<span class="verify-val tabular">{summaryUnitAmount(review.amount)}</span>
 								</div>
 								<div class="verify-row">
 									<span class="verify-key">Fee</span>
