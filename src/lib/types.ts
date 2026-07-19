@@ -487,6 +487,10 @@ export interface PortfolioActivity {
 	sats: number; // absolute value of the net delta
 	time: number | null; // unix seconds, null if unconfirmed
 	confirmations: number;
+	/** True when this inbound is a mining reward (a coinbase tx of a block this
+	 *  instance's pool found, or a coinbase UTXO of the wallet) — rendered as
+	 *  "Mining reward", not a generic "Received" (cairn-i0d0q). */
+	isMiningReward?: boolean;
 }
 
 /** One point on the portfolio balance-over-time chart. */
@@ -501,6 +505,15 @@ export interface PortfolioDetail {
 	scannedCount: number;
 	confirmed: number; // sats
 	unconfirmed: number; // sats
+	/** Slice of `confirmed` that is immature coinbase — not yet spendable
+	 *  (cairn-25ges: Home must not read higher than the wallet pages it links
+	 *  to). Optional: aggregates persisted before this field parse `undefined`
+	 *  (treated as 0). */
+	maturingTotal?: number;
+	/** Slice of `confirmed` whose coinbase-ness couldn't be verified and which is
+	 *  young enough to be immature coinbase — "still being verified", never
+	 *  silently spendable (cairn-8lwa6). Optional, same rollout as above. */
+	unverifiedTotal?: number;
 	allocation: AllocationSlice[];
 	recentActivity: PortfolioActivity[];
 	/** Total value over time, oldest first (from accumulated snapshots). */

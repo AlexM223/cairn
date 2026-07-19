@@ -20,6 +20,45 @@ fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 export const db = new DatabaseSync(DB_PATH);
 
+/**
+ * Run `fn`'s synchronous DB writes as ONE SQLite transaction (cairn-fzqpe).
+ * node:sqlite has no better-sqlite3-style `db.transaction()` helper, so this is
+ * the shared primitive: BEGIN IMMEDIATE (take the write lock up front so the
+ * unit serializes against concurrent writers), COMMIT on return, ROLLBACK on
+ * throw. If a transaction is somehow already open (nested call), `fn` simply
+ * runs inside it — the OUTER transaction owns atomicity, and this wrapper
+ * neither commits nor rolls back what it didn't begin.
+ *
+ * The point is crash-atomicity for multi-statement invariants (e.g. the
+ * address watcher's "claim txid as notified" + "enqueue the notification" pair
+ * — a process death between the two must roll back the claim, never leave a
+ * claimed-but-never-sent alert). `fn` MUST be synchronous: an await inside
+ * would hold the write lock across the event loop.
+ */
+export function withTransaction<T>(fn: () => T): T {
+	let began = false;
+	try {
+		db.exec('BEGIN IMMEDIATE');
+		began = true;
+	} catch {
+		/* already inside a transaction — the outer one owns atomicity */
+	}
+	try {
+		const result = fn();
+		if (began) db.exec('COMMIT');
+		return result;
+	} catch (e) {
+		if (began) {
+			try {
+				db.exec('ROLLBACK');
+			} catch {
+				/* connection-level failure; nothing more to do */
+			}
+		}
+		throw e;
+	}
+}
+
 db.exec(`
 	PRAGMA journal_mode = WAL;
 	PRAGMA foreign_keys = ON;
@@ -886,6 +925,14 @@ db.exec(`
 	);
 	if (!cols.includes('status')) db.exec('ALTER TABLE notified_txids ADD COLUMN status TEXT');
 	if (!cols.includes('amount_sats')) db.exec('ALTER TABLE notified_txids ADD COLUMN amount_sats INTEGER');
+	// cairn-ieilg: chain-tip height at the moment tx_confirmed fired (confirmed
+	// flipped to 1). Lets the watcher keep re-checking RECENTLY-confirmed rows for
+	// a bounded reorg window (tip − REORG_RECHECK_DEPTH) so a payment reorged out
+	// AFTER confirming is still reconciled ('replaced'/'dropped' + corrected
+	// balance) instead of keeping its stale "Payment received" forever. NULL on
+	// legacy rows = never re-checked (pre-fix behavior, bounded rollout).
+	if (!cols.includes('confirmed_height'))
+		db.exec('ALTER TABLE notified_txids ADD COLUMN confirmed_height INTEGER');
 }
 
 // Polymorphic child-table cleanup (cairn-97ui). balance_snapshots, wallet_backups,

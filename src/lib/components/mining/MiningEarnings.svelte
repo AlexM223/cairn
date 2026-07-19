@@ -53,7 +53,11 @@
 
 	<div class="totals">
 		<div class="total">
-			<span class="total-label">Spendable</span>
+			<!-- "Total earned", NOT "Spendable" (cairn-e176o): this sums LIFETIME
+			     matured rewards from mining_blocks with no join against the live
+			     UTXO set, so after any spend a "Spendable" label overstates forever.
+			     Lifetime earnings is what this figure truthfully is. -->
+			<span class="total-label">Total earned</span>
 			<Amount sats={totalMaturedSats} size="row" />
 		</div>
 		<div class="total">
@@ -95,9 +99,12 @@
 					<div class="block-meta">
 						<span class="block-when">{foundAgo(row.foundAt)}</span>
 						{#if row.status === 'mature'}
+							<!-- "Matured", not "Spendable" (cairn-e176o): the reward may
+							     already have been spent from the wallet; maturity is what
+							     this row actually knows. -->
 							<span class="status-chip mature">
 								<Icon name="check" size={12} />
-								Spendable
+								Matured
 							</span>
 						{:else if row.status === 'maturing'}
 							<span class="status-chip maturing">

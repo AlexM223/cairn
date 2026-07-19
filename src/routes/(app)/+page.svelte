@@ -186,6 +186,17 @@
 			portfolio.recentActivity.length === 0
 	);
 
+	// Maturity-aware hero (cairn-25ges / cairn-8lwa6): Home must read the SAME
+	// spendable figure as the wallet detail pages it links to. `confirmed` stays
+	// the full net-worth total; the hero excludes the immature-coinbase slice
+	// (`maturingTotal`) and the couldn't-verify slice (`unverifiedTotal`, fails
+	// closed on presentation), each surfaced honestly as its own sub-line.
+	const maturingTotal = $derived(portfolio?.maturingTotal ?? 0);
+	const unverifiedTotal = $derived(portfolio?.unverifiedTotal ?? 0);
+	const heroSats = $derived(
+		portfolio ? Math.max(0, portfolio.confirmed - maturingTotal - unverifiedTotal) : 0
+	);
+
 	// Multi-horizon balance delta (DESIGN-MANIFESTO.md MUST — cairn-d326, R6):
 	// 1d / 30d / 1yr / all-time shown together, never a single naked delta.
 	// Suppressed while the balance itself is hidden — a delta figure leaks
@@ -315,8 +326,22 @@
 						<div class="hero-sub"><span class="hidden-note">balance hidden</span></div>
 					{:else}
 						<div class="hero-amount-row">
-							<Amount sats={portfolio.confirmed} size="hero" price={heroPrice} />
+							<Amount sats={heroSats} size="hero" price={heroPrice} />
 						</div>
+						{#if maturingTotal > 0}
+							<div class="hero-sub">
+								<span class="pending-note tabular">
+									· {formatSats(maturingTotal)} sats maturing
+								</span>
+							</div>
+						{/if}
+						{#if unverifiedTotal > 0}
+							<div class="hero-sub">
+								<span class="pending-note tabular">
+									· {formatSats(unverifiedTotal)} sats still being verified
+								</span>
+							</div>
+						{/if}
 						{#if portfolio.unconfirmed !== 0}
 							<div class="hero-sub">
 								<span class="pending-note tabular">

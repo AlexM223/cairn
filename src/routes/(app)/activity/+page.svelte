@@ -214,6 +214,12 @@
 				return { kind: 'icon', name: 'server' };
 			case 'scan_complete':
 				return { kind: 'icon', name: 'refresh' };
+			// Mining events get their reward identity (cairn-i0d0q) instead of the
+			// generic info glyph — same flame the /mining rewards card uses.
+			case 'mining_block_found':
+			case 'mining_best_share':
+			case 'mining_worker_offline':
+				return { kind: 'icon', name: 'flame' };
 			default:
 				return SECURITY_TYPES.has(e.type)
 					? { kind: 'icon', name: 'key' }

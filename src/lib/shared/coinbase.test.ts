@@ -3,6 +3,7 @@ import {
 	coinbaseMaturity,
 	isImmatureCoinbase,
 	formatMaturityEta,
+	classifyCoinMaturity,
 	COINBASE_MATURITY
 } from './coinbase';
 
@@ -77,5 +78,47 @@ describe('formatMaturityEta', () => {
 
 	it('rounds sub-minute fragments to whole minutes below the 1-hour boundary', () => {
 		expect(formatMaturityEta(5)).toBe('~50 minutes');
+	});
+});
+
+// cairn-8lwa6 root primitive: the shared display-side maturity classification.
+// The send path already failed closed on unverifiable coinbase-ness; this is
+// the display path's single shared answer (used by walletSync's snapshot
+// derivation for wallet detail, Home, and the send fast path alike).
+describe('classifyCoinMaturity', () => {
+	const TIP = 1000;
+
+	it('a definite non-coinbase coin is spendable at any age', () => {
+		expect(classifyCoinMaturity(false, TIP, TIP)).toBe('spendable'); // 1 conf
+		expect(classifyCoinMaturity(false, 1, TIP)).toBe('spendable');
+	});
+
+	it('a definite coinbase coin is maturing until COINBASE_MATURITY confs, spendable after', () => {
+		expect(classifyCoinMaturity(true, TIP, TIP)).toBe('maturing'); // 1 conf
+		expect(classifyCoinMaturity(true, TIP - COINBASE_MATURITY + 2, TIP)).toBe('maturing'); // 99 confs
+		expect(classifyCoinMaturity(true, TIP - COINBASE_MATURITY + 1, TIP)).toBe('spendable'); // 100 confs
+	});
+
+	it('a definite coinbase coin with the tip unknown stays maturing (safe over-report)', () => {
+		expect(classifyCoinMaturity(true, 500, 0)).toBe('maturing');
+	});
+
+	it("an 'unknown' young coin is unverified — never silently spendable (cairn-8lwa6)", () => {
+		expect(classifyCoinMaturity('unknown', TIP, TIP)).toBe('unverified'); // 1 conf
+		expect(classifyCoinMaturity('unknown', TIP - COINBASE_MATURITY + 2, TIP)).toBe('unverified'); // 99 confs
+	});
+
+	it("an 'unknown' coin past COINBASE_MATURITY confs is provably spendable either way", () => {
+		expect(classifyCoinMaturity('unknown', TIP - COINBASE_MATURITY + 1, TIP)).toBe('spendable');
+		expect(classifyCoinMaturity('unknown', 1, TIP)).toBe('spendable');
+	});
+
+	it("an 'unknown' coin with the tip unknown is unverified (fail closed)", () => {
+		expect(classifyCoinMaturity('unknown', 500, 0)).toBe('unverified');
+	});
+
+	it('an unannotated (undefined) coin behaves like unknown', () => {
+		expect(classifyCoinMaturity(undefined, TIP, TIP)).toBe('unverified');
+		expect(classifyCoinMaturity(undefined, 1, TIP)).toBe('spendable');
 	});
 });

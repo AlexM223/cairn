@@ -41,7 +41,13 @@ export default defineConfig({
 						'$app/environment': path.resolve(
 							import.meta.dirname,
 							'src/tests/app-environment-stub.ts'
-						)
+						),
+						// Added for MiningConnectionCard.dom.test.ts (cairn-bm7c2 backfill):
+						// the component reads $app/state's `page` and uses the $app/forms
+						// `enhance` action, neither resolvable outside a real SvelteKit
+						// build — same stub-alias pattern as $app/environment above.
+						'$app/state': path.resolve(import.meta.dirname, 'src/tests/app-state-stub.ts'),
+						'$app/forms': path.resolve(import.meta.dirname, 'src/tests/app-forms-stub.ts')
 					},
 					// jsdom project: resolve packages (including Svelte itself) via their
 					// browser/client build rather than the default node/ssr condition, so
