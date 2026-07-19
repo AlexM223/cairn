@@ -1,36 +1,15 @@
-import { error, fail, isHttpError, redirect } from '@sveltejs/kit';
-import QRCode from 'qrcode';
-import { getWallet, deleteWallet, getLabels, nextReceiveAddress } from '$lib/server/wallets';
-import { AuthError } from '$lib/server/auth';
+import { error } from '@sveltejs/kit';
+import { getWallet, getLabels } from '$lib/server/wallets';
 import { listTransactions } from '$lib/server/transactions';
 import { getAddressLabels } from '$lib/server/addressLabels';
 import { isBackedUp } from '$lib/server/backups';
 import { readWalletSnapshot, EMPTY_WALLET_SNAPSHOT } from '$lib/server/walletSync';
 import { listReplacedInbound } from '$lib/server/addressWatcher';
-import { requireUser } from '$lib/server/api';
-import { childLogger } from '$lib/server/logger';
-import { sanitizeChainError } from '$lib/server/chainErrors';
+import { parseWalletId, rotateReceiveAction } from '$lib/server/receiveRotate';
 import type { Actions, PageServerLoad } from './$types';
 
-const log = childLogger('wallet');
-
-// Opaque parchment behind evergreen ink (cairn-7d3q4) — see the matching QR_OPTS
-// comment in $lib/server/walletSync.ts for why this must stay in sync and why it's
-// no longer light-modules-on-transparent.
-const QR_OPTS = {
-	margin: 1,
-	width: 220,
-	color: { dark: '#1f2623', light: '#f3efe7' }
-};
-
-function walletId(param: string): number {
-	const id = Number(param);
-	if (!Number.isInteger(id) || id <= 0) error(404, 'Wallet not found');
-	return id;
-}
-
 export const load: PageServerLoad = ({ params, locals, url, depends }) => {
-	const id = walletId(params.id);
+	const id = parseWalletId(params.id);
 	const userId = locals.user!.id;
 	const row = getWallet(userId, id);
 	if (!row) error(404, 'Wallet not found');
@@ -79,46 +58,10 @@ export const load: PageServerLoad = ({ params, locals, url, depends }) => {
 };
 
 export const actions: Actions = {
-	/** Hand out the next unused receive address (after the one on display). */
-	receive: async (event) => {
-		requireUser(event);
-		const { params, locals, request } = event;
-		const id = walletId(params.id);
-		const form = await request.formData();
-		const currentRaw = form.get('current');
-		const current = currentRaw == null ? NaN : Number(currentRaw);
-
-		try {
-			const next = await nextReceiveAddress(
-				locals.user!.id,
-				id,
-				Number.isInteger(current) ? current : undefined
-			);
-			if (!next) error(404, 'Wallet not found');
-
-			const qr = await QRCode.toDataURL(next.address, QR_OPTS);
-			return { receive: { ...next, qr } };
-		} catch (e) {
-			// The 404 above is a SvelteKit HttpError, not a connectivity failure --
-			// let it propagate to the error boundary instead of being reported as a
-			// degraded 502 form response.
-			if (isHttpError(e)) throw e;
-			return fail(502, {
-				receiveError: sanitizeChainError(e, log, { walletId: id }, 'receive-address action failed')
-			});
-		}
-	},
-
-	delete: async (event) => {
-		requireUser(event);
-		const { params, locals } = event;
-		const id = walletId(params.id);
-		try {
-			if (!deleteWallet(locals.user!.id, id)) error(404, 'Wallet not found');
-		} catch (e) {
-			if (e instanceof AuthError) return fail(409, { deleteError: e.message });
-			throw e;
-		}
-		redirect(303, '/wallets');
-	}
+	/** Hand out the next unused receive address (after the one on display).
+	 *  Shared with /wallets/[id]/receive — see $lib/server/receiveRotate.ts.
+	 *  Remove-wallet moved to the confirmation-gated /wallets/[id]/settings
+	 *  subpage (cairn-gt05.2, spec §2.2 — destructive actions never sit in the
+	 *  detail page's scroll flow). */
+	receive: rotateReceiveAction
 };

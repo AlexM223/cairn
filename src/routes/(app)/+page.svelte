@@ -118,6 +118,13 @@
 		return s.kind === 'multisig' ? `/wallets/multisig/${s.id}/send` : `/wallets/${s.id}/send`;
 	}
 
+	// Receive routes to the canonical /wallets/[id]/receive subpage (cairn-gt05.2,
+	// spec §2.4). Multisig wallets keep their detail page's embedded panel via
+	// the #receive anchor until that tree gets its own subpage.
+	function receiveHref(s: { kind: string; id: number; href: string }): string {
+		return s.kind === 'multisig' ? `${s.href}#receive` : `/wallets/${s.id}/receive`;
+	}
+
 	// Hero pills: with exactly one wallet they go straight to it. With more
 	// than one, a lightweight inline chooser lists every wallet so Send/Receive
 	// stop detouring through the full /wallets list on every click
@@ -128,7 +135,7 @@
 	);
 	const multiWallet = $derived(portfolio && portfolio.allocation.length > 1);
 	const sendTarget = $derived(soloWallet ? sendHref(soloWallet) : '/wallets');
-	const receiveTarget = $derived(soloWallet ? soloWallet.href : '/wallets');
+	const receiveTarget = $derived(soloWallet ? receiveHref(soloWallet) : '/wallets');
 
 	let openPicker = $state<'send' | 'receive' | null>(null);
 	let heroActionsEl = $state<HTMLDivElement | null>(null);
@@ -375,7 +382,7 @@
 					>
 						{#each portfolio.allocation as w (w.key)}
 							<a
-								href={openPicker === 'send' ? sendHref(w) : w.href}
+								href={openPicker === 'send' ? sendHref(w) : receiveHref(w)}
 								class="wallet-picker-row"
 								role="menuitem"
 								onclick={closePicker}

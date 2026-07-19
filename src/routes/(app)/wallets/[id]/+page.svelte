@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { enhance } from '$app/forms';
 	import { afterNavigate, goto, invalidate, replaceState } from '$app/navigation';
 	import { onNewBlock } from '$lib/liveBlocks';
 	import { confirmationsFor } from '$lib/confirmations';
@@ -9,13 +8,11 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import Amount from '$lib/components/Amount.svelte';
 	import Banner from '$lib/components/Banner.svelte';
-	import SyncIndicator from '$lib/components/heartwood/SyncIndicator.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
-	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
 	import Term from '$lib/components/Term.svelte';
-	import { DESCRIPTOR_TIP_SINGLE } from '$lib/termGlosses';
 	import TxStatusBadge from '$lib/components/TxStatusBadge.svelte';
 	import ConsolidationCard from './_components/ConsolidationCard.svelte';
+	import ReceivePanel from './_components/ReceivePanel.svelte';
 	import MiningRewards from '$lib/components/MiningRewards.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
@@ -24,8 +21,7 @@
 	import { shouldShowNetworkFee } from '$lib/shared/txRow';
 	import WalletStepChart from './_components/WalletStepChart.svelte';
 	import BalanceHorizons from '$lib/components/portfolio/BalanceHorizons.svelte';
-	import { copyToClipboard } from '$lib/clipboard';
-	import { formatBtc, formatFeeRate, formatSats, gatedFiatPrice, timeAgo, truncateMiddle } from '$lib/format';
+	import { formatFeeRate, gatedFiatPrice, timeAgo, truncateMiddle } from '$lib/format';
 	import { buildHorizonRows, changesFromHorizonSeries, historyFromTxDeltas } from '$lib/horizonDelta';
 	import { SCRIPT_TYPE_LABELS, WALLET_DEVICE_LABELS, walletTypeLabel } from '../labels';
 	import {
@@ -227,7 +223,7 @@
 			const url = new URL(window.location.href);
 			const txid = url.searchParams.get('speedup');
 			if (!txid) return;
-			tab = 'saved';
+			tab = 'activity';
 			void openSpeedUp(txid);
 			url.searchParams.delete('speedup');
 			try {
@@ -237,41 +233,39 @@
 			}
 		}, 0);
 	});
-	let confirmDelete = $state(false);
-	let deleting = $state(false);
-	let generating = $state(false);
-	// Rotate can legitimately take 30-40s when a fresh gap-limit scan is needed
-	// (cairn-2ic5): after a few seconds, reassure the user rather than leaving a
-	// silent spinner that reads as a hung button.
-	let rotateSlow = $state(false);
-	let rotateSlowTimer: ReturnType<typeof setTimeout> | null = null;
-	const ROTATE_SLOW_MS = 6000;
-	// Client-side error surface for a Rotate that fails at the transport layer
-	// (network unreachable, 500, thrown action) — those come back as
-	// result.type === 'error', which update() applies nothing for, so without
-	// this the button just spins back to "Rotate" with no explanation
-	// (cairn-sz1q). The server's own fail(502,{receiveError}) still surfaces via
-	// form.receiveError.
-	let rotateError = $state<string | null>(null);
-	let tab = $state<'transactions' | 'addresses' | 'saved'>('transactions');
-	let addrFilter = $state<'used' | 'unused' | 'change'>('used');
+	// Two tabs only (gt05.2, spec §2.2): Activity | Receive. The old
+	// "Addresses · N" tab lives on the /wallets/[id]/settings subpage now; the
+	// old "Sending" tab's draft management renders inside Activity below the
+	// transaction rows. Rotate/copy state lives inside ReceivePanel.
+	let tab = $state<'activity' | 'receive'>('activity');
 
-	// Progressive disclosure (cairn-uxdev batch 2, item 2): derivation path and
-	// the export-config explanatory copy are power-user detail, collapsed by
-	// default — matches the multisig detail page's existing showReceiveAdvanced
-	// convention (never persisted, always resets closed on load).
-	let showReceiveAdvanced = $state(false);
-	let showExportDetails = $state(false);
+	// The collapsed "Wallet details ›" Tier-1 expander (spec §2.2): type,
+	// signing model, full xpub, and the balance-history chart — everything
+	// cryptographic is invisible until asked for.
+	let detailsOpen = $state(false);
+	function openDetailsFromChip() {
+		detailsOpen = true;
+		// The chip points AT the expander — bring it into view once rendered.
+		setTimeout(() => {
+			document.getElementById('wallet-details')?.scrollIntoView({ block: 'nearest' });
+		}, 0);
+	}
 
 	// --- saved transactions (draft → awaiting-signature → broadcast) ---
 	// Rows removed optimistically on delete; a failed DELETE restores the id.
 	let deletedTxIds = $state<number[]>([]);
 	const savedTxs = $derived(data.transactions.filter((t) => !deletedTxIds.includes(t.id)));
-	// Unfinished drafts surface in an always-visible card so a transaction
-	// parked mid-signing is never lost behind a tab. Superseded rows are done
-	// (replaced by a fee bump), not in progress.
-	const inProgress = $derived(
-		savedTxs.filter((t) => t.status !== 'completed' && t.status !== 'superseded')
+	// "Payments you're working on" (gt05.2 two-tab collapse): the old Sending
+	// tab's rows that still NEED something — drafts / awaiting-signature (with
+	// Resume, Download PSBT, Discard) plus our own broadcast-but-unconfirmed
+	// rows (Bump fee). Confirmed history is the Activity rows' job; superseded
+	// rows are done. Rendered inside the Activity tab so nothing is lost.
+	const workingTxs = $derived(
+		savedTxs.filter(
+			(t) =>
+				t.status !== 'superseded' &&
+				(t.status !== 'completed' || plausiblyUnconfirmed(t.txid))
+		)
 	);
 	let confirmTxId = $state<number | null>(null);
 	let deletingTxId = $state<number | null>(null);
@@ -450,16 +444,6 @@
 
 	const receive = $derived(form?.receive ?? chainData.receive ?? null);
 
-	// Copy button on the receive panel (spec 5c: Copy + Rotate pills).
-	let addrCopied = $state(false);
-	async function copyAddress() {
-		if (!receive) return;
-		if (await copyToClipboard(receive.address)) {
-			addrCopied = true;
-			setTimeout(() => (addrCopied = false), 1500);
-		}
-	}
-
 	/** Confirmation depth for the burial-rings glyph. Unknown tip (scan hiccup)
 	 *  still shows a confirmed tx as sealed rather than lying "no rings yet". */
 	function confirmationsOf(height: number): number {
@@ -477,14 +461,8 @@
 
 	// Backup status: source of truth is the server-tracked wallet_backups table
 	// (data.backedUp) — the same value the creation wizard and the persistent
-	// banner use, so a download from anywhere (wizard, another browser) reflects
-	// here. The local flag is a purely-optimistic overlay for instant feedback on
-	// this page's own download buttons.
-	let downloadedNow = $state(false);
-	const backupDone = $derived(data.backedUp || downloadedNow);
-	function markBackupDownloaded() {
-		downloadedNow = true;
-	}
+	// banner use. The download buttons themselves live on the settings subpage.
+	const backupDone = $derived(data.backedUp);
 
 	// --- tx labels ---
 	// Server-loaded labels plus optimistic local edits layered on top; an
@@ -545,78 +523,8 @@
 			savingLabel = false;
 		}
 	}
-	// --- address labels (cairn-nbsx) ---
-	// Same optimistic-override idiom as tx labels, keyed by address instead of txid.
-	let addrLabelOverrides = $state<Record<string, string>>({});
-	const addressLabels = $derived<Record<string, string>>({
-		...data.addressLabels,
-		...addrLabelOverrides
-	});
-	let editingAddr = $state<string | null>(null);
-	let addrEditValue = $state('');
-	let savingAddrLabel = $state(false);
-	let addrLabelError = $state<string | null>(null);
-
-	function startAddrLabelEdit(address: string) {
-		editingAddr = address;
-		addrEditValue = addressLabels[address] ?? '';
-		addrLabelError = null;
-	}
-
-	function cancelAddrLabelEdit() {
-		editingAddr = null;
-		addrLabelError = null;
-	}
-
-	async function saveAddrLabel() {
-		if (editingAddr === null || savingAddrLabel) return;
-		const address = editingAddr;
-		const next = addrEditValue.trim().slice(0, 120);
-		const prev = addressLabels[address] ?? '';
-		if (next === prev) {
-			cancelAddrLabelEdit();
-			return;
-		}
-		addrLabelOverrides = { ...addrLabelOverrides, [address]: next };
-		editingAddr = null;
-		savingAddrLabel = true;
-		try {
-			const res = await fetch(`/api/wallets/${data.wallet.id}/address-labels`, {
-				method: 'PUT',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ address, label: next })
-			});
-			if (!res.ok) throw new Error(`HTTP ${res.status}`);
-			addrLabelError = null;
-		} catch {
-			addrLabelOverrides = { ...addrLabelOverrides, [address]: prev };
-			editingAddr = address;
-			addrEditValue = next;
-			addrLabelError = "Couldn't save the label — try again.";
-		} finally {
-			savingAddrLabel = false;
-		}
-	}
-
-	const usedAddrs = $derived((scan?.addresses ?? []).filter((a) => a.used));
-	// Unused = the forward gap window on BOTH chains — used-change addresses
-	// already show under Used, so hiding unused-change here left a slice of the
-	// wallet's addresses invisible in every view. Receive first: those are the
-	// ones you hand out.
-	const unusedAddrs = $derived(
-		(scan?.addresses ?? [])
-			.filter((a) => !a.used)
-			.toSorted((a, b) => Number(a.change) - Number(b.change))
-	);
-	// Change = the whole internal chain (m/1/*), used and upcoming — so you can
-	// verify where change went AND where the next spend's change will go
-	// (cairn-teyh).
-	const changeAddrs = $derived(
-		(scan?.addresses ?? []).filter((a) => a.change).toSorted((a, b) => a.index - b.index)
-	);
-	const shownAddrs = $derived(
-		addrFilter === 'used' ? usedAddrs : addrFilter === 'unused' ? unusedAddrs : changeAddrs
-	);
+	// Address labels + the full address list moved to /wallets/[id]/settings
+	// (gt05.2 — the "Addresses · N" tab is gone from this surface).
 
 </script>
 
@@ -655,25 +563,36 @@
 		<div class="wallet-top">
 		<!-- ------------------------------------------- eyebrow + hero -->
 		<header class="hw-head">
+			<!-- gt05.2 / spec §2.2: no raw "Native SegWit" tag on the surface — a
+			     plain "Single-key" chip opens the Wallet details expander, where
+			     the real term survives one tap down. -->
 			<div class="hw-eyebrow">
-				<EyebrowBreadcrumb
-					path={['Wallets', data.wallet.name]}
-					current={SCRIPT_TYPE_LABELS[data.wallet.scriptType]}
-				/>
+				<EyebrowBreadcrumb path={['Wallets']} current={data.wallet.name} />
+				<button
+					type="button"
+					class="type-chip"
+					aria-expanded={detailsOpen}
+					aria-controls="wallet-details"
+					onclick={openDetailsFromChip}
+				>
+					Single-key
+					<Icon name="chevron-down" size={12} />
+				</button>
 			</div>
 
 			{#if scan}
 				<div class="hw-hero">
 					<Amount sats={available} size="hero" price={heroPrice} />
 				</div>
-				<p class="hw-hero-sub">
-					<span class="tabular">{formatSats(available)} sats</span>
-					{#if scan.unconfirmed !== 0}
+				<!-- One balance, once (spec §2.2): the hero above is the only
+				     rendering — no duplicate sats line beneath it. -->
+				{#if scan.unconfirmed !== 0}
+					<p class="hw-hero-sub">
 						<span class="hw-pending">
-							· <Amount sats={scan.unconfirmed} size="inline" sign direction="in" /> on its way
+							<Amount sats={scan.unconfirmed} size="inline" sign direction="in" /> on its way
 						</span>
-					{/if}
-				</p>
+					</p>
+				{/if}
 				{#if maturingTotal > 0}
 					<p class="hw-hero-sub hw-maturing">
 						· <Amount sats={maturingTotal} size="inline" /> maturing —
@@ -737,35 +656,25 @@
 						Send
 					</a>
 				{/if}
-				<a href="#receive" class="btn btn-secondary hw-pill">
+				<!-- gt05.2 / spec §2.4: Receive routes to the canonical subpage. -->
+				<a href="/wallets/{data.wallet.id}/receive" class="btn btn-secondary hw-pill">
 					<Icon name="arrow-down-left" size={15} />
 					Receive
 				</a>
 			</div>
 
-			<p class="hw-sign-note">
-				<Term
-					tip="This wallet tracks your bitcoin using your public key. To send, you'll sign the transaction on your hardware device — your private key never leaves the device."
-				>
-					<Icon name="shield" size={12} />
-					{#if data.wallet.deviceType && data.wallet.deviceType !== 'file'}
-						Signs with your {WALLET_DEVICE_LABELS[data.wallet.deviceType]}
-					{:else}
-						Signs on your device
-					{/if}
-				</Term>
-				· {walletKind} · <span class="mono">{truncateMiddle(data.wallet.xpub, 10, 8)}</span>
-			</p>
-
-			<div class="hw-sync-row">
-				<SyncIndicator lastSyncedAt={data.lastSyncedAt} {syncing} />
-			</div>
+			<!-- The xpub fragment, type tag and "synced Ns ago" line are gone from
+			     the surface (spec §2.2): type/signing-model/xpub live in the
+			     Wallet details expander below; sync state belongs to Health. -->
 		</header>
 
-		<aside class="wallet-rail quiet-rail" aria-label="Wallet details">
+		<aside class="wallet-rail quiet-rail" aria-label="Wallet summary">
+			<!-- The rail whispers plain facts only (spec §2.2 + desktop rule 2):
+			     the raw xpub and address-type jargon live in the Wallet details
+			     expander, not here. -->
 			<div class="rail-block">
 				<span class="rail-eyebrow">Type</span>
-				<span class="rail-value-sm">{SCRIPT_TYPE_LABELS[data.wallet.scriptType]}</span>
+				<span class="rail-value-sm">Single-key</span>
 				<span class="rail-sub">{walletKind}</span>
 			</div>
 			<div class="rail-block">
@@ -777,13 +686,12 @@
 						Your device
 					{/if}
 				</span>
-				<span class="rail-sub mono">{truncateMiddle(data.wallet.xpub, 10, 8)}</span>
 			</div>
 			{#if receive}
 				<div class="rail-block">
 					<span class="rail-eyebrow">Receive address</span>
 					<span class="rail-value-sm mono rail-addr">{truncateMiddle(receive.address, 12, 10)}</span>
-					<a href="#receive" class="rail-link-inline">Show QR →</a>
+					<a href="/wallets/{data.wallet.id}/receive" class="rail-link-inline">Show QR →</a>
 				</div>
 			{/if}
 			<div class="rail-block">
@@ -792,7 +700,9 @@
 					<span class="rail-value-sm rail-ok">Backed up</span>
 				{:else}
 					<span class="rail-value-sm rail-warn">Not backed up</span>
-					<a href="#backup" class="rail-link-inline">Download config →</a>
+					<a href="/wallets/{data.wallet.id}/settings#backup" class="rail-link-inline"
+						>Download backup file →</a
+					>
 				{/if}
 			</div>
 		</aside>
@@ -840,34 +750,8 @@
 					missing funds you expect to see.
 				</Banner>
 			{/if}
-			<!-- ------------------------------------------- stepped balance chart -->
-			{#if scan.txs.some((t) => t.height > 0)}
-				<div class="hw-chart">
-					<WalletStepChart txs={scan.txs} confirmed={scan.confirmed} height={148} />
-					<p class="hw-caption">balance over time · each step is a transaction</p>
-				</div>
-			{/if}
-
-			{#if inProgress.length > 0}
-				<!-- ------------------------------ transactions in progress -->
-				<section class="hw-section" aria-label="Transactions in progress">
-					<h2 class="hw-section-title">In progress</h2>
-					<ul class="progress-list">
-						{#each inProgress as tx (tx.id)}
-							<li class="progress-row">
-								<TxStatusBadge status={tx.status} />
-								<span class="mono text-muted">{truncateMiddle(tx.recipient, 8, 6)}</span>
-								<span class="grow"><Amount sats={tx.amount} size="inline" /></span>
-								<span class="hint">{timeAgo(isoToUnix(tx.createdAt))}</span>
-								<a href="/wallets/{data.wallet.id}/send?tx={tx.id}" class="btn btn-secondary btn-sm">
-									Resume
-									<Icon name="arrow-right" size={13} />
-								</a>
-							</li>
-						{/each}
-					</ul>
-				</section>
-			{/if}
+			<!-- The stepped balance chart moved into the Wallet details expander
+			     (spec §2.2) — the surface keeps one hero number and air. -->
 
 			<!-- Consolidation suggestion: appears only when the wallet holds coins
 			     from huge batch payouts (slow to sign on hardware wallets). Fetches
@@ -878,123 +762,9 @@
 				receiveAddress={receive?.address ?? null}
 			/>
 
-			<!-- ------------------------------------------- receive (spec 5c/8d) -->
-			<!-- Always rendered (cairn-zke0) so the #receive anchor always has
-			     something to scroll to. When the wallet has never synced (or the
-			     node is unreachable on first load), `receive` is null — show a
-			     plain-language waiting state instead of leaving the panel blank. -->
-			<section class="hw-section hw-receive" id="receive">
-				{#if receive}
-					<div class="hw-receive-grid">
-						<div class="hw-qr-wrap">
-							<img
-								class="hw-qr"
-								src={receive.qr}
-								alt="QR code for {receive.address}"
-								width="300"
-								height="300"
-							/>
-						</div>
-						<div class="hw-receive-meta">
-							<h2 class="hw-receive-headline">A fresh address, every time.</h2>
-							<div class="hw-addr-row">
-								<span class="mono hw-addr">{receive.address}</span>
-							</div>
-							{#if rotateError || form?.receiveError}
-								<div class="form-error" role="alert">{rotateError ?? form?.receiveError}</div>
-							{/if}
-							<div class="hw-receive-actions">
-								<button type="button" class="btn btn-secondary hw-pill" onclick={copyAddress}>
-									<Icon name={addrCopied ? 'check' : 'copy'} size={14} />
-									{addrCopied ? 'Copied' : 'Copy'}
-								</button>
-								<form
-									method="POST"
-									action="?/receive"
-									use:enhance={() => {
-										generating = true;
-										rotateSlow = false;
-										rotateError = null;
-										if (rotateSlowTimer) clearTimeout(rotateSlowTimer);
-										rotateSlowTimer = setTimeout(() => (rotateSlow = true), ROTATE_SLOW_MS);
-										return async ({ result, update }) => {
-											if (rotateSlowTimer) clearTimeout(rotateSlowTimer);
-											rotateSlowTimer = null;
-											generating = false;
-											rotateSlow = false;
-											// A transport-level failure (network unreachable, 500, thrown
-											// action) arrives as 'error' and carries no form data, so
-											// update() would leave the UI silent. Surface it ourselves.
-											if (result.type === 'error') {
-												rotateError =
-													"Couldn't get a fresh address — check your connection and try again.";
-												return;
-											}
-											await update({ reset: false });
-										};
-									}}
-								>
-									<input type="hidden" name="current" value={receive.index} />
-									<button class="btn btn-secondary hw-pill" disabled={generating}>
-										{#if generating}<span class="spinner"></span>{:else}<Icon
-												name="refresh"
-												size={14}
-											/>{/if}
-										{generating ? (rotateSlow ? 'Still working…' : 'Rotating…') : 'Rotate'}
-									</button>
-								</form>
-							</div>
-							{#if generating && rotateSlow}
-								<p class="hw-rotate-status" role="status" aria-live="polite">
-									Still finding your next unused address — checking the chain can take a moment on a
-									busy node. Hang tight.
-								</p>
-							{/if}
-							<p class="hw-caption">
-								A new address for every payment keeps your history private. Old addresses keep
-								working forever — rotating never breaks anything.
-							</p>
-							{#if neverFunded}
-								<!-- Mechanism-fact confidence line (cairn-gt05.6, F17) — answers
-								     "is this really mine" for a never-funded wallet's first
-								     receive view, without reassurance-theater. -->
-								<p class="hw-caption">
-									This address belongs to your wallet. Anything sent to it is controlled only by
-									your keys — nobody else can move it. You can share it or reuse this flow as
-									often as you like.
-								</p>
-							{/if}
-							<div class="disclosure hw-receive-advanced">
-								<button
-									type="button"
-									class="disclosure-toggle"
-									onclick={() => (showReceiveAdvanced = !showReceiveAdvanced)}
-									aria-expanded={showReceiveAdvanced}
-								>
-									<Icon name="settings" size={14} />
-									Advanced
-									<span class="chev" class:open={showReceiveAdvanced}
-										><Icon name="chevron-down" size={14} /></span
-									>
-								</button>
-								{#if showReceiveAdvanced}
-									<div class="disclosure-body fade-in">
-										<span class="hw-addr-path mono">Derivation path: {receive.path}</span>
-									</div>
-								{/if}
-							</div>
-						</div>
-					</div>
-				{:else}
-					<div class="hw-receive-empty">
-						<h2 class="hw-receive-headline">Still connecting to your node</h2>
-						<p class="hw-caption">
-							We can't show your receive address until we reach your node. This usually clears up
-							in a few seconds — check back shortly, or use the refresh button above.
-						</p>
-					</div>
-				{/if}
-			</section>
+			<!-- The Receive panel lives in the Receive tab below (and canonically
+			     at /wallets/[id]/receive) — same ReceivePanel component both
+			     places, per spec §2.4. -->
 
 			<!-- ------------------------------------------- mining rewards -->
 			<!-- Coinbase (mining reward) UTXOs only — empty for a normal wallet, so
@@ -1003,41 +773,31 @@
 				<MiningRewards utxos={coinbaseUtxos} {tipHeight} />
 			{/if}
 
-			<!-- ------------------------------------------- tabs -->
-			<div class="hw-toggles" role="tablist">
+			<!-- ------------------- tabs: Activity | Receive (spec §2.2, two only) -->
+			<div class="hw-toggles" role="tablist" aria-label="Wallet views">
 				<button
 					type="button"
 					role="tab"
 					class="hw-toggle"
-					class:active={tab === 'transactions'}
-					aria-selected={tab === 'transactions'}
-					onclick={() => (tab = 'transactions')}
+					class:active={tab === 'activity'}
+					aria-selected={tab === 'activity'}
+					onclick={() => (tab = 'activity')}
 				>
-					Transactions · {scan.txs.length}
+					Activity · {scan.txs.length}
 				</button>
 				<button
 					type="button"
 					role="tab"
 					class="hw-toggle"
-					class:active={tab === 'addresses'}
-					aria-selected={tab === 'addresses'}
-					onclick={() => (tab = 'addresses')}
+					class:active={tab === 'receive'}
+					aria-selected={tab === 'receive'}
+					onclick={() => (tab = 'receive')}
 				>
-					Addresses · {scan.addresses.length}
-				</button>
-				<button
-					type="button"
-					role="tab"
-					class="hw-toggle"
-					class:active={tab === 'saved'}
-					aria-selected={tab === 'saved'}
-					onclick={() => (tab = 'saved')}
-				>
-					Sending{savedTxs.length > 0 ? ` · ${savedTxs.length}` : ''}
+					Receive
 				</button>
 			</div>
 
-			{#if tab === 'transactions'}
+			{#if tab === 'activity'}
 				<!-- Hairline tx rows with burial-ring confirmation glyphs (5d). -->
 				<section class="hw-txs" aria-label="Transactions">
 					{#if cancelledTxs.length > 0}
@@ -1228,170 +988,15 @@
 						{/each}
 					{/if}
 				</section>
-			{:else if tab === 'addresses'}
-				<section class="hw-table-section">
-					<div class="chips">
-						<button
-							type="button"
-							class="chip"
-							class:active={addrFilter === 'used'}
-							onclick={() => (addrFilter = 'used')}
-						>
-							Used {usedAddrs.length}
-						</button>
-						<button
-							type="button"
-							class="chip"
-							class:active={addrFilter === 'unused'}
-							onclick={() => (addrFilter = 'unused')}
-						>
-							Unused {unusedAddrs.length}
-						</button>
-						<button
-							type="button"
-							class="chip"
-							class:active={addrFilter === 'change'}
-							onclick={() => (addrFilter = 'change')}
-						>
-							Change {changeAddrs.length}
-						</button>
-					</div>
-					{#if shownAddrs.length === 0}
-						<div class="empty-state">
-							<span class="empty-title">
-								{addrFilter === 'used'
-									? 'No used addresses yet'
-									: addrFilter === 'unused'
-										? 'No unused addresses in the window'
-										: 'No change addresses in the window'}
-							</span>
-						</div>
-					{:else}
-						<div class="table-wrap">
-							<table class="table">
-								<thead>
-									<tr>
-										<th>Path</th>
-										<th>Address</th>
-										<th>Label</th>
-										<th class="num">Balance</th>
-										<th class="num">Txs</th>
-									</tr>
-								</thead>
-								<tbody>
-									{#each shownAddrs as addr (addr.address)}
-										<tr>
-											<td class="mono text-muted"
-												>{addr.derivationPath}{#if addr.change}<span
-														class="chg-chip"
-														title="An internal address — leftovers from your own spends land here."
-														>change</span
-													>{/if}</td
-											>
-											<td class="addr-cell">
-												<CopyText value={addr.address} truncate={12} />
-											</td>
-											<td class="addr-label-cell">
-												{#if editingAddr === addr.address}
-													<input
-														class="input addr-label-input"
-														bind:value={addrEditValue}
-														maxlength="120"
-														placeholder="e.g. exchange deposit"
-														use:focusInput
-														onkeydown={(e) => {
-															if (e.key === 'Enter') saveAddrLabel();
-															else if (e.key === 'Escape') cancelAddrLabelEdit();
-														}}
-														onblur={saveAddrLabel}
-													/>
-												{:else if addressLabels[addr.address]}
-													<button
-														type="button"
-														class="addr-label-btn has-label"
-														onclick={() => startAddrLabelEdit(addr.address)}
-														title="Edit label"
-													>
-														{addressLabels[addr.address]}
-													</button>
-												{:else}
-													<button
-														type="button"
-														class="addr-label-btn add-label"
-														onclick={() => startAddrLabelEdit(addr.address)}
-													>
-														+ Add label
-													</button>
-												{/if}
-											</td>
-											<td class="num">
-												{#if addr.balance !== 0}
-													<Amount sats={addr.balance} size="row" />
-												{:else}
-													<span class="text-muted">0</span>
-												{/if}
-											</td>
-											<td class="num text-muted">{addr.txCount}</td>
-										</tr>
-									{/each}
-								</tbody>
-							</table>
-						</div>
-						{#if addrLabelError}
-							<div class="form-error" role="alert" style="margin: 8px 14px">{addrLabelError}</div>
-						{/if}
-						{#if shownAddrs.some((a) => a.change)}
-							<p class="change-note">
-								<Icon name="info" size={13} />
-								<span>
-									Rows marked <span class="chg-chip">change</span> are this wallet's internal
-									addresses. When you spend, whatever isn't sent to the recipient comes back to one
-									of these — same keys, just a separate branch so payments you receive stay apart
-									from your own leftovers. Seeing them here is normal; that money never left the
-									wallet.
-								</span>
-							</p>
-						{/if}
-					{/if}
-				</section>
-			{:else}
-				<div class="saved-head">
-					<div class="saved-head-text">
-						<span class="hint">
-							Transactions you're building live here — a <strong>draft</strong> PSBT, one
-							<strong>awaiting signature</strong> on your hardware wallet, then
-							<strong>broadcast</strong> once sent.
-						</span>
-					</div>
-					<a href="/wallets/{data.wallet.id}/send" class="btn btn-primary btn-sm">
-						<Icon name="plus" size={14} />
-						New transaction
-					</a>
-				</div>
-
-				{#if savedTxs.length === 0}
-					<section class="hw-txs">
-						<div class="empty-state">
-							<Icon name="arrow-up-right" size={22} />
-							<span class="empty-title">Nothing in progress</span>
-							<span>
-								This is where transactions you're building and signing live. Heartwood builds an
-								unsigned transaction (a PSBT) that you sign on your hardware wallet — your keys
-								never touch this server.
-							</span>
-							<a
-								href="/wallets/{data.wallet.id}/send"
-								class="btn btn-primary btn-sm"
-								style="margin-top: 4px"
-							>
-								<Icon name="plus" size={14} />
-								New transaction
-							</a>
-						</div>
-					</section>
-				{:else}
-					<div class="saved-list">
-						{#each savedTxs as tx (tx.id)}
+				{#if workingTxs.length > 0}
+					<!-- Payments you're working on (the old Sending tab, folded into
+					     Activity per the two-tab collapse): drafts to resume, download
+					     or discard, plus our own broadcast-but-unconfirmed sends that
+					     can still be fee-bumped. Confirmed history is the rows above. -->
+					<section class="hw-section" aria-label="Payments in progress">
+						<h2 class="hw-section-title">In progress</h2>
+						<div class="saved-list">
+							{#each workingTxs as tx (tx.id)}
 							<section class="saved-row">
 								<div class="saved-row-top">
 									<TxStatusBadge status={tx.status} />
@@ -1539,95 +1144,75 @@
 										{/if}
 									</div>
 								{/if}
-							</section>
-						{/each}
-					</div>
+								</section>
+							{/each}
+						</div>
+					</section>
 				{/if}
+			{:else}
+				<!-- Receive tab: the same canonical ReceivePanel the
+				     /wallets/[id]/receive subpage renders (spec §2.4). -->
+				<section class="hw-section hw-receive" id="receive">
+					<ReceivePanel {receive} serverError={form?.receiveError ?? null} {neverFunded} />
+				</section>
 			{/if}
 
-			<!-- ------------------------------------------- export config -->
-			<section class="hw-section" id="backup">
-				<div class="hw-section-head">
-					<h2 class="hw-section-title">Export config <span class="optional-tag">optional</span></h2>
-					{#if backupDone}
-						<span class="badge badge-success" title="A copy of this wallet's config has been downloaded">
-							<Icon name="check" size={11} />
-							downloaded
-						</span>
-					{/if}
-				</div>
-				<div class="disclosure hw-export-advanced">
-					<button
-						type="button"
-						class="disclosure-toggle"
-						onclick={() => (showExportDetails = !showExportDetails)}
-						aria-expanded={showExportDetails}
-					>
-						<Icon name="settings" size={14} />
-						{showExportDetails ? 'Hide' : 'Show'} export options
-						<span class="chev" class:open={showExportDetails}
-							><Icon name="chevron-down" size={14} /></span
-						>
-					</button>
-					{#if showExportDetails}
-						<div class="disclosure-body fade-in">
-							<p class="backup-copy">
-								You don't need to back this up — a single-key wallet always rebuilds from your
-								hardware device (just re-import its key). If you'd like a copy anyway, the config
-								describes the wallet (public key and settings) for importing into Sparrow, Electrum,
-								or back into Heartwood. It <strong>can't spend</strong>.
-							</p>
-							<div class="row" style="gap: 8px; flex-wrap: wrap">
-								{#if data.flags?.wallet_config_export !== false}
-									<a
-										href="/api/wallets/{data.wallet.id}/config"
-										class="btn btn-secondary btn-sm"
-										download
-										onclick={markBackupDownloaded}
-									>
-										Wallet config (JSON)
-									</a>
-									<a
-										href="/api/wallets/{data.wallet.id}/descriptor"
-										class="btn btn-ghost btn-sm"
-										download
-										onclick={markBackupDownloaded}
-									>
-										Descriptor (.txt)
-									</a>
-								{:else}
-									<FeatureDisabled
-										message="Wallet config export has been disabled by your administrator."
-									/>
-								{/if}
-								{#if data.flags?.csv_export !== false}
-									<a
-										href="/api/wallets/{data.wallet.id}/history.csv"
-										class="btn btn-ghost btn-sm"
-										download
-										title="Download this wallet's transaction history as a CSV file"
-									>
-										History (CSV)
-									</a>
-								{:else}
-									<FeatureDisabled message="CSV export has been disabled by your administrator." />
-								{/if}
-							</div>
-							<p class="hw-caption">
-								Wallet config — re-import the key into Heartwood, Sparrow or Electrum. <Term
-									tip={DESCRIPTOR_TIP_SINGLE}>Descriptor</Term
-								> — the raw text form, for Bitcoin Core and power users.
-							</p>
-							{#if data.wallet.xpub}
-								<div class="xpub-line">
-									<span class="hint">Public key (xpub):</span>
-									<CopyText value={data.wallet.xpub} truncate={10} />
-								</div>
-							{/if}
+			<!-- --------------------- Wallet details › (Tier-1 expander, spec §2.2) -->
+			<!-- Everything cryptographic — type, signing model, the FULL copyable
+			     xpub, and the balance-history chart — lives here, collapsed. The
+			     "Single-key" chip up top opens this same expander. -->
+			<section class="hw-section wallet-details-section">
+				<button
+					type="button"
+					class="details-toggle"
+					aria-expanded={detailsOpen}
+					aria-controls="wallet-details"
+					onclick={() => (detailsOpen = !detailsOpen)}
+				>
+					Wallet details
+					<Icon name={detailsOpen ? 'chevron-down' : 'chevron-right'} size={14} />
+				</button>
+				{#if detailsOpen}
+					<div class="details-body fade-in" id="wallet-details">
+						<div class="details-row">
+							<span class="details-label">Type</span>
+							<span class="details-value">
+								Single-key wallet ·
+								<Term
+									tip="The technical address format this wallet uses. Native SegWit (bech32) addresses start with bc1q and pay the lowest fees."
+									>Address type: {SCRIPT_TYPE_LABELS[data.wallet.scriptType]}</Term
+								>
+							</span>
 						</div>
-					{/if}
-				</div>
+						<div class="details-row">
+							<span class="details-label">How this wallet signs</span>
+							<span class="details-value">
+								Signs on your device. Heartwood holds only your public key; you approve each
+								payment on your hardware wallet.
+							</span>
+						</div>
+						<div class="details-row">
+							<span class="details-label">Public key (xpub)</span>
+							<span class="details-value details-xpub">
+								<span class="mono xpub-full">{data.wallet.xpub}</span>
+								<CopyText value={data.wallet.xpub} display="Copy" mono={false} />
+							</span>
+						</div>
+						{#if scan && scan.txs.some((t) => t.height > 0)}
+							<div class="details-chart">
+								<WalletStepChart txs={scan.txs} confirmed={scan.confirmed} height={148} />
+								<p class="hw-caption">balance over time · each step is a transaction</p>
+							</div>
+						{/if}
+					</div>
+				{/if}
 			</section>
+
+			<!-- ------------------- Wallet settings › (Tier-2 subpage, spec §2.2) -->
+			<a class="settings-link" href="/wallets/{data.wallet.id}/settings">
+				Wallet settings
+				<Icon name="chevron-right" size={14} />
+			</a>
 		{:else if loading}
 			<!-- ------------------------------------------- streaming skeleton -->
 			<!-- The shell has painted from the cheap local fields; the scan, receive
@@ -1647,53 +1232,8 @@
 			</div>
 		{/if}
 
-		<!-- ------------------------------------------- delete (quiet footer) -->
-		<div class="hw-danger">
-			{#if !confirmDelete}
-				<button type="button" class="hw-danger-trigger" onclick={() => (confirmDelete = true)}>
-					Remove this wallet from Heartwood…
-				</button>
-			{:else}
-				<form
-					method="POST"
-					action="?/delete"
-					class="delete-confirm"
-					use:enhance={() => {
-						deleting = true;
-						return async ({ update }) => {
-							deleting = false;
-							await update();
-						};
-					}}
-				>
-					<p class="delete-backup-warning">
-						<Icon name="alert-triangle" size={16} />
-						<span>
-							This removes the wallet from Heartwood. Make sure you have your backup and your
-							signing device — Heartwood can't recover it for you.
-						</span>
-					</p>
-					{#if form?.deleteError}
-						<div class="form-error" role="alert">{form.deleteError}</div>
-					{/if}
-					<div class="row" style="gap: 8px">
-						<span class="confirm-text">Really delete?</span>
-						<button class="btn btn-danger btn-sm" disabled={deleting}>
-							{#if deleting}<span class="spinner"></span>{/if}
-							Delete wallet
-						</button>
-						<button
-							type="button"
-							class="btn btn-ghost btn-sm"
-							onclick={() => (confirmDelete = false)}
-							disabled={deleting}
-						>
-							Cancel
-						</button>
-					</div>
-				</form>
-			{/if}
-		</div>
+		<!-- Remove-wallet moved to /wallets/[id]/settings — a confirmation-gated
+		     Danger block on its own URL (spec §2.2), never in scroll flow here. -->
 	</div>
 </div>
 
@@ -1751,11 +1291,6 @@
 			grid-template-columns: minmax(0, var(--measure-reading)) var(--rail-w);
 			gap: var(--lane-gutter);
 			align-items: start;
-		}
-
-		/* The type/xpub sign-note moves into the rail on desktop. */
-		.wallet-top .hw-sign-note {
-			display: none;
 		}
 
 		.wallet-rail {
@@ -1834,6 +1369,11 @@
 	.hw-eyebrow {
 		margin-bottom: 18px;
 		max-width: 100%;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		align-self: stretch;
 	}
 
 	.hw-hero {
@@ -1921,18 +1461,30 @@
 		border-radius: var(--radius-pill);
 	}
 
-	.hw-sign-note {
+	/* The "Single-key ⌵" chip beside the eyebrow — opens Wallet details. */
+	.type-chip {
 		display: inline-flex;
 		align-items: center;
 		gap: 5px;
-		flex-wrap: wrap;
-		margin: 18px 0 0;
+		background: none;
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-pill);
+		padding: 4px 12px;
+		font-family: var(--font-ui);
 		font-size: 12px;
-		color: var(--text-muted);
+		font-weight: 500;
+		color: var(--text-secondary);
+		cursor: pointer;
 	}
 
-	.hw-sync-row {
-		margin-top: 10px;
+	.type-chip:hover {
+		color: var(--text);
+		border-color: var(--border-ghost);
+	}
+
+	.type-chip:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
 	}
 
 	/* Official device-help expandable near the hero (quiet <details> idiom). */
@@ -1966,12 +1518,6 @@
 		text-underline-offset: 2px;
 	}
 
-	/* --- unboxed stepped chart --- */
-
-	.hw-chart {
-		margin-top: 40px;
-	}
-
 	.hw-caption {
 		margin-top: 8px;
 		font-size: 11.5px;
@@ -1988,13 +1534,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
-	}
-
-	.hw-section-head {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		flex-wrap: wrap;
 	}
 
 	.hw-section-title {
@@ -2107,156 +1646,96 @@
 		flex-shrink: 0;
 	}
 
-	/* --- receive panel (5c/8d) --- */
+	/* --- Wallet details expander (Tier-1) + settings link (Tier-2) --- */
 
-	.hw-receive-grid {
-		display: grid;
-		grid-template-columns: auto 1fr;
-		gap: 44px;
-		align-items: center;
-	}
-
-	.hw-qr-wrap {
-		padding: 10px;
-	}
-
-	.hw-qr {
-		display: block;
-		width: 300px;
-		height: 300px;
-		image-rendering: pixelated;
-	}
-
-	.hw-receive-meta {
-		display: flex;
-		flex-direction: column;
-		gap: 14px;
-		min-width: 0;
-	}
-
-	.hw-receive-headline {
-		font-size: 22px;
-		font-weight: 600;
-		letter-spacing: -0.01em;
-		color: var(--text-hero);
-	}
-
-	.hw-addr-row {
-		border-bottom: 1px solid var(--hairline);
-		padding-bottom: 12px;
-		display: flex;
-		flex-direction: column;
-		gap: 5px;
-		min-width: 0;
-	}
-
-	.hw-addr {
-		font-size: 15px;
-		color: var(--text-rows);
-		word-break: break-all;
-		line-height: 1.5;
-	}
-
-	.hw-addr-path {
-		font-size: 11px;
-		color: var(--text-faint);
-	}
-
-	/* Advanced disclosure (matches the multisig detail page's convention). */
-	.hw-receive-advanced {
-		margin-top: 4px;
-	}
-
-	.disclosure {
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-control);
-		overflow: hidden;
-	}
-
-	.disclosure-toggle {
+	.details-toggle {
 		display: flex;
 		align-items: center;
-		gap: 8px;
-		width: 100%;
-		padding: 10px 12px;
-		background: transparent;
+		gap: 6px;
+		align-self: flex-start;
+		background: none;
 		border: none;
-		color: var(--text-secondary);
-		font: inherit;
-		font-size: 12.5px;
+		padding: 0;
+		font-family: var(--font-ui);
+		font-size: 14px;
 		font-weight: 500;
+		color: var(--text-secondary);
 		cursor: pointer;
-		text-align: left;
 	}
 
-	.disclosure-toggle:hover {
+	.details-toggle:hover {
 		color: var(--text);
 	}
 
-	.chev {
-		margin-left: auto;
-		display: inline-flex;
-		transition: transform 140ms var(--ease);
+	.details-toggle:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
+		border-radius: 4px;
 	}
 
-	.chev.open {
-		transform: rotate(180deg);
-	}
-
-	.disclosure-body {
-		padding: 2px 12px 12px;
-	}
-
-	.hw-export-advanced {
-		margin-top: 10px;
-	}
-
-	.hw-receive-actions {
-		display: flex;
-		gap: 10px;
-		flex-wrap: wrap;
-	}
-
-	.hw-rotate-status {
-		margin: 10px 0 0;
-		font-size: 12px;
-		line-height: 1.5;
-		color: var(--text-faint);
-	}
-
-	.hw-receive-empty {
+	.details-body {
 		display: flex;
 		flex-direction: column;
-		gap: 10px;
-		padding: 8px 0;
 	}
 
-	.hw-receive-empty .hw-receive-headline {
-		font-size: 18px;
+	.details-row {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding: 12px 0;
+		border-bottom: 1px solid var(--hairline);
 	}
 
-	@media (max-width: 860px) {
-		.hw-receive-grid {
-			grid-template-columns: 1fr;
-			gap: 22px;
-			justify-items: center;
-			text-align: center;
-		}
+	.details-label {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.12em;
+		text-transform: uppercase;
+		color: var(--eyebrow-path);
+	}
 
-		.hw-receive-meta {
-			align-items: center;
-			width: 100%;
-		}
+	.details-value {
+		font-size: 13.5px;
+		color: var(--text-rows);
+		line-height: 1.6;
+	}
 
-		.hw-addr-row {
-			align-items: center;
-			width: 100%;
-		}
+	.details-xpub {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		align-items: flex-start;
+	}
 
-		.hw-qr {
-			width: 228px;
-			height: 228px;
-		}
+	.xpub-full {
+		word-break: break-all;
+		font-size: 12.5px;
+		color: var(--text-secondary);
+	}
+
+	.details-chart {
+		margin-top: 16px;
+	}
+
+	.settings-link {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		align-self: flex-start;
+		margin-top: 18px;
+		font-size: 14px;
+		font-weight: 500;
+		color: var(--text-secondary);
+	}
+
+	.settings-link:hover {
+		color: var(--accent);
+	}
+
+	.settings-link:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
+		border-radius: 4px;
 	}
 
 	/* --- text-toggle tab row (Heartwood toggle grammar) --- */
@@ -2432,64 +1911,7 @@
 		font-size: 11.5px;
 	}
 
-	/* --- transactions in progress --- */
-
-	.progress-list {
-		list-style: none;
-		margin: 0;
-		padding: 0;
-		display: flex;
-		flex-direction: column;
-	}
-
-	.progress-row {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		flex-wrap: wrap;
-		font-size: 13px;
-		padding: 12px 0;
-		border-bottom: 1px solid var(--hairline);
-	}
-
-	.progress-row:last-child {
-		border-bottom: none;
-	}
-
-	/* --- addresses tab keeps the shared table; give it breathing room --- */
-
-	.hw-table-section {
-		display: flex;
-		flex-direction: column;
-	}
-
-	.hw-table-section .chips {
-		padding: 14px 0 10px;
-	}
-
-	/* --- saved transactions --- */
-
-	.saved-head {
-		display: flex;
-		align-items: center;
-		gap: 14px;
-		margin: 16px 0 4px;
-		flex-wrap: wrap;
-	}
-
-	.saved-head-text {
-		flex: 1;
-		min-width: 220px;
-	}
-
-	.saved-head-text strong {
-		font-weight: 600;
-		color: var(--text-secondary);
-	}
-
-	.saved-head .btn {
-		flex-shrink: 0;
-	}
+	/* --- payments in progress (saved rows, inside Activity) --- */
 
 	.saved-list {
 		display: flex;
@@ -2580,85 +2002,6 @@
 		font-size: 12.5px;
 	}
 
-	/* --- export config --- */
-
-	.optional-tag {
-		font-size: 11px;
-		font-weight: 500;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		color: var(--text-muted);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-badge);
-		padding: 1px 6px;
-		margin-left: 6px;
-		vertical-align: middle;
-	}
-
-	.backup-copy {
-		margin: 0;
-		max-width: 640px;
-	}
-
-	.xpub-line {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		font-size: 12.5px;
-		min-width: 0;
-		margin-top: 8px;
-	}
-
-	/* --- delete (quiet footer) --- */
-
-	.hw-danger {
-		margin-top: 48px;
-		padding-top: 16px;
-		border-top: 1px solid var(--hairline);
-	}
-
-	.hw-danger-trigger {
-		background: none;
-		border: none;
-		padding: 0;
-		font: inherit;
-		font-size: 12.5px;
-		color: var(--text-faint);
-		cursor: pointer;
-	}
-
-	.hw-danger-trigger:hover {
-		color: var(--error);
-	}
-
-	.confirm-text {
-		white-space: nowrap;
-	}
-
-	.delete-confirm {
-		align-items: flex-start;
-	}
-
-	.delete-backup-warning {
-		display: flex;
-		align-items: flex-start;
-		gap: 8px;
-		max-width: 420px;
-		margin: 0;
-		padding: 8px 12px;
-		font-size: 12.5px;
-		line-height: 1.45;
-		color: var(--warning);
-		background: var(--warning-muted);
-		border: 1px solid var(--warning);
-		border-radius: var(--radius-control);
-	}
-
-	.delete-backup-warning :global(svg) {
-		flex-shrink: 0;
-		margin-top: 1px;
-	}
-
 	/* --- mobile (≤900px per Heartwood responsive rules) --- */
 
 	@media (max-width: 900px) {
@@ -2682,14 +2025,6 @@
 		.hw-pill {
 			width: 100%;
 			height: 48px;
-		}
-
-		.hw-sign-note {
-			justify-content: center;
-		}
-
-		.hw-chart {
-			margin-top: 30px;
 		}
 
 		.hw-tx-title {

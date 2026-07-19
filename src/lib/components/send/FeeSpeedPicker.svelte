@@ -9,8 +9,10 @@
 	// per-speed fee in money needs the built PSBT's vsize (server-side coin
 	// selection), so the real fee-as-money lands on the Review card instead.
 	import Icon from '$lib/components/Icon.svelte';
+	import Amount from '$lib/components/Amount.svelte';
+	import Term from '$lib/components/Term.svelte';
 	import { formatFeeRate } from '$lib/format';
-	import { FEE_SPEEDS, type FeeChoiceKey } from './sendCopy';
+	import { FEE_SPEEDS, FEE_RATE_TERM_TIP, type FeeChoiceKey } from './sendCopy';
 	import { resolveFeeRate, belowFloorMessage } from './feeChoice';
 	import type { FeeEstimates } from '$lib/types';
 
@@ -19,14 +21,31 @@
 		feeRate = $bindable(1),
 		choice = $bindable('standard'),
 		loading = false,
-		note = undefined
+		note = undefined,
+		vsize = null,
+		onuserchange = undefined
 	}: {
 		fees: FeeEstimates | null;
 		feeRate?: number;
 		choice?: FeeChoiceKey;
 		loading?: boolean;
 		note?: string;
+		/** The built draft's virtual size (review step, cairn-gt05.2): when
+		 *  known, each speed shows its estimated COST as money (the Venmo read)
+		 *  and the raw sat/vB demotes to muted micro-text, glossed once below.
+		 *  Null (create-time / unknown) keeps the original rate-only display. */
+		vsize?: number | null;
+		/** Fired on a genuine USER interaction (speed tap / custom-rate edit) —
+		 *  never on mount or on a live-estimate refresh. The review card uses
+		 *  this to know a fee change was asked for (rebuild gate, gt05.2). */
+		onuserchange?: () => void;
 	} = $props();
+
+	/** Estimated total fee for a speed at `rate`, when the draft's size is known. */
+	function estimatedFeeSats(rate: number | null): number | null {
+		if (rate == null || vsize == null || vsize <= 0) return null;
+		return Math.max(1, Math.round(rate * vsize));
+	}
 
 	// Custom sat/vB box. Seeded from the live half-hour estimate until the user
 	// edits it (the customFeeTouched guard, carried in from the old page code).
@@ -73,11 +92,13 @@
 
 	function selectSpeed(key: FeeChoiceKey) {
 		choice = key;
+		onuserchange?.();
 	}
 
 	function onCustomInput() {
 		customFeeTouched = true;
 		choice = 'custom';
+		onuserchange?.();
 	}
 </script>
 
@@ -105,18 +126,28 @@
 					<span class="speed-name">{speed.name}</span>
 					<span class="speed-eta">{speed.eta}</span>
 				</span>
-				<span class="speed-rate tabular">
-					{#if rate != null}
-						{formatFeeRate(rate)}
+				<span class="speed-right">
+					{#if estimatedFeeSats(rate) != null}
+						<span class="speed-cost"><Amount sats={estimatedFeeSats(rate)!} size="inline" /></span>
+						<span class="speed-rate micro tabular">{formatFeeRate(rate!)}</span>
+					{:else if rate != null}
+						<span class="speed-rate tabular">{formatFeeRate(rate)}</span>
 					{:else if loading}
-						<span class="skeleton">0 sat/vB</span>
+						<span class="speed-rate tabular"><span class="skeleton">0 sat/vB</span></span>
 					{:else}
-						—
+						<span class="speed-rate tabular">—</span>
 					{/if}
 				</span>
 			</button>
 		{/each}
 	</div>
+
+	{#if vsize != null && vsize > 0}
+		<p class="fee-caption">
+			Rates are shown in <Term tip={FEE_RATE_TERM_TIP}>sat/vB</Term> — the plain cost beside each speed
+			is what this payment would actually pay.
+		</p>
+	{/if}
 
 	<button
 		type="button"
@@ -262,10 +293,29 @@
 		color: var(--text-muted);
 	}
 
+	.speed-right {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-end;
+		gap: 2px;
+		flex-shrink: 0;
+	}
+
+	.speed-cost {
+		font-size: 13.5px;
+		color: var(--text-rows);
+	}
+
 	.speed-rate {
 		font-size: 12.5px;
 		color: var(--text-secondary);
 		white-space: nowrap;
+	}
+
+	/* Demoted raw rate (review mode): micro, muted — the money is the read. */
+	.speed-rate.micro {
+		font-size: 10.5px;
+		color: var(--text-muted);
 	}
 
 	.advanced-toggle {

@@ -18,7 +18,12 @@
 		truncateMiddle,
 		chunkString
 	} from '$lib/format';
-	import { summarySentence, feeContextClause } from './sendCopy';
+	import {
+		summarySentence,
+		feeContextClause,
+		REVIEW_HEADING,
+		OWN_NODE_BROADCAST_LINE
+	} from './sendCopy';
 	// R2 (docs/UX-PSYCHOLOGY-RESEARCH-2026-07-15.md): stake-triggered recipient
 	// verification. Pure trigger/match logic lives in recipientVerify.ts —
 	// this component only wires it to the card's own props/state.
@@ -40,6 +45,7 @@
 		arrivalWords,
 		multisig = null,
 		detailExtra = undefined,
+		feeExpand = undefined,
 		onDetailsOpen = undefined,
 		balanceSats = null,
 		knownAddresses = [],
@@ -57,6 +63,11 @@
 		arrivalWords: string;
 		multisig?: { threshold: number; keysTotal: number; quorumLabel: string } | null;
 		detailExtra?: Snippet;
+		/** Review-step fee control (cairn-gt05.2, spec §2.3): when provided, the
+		 *  Network-fee row becomes ONE collapsed tappable line that expands to
+		 *  render this snippet (the caller passes FeeSpeedPicker + its rebuild
+		 *  plumbing). Absent = the row stays the static line it always was. */
+		feeExpand?: Snippet;
 		/** Fired the first time the Details expander opens — lets a page trigger a
 		 *  lazy fetch (e.g. multisig per-coin signing masses) only when revealed. */
 		onDetailsOpen?: () => void;
@@ -194,9 +205,16 @@
 	});
 
 	let detailsOpen = $state(false);
+	let feeOpen = $state(false);
 </script>
 
 <div class="review-card">
+	{#if mode === 'review'}
+		<!-- gt05.11: the review step is a first-person verification act — the
+		     heading names the one load-bearing check (the destination), not a
+		     generic "Review". -->
+		<h2 class="review-heading">{REVIEW_HEADING}</h2>
+	{/if}
 	<p class="summary-sentence">{sentence}</p>
 
 	<div class="money-hero">
@@ -286,16 +304,46 @@
 	{/if}
 
 	<div class="core-rows">
-		<div class="core-row">
-			<span class="core-label">Network fee</span>
-			<span class="core-val">
-				<Amount sats={feeSats} size="inline" />
-				<span class="arrival">· arrives in {arrivalWords}</span>
-				{#if feeContext != null}
-					<span class="arrival">· {feeContext}</span>
-				{/if}
-			</span>
-		</div>
+		{#if feeExpand}
+			<!-- gt05.2 / spec §2.3: the fee arrives at review as ONE collapsed
+			     tappable line; expanding reveals the three plain-language speeds
+			     (the caller's snippet). Default Standard — most users never open it. -->
+			<button
+				type="button"
+				class="core-row fee-row-toggle"
+				aria-expanded={feeOpen}
+				aria-controls="review-fee-expand"
+				onclick={() => (feeOpen = !feeOpen)}
+			>
+				<span class="core-label">Network fee</span>
+				<span class="core-val">
+					<Amount sats={feeSats} size="inline" />
+					<span class="arrival">· arrives in {arrivalWords}</span>
+					{#if feeContext != null}
+						<span class="arrival">· {feeContext}</span>
+					{/if}
+					<span class="fee-chev" aria-hidden="true">
+						<Icon name={feeOpen ? 'chevron-down' : 'chevron-right'} size={14} />
+					</span>
+				</span>
+			</button>
+			{#if feeOpen}
+				<div class="fee-expand fade-in" id="review-fee-expand">
+					{@render feeExpand()}
+				</div>
+			{/if}
+		{:else}
+			<div class="core-row">
+				<span class="core-label">Network fee</span>
+				<span class="core-val">
+					<Amount sats={feeSats} size="inline" />
+					<span class="arrival">· arrives in {arrivalWords}</span>
+					{#if feeContext != null}
+						<span class="arrival">· {feeContext}</span>
+					{/if}
+				</span>
+			</div>
+		{/if}
 		<div class="core-row total">
 			<span class="core-label">Total from wallet</span>
 			<Amount sats={totalSats} size="inline" />
@@ -303,6 +351,12 @@
 	</div>
 
 	<p class="step-lead">{irreversibility}</p>
+
+	{#if mode === 'confirm'}
+		<!-- gt05.11: the own-node mechanism line at the broadcast moment — a
+		     muted fact, not a badge. -->
+		<p class="own-node-line">{OWN_NODE_BROADCAST_LINE}</p>
+	{/if}
 
 	<button
 		class="details-toggle"
@@ -393,6 +447,13 @@
 		display: flex;
 		flex-direction: column;
 		gap: 18px;
+	}
+
+	.review-heading {
+		font-size: 17px;
+		font-weight: 600;
+		letter-spacing: -0.01em;
+		color: var(--text);
 	}
 
 	.summary-sentence {
@@ -494,6 +555,47 @@
 		font-size: 14px;
 		color: var(--text-secondary);
 		line-height: 1.6;
+	}
+
+	.own-node-line {
+		font-size: 12.5px;
+		color: var(--text-muted);
+		line-height: 1.5;
+		margin: 0;
+	}
+
+	/* The tappable fee line — a real <button> styled as the row it replaces,
+	   keyboard-operable with a visible focus state. */
+	.fee-row-toggle {
+		width: 100%;
+		background: none;
+		border: none;
+		border-bottom: 1px solid var(--hairline);
+		font: inherit;
+		color: inherit;
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.fee-row-toggle:hover .core-label {
+		color: var(--text);
+	}
+
+	.fee-row-toggle:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
+		border-radius: 6px;
+	}
+
+	.fee-chev {
+		display: inline-flex;
+		align-self: center;
+		color: var(--text-muted);
+	}
+
+	.fee-expand {
+		padding: 4px 0 14px;
+		border-bottom: 1px solid var(--hairline);
 	}
 
 	.details-toggle {

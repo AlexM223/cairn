@@ -15,7 +15,6 @@
 	import QuorumArc from '$lib/components/heartwood/QuorumArc.svelte';
 	import BurialRings from '$lib/components/heartwood/BurialRings.svelte';
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
-	import AtTipPill from '$lib/components/heartwood/AtTipPill.svelte';
 	import { formatBtc, formatSats, formatFeeRate, formatUnitAmount, truncateMiddle } from '$lib/format';
 	import { classifyRecipientAddress, looksLikeAddress } from './addressShape';
 	import Amount from '$lib/components/Amount.svelte';
@@ -25,6 +24,12 @@
 	import BroadcastGraceControl from '$lib/components/send/BroadcastGraceControl.svelte';
 	import { sendCtaLabel } from '$lib/components/send/sendMoney';
 	import { arrivalWords, type FeeChoiceKey } from '$lib/components/send/sendCopy';
+	import {
+		sendFailureCopy,
+		sendFailureText,
+		type SendFailureKind
+	} from '$lib/components/send/sendFailure';
+	import { sendCreateGate } from './createGate';
 	import { btcUsd, fiatVisible } from '$lib/price';
 	import { unitPref } from '$lib/units';
 	import { scrollToTop } from '$lib/scrollToTop';
@@ -319,9 +324,27 @@
 
 	// Fee tier + effective rate are owned by FeeSpeedPicker now; the page keeps
 	// only the bound values it needs — `feeRate` for build()/canBuild, `feeChoice`
-	// for the Review card's arrival words.
+	// for the Review card's arrival words. Since gt05.2 the picker itself lives
+	// on the REVIEW card (one collapsed fee line, spec §2.3): the create step
+	// asks only "how much, to whom" and builds at the default Standard tier,
+	// resolved from the live estimates below.
 	let feeChoice = $state<FeeChoiceKey>('standard');
 	let feeRate = $state(1);
+
+	// The create step's collapsed "Advanced ›" expander (holds CoinControl
+	// only). Starts open for a consolidation handoff so the preselected coins
+	// are visible.
+	let createAdvancedOpen = $state<boolean>(consolidateParams !== null);
+
+	// Create-time default fee: with no picker mounted on the create step, the
+	// Standard (half-hour) tier from the live estimates drives the initial
+	// build, clamped to the node's relay floor. A custom/other choice made on
+	// the review card takes over from there (feeChoice flips off 'standard').
+	$effect(() => {
+		if (step !== 'create' || feeChoice !== 'standard') return;
+		const std = fees?.halfHour;
+		if (std != null) feeRate = Math.max(std, fees?.minFeeRate ?? 0);
+	});
 
 	// Fill the streamed fields in when the server's Electrum round-trips settle.
 	// A new-block invalidate (onMount) creates a fresh `data.live`, re-running
@@ -399,6 +422,19 @@
 	// clamps the effective rate to this floor, so this is the matching guard.
 	const nodeFloor = $derived(fees?.minFeeRate ?? 1);
 	const canBuild = $derived(rowsValid && feeRate >= nodeFloor && !exceedsBalance);
+
+	// Zero-balance gate (gt05.2, spec §2.3): a truly empty wallet gets a real
+	// empty state with one primary Receive CTA — never the old bare "0" wall.
+	// Pure decision logic in createGate.ts (unit-tested).
+	const createGate = $derived(
+		sendCreateGate({
+			liveLoaded,
+			scanError,
+			confirmed,
+			maturingTotal,
+			resuming: resumeTx !== null || consolidateParams !== null
+		})
+	);
 
 	// --- running-summary rail (desktop >=1160, docs/DESKTOP-LAYOUT-DESIGN.md §4
 	//     Send). A READ-ONLY reflection of the wizard's own state — no new logic.
@@ -482,6 +518,47 @@
 			building = false;
 		}
 	}
+
+	// --- review-step fee change (gt05.2, spec §2.3) --------------------------
+	// The fee picker lives on the review card now (one collapsed line, default
+	// Standard). Picking a different speed REBUILDS the draft at the new rate —
+	// the fee was always computed at build time, so this reorders presentation,
+	// not draft logic — then deletes the superseded draft row so nothing
+	// strands in "in progress". Gated on a genuine user interaction
+	// (feeUserTouched, set by the picker's onuserchange) so a resume or a
+	// live-estimate refresh can never silently rebuild a draft.
+	let feeUserTouched = $state(false);
+	let feeRetryBlockedRate: number | null = null;
+
+	async function rebuildWithFee() {
+		if (!draft || building) return;
+		const oldId = draft.id;
+		const attemptedRate = feeRate;
+		await build();
+		if (buildError !== null) {
+			// Don't loop against a persistent failure — the user picks a different
+			// speed (or goes Back & edit) to retry; the reviewed draft is intact.
+			feeRetryBlockedRate = attemptedRate;
+			return;
+		}
+		feeRetryBlockedRate = null;
+		if (draft && draft.id !== oldId) {
+			// Best-effort cleanup of the replaced draft row.
+			void fetch(`/api/wallets/${walletId}/transactions/${oldId}`, { method: 'DELETE' }).catch(
+				() => {}
+			);
+		}
+	}
+
+	$effect(() => {
+		const rate = feeRate;
+		if (step !== 'review' || !draft || building || !feeUserTouched) return;
+		if (draft.feeRate === rate) return;
+		if (feeRetryBlockedRate === rate) return;
+		// Small debounce so custom-rate typing collapses to one rebuild.
+		const t = setTimeout(() => void rebuildWithFee(), 450);
+		return () => clearTimeout(t);
+	});
 
 	// ------------------------------------------------------------- REVIEW step
 	// The saved-address label for the (single) recipient, when the sent-to
@@ -574,7 +651,8 @@
 			});
 			const patchBody = await patch.json();
 			if (!patch.ok) {
-				signError = patchBody.error ?? 'That PSBT could not be attached.';
+				// gt05.7: state the fund state + retry safety, never a bare refusal.
+				signError = sendFailureText('attach-rejected', patchBody.error);
 				return;
 			}
 			draft = patchBody.transaction as SavedTransaction;
@@ -590,7 +668,8 @@
 					'This PSBT was attached but still is not fully signed. Sign it with your wallet and upload it again.';
 			}
 		} catch {
-			signError = 'Could not reach Heartwood to attach the signed transaction.';
+			// gt05.7: connection-layer failure — name the layer, state fund state.
+			signError = sendFailureText('attach-unreachable');
 		} finally {
 			attaching = false;
 		}
@@ -604,6 +683,14 @@
 	let broadcasting = $state(false);
 	let broadcastError = $state<string | null>(null);
 	let broadcastRejected = $state(false);
+	// gt05.7: which layer failed — drives the retry-safety copy (fund state,
+	// non-accusatory layer naming, transient vs needs-a-change) on the banner.
+	let broadcastKind = $state<SendFailureKind | null>(null);
+	const broadcastFailure = $derived(
+		broadcastError !== null && broadcastKind !== null
+			? sendFailureCopy(broadcastKind, broadcastError)
+			: null
+	);
 	// cairn-5yz3.1: broadcast() used to run only from a follow-up Modal
 	// ("Broadcast this transaction? Once it's broadcast, there is no undo.")
 	// — a second are-you-sure on top of the Confirm step's own full
@@ -642,6 +729,7 @@
 		broadcasting = true; // disabled immediately — no double-broadcast
 		broadcastError = null;
 		broadcastRejected = false;
+		broadcastKind = null;
 		duplicateBroadcastNote = null;
 		try {
 			const res = await fetch(`/api/wallets/${walletId}/transactions/${draft.id}/broadcast`, {
@@ -660,6 +748,7 @@
 				// { error } from the wallet, { message } from a requireFeature 403.
 				broadcastError = body.error ?? body.message ?? 'Broadcast failed.';
 				broadcastRejected = body.code === 'rejected';
+				broadcastKind = broadcastRejected ? 'broadcast-rejected' : 'broadcast-error';
 				return;
 			}
 			sentTxid = body.txid as string;
@@ -668,6 +757,7 @@
 			step = 'sent';
 		} catch {
 			broadcastError = 'Could not reach Heartwood to broadcast.';
+			broadcastKind = 'broadcast-unreachable';
 		} finally {
 			broadcasting = false;
 		}
@@ -844,7 +934,7 @@
 		const unsubscribe = onNewBlock((height) => {
 			if (height <= lastSeen) return;
 			lastSeen = height;
-			// Optimistic tip bump so AtTipPill/coin-control react immediately…
+			// Optimistic tip bump so coin-control maturity reacts immediately…
 			if (height > tipHeight) tipHeight = height;
 			// …then re-run the streamed load so fees + tip refresh from the node.
 			void invalidate(`cairn:send:${walletId}`);
@@ -948,9 +1038,10 @@
 			<span class="flow-spacer"></span>
 		</header>
 
+		<!-- gt05.2 / spec §2.3: no AtTipPill on Send — chain-sync is a Health
+		     concern, never a per-send one. -->
 		<div class="eyebrow-row">
 			<EyebrowBreadcrumb path={[data.wallet.name]} current={crumbCurrent} />
-			<AtTipPill height={tipHeight} pulseKey={tipHeight} />
 		</div>
 
 		<!-- The send wizard is fully client-driven (WebUSB/QR signing, live fee
@@ -991,6 +1082,29 @@
 					</Banner>
 				{/if}
 
+				{#if createGate === 'empty'}
+					<!-- gt05.2 / spec §2.3: the real empty state — one sentence, one
+					     primary action — replaces the old bare "0" dead end. -->
+					<div class="send-empty">
+						<h2 class="send-empty-title">This wallet is empty.</h2>
+						<p class="send-empty-sub">Add bitcoin before you can send.</p>
+						<a class="btn btn-primary pill-lg" href={`/wallets/${walletId}/receive`}>
+							<Icon name="arrow-down-left" size={15} /> Receive bitcoin
+						</a>
+					</div>
+				{:else if createGate === 'maturing'}
+					<div class="send-empty">
+						<h2 class="send-empty-title">Nothing spendable just yet.</h2>
+						<p class="send-empty-sub">
+							<Amount sats={maturingTotal} size="inline" /> from a mining reward is still maturing —
+							it becomes spendable once the network has sealed enough blocks over it.
+						</p>
+						<a class="btn btn-primary pill-lg" href={`/wallets/${walletId}/receive`}>
+							<Icon name="arrow-down-left" size={15} /> Receive bitcoin
+						</a>
+					</div>
+				{:else}
+
 				{#if consolidateParams}
 					<div class="max-note">
 						<Icon name="zap" size={15} />
@@ -1023,22 +1137,10 @@
 							<p class="hero-sub">
 								Sweeps the entire spendable balance to this address, minus the fee.
 							</p>
+							<button type="button" class="quiet-link" onclick={() => (amountMode = 'btc')}>
+								Enter an amount instead ›
+							</button>
 						{/if}
-						<div class="mode-toggles" role="group" aria-label="Amount mode">
-							<button
-								type="button"
-								class="txt-toggle"
-								class:active={amountMode === 'btc'}
-								onclick={() => (amountMode = 'btc')}>Amount</button
-							>
-							<button
-								type="button"
-								class="txt-toggle"
-								class:active={amountMode === 'max'}
-								onclick={() => (amountMode = 'max')}
-								title="Sweep the whole spendable balance">Max</button
-							>
-						</div>
 						{#if maturingTotal > 0}
 							<p class="maturing-note">
 								<Icon name="clock" size={13} />
@@ -1143,44 +1245,11 @@
 					</p>
 				{/if}
 
-				<FeeSpeedPicker {fees} bind:feeRate bind:choice={feeChoice} loading={!liveLoaded} />
-
-				{#if utxos.length > 0}
-					{#if data.flags?.coin_control === false}
-						<!-- Coin control disabled by an admin: show WHY rather than silently
-						     dropping the picker, and leave selection empty so the send uses
-						     automatic coin selection (cairn-jyh7, cairn-8dup). -->
-						<FeatureDisabled
-							block
-							message="Choosing specific coins to spend has been disabled by your administrator."
-						/>
-					{:else}
-						<!-- Optional manual coin control — collapsed so the default flow stays clean. -->
-						<div class="field">
-							<CoinControl
-								{walletId}
-								{utxos}
-								bind:selected={selectedCoins}
-								{tipHeight}
-								initialOpen={consolidateParams !== null}
-							/>
-						</div>
-					{/if}
-				{/if}
-
-				<HowItWorks id="send-psbt">
-					<p>
-						Heartwood builds an <Term
-							tip="A Partially Signed Bitcoin Transaction — an unsigned proposal your hardware wallet reviews and signs. Your private keys never touch Heartwood's server."
-							>unsigned transaction (a PSBT)</Term
-						> — a proposal describing exactly what will be sent. You take it to your hardware
-						wallet or signing app, which reviews it and adds your signature.
-					</p>
-					<p>
-						<strong>Heartwood never sees a key.</strong> It only holds your public key — it can
-						build and broadcast, but only your device can authorize the spend.
-					</p>
-				</HowItWorks>
+				<!-- gt05.2 / spec §2.3: the create step asks exactly two things —
+				     how much, to whom. The fee arrives on the Review card as one
+				     collapsed line (default Standard); coin control lives one
+				     gesture down behind Advanced ›; the PSBT explainer moved to a
+				     quiet link on the Sign step. -->
 
 				{#if buildError}
 					<div class="form-error" role="alert">{buildError}</div>
@@ -1189,12 +1258,59 @@
 				<div class="row step-actions" style="justify-content: flex-end">
 					<a class="btn btn-ghost" href={`/wallets/${walletId}`}>Cancel</a>
 					<button class="btn btn-primary pill-lg" onclick={build} disabled={!canBuild || building}>
-						{#if building}<span class="spinner"></span> Building…{:else}Review send<Icon
+						{#if building}<span class="spinner"></span> Building…{:else}Review payment<Icon
 								name="arrow-right"
 								size={15}
 							/>{/if}
 					</button>
 				</div>
+
+				{#if rows.length === 1 && !isMax}
+					<!-- Quiet text link replaces the old Max toggle (spec §2.3). -->
+					<button type="button" class="quiet-link" onclick={() => (amountMode = 'max')}>
+						Send everything ›
+					</button>
+				{/if}
+
+				{#if utxos.length > 0}
+					<div class="create-advanced">
+						<button
+							type="button"
+							class="quiet-link"
+							aria-expanded={createAdvancedOpen}
+							aria-controls="create-advanced-body"
+							onclick={() => (createAdvancedOpen = !createAdvancedOpen)}
+						>
+							Advanced
+							<Icon name={createAdvancedOpen ? 'chevron-down' : 'chevron-right'} size={13} />
+						</button>
+						{#if createAdvancedOpen}
+							<div id="create-advanced-body" class="fade-in">
+								{#if data.flags?.coin_control === false}
+									<!-- Coin control disabled by an admin: show WHY rather than
+									     silently dropping the picker, and leave selection empty so
+									     the send uses automatic coin selection (cairn-jyh7, 8dup). -->
+									<FeatureDisabled
+										block
+										message="Choosing specific coins to spend has been disabled by your administrator."
+									/>
+								{:else}
+									<div class="field">
+										<CoinControl
+											{walletId}
+											{utxos}
+											bind:selected={selectedCoins}
+											{tipHeight}
+											initialOpen={consolidateParams !== null}
+										/>
+									</div>
+								{/if}
+							</div>
+						{/if}
+					</div>
+				{/if}
+
+				{/if}
 			</section>
 
 		<!-- ============================================================ REVIEW -->
@@ -1215,7 +1331,32 @@
 					balanceSats={confirmed}
 					{knownAddresses}
 					bind:recipientVerified={reviewRecipientVerified}
-				/>
+				>
+					{#snippet feeExpand()}
+						<!-- gt05.2 / spec §2.3: the three plain-language speeds, one tap
+						     down from the collapsed fee line. Picking one rebuilds the
+						     draft at the new rate (rebuildWithFee) — the flow stays on
+						     this Review card; nothing is sent until broadcast. -->
+						<div class="fee-review">
+							<FeeSpeedPicker
+								{fees}
+								bind:feeRate
+								bind:choice={feeChoice}
+								loading={!liveLoaded}
+								vsize={review.vsize}
+								onuserchange={() => (feeUserTouched = true)}
+								note="Picking a different speed rebuilds this draft with the new fee — nothing is sent until you broadcast."
+							/>
+							{#if building}
+								<p class="field-line muted" role="status">
+									<span class="spinner"></span> Updating the fee…
+								</p>
+							{:else if buildError}
+								<div class="form-error" role="alert">{buildError}</div>
+							{/if}
+						</div>
+					{/snippet}
+				</SendReviewCard>
 
 				{#if chainDepthWarning}
 					<div class="attention-panel" role="status">
@@ -1481,16 +1622,24 @@
 							{/if}
 						{/if}
 
-						<HowItWorks id="send-sign">
+						<!-- gt05.2 / spec §2.3: the create step's PSBT block is gone — this
+						     single quiet link on the SIGN step is where the mechanism lives.
+						     "PSBT" never appears unprompted; the real term survives one tap
+						     down inside the <Term> gloss. -->
+						<HowItWorks id="send-sign" title="Why do I sign on my device?">
 							<p>
-								Signing happens <strong>on your device</strong>, never here.
+								Signing happens <strong>on your device</strong>, never here. Heartwood prepares an
+								<Term
+									tip="Technically a PSBT — a Partially Signed Bitcoin Transaction. Your hardware wallet reviews the proposal and adds your signature; your private keys never touch Heartwood's server."
+									>unsigned transaction (a proposal)</Term
+								> describing exactly what will be sent.
 								{#if walletDevice && walletDevice !== 'file'}
 									Your wallet signs with a {WALLET_DEVICE_LABELS[walletDevice]} — follow its steps above,
 									review the amount and address <em>on the device screen</em>, and approve. Prefer a
 									different method this once? Choose “Use a different method”.
 								{:else}
-									Pick how your signer receives the unsigned transaction — USB, a microSD card, QR
-									codes, or a plain file — then review the amount and address
+									Pick how your signer receives the proposal — USB, a microSD card, QR codes, or a
+									plain file — then review the amount and address
 									<em>on the device screen</em> and approve.
 								{/if}
 								Heartwood verifies that every returned signature commits to the exact transaction
@@ -1573,9 +1722,17 @@
 					multisig={null}
 				/>
 
-				{#if broadcastError}
+				{#if broadcastFailure}
+					<!-- gt05.7: fund state first, layer named non-accusatorily, one
+					     concrete next step. The draft is preserved — the flow stays
+					     right here, never dumped back to an empty create screen. -->
 					<Banner variant="error">
-						{broadcastError}
+						<strong>{broadcastFailure.headline}</strong>
+						{broadcastFailure.fundState}
+						{#if broadcastFailure.layer}
+							{broadcastFailure.layer}
+						{/if}
+						{broadcastFailure.nextStep}
 						{#snippet actions()}
 							{#if broadcastRejected || draft}
 								<a class="btn btn-secondary btn-sm" href={fileUrl} download>
@@ -1991,33 +2148,69 @@
 		color: var(--eyebrow-path);
 	}
 
-	/* The toggle grammar: active bright copper on a copper tint, radius 14. */
-	.txt-toggle {
-		background: transparent;
+	/* Quiet text links (spec §2.3): "Send everything ›", "Advanced ›" — never
+	   competing with the one primary button. Real buttons, keyboard-visible. */
+	.quiet-link {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		align-self: flex-start;
+		background: none;
 		border: none;
-		border-radius: 14px;
-		padding: 6px 13px;
+		padding: 2px 0;
 		font-family: var(--font-ui);
 		font-size: 13px;
 		font-weight: 500;
-		color: var(--eyebrow-path);
-		cursor: pointer;
-		transition:
-			background 120ms var(--ease),
-			color 120ms var(--ease);
-	}
-
-	.txt-toggle:hover {
 		color: var(--text-secondary);
+		cursor: pointer;
 	}
 
-	.txt-toggle.active {
-		background: rgba(103, 150, 201, 0.1);
-		color: var(--accent-bright);
+	.quiet-link:hover {
+		color: var(--accent);
 	}
 
-	.toggle-rate {
-		font-weight: 400;
+	.quiet-link:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
+		border-radius: 4px;
+	}
+
+	.create-advanced {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+
+	/* Zero-balance empty state (spec §2.3): one sentence, one primary action. */
+	.send-empty {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 10px;
+		padding: 32px 0;
+	}
+
+	.send-empty-title {
+		font-size: 22px;
+		font-weight: 600;
+		letter-spacing: -0.01em;
+		color: var(--text);
+	}
+
+	.send-empty-sub {
+		font-size: 15px;
+		color: var(--text-secondary);
+		line-height: 1.6;
+	}
+
+	.send-empty .btn {
+		margin-top: 10px;
+	}
+
+	.fee-review {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
 	}
 
 	/* ---- Create: the amount hero ---- */
@@ -2114,11 +2307,6 @@
 		margin-top: 10px;
 		font-size: 13px;
 		color: var(--text-muted);
-	}
-
-	.mode-toggles {
-		display: flex;
-		gap: 4px;
 	}
 
 	/* ---- Create: TO hairline field ---- */

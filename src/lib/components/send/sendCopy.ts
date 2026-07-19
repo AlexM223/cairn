@@ -9,7 +9,7 @@ import type { FeeEstimates } from '$lib/types';
 export const FEE_SPEEDS = [
 	{ key: 'priority', name: 'Priority', eta: 'about 10 minutes', tier: 'fastest' },
 	{ key: 'standard', name: 'Standard', eta: 'about 30 minutes', tier: 'halfHour' },
-	{ key: 'economy', name: 'Economy', eta: 'an hour or more', tier: 'economy' }
+	{ key: 'economy', name: 'Economy', eta: 'a few hours', tier: 'economy' }
 ] as const satisfies ReadonlyArray<{
 	key: string;
 	name: string;
@@ -20,6 +20,19 @@ export const FEE_SPEEDS = [
 export type FeeSpeedKey = (typeof FEE_SPEEDS)[number]['key'];
 export type FeeChoiceKey = FeeSpeedKey | 'custom';
 
+/** cairn-gt05.11 — the review step is a first-person verification act, not a
+ *  generic "Review": the heading names the one thing worth checking. */
+export const REVIEW_HEADING = 'Confirm this payment is going to the right place';
+
+/** cairn-gt05.11 — one muted own-node mechanism line at the broadcast moment.
+ *  A mechanism fact, not a badge or a reassurance adjective. */
+export const OWN_NODE_BROADCAST_LINE =
+	'Your own node broadcasts this — no third party sees it first.';
+
+/** The sat/vB gloss used wherever the raw rate is demoted to micro-text. */
+export const FEE_RATE_TERM_TIP =
+	'The raw network fee rate in satoshis per virtual byte (sat/vB) — the unit Bitcoin nodes use to price transaction space.';
+
 /** Plain-language arrival estimate for the chosen fee tier. Custom can't be
  *  pinned to a duration, so it reads as a mempool-dependent time. */
 export function arrivalWords(choice: FeeChoiceKey): string {
@@ -29,7 +42,7 @@ export function arrivalWords(choice: FeeChoiceKey): string {
 		case 'standard':
 			return 'about 30 minutes';
 		case 'economy':
-			return 'an hour or more';
+			return 'a few hours';
 		default:
 			return 'a time that depends on the mempool';
 	}
