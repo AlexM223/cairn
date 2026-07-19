@@ -50,6 +50,17 @@
 	const tipHeight = $derived(scan.tipHeight);
 	const speedUp = $derived(scan.speedUp);
 	const savedTxs = $derived(scan.savedTxs);
+	// Pending-signature drafts (cairn-0pxk5): unfinished multisig transactions
+	// have no on-chain footprint yet, so they never show up in the Electrum-scan
+	// Transactions tab below. 'draft' = built, no signatures merged in yet;
+	// 'awaiting_signature' = some but not all of the quorum collected — both
+	// still need attention before they can broadcast. Summaries are
+	// viewer-reachable, but only owner/cosigner roles can actually open the
+	// Send page to act on one (a pure viewer gets a 404 there), so the card
+	// itself is gated on role below.
+	const pendingDrafts = $derived(
+		savedTxs.filter((t) => t.status === 'draft' || t.status === 'awaiting_signature')
+	);
 	// cairn-oae1.3: Electrum's `confirmed` counts an immature coinbase output as
 	// spendable — `maturingTotal` is that slice, so the headline can show what's
 	// actually available separately from what's still cooling down.
@@ -679,6 +690,35 @@
 				>
 					<Icon name="x" size={14} />
 				</button>
+			</div>
+		{/if}
+
+		{#if pendingDrafts.length > 0 && data.role !== 'viewer'}
+			<!-- Pending-draft nudge (cairn-0pxk5): same calm-amber, hairline-bounded
+			     treatment as the stale-key nudge above — a draft awaiting signatures
+			     is worth noticing, not alarming about. Independent of the on-chain
+			     scan (savedTxs is a local DB read), so it shows even when scanError
+			     is set below. Links reuse the same ?tx= deep-link format
+			     freezeRosterAndNotify already emits in notifications. -->
+			<div class="pending-drafts-nudge" role="status">
+				<Icon name="clipboard" size={16} />
+				<div class="grow">
+					<div class="nudge-title">
+						Awaiting signatures ({pendingDrafts.length})
+					</div>
+					<p class="nudge-copy">
+						{pendingDrafts.length === 1
+							? "A transaction draft needs more signatures before it can be sent."
+							: `${pendingDrafts.length} transaction drafts need more signatures before they can be sent.`}
+					</p>
+					<div class="pending-draft-links">
+						{#each pendingDrafts as pd (pd.id)}
+							<a href="/wallets/multisig/{data.multisig.id}/send?tx={pd.id}" class="rail-link-inline">
+								Review draft #{pd.id} →
+							</a>
+						{/each}
+					</div>
+				</div>
 			</div>
 		{/if}
 
@@ -1607,6 +1647,31 @@
 		font-size: 12.5px;
 		line-height: 1.6;
 		color: var(--text-secondary);
+	}
+
+	/* --- pending-draft nudge: same calm-amber hairline treatment (cairn-0pxk5) --- */
+
+	.pending-drafts-nudge {
+		display: flex;
+		align-items: flex-start;
+		gap: 12px;
+		margin-top: 32px;
+		padding: 14px 0;
+		border-top: 1px solid var(--hairline);
+		border-bottom: 1px solid var(--hairline);
+		color: var(--attention);
+	}
+
+	.pending-drafts-nudge :global(svg) {
+		margin-top: 2px;
+		flex-shrink: 0;
+	}
+
+	.pending-draft-links {
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+		margin-top: 6px;
 	}
 
 	/* --- unboxed stepped chart --- */

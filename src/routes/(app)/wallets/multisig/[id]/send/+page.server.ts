@@ -3,6 +3,7 @@ import { requireFeature } from '$lib/server/api';
 import { getSignableMultisig } from '$lib/server/wallets/multisig';
 import {
 	getMultisigTransaction,
+	listMultisigTransactionSummaries,
 	multisigTransactionProgress,
 	ownMultisigTxids,
 	sentMultisigRecipientAddresses,
@@ -185,6 +186,19 @@ export const load: PageServerLoad = async (event) => {
 		resume = { transaction, summary, progress, roster };
 	}
 
+	// cairn-0pxk5: when landing on a fresh wizard (no ?tx=), surface a
+	// non-blocking notice if a resumable draft already exists for this wallet
+	// — never auto-redirect, agency stays with the user. 'draft'/'awaiting_
+	// signature' are the two unfinished states (not yet broadcast/superseded).
+	let pendingDraft: { id: number } | null = null;
+	if (!resume) {
+		const summaries = listMultisigTransactionSummaries(locals.user!.id, id) ?? [];
+		const pending = summaries.find(
+			(s) => s.status === 'draft' || s.status === 'awaiting_signature'
+		);
+		pendingDraft = pending ? { id: pending.id } : null;
+	}
+
 	return {
 		multisig: {
 			id: multisig.id,
@@ -220,6 +234,10 @@ export const load: PageServerLoad = async (event) => {
 		// the resumed step renders the instant the shell paints, with fees/utxos/
 		// tip filling in behind it.
 		resume,
+		// cairn-0pxk5: non-null only on a fresh wizard load (no ?tx=) when another
+		// draft for this wallet is still unfinished — the create step renders a
+		// dismissible-but-not-auto-followed notice pointing at it.
+		pendingDraft,
 		// R2 (docs/UX-PSYCHOLOGY-RESEARCH-2026-07-15.md): addresses this multisig
 		// has already broadcast a completed send to — the review step's entire
 		// "known address" signal here (multisig has no address book), feeding the

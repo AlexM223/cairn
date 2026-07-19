@@ -872,6 +872,24 @@
 	<!-- ============================================================ CREATE -->
 	{#if step === 'create'}
 		<section class="step-body fade-in" tabindex="-1" aria-label={stepAriaLabel}>
+			{#if data.pendingDraft}
+				<!-- cairn-0pxk5: a fresh wizard never auto-redirects to a resumable
+				     draft — agency stays with the user — but starting a brand-new one
+				     while another still needs signatures is worth a heads-up. Reuses
+				     the same ?tx= deep-link format freezeRosterAndNotify emits. -->
+				{@const pendingDraftId = data.pendingDraft.id}
+				<Banner variant="warning">
+					A transaction draft is awaiting signatures — starting a new one won't affect it.
+					{#snippet actions()}
+						<a
+							class="btn btn-secondary btn-sm"
+							href="/wallets/multisig/{multisigId}/send?tx={pendingDraftId}"
+						>
+							Resume draft
+						</a>
+					{/snippet}
+				</Banner>
+			{/if}
 			<div class="recipient-blocks">
 				{#each rows as row, i (row.key)}
 					<div class="recipient-block">
