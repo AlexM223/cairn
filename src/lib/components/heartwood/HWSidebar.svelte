@@ -15,19 +15,26 @@
 	import { onMount } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import NotificationPanel from '$lib/components/NotificationPanel.svelte';
+	import { isNavActive, type AccountMenuLink, type NavItem } from '$lib/nav';
+	import { notifUnread } from '$lib/live/notifUnread.svelte';
+	import { viewport } from '$lib/viewport.svelte';
 
-	type NavItem = { href: string; label: string; icon: string };
 	type User = { displayName: string; email: string; isAdmin: boolean };
 
 	let {
 		navItems,
+		menuEntries,
 		user,
 		operatorName = null
-	}: { navItems: NavItem[]; user: User; operatorName?: string | null } = $props();
+	}: {
+		navItems: NavItem[];
+		menuEntries: AccountMenuLink[];
+		user: User;
+		operatorName?: string | null;
+	} = $props();
 
 	function isActive(href: string): boolean {
-		if (href === '/') return page.url.pathname === '/';
-		return page.url.pathname === href || page.url.pathname.startsWith(href + '/');
+		return isNavActive(href, page.url.pathname);
 	}
 
 	// Heartwood mark, detail="simple", eccentric pith — inlined here on purpose
@@ -49,6 +56,27 @@
 
 	let menuOpen = $state(false);
 	let menuWrap = $state<HTMLDivElement | null>(null);
+
+	// Nav rewrite (cairn-gt05.4, spec §2.7): the notifications panel opens from
+	// the account menu now (no standalone bell in the rail foot); it anchors to
+	// the avatar, which also carries the unread badge.
+	let notifOpen = $state(false);
+	let accountEl = $state<HTMLButtonElement | null>(null);
+
+	function openNotifications(e: MouseEvent) {
+		// stopPropagation: the panel's document-level click handler would
+		// otherwise see this same click land outside the panel and close it on
+		// the spot it opened.
+		e.stopPropagation();
+		menuOpen = false;
+		notifOpen = true;
+	}
+
+	const accountLabel = $derived(
+		notifUnread.count > 0
+			? `Account menu (${notifUnread.count} unread notification${notifUnread.count === 1 ? '' : 's'})`
+			: 'Account menu'
+	);
 
 	// Collapse state (desktop only). SSR-safe read: default to expanded so the
 	// server-rendered markup is stable, read the stored value in onMount (after
@@ -90,7 +118,14 @@
 
 <svelte:window onclick={onDocClick} onkeydown={onKeydown} />
 
-<aside class="rail" class:collapsed={hydrated && collapsed}>
+<!-- aria-hidden below 900px: the mobile shell owns nav there and this rail is
+     display:none — the explicit attribute guarantees exactly one exposed <nav>
+     landmark per breakpoint (spec §2.7 duplicate-landmark fix). -->
+<aside
+	class="rail"
+	class:collapsed={hydrated && collapsed}
+	aria-hidden={viewport.isMobile ? 'true' : undefined}
+>
 	<a href="/" class="brand" aria-label="Home">
 		<svg class="mark-svg" width="26" height="26" viewBox="0 0 100 100" aria-hidden="true">
 			{#each MARK_RINGS as ring (ring.rx)}
@@ -121,25 +156,7 @@
 				aria-current={isActive(item.href) ? 'page' : undefined}
 			>
 				<span class="nav-icon">
-					{#if item.icon === 'explorer'}
-						<!-- Explorer's three-concentric-circles icon is custom per the spec's
-						     Assets section — Icon.svelte has nothing close. -->
-						<svg
-							width="19"
-							height="19"
-							viewBox="0 0 20 20"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="1.4"
-							aria-hidden="true"
-						>
-							<circle cx="10" cy="10" r="7.5" />
-							<circle cx="10" cy="10" r="4.5" />
-							<circle cx="10" cy="10" r="1.4" fill="currentColor" stroke="none" />
-						</svg>
-					{:else}
-						<Icon name={item.icon} size={19} strokeWidth={1.6} />
-					{/if}
+					<Icon name={item.icon} size={19} strokeWidth={1.6} />
 				</span>
 				<span class="nav-label">{item.label}</span>
 			</a>
@@ -177,21 +194,24 @@
 			<span class="sync-line">Chain sync</span>
 		</div>
 
-		<div class="notif-row">
-			<NotificationPanel />
-			<span class="foot-label">Alerts</span>
-		</div>
-
 		<div class="menu-wrap" bind:this={menuWrap}>
 			<button
 				type="button"
 				class="account"
+				bind:this={accountEl}
 				aria-haspopup="true"
 				aria-expanded={menuOpen}
-				aria-label="Account menu"
+				aria-label={accountLabel}
 				onclick={() => (menuOpen = !menuOpen)}
 			>
-				<span class="avatar">{user.displayName.slice(0, 1).toUpperCase()}</span>
+				<span class="avatar">
+					{user.displayName.slice(0, 1).toUpperCase()}
+					{#if notifUnread.count > 0}
+						<span class="avatar-badge" aria-hidden="true"
+							>{notifUnread.count > 99 ? '99+' : notifUnread.count}</span
+						>
+					{/if}
+				</span>
 				<span class="account-name truncate">{user.displayName}</span>
 				<span class="account-chev"><Icon name="chevron-down" size={15} /></span>
 			</button>
@@ -201,9 +221,32 @@
 						<div class="menu-name truncate">{user.displayName}</div>
 						<div class="menu-email truncate">{user.email}</div>
 					</div>
-					<a href="/settings" class="menu-item" role="menuitem" onclick={() => (menuOpen = false)}>
-						Settings
-					</a>
+					{#each menuEntries as entry (entry.href)}
+						<a
+							href={entry.href}
+							class="menu-item"
+							role="menuitem"
+							onclick={() => (menuOpen = false)}
+						>
+							{entry.label}
+						</a>
+					{/each}
+					<button
+						type="button"
+						class="menu-item"
+						role="menuitem"
+						aria-label={notifUnread.count > 0
+							? `Notifications, ${notifUnread.count} unread`
+							: 'Notifications'}
+						onclick={openNotifications}
+					>
+						Notifications
+						{#if notifUnread.count > 0}
+							<span class="menu-count" aria-hidden="true"
+								>{notifUnread.count > 99 ? '99+' : notifUnread.count}</span
+							>
+						{/if}
+					</button>
 					<a href="/terms" class="menu-item" role="menuitem" onclick={() => (menuOpen = false)}>
 						Terms
 					</a>
@@ -217,11 +260,13 @@
 							operated by <strong>{operatorName}</strong>
 						</a>
 					{/if}
+					<div class="menu-sep" role="separator"></div>
 					<form method="POST" action="/logout">
 						<button class="menu-item menu-signout" role="menuitem">Sign out</button>
 					</form>
 				</div>
 			{/if}
+			<NotificationPanel variant="external" anchor={accountEl} bind:open={notifOpen} />
 		</div>
 
 		<button
@@ -361,17 +406,6 @@
 		animation: hwPulse 2.4s ease-in-out infinite;
 	}
 
-	.notif-row {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		margin-bottom: 10px;
-	}
-
-	.foot-label {
-		display: none;
-	}
-
 	.menu-wrap {
 		position: relative;
 		display: flex;
@@ -388,6 +422,7 @@
 	}
 
 	.avatar {
+		position: relative;
 		width: 30px;
 		height: 30px;
 		border-radius: 50%;
@@ -398,6 +433,27 @@
 		font: 600 12.5px var(--font-ui);
 		color: var(--on-accent);
 		flex-shrink: 0;
+	}
+
+	/* Unread badge on the avatar (spec §2.7: the bell badge lives on the avatar
+	   now that the panel opens from the account menu). Same treatment the old
+	   bell badge used. */
+	.avatar-badge {
+		position: absolute;
+		top: -4px;
+		right: -4px;
+		min-width: 15px;
+		height: 15px;
+		padding: 0 4px;
+		border-radius: 8px;
+		background: var(--accent);
+		color: var(--bg);
+		border: 1px solid var(--bg);
+		font-size: 9.5px;
+		font-weight: 700;
+		line-height: 13px;
+		text-align: center;
+		font-variant-numeric: tabular-nums;
 	}
 
 	.account-name,
@@ -460,6 +516,29 @@
 	.menu-item:hover {
 		background: color-mix(in srgb, var(--text) 4%, transparent);
 		color: var(--text);
+	}
+
+	.menu-count {
+		display: inline-block;
+		min-width: 15px;
+		height: 15px;
+		padding: 0 4px;
+		margin-left: 6px;
+		border-radius: 8px;
+		background: var(--accent);
+		color: var(--bg);
+		font-size: 9.5px;
+		font-weight: 700;
+		line-height: 15px;
+		text-align: center;
+		font-variant-numeric: tabular-nums;
+		vertical-align: 1px;
+	}
+
+	.menu-sep {
+		height: 1px;
+		margin: 4px 6px;
+		background: var(--hairline);
 	}
 
 	.menu-note {
@@ -577,27 +656,6 @@
 			font-weight: 500;
 			color: var(--text-secondary);
 			white-space: nowrap;
-		}
-
-		.rail:not(.collapsed) .notif-row {
-			justify-content: flex-start;
-			gap: 10px;
-			height: 40px;
-			padding: 0 12px;
-			margin-bottom: 0;
-			border-radius: 9px;
-			transition: background 120ms var(--ease);
-		}
-
-		.rail:not(.collapsed) .notif-row:hover {
-			background: color-mix(in srgb, var(--text) 6%, transparent);
-		}
-
-		.rail:not(.collapsed) .foot-label {
-			display: block;
-			font-size: var(--t-body-size);
-			font-weight: 500;
-			color: var(--text-secondary);
 		}
 
 		.rail:not(.collapsed) .menu-wrap {

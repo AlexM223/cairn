@@ -19,6 +19,8 @@
 	 * and the {#key} re-mounts the bloom layer, restarting its CSS animation exactly
 	 * once. No JS timers drive the animation itself.
 	 */
+	import FeeRate from '$lib/components/FeeRate.svelte';
+
 	let {
 		growth = 0,
 		nextFee = null,
@@ -72,7 +74,10 @@
 	<div class="label">
 		<span class="lead">forming now</span>
 		{#if nextFee !== null}
-			<span class="sub">~{nextFee} sat/vB to make it</span>
+			<!-- Shared FeeRate (spec §2.5, explorer de-jargon rider): the raw rate
+			     stays, Term-glossed like everywhere else; time={null} because the
+			     "to make it" copy already says when. -->
+			<span class="sub"><FeeRate rate={nextFee} approx time={null} /> to make it</span>
 		{/if}
 	</div>
 </div>

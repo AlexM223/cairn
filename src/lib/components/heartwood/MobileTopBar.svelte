@@ -1,32 +1,34 @@
 <script lang="ts">
 	// Heartwood mobile top bar (<=900px, tab pages + mining, cairn-5e2k): mark +
 	// wordmark on the left; on the right an at-tip dial pill placeholder (or a
-	// search icon on Explorer, per spec), the notification bell, and the
-	// avatar menu. Mining, Node & Settings live behind the avatar menu on
-	// mobile — the tab row below never shows them.
+	// search icon on Explorer, per spec) and the avatar menu. Everything that
+	// left the primary nav (spec §2.7, cairn-gt05.4) — Explorer, Mining, Health,
+	// Settings, Notifications — lives behind the avatar menu; the tab row below
+	// shows only the three primaries.
 	//
-	// The bell (cairn-vjjc4): the desktop HWSidebar mounts its own
-	// NotificationPanel in the foot rail, which is display:none below 900px —
-	// leaving mobile with no notification entry point at all. This mounts a
-	// second instance here. That's safe to duplicate: liveClient.ts is a
-	// refcounted singleton over one shared EventSource, so two mounted panels
-	// don't open two SSE connections, just one extra (idempotent) initial
-	// /api/notifications fetch. Only one of the two is ever visually shown at
-	// a time (the CSS breakpoints are complementary), so there's no double
-	// dropdown. NotificationPanel's own CSS switches its open-direction and
-	// tap-target sizing at the same breakpoint for this top-anchored mount.
+	// Notifications (cairn-vjjc4 lineage): the desktop HWSidebar mounts its own
+	// NotificationPanel, display:none'd below 900px — so this bar mounts a
+	// second, external-mode instance anchored to the avatar. That's safe to
+	// duplicate: liveClient.ts is a refcounted singleton over one shared
+	// EventSource, so two mounted panels don't open two SSE connections, just
+	// one extra (idempotent) initial /api/notifications fetch. Only one is ever
+	// visible at a time (complementary CSS breakpoints + aria-hidden). The
+	// unread badge rides on the avatar itself.
 	import NotificationPanel from '$lib/components/NotificationPanel.svelte';
+	import { notifUnread } from '$lib/live/notifUnread.svelte';
+	import { viewport } from '$lib/viewport.svelte';
+	import type { AccountMenuLink } from '$lib/nav';
 
 	let {
 		variant = 'dial',
 		user,
 		operatorName = null,
-		showMining = false
+		menuEntries
 	}: {
 		variant?: 'dial' | 'search';
 		user: { displayName: string; email: string; isAdmin: boolean };
 		operatorName?: string | null;
-		showMining?: boolean;
+		menuEntries: AccountMenuLink[];
 	} = $props();
 
 	// Heartwood mark, detail="simple" — inlined (shared HeartwoodMark component
@@ -46,6 +48,8 @@
 
 	let menuOpen = $state(false);
 	let menuWrap = $state<HTMLDivElement | null>(null);
+	let notifOpen = $state(false);
+	let avatarEl = $state<HTMLButtonElement | null>(null);
 
 	function onDocClick(e: MouseEvent) {
 		if (menuOpen && menuWrap && !menuWrap.contains(e.target as Node)) menuOpen = false;
@@ -53,11 +57,28 @@
 	function onKeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape') menuOpen = false;
 	}
+
+	function openNotifications(e: MouseEvent) {
+		// stopPropagation so the panel's document click handler doesn't close it
+		// on the same click that opened it.
+		e.stopPropagation();
+		menuOpen = false;
+		notifOpen = true;
+	}
+
+	const accountLabel = $derived(
+		notifUnread.count > 0
+			? `Account menu (${notifUnread.count} unread notification${notifUnread.count === 1 ? '' : 's'})`
+			: 'Account menu'
+	);
 </script>
 
 <svelte:window onclick={onDocClick} onkeydown={onKeydown} />
 
-<header class="topbar">
+<!-- aria-hidden above 900px: the desktop rail owns nav/account chrome there and
+     this bar is display:none — the explicit attribute keeps the a11y tree to
+     exactly one nav/account surface per breakpoint (spec §2.7). -->
+<header class="topbar" aria-hidden={viewport.isMobile ? undefined : 'true'}>
 	<a href="/" class="brand" aria-label="Home">
 		<svg width="22" height="22" viewBox="0 0 100 100" aria-hidden="true">
 			{#each MARK_RINGS as ring (ring.rx)}
@@ -116,18 +137,22 @@
 			</span>
 		{/if}
 
-		<NotificationPanel />
-
 		<div class="menu-wrap" bind:this={menuWrap}>
 			<button
 				type="button"
 				class="avatar"
+				bind:this={avatarEl}
 				aria-haspopup="true"
 				aria-expanded={menuOpen}
-				aria-label="Account menu"
+				aria-label={accountLabel}
 				onclick={() => (menuOpen = !menuOpen)}
 			>
 				{user.displayName.slice(0, 1).toUpperCase()}
+				{#if notifUnread.count > 0}
+					<span class="avatar-badge" aria-hidden="true"
+						>{notifUnread.count > 99 ? '99+' : notifUnread.count}</span
+					>
+				{/if}
 			</button>
 			{#if menuOpen}
 				<div class="menu" role="menu">
@@ -135,19 +160,32 @@
 						<div class="menu-name truncate">{user.displayName}</div>
 						<div class="menu-email truncate">{user.email}</div>
 					</div>
-					{#if showMining}
-						<a href="/mining" class="menu-item" role="menuitem" onclick={() => (menuOpen = false)}>
-							Mining
+					{#each menuEntries as entry (entry.href)}
+						<a
+							href={entry.href}
+							class="menu-item"
+							role="menuitem"
+							onclick={() => (menuOpen = false)}
+						>
+							{entry.label}
 						</a>
-					{/if}
-					<a href="/settings" class="menu-item" role="menuitem" onclick={() => (menuOpen = false)}>
-						Settings
-					</a>
-					{#if user.isAdmin}
-						<a href="/admin" class="menu-item" role="menuitem" onclick={() => (menuOpen = false)}>
-							Health
-						</a>
-					{/if}
+					{/each}
+					<button
+						type="button"
+						class="menu-item"
+						role="menuitem"
+						aria-label={notifUnread.count > 0
+							? `Notifications, ${notifUnread.count} unread`
+							: 'Notifications'}
+						onclick={openNotifications}
+					>
+						Notifications
+						{#if notifUnread.count > 0}
+							<span class="menu-count" aria-hidden="true"
+								>{notifUnread.count > 99 ? '99+' : notifUnread.count}</span
+							>
+						{/if}
+					</button>
 					<a href="/terms" class="menu-item" role="menuitem" onclick={() => (menuOpen = false)}>
 						Terms
 					</a>
@@ -161,11 +199,13 @@
 							operated by <strong>{operatorName}</strong>
 						</a>
 					{/if}
+					<div class="menu-sep" role="separator"></div>
 					<form method="POST" action="/logout">
 						<button class="menu-item menu-signout" role="menuitem">Sign out</button>
 					</form>
 				</div>
 			{/if}
+			<NotificationPanel variant="external" anchor={avatarEl} bind:open={notifOpen} />
 		</div>
 	</div>
 </header>
@@ -245,6 +285,26 @@
 		padding: 0;
 	}
 
+	/* Unread badge on the avatar (spec §2.7): the old bell's badge treatment,
+	   carried onto the account trigger now that the bell left the chrome. */
+	.avatar-badge {
+		position: absolute;
+		top: -4px;
+		right: -4px;
+		min-width: 15px;
+		height: 15px;
+		padding: 0 4px;
+		border-radius: 8px;
+		background: var(--accent);
+		color: var(--bg);
+		border: 1px solid var(--bg);
+		font-size: 9.5px;
+		font-weight: 700;
+		line-height: 13px;
+		text-align: center;
+		font-variant-numeric: tabular-nums;
+	}
+
 	/* Touch-target batch (cairn-uxdev batch 2, item 3): the visual avatar stays
 	   30x30, but an invisible ::after extends the actual hit area to ~44x44 on
 	   mobile, where this bar is shown (.topbar is display:none above 900px). */
@@ -315,6 +375,29 @@
 	.menu-item:hover {
 		background: rgba(255, 255, 255, 0.03);
 		color: var(--text);
+	}
+
+	.menu-count {
+		display: inline-block;
+		min-width: 15px;
+		height: 15px;
+		padding: 0 4px;
+		margin-left: 6px;
+		border-radius: 8px;
+		background: var(--accent);
+		color: var(--bg);
+		font-size: 9.5px;
+		font-weight: 700;
+		line-height: 15px;
+		text-align: center;
+		font-variant-numeric: tabular-nums;
+		vertical-align: 1px;
+	}
+
+	.menu-sep {
+		height: 1px;
+		margin: 4px 6px;
+		background: var(--hairline);
 	}
 
 	.menu-note {
