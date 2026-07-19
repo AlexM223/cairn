@@ -2615,7 +2615,14 @@ Wraps every authenticated page with:
   `BackCircle` header instead (wallet/vault detail, send/sign wizards,
   `/settings/**`, `/admin/**`, `/recovery-setup`). `/vaults` is classified as
   a tab route for consistency, but **has no real pages** — see the route
-  table note below before "helpfully" building one.
+  table note below before "helpfully" building one. **`/mining` is a third
+  case (`cairn-5e2k`):** below 900px it gets the same `MobileTopBar` as the
+  tab pages (Home link + account menu, with a flag-gated "Mining" item added
+  to the avatar dropdown via `showMining`) but does **not** join
+  `MobileTabRow` — it's a primary sidebar-nav section, not a 5th tab slot,
+  so without its own top bar it fell through to the flow-page's
+  back-circle-only header and became a dead end when opened directly
+  (bookmark, notification, reload).
 - `ChainHealthBanner` — always mounted, silent unless Electrum/SOCKS5 is
   unhealthy. Two distinct unhealthy states, both from `getChainHealth()`
   (`chainHealth.ts`): **never-configured** (`health.neverConfigured` true —
