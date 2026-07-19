@@ -32,7 +32,8 @@
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"mining:forced-solve-harness": "node scripts/mining/forcedSolveHarness.mjs",
 		"mining:forced-solve": "node scripts/qa/mining-forced-solve.mjs",
-		"mining:load-test": "node scripts/qa/mining-load-test.mjs"
+		"mining:load-test": "node scripts/qa/mining-load-test.mjs",
+		"qa:prod-boot": "node scripts/qa/prod-boot-smoke.mjs"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-auto": "^7.0.1",
