@@ -1,9 +1,22 @@
 <script lang="ts">
 	// Heartwood mobile top bar (<=900px, tab pages + mining, cairn-5e2k): mark +
 	// wordmark on the left; on the right an at-tip dial pill placeholder (or a
-	// search icon on Explorer, per spec) and the avatar menu. Mining, Node &
-	// Settings live behind the avatar menu on mobile — the tab row below never
-	// shows them.
+	// search icon on Explorer, per spec), the notification bell, and the
+	// avatar menu. Mining, Node & Settings live behind the avatar menu on
+	// mobile — the tab row below never shows them.
+	//
+	// The bell (cairn-vjjc4): the desktop HWSidebar mounts its own
+	// NotificationPanel in the foot rail, which is display:none below 900px —
+	// leaving mobile with no notification entry point at all. This mounts a
+	// second instance here. That's safe to duplicate: liveClient.ts is a
+	// refcounted singleton over one shared EventSource, so two mounted panels
+	// don't open two SSE connections, just one extra (idempotent) initial
+	// /api/notifications fetch. Only one of the two is ever visually shown at
+	// a time (the CSS breakpoints are complementary), so there's no double
+	// dropdown. NotificationPanel's own CSS switches its open-direction and
+	// tap-target sizing at the same breakpoint for this top-anchored mount.
+	import NotificationPanel from '$lib/components/NotificationPanel.svelte';
+
 	let {
 		variant = 'dial',
 		user,
@@ -102,6 +115,8 @@
 				</svg>
 			</span>
 		{/if}
+
+		<NotificationPanel />
 
 		<div class="menu-wrap" bind:this={menuWrap}>
 			<button

@@ -45,14 +45,23 @@
 	const canPopover =
 		typeof HTMLElement !== 'undefined' && 'showPopover' in HTMLElement.prototype;
 
-	/** Pin the top-layer panel to the bell: same left edge, opening upward. */
+	/** Pin the top-layer panel to the bell: same left edge, opening upward from
+	 *  the desktop sidebar's bottom-anchored bell, or downward from the mobile
+	 *  top bar's top-anchored one (cairn-vjjc4) — same @900px breakpoint the
+	 *  rest of the mobile shell (HWSidebar/MobileTopBar) switches on. */
 	function positionPanel() {
 		if (!popEl || !bellEl) return;
 		const rect = bellEl.getBoundingClientRect();
 		// Clamp so the 320px panel never leaves the viewport on narrow screens.
 		const left = Math.max(8, Math.min(rect.left, window.innerWidth - 320 - 8));
 		popEl.style.left = `${left}px`;
-		popEl.style.bottom = `${window.innerHeight - rect.top + 8}px`;
+		if (window.innerWidth <= 900) {
+			popEl.style.top = `${rect.bottom + 8}px`;
+			popEl.style.bottom = 'auto';
+		} else {
+			popEl.style.bottom = `${window.innerHeight - rect.top + 8}px`;
+			popEl.style.top = 'auto';
+		}
 	}
 
 	$effect(() => {
@@ -369,6 +378,26 @@
 		position: fixed;
 		top: auto;
 		right: auto;
+	}
+
+	/* Mobile entry point (cairn-vjjc4): the sidebar's bell lives at the bottom
+	   of the screen and opens upward (the default above), but below 900px the
+	   bell moves into the top bar (MobileTopBar), so the panel needs to open
+	   downward instead or it renders off the top of the viewport. Covers both
+	   the CSS fallback (this rule) and the popover/positionPanel() path above,
+	   which switches on the same breakpoint. Also widen the bell's tap target
+	   to ~44px on touch, matching MobileTopBar's avatar/search-icon pattern. */
+	@media (max-width: 900px) {
+		.notif-panel {
+			bottom: auto;
+			top: calc(100% + 8px);
+		}
+
+		.bell::after {
+			content: '';
+			position: absolute;
+			inset: -7px;
+		}
 	}
 
 	.panel-head {
