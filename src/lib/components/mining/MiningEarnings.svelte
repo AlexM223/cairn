@@ -68,7 +68,15 @@
 		</p>
 	{:else}
 		<ul class="block-list">
-			{#each rows as row (`${row.height}:${row.vout}`)}
+			<!--
+				Key on the coinbase txid (unique per found block). height:vout is NOT
+				unique — regtest/reorg churn records multiple blocksFound rows at the
+				same height with vout always 0, and duplicate keys make Svelte 5 throw
+				each_key_duplicate during hydration, silently blanking the whole
+				dashboard subtree (cairn-et5a0). Index fallback covers null-txid
+				(rejected-submit) rows.
+			-->
+			{#each rows as row, i (row.txid ?? `${row.height}:${row.vout}:${i}`)}
 				<li class="block-row">
 					<div class="block-head">
 						{#if row.txid}
