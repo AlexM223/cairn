@@ -39,7 +39,13 @@ export const load: PageServerLoad = async (event) => {
 		);
 		return {
 			view: {
-				engine: { status: 'stopped' as const, stratumPort: 0, bind: '' },
+				engine: {
+					status: 'stopped' as const,
+					stratumPort: 0,
+					bind: '',
+					shareDifficulty: 0,
+					asicPort: null
+				},
 				connection: null,
 				payout: null,
 				workers: [],
@@ -52,6 +58,7 @@ export const load: PageServerLoad = async (event) => {
 				},
 				earnings: { blocksFound: [], totalMaturedSats: 0, totalPendingSats: 0 },
 				odds: null,
+				networkDifficulty: null,
 				wallets: []
 			},
 			loadError: 'Mining data is temporarily unavailable. Try refreshing the page.'

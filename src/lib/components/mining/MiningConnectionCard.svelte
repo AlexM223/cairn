@@ -6,6 +6,15 @@
 	 * hosts the regenerate-ID affordance: a small, two-step (reveal-then-
 	 * confirm) action rather than a full gated subpage, since it's a medium-
 	 * stakes "the old value stops working" change, not a destructive one.
+	 *
+	 * cairn-bm7c2 (UI half): when the pool is bound to loopback only, an
+	 * unconditional copy-paste address is a dishonest affordance — it looks
+	 * connectable from any device but only ever works from this machine. Swap
+	 * the address block for an honest plain-language state instead.
+	 *
+	 * cairn-pz8v5 (UI half): when the admin has opened a second, high-
+	 * difficulty-floor listener for ASIC-class hardware, show both addresses
+	 * with plain labels rather than silently only ever advertising one port.
 	 */
 	import { enhance } from '$app/forms';
 	import { page } from '$app/state';
@@ -18,16 +27,29 @@
 		workerFormat,
 		password,
 		stratumPort,
+		bind,
+		asicPort,
 		hasWorkers
 	}: {
 		miningId: string;
 		workerFormat: string;
 		password: string;
 		stratumPort: number;
+		/** Network exposure of the pool's Stratum listener(s). */
+		bind: 'loopback' | 'lan' | 'all';
+		/** Second (ASIC-class) high-floor listener, null when the admin hasn't enabled it. */
+		asicPort: { port: number; shareDifficulty: number } | null;
 		hasWorkers: boolean;
 	} = $props();
 
 	const host = $derived(page.url.hostname);
+	const isAdmin = $derived(page.data.user?.isAdmin ?? false);
+	/** Reachable from anywhere but this machine (mirrors bindLabel's 'lan'/'all'). */
+	const isOpen = $derived(bind !== 'loopback');
+
+	function address(port: number): string {
+		return `stratum+tcp://${host}:${port}`;
+	}
 
 	let confirmingRegenerate = $state(false);
 	let regenerating = $state(false);
@@ -50,11 +72,38 @@
 		start showing up below.
 	</p>
 
-	<dl class="fields">
-		<div class="field">
-			<dt>Pool address</dt>
-			<dd><CopyText value={`stratum+tcp://${host}:${stratumPort}`} mono /></dd>
+	{#if !isOpen}
+		<div class="access-notice">
+			<Icon name="info" size={14} />
+			<div class="access-copy">
+				<p>The pool is currently only reachable from this computer.</p>
+				{#if isAdmin}
+					<a class="access-link" href="/admin/mining"
+						>An admin can open it to your local network in Pool settings.</a
+					>
+				{/if}
+			</div>
 		</div>
+	{/if}
+
+	<dl class="fields">
+		{#if isOpen}
+			{#if asicPort}
+				<div class="field">
+					<dt>Small miners (Bitaxe, USB sticks)</dt>
+					<dd><CopyText value={address(stratumPort)} mono /></dd>
+				</div>
+				<div class="field">
+					<dt>Big machines (Antminer-class)</dt>
+					<dd><CopyText value={address(asicPort.port)} mono /></dd>
+				</div>
+			{:else}
+				<div class="field">
+					<dt>Pool address</dt>
+					<dd><CopyText value={address(stratumPort)} mono /></dd>
+				</div>
+			{/if}
+		{/if}
 		<div class="field">
 			<dt>Worker username</dt>
 			<dd>
@@ -67,6 +116,14 @@
 			<dd><CopyText value={password} mono /></dd>
 		</div>
 	</dl>
+
+	{#if isOpen && asicPort}
+		<p class="access-hint">
+			Big machines get a separate lane so their flood of work doesn't drown out the small ones.
+		</p>
+	{:else if !isOpen}
+		<p class="access-hint">These will work once the pool is opened to your network.</p>
+	{/if}
 
 	{#if !hasWorkers}
 		<p class="waiting-hint">
@@ -132,6 +189,50 @@
 		font-size: 13.5px;
 		line-height: 1.55;
 		color: var(--text-secondary);
+	}
+
+	/* Honest-state notice replacing the address block when the pool is only
+	   reachable from this machine — amber "attend to this," never red (a
+	   loopback bind is a normal default, not a broken/destructive state). */
+	.access-notice {
+		display: flex;
+		align-items: flex-start;
+		gap: 8px;
+		padding: 10px 12px;
+		background: var(--attention-muted);
+		border-radius: var(--radius-control);
+		color: var(--attention);
+	}
+
+	.access-copy {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.access-copy p {
+		margin: 0;
+		font-size: 13px;
+		line-height: 1.5;
+		color: var(--text-secondary);
+	}
+
+	.access-link {
+		font-size: 12px;
+		color: var(--attention);
+		text-decoration: underline;
+		text-underline-offset: 2px;
+	}
+
+	.access-link:hover {
+		color: var(--text);
+	}
+
+	.access-hint {
+		margin: 0;
+		font-size: 12px;
+		line-height: 1.5;
+		color: var(--text-muted);
 	}
 
 	.fields {

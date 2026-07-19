@@ -268,7 +268,11 @@ export class MiningAggregates {
 	private publishNudges(changedUsers: Set<number>): void {
 		if (changedUsers.size === 0) return;
 		for (const userId of changedUsers) livePublish('mining', { userId }, {});
-		livePublish('mining:pool', { admin: true }, {});
+		// Broadcast, not admin-gated (cairn-et38g): the pool nudge is data-free —
+		// every connected client may hear "pool numbers moved" and refetch its own
+		// endpoint, which stays access-gated (/api/admin/mining requireAdmin,
+		// /api/mining/pool requireFeature) server-side.
+		livePublish('mining:pool', { broadcast: true }, {});
 	}
 
 	private flushWorkers(): Set<number> {

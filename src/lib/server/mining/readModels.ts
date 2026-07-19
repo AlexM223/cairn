@@ -31,7 +31,19 @@ type EngineDisplayStatus = 'running' | 'stopped' | 'core_missing';
 // --------------------------------------------------------------- user view
 
 export interface UserMiningView {
-	engine: { status: EngineDisplayStatus; stratumPort: number; bind: MiningBind };
+	engine: {
+		status: EngineDisplayStatus;
+		stratumPort: number;
+		bind: MiningBind;
+		/** Difficulty floor of the standard (small-miner) port. */
+		shareDifficulty: number;
+		/**
+		 * The high-difficulty-floor listener for ASIC-class hardware
+		 * (cairn-pz8v5), null when the admin disabled it. The connection card
+		 * uses this to steer big machines to the right port in plain language.
+		 */
+		asicPort: { port: number; shareDifficulty: number } | null;
+	};
 	connection: { miningId: string; workerFormat: string; password: 'x' } | null;
 	payout: { walletId: number; walletName: string; address: string } | null;
 	workers: {
@@ -67,6 +79,13 @@ export interface UserMiningView {
 		expectedYearsPerBlock: number;
 		probPerDayPct: number;
 	} | null;
+	/**
+	 * Approximate network difficulty (D ≈ H · 600 / 2^32) — context for the
+	 * best-share-ever card ("N% of the way to a block", cairn-20k25).
+	 * Independent of `odds`, which is null whenever the user isn't hashing
+	 * right now; the high score deserves context even with miners offline.
+	 */
+	networkDifficulty: number | null;
 	wallets: { id: number; name: string; eligible: boolean }[];
 }
 
@@ -221,13 +240,23 @@ export async function getUserMiningView(userId: number): Promise<UserMiningView>
 	}));
 
 	return {
-		engine: { status: engineDisplayStatus(), stratumPort: settings.stratumPort, bind: settings.bind },
+		engine: {
+			status: engineDisplayStatus(),
+			stratumPort: settings.stratumPort,
+			bind: settings.bind,
+			shareDifficulty: settings.shareDifficulty,
+			asicPort: settings.asicPortEnabled
+				? { port: settings.asicStratumPort, shareDifficulty: settings.asicShareDifficulty }
+				: null
+		},
 		connection,
 		payout,
 		workers,
 		totals,
 		earnings: { blocksFound, totalMaturedSats, totalPendingSats },
 		odds,
+		networkDifficulty:
+			networkHashps !== null && networkHashps > 0 ? (networkHashps * 600) / 2 ** 32 : null,
 		wallets
 	};
 }
@@ -243,6 +272,8 @@ export interface AdminMiningView {
 		stratumPort: number;
 		lastTemplateAgoSec: number | null;
 		fatalErrors: string[];
+		/** Per-listener breakdown (standard + optional ASIC port, cairn-pz8v5). */
+		listeners: { role: 'standard' | 'asic'; port: number; connections: number }[];
 	};
 	pool: { connectedWorkers: number; connectedUsers: number; hashrateNow: number; hashrate24h: number };
 	hashrateSeries: { t: number; hashrate: number }[];
@@ -279,6 +310,9 @@ export interface AdminMiningView {
 		vardiffEnabled: boolean;
 		vardiffTargetPerMin: number;
 		poolTag: string;
+		asicPortEnabled: boolean;
+		asicStratumPort: number;
+		asicShareDifficulty: number;
 	};
 }
 
@@ -390,7 +424,8 @@ export async function getAdminMiningView(): Promise<AdminMiningView> {
 			bind: settings.bind,
 			stratumPort: settings.stratumPort,
 			lastTemplateAgoSec: lastJobAt === null ? null : Math.round((now - lastJobAt) / 1000),
-			fatalErrors: miningFatalErrors()
+			fatalErrors: miningFatalErrors(),
+			listeners: status.engine?.listeners ?? []
 		},
 		pool: {
 			connectedWorkers: connections.length,
@@ -409,7 +444,259 @@ export async function getAdminMiningView(): Promise<AdminMiningView> {
 			shareDifficulty: settings.shareDifficulty,
 			vardiffEnabled: settings.vardiffEnabled,
 			vardiffTargetPerMin: settings.vardiffTargetPerMin,
-			poolTag: settings.poolTag
+			poolTag: settings.poolTag,
+			asicPortEnabled: settings.asicPortEnabled,
+			asicStratumPort: settings.asicStratumPort,
+			asicShareDifficulty: settings.asicShareDifficulty
 		}
 	};
+}
+
+// ------------------------------------------------------- public pool view
+
+/**
+ * Pool-wide stats every signed-in pool user may see (cairn-et38g): pool
+ * hashrate + 24h chart, miners online, the blocks-found trophy wall, the
+ * pool's best share so far, and a per-user best-share leaderboard
+ * (cairn-192dr, no pot — bragging rights only). Display names are the same
+ * ones the admin view shows: a Heartwood instance is a private multi-user
+ * install, and the trophy wall is the point. Genuinely sensitive admin
+ * material (settings, per-connection difficulty, fatal errors, per-user
+ * share percentages) stays in getAdminMiningView behind requireAdmin.
+ */
+export interface PublicPoolView {
+	engine: { status: EngineDisplayStatus };
+	pool: {
+		connectedWorkers: number;
+		connectedUsers: number;
+		hashrateNow: number;
+		hashrate24h: number;
+	};
+	hashrateSeries: { t: number; hashrate: number }[];
+	/**
+	 * Approximate network difficulty derived from the node's network hashrate
+	 * estimate (D ≈ H · 600 / 2^32). Lets the UI put a best share in context —
+	 * "N% of the way to a block" — without a second chain call. Null when the
+	 * node can't report a network hashrate.
+	 */
+	networkDifficulty: number | null;
+	/** The pool's best share ever, with its holder. Null until a first share lands. */
+	bestShare: { difficulty: number; holderName: string; isYou: boolean } | null;
+	/** Per-user best shares, ranked. Session-live bests included. Top 10. */
+	leaderboard: {
+		rank: number;
+		name: string;
+		isYou: boolean;
+		bestShareDifficulty: number;
+		hashrateNow: number;
+		online: boolean;
+	}[];
+	/** Trophy wall — newest first, all finders, rejected rows kept honest. */
+	blocks: {
+		height: number;
+		blockHash: string;
+		foundByName: string;
+		isYou: boolean;
+		reward: number;
+		foundAt: string;
+		status: 'maturing' | 'mature' | 'rejected';
+	}[];
+	/** All-time count of accepted blocks found by this pool. */
+	totalBlocksFound: number;
+}
+
+export async function getPublicPoolView(viewerUserId: number): Promise<PublicPoolView> {
+	const status = miningEngineStatus();
+	const agg = getMiningAggregates();
+	const now = Date.now();
+	const tipHeight = await safeTipHeight();
+
+	const liveMiners = agg.liveAllMiners();
+	const poolHashrateNow = liveMiners.reduce((a, m) => a + m.hashrate.now, 0);
+	const poolHashrate24h = liveMiners.reduce((a, m) => a + m.hashrate.h24, 0);
+	const connections = status.engine?.connections ?? [];
+	const connectedUsers = new Set(connections.map((c) => c.userId)).size;
+
+	// per-user best share: durable DB best overlaid with live session bests
+	const bestByUser = new Map<number, number>();
+	try {
+		const rows = db
+			.prepare(
+				`SELECT user_id, MAX(best_share_diff) AS best
+				   FROM mining_workers
+				  GROUP BY user_id`
+			)
+			.all() as { user_id: number; best: number | null }[];
+		for (const r of rows) if (r.best && r.best > 0) bestByUser.set(r.user_id, r.best);
+	} catch (e) {
+		log.warn({ err: e }, 'leaderboard best-share read failed');
+	}
+	const liveByUser = new Map<number, { hashrateNow: number; online: boolean }>();
+	for (const m of liveMiners) {
+		if (m.bestShareDiff > (bestByUser.get(m.userId) ?? 0)) bestByUser.set(m.userId, m.bestShareDiff);
+		const cur = liveByUser.get(m.userId) ?? { hashrateNow: 0, online: false };
+		cur.hashrateNow += m.hashrate.now;
+		cur.online =
+			cur.online || (m.lastShareAtMs !== null && now - m.lastShareAtMs < ONLINE_THRESHOLD_MS);
+		liveByUser.set(m.userId, cur);
+	}
+
+	const blockFinderIds = (
+		db
+			.prepare('SELECT DISTINCT user_id FROM mining_blocks WHERE user_id IS NOT NULL')
+			.all() as { user_id: number }[]
+	).map((r) => r.user_id);
+	const names = userNames([...bestByUser.keys(), ...blockFinderIds]);
+
+	const leaderboard = [...bestByUser.entries()]
+		.sort((a, b) => b[1] - a[1])
+		.slice(0, 10)
+		.map(([userId, best], i) => ({
+			rank: i + 1,
+			name: names.get(userId) ?? `user ${userId}`,
+			isYou: userId === viewerUserId,
+			bestShareDifficulty: best,
+			hashrateNow: liveByUser.get(userId)?.hashrateNow ?? 0,
+			online: liveByUser.get(userId)?.online ?? false
+		}));
+
+	const bestShare =
+		leaderboard.length > 0
+			? {
+					difficulty: leaderboard[0].bestShareDifficulty,
+					holderName: leaderboard[0].name,
+					isYou: leaderboard[0].isYou
+				}
+			: null;
+
+	// pool hashrate series (same pool-scoped rows the admin chart reads)
+	const sinceIso = new Date(now - 86_400_000).toISOString();
+	let hashrateSeries: { t: number; hashrate: number }[] = [];
+	try {
+		const rows = db
+			.prepare(
+				`SELECT bucket_start, hashrate_est
+				   FROM mining_stats
+				  WHERE user_id IS NULL AND bucket_start >= ?
+				  ORDER BY bucket_start ASC`
+			)
+			.all(sinceIso) as { bucket_start: string; hashrate_est: number }[];
+		hashrateSeries = rows.map((r) => ({ t: Date.parse(r.bucket_start), hashrate: r.hashrate_est }));
+	} catch (e) {
+		log.warn({ err: e }, 'pool hashrate series read failed');
+	}
+
+	// trophy wall
+	const blockRows = db
+		.prepare('SELECT * FROM mining_blocks ORDER BY height DESC, id DESC LIMIT 25')
+		.all() as unknown as BlockRow[];
+	const blocks = blockRows.map((row) => ({
+		height: row.height,
+		blockHash: row.block_hash,
+		foundByName: row.user_id === null ? '—' : (names.get(row.user_id) ?? `user ${row.user_id}`),
+		isYou: row.user_id !== null && row.user_id === viewerUserId,
+		reward: Number(row.coinbase_value_sats),
+		foundAt: row.found_at,
+		status: blockStatus(row, tipHeight)
+	}));
+
+	let totalBlocksFound = 0;
+	try {
+		const row = db
+			.prepare("SELECT COUNT(*) AS n FROM mining_blocks WHERE submit_result = 'accepted'")
+			.get() as { n: number } | undefined;
+		totalBlocksFound = row?.n ?? 0;
+	} catch (e) {
+		log.warn({ err: e }, 'blocks count read failed');
+	}
+
+	const networkHashps = await getNetworkHashps();
+	const networkDifficulty =
+		networkHashps !== null && networkHashps > 0 ? (networkHashps * 600) / 2 ** 32 : null;
+
+	return {
+		engine: { status: engineDisplayStatus() },
+		pool: {
+			connectedWorkers: connections.length,
+			connectedUsers,
+			hashrateNow: poolHashrateNow,
+			hashrate24h: poolHashrate24h
+		},
+		hashrateSeries,
+		networkDifficulty,
+		bestShare,
+		leaderboard,
+		blocks,
+		totalBlocksFound
+	};
+}
+
+// -------------------------------------------------- explorer attribution
+
+/**
+ * Attribution for a block THIS pool found (cairn-r1hca): lets the explorer
+ * recognize and celebrate instance-found blocks. Accepted submits only —
+ * a rejected (reorged-out) submit is not "our block" on the active chain.
+ * walletId is only exposed to the finder themself.
+ */
+export interface PoolBlockAttribution {
+	height: number;
+	finderName: string;
+	isYou: boolean;
+	rewardSats: number;
+	foundAt: string;
+	coinbaseTxid: string | null;
+	/** Finder's payout wallet — only when the viewer IS the finder, else null. */
+	walletId: number | null;
+}
+
+export function getPoolBlockAttribution(
+	blockHash: string,
+	viewerUserId: number | null
+): PoolBlockAttribution | null {
+	try {
+		const row = db
+			.prepare(
+				"SELECT * FROM mining_blocks WHERE block_hash = ? AND submit_result = 'accepted'"
+			)
+			.get(blockHash) as BlockRow | undefined;
+		if (!row) return null;
+		const isYou = row.user_id !== null && row.user_id === viewerUserId;
+		const finderName =
+			row.user_id === null
+				? '—'
+				: (userNames([row.user_id]).get(row.user_id) ?? `user ${row.user_id}`);
+		return {
+			height: row.height,
+			finderName,
+			isYou,
+			rewardSats: Number(row.coinbase_value_sats),
+			foundAt: row.found_at,
+			coinbaseTxid: row.coinbase_txid,
+			walletId: isYou ? row.wallet_id : null
+		};
+	} catch (e) {
+		log.warn({ err: e, blockHash }, 'pool block attribution read failed');
+		return null;
+	}
+}
+
+/**
+ * Block hashes of accepted pool-found blocks, newest first — the explorer
+ * index uses this as a membership set to badge "found here" rows without a
+ * per-row query (cairn-r1hca).
+ */
+export function listPoolFoundBlockHashes(limit = 500): string[] {
+	try {
+		return (
+			db
+				.prepare(
+					"SELECT block_hash FROM mining_blocks WHERE submit_result = 'accepted' ORDER BY height DESC LIMIT ?"
+				)
+				.all(limit) as { block_hash: string }[]
+		).map((r) => r.block_hash);
+	} catch (e) {
+		log.warn({ err: e }, 'pool block hashes read failed');
+		return [];
+	}
 }

@@ -15,6 +15,7 @@
 	import { toast } from '$lib/components/toast.svelte';
 	import Toasts from '$lib/components/Toasts.svelte';
 	import MiningHero from '$lib/components/mining/MiningHero.svelte';
+	import MiningBestShare from '$lib/components/mining/MiningBestShare.svelte';
 	import MiningConnectionCard from '$lib/components/mining/MiningConnectionCard.svelte';
 	import MiningPayoutWallet from '$lib/components/mining/MiningPayoutWallet.svelte';
 	import MiningWorkersList from '$lib/components/mining/MiningWorkersList.svelte';
@@ -29,7 +30,15 @@
 	// own local state both get real type-checking instead of falling through
 	// to `any`.
 	interface MiningView {
-		engine: { status: 'running' | 'stopped' | 'core_missing'; stratumPort: number; bind: string };
+		engine: {
+			status: 'running' | 'stopped' | 'core_missing';
+			stratumPort: number;
+			bind: 'loopback' | 'lan' | 'all';
+			/** Difficulty floor of the standard (small-miner) port. */
+			shareDifficulty: number;
+			/** High-difficulty-floor listener for ASIC-class hardware, null when disabled. */
+			asicPort: { port: number; shareDifficulty: number } | null;
+		};
 		connection: { miningId: string; workerFormat: string; password: string } | null;
 		payout: { walletId: number; walletName: string; address: string } | null;
 		workers: {
@@ -67,6 +76,8 @@
 			probPerDayPct: number;
 		} | null;
 		wallets: { id: number; name: string; eligible: boolean }[];
+		/** Context for the best-share card ("N% of the way to a block"); null when unknown. */
+		networkDifficulty: number | null;
 	}
 
 	let { data }: { data: { view: MiningView; loadError: string | null } } = $props();
@@ -139,6 +150,10 @@
 
 <Toasts />
 
+<div class="pool-link-row">
+	<a class="btn-link pool-link" href="/mining/pool">See the whole pool ›</a>
+</div>
+
 <div class="page-shell stack" class:is-dashboard={isDashboard}>
 	{#if data.loadError}
 		<div class="empty-state load-error-panel">
@@ -169,6 +184,15 @@
 			<MiningHero hashrateNow={view.totals.hashrateNow} hashrate24h={view.totals.hashrate24h} />
 		</div>
 
+		{#if view.totals.bestShareEver > 0}
+			<div class="mining-hero-wrap">
+				<MiningBestShare
+					bestShareEver={view.totals.bestShareEver}
+					networkDifficulty={view.networkDifficulty}
+				/>
+			</div>
+		{/if}
+
 		<!-- Desktop (>=1160px): workers hairline list in the main column, the pool/
 		     payout/earnings/odds panels in a right-hand rail. DOM order is kept
 		     exactly (connection · payout · workers · earnings · odds) so the mobile
@@ -181,6 +205,8 @@
 					workerFormat={view.connection.workerFormat}
 					password={view.connection.password}
 					stratumPort={view.engine.stratumPort}
+					bind={view.engine.bind}
+					asicPort={view.engine.asicPort}
 					hasWorkers={view.workers.length > 0}
 				/>
 			</div>
@@ -231,6 +257,18 @@
 </div>
 
 <style>
+	/* Quiet top-of-page link over to the pool-wide stats page — same reading
+	   measure as the page shell so it lines up with the content below it. */
+	.pool-link-row {
+		max-width: var(--measure-reading);
+		margin: 0 auto;
+		padding: 16px 16px 0;
+	}
+
+	.pool-link {
+		font-size: 12.5px;
+	}
+
 	/* Calm default: onboarding, disabled, and error states are single-decision
 	   screens and stay at reading measure (the old 640 cap is removed per
 	   docs/DESKTOP-LAYOUT-DESIGN.md §2). On mobile this cap is inert. */

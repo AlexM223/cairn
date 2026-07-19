@@ -184,7 +184,9 @@ describe('flush live nudges (Wave 3, §3.4)', () => {
 
 		const pool = publishMock.mock.calls.filter((c) => c[0] === 'mining:pool');
 		expect(pool.length).toBe(1);
-		expect(pool[0][1]).toEqual({ admin: true }); // admin-broadcast scope
+		// Broadcast scope since cairn-et38g: the pool nudge is data-free and every
+		// signed-in client may hear it; the data endpoints stay gated server-side.
+		expect(pool[0][1]).toEqual({ broadcast: true });
 		expect(pool[0][2]).toEqual({});
 	});
 
