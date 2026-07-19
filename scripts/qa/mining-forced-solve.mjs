@@ -121,7 +121,7 @@ async function main() {
 		console.log('Deliverable: harness is complete; run on a box with a bitcoind binary or docker to execute.');
 		process.exit(2);
 	}
-	console.log(`[forced-solve] regtest up via ${node.kind}`);
+	console.log(`[forced-solve] regtest up via ${node.kind} on 127.0.0.1:${node.port}`);
 
 	const winner = makeIdentity(0x11, 1, 101, 'mid-winner');
 	const other = makeIdentity(0x22, 2, 102, 'mid-other');
