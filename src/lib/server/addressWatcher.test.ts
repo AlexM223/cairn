@@ -381,6 +381,80 @@ describe('cairn-uzgu / cairn-gakd Phase 1: stale multisig watch cleanup on delet
 	});
 });
 
+// ---- cairn-zltwz part (a): one bad multisig descriptor must not abort watch
+// enumeration for the rest ----------------------------------------------------
+//
+// createMultisigDeriver used to be called OUTSIDE multisigAddresses' own
+// try/catch. enumerateAll's per-multisig loop has no guard of its own — it
+// relies entirely on multisigAddresses() to contain a bad wallet's failure —
+// so an uncaught throw there propagated out through the
+// `for (const m of multisigRows)` loop and was caught by enumerateAll's OUTER
+// try/catch, which aborts the WHOLE multisig pass: every multisig after the
+// bad one in iteration order silently lost its watch subscriptions.
+
+describe('cairn-zltwz part (a): a bad multisig descriptor does not kill watch enumeration for the rest', () => {
+	const BIP48_PATH = "m/48'/0'/0'/2'";
+	function fixtureKey(seedByte: number): { xpub: string; fingerprint: string; path: string } {
+		const master = HDKey.fromMasterSeed(new Uint8Array(32).fill(seedByte));
+		const account = master.derive(BIP48_PATH);
+		return {
+			xpub: account.publicExtendedKey,
+			fingerprint: (master.fingerprint >>> 0).toString(16).padStart(8, '0'),
+			path: BIP48_PATH
+		};
+	}
+	function newMultisigKey(seedByte: number, name: string): NewMultisigKey {
+		return { name, category: 'hardware', deviceType: 'trezor', ...fixtureKey(seedByte) };
+	}
+
+	it('a multisig whose stored key can no longer be parsed is skipped (logged), and a healthy multisig created after it still gets watched', async () => {
+		const zUser = (
+			await registerUser({
+				email: 'watcher-zltwz@example.com',
+				password: 'correct horse battery',
+				displayName: 'WatcherZltwz'
+			})
+		).id;
+
+		const bad = createMultisig(zUser, {
+			name: 'Bad descriptor multisig',
+			threshold: 2,
+			keys: [newMultisigKey(21, 'Key A'), newMultisigKey(22, 'Key B'), newMultisigKey(23, 'Key C')]
+		});
+		// Corrupt the stored key directly — simulates a key that's no longer
+		// parseable (e.g. encoded for the wrong network after a chain reconfigure,
+		// cairn-zltwz's root scenario). toMultisigConfig is a pure field mapping
+		// that never validates the xpub, so this exercises exactly the
+		// previously-unguarded createMultisigDeriver call site, not the earlier
+		// toMultisigConfig try/catch.
+		db.prepare('UPDATE multisig_keys SET xpub = ? WHERE multisig_id = ? AND position = 0').run(
+			'not-a-real-xpub',
+			bad.id
+		);
+
+		// Created AFTER the bad one, so it sorts after it in enumerateAll's
+		// unordered `SELECT * FROM multisigs` (SQLite returns rowid order absent an
+		// ORDER BY) — exactly the "everything after the bad wallet" blast radius.
+		const good = createMultisig(zUser, {
+			name: 'Healthy multisig after the bad one',
+			threshold: 2,
+			keys: [newMultisigKey(24, 'Key A'), newMultisigKey(25, 'Key B'), newMultisigKey(26, 'Key C')]
+		});
+
+		await refreshWatches();
+
+		const goodWatched = [..._internals.state.byScripthash.values()].some(
+			(w) => w.kind === 'multisig' && w.walletId === good.id
+		);
+		expect(goodWatched).toBe(true);
+
+		const badWatched = [..._internals.state.byScripthash.values()].some(
+			(w) => w.kind === 'multisig' && w.walletId === bad.id
+		);
+		expect(badWatched).toBe(false);
+	});
+});
+
 // ---- cairn-mo36: TOCTOU race between existence check and write --------------
 //
 // handleScripthashChange checks walletStillExists(w) ONCE near the top, then

@@ -295,7 +295,27 @@ function multisigAddresses(multisig: MultisigRow): Watched[] {
 	// One deriver for the whole wallet: resolve/validate once, hoist the chain nodes,
 	// then derive every watched index off that shared state (cairn-8ubd) instead of
 	// re-parsing all N cosigner xpubs per address.
-	const deriver = createMultisigDeriver(config);
+	//
+	// cairn-zltwz part (a): this used to run OUTSIDE any try/catch. enumerateAll's
+	// per-multisig loop has no per-iteration guard of its own — it relies entirely
+	// on multisigAddresses() to contain a bad wallet's failure — so an uncaught
+	// throw here (e.g. a key encoded for the wrong network after a chain
+	// reconfigure) propagated up through the `for (const m of multisigRows)` loop
+	// and was caught by enumerateAll's OUTER try/catch, which aborts the whole
+	// multisig pass: every multisig wallet after the bad one in iteration order
+	// silently lost its watch subscriptions. Catching it here, like the
+	// toMultisigConfig call just above, means one bad wallet is skipped —
+	// everyone else keeps their watches.
+	let deriver;
+	try {
+		deriver = createMultisigDeriver(config);
+	} catch (e) {
+		log.warn(
+			{ err: e, multisigId: multisig.id, name: multisig.name },
+			'skip multisig: deriver creation failed'
+		);
+		return out;
+	}
 	const depth = watchDepthFor('multisig', multisig.id);
 	for (const change of [0, 1] as const) {
 		for (let i = 0; i < depth[change]; i++) {
