@@ -5,6 +5,7 @@
 
 import { db } from './db';
 import { parseXpub, deriveAddress } from './bitcoin/xpub';
+import { getChainConfig } from './settings';
 import { containsNulByte, truncateUtf16Safe, TextInputError } from './textGuard';
 import { AuthError } from './auth';
 import {
@@ -13,7 +14,7 @@ import {
 	findNextUnusedIndex,
 	type WalletScanResult
 } from './bitcoin/walletScan';
-import { unwatchWallet } from './addressWatcher';
+import { unwatchWallet, refreshWatches, getWatcherScanProgress } from './addressWatcher';
 import { withLock } from './keyedLock';
 import { childLogger } from './logger';
 import { sanitizeChainError } from './chainErrors';
@@ -317,7 +318,15 @@ export function createWallet(
 	const xpub = parsedInput.xpub;
 	let scriptType: ScriptType;
 	try {
-		scriptType = parseXpub(xpub).scriptType;
+		// Validate against the INSTANCE's actual configured network (cairn-xqnn7),
+		// not parseXpub's lazy `defaultNetwork` fallback — that fallback is only
+		// synced when getChain() has already been called at least once (see
+		// chain/index.ts's ChainService constructor), and wallet creation never
+		// touches the chain backend at all. Without this explicit read, a
+		// mainnet zpub imported before any Electrum call on a regtest/testnet
+		// instance was silently accepted, only to fail later — at RBF/scan time
+		// — with a confusing "can't reach your node" error (see walletScan.ts).
+		scriptType = parseXpub(xpub, getChainConfig().network).scriptType;
 	} catch (e) {
 		throw new Error(friendlyXpubError(e));
 	}
@@ -381,6 +390,22 @@ export function createWallet(
 			{ userId, walletId: row.id, scriptType, deviceType, hasKeyOrigin: masterFingerprint !== null },
 			'wallet created'
 		);
+		// cairn-0tvez: subscribe this wallet's addresses to the watcher NOW, not on
+		// the next 5-minute periodic pass. A wallet funded within seconds/minutes of
+		// creation used to have no live scripthash subscription yet, so the deposit's
+		// status change never landed, the wallet never got marked dirty, and its
+		// detail page served an empty snapshot forever (the clean-skip TTL trusts a
+		// dirty_since that can only ever be null if nothing is watching). Best-effort,
+		// fire-and-forget — never blocks/fails wallet creation. Skipped when the
+		// watcher hasn't started yet (every unit test, and the narrow pre-boot
+		// window): refreshWatches would otherwise open real Electrum sockets, and an
+		// unstarted watcher will pick this wallet up on its own startup baseline pass
+		// regardless.
+		if (getWatcherScanProgress().started) {
+			void refreshWatches().catch((e) =>
+				log.debug({ err: e, walletId: row.id }, 'post-create watch refresh failed (periodic refresh will retry)')
+			);
+		}
 		return toWalletSummary(row);
 	} catch (e) {
 		if (e instanceof Error && /UNIQUE/i.test(e.message)) {

@@ -63,6 +63,7 @@ import {
 	finalizeCachedBalance,
 	refreshWalletSnapshot,
 	refreshPortfolio,
+	readWalletSnapshot,
 	readDirtySince,
 	readSyncMeta,
 	clearDirtyIfUnchanged,
@@ -722,6 +723,77 @@ describe('doWalletScan coinbase bucketing — QA finding F2 regression lock', ()
 		await refreshWalletSnapshot(userId, walletId, { force: true });
 
 		expect(listUnspentMock).toHaveBeenCalledTimes(1);
+	});
+});
+
+// ------------- cairn-0tvez: never persist an empty snapshot for an unwatched wallet
+//
+// A wallet with no live scripthash subscription has nothing to ever mark it
+// dirty again — persisting an EMPTY ("clean") snapshot for one would get it
+// stuck showing zero forever once it's actually funded (dirty_since stays
+// null, and the clean-skip TTL trusts that indefinitely). doWalletScan must
+// skip the persist in exactly that case, while still returning the correct
+// (empty) result to the caller in flight, and must still persist normally
+// once the wallet IS watched, or for any NON-empty result regardless of watch
+// status (a real balance must never be hidden).
+
+describe('cairn-0tvez: empty-snapshot persistence guard', () => {
+	beforeEach(() => {
+		wipeWalletFixtures();
+		getTxHexMock.mockReset();
+		listUnspentMock.mockReset();
+		scanWalletMock.mockReset();
+		findNextUnusedIndexMock.mockReset();
+		isWalletWatchedMock.mockReset();
+	});
+
+	function stubEmptyWallet(): void {
+		scanWalletMock.mockResolvedValue({
+			addresses: [{ address: RECEIVE_0, index: 0, change: false, used: false, balance: 0 }],
+			txs: [],
+			confirmed: 0,
+			unconfirmed: 0
+		});
+		listUnspentMock.mockResolvedValue([]);
+		findNextUnusedIndexMock.mockResolvedValue(0);
+	}
+
+	it('does NOT persist a snapshot for an empty scan when the wallet is not watched', async () => {
+		const { userId, walletId } = await seedWallet();
+		stubEmptyWallet();
+		isWalletWatchedMock.mockReturnValue(false);
+
+		const snap = await refreshWalletSnapshot(userId, walletId, { force: true });
+		// The in-flight caller still gets a correct (empty) answer...
+		expect(snap).not.toBeNull();
+		expect(snap!.scan!.confirmed).toBe(0);
+		// ...but nothing was written to the DB as a trustworthy "clean" baseline —
+		// the next load falls through to a live rescan instead of getting stuck.
+		expect(readWalletSnapshot(walletId)).toBeNull();
+	});
+
+	it('DOES persist an empty scan once the wallet is actively watched', async () => {
+		const { userId, walletId } = await seedWallet();
+		stubEmptyWallet();
+		isWalletWatchedMock.mockReturnValue(true);
+
+		await refreshWalletSnapshot(userId, walletId, { force: true });
+
+		expect(readWalletSnapshot(walletId)).not.toBeNull();
+	});
+
+	it('persists a NON-empty scan even when the wallet is not watched (a real balance must never be hidden)', async () => {
+		const { userId, walletId } = await seedWallet();
+		stubOneConfirmedUtxo('ab'.repeat(32), 150_000_000, 900_000);
+		getTxHexMock.mockResolvedValue(normalRawHex());
+		isWalletWatchedMock.mockReturnValue(false);
+
+		const snap = await refreshWalletSnapshot(userId, walletId, { force: true });
+		expect(snap!.scan!.confirmed).toBe(150_000_000);
+
+		const stored = readWalletSnapshot(walletId);
+		expect(stored).not.toBeNull();
+		expect(stored!.snapshot.scan!.confirmed).toBe(150_000_000);
 	});
 });
 

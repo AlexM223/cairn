@@ -835,6 +835,23 @@ async function doWalletScan(userId: number, row: WalletRow): Promise<WalletSnaps
 		speedUp,
 		scanError: null
 	};
+	// cairn-0tvez defensive guard: an EMPTY result (no txs, zero balance) for a
+	// wallet the watcher isn't currently subscribed to must NOT be persisted as a
+	// "clean" snapshot. Nothing is watching this wallet's addresses, so nothing
+	// will ever mark it dirty when it's later funded — a persisted empty snapshot
+	// would then be served forever (dirty_since stays null, and the clean-skip TTL
+	// trusts that indefinitely). Skipping the persist here just means the NEXT
+	// load also finds no snapshot (lastSyncedAt === null, which shouldSkipScan
+	// never skips) and re-scans live, instead of getting stuck on a snapshot with
+	// no way to self-correct. This gap closes the moment the watcher subscribes
+	// this wallet — immediately at creation (see wallets.ts), or at worst the next
+	// periodic refresh. A NON-empty result is always persisted regardless of watch
+	// status — it reflects real on-chain state as of this scan and is strictly
+	// better than showing nothing.
+	const isEmpty = scan.confirmed === 0 && scan.unconfirmed === 0 && scan.txs.length === 0;
+	if (isEmpty && !isWalletWatched('wallet', row.id)) {
+		return snapshot;
+	}
 	writeSnapshot('wallet', row.id, snapshot, summarizeWalletSnapshot(snapshot));
 	// A fresh successful scan reflects on-chain state as of scan start, so clear the
 	// dirty flag — unless a status change raced this scan (CAS on dirtyAtStart).
@@ -927,6 +944,15 @@ async function doMultisigScan(userId: number, multisig: MultisigRow): Promise<Mu
 		speedUp,
 		scanError: null
 	};
+	// cairn-0tvez defensive guard — see the matching comment in doWalletScan above
+	// for the full rationale: never persist an EMPTY result as "clean" for a
+	// multisig the watcher isn't currently subscribed to, or it can get stuck
+	// showing zero forever once funded.
+	const isEmpty =
+		detail.balance.confirmed === 0 && detail.balance.unconfirmed === 0 && detail.history.length === 0;
+	if (isEmpty && !isWalletWatched('multisig', multisig.id)) {
+		return snapshot;
+	}
 	writeSnapshot('multisig', multisig.id, snapshot, summarizeMultisigSnapshot(snapshot));
 	// Clear dirty on a successful persist unless a status change raced the scan.
 	clearDirtyIfUnchanged('multisig', multisig.id, dirtyAtStart);

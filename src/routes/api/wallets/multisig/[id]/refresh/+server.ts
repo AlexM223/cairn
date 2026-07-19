@@ -22,7 +22,15 @@ export const POST: RequestHandler = async (event) => {
 	}
 
 	try {
-		const snapshot = await refreshMultisigSnapshot(user.id, id);
+		// cairn-0tvez: force the rescan rather than trusting the throttle/clean-skip
+		// gate. This endpoint is the client's explicit "go get fresh data" signal
+		// (mount + new-block nudge) — without force, a snapshot marked CLEAN (no
+		// scripthash-status change ever observed, e.g. because the watcher hadn't
+		// subscribed this multisig's addresses yet) could sit unrefreshed for up to
+		// MAX_CLEAN_TTL_MS (30 min) even though the client is actively asking for a
+		// refresh right now. Single-flighted still — a concurrent trigger for the
+		// same id coalesces onto one real scan.
+		const snapshot = await refreshMultisigSnapshot(user.id, id, { force: true });
 		if (!snapshot) return json({ error: 'Multisig not found' }, { status: 404 });
 		const stored = readMultisigSnapshot(id);
 		return json({ snapshot, lastSyncedAt: stored?.lastSyncedAt ?? null });

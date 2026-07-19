@@ -34,7 +34,7 @@ import { invalidateMultisigCache } from '../multisigScan';
 // Also cyclic with ../addressWatcher (it imports toMultisigConfig/MultisigRow
 // from this module) — same safety argument: unwatchMultisig is only reached
 // from inside deleteMultisig's function body, never at module top level.
-import { unwatchMultisig } from '../addressWatcher';
+import { unwatchMultisig, refreshWatches, getWatcherScanProgress } from '../addressWatcher';
 
 // Wave 2 / log-ops.md: this module had ZERO log lines of any kind (not even a
 // failure log) — an even bigger blind spot than wallets.ts's single-sig
@@ -512,6 +512,18 @@ export function createMultisig(
 				}))
 			}
 		});
+	}
+
+	// cairn-0tvez: subscribe this multisig's addresses to the watcher NOW — see the
+	// matching comment in wallets.ts's createWallet for the full race-condition
+	// rationale (funded-right-after-created wallets serving a permanently empty
+	// snapshot because nothing was watching yet to mark them dirty). Skipped when
+	// the watcher hasn't started (unit tests, pre-boot window) to avoid opening
+	// real Electrum sockets outside a running app.
+	if (getWatcherScanProgress().started) {
+		void refreshWatches().catch((e) =>
+			log.debug({ err: e, multisigId }, 'post-create watch refresh failed (periodic refresh will retry)')
+		);
 	}
 
 	return getMultisig(userId, multisigId)!;

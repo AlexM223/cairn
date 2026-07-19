@@ -25,7 +25,12 @@ export const POST: RequestHandler = async (event) => {
 	}
 
 	try {
-		const snapshot = await refreshWalletSnapshot(user.id, id);
+		// cairn-0tvez: force the rescan — see the matching comment in the multisig
+		// refresh route. Without force, a CLEAN-flagged snapshot (nothing has ever
+		// marked it dirty, e.g. the watcher hadn't subscribed this wallet yet) could
+		// sit unrefreshed for up to MAX_CLEAN_TTL_MS despite the client explicitly
+		// asking for fresh data right now.
+		const snapshot = await refreshWalletSnapshot(user.id, id, { force: true });
 		if (!snapshot) return json({ error: 'Wallet not found' }, { status: 404 });
 		const stored = readWalletSnapshot(id);
 		return json({ snapshot, lastSyncedAt: stored?.lastSyncedAt ?? null });
