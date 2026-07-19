@@ -539,6 +539,16 @@
 			</div>
 		{/if}
 
+		{#if data.descriptorError}
+			<!-- cairn-zltwz part (b): the descriptor couldn't be built (e.g. this
+			     wallet's keys were encoded for a network the instance is no longer
+			     configured for) — a graceful, plain-language notice instead of the
+			     page 500ing. -->
+			<Banner variant="warning">
+				{data.descriptorError}
+			</Banner>
+		{/if}
+
 		<!-- Desktop (>=1160px): reading-measure balance hero + a quiet rail led by
 		     a smaller QuorumArc and the cosigner roster (docs/DESKTOP-LAYOUT-DESIGN.md
 		     §4 Wallet detail — multisig). Below that the rail is display:none and the

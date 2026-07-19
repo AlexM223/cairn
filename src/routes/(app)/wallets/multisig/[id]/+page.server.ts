@@ -15,7 +15,7 @@ import {
 import { listContacts } from '$lib/server/contacts';
 import { getInstanceSettings } from '$lib/server/settings';
 import { invalidateMultisigCache, nextMultisigReceiveAddress } from '$lib/server/multisigScan';
-import { multisigToDescriptor } from '$lib/server/bitcoin/multisig';
+import { multisigToDescriptor, MultisigError } from '$lib/server/bitcoin/multisig';
 import { listMultisigTransactionSummaries } from '$lib/server/multisigTransactions';
 import { isBackedUp } from '$lib/server/backups';
 import { getAddressLabels } from '$lib/server/addressLabels';
@@ -62,6 +62,28 @@ export const load: PageServerLoad = ({ params, locals, url, depends }) => {
 	// already has is never touched by this (cairn-7t0z.5).
 	const canManageShares = role === 'owner' && getInstanceSettings().instanceMode === 'team';
 
+	// cairn-zltwz part (b): a wallet whose keys were encoded for a network the
+	// instance is no longer configured for (e.g. the Bitcoin connection's
+	// network changed after this wallet was created) makes multisigToDescriptor
+	// throw MultisigError instead of returning a string. That's a real,
+	// user-actionable state (the wallet's config needs to be repaired or
+	// re-imported for the new network) — not a crash. Caught here so load()
+	// still returns the rest of the page (balance, keys, history all come from
+	// data that doesn't need to re-resolve the keys), with a plain-language
+	// notice instead of the descriptor.
+	let descriptor: string | null = null;
+	let descriptorError: string | null = null;
+	if (role !== 'viewer') {
+		try {
+			descriptor = multisigToDescriptor(toMultisigConfig(multisig));
+		} catch (e) {
+			if (!(e instanceof MultisigError)) throw e;
+			log.error({ err: e, multisigId: id }, 'multisig descriptor build failed');
+			descriptorError =
+				"This shared wallet's setup is incomplete — finish or repair its configuration to see its descriptor and backup files.";
+		}
+	}
+
 	const base = {
 		// The caller's role drives which owner-only controls (share, delete,
 		// broadcast) the page renders — the server gates them regardless.
@@ -94,8 +116,11 @@ export const load: PageServerLoad = ({ params, locals, url, depends }) => {
 		backedUp: isBackedUp('multisig', id),
 		// The descriptor embeds every key's origin path. Owners and cosigners need
 		// it (cosigners register the full quorum on their device to sign); a pure
-		// viewer never signs, so they don't get it (plan §6).
-		descriptor: role === 'viewer' ? null : multisigToDescriptor(toMultisigConfig(multisig)),
+		// viewer never signs, so they don't get it (plan §6). Null with
+		// descriptorError set means the build failed gracefully (see above), not
+		// that this is a viewer.
+		descriptor,
+		descriptorError,
 		// Address labels (cairn-nbsx) — shared annotations for this vault; local read.
 		addressLabels: getAddressLabels(locals.user!.id, 'multisig', id),
 		// Sharing surface (owner + team mode only). Both lists are cheap local reads
