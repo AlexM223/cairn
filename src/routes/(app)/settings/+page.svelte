@@ -13,6 +13,7 @@
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
 	import Modal from '$lib/components/heartwood/Modal.svelte';
+	import { showContactsRow } from '$lib/settingsView';
 
 	let { data } = $props();
 
@@ -186,8 +187,9 @@
 	// shared `fiatPrimaryPref` store directly, so flipping it here updates
 	// every Amount on the site immediately.
 
-	// Which hairline rows are expanded inline (account / passkeys / recovery /
-	// contacts-gate / about). Everything the old card layout held still lives
+	// Which hairline rows/groups are expanded inline (account / passkeys /
+	// recovery / about, plus the collapsed-by-default 'advanced' and 'danger'
+	// GROUPS, spec §2.6c). Everything the old card layout held still lives
 	// here — it just opens beneath its row now.
 	let open = $state<Record<string, boolean>>({});
 	function toggleRow(key: string) {
@@ -237,15 +239,17 @@
 		<nav class="settings-nav" aria-label="Settings sections">
 			<a href="#set-account">Account</a>
 			<a href="#set-display">Display</a>
-			<a href="#set-notifications">Notifications</a>
 			<a href="#set-security">Security</a>
 			<a href="#set-advanced">Advanced</a>
-			<a href="#set-about">About</a>
+			<a href="#set-danger">Danger zone</a>
 		</nav>
 
 		<div class="settings-content">
+	<!-- ============================== ACCOUNT (spec §2.6c, group 1 of 5) -->
+	<h2 class="group-title" id="set-account">Account</h2>
+
 	<!-- Profile row -->
-	<div class="profile-row" id="set-account">
+	<div class="profile-row">
 		<div class="avatar" aria-hidden="true">{avatarInitial}</div>
 		<div class="profile-meta">
 			<div class="profile-name">{user.displayName}</div>
@@ -369,6 +373,19 @@
 		</div>
 	{/if}
 
+	<!-- Notifications: an account-level preference (channels + per-event
+	     toggles). The spec's five groups don't name it; capability is never
+	     deleted (principle 4), so it rides with Account until Phase 4 gives
+	     it an account-menu entry point. -->
+	<a class="hw-row" href="/settings/notifications">
+		<span class="row-title">Notification settings</span>
+		<span class="row-meta">in-app + your channels</span>
+		<span class="chev"><Icon name="chevron-right" size={14} /></span>
+	</a>
+
+	<!-- ==================== DISPLAY (group 2: Units + Fiat + Theme merged) -->
+	<h2 class="group-title" id="set-display">Display</h2>
+
 	<!-- Units -->
 	<div class="hw-row static">
 		<span class="row-title">Units</span>
@@ -394,7 +411,7 @@
 	     No per-user currency setting exists yet, so this only switches the USD
 	     estimate on/off — same privacy-gated fetch Home already used (no price
 	     call until turned on). -->
-	<div class="hw-row static" id="set-display">
+	<div class="hw-row static">
 		<span class="row-title">Fiat display</span>
 		<div class="unit-toggle" role="group" aria-label="Fiat display">
 			<button
@@ -438,15 +455,106 @@
 		</div>
 	{/if}
 
-	<!-- Notifications -->
-	<a class="hw-row" href="/settings/notifications" id="set-notifications">
-		<span class="row-title">Notification settings</span>
-		<span class="row-meta">in-app + your channels</span>
-		<span class="chev"><Icon name="chevron-right" size={14} /></span>
-	</a>
+	<!-- Theme (merged into Display, spec §2.6c "Theme · …" row; app-wide light
+	     mode rollout, cairn-sdx5.7). System honors the OS's
+	     prefers-color-scheme; Dark/Light are explicit overrides applied via
+	     data-theme on <html> (src/app.css), with no page reload. -->
+	<div class="hw-row static">
+		<span class="row-title">Theme</span>
+		<div class="unit-toggle" role="group" aria-label="Theme">
+			<button
+				type="button"
+				class="unit"
+				class:active={theme === 'system'}
+				aria-pressed={theme === 'system'}
+				onclick={() => setTheme('system')}>System</button
+			>
+			<button
+				type="button"
+				class="unit"
+				class:active={theme === 'dark'}
+				aria-pressed={theme === 'dark'}
+				onclick={() => setTheme('dark')}>Dark</button
+			>
+			<button
+				type="button"
+				class="unit"
+				class:active={theme === 'light'}
+				aria-pressed={theme === 'light'}
+				onclick={() => setTheme('light')}>Light</button
+			>
+		</div>
+	</div>
+
+	<!-- ============== SECURITY (group 3 — Recovery ranked FIRST: it's the
+	     backup-adjacent item whose loss costs access, spec §2.6c) -->
+	<h2 class="group-title" id="set-security">Security</h2>
+
+	<!-- Recovery -->
+	<button type="button" class="hw-row" aria-expanded={!!open.recovery} onclick={() => toggleRow('recovery')}>
+		<span class="row-title">Recovery</span>
+		{#if recovery.complete}
+			<span class="row-meta sage">
+				<Icon name="check" size={13} strokeWidth={2.25} />
+				phrase + {recovery.codesRemaining} codes
+			</span>
+		{:else}
+			<span class="row-meta attn">not set up</span>
+		{/if}
+		<span class="chev" class:down={open.recovery}><Icon name="chevron-right" size={14} /></span>
+	</button>
+
+	{#if open.recovery}
+		<div class="row-panel fade-in">
+			<p class="hint">
+				A way back into Heartwood if you lose every passkey. This recovers your
+				<strong>login only</strong> — a recovery phrase or code can never move or access your bitcoin.
+				Your bitcoin keys live on your hardware wallet regardless. Store your recovery secrets
+				separately from your hardware-wallet backup; they protect different things.
+			</p>
+
+			<ul class="rec-status">
+				<li class="rec-row">
+					<span class="rec-icon" class:on={recovery.phrase}>
+						<Icon name={recovery.phrase ? 'check' : 'x'} size={13} strokeWidth={2.25} />
+					</span>
+					<div class="rec-meta">
+						<div class="rec-name">Recovery phrase</div>
+						<div class="rec-sub">
+							{recovery.phrase ? 'Set — 12-word phrase stored.' : 'Not set up yet.'}
+						</div>
+					</div>
+				</li>
+				<li class="rec-row">
+					<span class="rec-icon" class:on={recovery.codesRemaining > 0}>
+						<Icon name={recovery.codesRemaining > 0 ? 'check' : 'x'} size={13} strokeWidth={2.25} />
+					</span>
+					<div class="rec-meta">
+						<div class="rec-name">Recovery codes</div>
+						<div class="rec-sub">
+							{#if recovery.codesRemaining > 0}
+								{recovery.codesRemaining} of 8 single-use codes remaining.
+							{:else}
+								Not set up yet.
+							{/if}
+						</div>
+					</div>
+				</li>
+			</ul>
+
+			<div class="rec-actions">
+				{#if recovery.complete}
+					<a class="btn btn-secondary btn-sm" href="/recovery-setup?force=1">Regenerate recovery</a>
+					<span class="hint rec-warn">Regenerating replaces your current phrase and codes.</span>
+				{:else}
+					<a class="btn btn-primary btn-sm" href="/recovery-setup">Set up recovery</a>
+				{/if}
+			</div>
+		</div>
+	{/if}
 
 	<!-- Passkeys (expands: full management, add/rename/remove) -->
-	<button type="button" class="hw-row" id="set-security" aria-expanded={!!open.passkeys} onclick={() => toggleRow('passkeys')}>
+	<button type="button" class="hw-row" aria-expanded={!!open.passkeys} onclick={() => toggleRow('passkeys')}>
 		<span class="row-title">Passkeys</span>
 		<span class="row-meta">{passkeys.length} active</span>
 		<span class="chev" class:down={open.passkeys}><Icon name="chevron-right" size={14} /></span>
@@ -526,195 +634,104 @@
 		</div>
 	{/if}
 
-	<!-- Recovery -->
-	<button type="button" class="hw-row" aria-expanded={!!open.recovery} onclick={() => toggleRow('recovery')}>
-		<span class="row-title">Recovery</span>
-		{#if recovery.complete}
-			<span class="row-meta sage">
-				<Icon name="check" size={13} strokeWidth={2.25} />
-				phrase + {recovery.codesRemaining} codes
-			</span>
-		{:else}
-			<span class="row-meta attn">not set up</span>
-		{/if}
-		<span class="chev" class:down={open.recovery}><Icon name="chevron-right" size={14} /></span>
-	</button>
-
-	{#if open.recovery}
-		<div class="row-panel fade-in">
-			<p class="hint">
-				A way back into Heartwood if you lose every passkey. This recovers your
-				<strong>login only</strong> — a recovery phrase or code can never move or access your bitcoin.
-				Your bitcoin keys live on your hardware wallet regardless. Store your recovery secrets
-				separately from your hardware-wallet backup; they protect different things.
-			</p>
-
-			<ul class="rec-status">
-				<li class="rec-row">
-					<span class="rec-icon" class:on={recovery.phrase}>
-						<Icon name={recovery.phrase ? 'check' : 'x'} size={13} strokeWidth={2.25} />
-					</span>
-					<div class="rec-meta">
-						<div class="rec-name">Recovery phrase</div>
-						<div class="rec-sub">
-							{recovery.phrase ? 'Set — 12-word phrase stored.' : 'Not set up yet.'}
-						</div>
-					</div>
-				</li>
-				<li class="rec-row">
-					<span class="rec-icon" class:on={recovery.codesRemaining > 0}>
-						<Icon name={recovery.codesRemaining > 0 ? 'check' : 'x'} size={13} strokeWidth={2.25} />
-					</span>
-					<div class="rec-meta">
-						<div class="rec-name">Recovery codes</div>
-						<div class="rec-sub">
-							{#if recovery.codesRemaining > 0}
-								{recovery.codesRemaining} of 8 single-use codes remaining.
-							{:else}
-								Not set up yet.
-							{/if}
-						</div>
-					</div>
-				</li>
-			</ul>
-
-			<div class="rec-actions">
-				{#if recovery.complete}
-					<a class="btn btn-secondary btn-sm" href="/recovery-setup?force=1">Regenerate recovery</a>
-					<span class="hint rec-warn">Regenerating replaces your current phrase and codes.</span>
-				{:else}
-					<a class="btn btn-primary btn-sm" href="/recovery-setup">Set up recovery</a>
-				{/if}
-			</div>
-		</div>
-	{/if}
-
-	<!-- Contacts -->
-	{#if page.data.instanceMode === 'team'}
-		<a class="hw-row" href="/settings/contacts">
-			<span class="row-title">Contacts</span>
-			<span class="row-meta">shared-wallet co-signers</span>
-			<span class="chev"><Icon name="chevron-right" size={14} /></span>
-		</a>
-	{:else}
-		<button type="button" class="hw-row" aria-expanded={!!open.contacts} onclick={() => toggleRow('contacts')}>
-			<span class="row-title">Contacts</span>
-			<span class="row-meta">team features off</span>
-			<span class="chev" class:down={open.contacts}><Icon name="chevron-right" size={14} /></span>
-		</button>
-		{#if open.contacts}
-			<div class="row-panel fade-in">
-				<p class="hint">
-					Want to share a multisig wallet with a co-signer? {#if user?.isAdmin}
-						<a href="/admin/settings">Turn on team features</a>
-					{:else}
-						Ask your admin to turn on team features
-					{/if} to unlock contacts and wallet sharing.
-				</p>
-			</div>
-		{/if}
-	{/if}
-
 	<!-- Devices & sessions -->
-	<a class="hw-row" href="/settings/devices" id="set-advanced">
+	<a class="hw-row" href="/settings/devices">
 		<span class="row-title">Devices &amp; sessions</span>
 		<span class="row-meta">where you're signed in</span>
 		<span class="chev"><Icon name="chevron-right" size={14} /></span>
 	</a>
 
-	<!-- API tokens -->
-	<a class="hw-row" href="/settings/tokens">
-		<span class="row-title">API tokens</span>
-		<span class="row-meta">script against your instance</span>
-		<span class="chev"><Icon name="chevron-right" size={14} /></span>
-	</a>
-
-	<!-- Data export -->
-	<a class="hw-row" href="/api/account/export" download>
-		<span class="row-title">Download my data</span>
-		<span class="row-meta">everything stored here — never keys</span>
-		<span class="chev"><Icon name="arrow-down-left" size={14} /></span>
-	</a>
-
-	<!-- Theme (UX spec §2.6c "Theme · Heartwood (dark)" row; app-wide light
-	     mode rollout, cairn-sdx5.7). System honors the OS's
-	     prefers-color-scheme; Dark/Light are explicit overrides applied via
-	     data-theme on <html> (src/app.css), with no page reload. -->
-	<div class="hw-row static">
-		<span class="row-title">Theme</span>
-		<div class="unit-toggle" role="group" aria-label="Theme">
-			<button
-				type="button"
-				class="unit"
-				class:active={theme === 'system'}
-				aria-pressed={theme === 'system'}
-				onclick={() => setTheme('system')}>System</button
-			>
-			<button
-				type="button"
-				class="unit"
-				class:active={theme === 'dark'}
-				aria-pressed={theme === 'dark'}
-				onclick={() => setTheme('dark')}>Dark</button
-			>
-			<button
-				type="button"
-				class="unit"
-				class:active={theme === 'light'}
-				aria-pressed={theme === 'light'}
-				onclick={() => setTheme('light')}>Light</button
-			>
-		</div>
-	</div>
-
-	<!-- About -->
-	<button type="button" class="hw-row" id="set-about" aria-expanded={!!open.about} onclick={() => toggleRow('about')}>
-		<span class="row-title">About</span>
-		<span class="row-meta">not a custodian</span>
-		<span class="chev" class:down={open.about}><Icon name="chevron-right" size={14} /></span>
+	<!-- ============== ADVANCED (group 4 — collapsed by default: power
+	     features a first-week user never touches, spec §2.6c) -->
+	<button
+		type="button"
+		class="hw-row group-toggle"
+		id="set-advanced"
+		aria-expanded={!!open.advanced}
+		aria-controls="advanced-rows"
+		onclick={() => toggleRow('advanced')}
+	>
+		<span class="group-title inline">Advanced</span>
+		<span class="chev" class:down={open.advanced}><Icon name="chevron-right" size={14} /></span>
 	</button>
 
-	{#if open.about}
-		<div class="row-panel fade-in">
-			<p class="hint">
-				Review the agreement you accepted for this instance, along with Heartwood's software
-				disclaimer and privacy model — what's stored here and what leaves this server.
-			</p>
-			<div class="about-links">
-				<a class="btn btn-secondary btn-sm" href="/agreement">
-					<Icon name="shield" size={14} /> Review the agreement
+	{#if open.advanced}
+		<div class="group-rows fade-in" id="advanced-rows">
+			<!-- API tokens -->
+			<a class="hw-row" href="/settings/tokens">
+				<span class="row-title">API tokens</span>
+				<span class="row-meta">script against your instance</span>
+				<span class="chev"><Icon name="chevron-right" size={14} /></span>
+			</a>
+
+			<!-- Contacts — rendered ONLY when team mode is on ($lib/settingsView
+			     showContactsRow, spec §2.6c). The old solo-mode "team features
+			     off" explainer row is gone: a disabled feature no longer
+			     advertises itself here. -->
+			{#if showContactsRow(page.data.instanceMode)}
+				<a class="hw-row" href="/settings/contacts">
+					<span class="row-title">Contacts</span>
+					<span class="row-meta">shared-wallet co-signers</span>
+					<span class="chev"><Icon name="chevron-right" size={14} /></span>
 				</a>
-				<a class="btn btn-ghost btn-sm" href="/terms">
-					<Icon name="info" size={14} /> Terms &amp; privacy
-				</a>
-			</div>
+			{/if}
+
+			<!-- Data export -->
+			<a class="hw-row" href="/api/account/export" download>
+				<span class="row-title">Download my data</span>
+				<span class="row-meta">everything stored here — never keys</span>
+				<span class="chev"><Icon name="arrow-down-left" size={14} /></span>
+			</a>
+
+			<!-- About this app -->
+			<button type="button" class="hw-row" aria-expanded={!!open.about} onclick={() => toggleRow('about')}>
+				<span class="row-title">About this app</span>
+				<span class="row-meta">not a custodian</span>
+				<span class="chev" class:down={open.about}><Icon name="chevron-right" size={14} /></span>
+			</button>
+
+			{#if open.about}
+				<div class="row-panel fade-in">
+					<p class="hint">
+						Review the agreement you accepted for this instance, along with Heartwood's software
+						disclaimer and privacy model — what's stored here and what leaves this server.
+					</p>
+					<div class="about-links">
+						<a class="btn btn-secondary btn-sm" href="/agreement">
+							<Icon name="shield" size={14} /> Review the agreement
+						</a>
+						<a class="btn btn-ghost btn-sm" href="/terms">
+							<Icon name="info" size={14} /> Terms &amp; privacy
+						</a>
+					</div>
+				</div>
+			{/if}
 		</div>
 	{/if}
 
-	<!-- Danger zone -->
-	<section class="danger-zone">
-		<span class="danger-title">Danger zone</span>
+	<!-- ============== DANGER ZONE (group 5 — collapsed, red, ONE plain
+	     sentence + typed confirm; the 4-bullet caveat wall is gone, spec §2.6c
+	     + manifesto §5 destructive-max friction / anti-caveat-wall). The
+	     server-side deleteAccount action is unchanged. -->
+	<section class="danger-zone" id="set-danger">
+		<button
+			type="button"
+			class="hw-row group-toggle"
+			aria-expanded={!!open.danger}
+			aria-controls="danger-rows"
+			onclick={() => toggleRow('danger')}
+		>
+			<span class="group-title danger-title inline">Danger zone</span>
+			<span class="chev" class:down={open.danger}><Icon name="chevron-right" size={14} /></span>
+		</button>
+
+		{#if open.danger}
+		<div class="group-rows fade-in" id="danger-rows">
 		<p class="hint">
-			Delete your account and everything it stores on this server: your wallets and their
-			configuration, labels, address book, notification settings, and activity.
+			Deleting your account permanently removes everything it stores on this server — your
+			bitcoin itself is never touched, but shared wallets you own disappear for their cosigners
+			too.
 		</p>
-		<ul class="hint danger-list">
-			<li>Wallets someone else shared with you are safe — you're just removed, the owner keeps everything.</li>
-			<li>
-				Shared vaults you own are not: if you've shared a multisig wallet with cosigners or
-				viewers, deleting your account deletes it for all of them too, immediately and without
-				warning them, and discards any sends they had in progress.
-			</li>
-			<li>
-				Your bitcoin itself is never touched — this server never holds your keys, so coins backed
-				by hardware or other wallets stay exactly where they are. What's lost is this app's wallet
-				setup and history, which can be hard to rebuild without a backup.
-			</li>
-			<li>
-				If you own a shared wallet, use its <strong>Export config</strong> option or hand off ownership
-				to a cosigner before you delete your account.
-			</li>
-		</ul>
 
 		{#if !confirmingDelete}
 			<div>
@@ -776,6 +793,8 @@
 					</button>
 				</div>
 			</form>
+		{/if}
+		</div>
 		{/if}
 	</section>
 		</div>
@@ -973,6 +992,46 @@
 
 		.profile-sub {
 			font-size: 11px;
+		}
+	}
+
+	/* ---------- Group headers (spec §2.6c: five named groups) ---------- */
+
+	.group-title {
+		display: block;
+		margin: 40px 0 2px;
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--text-muted);
+	}
+
+	.settings-content > .group-title:first-child {
+		margin-top: 10px;
+	}
+
+	/* Collapsed-group headers (Advanced / Danger zone): the eyebrow itself is
+	   the expander button's label, so it loses its block margins and takes the
+	   row's flex slot. */
+	.group-title.inline {
+		flex: 1;
+		min-width: 0;
+		margin: 0;
+	}
+
+	.group-toggle {
+		margin-top: 28px;
+	}
+
+	.group-rows {
+		display: flex;
+		flex-direction: column;
+	}
+
+	@media (max-width: 900px) {
+		.group-title {
+			margin-top: 32px;
 		}
 	}
 
@@ -1363,8 +1422,13 @@
 		flex-direction: column;
 		gap: 12px;
 		margin-top: 44px;
-		padding-top: 18px;
+		padding-top: 6px;
 		border-top: 1px solid var(--hairline);
+	}
+
+	/* The section's own top margin already separates the group. */
+	.danger-zone .group-toggle {
+		margin-top: 0;
 	}
 
 	.danger-title {
@@ -1373,18 +1437,6 @@
 		letter-spacing: 0.08em;
 		text-transform: uppercase;
 		color: var(--error);
-	}
-
-	.danger-list {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-		margin: 0;
-		padding-left: 18px;
-	}
-
-	.danger-list li {
-		list-style: disc;
 	}
 
 	.danger-btn {
