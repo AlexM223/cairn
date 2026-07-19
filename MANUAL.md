@@ -143,7 +143,8 @@ Routes:  src/routes/(app)/**  (+page.server.ts loaders & form actions)
    ▼
 Domain services: src/lib/server/**
    wallets.ts / wallets/multisig.ts, transactions.ts / multisigTransactions.ts,
-   feeBump.ts, bitcoin/{psbt,multisigPsbt,xpub,multisig}.ts, auth.ts, notifications.ts,
+   spendLifecycle.ts (shared lifecycle engine), feeBump.ts,
+   bitcoin/{psbt,multisigPsbt,xpub,multisig}.ts, auth.ts, notifications.ts,
    featureFlags/*, walletSync.ts / chainSync.ts (SWR), addressWatcher.ts
    ▼
 Chain facade: src/lib/server/chain/index.ts  (ChainService singleton, getChain())
@@ -1172,46 +1173,82 @@ see the "shared spend rules" section header at `psbt.ts:229`:
 refactor — the file headers of `multisig.ts`/`psbt.ts` note that
 `multisigPsbt.ts` "used to carry a verbatim copy of each block."
 
-### buildDraft / broadcast — shared lifecycle, still two parallel services
+### buildDraft / broadcast — one shared lifecycle engine (`spendLifecycle.ts`)
 
-Two structurally parallel services, **not** merged into one:
-`src/lib/server/transactions.ts` (single-sig, table `transactions`) and
-`src/lib/server/multisigTransactions.ts` (multisig, table
-`multisig_transactions`). The multisig file's header comment states this
-explicitly: "Mirrors transactions.ts deliberately — same lifecycle
-vocabulary, same atomic broadcast claim, same substitution guard — but
-against the parallel multisig_transactions table." `multisigTransactions.ts`
-imports several helpers straight from `transactions.ts` (`normalizePsbt`,
-`InvalidPsbtError`, `BroadcastError`, `detectUnconfirmedInflows`,
-`classifyUnconfirmedTrust`, `tryPackageRescue`, `coinsReservedByDrafts`,
-`reservationErrorMessage`, `reservationWarningFor`) — so the two files are
-coupled (one imports from the other) for these pieces, not siblings of a
-third shared module.
+Since cairn-rg99 (Move 4 consolidation) the spend-record lifecycle is ONE
+implementation: `src/lib/server/spendLifecycle.ts` — "a spend record has one
+lifecycle (draft → awaiting_signature → completed/superseded), parameterized
+by storage location". Both services call it with their `TxTableSpec`
+(`{table: 'transactions', ownerColumn: 'wallet_id'}` vs
+`{table: 'multisig_transactions', ownerColumn: 'multisig_id'}` — the same
+closed-union pattern `feeBump.ts` established), injecting only what genuinely
+differs as callbacks. The DB schemas stay deliberately parallel (see db.ts);
+single-sig is NOT modeled as "M=1 multisig" (script types, finalization, and
+signer coordination genuinely differ and stay per-side).
 
-**`buildDraft` lifecycle** (`transactions.ts` `buildDraft()`):
+What lives once in `spendLifecycle.ts`:
+- `executeBuildDraft` — per-owner lock, unconfirmed-trust classification,
+  coinbase-maturity tip fetch, reservation exclusion + shortfall reframe,
+  the draft INSERT, the post-save hook (multisig roster freeze), and the
+  chain-depth/reservation warnings. Callers supply access resolution
+  (`prepare`, inside the lock), the UTXO source, change derivation, and
+  `constructPsbt` vs `constructMultisigPsbt`.
+- `executeBroadcast` — the ENTIRE broadcast pipeline (details below).
+  Callers supply `preparePsbt` (single-sig: normalize + substitution guard;
+  multisig: ride-along signature merge via the normal attach path) and
+  `finalize` (single-sig: `finalizePsbt` + friendly missing-signature/sighash
+  mapping; multisig: quorum gate + `finalizeMultisigPsbt`).
+- The spec-parameterized helpers behind both sides' public functions:
+  `claimBroadcast`/`releaseBroadcastClaim` (the atomic double-broadcast
+  guard — previously duplicated, "the most dangerous line in the codebase to
+  have two of", now defined exactly once), `findCompletedDuplicate`,
+  `deleteSpendDraft`, `updateSpendRow`, `insertDraftRow`,
+  `ownBroadcastedTxids`, `reservedSpendCoins`, plus `BroadcastError`,
+  `tryPackageRescue`, `classifyUnconfirmedTrust`, `coinsReservedByDrafts` and
+  the reservation-message helpers (moved from `transactions.ts`, which
+  re-exports them — `BroadcastError` by class identity — so existing
+  importers are unchanged).
+`spendLifecycle.test.ts` is the parity regression suite: the same
+claim/dedup/supersede/forgery scenario matrix runs against BOTH specs, so a
+future edit that forks the two wallet types' broadcast-claim behavior again
+fails immediately.
 
-1. `withLock('wallet:<id>', ...)` (`keyedLock.ts`) — serializes concurrent
-   draft builds *per wallet* (commit `ff2d16f`). The reservation-exclusion
-   read is racy on its own (multiple awaits between the read and the
-   INSERT), so two truly concurrent `buildDraft` calls could each see
-   "nothing reserved" and pick the identical coin; the lock closes that
-   window. Builds against *different* wallets are unaffected (keyed by
-   walletId) — the same primitive `nextReceiveAddress` uses for an analogous
-   read-scan-derive-write race.
-2. Fetches live UTXOs (`getWalletUtxos` → Electrum `scripthash.listunspent`,
-   batched, lane-routed `background`), classifies unconfirmed trust,
-   optionally fetches tip height (only if a coinbase coin is present).
-3. Derives the next change address.
-4. **Coin reservation**: `reservedWalletCoins(walletId)` returns a map of
-   `"txid:vout" -> draft ids` for every coin referenced by this wallet's
+Two pre-consolidation one-line divergences were deliberately unified (both
+directions verified safe against the pinned suites, recorded on cairn-rg99):
+the supersede-the-replaced-original UPDATE now uses the tighter single-sig
+predicate (`status = 'completed'`) wrapped in the safer multisig `try/catch`
+(bookkeeping after money moved must never fail a succeeded broadcast), and
+completion now persists the authoritative PSBT on both sides (for multisig a
+value-level no-op — the attach path already stored those bytes).
+
+**`buildDraft` lifecycle** (`executeBuildDraft` in `spendLifecycle.ts`, called
+by both `buildDraft()` and `buildMultisigDraft()`):
+
+1. `withLock` (`keyedLock.ts`) — serializes concurrent draft builds *per
+   owner* (commit `ff2d16f`). The reservation-exclusion read is racy on its
+   own (multiple awaits between the read and the INSERT), so two truly
+   concurrent builds could each see "nothing reserved" and pick the
+   identical coin; the lock closes that window. Builds against *different*
+   wallets are unaffected. Lock keys stay per-caller: `wallet:<id>` vs
+   `multisig-draft:<id>` (the latter deliberately distinct from
+   `nextMultisigChangeIndex`'s inner `multisig:<id>` lock — same key would
+   deadlock).
+2. Fetches live UTXOs (`getWalletUtxos`/`getMultisigUtxos` → Electrum
+   `scripthash.listunspent`, batched, lane-routed), classifies unconfirmed
+   trust (`ownBroadcastedTxids` + `classifyUnconfirmedTrust`), optionally
+   fetches tip height (only if a coinbase coin is present).
+3. **Coin reservation**: `reservedSpendCoins(spec, ownerId)` returns a map
+   of `"txid:vout" -> draft ids` for every coin referenced by this owner's
    other in-flight (`draft`/`awaiting_signature`) drafts, computed by
    re-parsing each draft's stored PSBT via `summarizePsbt().inputs`
-   (`coinsReservedByDrafts`, shared with multisig — **there is no
-   reservation table**). Auto-selection excludes these coins; coin control
-   can still deliberately target a reserved coin (RBF/respend), surfaced as
-   a non-blocking `reservationWarning` naming the colliding draft id(s).
-5. Calls `constructPsbt()`, inserts a `'draft'` row, returns `{draft,
-   details, chainDepthWarning, reservationWarning}`.
+   (`coinsReservedByDrafts` — **there is no reservation table**).
+   Auto-selection excludes these coins; coin control can still deliberately
+   target a reserved coin (RBF/respend), surfaced as a non-blocking
+   `reservationWarning` naming the colliding draft id(s).
+4. Calls the injected builder (which derives the change address and runs
+   `constructPsbt()`/`constructMultisigPsbt()`), inserts a `'draft'` row,
+   runs the post-save hook (multisig: roster freeze + notify), returns
+   `{draft, details, chainDepthWarning, reservationWarning}`.
 
 **Broadcast dedup** (`broadcastTransaction()`, commit `8b591c2`): several
 drafts built from identical inputs/recipient/amount/feeRate — exactly what
@@ -1219,8 +1256,9 @@ the coin-reservation race used to allow — sign to the byte-identical
 transaction (deterministic ECDSA/RFC6979). Previously every one of them
 would broadcast "successfully" and each get marked `'completed'` with the
 same real txid — N phantom "sends" on record for one transfer. The fix:
-- `findCompletedDuplicateId()` checks whether a *different* `'completed'`
-  row already exists in this wallet with this exact txid.
+- `findCompletedDuplicate()` (`spendLifecycle.ts`) checks whether a
+  *different* `'completed'` row already exists for this owner with this
+  exact txid.
 - Checked **twice**: an "early" check right after `finalizePsbt()` computes
   the deterministic txid (before ever touching the network — skips the
   network call entirely for a known duplicate), and a "late" re-check after
@@ -1232,19 +1270,13 @@ same real txid — N phantom "sends" on record for one transfer. The fix:
   existing `'superseded'` status (no schema migration needed) rather than
   adding a new status value.
 - Broadcast is additionally protected by an atomic UPDATE-based claim
-  (`broadcast_started_at`) so two concurrent calls for the *same* row can't
-  both reach the network — the loser sees `'already_sent'`. A stale claim
-  (crash mid-broadcast) expires after 60s so **retry** isn't wedged forever
-  — `broadcastTransaction`/`broadcastMultisigTransaction` let a claim older
-  than 60s be overwritten by a fresh attempt. That 60s staleness window is
-  **not** mirrored on the delete path: `deleteTransaction`/
-  `deleteMultisigTransaction` refuse to delete a row whenever
-  `broadcast_started_at IS NOT NULL`, full stop, with no age check — so a
-  row left behind by a broadcast that crashed mid-flight blocks deletion
-  indefinitely until it's explicitly reclaimed by a retry or transitions to
-  `completed`/`superseded` (`cairn-ytnc`, open — low-severity by design,
-  since it errs toward never silently losing a broadcast record, but the
-  60s figure is retry-only, not a universal expiry).
+  (`broadcast_started_at`, `claimBroadcast()` in `spendLifecycle.ts`) so two
+  concurrent calls for the *same* row can't both reach the network — the
+  loser sees `'already_sent'`. A stale claim (crash mid-broadcast) expires
+  after 60s so **retry** isn't wedged forever. The same 60s staleness window
+  is mirrored on the delete path (`deleteSpendDraft`, cairn-ytnc): a claim
+  younger than 60s blocks deletion (an in-flight or just-failed broadcast
+  must not be erased), a stale one no longer does.
 - After a real Electrum broadcast, the *reported* txid is checked against
   the locally recomputed deterministic txid (`finalized.txid`) — this closes
   invariant 2 from §1 (`cairn-ziwm`).
@@ -1506,32 +1538,40 @@ call is in flight — this only bounds how long the caller waits).
 
 ### Single-sig vs multisig duality — what's shared vs forked
 
-**Shared** (post wallet-dedup-refactor):
+**Shared** (post wallet-dedup-refactor + cairn-rg99 consolidation):
 - `psbt.ts`'s `validateRecipientsAndFeeRate` / `selectSpendCandidates`.
-- `feeBump.ts`'s entire RBF+CPFP engine — the single biggest dedup win; both
-  services call the same `executeRbfBump`/`executeCpfpDraft` skeletons.
-- `coinsReservedByDrafts` / `reservationErrorMessage` / `reservationWarningFor`
-  / `detectUnconfirmedInflows` / `classifyUnconfirmedTrust` / `normalizePsbt`
-  / `InvalidPsbtError` / `BroadcastError` / `tryPackageRescue` — all defined
-  in `transactions.ts` and imported directly by `multisigTransactions.ts`.
+- `feeBump.ts`'s entire RBF+CPFP engine; both services call the same
+  `executeRbfBump`/`executeCpfpDraft` skeletons.
+- `spendLifecycle.ts` — the whole spend-record lifecycle (cairn-rg99):
+  `executeBuildDraft` (lock, trust classification, reservation, draft
+  persistence) and `executeBroadcast` (atomic claim, duplicate dedup,
+  package rescue, txid verification, supersede bookkeeping), plus the
+  spec-parameterized row helpers and the moved shared utilities
+  (`BroadcastError`, `tryPackageRescue`, `classifyUnconfirmedTrust`,
+  `coinsReservedByDrafts`, reservation messages). Both service files are now
+  siblings of this third shared module; `transactions.ts` re-exports the
+  moved symbols so historical import paths keep working. Parity is pinned by
+  `spendLifecycle.test.ts` (same scenario matrix over both tables).
+- `detectUnconfirmedInflows` / `normalizePsbt` / `InvalidPsbtError` — defined
+  in `transactions.ts` and imported by `multisigTransactions.ts`.
 - All 4 USB hardware-signer drivers (Trezor/Ledger/BitBox02/Jade) already
   handle both single-sig and multisig signing within one file each.
 - Descriptor/BIP-48/Caravan logic in `multisig.ts`/`multisigExport.ts` has no
   single-sig equivalent to fork from — it's inherently multisig-only.
 
-**Still forked** (confirmed remaining duplication, `cairn-rg99`):
+**Still forked** (deliberate, per the cairn-rg99 design rule "don't model
+single-sig as M=1 multisig"):
 - `constructPsbt` (`psbt.ts`) vs `constructMultisigPsbt` (`multisigPsbt.ts`)
   — two separate PSBT-building functions sharing only the two validation/
   eligibility helpers above. Multisig construction additionally handles
   N-of-M `bip32Derivation` sets, witnessScript/redeemScript attachment, and
   incremental-signature accumulation (`combineMultisigPsbts`,
   `multisigPsbtProgress`) that single-sig has no analog for.
-- `transactions.ts` vs `multisigTransactions.ts` — two parallel service
-  files over two parallel DB tables. The multisig file's own header comment
-  names this as deliberate: a multisig draft's lifecycle genuinely differs
-  (accumulates signatures across several attach calls until quorum; roster
-  freeze/notification hooks; viewer-vs-cosigner-vs-owner access tiers) even
-  though the *shape* mirrors `transactions.ts` closely.
+- The two DB tables (`transactions` vs `multisig_transactions`) stay
+  parallel (see db.ts), and each service keeps its genuinely-different
+  surface: access tiers (owner/cosigner/viewer vs plain ownership), the
+  attach/quorum signature flow, roster freeze/notification hooks, and
+  finalization.
 - Two device-timeout/capability-probe patterns per driver file, not unified
   (each of `trezor.ts`/`ledger.ts`/`bitbox02.ts`/`jade.ts` independently
   implements single-sig AND multisig account-path/read/sign functions, but

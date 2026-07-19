@@ -2,19 +2,20 @@
 // multisig's live UTXO set and persists them through draft → awaiting-signature
 // (one merged signature at a time, until quorum) → completed (broadcast).
 //
-// Mirrors transactions.ts deliberately — same lifecycle vocabulary, same
-// atomic broadcast claim, same substitution guard — but against the parallel
-// multisig_transactions table (see db.ts for why parallel, not merged). The one
-// structural difference from wallet sends: a stored PSBT here accumulates
-// signatures across SEVERAL attach calls, merged by combineMultisigPsbts, and
-// broadcast refuses to proceed below the multisig's M-of-N quorum.
+// The lifecycle itself — draft persistence, coin reservation, the atomic
+// broadcast claim, duplicate dedup, RBF supersede bookkeeping — is the SAME
+// implementation transactions.ts runs, in spendLifecycle.ts (cairn-rg99),
+// parameterized by the parallel multisig_transactions table (see db.ts for why
+// the schema stays parallel, not merged). This file supplies only what is
+// genuinely multisig: access tiers, roster coordination, and the structural
+// difference from wallet sends — a stored PSBT here accumulates signatures
+// across SEVERAL attach calls, merged by combineMultisigPsbts, and broadcast
+// refuses to proceed below the multisig's M-of-N quorum.
 
 import { Transaction } from '@scure/btc-signer';
-import { base64 } from '@scure/base';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { db } from './db';
 import { getChain } from './chain';
-import { withLock } from './keyedLock';
 import {
 	getMultisig,
 	getViewableMultisig,
@@ -41,22 +42,28 @@ import {
 	type MultisigSigningProgress
 } from './bitcoin/multisigPsbt';
 import { PsbtError, type SpendableUtxo } from './bitcoin/psbt';
+import { normalizePsbt, InvalidPsbtError, detectUnconfirmedInflows, type UnconfirmedInflow } from './transactions';
 import {
-	normalizePsbt,
-	InvalidPsbtError,
+	BumpError,
+	CpfpError,
+	executeCpfpDraft,
+	executeRbfBump,
+	type TxTableSpec
+} from './feeBump';
+import {
 	BroadcastError,
-	detectUnconfirmedInflows,
-	classifyUnconfirmedTrust,
-	tryPackageRescue,
-	coinsReservedByDrafts,
-	reservationErrorMessage,
-	reservationWarningFor,
-	type UnconfirmedInflow,
+	executeBroadcast,
+	executeBuildDraft,
+	updateSpendRow,
+	deleteSpendDraft,
+	ownBroadcastedTxids,
+	parseRecipients,
 	type ReservationWarning
-} from './transactions';
-import { BumpError, CpfpError, executeCpfpDraft, executeRbfBump } from './feeBump';
-import { checkSelectedInputsChainDepth, type ChainDepthWarning } from './chainDepth';
-import { friendlyBroadcastRejection } from './broadcastRejection';
+} from './spendLifecycle';
+import type { ChainDepthWarning } from './chainDepth';
+
+/** This service's storage location in the shared lifecycle engine (cairn-rg99). */
+const SPEC: TxTableSpec = { table: 'multisig_transactions', ownerColumn: 'multisig_id' };
 
 export type MultisigTxStatus = 'draft' | 'awaiting_signature' | 'completed' | 'superseded';
 
@@ -98,28 +105,6 @@ function viewableMultisig(userId: number, multisigId: number): MultisigRow | nul
 
 function signableMultisig(userId: number, multisigId: number): MultisigRow | null {
 	return getSignableMultisig(userId, multisigId);
-}
-
-function recipientsJson(recipients: { address: string; amount: number }[]): string | null {
-	return recipients.length > 1 ? JSON.stringify(recipients) : null;
-}
-
-function parseRecipients(
-	raw: unknown,
-	recipient: string,
-	amount: number
-): { address: string; amount: number }[] {
-	if (typeof raw === 'string' && raw.length > 0) {
-		try {
-			const parsed = JSON.parse(raw);
-			if (Array.isArray(parsed) && parsed.length > 0) {
-				return parsed.map((p) => ({ address: String(p.address), amount: Number(p.amount) }));
-			}
-		} catch {
-			/* fall through to the single-recipient shape */
-		}
-	}
-	return [{ address: recipient, amount }];
 }
 
 function mapRow(r: Record<string, unknown>): SavedMultisigTransaction {
@@ -238,22 +223,24 @@ export interface BuildMultisigDraftInput {
 	onlyUtxos?: { txid: string; vout: number }[];
 }
 
-/** In-flight (pre-broadcast) draft coin references for one multisig — the
- *  multisig-table mirror of transactions.ts's reservedWalletCoins (cairn QA
- *  R7 B4). */
-function reservedMultisigCoins(multisigId: number): Map<string, number[]> {
-	const rows = db
-		.prepare(
-			`SELECT id, psbt FROM multisig_transactions
-			 WHERE multisig_id = ? AND status IN ('draft', 'awaiting_signature')`
-		)
-		.all(multisigId) as { id: number; psbt: string }[];
-	return coinsReservedByDrafts(rows);
-}
-
 /**
  * Build an unsigned multisig PSBT from live UTXOs and persist it as a draft.
  * Throws PsbtError (user-presentable message) on construction problems.
+ *
+ * The lifecycle skeleton — per-multisig lock (cairn QA R7 B4 follow-up),
+ * unconfirmed-coin trust classification (cairn-u9ob.1), the coinbase-maturity
+ * tip fetch (cairn-oae1.1), reservation exclusion + shortfall reframe (cairn
+ * QA R7 B4), draft persistence, and the chain-depth/reservation warnings —
+ * runs in spendLifecycle.executeBuildDraft, shared verbatim with the
+ * single-sig side; this function supplies only what is multisig-specific:
+ * the cosigner-reachable access gate, the vault's UTXO source, change-index
+ * issuance, constructMultisigPsbt, and the roster freeze + notify hook.
+ *
+ * The lock key is deliberately a DIFFERENT namespace from
+ * nextMultisigChangeIndex's own `multisig:${id}` withLock (multisigScan.ts):
+ * an outer withLock on that same key would deadlock (nextMultisigChangeIndex
+ * is called from inside this critical section) — `multisig-draft:` only needs
+ * to serialize against ITSELF, not against change-index issuance.
  */
 export async function buildMultisigDraft(
 	userId: number,
@@ -265,73 +252,21 @@ export async function buildMultisigDraft(
 	chainDepthWarning: ChainDepthWarning | null;
 	reservationWarning: ReservationWarning | null;
 }> {
-	// cairn QA R7 B4 (follow-up): serialize builds per multisig, same rationale
-	// as buildDraft (transactions.ts) — the reservation exclusion only sees
-	// what's ALREADY persisted, so truly-concurrent calls can both read "not
-	// reserved" before either inserts. A DIFFERENT lock key from
-	// nextMultisigChangeIndex's own `multisig:${id}` withLock (multisigScan.ts)
-	// on purpose: that lock is HELD by an outer withLock on the same key would
-	// deadlock (nextMultisigChangeIndex is called from inside this critical
-	// section below) — this section's `multisig-draft:` namespace only needs
-	// to serialize against ITSELF, not against change-index issuance.
-	return withLock(`multisig-draft:${multisigId}`, async () => {
+	return executeBuildDraft<MultisigRow, SavedMultisigTransaction, ConstructedMultisigPsbt>({
+		spec: SPEC,
+		ownerId: multisigId,
+		lockKey: `multisig-draft:${multisigId}`,
+		onlyUtxos: input.onlyUtxos,
 		// A wallet-level cosigner (or the owner) may initiate a spend; the roster
-		// frozen just below records who is then expected to sign it.
-		const multisig = signableMultisig(userId, multisigId);
-		if (!multisig) throw new PsbtError('Multisig not found.', 'construction_failed');
-
-		// Classify unconfirmed coins so selection can spend our own change but never
-		// auto-select a stranger's unconfirmed coin (cairn-u9ob.1).
-		const ownTxids = new Set(
-			(
-				db
-					.prepare(
-						"SELECT txid FROM multisig_transactions WHERE multisig_id = ? AND txid IS NOT NULL"
-					)
-					.all(multisigId) as { txid: string }[]
-			).map((r) => r.txid.toLowerCase())
-		);
-		const utxos = classifyUnconfirmedTrust(await getMultisigUtxos(multisig), ownTxids);
-		const changeIndex = await nextMultisigChangeIndex(multisig);
-		// Only fetch the tip (for the coinbase-maturity guard) when a coinbase coin is
-		// present, and never let a transient tip failure block an ordinary send.
-		let tipHeight: number | undefined;
-		if (utxos.some((u) => u.coinbase)) {
-			try {
-				tipHeight = (await getChain().getTip()).height;
-			} catch {
-				// Tip unavailable — leave tipHeight undefined. selectSpendCandidates
-				// fails CLOSED for coinbase-flagged coins when the tip is unknown
-				// (cairn-oae1.1): excludes them from auto-selection and rejects an
-				// explicit coin-control pick, while ordinary (non-coinbase) sends
-				// are completely unaffected.
-				tipHeight = undefined;
-			}
-		}
-
-		// cairn QA R7 B4: exclude coins another in-flight draft of THIS multisig
-		// already references from automatic selection (see buildDraft in
-		// transactions.ts for the full rationale — identical here).
-		const hasCoinControl = (input.onlyUtxos?.length ?? 0) > 0;
-		const reserved = reservedMultisigCoins(multisigId);
-		let candidateUtxos = utxos;
-		let reservedSats = 0;
-		const reservedDraftIds = new Set<number>();
-		if (!hasCoinControl && reserved.size > 0) {
-			candidateUtxos = utxos.filter((u) => {
-				const ids = reserved.get(`${u.txid}:${u.vout}`);
-				if (!ids) return true;
-				reservedSats += u.value;
-				for (const id of ids) reservedDraftIds.add(id);
-				return false;
-			});
-		}
-
-		let details: ConstructedMultisigPsbt;
-		try {
-			details = await constructMultisigPsbt({
+		// frozen in onDraftSaved records who is then expected to sign it.
+		prepare: () => signableMultisig(userId, multisigId),
+		notFoundError: () => new PsbtError('Multisig not found.', 'construction_failed'),
+		getUtxos: (multisig) => getMultisigUtxos(multisig),
+		buildPsbt: async (multisig, { utxos, tipHeight }) => {
+			const changeIndex = await nextMultisigChangeIndex(multisig);
+			return constructMultisigPsbt({
 				config: toMultisigConfig(multisig),
-				utxos: candidateUtxos,
+				utxos,
 				recipients: input.recipients,
 				feeRate: input.feeRate,
 				// Node relay floor gates the fee (cairn-eacw.2) — same as the single-sig
@@ -342,54 +277,14 @@ export async function buildMultisigDraft(
 				onlyUtxos: input.onlyUtxos,
 				tipHeight
 			});
-		} catch (e) {
-			if (
-				!hasCoinControl &&
-				reservedDraftIds.size > 0 &&
-				e instanceof PsbtError &&
-				(e.code === 'insufficient_funds' || e.code === 'no_utxos')
-			) {
-				throw new PsbtError(
-					reservationErrorMessage(reservedSats, [...reservedDraftIds].sort((a, b) => a - b)),
-					e.code
-				);
-			}
-			throw e;
-		}
-
-		const res = db
-			.prepare(
-				`INSERT INTO multisig_transactions (multisig_id, status, psbt, recipient, amount, fee, fee_rate, change_index, recipients)
-				 VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?)`
-			)
-			.run(
-				multisigId,
-				details.psbtBase64,
-				details.recipient,
-				details.amount,
-				details.fee,
-				details.feeRate,
-				details.change?.index ?? null,
-				recipientsJson(details.recipients)
-			);
-
-		const draft = getMultisigTransaction(userId, multisigId, Number(res.lastInsertRowid));
-		if (!draft) throw new PsbtError('Draft could not be saved.', 'construction_failed');
-
+		},
+		reload: (rowId) => getMultisigTransaction(userId, multisigId, rowId),
+		draftSaveError: () => new PsbtError('Draft could not be saved.', 'construction_failed'),
 		// Freeze the signer roster and notify every member except the creator that
 		// their signature is wanted — immediately, at creation (not deferred until
 		// someone else signs). For a solo multisig the roster is just the owner, so
 		// this notifies no one and costs a single cheap insert.
-		freezeRosterAndNotify(multisig, draft, userId);
-
-		// Warn (never block) if this draft spends an unconfirmed coin whose mempool
-		// chain is near the limit (cairn-u9ob.5). Network cost only when an
-		// unconfirmed coin was actually selected; silent without the v1 CPFP endpoint.
-		const chainDepthWarning = await checkSelectedInputsChainDepth(details.inputs, utxos);
-		const reservationWarning = hasCoinControl
-			? reservationWarningFor(details.inputs, reserved)
-			: null;
-		return { draft, details, chainDepthWarning, reservationWarning };
+		onDraftSaved: (draft, multisig) => freezeRosterAndNotify(multisig, draft, userId)
 	});
 }
 
@@ -403,14 +298,7 @@ export function updateMultisigTransaction(
 	const existing = getMultisigTransaction(userId, multisigId, txId);
 	if (!existing) return null;
 
-	db.prepare(
-		`UPDATE multisig_transactions
-		 SET status = COALESCE(?, status),
-		     psbt = COALESCE(?, psbt),
-		     txid = COALESCE(?, txid),
-		     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-		 WHERE id = ?`
-	).run(fields.status ?? null, fields.psbt ?? null, fields.txid ?? null, txId);
+	updateSpendRow(SPEC, txId, fields);
 
 	return getMultisigTransaction(userId, multisigId, txId);
 }
@@ -485,68 +373,12 @@ export function deleteMultisigTransaction(userId: number, multisigId: number, tx
 	// pending session out from under the owner and other signers.
 	if (!getMultisig(userId, multisigId)) return false;
 	if (!getMultisigTransaction(userId, multisigId, txId)) return false;
-	// cairn-up0q: same TOCTOU as single-sig deleteTransaction (transactions.ts)
-	// — check-then-delete could race broadcastMultisigTransaction's atomic
-	// claim, letting a concurrent delete erase a row after a broadcast had
-	// already started. This also closes a second gap: only 'completed' was
-	// excluded before, but a 'superseded' tx was broadcast too (see the
-	// supersede step in broadcastMultisigTransaction / bumpMultisigTransaction)
-	// and deleting it would erase that record, same as single-sig. Guard and
-	// delete are now one atomic conditional statement.
-	//
-	// cairn-ytnc: mirrors the same fix as single-sig deleteTransaction — a
-	// crashed-mid-broadcast claim expires after 60s (broadcastMultisigTransaction
-	// lets a retry reclaim it), so the delete guard now shares that staleness
-	// window instead of blocking on any non-null claim forever.
-	const result = db
-		.prepare(
-			`DELETE FROM multisig_transactions
-			 WHERE id = ? AND multisig_id = ?
-			   AND status NOT IN ('completed', 'superseded')
-			   AND (broadcast_started_at IS NULL
-			        OR broadcast_started_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-60 seconds'))`
-		)
-		.run(txId, multisigId);
-	return Number(result.changes) > 0;
-}
-
-/** The multisig-table mirror of transactions.ts's findCompletedDuplicateId
- *  (cairn QA R7 B4 sub-case 1). */
-function findCompletedDuplicateMultisigId(
-	multisigId: number,
-	txid: string,
-	excludeId: number
-): number | null {
-	const row = db
-		.prepare(
-			`SELECT id FROM multisig_transactions
-			 WHERE multisig_id = ? AND status = 'completed' AND id != ? AND LOWER(txid) = LOWER(?)
-			 LIMIT 1`
-		)
-		.get(multisigId, excludeId, txid) as { id: number } | undefined;
-	return row?.id ?? null;
-}
-
-/** The multisig-table mirror of transactions.ts's markDuplicateBroadcast. */
-function markDuplicateMultisigBroadcast(
-	userId: number,
-	multisigId: number,
-	txId: number,
-	txid: string
-): { txid: string; transaction: SavedMultisigTransaction; duplicate: true; message: string } {
-	db.prepare(
-		`UPDATE multisig_transactions
-		 SET status = 'superseded', txid = ?, broadcast_started_at = NULL,
-		     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-		 WHERE id = ?`
-	).run(txid, txId);
-	return {
-		txid,
-		transaction: getMultisigTransaction(userId, multisigId, txId)!,
-		duplicate: true,
-		message:
-			'This transaction duplicated another draft that already broadcast the identical payment — no new transaction was sent.'
-	};
+	// The atomic conditional DELETE (cairn-up0q TOCTOU fix + cairn-ytnc stale-
+	// claim window) lives in spendLifecycle.deleteSpendDraft, shared with the
+	// single-sig side. It also excludes 'superseded' rows — a superseded tx was
+	// broadcast too (see the supersede step in the shared broadcast engine) and
+	// deleting it would erase that record.
+	return deleteSpendDraft(SPEC, multisigId, txId);
 }
 
 /**
@@ -554,14 +386,16 @@ function markDuplicateMultisigBroadcast(
  * quorum with an "X of M signatures collected" message — quorum is judged
  * from the PSBT itself, never a stored counter. Optionally merges one last
  * signed PSBT first (a device flow may hand the final signature straight to
- * the broadcast step). Uses the same atomic broadcast claim as wallet sends:
- * one guarded UPDATE lets exactly one concurrent caller through, and a failed
- * network send releases the claim so the user can retry.
+ * the broadcast step).
  *
- * `duplicate`/`message` (cairn QA R7 B4 sub-case 1) are present when this
- * draft's finalized transaction is byte-identical to one another draft of
- * this multisig already broadcast — see broadcastTransaction in
- * transactions.ts for the full rationale (identical here, mirrored table).
+ * The whole broadcast pipeline — already-sent guard, early/late duplicate
+ * dedup (cairn QA R7 B4 sub-case 1), the atomic broadcast claim, package-relay
+ * rescue (cairn-u9ob.8), reported-txid verification (cairn-ziwm), RBF
+ * supersede bookkeeping, wallet-dirty marking (cairn-g1u2) — runs in
+ * spendLifecycle.executeBroadcast, shared verbatim with the single-sig side.
+ * This function supplies only what is multisig-specific: the owner-only
+ * access gate, the ride-along signature merge through the normal attach path,
+ * and the quorum gate + multisig finalization.
  */
 export async function broadcastMultisigTransaction(
 	userId: number,
@@ -577,156 +411,62 @@ export async function broadcastMultisigTransaction(
 	// Broadcast stays owner-only (plan §3, §8): a cosigner signs, only the owner
 	// sends the fully-signed transaction to the network.
 	const multisig = getMultisig(userId, multisigId);
-	let tx = multisig ? getMultisigTransaction(userId, multisigId, txId) : null;
+	const tx = multisig ? getMultisigTransaction(userId, multisigId, txId) : null;
 	if (!multisig || !tx) throw new BroadcastError('Transaction not found.', 'not_found');
-	if (tx.status === 'completed' || tx.txid) {
-		throw new BroadcastError('This transaction has already been broadcast.', 'already_sent');
-	}
 
-	// A final signature riding along with the broadcast request merges (and
-	// persists) exactly like a normal attach — same guards, same idempotency.
-	if (signedPsbt?.trim()) {
-		let attached: ReturnType<typeof attachMultisigSignature>;
-		try {
-			attached = attachMultisigSignature(userId, multisigId, txId, signedPsbt);
-		} catch (e) {
-			if (e instanceof MultisigPsbtError && e.code === 'different_transaction') {
-				throw new BroadcastError(e.message, 'mismatch');
+	return executeBroadcast<SavedMultisigTransaction>({
+		spec: SPEC,
+		ownerId: multisigId,
+		txId,
+		tx,
+		preparePsbt: (tx) => {
+			// A final signature riding along with the broadcast request merges (and
+			// persists) exactly like a normal attach — same guards, same idempotency.
+			if (signedPsbt?.trim()) {
+				let attached: ReturnType<typeof attachMultisigSignature>;
+				try {
+					attached = attachMultisigSignature(userId, multisigId, txId, signedPsbt);
+				} catch (e) {
+					if (e instanceof MultisigPsbtError && e.code === 'different_transaction') {
+						throw new BroadcastError(e.message, 'mismatch');
+					}
+					if (e instanceof MultisigPsbtError) throw new BroadcastError(e.message, 'incomplete');
+					if (e instanceof BroadcastError) throw e;
+					throw new BroadcastError(
+						e instanceof InvalidPsbtError ? e.message : "That doesn't look like a valid PSBT.",
+						'incomplete'
+					);
+				}
+				if (!attached) throw new BroadcastError('Transaction not found.', 'not_found');
+				tx = attached.transaction;
 			}
-			if (e instanceof MultisigPsbtError) throw new BroadcastError(e.message, 'incomplete');
-			if (e instanceof BroadcastError) throw e;
-			throw new BroadcastError(
-				e instanceof InvalidPsbtError ? e.message : "That doesn't look like a valid PSBT.",
-				'incomplete'
-			);
-		}
-		if (!attached) throw new BroadcastError('Transaction not found.', 'not_found');
-		tx = attached.transaction;
-	}
+			return { psbt: tx.psbt, tx };
+		},
+		finalize: (psbt, tx) => {
+			// Quorum gate: the PSBT itself is the authority. "1 of 2 signatures
+			// collected" beats btc-signer's opaque finalize error every time.
+			const progress = multisigTransactionProgress(multisig, tx);
+			if (!progress) {
+				throw new BroadcastError('The stored PSBT could not be read.', 'incomplete');
+			}
+			if (!progress.complete) {
+				throw new BroadcastError(
+					`Only ${progress.collected} of ${progress.required} signatures collected — this multisig needs ${progress.required} signatures to spend.`,
+					'incomplete'
+				);
+			}
 
-	// Quorum gate: the PSBT itself is the authority. "1 of 2 signatures
-	// collected" beats btc-signer's opaque finalize error every time.
-	const progress = multisigTransactionProgress(multisig, tx);
-	if (!progress) {
-		throw new BroadcastError('The stored PSBT could not be read.', 'incomplete');
-	}
-	if (!progress.complete) {
-		throw new BroadcastError(
-			`Only ${progress.collected} of ${progress.required} signatures collected — this multisig needs ${progress.required} signatures to spend.`,
-			'incomplete'
-		);
-	}
-
-	let finalized: { rawHex: string; txid: string };
-	try {
-		finalized = finalizeMultisigPsbt(tx.psbt);
-	} catch (e) {
-		throw new BroadcastError(
-			e instanceof Error ? e.message : 'This PSBT could not be finalized.',
-			'incomplete'
-		);
-	}
-
-	// Early duplicate short-circuit — see broadcastTransaction (transactions.ts)
-	// for the full rationale: finalized.txid is known before touching the
-	// network, so a draft that already matches another completed row of this
-	// multisig never needs a redundant broadcast call.
-	const earlyDuplicate = findCompletedDuplicateMultisigId(multisigId, finalized.txid, txId);
-	if (earlyDuplicate !== null) {
-		return markDuplicateMultisigBroadcast(userId, multisigId, txId, finalized.txid);
-	}
-
-	// Atomically claim the broadcast before touching the network — identical
-	// idiom to transactions.ts: the friendly checks above are racy on their
-	// own; this single guarded UPDATE lets exactly one caller through, and a
-	// stale claim (crash mid-broadcast) expires after 60s.
-	const claimed = db
-		.prepare(
-			`UPDATE multisig_transactions
-			 SET broadcast_started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-			     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-			 WHERE id = ? AND multisig_id = ? AND txid IS NULL AND status != 'completed'
-			   AND (broadcast_started_at IS NULL
-			        OR broadcast_started_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-60 seconds'))`
-		)
-		.run(txId, multisigId);
-	if (Number(claimed.changes) === 0) {
-		throw new BroadcastError('This transaction has already been broadcast.', 'already_sent');
-	}
-
-	let reportedTxid: string;
-	try {
-		reportedTxid = await getChain().electrum.broadcast(finalized.rawHex);
-	} catch (e) {
-		const raw = e instanceof Error ? e.message : String(e);
-		// Opportunistic package-relay rescue, same as the single-sig path (cairn-u9ob.8).
-		const rescued = await tryPackageRescue(tx.psbt, finalized.rawHex, finalized.txid, raw);
-		if (rescued) {
-			reportedTxid = rescued;
-		} else {
-			// Release the claim: a failed broadcast must stay retryable.
-			db.prepare('UPDATE multisig_transactions SET broadcast_started_at = NULL WHERE id = ?').run(txId);
-			throw new BroadcastError(friendlyBroadcastRejection(raw), 'rejected');
-		}
-	}
-
-	// A malicious or misbehaving Electrum server can return an arbitrary txid for
-	// a broadcast it never performed. finalized.txid is the double-SHA256 of the
-	// exact bytes we sent — recomputed locally, it can't be forged. On a mismatch,
-	// don't trust that the broadcast happened: release the claim (keep it
-	// retryable) and refuse to record a bogus txid (cairn-ziwm).
-	if (reportedTxid.trim().toLowerCase() !== finalized.txid.toLowerCase()) {
-		db.prepare('UPDATE multisig_transactions SET broadcast_started_at = NULL WHERE id = ?').run(txId);
-		throw new BroadcastError(
-			'The server acknowledged the broadcast with a different transaction id than the one we signed — refusing to record it. Check your Electrum server and try again.',
-			'rejected'
-		);
-	}
-	const broadcastTxid = finalized.txid;
-
-	// Late re-check — see broadcastTransaction (transactions.ts) for the full
-	// rationale: closes the true-concurrency window the network `await` above
-	// opens, using node:sqlite's synchronous, single-threaded-Node guarantee
-	// that this SELECT-then-UPDATE pair can't itself be interleaved.
-	const lateDuplicate = findCompletedDuplicateMultisigId(multisigId, broadcastTxid, txId);
-	if (lateDuplicate !== null) {
-		return markDuplicateMultisigBroadcast(userId, multisigId, txId, broadcastTxid);
-	}
-
-	const updated = updateMultisigTransaction(userId, multisigId, txId, {
-		status: 'completed',
-		txid: broadcastTxid
+			try {
+				return finalizeMultisigPsbt(psbt);
+			} catch (e) {
+				throw new BroadcastError(
+					e instanceof Error ? e.message : 'This PSBT could not be finalized.',
+					'incomplete'
+				);
+			}
+		},
+		reload: (rowId) => getMultisigTransaction(userId, multisigId, rowId)
 	});
-
-	// A broadcast RBF replacement supersedes the transaction it replaced: mark the
-	// original 'superseded' so the UI stops offering to sign/bump a tx the network
-	// has now replaced (mirrors transactions.ts). Best-effort — never fails the
-	// broadcast that already succeeded.
-	if (updated?.replacesTxid) {
-		try {
-			db.prepare(
-				`UPDATE multisig_transactions
-				 SET status = 'superseded', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-				 WHERE multisig_id = ? AND txid = ? AND status != 'superseded'`
-			).run(multisigId, updated.replacesTxid);
-		} catch {
-			/* superseded bookkeeping is cosmetic; the replacement is already sent */
-		}
-	}
-
-	// This multisig's coins just changed (we spent one), so mark it dirty BEFORE
-	// returning so the next send load re-scans live instead of serving the pre-spend
-	// snapshot from the clean-wallet fast path (cairn-g1u2) — the async watcher
-	// notification may not have landed yet. Dynamic import breaks the walletSync →
-	// multisigTransactions cycle; best-effort, never throws.
-	try {
-		const { markWalletDirty } = await import('./walletSync');
-		markWalletDirty('multisig', multisigId);
-	} catch {
-		/* best-effort: next load re-scans once the watcher notification or TTL fires */
-	}
-
-	return { txid: broadcastTxid, transaction: updated! };
 }
 
 /**
@@ -807,7 +547,7 @@ export async function bumpMultisigTransaction(
 	if (!multisig || !tx) throw new BumpError('Transaction not found.', 'not_found');
 
 	return executeRbfBump<SavedMultisigTransaction, ConstructedMultisigPsbt>({
-		spec: { table: 'multisig_transactions', ownerColumn: 'multisig_id' },
+		spec: SPEC,
 		ownerId: multisigId,
 		tx,
 		newFeeRate,
@@ -852,12 +592,7 @@ export async function bumpMultisigTransaction(
 /** Own txids this multisig broadcast — same own-change vs received signal the
  *  single-sig path uses (ownBroadcastTxids), against multisig_transactions. */
 export function ownMultisigTxids(multisigId: number): Set<string> {
-	const rows = db
-		.prepare(
-			"SELECT txid FROM multisig_transactions WHERE multisig_id = ? AND txid IS NOT NULL"
-		)
-		.all(multisigId) as { txid: string }[];
-	return new Set(rows.map((r) => r.txid.toLowerCase()));
+	return ownBroadcastedTxids(SPEC, multisigId);
 }
 
 /** Wallet-scoped stuck/incoming-tx detection (cairn-u9ob.2), multisig side.
@@ -900,7 +635,7 @@ export async function buildMultisigCpfpDraft(
 	const config = toMultisigConfig(multisig);
 
 	return executeCpfpDraft<SavedMultisigTransaction, ConstructedMultisigPsbt>({
-		spec: { table: 'multisig_transactions', ownerColumn: 'multisig_id' },
+		spec: SPEC,
 		ownerId: multisigId,
 		parentTxid,
 		targetFeeRate,
