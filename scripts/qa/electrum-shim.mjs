@@ -227,6 +227,7 @@ function runShim(cfg) {
 	// ------------------------------------------------------------------ server
 	const headerSubscribers = new Set(); // sockets
 	const scripthashSubscribers = new Map(); // scripthash -> Set(sockets)
+	const allSockets = new Set(); // every live connection, for a hard stop()
 
 	function jsonLine(obj) {
 		return JSON.stringify(obj) + '\n';
@@ -316,6 +317,7 @@ function runShim(cfg) {
 	}
 
 	const server = net.createServer((socket) => {
+		allSockets.add(socket);
 		socket.setEncoding('utf8');
 		let buffer = '';
 		const ownHeaderSub = { active: false };
@@ -364,6 +366,7 @@ function runShim(cfg) {
 		});
 
 		socket.on('close', () => {
+			allSockets.delete(socket);
 			headerSubscribers.delete(socket);
 			for (const sh of ownScripthashSubs) scripthashSubscribers.get(sh)?.delete(socket);
 		});
@@ -417,8 +420,15 @@ function runShim(cfg) {
 	return {
 		host: LISTEN_HOST,
 		port: LISTEN_PORT,
+		// Hard stop: net.Server#close()'s callback only fires once every existing
+		// connection has ENDED, not merely stopped accepting new ones — and a QA
+		// driver simulating a node outage wants the shim gone immediately, not a
+		// graceful drain that hangs forever on a client (the app) that keeps its
+		// Electrum TCP connection open with keep-alive. Destroy every tracked
+		// socket first so close() resolves right away.
 		async stop() {
 			clearInterval(pollTimer);
+			for (const sock of allSockets) sock.destroy();
 			await new Promise((resolve) => server.close(() => resolve()));
 		}
 	};

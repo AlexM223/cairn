@@ -33,7 +33,9 @@
 		"mining:forced-solve-harness": "node scripts/mining/forcedSolveHarness.mjs",
 		"mining:forced-solve": "node scripts/qa/mining-forced-solve.mjs",
 		"mining:load-test": "node scripts/qa/mining-load-test.mjs",
-		"qa:prod-boot": "node scripts/qa/prod-boot-smoke.mjs"
+		"qa:prod-boot": "node scripts/qa/prod-boot-smoke.mjs",
+		"qa:route-crawl": "node scripts/qa/route-crawl.mjs",
+		"qa:notif-deeplink": "node scripts/qa/notif-deeplink.mjs"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-auto": "^7.0.1",
