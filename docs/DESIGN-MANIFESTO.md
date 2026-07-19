@@ -1,5 +1,21 @@
 # Heartwood — Design Manifesto
 
+> **STATUS: FROZEN — canonical as of 2026-07-19.**
+> The evergreen identity defined in this document is ratified and frozen per the identity-freeze
+> decision in `docs/HEARTWOOD-VISION-REVIEW.md` ("Freeze visual identity on evergreen"). This is the
+> project's **third and final** identity pass; no further token/component re-palettes.
+>
+> - The proposed amendments in `docs/DESIGN-MANIFESTO-AMENDMENTS-2026-07-19.md` are **NOT in force.**
+>   They remain proposals until Alex explicitly ratifies them (see
+>   `docs/DECISION-QUEUE-2026-07-19.md` for the consolidated ratification sheet).
+> - In particular, **sats-first display remains the MUST-level default** (§3 rule 3). The proposed
+>   USD-default reversal (`cairn-4vh2`) is parked and must not be implemented without an explicit
+>   Alex decision.
+> - Any change to this document — wording, tokens, rules — requires an explicit Alex decision
+>   recorded in the decision queue. Build work implements this document as written.
+>
+> Freeze bead: `cairn-b74lk`.
+
 Canonical visual-identity doctrine for Heartwood (the Cairn codebase). This is the single source of
 truth for color, type, layout, and interaction. Where a component or a screen disagrees with this
 document, the component is wrong.
