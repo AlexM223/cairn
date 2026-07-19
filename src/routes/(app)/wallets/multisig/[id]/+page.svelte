@@ -13,6 +13,7 @@
 	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import Term from '$lib/components/Term.svelte';
+	import { DESCRIPTOR_TIP_MULTISIG } from '$lib/termGlosses';
 	import MiningRewards from '$lib/components/MiningRewards.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
@@ -1289,8 +1290,9 @@
 										<strong>Wallet config</strong> — opens directly in Sparrow, Caravan and
 										Unchained. · <strong>ColdCard file</strong> — put it on the microSD so the
 										ColdCard (or Passport/Keystone/SeedSigner) recognizes the wallet before
-										co-signing. · <strong>Descriptor</strong> — the raw text form, for Bitcoin Core
-										and power users.
+										co-signing. · <strong
+											><Term tip={DESCRIPTOR_TIP_MULTISIG}>Descriptor</Term></strong
+										> — the raw text form, for Bitcoin Core and power users.
 									</p>
 									{#if data.descriptor}
 										<div class="descriptor-line">

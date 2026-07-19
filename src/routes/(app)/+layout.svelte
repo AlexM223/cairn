@@ -32,7 +32,7 @@
 		{ href: '/wallets', label: 'Wallets', icon: 'wallet' },
 		{ href: '/activity', label: 'Activity', icon: 'activity' },
 		...(flags.mining !== false ? [{ href: '/mining', label: 'Mining', icon: 'flame' }] : []),
-		...(data.user.isAdmin ? [{ href: '/admin', label: 'Node', icon: 'server' }] : []),
+		...(data.user.isAdmin ? [{ href: '/admin', label: 'Health', icon: 'server' }] : []),
 		{ href: '/settings', label: 'Settings', icon: 'settings' }
 	]);
 

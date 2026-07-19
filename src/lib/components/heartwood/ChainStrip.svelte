@@ -190,7 +190,12 @@
 	});
 </script>
 
-<div class="strip-wrap" bind:this={wrap} role="img" aria-label="Timechain — one ring per difficulty epoch">
+<div
+	class="strip-wrap"
+	bind:this={wrap}
+	role="img"
+	aria-label="Chain history — one mark per difficulty period, oldest to newest"
+>
 	<canvas bind:this={canvas} class="strip" style="height: {height}px"></canvas>
 	<span class="now-dot" style="left: {Math.max(cssWidth - 3.5, 0)}px; top: {height / 2}px"></span>
 </div>

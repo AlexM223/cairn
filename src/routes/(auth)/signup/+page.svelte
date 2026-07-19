@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import Banner from '$lib/components/Banner.svelte';
+	import Term from '$lib/components/Term.svelte';
+	import { PASSKEY_TIP } from '$lib/termGlosses';
 	import { validateSignup } from './validate';
 
 	let { data } = $props();
@@ -106,7 +108,9 @@
 				required
 				bind:value={password}
 			/>
-			<span class="hint">At least 8 characters. You can add a passkey later in Settings.</span>
+			<span class="hint"
+				>At least 8 characters. You can add a <Term tip={PASSKEY_TIP}>passkey</Term> later in Settings.</span
+			>
 		</div>
 
 		{#if data.needsInvite}

@@ -5,6 +5,8 @@
 	import { signInWithPasskey, browserSupportsWebAuthn } from '$lib/passkey';
 	import { resolveNextUrl } from './nextUrl';
 	import Banner from '$lib/components/Banner.svelte';
+	import Term from '$lib/components/Term.svelte';
+	import { PASSKEY_TIP } from '$lib/termGlosses';
 
 	let { data } = $props();
 
@@ -149,10 +151,11 @@
 		<button type="button" class="btn btn-secondary" onclick={signInPasskey} disabled={submitting}>
 			Sign in with a passkey
 		</button>
+		<p class="hint passkey-hint"><Term tip={PASSKEY_TIP}>What's a passkey?</Term></p>
 	{:else if showPasskeyOriginHint}
 		<p class="hint origin-hint">
-			Passkeys are available at {data.passkeyExpectedOrigin} — on this address, sign in with your
-			email and password.
+			<Term tip={PASSKEY_TIP}>Passkeys</Term> are available at {data.passkeyExpectedOrigin} — on this
+			address, sign in with your email and password.
 		</p>
 	{/if}
 
@@ -180,5 +183,10 @@
 	.origin-hint {
 		text-align: center;
 		margin-top: 2px;
+	}
+
+	.passkey-hint {
+		text-align: center;
+		margin-top: -2px;
 	}
 </style>

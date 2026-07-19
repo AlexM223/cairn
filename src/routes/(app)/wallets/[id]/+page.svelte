@@ -13,6 +13,7 @@
 	import CopyText from '$lib/components/CopyText.svelte';
 	import FeatureDisabled from '$lib/components/FeatureDisabled.svelte';
 	import Term from '$lib/components/Term.svelte';
+	import { DESCRIPTOR_TIP_SINGLE } from '$lib/termGlosses';
 	import TxStatusBadge from '$lib/components/TxStatusBadge.svelte';
 	import ConsolidationCard from './_components/ConsolidationCard.svelte';
 	import MiningRewards from '$lib/components/MiningRewards.svelte';
@@ -1564,8 +1565,9 @@
 								{/if}
 							</div>
 							<p class="hw-caption">
-								Wallet config — re-import the key into Heartwood, Sparrow or Electrum. Descriptor —
-								the raw text form, for Bitcoin Core and power users.
+								Wallet config — re-import the key into Heartwood, Sparrow or Electrum. <Term
+									tip={DESCRIPTOR_TIP_SINGLE}>Descriptor</Term
+								> — the raw text form, for Bitcoin Core and power users.
 							</p>
 							{#if data.wallet.xpub}
 								<div class="xpub-line">

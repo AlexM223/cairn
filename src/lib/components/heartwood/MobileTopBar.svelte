@@ -130,7 +130,7 @@
 					</a>
 					{#if user.isAdmin}
 						<a href="/admin" class="menu-item" role="menuitem" onclick={() => (menuOpen = false)}>
-							Node
+							Health
 						</a>
 					{/if}
 					<a href="/terms" class="menu-item" role="menuitem" onclick={() => (menuOpen = false)}>

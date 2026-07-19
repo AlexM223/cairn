@@ -11,6 +11,7 @@
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
 	import Term from '$lib/components/Term.svelte';
+	import { DESCRIPTOR_TIP_MULTISIG } from '$lib/termGlosses';
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import CopyText from '$lib/components/CopyText.svelte';
 	import { scrollToTop } from '$lib/scrollToTop';
@@ -1448,7 +1449,7 @@
 					<div class="disclosure-body fade-in">
 						<p class="hint" style="margin-bottom: 8px">
 							Paste the wallet's <Term
-								tip="A descriptor is a single line of text that describes a multisig wallet completely — the quorum and every public key. Wallets like Sparrow export it under Settings."
+								tip={DESCRIPTOR_TIP_MULTISIG}
 								>descriptor</Term
 							>, or a Caravan / Unchained wallet file (JSON) — Heartwood fills in the quorum and
 							keys for you.
@@ -1765,7 +1766,7 @@
 					<div class="disclosure-body fade-in">
 						<p class="hint" style="margin-bottom: 8px">
 							Paste the wallet's <Term
-								tip="A descriptor is a single line of text that describes a multisig wallet completely — the quorum and every public key. Wallets like Sparrow export it under Settings."
+								tip={DESCRIPTOR_TIP_MULTISIG}
 								>descriptor</Term
 							>, or a Caravan / Unchained wallet file (JSON) — Heartwood fills in the quorum and
 							keys for you.

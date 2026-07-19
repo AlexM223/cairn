@@ -5,6 +5,8 @@
 	import { guessPasskeyName } from '$lib/passkey';
 	import type { SessionUser } from '$lib/types';
 	import Banner from '$lib/components/Banner.svelte';
+	import Term from '$lib/components/Term.svelte';
+	import { PASSKEY_TIP } from '$lib/termGlosses';
 
 	let { data } = $props();
 
@@ -300,8 +302,9 @@
 			<h1>Finish recovering your account</h1>
 			<p class="sub">
 				{#if displayName}Welcome back, {displayName}. {/if}Your identity is verified. Finish with a
-				new passkey{passkeySupported ? '' : ' (unavailable on this connection)'} or set a new
-				password.
+				new <Term tip={PASSKEY_TIP}>passkey</Term>{passkeySupported
+					? ''
+					: ' (unavailable on this connection)'} or set a new password.
 			</p>
 		</div>
 
