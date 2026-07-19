@@ -14,6 +14,8 @@
 	import { enhance } from '$app/forms';
 	import Icon from '$lib/components/Icon.svelte';
 	import CoreRpcRequiredNotice from '$lib/components/CoreRpcRequiredNotice.svelte';
+	import Term from '$lib/components/Term.svelte';
+	import { STRATUM_TIP } from '$lib/termGlosses';
 	import { agoLabel, bindLabel, formatUptime, type AdminMiningEngineView } from './adminMiningView';
 
 	let {
@@ -34,7 +36,10 @@
 <section class="hw-section engine-health">
 	<div class="section-head">
 		<span class="hw-title">Engine</span>
-		<p class="hint">The Stratum server this instance runs for its own users to mine against.</p>
+		<p class="hint">
+			The <Term tip={STRATUM_TIP}>Stratum</Term> server this instance runs for its own users to mine
+			against.
+		</p>
 	</div>
 
 	{#if error}

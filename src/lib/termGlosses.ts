@@ -22,3 +22,12 @@ export const ELECTRUM_TIP =
 
 export const CORE_RPC_TIP =
 	"RPC is the interface Bitcoin Core exposes for other software to talk to it. Connecting Heartwood to your own Core node's RPC unlocks richer block and transaction detail, fully self-hosted.";
+
+// Explorer breadcrumb (cairn-s7rpg, follow-up to cairn-vxbk — that pass
+// couldn't reach this one because EyebrowBreadcrumb had no Term-capable slot).
+export const TIMECHAIN_TIP =
+	"The timechain is Bitcoin's shared ledger — every block linked to the one before it, forming one unbroken, tamper-evident history.";
+
+// Admin > Mining engine + pool-settings jargon (cairn-b55a5).
+export const STRATUM_TIP =
+	'Stratum is the protocol miners speak to a pool — it hands out work and collects the shares they find.';

@@ -11,6 +11,7 @@
 	import HowItWorks from '$lib/components/HowItWorks.svelte';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import EyebrowBreadcrumb from '$lib/components/heartwood/EyebrowBreadcrumb.svelte';
+	import { TIMECHAIN_TIP } from '$lib/termGlosses';
 	import ChainStrip from '$lib/components/heartwood/ChainStrip.svelte';
 	import RingStub from '$lib/components/heartwood/RingStub.svelte';
 	import FormingRing from '$lib/components/heartwood/FormingRing.svelte';
@@ -436,7 +437,7 @@
 	<div class="body">
 		<!-- ================================================== eyebrow + search -->
 		<div class="top-row fade-in">
-			<EyebrowBreadcrumb path={['The timechain']} />
+			<EyebrowBreadcrumb path={['The timechain']} tip={TIMECHAIN_TIP} />
 			<form method="GET" action="/explorer" class="search" role="search" onsubmit={hideLive}>
 				<span class="search-icon"><Icon name="search" size={16} /></span>
 				<input

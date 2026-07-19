@@ -9,6 +9,8 @@
 	 * lesson).
 	 */
 	import { enhance } from '$app/forms';
+	import Term from '$lib/components/Term.svelte';
+	import { STRATUM_TIP } from '$lib/termGlosses';
 	import type { AdminMiningSettingsView, MiningBind } from './adminMiningView';
 
 	let {
@@ -58,7 +60,7 @@
 >
 	<div class="section-head">
 		<span class="hw-title">Pool settings</span>
-		<p class="hint">Configure the Stratum server your users' miners connect to.</p>
+		<p class="hint">Configure the <Term tip={STRATUM_TIP}>Stratum</Term> server your users' miners connect to.</p>
 	</div>
 
 	{#if error}
@@ -91,7 +93,7 @@
 
 	<div class="row-fields">
 		<div class="field port-field">
-			<label class="label" for="port">Stratum port</label>
+			<label class="label" for="port"><Term tip={STRATUM_TIP}>Stratum</Term> port</label>
 			<input
 				class="input mono"
 				id="port"
