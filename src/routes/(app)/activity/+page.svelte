@@ -240,6 +240,23 @@
 	function height(e: ActivityEvent): number | null {
 		return num(e.detail?.height);
 	}
+	// Mirrors NotificationPanel.svelte's linkFor(): an explicit detail.link wins
+	// — notify() merges payload.link into the persisted detail JSON under "link"
+	// (cairn-ay45q) — with a txid → explorer link fallback for older rows. Only
+	// same-origin relative paths are honoured, and non-tx explorer links are
+	// suppressed when the explorer flag is off (cairn-5yz3.3: tx detail is
+	// exempt from the flag).
+	function linkFor(e: ActivityEvent): string | null {
+		const raw = e.detail?.link;
+		if (typeof raw === 'string' && raw.startsWith('/')) {
+			const isTxLink = /^\/explorer\/tx\//.test(raw);
+			if (!explorerEnabled && raw.startsWith('/explorer/') && !isTxLink) return null;
+			return raw;
+		}
+		const t = txid(e);
+		if (t) return `/explorer/tx/${t}`;
+		return null;
+	}
 	function amountSats(e: ActivityEvent): number | null {
 		return num(e.detail?.amountSats);
 	}
@@ -351,6 +368,7 @@
 						{@const marker = markerFor(e)}
 						{@const sats = amountSats(e)}
 						{@const q = quorum(e)}
+						{@const href = linkFor(e)}
 						<li class="event" class:attention={e.level === 'warn' || e.level === 'error'}>
 							<span class="marker" aria-hidden="true">
 								{#if marker.kind === 'rings'}
@@ -371,11 +389,15 @@
 								{/if}
 							</span>
 							<div class="body">
-								<div class="message">{e.message}</div>
+								{#if href && !txid(e)}
+									<a class="message" {href}>{e.message}</a>
+								{:else}
+									<div class="message">{e.message}</div>
+								{/if}
 								<div class="meta">
 									<span>{metaFor(e)}</span>
 									{#if txid(e)}
-										<a class="mono link" href={`/explorer/tx/${txid(e)}`}>
+										<a class="mono link" href={href ?? `/explorer/tx/${txid(e)}`}>
 											{truncateMiddle(txid(e)!, 6, 6)}
 										</a>
 										<CopyText value={txid(e)!} display="copy" mono={false} />
@@ -752,6 +774,15 @@
 		font-weight: 500;
 		color: var(--text-rows);
 		line-height: 1.45;
+	}
+
+	a.message {
+		text-decoration: none;
+	}
+
+	a.message:hover {
+		color: var(--accent);
+		text-decoration: underline;
 	}
 
 	.event.attention .message {
