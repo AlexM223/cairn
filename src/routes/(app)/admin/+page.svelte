@@ -110,7 +110,7 @@
 			</div>
 			<div class="hero-ring attention-text">
 				{node.error ?? `${CHAIN_DOWN}.`}
-				<a href="/admin/settings">Check the connection →</a>
+				<a href="/admin/settings#node-connection">Check the connection →</a>
 			</div>
 		{/if}
 	</div>
@@ -199,7 +199,7 @@
 	<div class="kv">
 		<span class="k">Registration</span>
 		<span class="v cap">{data.registrationMode}</span>
-		<a class="row-action" href="/admin/settings">Change</a>
+		<a class="row-action" href="/admin/settings#registration">Change</a>
 	</div>
 	<div class="kv">
 		<span class="k">Mining</span>
@@ -233,7 +233,7 @@
 		· <a href="/terms" target="_blank" rel="noopener">Agreement</a> —
 		<a class="foot-cta" href="/admin/settings">Instance settings →</a>
 	</span>
-	<a class="foot-reset" href="/admin/settings">Factory reset…</a>
+	<a class="foot-reset" href="/admin/settings#factory-reset">Factory reset…</a>
 </div>
 
 <style>

@@ -179,7 +179,7 @@
 
 		<div class="notif-row">
 			<NotificationPanel />
-			<span class="foot-label">Notifications</span>
+			<span class="foot-label">Alerts</span>
 		</div>
 
 		<div class="menu-wrap" bind:this={menuWrap}>

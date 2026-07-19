@@ -440,7 +440,7 @@
 
 	<!-- Notifications -->
 	<a class="hw-row" href="/settings/notifications" id="set-notifications">
-		<span class="row-title">Notifications</span>
+		<span class="row-title">Notification settings</span>
 		<span class="row-meta">in-app + your channels</span>
 		<span class="chev"><Icon name="chevron-right" size={14} /></span>
 	</a>

@@ -142,7 +142,7 @@
 		<Banner variant="success">Settings saved — connection updated.</Banner>
 	{/if}
 
-	<section class="hw-section section">
+	<section class="hw-section section" id="registration">
 		<div class="section-head">
 			<span class="hw-title">Registration</span>
 			<p class="hint">Who can create an account on this instance.</p>
@@ -178,7 +178,7 @@
 		</div>
 	</section>
 
-	<section class="hw-section section">
+	<section class="hw-section section" id="node-connection">
 		<div class="section-head">
 			<span class="hw-title">Node connection</span>
 			<p class="hint">
@@ -679,7 +679,7 @@
 	</div>
 </form>
 
-<section class="hw-section section danger-zone fade-in">
+<section class="hw-section section danger-zone fade-in" id="factory-reset">
 	<div class="section-head">
 		<span class="hw-title danger-title">Factory reset</span>
 		<p class="hint">

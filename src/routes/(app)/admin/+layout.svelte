@@ -18,7 +18,7 @@
 			{ href: '/admin/settings', label: 'Settings' },
 			{ href: '/admin/mining', label: 'Mining' },
 			{ href: '/admin/feature-flags', label: 'Feature flags' },
-			{ href: '/admin/notifications', label: 'Notifications' },
+			{ href: '/admin/notifications', label: 'Notification delivery' },
 			{ href: '/admin/announcements', label: 'Announcements' },
 			{ href: '/admin/referral-settings', label: 'Referrals' },
 			{ href: '/admin/logs', label: 'Logs' },
