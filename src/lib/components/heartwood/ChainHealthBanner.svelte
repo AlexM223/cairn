@@ -28,6 +28,15 @@
 	 * since nothing is actually broken — nobody has set this up yet. An instance
 	 * that WAS configured (custom, or Umbrel auto-connected) and has since gone
 	 * unreachable still gets the real warning-styled "can't reach it" banner.
+	 *
+	 * initialHealth (cairn-favlc): the live `chainHealth` store's `.health`
+	 * getter is hard-coded to null during SSR (client-only fetch + SSE
+	 * subscription), so without a seed the banner rendered nothing in the
+	 * server-rendered HTML no matter how long an outage had been going on —
+	 * only a hydrated, JS-running client ever saw it. The (app) layout's
+	 * server load now runs the same cheap getNetworkHealth() read
+	 * /api/chain-health already serves and passes it down as this prop, so
+	 * the very first response already carries the correct verdict.
 	 */
 	import Icon from '$lib/components/Icon.svelte';
 	import type { ChainHealth } from '$lib/server/chainHealth';
@@ -41,12 +50,19 @@
 	// before the connection was lost, or a default public backend) — instead of
 	// always claiming data "will appear once connected" wherever the banner
 	// renders, which is false the instant there's a snapshot on screen under it.
-	let { isAdmin = false, hasSnapshot = false }: { isAdmin?: boolean; hasSnapshot?: boolean } =
-		$props();
+	let {
+		isAdmin = false,
+		hasSnapshot = false,
+		initialHealth = null
+	}: { isAdmin?: boolean; hasSnapshot?: boolean; initialHealth?: ChainHealth | null } = $props();
 
 	// Live transport health off the shared store (docs/LIVE-UPDATES-DESIGN.md §5):
 	// no more 15s poll — the store seeds once and re-reads on each `health` nudge.
-	const health = $derived<ChainHealth | null>(chainHealth.health);
+	// Falls back to the server-rendered initialHealth until that seed lands
+	// (always true during SSR, and briefly on the client before hydration's
+	// first fetch/SSE nudge resolves) so the banner is correct on first paint
+	// instead of only once client JS has run (cairn-favlc).
+	const health = $derived<ChainHealth | null>(chainHealth.health ?? initialHealth);
 
 	const unhealthy = $derived(health !== null && !health.healthy);
 

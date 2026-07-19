@@ -123,21 +123,19 @@ async function main() {
 		const healthDown = await getWithCookie(`${app.base}/api/health`, session.cookie);
 		assertTrue(healthDown.status === 200, `GET /api/health is still 200 with chain down (got ${healthDown.status})`);
 
-		// KNOWN FLAKY (cairn-favlc): the chain-down copy doesn't reliably render
-		// on / within a few seconds of the Electrum connection dropping — the
-		// client-side detection/retry cycle can outlast this gate's settle
-		// window. Confirmed as a real observed gap in the first passing run
-		// (chain-up + all other chain-down assertions green, only this one
-		// missed). Soft-checked (warn, non-fatal) until cairn-favlc lands a fix
-		// or a confirmed minimum wait; see that bead for repro + evidence.
+		// cairn-favlc: root-caused as an SSR gap, not a timing race. The
+		// ChainHealthBanner was entirely client-JS-rendered (its live store's
+		// `.health` getter is hard-coded null during SSR), so a hydration-less
+		// fetch like this one never saw the banner no matter how long it waited.
+		// Fixed by seeding the banner from the (app) layout's server load (the
+		// same getNetworkHealth() union /api/chain-health serves), so the very
+		// first response already carries the correct verdict. Hard assertion
+		// restored now that the gap is closed.
 		const root = await getWithCookie(`${app.base}/`, session.cookie);
-		if (root.text.includes(CHAIN_DOWN_COPY)) {
-			console.log(`  ok: GET / body contains chain-down copy "${CHAIN_DOWN_COPY}"`);
-		} else {
-			console.warn(
-				`  WARN (known-flaky, cairn-favlc): GET / body did not contain chain-down copy "${CHAIN_DOWN_COPY}" within the settle window — not failing the gate on this alone.`
-			);
-		}
+		assertTrue(
+			root.text.includes(CHAIN_DOWN_COPY),
+			`GET / body contains chain-down copy "${CHAIN_DOWN_COPY}"`
+		);
 
 		if (failures.length > 0) {
 			console.error(`\n[route-crawl] FAIL — ${failures.length} assertion(s) failed:`);

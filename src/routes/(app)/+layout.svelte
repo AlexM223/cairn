@@ -227,7 +227,11 @@
 			     renders nothing until the Electrum pool / SOCKS5 proxy is unhealthy,
 			     then warns that balances may be stale and (for admins) links to the
 			     connection settings. Polls /api/chain-health, a cheap in-memory read. -->
-			<ChainHealthBanner isAdmin={data.user.isAdmin} hasSnapshot={data.hasChainSnapshot ?? false} />
+			<ChainHealthBanner
+				isAdmin={data.user.isAdmin}
+				hasSnapshot={data.hasChainSnapshot ?? false}
+				initialHealth={data.chainHealth ?? null}
+			/>
 			{#if !data.firstSyncComplete && !data.hasChainSnapshot}
 				<!-- Non-blocking first-sync indicator (cairn-2zxt.1). Shown until the
 				     chain-history cache exists; polls /api/sync for live detail and

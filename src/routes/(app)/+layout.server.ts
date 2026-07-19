@@ -7,6 +7,7 @@ import { getInstanceMode } from '$lib/server/settings';
 import { httpsExternalPort } from '$lib/server/httpsPort';
 import { isFirstSyncComplete } from '$lib/server/syncStatus';
 import { readChainSnapshot } from '$lib/server/chainSnapshot';
+import { getNetworkHealth } from '$lib/server/chainHealth';
 import type { LayoutServerLoad } from './$types';
 
 // cairn-v84z — this load intentionally reads ONLY `locals` (no `url`,
@@ -102,6 +103,17 @@ export const load: LayoutServerLoad = async ({ locals }) => {
 		// "never configured" copy stops claiming data "will appear" once
 		// connected when a snapshot is already showing it.
 		hasChainSnapshot: readChainSnapshot() !== null,
+		// Chain-transport health AT REQUEST TIME (cairn-favlc): ChainHealthBanner
+		// used to be client-JS-only (onMount poll, then the live rune store below)
+		// with no SSR fallback, so the very first server-rendered response after an
+		// outage never contained the "can't reach your Bitcoin node" copy — a
+		// hydration-less fetch (any crawler, or a slow client before JS runs) saw
+		// nothing no matter how long it waited, because the client store's `health`
+		// getter is hard-coded to `null` during SSR. This is the same cheap
+		// in-memory union read /api/chain-health already serves, seeding the banner
+		// so it's correct on the very first paint instead of only after the live
+		// store's post-hydration fetch lands.
+		chainHealth: getNetworkHealth(),
 		// Resolved feature flags for this user, read on the client as data.flags.send
 		// (etc). Server-side enforcement (requireFeature) is the real gate; this is
 		// what lets the UI hide/grey features the user can't use.
