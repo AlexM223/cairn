@@ -190,12 +190,21 @@ export function notify(payload: NotificationPayload): void {
 
 	// 1. In-app is always-on and instant — it IS the activity feed.
 	try {
+		// payload.link has no column of its own on `events` — it rides along inside
+		// the JSON `detail` blob (merged in, not overwritten) so NotificationPanel's
+		// linkFor() can read detail.link back out (cairn-ay45q: this used to be
+		// silently dropped here, so every non-tx notification rendered with no
+		// href at all even though external channels received the link fine).
+		const detail =
+			payload.detail || payload.link
+				? { ...(payload.detail ?? {}), ...(payload.link ? { link: payload.link } : {}) }
+				: null;
 		recordActivity({
 			type: payload.type,
 			message: payload.title + (payload.body ? ` — ${payload.body}` : ''),
 			level: payload.level,
 			userId: payload.userId,
-			detail: payload.detail ?? null
+			detail
 		});
 	} catch (e) {
 		log.error({ err: e, type: payload.type }, 'notify() in-app record failed');

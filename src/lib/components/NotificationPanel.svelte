@@ -110,9 +110,12 @@
 		return Number.isFinite(secs) ? timeAgo(secs) : '';
 	}
 
-	// A notification's deep link: an explicit detail.link wins (that's what
-	// notify(payload.link) stores), otherwise fall back to a txid → explorer link
-	// like the activity page does. Only same-origin relative paths are honoured.
+	// A notification's deep link: an explicit detail.link wins — notify() in
+	// notifications.ts merges payload.link into the persisted detail JSON under
+	// the "link" key (cairn-ay45q), so this reads that back out. Older rows
+	// written before that fix have no detail.link at all; for those, fall back
+	// to a txid → explorer link like the activity page does. Only same-origin
+	// relative paths are honoured.
 	// With the explorer feature flag off, /explorer/** 403s server-side EXCEPT
 	// /explorer/tx/[txid] (cairn-5yz3.3 — tx detail is exempt from the flag, it's
 	// not chain browsing, and it's the only tx-detail surface in the app). So

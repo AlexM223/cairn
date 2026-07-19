@@ -208,6 +208,76 @@ describe('notify() stage isolation (cairn-potk, fix cairn-s0p5)', () => {
 	});
 });
 
+describe('notify() persists payload.link into events.detail (cairn-ay45q)', () => {
+	// Root cause: notify()'s recordActivity() call only forwarded payload.detail
+	// and silently dropped payload.link, so NotificationPanel.svelte's linkFor()
+	// — which reads detail.link — never saw a link for any non-tx notification
+	// type (sign_session_waiting, cosigner_left, security_new_passkey, ...).
+
+	it('merges payload.link into the persisted detail JSON, alongside existing detail fields', async () => {
+		const u = await makeUser('link-a@example.com');
+		db.exec('DELETE FROM events');
+
+		notify(
+			payload({
+				type: 'sign_session_waiting',
+				userId: u.id,
+				detail: { multisigId: 5, txId: 9 },
+				link: '/wallets/multisig/5/send?tx=9'
+			})
+		);
+
+		const row = db
+			.prepare('SELECT detail FROM events WHERE user_id = ? AND type = ?')
+			.get(u.id, 'sign_session_waiting') as { detail: string };
+		const detail = JSON.parse(row.detail) as Record<string, unknown>;
+		expect(detail.link).toBe('/wallets/multisig/5/send?tx=9');
+		expect(detail.multisigId).toBe(5);
+		expect(detail.txId).toBe(9);
+	});
+
+	it('persists a link with no other detail fields', async () => {
+		const u = await makeUser('link-b@example.com');
+		db.exec('DELETE FROM events');
+
+		notify(payload({ type: 'security_new_passkey', userId: u.id, detail: undefined, link: '/settings/security' }));
+
+		const row = db
+			.prepare('SELECT detail FROM events WHERE user_id = ? AND type = ?')
+			.get(u.id, 'security_new_passkey') as { detail: string };
+		expect(JSON.parse(row.detail)).toEqual({ link: '/settings/security' });
+	});
+
+	it('a legacy row written without a link key stays link-less (no crash, no fabricated link)', async () => {
+		const u = await makeUser('link-c@example.com');
+		db.exec('DELETE FROM events');
+
+		// Simulate a pre-fix row: detail JSON with no "link" key at all, exactly
+		// what the old (broken) notify() implementation used to write.
+		db.prepare(
+			`INSERT INTO events (user_id, type, level, message, detail) VALUES (?, 'sign_session_waiting', 'info', 'legacy', ?)`
+		).run(u.id, JSON.stringify({ multisigId: 1, txId: 1, collected: 1, required: 2 }));
+
+		const row = db
+			.prepare('SELECT detail FROM events WHERE user_id = ? AND type = ?')
+			.get(u.id, 'sign_session_waiting') as { detail: string };
+		const detail = JSON.parse(row.detail) as Record<string, unknown>;
+		expect(detail.link).toBeUndefined();
+	});
+
+	it('no detail and no link persists a null detail column, same as before', async () => {
+		const u = await makeUser('link-d@example.com');
+		db.exec('DELETE FROM events');
+
+		notify(payload({ type: 'tx_received', userId: u.id, detail: undefined, link: undefined }));
+
+		const row = db
+			.prepare('SELECT detail FROM events WHERE user_id = ? AND type = ?')
+			.get(u.id, 'tx_received') as { detail: string | null };
+		expect(row.detail).toBeNull();
+	});
+});
+
 describe('token bucket rate limit', () => {
 	it('allows a burst up to bucket size then denies until refill', () => {
 		const { takeToken, buckets } = _internals;
