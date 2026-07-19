@@ -177,7 +177,10 @@ export const DEFAULT_ORIGIN_PATH: Record<ScriptType, string> = {
 // Approximate virtual sizes for fee estimation (sat/vB pricing).
 const INPUT_VSIZE: Record<string, number> = { p2pkh: 148, 'p2sh-p2wpkh': 91, p2wpkh: 68 };
 const TX_OVERHEAD_VSIZE = 11;
-const DUST_SATS = 546;
+// The flat 546-sat legacy constant this module used to check dust against at
+// several call sites (cairn-7ld60) has been removed — every dust comparison
+// now calls dustThreshold(address) below, matching its documented per-script-
+// type floor (P2PKH 546, P2SH 540, P2WPKH 294, P2WSH/P2TR 330).
 
 /**
  * Hard server-side fee-rate ceiling (sat/vB). Even at the worst fee spikes in
@@ -709,7 +712,11 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 			TX_OVERHEAD_VSIZE + spendable.length * INPUT_VSIZE[scriptType] + outputVsize(recipient);
 		const fee = Math.ceil(vsize * feeRate);
 		const amount = totalIn - fee;
-		if (amount <= DUST_SATS) {
+		// Per-destination-type dust floor (cairn-7ld60) — matches the pre-flight
+		// check in validateRecipientsAndFeeRate rather than the flat legacy
+		// DUST_SATS constant, so a send-max sweep to a P2WPKH/P2WSH/P2TR
+		// destination isn't held to the higher P2PKH/P2SH floor.
+		if (amount <= dustThreshold(recipient)) {
 			throw new PsbtError(
 				coinControl
 					? "The selected coins don't cover the network fee at this rate — select more coins or lower the fee."
@@ -784,7 +791,9 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 			outputVsize(params.changeAddress);
 		fee = Math.ceil(vsizeEst * feeRate);
 		const change = totalIn - totalAmount - fee;
-		if (change < DUST_SATS) {
+		// Per-destination-type dust floor (cairn-7ld60) for the change output's
+		// own address, matching dustThreshold's use elsewhere in this file.
+		if (change < dustThreshold(params.changeAddress)) {
 			throw new PsbtError(
 				'The change output is too small to absorb the higher fee at this rate.',
 				'insufficient_funds'
@@ -862,12 +871,13 @@ export async function constructPsbt(params: ConstructParams): Promise<Constructe
 			totalInSel += u.value;
 			const baseVsize = TX_OVERHEAD_VSIZE + chosen.length * perInput + recipientsVsize;
 			const feeWithChange = Math.ceil((baseVsize + changeVsize) * feeRate);
-			// Keep the change output only when it clears the generic dust floor;
+			// Keep the change output only when it clears ITS OWN destination-type
+			// dust floor (cairn-7ld60) — not the flat legacy DUST_SATS constant;
 			// the +1 guarantees a strictly-spendable remainder (matches the
 			// multisig path). Otherwise attempt a changeless spend and let a
 			// sub-dust remainder fall into the fee rather than mint an unspendable
 			// output.
-			if (totalInSel >= totalAmount + feeWithChange + DUST_SATS + 1) {
+			if (totalInSel >= totalAmount + feeWithChange + dustThreshold(params.changeAddress) + 1) {
 				fee = feeWithChange;
 				changeValueSel = totalInSel - totalAmount - fee;
 				hasChangeSel = true;

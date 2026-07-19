@@ -189,11 +189,16 @@ describe('boundary: zero balance', () => {
 describe('boundary: dust threshold (send-max sweep result)', () => {
 	// Deterministic by construction: vsize = TX_OVERHEAD(11) + 1*INPUT_VSIZE.p2wpkh(68)
 	// + outputVsize(p2wpkh recipient)(31) = 110 vB. At feeRate 1 sat/vB, fee = 110.
-	// amount = totalIn - fee; rejected when amount <= 546 (DUST_SATS).
+	// amount = totalIn - fee; rejected when amount <= dustThreshold(recipient) — 294
+	// for a p2wpkh destination (cairn-7ld60: this call site used to compare against
+	// the flat legacy DUST_SATS=546 constant instead of the recipient's own
+	// per-script-type floor; see the "dust threshold (plain recipient amount,
+	// pre-flight)" block above for the full matrix).
 	const FEE_AT_1_SAT_VB = 110;
+	const P2WPKH_DUST = 294;
 
-	it('single-sig: sweep result of EXACTLY 546 sats (the dust ceiling) is rejected', async () => {
-		const totalIn = FEE_AT_1_SAT_VB + 546;
+	it('single-sig: sweep result of EXACTLY 294 sats (the p2wpkh dust ceiling) is rejected', async () => {
+		const totalIn = FEE_AT_1_SAT_VB + P2WPKH_DUST;
 		const err = await expectPlainRejection(
 			constructPsbt({
 				...COMMON,
@@ -206,20 +211,20 @@ describe('boundary: dust threshold (send-max sweep result)', () => {
 		expect(err.message.toLowerCase()).toContain('nothing left to send');
 	});
 
-	it('single-sig: sweep result of 547 sats (one above the dust ceiling) succeeds', async () => {
-		const totalIn = FEE_AT_1_SAT_VB + 547;
+	it('single-sig: sweep result of 295 sats (one above the dust ceiling) succeeds', async () => {
+		const totalIn = FEE_AT_1_SAT_VB + P2WPKH_DUST + 1;
 		const draft = await constructPsbt({
 			...COMMON,
 			utxos: [utxo(totalIn)],
 			recipients: [{ address: RECIPIENT_P2WPKH, amount: 'max' }],
 			feeRate: 1
 		});
-		expect(draft.amount).toBe(547);
+		expect(draft.amount).toBe(P2WPKH_DUST + 1);
 		expect(draft.change).toBeNull();
 	});
 
 	it('single-sig, coin-control sweep at the same dust boundary gets the coin-control-flavored message', async () => {
-		const totalIn = FEE_AT_1_SAT_VB + 546;
+		const totalIn = FEE_AT_1_SAT_VB + P2WPKH_DUST;
 		const err = await expectPlainRejection(
 			constructPsbt({
 				...COMMON,
@@ -264,19 +269,23 @@ describe('boundary: dust threshold (send-max sweep result)', () => {
 
 describe('boundary: dust threshold (RBF replacement change output)', () => {
 	// exactInputs spends a single given coin verbatim; the entire fee increase
-	// comes out of change, and change < DUST_SATS is refused outright rather
-	// than silently altering what the user already reviewed.
-	it('single-sig: change of exactly 545 (one under dust) is rejected; 546 succeeds', async () => {
+	// comes out of change, and change < dustThreshold(changeAddress) is refused
+	// outright rather than silently altering what the user already reviewed.
+	// CHANGE_0 is a p2wpkh address, so its floor is 294 (cairn-7ld60: this call
+	// site used to compare against the flat legacy DUST_SATS=546 constant
+	// instead of the change output's own per-script-type floor).
+	it('single-sig: change of exactly 293 (one under dust) is rejected; 294 succeeds', async () => {
 		// vsizeEst = 11 + 1*68 (input) + outputVsize(recipient, p2wpkh=31) + outputVsize(change, p2wpkh=31) = 141
 		const vsizeEst = 11 + 68 + 31 + 31;
 		const feeRate = 1;
 		const fee = Math.ceil(vsizeEst * feeRate);
 		const amount = 30_000;
+		const P2WPKH_DUST = 294;
 
 		const failing = await expectPlainRejection(
 			constructPsbt({
 				...COMMON,
-				utxos: [utxo(amount + fee + 545)],
+				utxos: [utxo(amount + fee + P2WPKH_DUST - 1)],
 				recipients: [{ address: RECIPIENT_P2WPKH, amount }],
 				feeRate,
 				exactInputs: true
@@ -287,13 +296,13 @@ describe('boundary: dust threshold (RBF replacement change output)', () => {
 
 		const ok = await constructPsbt({
 			...COMMON,
-			utxos: [utxo(amount + fee + 546)],
+			utxos: [utxo(amount + fee + P2WPKH_DUST)],
 			recipients: [{ address: RECIPIENT_P2WPKH, amount }],
 			feeRate,
 			exactInputs: true
 		});
 		expect(ok.change).not.toBeNull();
-		expect(ok.change!.value).toBe(546);
+		expect(ok.change!.value).toBe(P2WPKH_DUST);
 	});
 });
 
@@ -441,14 +450,17 @@ describe('boundary: amount <= fee is legal (not an error) as long as the output 
 describe('boundary: amount + fee exceeds available balance by exactly 1 sat', () => {
 	it('single-sig (exactInputs/RBF path): balance short by 1 sat rejects; exact balance succeeds changeless', async () => {
 		// changeless requires totalIn - amount - feeWithoutChange == 0 in the RBF
-		// path's change<DUST branch — but exactInputs ALWAYS reserves a change
+		// path's change<dust branch — but exactInputs ALWAYS reserves a change
 		// output slot (see multisigPsbt/psbt exactInputs branch), so the minimum
-		// viable totalIn for this path is amount + fee + DUST_SATS (546), not 0.
+		// viable totalIn for this path is amount + fee + dustThreshold(changeAddress),
+		// not 0. CHANGE_0 is p2wpkh, so its floor is 294 (cairn-7ld60: this call
+		// site used to anchor on the flat legacy DUST_SATS=546 constant instead).
 		// The "exactly 1 sat short" boundary is therefore anchored at that floor.
 		const vsizeEst = 11 + 68 + 31 + 31; // 1 input, 1 recipient out, 1 change out (p2wpkh)
 		const fee = Math.ceil(vsizeEst * 1);
 		const amount = 30_000;
-		const floor = amount + fee + 546;
+		const P2WPKH_DUST = 294;
+		const floor = amount + fee + P2WPKH_DUST;
 
 		await expectPlainRejection(
 			constructPsbt({
@@ -467,7 +479,7 @@ describe('boundary: amount + fee exceeds available balance by exactly 1 sat', ()
 			feeRate: 1,
 			exactInputs: true
 		});
-		expect(ok.change!.value).toBe(546);
+		expect(ok.change!.value).toBe(P2WPKH_DUST);
 	});
 
 	it('single-sig (normal auto-selection): balance short by 1 sat for a changeless spend rejects; exact balance succeeds', async () => {
