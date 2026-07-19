@@ -2394,6 +2394,15 @@ ever linked via `txid`, so a `link`-only event (e.g. `sign_session_waiting`,
 which has no txid) rendered as plain unlinked text there even after the
 `detail.link` persistence fix landed.
 
+**Live-refresh confirmed working (`cairn-tiguv`, cannot-reproduce, v0.2.41):**
+a QA finding that the bell badge doesn't update without reload traced to a
+raw SQL `INSERT` into `events` that bypasses `notifyBus` entirely (by
+design — direct DB writes were never expected to live-push). A real trigger
+(`notify()` → `notifyBus.emit` → `liveHub` → SSE `event: notification`) was
+verified on the wire updating the badge within ~1.5s, no reload, on both the
+desktop-sidebar and (post-`cairn-vjjc4`) `MobileTopBar` mounts independently.
+No code change; closed as working-as-designed.
+
 **Dispatch**: `notify(payload: NotificationPayload)` is called from deep
 inside domain code (e.g. `auth.ts`'s `registerUserWithHash` fires
 `admin_new_signup`) — always best-effort/non-throwing, so a notification
@@ -2749,6 +2758,17 @@ Wraps every authenticated page with:
   so without its own top bar it fell through to the flow-page's
   back-circle-only header and became a dead end when opened directly
   (bookmark, notification, reload).
+- **Mobile notification reachability (`cairn-vjjc4`, v0.2.41):** the bell
+  used to live only inside `HWSidebar`'s `<aside class="rail">`, which is
+  `display:none` below 900px — mobile had zero notification entry point
+  (only the full `/activity` page). `NotificationPanel` is now also mounted
+  inside `MobileTopBar` (right cluster, before the avatar menu); safe to
+  dual-mount because `liveClient.ts`'s `EventSource` is a refcounted
+  singleton (one real SSE connection regardless of mount count) and the two
+  mounts are CSS-complementary — never both visible at once. The panel also
+  now opens **downward** (not upward off-screen) when the bell is
+  top-anchored (≤900px), and its tap target is widened to ~44px via `::after`
+  to match `MobileTopBar`'s other icon buttons.
 - `ChainHealthBanner` — always mounted, silent unless Electrum/SOCKS5 is
   unhealthy. Two distinct unhealthy states, both from `getChainHealth()`
   (`chainHealth.ts`): **never-configured** (`health.neverConfigured` true —
@@ -3566,7 +3586,17 @@ internals, guided wizards" philosophy:
   underline and a hover/focus tooltip, a real `<button>` so keyboard users
   get the same affordance as mouse hover. Tip copy is centralized in
   `src/lib/termGlosses.ts` (`DESCRIPTOR_TIP_*`, `ELECTRUM_TIP`,
-  `CORE_RPC_TIP`, ...) rather than inlined per call site. **Admin surfaces
+  `CORE_RPC_TIP`, ...) rather than inlined per call site. **v0.2.41 glosses
+  (`cairn-b55a5`, `cairn-s7rpg`):** `STRATUM_TIP` added and wired via
+  `<Term>` on `/admin/mining`'s engine-health hint and pool-settings
+  form/port label (`AdminEngineHealth.svelte`, `AdminPoolSettingsForm.svelte`
+  — the end-user `/mining` page was already plain-language and untouched);
+  `TIMECHAIN_TIP` added for the explorer breadcrumb's "The timechain"
+  segment, which needed a new optional `tip` prop on `EyebrowBreadcrumb`
+  (wired at `explorer/+page.svelte`) since that component previously had no
+  `<Term>`-capable slot — the reason `cairn-vxbk`'s original v0.2.38 sweep
+  couldn't reach it. **Admin surfaces
+  (`cairn-3hwc8`, v0.2.39):** a prior pass (`cairn-vxbk`) glossed jargon
   (`cairn-3hwc8`, v0.2.39):** a prior pass (`cairn-vxbk`) glossed jargon
   app-wide but skipped `src/routes/(app)/admin/**` for a since-resolved
   concurrent edit — `admin/settings` now wraps "Electrum" and "RPC" (in
@@ -4031,6 +4061,9 @@ touches a live regtest node.
 | `npm run prepare` | `svelte-kit sync \|\| echo ''` |
 | `npm test` | `vitest run` |
 | `npm run check` / `check:watch` | `svelte-kit sync && svelte-check` |
+| `npm run qa:prod-boot` | `node scripts/qa/prod-boot-smoke.mjs` — build + boot `server.mjs` + liveness gate |
+| `npm run qa:route-crawl` | `node scripts/qa/route-crawl.mjs` — see durable QA gates below |
+| `npm run qa:notif-deeplink` | `node scripts/qa/notif-deeplink.mjs` — see durable QA gates below |
 
 ### `vite.config.ts` gotchas (both explicitly documented in comments — do not "fix" either)
 
@@ -4172,6 +4205,32 @@ to the seed block so the marker-diff half actually looks for it. Known
 current scope limit: the marker sweep deliberately skips chain-backed
 routes (`/api/wallets`, `/api/portfolio`, explorer) pending chain-service
 mocks — filed as a separate P3 follow-up, not a gap in what's covered today.
+
+### Durable QA gates: `qa:route-crawl`, `qa:notif-deeplink` (Wave-5R, v0.2.41)
+
+Two authenticated, throwaway-instance gates plus a shared harness
+(`scripts/qa/qa-harness.mjs`: free-port probe, prod-boot launch, and an
+**INSERT-only** admin+session DB seeding helper — deliberately not the
+DELETE-then-insert pattern some prior QA seed scripts used, which is unsafe
+to copy against a shared/long-lived DB).
+
+- **`qa:route-crawl`** (`scripts/qa/route-crawl.mjs`) — spins up a throwaway
+  regtest `bitcoind` + this repo's Electrum shim, boots the app for real,
+  mines 110 blocks, seeds an admin session, and authenticated-crawls `/`,
+  `/wallets`, `/wallets/new`, `/settings`, `/admin`, `/admin/settings`,
+  `/explorer`, `/api/health`, asserting no 5xx / raw stack trace. Then kills
+  the shim and re-crawls to confirm the degraded (chain-down) path also
+  renders cleanly instead of 500ing, including a hard assertion that `GET /`
+  contains the chain-down copy — this is what `cairn-favlc`'s SSR fix (§20.4)
+  made reliable; it was soft-checked (WARN) until that fix landed.
+- **`qa:notif-deeplink`** (`scripts/qa/notif-deeplink.mjs`) — verifies a
+  seeded notification's deep link resolves via the `txid` → `/explorer/tx/
+  {txid}` fallback, mirroring `NotificationPanel`'s `linkFor()` (§8 Deep
+  links) so this stays a regression guard for `cairn-ay45q`/`cairn-fochc`,
+  not just a one-time manual check.
+
+Both gates are throwaway-instance (own temp DB/port), not part of `npm
+test`/CI yet — run manually before a release, same as `qa:prod-boot`.
 
 ### Regtest + hardware-emulator stack (NOT part of normal `npm test`/CI)
 
@@ -5020,13 +5079,26 @@ Precondition: a broadcast, still-unconfirmed tx with a change output.
      would drop below `dustThreshold(changeAddress)` (per-script-type floor — P2WPKH 294,
      P2WSH/P2TR 330, P2PKH 546, P2SH 540, `cairn-7ld60`) the bump is **refused** with a clear message;
      (d) a **changeless** original cannot be bumped (no fee headroom) — expected refusal.
+   - **Custom fee-rate + floor hint (`cairn-vxel8`, v0.2.41):** the bump form's free-text
+     sat/vB input (mirrors the CPFP pattern) now shows a proactive floor hint and disables
+     submit below `tx.feeRate` — the same `newFeeRate <= tx.feeRate` rule `feeBump.ts`
+     already enforced server-side, now surfaced before submit instead of only as a
+     post-submit rejection.
 2. Sign + broadcast the replacement.
    - **Expected:** replacement → `completed`; the **original row flips
      `completed`→`superseded`**; only **one live replacement per original** is allowed
      (a second concurrent bump hits the partial UNIQUE index on `(owner, replaces_txid)`
-     and is rejected).
-- **PASS:** the replacement confirms, original shows `superseded`, second-bump attempt is
-  refused.
+     and is rejected). `TxStatusBadge` labels a superseded tx **"Replaced"**.
+   - **Resume-link fix (`cairn-vxel8`, v0.2.41):** revisiting a superseded original's
+     `?tx=` resume link (both `wallets/[id]/send` and `wallets/multisig/[id]/send`) now
+     routes straight to the `sent` step like `completed`, instead of falling through to an
+     editable `review` draft of a tx that can no longer be broadcast. (Investigation found
+     no literal "Failed" status anywhere in this path — the backend and badge already
+     labeled `superseded`/"Replaced" correctly; this resume fallthrough was the actual
+     adjacent bug.)
+- **PASS:** the replacement confirms, original shows "Replaced", second-bump attempt is
+  refused, and reopening the superseded original's resume link lands on Sent, not an
+  editable draft.
 
 ### 18.4 CPFP (child-pays-for-parent) `[emulator]`
 Precondition: a **stuck** tx that paid change back to the wallet (the wallet owns an
@@ -5365,6 +5437,14 @@ was ever stored).
      is bounded by the connect-timeout (`armConnectTimeout`, cairn-vn48 — no infinite hang).
    - A flapping connection does **not** spam admins: the outage alert is 60s-debounced
      (`OUTAGE_GRACE_MS`) and latched.
+   - **SSR on first paint (`cairn-favlc`, v0.2.41):** `ChainHealthBanner` was previously
+     100%-client-JS-rendered (the live `chainHealth.svelte.ts` store's `.health` getter is
+     hard-coded `null` during SSR) — a no-JS or pre-hydration fetch of `/` during an outage
+     could never show the chain-down copy. `(app)/+layout.server.ts` now calls
+     `getNetworkHealth()` and passes it down as `initialHealth`; the banner falls back to it
+     whenever the live store hasn't seeded yet (`chainHealth.health ?? initialHealth`), so
+     the correct verdict renders in the very first server response, not just after
+     hydration.
 2. With chain unreachable, load `/` and `/explorer`.
    - **Expected:** balances serve **stale-but-served** snapshots (fail-open); explorer shows
      the "Can't reach chain data" path with the **real** underlying cause surfaced (DNS/TLS/
@@ -5791,6 +5871,16 @@ backups, clear house-standard errors, **never red for routine states**, working 
      `rotateError` — "Couldn't get a fresh address — check your connection and try again."
      Previously that second path just spun the button back to "Rotate" with no explanation
      (`cairn-sz1q`).
+   - ✅ **QR scannability (`cairn-7d3q4`, v0.2.41):** the receive address
+     already rendered a QR (`QRCode.toDataURL`, wired in `walletSync.ts`'s
+     shared `QR_OPTS` plus both `wallets/[id]` and `wallets/multisig/[id]`
+     `+page.server.ts`) — the actual defect was contrast: light-parchment
+     modules on a transparent background, unreadable against the app's
+     `--light-bg` in light theme. Fixed to opaque `--light-bg` background +
+     evergreen-ink dark modules in all three `QR_OPTS` definitions, so it
+     scans regardless of theme or surrounding surface. Verify: `<img
+     class="hw-qr">` decodes to a 220×220 PNG with dark-on-light modules in
+     both themes.
    - ✅ **First-deposit confidence (`cairn-gt05.6`, v0.2.39):** on a wallet with zero balance,
      zero tx history, and zero unconfirmed, the receive-address disclosure shows a
      mechanism-fact confidence line ("This address belongs to your wallet... nobody else can
