@@ -31,9 +31,11 @@
 		return page.url.pathname.startsWith(href);
 	}
 
-	// One eyebrow for the whole admin surface: `NODE` on the overview,
-	// `NODE · <SECTION>` on subpages. Reused centered in the mobile flow header
+	// One eyebrow for the whole admin surface: `HEALTH` on the overview,
+	// `HEALTH · <SECTION>` on subpages. Reused centered in the mobile flow header
 	// (the app shell already renders the back circle for /admin/** on mobile).
+	// Matches the app-shell nav label (Node -> Health, cairn-vxbk) — this
+	// in-page eyebrow was the gap that rename left behind (cairn-3hwc8).
 	const currentTab = $derived(tabs.find((t) => t.href !== '/admin' && isActive(t.href)) ?? null);
 </script>
 
@@ -44,7 +46,7 @@
 	<GroveField volume="whisper" />
 	<div class="admin-content">
 		<div class="admin-eyebrow">
-			<EyebrowBreadcrumb path={['Node']} current={currentTab?.label} />
+			<EyebrowBreadcrumb path={['Health']} current={currentTab?.label} />
 		</div>
 
 		<!-- Desktop (>=1160px) lays the section list out as a 200px vertical

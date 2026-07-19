@@ -14,3 +14,11 @@ export const DESCRIPTOR_TIP_MULTISIG =
 
 export const DESCRIPTOR_TIP_SINGLE =
 	'A descriptor is a single line of text that describes this wallet completely — its type and public key. Wallets like Sparrow or Electrum can import it directly.';
+
+// Admin > Settings connection jargon (cairn-3hwc8, follow-up to cairn-vxbk —
+// that pass skipped src/routes/admin/** for a since-resolved concurrent edit).
+export const ELECTRUM_TIP =
+	'Electrum is the lightweight protocol Heartwood uses to check balances and send transactions — either a public server or one you run yourself.';
+
+export const CORE_RPC_TIP =
+	"RPC is the interface Bitcoin Core exposes for other software to talk to it. Connecting Heartwood to your own Core node's RPC unlocks richer block and transaction detail, fully self-hosted.";

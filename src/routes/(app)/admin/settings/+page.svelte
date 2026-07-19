@@ -3,6 +3,8 @@
 	import Banner from '$lib/components/Banner.svelte';
 	import { formatNumber } from '$lib/format';
 	import { CHAIN_DOWN, CHAIN_DOWN_PROXY } from '$lib/chainStatusCopy';
+	import Term from '$lib/components/Term.svelte';
+	import { ELECTRUM_TIP, CORE_RPC_TIP } from '$lib/termGlosses';
 
 	let { data, form } = $props();
 
@@ -335,7 +337,7 @@
 				</div>
 
 				<div class="subgroup">
-					<span class="subgroup-title">Electrum server</span>
+					<span class="subgroup-title"><Term tip={ELECTRUM_TIP}>Electrum</Term> server</span>
 					<div class="row-fields">
 						<div class="field grow">
 							<label class="label" for="electrumHost">Host</label>
@@ -416,7 +418,8 @@
 		     the path (cairn-zoz8.16). -->
 		<div class="subgroup proxy-group">
 			<span class="subgroup-title">
-				Bitcoin Core RPC <span class="badge badge-neutral">self-hosted</span>
+				Bitcoin Core <Term tip={CORE_RPC_TIP}>RPC</Term>
+				<span class="badge badge-neutral">self-hosted</span>
 			</span>
 			<p class="hint">
 				Point Heartwood at your own Bitcoin Core node's RPC interface for rich block and

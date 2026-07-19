@@ -72,10 +72,10 @@
 </script>
 
 <svelte:head>
-	<title>Node — Heartwood</title>
+	<title>Health — Heartwood</title>
 </svelte:head>
 
-<!-- status pill row (the layout renders the NODE eyebrow above the tabs) -->
+<!-- status pill row (the layout renders the HEALTH eyebrow above the tabs) -->
 <div class="status-row fade-in">
 	{#if nodeLoading}
 		<span class="status checking"><span class="dot blink"></span>Checking connection…</span>
@@ -94,14 +94,17 @@
 				<span class="hero-number hero-height skeleton" aria-hidden="true">000,000</span>
 				<span class="hero-sub">at the tip</span>
 			</div>
-			<div class="hero-ring skeleton skeleton-line" aria-hidden="true">ring 000 forming — 0,000 of 2,016 laid</div>
+			<div class="hero-ring skeleton skeleton-line" aria-hidden="true">
+				difficulty period 000 forming — 0,000 of 2,016 blocks in
+			</div>
 		{:else if tip !== null}
 			<div class="hero-row">
 				<span class="hero-number hero-height">{formatNumber(tip)}</span>
 				<span class="hero-sub">at the tip</span>
 			</div>
 			<div class="hero-ring">
-				ring {formatNumber(ringNumber!)} forming — {formatNumber(ringLaid)} of 2,016 laid
+				difficulty period {formatNumber(ringNumber!)} forming — {formatNumber(ringLaid)} of 2,016 blocks
+				in
 				{#if ringCloses}· closes ≈ {ringCloses}{/if}
 			</div>
 		{:else}
