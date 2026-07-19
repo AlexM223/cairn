@@ -27,10 +27,13 @@ import type { Actions, PageServerLoad } from './$types';
 
 const log = childLogger('wallet');
 
+// Opaque parchment behind evergreen ink (cairn-7d3q4) — see the matching QR_OPTS
+// comment in $lib/server/walletSync.ts for why this must stay in sync and why it's
+// no longer light-modules-on-transparent.
 const QR_OPTS = {
 	margin: 1,
 	width: 220,
-	color: { dark: '#E4D8CC', light: '#00000000' }
+	color: { dark: '#1f2623', light: '#f3efe7' }
 };
 
 function multisigId(param: string): number {

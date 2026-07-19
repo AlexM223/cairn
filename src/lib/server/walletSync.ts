@@ -104,12 +104,18 @@ export function cleanSkipWindowMs(): number {
 }
 
 /** QR options — copied from the page loaders so a snapshot's stored QR matches
- *  what the receive panel would have rendered live (Heartwood parchment on
- *  transparent). */
+ *  what the receive panel would have rendered live. Opaque parchment (--light-bg,
+ *  src/app.css) behind evergreen ink (cairn-7d3q4): the previous light-modules-on-
+ *  transparent scheme (`#E4D8CC` on `#00000000`) had good contrast against the
+ *  app's near-black `--bg` card but was nearly invisible in light theme, where
+ *  the card itself sits on `--light-bg` (`#f3efe7`) — two light parchment tones
+ *  a scanner can't tell apart. Baking in an opaque light card behind dark ink
+ *  makes the code self-contained: it scans the same regardless of theme or
+ *  whatever surface it's rendered on. */
 const QR_OPTS = {
 	margin: 1,
 	width: 220,
-	color: { dark: '#E4D8CC', light: '#00000000' }
+	color: { dark: '#1f2623', light: '#f3efe7' }
 };
 
 // --------------------------------------------------------------- snapshot shapes
