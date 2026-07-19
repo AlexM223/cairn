@@ -150,11 +150,22 @@ function runShim(cfg) {
 		return tip;
 	}
 
-	// crude unconfirmed tracking: sum of mempool-tx outputs per scripthash, minus
-	// nothing (spends of unconfirmed inputs aren't netted) -- good enough for QA
-	// "is there an unconfirmed tx" signal, not exact accounting.
+	// Unconfirmed tracking: mempool-tx outputs paying a watched scripthash are
+	// indexed into utxoByOutpoint/scripthashUtxos at height 0, mirroring
+	// scanBlock()'s bookkeeping -- real electrs returns unconfirmed UTXOs the
+	// same way, and the app's getWalletUtxos/detectUnconfirmedInflows chain
+	// (and the Speed-up/CPFP affordance) depend on listunspent surfacing them.
+	// Spends of a tracked outpoint by another mempool tx drop it from the
+	// index (an output already spent, confirmed or not, isn't unspent).
+	// mempoolTxOutputs remembers which outpoint keys each txid contributed so
+	// a later eviction (dropped from mempool without confirming) can retract
+	// exactly those entries -- but only if they're still height 0, since a
+	// confirmation in the same poll cycle (catchUp() runs before this) will
+	// already have overwritten the entry with its real height via scanBlock,
+	// and that must not be clobbered back out.
 	const mempoolSeen = new Set();
 	const mempoolReceived = new Map(); // scripthash -> sats
+	const mempoolTxOutputs = new Map(); // txid -> [outpointKey]
 	async function scanMempoolOnce(touched) {
 		let txids;
 		try {
@@ -164,27 +175,51 @@ function runShim(cfg) {
 		}
 		const stillPresent = new Set(txids);
 		for (const seen of [...mempoolSeen]) {
-			if (!stillPresent.has(seen)) mempoolSeen.delete(seen); // confirmed or evicted; history already added on confirm
+			if (stillPresent.has(seen)) continue;
+			mempoolSeen.delete(seen);
+			const keys = mempoolTxOutputs.get(seen);
+			mempoolTxOutputs.delete(seen);
+			if (!keys) continue;
+			for (const key of keys) {
+				const u = utxoByOutpoint.get(key);
+				if (!u || u.height !== 0) continue; // confirmed this cycle -- keep it
+				utxoByOutpoint.delete(key);
+				scripthashUtxos.get(u.scripthash)?.delete(key);
+				touched?.add(u.scripthash);
+			}
 		}
 		for (const txid of txids) {
 			if (mempoolSeen.has(txid)) continue;
 			mempoolSeen.add(txid);
 			try {
 				const raw = await rpc('getrawtransaction', [txid, 2]);
+				const outputKeys = [];
 				for (const vout of raw.vout || []) {
 					const spkHex = vout.scriptPubKey?.hex;
 					if (!spkHex) continue;
 					const scripthash = scripthashFromHex(spkHex);
+					const key = `${txid}:${vout.n}`;
+					const valueSats = Math.round(vout.value * 1e8);
+					utxoByOutpoint.set(key, { scripthash, value: valueSats, height: 0 });
+					if (!scripthashUtxos.has(scripthash)) scripthashUtxos.set(scripthash, new Set());
+					scripthashUtxos.get(scripthash).add(key);
+					outputKeys.push(key);
 					addHistory(scripthash, txid, 0);
-					mempoolReceived.set(scripthash, (mempoolReceived.get(scripthash) || 0) + Math.round(vout.value * 1e8));
+					mempoolReceived.set(scripthash, (mempoolReceived.get(scripthash) || 0) + valueSats);
 					touched?.add(scripthash);
 				}
+				mempoolTxOutputs.set(txid, outputKeys);
 				for (const vin of raw.vin || []) {
 					const spk = vin.prevout?.scriptPubKey?.hex;
 					if (!spk) continue;
 					const scripthash = scripthashFromHex(spk);
 					addHistory(scripthash, txid, 0);
 					touched?.add(scripthash);
+					const key = `${vin.txid}:${vin.vout}`;
+					if (utxoByOutpoint.has(key)) {
+						utxoByOutpoint.delete(key);
+						scripthashUtxos.get(scripthash)?.delete(key);
+					}
 				}
 			} catch {
 				/* tx evicted between listing and fetch; ignore */
@@ -289,7 +324,13 @@ function runShim(cfg) {
 				const [sh] = params;
 				const keys = scripthashUtxos.get(sh);
 				let confirmed = 0;
-				if (keys) for (const k of keys) confirmed += utxoByOutpoint.get(k)?.value ?? 0;
+				// scripthashUtxos now also holds height-0 (mempool) entries so that
+				// listunspent can surface unconfirmed UTXOs -- exclude those here so
+				// they aren't double-counted against mempoolReceived's unconfirmed sum.
+				if (keys) for (const k of keys) {
+					const u = utxoByOutpoint.get(k);
+					if (u && u.height > 0) confirmed += u.value;
+				}
 				const unconfirmed = mempoolReceived.get(sh) ?? 0;
 				return { confirmed, unconfirmed };
 			}
