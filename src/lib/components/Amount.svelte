@@ -23,7 +23,15 @@
 	// present or future — can leak a dollar figure by forgetting to gate
 	// itself. See `resolveAmountPrice` in `$lib/format` for the precedence.
 	import { btcUsd, fiatPrimaryPref, fiatVisible } from '$lib/price';
-	import { formatBtc, formatSats, formatFiat, btcToFiat, isFiatPrimary, resolveAmountPrice } from '$lib/format';
+	import {
+		formatUnitAmount,
+		formatSats,
+		formatFiat,
+		btcToFiat,
+		isFiatPrimary,
+		resolveAmountPrice
+	} from '$lib/format';
+	import { unitPref } from '$lib/units';
 
 	let {
 		sats,
@@ -62,13 +70,20 @@
 		effectivePrice != null ? btcToFiat(Math.abs(btcValue), effectivePrice) : null
 	);
 	const prefix = $derived(sign ? (satsValue > 0 ? '+' : satsValue < 0 ? '−' : '') : '');
-	const btcText = $derived(`${prefix}${formatBtc(Math.abs(satsValue), { trim })} BTC`);
+	// Honors Settings -> Units (unitPref, $lib/units) so every balance/tx-row
+	// surface that renders through this shared component -- Home's hero +
+	// recent-activity, wallet-detail's hero + in-progress draft rows, etc. --
+	// switches to sats display the same way the Send flow's own hero field
+	// and summary rail already do (cairn-fbgl1, follow-up to cairn-nb8e).
+	const bitcoinText = $derived(
+		`${prefix}${formatUnitAmount(Math.abs(satsValue), $unitPref, { trim })}`
+	);
 	const fiatText = $derived(fiatValue != null ? `${prefix}${formatFiat(fiatValue)}` : null);
 	// Sats-first by default (DESIGN-MANIFESTO.md §3 MUST); fiat only takes the
 	// primary slot when the user has explicitly chosen fiat-primary display.
 	const fiatPrimary = $derived(isFiatPrimary($fiatPrimaryPref, fiatText));
-	const primaryText = $derived(fiatPrimary ? fiatText : btcText);
-	const secondaryRaw = $derived(fiatPrimary ? btcText : fiatText);
+	const primaryText = $derived(fiatPrimary ? fiatText : bitcoinText);
+	const secondaryRaw = $derived(fiatPrimary ? bitcoinText : fiatText);
 	const secondaryText = $derived(
 		secondaryRaw != null && size === 'inline' ? `(${secondaryRaw})` : secondaryRaw
 	);
@@ -83,7 +98,7 @@
 		<span class="line primary">{primaryText}</span>
 		<span class="line secondary">{secondaryText}</span>
 	{:else}
-		<span class="line primary btc-only">{btcText}</span>
+		<span class="line primary btc-only">{bitcoinText}</span>
 	{/if}
 </span>
 

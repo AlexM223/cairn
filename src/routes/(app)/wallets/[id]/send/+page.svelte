@@ -16,7 +16,7 @@
 	import BurialRings from '$lib/components/heartwood/BurialRings.svelte';
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
 	import AtTipPill from '$lib/components/heartwood/AtTipPill.svelte';
-	import { formatBtc, formatSats, formatFeeRate, truncateMiddle } from '$lib/format';
+	import { formatBtc, formatSats, formatFeeRate, formatUnitAmount, truncateMiddle } from '$lib/format';
 	import { classifyRecipientAddress, looksLikeAddress } from './addressShape';
 	import Amount from '$lib/components/Amount.svelte';
 	import AmountEntry from '$lib/components/send/AmountEntry.svelte';
@@ -388,8 +388,10 @@
 	// Unit-respecting rendering for the summary rail's BTC/sats lines (cairn-v5ass
 	// follow-up to cairn-nb8e) -- reads the same `$lib/units` preference
 	// AmountEntry's hero field already honors, instead of hardcoding " BTC".
+	// Delegates to the shared `formatUnitAmount` helper (cairn-fbgl1), which
+	// Amount.svelte now also uses so every surface stays in sync.
 	function summaryUnitAmount(amountSats: number): string {
-		return $unitPref === 'sats' ? `${formatSats(amountSats)} sats` : `${formatBtc(amountSats)} BTC`;
+		return formatUnitAmount(amountSats, $unitPref);
 	}
 
 	let building = $state(false);

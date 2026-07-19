@@ -21,6 +21,27 @@ export function formatSats(sats: number): string {
 	return new Intl.NumberFormat('en-US').format(sats);
 }
 
+/**
+ * Bitcoin-denominated display text honoring the sats/BTC preference
+ * (`unitPref` in $lib/units, Settings -> Units) -- "100,000,000 sats" or
+ * "1.00 BTC" for the same amount. `sats` should already be sign-stripped by
+ * the caller (callers that show a +/- prefix, e.g. Amount.svelte, prepend it
+ * themselves so the sign sits outside the unit-specific formatting).
+ *
+ * Single source of truth shared by Amount.svelte (every non-send-flow
+ * balance/tx-row surface) and the Send flow's own summary rail, so a unit
+ * choice can never drift out of sync between surfaces again (cairn-fbgl1,
+ * follow-up to cairn-nb8e/cairn-v5ass which first wired the Send flow's own
+ * hero field + summary rail to this preference).
+ */
+export function formatUnitAmount(
+	sats: number,
+	unit: 'btc' | 'sats',
+	opts: { trim?: boolean } = {}
+): string {
+	return unit === 'sats' ? `${formatSats(sats)} sats` : `${formatBtc(sats, opts)} BTC`;
+}
+
 export function formatNumber(n: number, maxFrac = 0): string {
 	return new Intl.NumberFormat('en-US', { maximumFractionDigits: maxFrac }).format(n);
 }

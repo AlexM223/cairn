@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
 	formatBtc,
 	formatSats,
+	formatUnitAmount,
 	timeAgo,
 	expiresIn,
 	formatBytes,
@@ -46,6 +47,27 @@ describe('formatSats', () => {
 	it('adds US thousands separators', () => {
 		expect(formatSats(123456789)).toBe('123,456,789');
 		expect(formatSats(0)).toBe('0');
+	});
+});
+
+describe('formatUnitAmount', () => {
+	// Shared unit-respecting formatter (cairn-fbgl1) -- single source of truth
+	// for "BTC" vs "sats" display text used by Amount.svelte (every
+	// balance/tx-row surface) and the Send flow's own summary rail, so the two
+	// families of call sites can never drift out of sync on the sats/BTC
+	// preference again.
+	it('renders BTC text for unit "btc"', () => {
+		expect(formatUnitAmount(100_000_000, 'btc')).toBe('1.00 BTC');
+		expect(formatUnitAmount(150_000_000, 'btc')).toBe('1.50 BTC');
+	});
+
+	it('renders sats text for unit "sats"', () => {
+		expect(formatUnitAmount(100_000_000, 'sats')).toBe('100,000,000 sats');
+		expect(formatUnitAmount(0, 'sats')).toBe('0 sats');
+	});
+
+	it('passes formatBtc options through (e.g. trim off)', () => {
+		expect(formatUnitAmount(100_000_000, 'btc', { trim: false })).toBe('1.00000000 BTC');
 	});
 });
 
