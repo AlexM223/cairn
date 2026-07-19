@@ -7,11 +7,25 @@
 
 	let { data, form } = $props();
 	let creating = $state(false);
+	let savingName = $state(false);
 	let copied = $state<string | null>(null);
 
 	async function copy(code: string) {
 		if (!(await copyToClipboard(code))) return;
 		copied = code;
+		setTimeout(() => (copied = null), 1500);
+	}
+
+	// The come-aboard landing link — what actually gets sent to an invitee
+	// (cairn-s8g9a). Origin is taken from the browser so it matches however
+	// the admin is reaching the instance right now.
+	function inviteLink(code: string): string {
+		return `${location.origin}/invite/${encodeURIComponent(code)}`;
+	}
+
+	async function copyLink(code: string) {
+		if (!(await copyToClipboard(inviteLink(code)))) return;
+		copied = `link:${code}`;
 		setTimeout(() => (copied = null), 1500);
 	}
 
@@ -39,6 +53,46 @@
 <svelte:head>
 	<title>Invites — Admin — Heartwood</title>
 </svelte:head>
+
+<section class="hw-section create-section fade-in">
+	<span class="hw-title">How your node introduces itself</span>
+	<p class="identity-hint">
+		Whoever opens an invite link lands on a page that leads with your node's name — set it here.
+		Left empty, the page falls back to "[your name]'s node".
+	</p>
+	<form
+		method="POST"
+		action="?/saveName"
+		class="identity-form"
+		use:enhance={({ cancel }) => {
+			if (savingName) return cancel();
+			savingName = true;
+			return async ({ update }) => {
+				savingName = false;
+				await update({ reset: false });
+			};
+		}}
+	>
+		<div class="field">
+			<label class="label" for="instanceName">Node name <span class="opt">optional</span></label>
+			<input
+				class="input"
+				id="instanceName"
+				name="instanceName"
+				placeholder="e.g. The Martinez family node"
+				maxlength={data.instanceNameMax}
+				value={data.instanceName ?? ''}
+			/>
+		</div>
+		<button type="submit" class="btn btn-secondary" disabled={savingName}>
+			{#if savingName}<span class="spinner"></span>{/if}
+			Save
+		</button>
+		{#if form?.nameSaved}
+			<span class="saved-note"><Icon name="check" size={13} /> Saved</span>
+		{/if}
+	</form>
+</section>
 
 <section class="hw-section create-section fade-in">
 	<span class="hw-title">Create invites</span>
@@ -74,6 +128,19 @@
 			<label class="label" for="expiresDays">Expires in days <span class="opt">0 = never</span></label>
 			<input class="input" id="expiresDays" name="expiresDays" type="number" min="0" value="30" />
 		</div>
+		<div class="field wide">
+			<label class="label" for="welcomeMessage">
+				Welcome message <span class="opt">optional — shown on the invite page</span>
+			</label>
+			<textarea
+				class="input welcome-input"
+				id="welcomeMessage"
+				name="welcomeMessage"
+				rows="2"
+				maxlength={data.welcomeMax}
+				placeholder="A few warm words from you, in your voice — the first thing your invitee reads."
+			></textarea>
+		</div>
 		<button type="submit" class="btn btn-primary" disabled={creating}>
 			{#if creating}<span class="spinner"></span>{:else}<Icon name="plus" size={15} />{/if}
 			Create
@@ -86,13 +153,19 @@
 
 	{#if form?.created?.length}
 		<div class="created-box">
-			<span class="hint">Created {form.created.length} invite{form.created.length === 1 ? '' : 's'} — click to copy:</span>
+			<span class="hint">
+				Created {form.created.length} invite{form.created.length === 1 ? '' : 's'} — send the
+				link, it lands on your node's welcome page:
+			</span>
 			<div class="created-codes">
 				{#each form.created as code (code)}
-					<button class="code-chip mono" onclick={() => copy(code)}>
+					<button class="code-chip mono" onclick={() => copyLink(code)} title="Copy invite link">
 						{code}
-						<Icon name={copied === code ? 'check' : 'copy'} size={13} />
+						<Icon name={copied === `link:${code}` ? 'check' : 'copy'} size={13} />
 					</button>
+					<a class="preview-link" href={`/invite/${encodeURIComponent(code)}`} target="_blank">
+						Preview <Icon name="arrow-up-right" size={12} />
+					</a>
 				{/each}
 			</div>
 		</div>
@@ -135,6 +208,21 @@
 							<td class="text-muted">{until(invite.expiresAt)}</td>
 							<td style="text-align: right">
 								{#if invite.status === 'active'}
+									<button
+										class="btn btn-ghost btn-sm"
+										onclick={() => copyLink(invite.code)}
+										title="Copy the invite link — it lands on your node's welcome page"
+									>
+										{copied === `link:${invite.code}` ? 'Copied' : 'Copy link'}
+									</button>
+									<a
+										class="btn btn-ghost btn-sm"
+										href={`/invite/${encodeURIComponent(invite.code)}`}
+										target="_blank"
+										title="See the page your invitee will land on"
+									>
+										Preview
+									</a>
 									<form method="POST" action="?/revoke" use:enhance style="display: inline">
 										<input type="hidden" name="id" value={invite.id} />
 										<button class="btn btn-ghost btn-sm">Revoke</button>
@@ -186,6 +274,58 @@
 	.opt {
 		font-weight: 400;
 		color: var(--text-muted);
+	}
+
+	.identity-hint {
+		font-size: 13px;
+		color: var(--text-secondary);
+		margin: 0;
+		max-width: 62ch;
+	}
+
+	.identity-form {
+		display: flex;
+		gap: 12px;
+		align-items: flex-end;
+		flex-wrap: wrap;
+	}
+
+	.identity-form .field {
+		flex: 1;
+		min-width: 220px;
+		max-width: 380px;
+	}
+
+	.saved-note {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		font-size: 12.5px;
+		color: var(--sage);
+		padding-bottom: 10px;
+	}
+
+	.create-form .wide {
+		flex: 1 1 100%;
+	}
+
+	.welcome-input {
+		resize: vertical;
+		min-height: 54px;
+	}
+
+	.preview-link {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		font-size: 12.5px;
+		color: var(--text-secondary);
+		align-self: center;
+		margin-right: 6px;
+	}
+
+	.preview-link:hover {
+		color: var(--accent);
 	}
 
 	/* Fresh codes: a filled input-tone surface (the one allowed fill). */

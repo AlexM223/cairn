@@ -75,6 +75,12 @@
 					<Banner variant="error">{form.error}</Banner>
 				{/if}
 
+				{#if data.next}
+					<!-- Allowlisted onward target (see +page.server.ts): carries the
+					     invited-crew tour hand-off through the accept POST. -->
+					<input type="hidden" name="next" value={data.next} />
+				{/if}
+
 				<label class="accept">
 					<input type="checkbox" name="accept" bind:checked={accepted} />
 					<span>I understand and accept these terms.</span>

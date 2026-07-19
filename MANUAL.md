@@ -1679,7 +1679,7 @@ standalone migration on a live funds DB).
 | `account_recovery_phrases` / `account_recovery_codes` | login-recovery secrets (scrypt-hashed like passwords) — **not** Bitcoin recovery |
 | `recovery_grants` | short-TTL token authorizing only "register a new passkey" after a successful recovery verify |
 | `known_devices` | per-user device fingerprint (sha256 of UA) for new-device login alerts |
-| `invites` | invite codes (code, max_uses, used_count, revoked, expires_at) |
+| `invites` | invite codes (code, max_uses, used_count, revoked, expires_at, welcome_message) |
 | `admin_disclosure_acceptances` / `user_agreement_acceptances` | legal clickwrap records |
 
 **Wallets (single-sig)**
@@ -1955,6 +1955,64 @@ deployment platform's install UI/logs, the account is flagged
 (`completeForcedCredentialReset`) requiring **both** a new password and a
 real (non-placeholder) email before any other route is reachable — and it
 refuses reuse of the bootstrap password itself.
+
+### Come aboard — invite landing, branded signup, welcome tour
+
+The invite experience (epic beads cairn-s8g9a/n1ovc/95yic/sr5ry, from the
+HEARTWOOD-VISION-REVIEW.md Addendum's "come aboard" move) turns an invite
+link into a captain-branded flow instead of a generic signup form:
+
+- **`/invite/[code]`** (top-level, public — outside the `(app)` gate, like
+  `/terms`): the landing page an invitee opens. Leads with the node's
+  identity ("You've been invited aboard [name]"), the captain's optional
+  welcome message, a node-status teaser, and a "Come aboard" CTA to
+  `/signup?invite=CODE`. Signed-in visitors get "Open Heartwood" instead.
+- **Preview contract** (`src/lib/server/invitePreview.ts` — its header is
+  the audited security contract; `invitePreview.test.ts` pins it): a code
+  that is not currently redeemable (unknown / revoked / expired /
+  exhausted, indistinguishably) returns `null` and the page renders a calm
+  dead-end with ZERO instance information. A redeemable code exposes
+  exactly: `instanceName`, `captainName` (the invite creator's display
+  name), `welcomeMessage`, `watching` (chain-transport health boolean),
+  `synced` (first-sync boolean), `tipHeight` (persisted-snapshot read, no
+  live chain call), and `sharedSurfaces.{explorer,mining}` (instance-level
+  flag booleans). Never balances, addresses, wallet/user counts, emails, or
+  invite bookkeeping. Lookups (landing AND the signup load's branding
+  check) count misses against the SAME per-IP `invitesIp` rate-limit
+  buckets as signup, so no new enumeration budget exists.
+- **Identity fields**: `instance_name` settings key
+  (`admin.ts getInstanceName()/setInstanceName()`, 60-char cap, NUL-guarded,
+  empty clears; editable at the top of `/admin/invites`) and
+  `invites.welcome_message` (per-invite, 500-char cap, set in the
+  create-invite form; `createInvites()`/`listInvites()` carry it). Landing
+  headline fallback: `instance_name` → "[captain]'s node" → "a Heartwood
+  node" (`inviteNodeTitle()`).
+- **Branded signup**: `/signup?invite=CODE` with a currently-valid code
+  shows "Joining [node] — invited by [captain]" above the form. On success
+  the client goes to **`/welcome-aboard`** instead of `/` (keyed on the
+  server-validated preview, not mere code presence).
+- **`/welcome-aboard`** (`(app)` group): a 4-step guided tour for invited
+  crew — welcome/keys-stay-yours, what you can see (rows for shared
+  wallets already waiting, explorer, mining — each flag/state-gated), how
+  notifications reach you, and a final "add your first wallet / look
+  around" choice. Step progress snapshots to sessionStorage
+  (`cairn.welcome-aboard.v1`, 1h max age, `_components/welcomeProgress.ts`
+  mirrors the multisig wizard pattern) so an Umbrel app_proxy reload
+  resumes mid-tour. Harmless for any signed-in user to open by hand.
+- **Agreement gate threading**: every fresh non-admin signup passes the
+  `/agreement` gate before any `(app)` page, which would swallow the
+  welcome-aboard hand-off. `appGateRedirect()` therefore maps exactly
+  `/welcome-aboard` → `/agreement?next=welcome-aboard`; the agreement page
+  carries the token through the `?/accept` POST as a hidden field and the
+  action redirects to `/welcome-aboard` ONLY for that exact token (strict
+  allowlist, never a raw pathname — no open redirect; pinned in
+  `src/routes/agreement/server.test.ts` and `appGate.test.ts`).
+- **Admin affordances** on `/admin/invites`: node-name form (`?/saveName`),
+  per-invite welcome message, per-invite "Copy link" (copies
+  `{origin}/invite/CODE`) and "Preview" (opens the landing in a new tab).
+
+QA seed: `scripts/qa/seed-move2-come-aboard.mjs` (admin + session + team
+mode + all four invite states + synced/watching chain state).
 
 ### Access-gate model (`appGate.ts`, `hooks.server.ts`)
 
@@ -2888,6 +2946,7 @@ Pages under `(app)`:
 | `explorer/difficulty` | difficulty chart |
 | `mining/+page.svelte` | this user's own solo-mining dashboard (§ "Mining engine" above, § "Mining dashboard client" below) — flag-gated (`mining`), scoped entirely to the viewing user by `getUserMiningView` |
 | `recovery-setup/+page.svelte` | post-signup recovery/backup setup flow |
+| `welcome-aboard/+page.svelte` | 4-step guided first-run tour for invited crew (see §7 "Come aboard") — reached from the signup page's post-invite redirect through the agreement gate's `next=welcome-aboard` threading; sessionStorage-resumable (`_components/welcomeProgress.ts`) |
 | `settings/+page.svelte` | general settings |
 | `settings/contacts` | address book |
 | `settings/devices` | linked/trusted devices |
@@ -2906,7 +2965,8 @@ parsing), `signup/+page.svelte`, `recover/+page.svelte`.
 has a `+page.server.ts`; `agreement` has a `server.test.ts`); `setup-admin/`
 (first-run admin bootstrap); `sync/+page.svelte` (dedicated first-sync
 progress page, distinct from the in-layout `SyncBanner`); `logout/+page.server.ts`
-(logout action only, no UI).
+(logout action only, no UI); `invite/[code]/` (public captain-branded invite
+landing — see §7 "Come aboard" for the preview contract and rate limiting).
 
 **`api/`** — the ~100-endpoint JSON tree covered in §8, consumed by client
 polling/fetch/live-stream (e.g. `ChainHealthBanner` is payload-driven off the

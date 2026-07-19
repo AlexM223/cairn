@@ -90,6 +90,13 @@ describe('appGateRedirect — disclosure / agreement gate', () => {
 		expect(appGateRedirect(member, '/wallets')).toBe('/agreement');
 	});
 
+	it('threads the welcome-aboard tour through the agreement gate as a fixed token (cairn-95yic)', () => {
+		userAgreement.mockReturnValue(false);
+		expect(appGateRedirect(member, '/welcome-aboard')).toBe('/agreement?next=welcome-aboard');
+		// Only that exact pathname — nothing else gets a next.
+		expect(appGateRedirect(member, '/welcome-aboard/extra')).toBe('/agreement');
+	});
+
 	it('does NOT check hasAcceptedAdminDisclosure for a non-admin', () => {
 		userAgreement.mockReturnValue(false);
 		appGateRedirect(member, '/wallets');

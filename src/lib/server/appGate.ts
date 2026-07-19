@@ -52,7 +52,14 @@ export function appGateRedirect(user: SessionUser | null, pathname: string): str
 	if (user.isAdmin) {
 		if (!hasAcceptedAdminDisclosure(user.id)) return '/disclosure';
 	} else if (!hasAcceptedCurrentAgreement(user.id)) {
-		return '/agreement';
+		// Preserve exactly one onward destination through the agreement gate:
+		// the invited-crew welcome tour (cairn-95yic). Every fresh non-admin
+		// signup passes through this gate before its first (app) page, so
+		// without this the signup page's /welcome-aboard hand-off would always
+		// be swallowed and invited users would land on the generic home. The
+		// token is a fixed string (never the raw pathname) — the agreement
+		// action allowlists it right back to '/welcome-aboard' only.
+		return pathname === '/welcome-aboard' ? '/agreement?next=welcome-aboard' : '/agreement';
 	}
 
 	// Recovery gate. Account recovery is MANDATORY for the admin (the instance
