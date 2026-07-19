@@ -14,6 +14,7 @@ import { notify } from './notifications';
 import { publish as livePublish } from './liveHub';
 import { childLogger } from './logger';
 import { formatNumber } from '$lib/format';
+import { CHAIN_DOWN_ACTIVITY } from '$lib/chainStatusCopy';
 
 const log = childLogger('electrum');
 
@@ -124,7 +125,7 @@ export function wireChainEvents(electrum: ElectrumPool): void {
 		recordActivity({
 			type: 'network_down',
 			level: 'warn',
-			message: 'Network connection lost',
+			message: CHAIN_DOWN_ACTIVITY,
 			detail: { server }
 		});
 	});

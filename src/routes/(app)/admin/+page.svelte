@@ -1,6 +1,7 @@
 <script lang="ts">
 	import EpochDial from '$lib/components/heartwood/EpochDial.svelte';
 	import { formatNumber, formatBytes } from '$lib/format';
+	import { CHAIN_DOWN } from '$lib/chainStatusCopy';
 
 	let { data } = $props();
 
@@ -81,7 +82,7 @@
 	{:else if connected}
 		<span class="status healthy"><span class="dot blink"></span>Healthy</span>
 	{:else}
-		<span class="status behind"><span class="dot"></span>Can't reach chain data</span>
+		<span class="status behind"><span class="dot"></span>{CHAIN_DOWN}</span>
 	{/if}
 </div>
 
@@ -108,7 +109,7 @@
 				<span class="hero-number hero-height dim">—</span>
 			</div>
 			<div class="hero-ring attention-text">
-				{node.error ?? 'No connection to the configured chain sources.'}
+				{node.error ?? `${CHAIN_DOWN}.`}
 				<a href="/admin/settings">Check the connection →</a>
 			</div>
 		{/if}

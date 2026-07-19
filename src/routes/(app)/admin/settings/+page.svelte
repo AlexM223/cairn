@@ -2,6 +2,7 @@
 	import { enhance } from '$app/forms';
 	import Banner from '$lib/components/Banner.svelte';
 	import { formatNumber } from '$lib/format';
+	import { CHAIN_DOWN, CHAIN_DOWN_PROXY } from '$lib/chainStatusCopy';
 
 	let { data, form } = $props();
 
@@ -556,8 +557,8 @@
 						<span class="health-dot bad"></span>
 						<span>
 							{chainHealth.proxyConfigured
-								? 'Connections through the proxy are failing'
-								: 'Connections to the node are failing'}{chainHealth.lastErrorAt
+								? CHAIN_DOWN_PROXY
+								: CHAIN_DOWN}{chainHealth.lastErrorAt
 								? ` — last failure ${agoLabel(chainHealth.lastErrorAt)}`
 								: ''}{chainHealth.lastError ? ` (${chainHealth.lastError})` : ''}.
 						</span>
@@ -943,7 +944,7 @@
 	}
 
 	.health-line.health-bad {
-		color: var(--error);
+		color: var(--attention);
 	}
 
 	.health-dot {
@@ -959,7 +960,7 @@
 	}
 
 	.health-dot.bad {
-		background: var(--error);
+		background: var(--attention);
 	}
 
 	.save-row {

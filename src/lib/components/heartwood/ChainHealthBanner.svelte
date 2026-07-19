@@ -32,6 +32,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import type { ChainHealth } from '$lib/server/chainHealth';
 	import { chainHealth } from '$lib/live/chainHealth.svelte';
+	import { CHAIN_DOWN, CHAIN_DOWN_PROXY } from '$lib/chainStatusCopy';
 
 	// Whether the viewer can act on this — only admins get the settings link.
 	// hasSnapshot (cairn-6efi QA P1-a, ported from explorer/heartwood-wave2):
@@ -61,9 +62,7 @@
 
 	function headline(h: ChainHealth): string {
 		if (h.neverConfigured) return "Heartwood isn't connected to the Bitcoin network yet.";
-		return h.proxyConfigured
-			? "Can't reach the Bitcoin network through the configured proxy."
-			: "Can't reach the Bitcoin network.";
+		return `${h.proxyConfigured ? CHAIN_DOWN_PROXY : CHAIN_DOWN}.`;
 	}
 
 	function subline(h: ChainHealth): string {

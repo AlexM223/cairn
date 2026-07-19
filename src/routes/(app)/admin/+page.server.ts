@@ -6,8 +6,18 @@ import { getNetworkHealth } from '$lib/server/chainHealth';
 import { readChainSnapshot } from '$lib/server/chainSnapshot';
 import { getUpdateNotice, CURRENT_VERSION } from '$lib/server/updateCheck';
 import { DB_PATH } from '$lib/server/db';
+import { CHAIN_DOWN } from '$lib/chainStatusCopy';
 import type { PageServerLoad } from './$types';
 import type { NodeInfo } from '$lib/types';
+
+/** `health.lastError` is deliberately passed through raw when present (admin
+ *  diagnostic detail an operator can act on -- see page.server.test.ts "a
+ *  real, honest error"); only the generic no-detail fallback (a connection
+ *  was attempted and failed, but no message was recorded) uses the shared
+ *  chain-down copy (cairn-6edk) instead of its own one-off wording. */
+function nodeErrorText(lastError: string | null): string {
+	return lastError ?? `${CHAIN_DOWN}.`;
+}
 
 /** Best-effort storage picture for the Node page: how big the instance's
  *  database is, and how full the volume it lives on is. Any FS hiccup (odd
@@ -74,7 +84,7 @@ function buildNodeInfo(settings: ReturnType<typeof getInstanceSettings>): NodeIn
 		tipHeight,
 		tipHash: snap?.data.blocks[0]?.hash ?? null,
 		network: 'mainnet',
-		error: connected ? undefined : attempted ? (health.lastError ?? 'Connection failed') : undefined
+		error: connected ? undefined : attempted ? nodeErrorText(health.lastError) : undefined
 	};
 }
 
