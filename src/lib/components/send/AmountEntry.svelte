@@ -13,7 +13,7 @@
 	// Compact (batch-row) mode is BTC-only: no swap, sats shown as the secondary
 	// line — one fewer per-row unit to reason about.
 	import Icon from '$lib/components/Icon.svelte';
-	import { btcUsd, fiatPrimaryPref } from '$lib/price';
+	import { btcUsd, fiatPrimaryPref, fiatVisible } from '$lib/price';
 	import { unitPref, setUnitPref } from '$lib/units';
 	import { formatBtc, formatSats, formatFiat } from '$lib/format';
 	import { SATS_PER_BTC, sanitizeDecimal, textToSats, isHighSpend, nextUnit } from './amountInput';
@@ -41,8 +41,10 @@
 	// `fiatPrimaryPref` in $lib/price, cairn-nb8e) -- sats-first doctrine
 	// (DESIGN-MANIFESTO.md §3): BTC/sats is the default hero, fiat is opt-in
 	// secondary, never a denomination sprung on the user just because a price
-	// happened to load.
-	const fiatEligible = $derived(price != null && $fiatPrimaryPref);
+	// happened to load. Also requires `fiatVisible` (Settings -> Display's
+	// Fiat display Hidden/Shown toggle) -- a Hidden setting always wins over
+	// fiat-primary, same enforcement doctrine as Amount.svelte (cairn-8pl9w).
+	const fiatEligible = $derived(price != null && $fiatPrimaryPref && $fiatVisible);
 
 	// Three-way denomination cycle: BTC -> sats -> (USD, only when fiat-primary
 	// is on) -> BTC. `sats` (the bound prop) is always the canonical amount;
@@ -155,9 +157,10 @@
 	// one unit while editing" — the sats<->BTC swap is a 100,000,000x slip,
 	// and a further slip if fiat is misread as BTC or vice versa).
 	const secondaryLine = $derived.by(() => {
-		if (price == null) {
-			// No price loaded — nothing to convert to fiat, so just show the
-			// other Bitcoin-denominated unit.
+		if (price == null || !$fiatVisible) {
+			// No price loaded, or the user has fiat display set to Hidden --
+			// either way nothing to convert to fiat, so just show the other
+			// Bitcoin-denominated unit (cairn-8pl9w).
 			return entryUnit === 'sats' ? `${formatBtc(sats)} BTC` : `${formatSats(sats)} sats`;
 		}
 		const fiatText = formatFiat((sats / SATS_PER_BTC) * price);
@@ -237,7 +240,7 @@
 			<p class="hero-sub">Type an amount</p>
 		{/if}
 
-		{#if price != null}
+		{#if price != null && $fiatVisible}
 			<p class="rate-anchor">1 BTC = {formatFiat(price)}</p>
 		{/if}
 	</div>

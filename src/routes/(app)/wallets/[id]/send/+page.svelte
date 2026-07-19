@@ -26,6 +26,7 @@
 	import { sendCtaLabel } from '$lib/components/send/sendMoney';
 	import { arrivalWords, type FeeChoiceKey } from '$lib/components/send/sendCopy';
 	import { btcUsd, fiatVisible } from '$lib/price';
+	import { unitPref } from '$lib/units';
 	import { scrollToTop } from '$lib/scrollToTop';
 	import type { ScriptType, FeeEstimates } from '$lib/types';
 	import type { ConstructedPsbt } from '$lib/server/bitcoin/psbt';
@@ -384,6 +385,12 @@
 			? Math.max(0, confirmed - summaryAmountSats - (summaryFeeSats ?? 0))
 			: null
 	);
+	// Unit-respecting rendering for the summary rail's BTC/sats lines (cairn-v5ass
+	// follow-up to cairn-nb8e) -- reads the same `$lib/units` preference
+	// AmountEntry's hero field already honors, instead of hardcoding " BTC".
+	function summaryUnitAmount(amountSats: number): string {
+		return $unitPref === 'sats' ? `${formatSats(amountSats)} sats` : `${formatBtc(amountSats)} BTC`;
+	}
 
 	let building = $state(false);
 	let buildError = $state<string | null>(null);
@@ -1684,7 +1691,7 @@
 				<span class="summary-eyebrow">This send</span>
 				<div class="summary-block">
 					<span class="summary-label">Amount</span>
-					<span class="summary-value tabular">{formatBtc(summaryAmountSats)} BTC</span>
+					<span class="summary-value tabular">{summaryUnitAmount(summaryAmountSats)}</span>
 					{#if $fiatVisible && $btcUsd != null}
 						<span class="summary-sub tabular">
 							≈ {((summaryAmountSats / SATS_PER_BTC) * $btcUsd).toLocaleString(undefined, {
@@ -1718,7 +1725,7 @@
 				<div class="summary-block">
 					<span class="summary-label">Remaining</span>
 					<span class="summary-value tabular">
-						{summaryRemainingSats != null ? `${formatBtc(summaryRemainingSats)} BTC` : '—'}
+						{summaryRemainingSats != null ? summaryUnitAmount(summaryRemainingSats) : '—'}
 					</span>
 				</div>
 			</aside>
