@@ -8,6 +8,7 @@
 	import { toast } from '$lib/components/toast.svelte';
 	import { addPasskey, browserSupportsWebAuthn } from '$lib/passkey';
 	import { fiatPrimaryPref, setFiatPrimaryPref, fiatVisible, setFiatVisible } from '$lib/price';
+	import { unitPref, setUnitPref } from '$lib/units';
 	import type { CredentialInfo } from '$lib/types';
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
@@ -131,15 +132,12 @@
 	const recovery = $derived(data.recovery);
 
 	// --- Display unit preference (Heartwood 5h Units toggle) -----------------
-	// Client-side preference persisted to localStorage under `hw.unit` so the
-	// balance-rendering lanes can read the same key. Defaults to BTC.
-	let unit = $state<'btc' | 'sats'>('btc');
-	$effect(() => {
-		if (localStorage.getItem('hw.unit') === 'sats') unit = 'sats';
-	});
+	// Shared `hw.unit`-backed store (`$lib/units`, cairn-nb8e) so every other
+	// surface that cycles/picks BTC vs sats -- AmountEntry's unit-cycle button
+	// included -- reads and writes the exact same preference this toggle does.
+	const unit = $derived($unitPref);
 	function setUnit(u: 'btc' | 'sats') {
-		unit = u;
-		localStorage.setItem('hw.unit', u);
+		setUnitPref(u);
 	}
 
 	// --- Fiat display toggle (UX redesign Phase 1, cairn-gt05.1) -------------

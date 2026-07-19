@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sanitizeDecimal, textToSats, SATS_PER_BTC, isHighSpend } from './amountInput';
+import { sanitizeDecimal, textToSats, SATS_PER_BTC, isHighSpend, nextUnit } from './amountInput';
 
 describe('sanitizeDecimal', () => {
 	it('strips letters, keeping digits and a single decimal point (cairn-wi8a)', () => {
@@ -79,5 +79,23 @@ describe('isHighSpend (R1 unit-slip guard, cairn-9nvo)', () => {
 	it('is false once the amount reaches or exceeds the balance — that band belongs to the over-balance guard instead', () => {
 		expect(isHighSpend(1_000_000, 1_000_000)).toBe(false);
 		expect(isHighSpend(1_500_000, 1_000_000)).toBe(false);
+	});
+});
+
+describe('nextUnit (AmountEntry unit-cycle order, cairn-nb8e)', () => {
+	it('cycles BTC -> sats -> BTC when fiat is not eligible (no price, or fiat-primary off)', () => {
+		expect(nextUnit('btc', false)).toBe('sats');
+		expect(nextUnit('sats', false)).toBe('btc');
+	});
+
+	it('never lands on fiat when fiat is not eligible, even starting from fiat', () => {
+		// e.g. fiat-primary got turned off mid-session while entryUnit was still 'fiat'.
+		expect(nextUnit('fiat', false)).toBe('btc');
+	});
+
+	it('cycles BTC -> sats -> USD -> BTC when fiat is eligible', () => {
+		expect(nextUnit('btc', true)).toBe('sats');
+		expect(nextUnit('sats', true)).toBe('fiat');
+		expect(nextUnit('fiat', true)).toBe('btc');
 	});
 });

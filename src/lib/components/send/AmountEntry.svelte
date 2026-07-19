@@ -13,9 +13,10 @@
 	// Compact (batch-row) mode is BTC-only: no swap, sats shown as the secondary
 	// line — one fewer per-row unit to reason about.
 	import Icon from '$lib/components/Icon.svelte';
-	import { btcUsd } from '$lib/price';
+	import { btcUsd, fiatPrimaryPref } from '$lib/price';
+	import { unitPref, setUnitPref } from '$lib/units';
 	import { formatBtc, formatSats, formatFiat } from '$lib/format';
-	import { SATS_PER_BTC, sanitizeDecimal, textToSats, isHighSpend } from './amountInput';
+	import { SATS_PER_BTC, sanitizeDecimal, textToSats, isHighSpend, nextUnit } from './amountInput';
 
 	let {
 		sats = $bindable(0),
@@ -35,11 +36,23 @@
 	// which also hides the swap and makes the secondary line show sats.
 	const price = $derived(compact ? null : $btcUsd);
 
-	// Three-way denomination cycle: BTC -> sats -> USD -> BTC. `sats` (the
-	// bound prop) is always the canonical amount; entryUnit only changes how
-	// `text` is rendered/parsed. Cycling never recomputes `sats` from `text` —
-	// it re-renders `text` FROM the existing `sats`, so no precision drift.
-	let entryUnit = $state<'btc' | 'sats' | 'fiat'>('btc');
+	// Fiat only ever participates in the unit cycle when the user has
+	// explicitly opted into fiat-primary display (Settings -> Display,
+	// `fiatPrimaryPref` in $lib/price, cairn-nb8e) -- sats-first doctrine
+	// (DESIGN-MANIFESTO.md §3): BTC/sats is the default hero, fiat is opt-in
+	// secondary, never a denomination sprung on the user just because a price
+	// happened to load.
+	const fiatEligible = $derived(price != null && $fiatPrimaryPref);
+
+	// Three-way denomination cycle: BTC -> sats -> (USD, only when fiat-primary
+	// is on) -> BTC. `sats` (the bound prop) is always the canonical amount;
+	// entryUnit only changes how `text` is rendered/parsed. Cycling never
+	// recomputes `sats` from `text` — it re-renders `text` FROM the existing
+	// `sats`, so no precision drift. Starts from the shared BTC/sats
+	// preference (`$lib/units`, same `hw.unit` Settings writes) so this field
+	// never disagrees with the rest of the app about which Bitcoin
+	// denomination the user prefers (cairn-nb8e).
+	let entryUnit = $state<'btc' | 'sats' | 'fiat'>($unitPref);
 	let text = $state('');
 	// The sats value the current `text` represents — lets the reseed effect tell
 	// an external sats change apart from our own keystroke-driven write.
@@ -56,16 +69,6 @@
 		return formatBtc(s, { trim: true });
 	}
 
-	// Cycle order skips fiat entirely when no price is known (nothing to
-	// convert against), so BTC<->sats keeps working offline.
-	function nextUnit(u: 'btc' | 'sats' | 'fiat', hasPrice: boolean): 'btc' | 'sats' | 'fiat' {
-		const cycle: Array<'btc' | 'sats' | 'fiat'> = hasPrice
-			? ['btc', 'sats', 'fiat']
-			: ['btc', 'sats'];
-		const i = cycle.indexOf(u);
-		return cycle[(i + 1) % cycle.length];
-	}
-
 	const unitLabel = (u: 'btc' | 'sats' | 'fiat') =>
 		u === 'btc' ? 'BTC' : u === 'sats' ? 'sats' : 'USD';
 
@@ -79,21 +82,24 @@
 		}
 	});
 
-	// Before the user types, prefer fiat entry once a price is available (the
-	// consumer-app default). Never overrides a unit the user chose or text typed.
+	// Before the user types, prefer fiat entry once a price is available --
+	// but only for users who opted into fiat-primary display. Never overrides
+	// a unit the user chose or text typed.
 	$effect(() => {
 		if (userTouched || compact) return;
-		if (price != null && entryUnit === 'btc' && sats <= 0) {
+		if (fiatEligible && entryUnit === 'btc' && sats <= 0) {
 			entryUnit = 'fiat';
 		}
 	});
 
-	// If the price feed drops mid-session while entering in fiat, fall back to
-	// BTC so entry never blocks on a missing rate.
+	// If the price feed drops, or fiat-primary gets turned off, mid-session
+	// while entering in fiat, fall back to the user's BTC/sats preference so
+	// entry never blocks on a missing rate or shows a denomination the user
+	// no longer has enabled.
 	$effect(() => {
-		if (price == null && entryUnit === 'fiat') {
-			entryUnit = 'btc';
-			text = satsToText(sats, 'btc', null);
+		if (!fiatEligible && entryUnit === 'fiat') {
+			entryUnit = $unitPref;
+			text = satsToText(sats, $unitPref, null);
 			lastSats = sats;
 		}
 	});
@@ -121,10 +127,16 @@
 
 	// Cycles the DISPLAY denomination only — re-renders `text` from the
 	// existing canonical `sats`, never recomputes `sats` itself, so cycling
-	// through BTC -> sats -> USD -> BTC never drifts the amount.
+	// through BTC -> sats -> (USD, fiat-primary users only) -> BTC never
+	// drifts the amount. Landing on BTC or sats writes back to the shared
+	// `hw.unit` preference (`$lib/units`) so this field's cycle stays in sync
+	// with Settings and every other BTC/sats surface (cairn-nb8e) — landing
+	// on fiat leaves that preference untouched since it only ever tracks the
+	// Bitcoin denomination, not fiat.
 	function cycleUnit() {
 		userTouched = true;
-		entryUnit = nextUnit(entryUnit, price != null);
+		entryUnit = nextUnit(entryUnit, fiatEligible);
+		if (entryUnit !== 'fiat') setUnitPref(entryUnit);
 		text = satsToText(sats, entryUnit, price);
 		lastSats = sats;
 	}
@@ -208,7 +220,7 @@
 				title="Change amount unit"
 			>
 				<Icon name="swap-horizontal" size={13} />
-				<span class="unit-cycle-label">{unitLabel(nextUnit(entryUnit, price != null))}</span>
+				<span class="unit-cycle-label">{unitLabel(nextUnit(entryUnit, fiatEligible))}</span>
 			</button>
 		</div>
 

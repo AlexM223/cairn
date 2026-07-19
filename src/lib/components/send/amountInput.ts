@@ -38,6 +38,23 @@ export function textToSats(t: string, unit: EntryUnit, p: number | null): number
 }
 
 /**
+ * AmountEntry's unit-cycle order (cairn-nb8e): BTC -> sats -> USD -> BTC.
+ * Fiat only joins the cycle when `fiatEligible` -- a price is loaded AND the
+ * user has explicitly opted into fiat-primary display (`fiatPrimaryPref`,
+ * $lib/price) -- is true; otherwise the cycle is just BTC<->sats, so a user
+ * who never turned fiat-primary on (or is offline) never lands on a
+ * denomination Settings' Units toggle doesn't itself offer.
+ */
+export function nextUnit(u: EntryUnit, fiatEligible: boolean): EntryUnit {
+	const cycle: EntryUnit[] = fiatEligible ? ['btc', 'sats', 'fiat'] : ['btc', 'sats'];
+	const i = cycle.indexOf(u);
+	// `u` may be 'fiat' while fiatEligible is false (e.g. fiat-primary just
+	// got turned off) -- indexOf returns -1 then, so treat it as if it were
+	// already past the end of the (fiat-less) cycle and wrap to the start.
+	return cycle[(i + 1) % cycle.length];
+}
+
+/**
  * R1 unit-slip guard (docs/UX-PSYCHOLOGY-RESEARCH-2026-07-15.md, F5 + F2):
  * a calm, non-blocking signal that the entered amount is a LARGE share of
  * what the wallet can actually spend — not an error, just worth noticing
