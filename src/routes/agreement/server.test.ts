@@ -99,11 +99,55 @@ describe('/agreement ?/accept', () => {
 	});
 });
 
+describe('/agreement ?/accept next-threading (cairn-95yic)', () => {
+	it('redirects to /welcome-aboard when the allowlisted next token rides the form', async () => {
+		const user = await makeUser();
+		let thrown: unknown;
+		try {
+			await actions.accept(acceptEvent(user, { accept: 'on', next: 'welcome-aboard' }));
+		} catch (e) {
+			thrown = e;
+		}
+		expect(thrown).toMatchObject({ status: 303, location: '/welcome-aboard' });
+		expect(hasAcceptedCurrentAgreement(user.id)).toBe(true);
+	});
+
+	it('ignores any non-allowlisted next value — no open redirect, not even internal paths', async () => {
+		for (const evil of ['/admin', '//evil.example', 'https://evil.example', '/welcome-aboard']) {
+			wipe();
+			setSetting('registration_mode', 'open');
+			const user = await makeUser();
+			let thrown: unknown;
+			try {
+				await actions.accept(acceptEvent(user, { accept: 'on', next: evil }));
+			} catch (e) {
+				thrown = e;
+			}
+			// Note '/welcome-aboard' (with the slash) is also rejected: the token
+			// is the exact string 'welcome-aboard', never a pathname.
+			expect(thrown).toMatchObject({ status: 303, location: '/' });
+		}
+	});
+
+	it('load surfaces the token only for the exact allowlisted value', async () => {
+		const user = await makeUser();
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const at = (q: string) =>
+			({ locals: { user }, url: new URL(`http://localhost/agreement${q}`) }) as any;
+		expect(((await load(at('?next=welcome-aboard'))) as { next: string | null }).next).toBe(
+			'welcome-aboard'
+		);
+		expect(((await load(at('?next=/welcome-aboard'))) as { next: string | null }).next).toBeNull();
+		expect(((await load(at('?next=evil'))) as { next: string | null }).next).toBeNull();
+		expect(((await load(at(''))) as { next: string | null }).next).toBeNull();
+	});
+});
+
 describe('/agreement load', () => {
 	it('reports alreadyAccepted correctly before and after acceptance', async () => {
 		const user = await makeUser();
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const loadEvent = { locals: { user } } as any;
+		const loadEvent = { locals: { user }, url: new URL('http://localhost/agreement') } as any;
 
 		type LoadData = { alreadyAccepted: boolean; agreement: { version: number } };
 		const before = (await load(loadEvent)) as LoadData;

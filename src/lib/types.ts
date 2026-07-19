@@ -414,6 +414,8 @@ export interface InviteInfo {
 	expiresAt: string | null;
 	createdAt: string;
 	status: 'active' | 'exhausted' | 'expired' | 'revoked';
+	/** Optional captain-written welcome shown on the invite landing page (cairn-s8g9a). */
+	welcomeMessage: string | null;
 }
 
 export interface AdminUserInfo {

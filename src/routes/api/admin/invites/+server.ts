@@ -9,7 +9,7 @@ export const GET: RequestHandler = async (event) => {
 	return json({ invites: listInvites() });
 };
 
-/** POST { count?, label?, maxUses?, expiresDays? } */
+/** POST { count?, label?, maxUses?, expiresDays?, welcomeMessage? } */
 export const POST: RequestHandler = async (event) => {
 	const admin = requireAdmin(event);
 	const body = await readJson<{
@@ -17,6 +17,7 @@ export const POST: RequestHandler = async (event) => {
 		label?: string;
 		maxUses?: number;
 		expiresDays?: number;
+		welcomeMessage?: string;
 	}>(event);
 
 	try {
@@ -25,7 +26,8 @@ export const POST: RequestHandler = async (event) => {
 			count: body.count ?? 1,
 			label: body.label,
 			maxUses: body.maxUses,
-			expiresDays: body.expiresDays ?? null
+			expiresDays: body.expiresDays ?? null,
+			welcomeMessage: body.welcomeMessage
 		});
 		return json({ invites: created }, { status: 201 });
 	} catch (e) {

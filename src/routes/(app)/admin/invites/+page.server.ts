@@ -1,12 +1,27 @@
 import { fail } from '@sveltejs/kit';
-import { createInvites, listInvites, revokeInvite } from '$lib/server/admin';
+import {
+	createInvites,
+	getInstanceName,
+	listInvites,
+	revokeInvite,
+	setInstanceName,
+	INSTANCE_NAME_MAX_LENGTH,
+	WELCOME_MESSAGE_MAX_LENGTH
+} from '$lib/server/admin';
 import { assertTeamMode, requireAdmin } from '$lib/server/api';
 import { AuthError } from '$lib/server/auth';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async () => {
 	assertTeamMode();
-	return { invites: listInvites() };
+	return {
+		invites: listInvites(),
+		// Come-aboard identity (cairn-s8g9a): the node name the invite landing
+		// leads with, editable right where invites are made.
+		instanceName: getInstanceName(),
+		instanceNameMax: INSTANCE_NAME_MAX_LENGTH,
+		welcomeMax: WELCOME_MESSAGE_MAX_LENGTH
+	};
 };
 
 export const actions: Actions = {
@@ -38,9 +53,25 @@ export const actions: Actions = {
 				count,
 				label,
 				maxUses,
-				expiresDays
+				expiresDays,
+				welcomeMessage: String(form.get('welcomeMessage') ?? '')
 			});
 			return { created: created.map((i) => i.code) };
+		} catch (e) {
+			if (e instanceof AuthError) return fail(400, { error: e.message });
+			throw e;
+		}
+	},
+
+	// Come-aboard identity (cairn-s8g9a): save (or clear, with an empty value)
+	// the node name shown on the invite landing / branded signup / welcome tour.
+	saveName: async (event) => {
+		requireAdmin(event);
+		assertTeamMode();
+		const form = await event.request.formData();
+		try {
+			setInstanceName(String(form.get('instanceName') ?? ''));
+			return { nameSaved: true };
 		} catch (e) {
 			if (e instanceof AuthError) return fail(400, { error: e.message });
 			throw e;

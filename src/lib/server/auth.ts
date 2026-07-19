@@ -773,6 +773,24 @@ function findInvite(code: string) {
 		| undefined;
 }
 
+/**
+ * Non-throwing redeemability check for the invite landing page's preview
+ * (come-aboard, cairn-n1ovc). Returns the invite's row id when the code is
+ * currently redeemable, null otherwise — deliberately WITHOUT distinguishing
+ * unknown / revoked / expired / exhausted, so an anonymous probe of the
+ * preview surface learns nothing beyond "not redeemable". The detailed
+ * error copy stays on the authenticated-intent signup POST path
+ * (assertInviteRedeemable below), where it always lived.
+ */
+export function redeemableInviteId(code: string): number | null {
+	try {
+		assertInviteRedeemable(code);
+	} catch {
+		return null;
+	}
+	return findInvite(code)?.id ?? null;
+}
+
 /** Throw AuthError('bad_invite') unless the code is currently redeemable. */
 function assertInviteRedeemable(code: string): void {
 	const invite = findInvite(code);

@@ -48,7 +48,10 @@
 			});
 			const body = await res.json().catch(() => null);
 			if (!res.ok) throw new Error(body?.error || 'Could not create the account.');
-			await goto('/', { invalidateAll: true });
+			// Invited crew get the guided welcome-aboard first run instead of
+			// being dropped on the generic home screen (cairn-95yic). Keyed on
+			// the server-validated preview, not the mere presence of a code.
+			await goto(data.invitePreview ? '/welcome-aboard' : '/', { invalidateAll: true });
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Could not create the account.';
 		} finally {
@@ -72,6 +75,18 @@
 		<Banner variant="info">
 			You're setting up this instance — the first account becomes the administrator.
 		</Banner>
+	{/if}
+
+	{#if data.invitePreview && data.inviteNode}
+		<!-- Come-aboard branding (cairn-95yic): this signup belongs to a
+		     specific captain's node, and the page should say so. -->
+		<div class="joining">
+			<span class="joining-eyebrow">Joining</span>
+			<span class="joining-node">{data.inviteNode}</span>
+			{#if data.invitePreview.captainName}
+				<span class="joining-captain">invited by {data.invitePreview.captainName}</span>
+			{/if}
+		</div>
 	{/if}
 
 	<!--
@@ -142,6 +157,37 @@
 <style>
 	form {
 		gap: 16px;
+	}
+
+	.joining {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 2px;
+		margin-bottom: 22px;
+		text-align: center;
+	}
+
+	.joining-eyebrow {
+		font-size: 11px;
+		font-weight: 500;
+		letter-spacing: 0.09em;
+		text-transform: uppercase;
+		color: var(--text-muted);
+	}
+
+	.joining-node {
+		font-family: var(--font-serif);
+		font-size: 21px;
+		font-weight: 500;
+		letter-spacing: -0.01em;
+		color: var(--text-hero);
+		overflow-wrap: anywhere;
+	}
+
+	.joining-captain {
+		font-size: 12.5px;
+		color: var(--text-secondary);
 	}
 
 	.btn {

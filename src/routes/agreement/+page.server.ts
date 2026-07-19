@@ -7,7 +7,7 @@ import {
 } from '$lib/server/disclosures';
 import type { Actions, PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async ({ locals }) => {
+export const load: PageServerLoad = async ({ locals, url }) => {
 	if (!locals.user) redirect(302, '/login');
 	const agreement = getUserAgreement();
 	return {
@@ -18,7 +18,14 @@ export const load: PageServerLoad = async ({ locals }) => {
 		hasCustomOperator: agreement.operator.trim() !== '' && agreement.operator !== DEFAULT_OPERATOR,
 		// When already accepted, the page is a read-only review (reachable from
 		// Settings); otherwise it's the acceptance gate.
-		alreadyAccepted: hasAcceptedCurrentAgreement(locals.user.id)
+		alreadyAccepted: hasAcceptedCurrentAgreement(locals.user.id),
+		// Onward destination after accepting (cairn-95yic). STRICT allowlist —
+		// this is a post-auth redirect target, so it must never be an arbitrary
+		// user-supplied path: the only recognized token is 'welcome-aboard'
+		// (the invited-crew tour the signup redirect points at, which the
+		// agreement gate would otherwise swallow — every fresh non-admin signup
+		// passes through this gate before their first (app) page).
+		next: url.searchParams.get('next') === 'welcome-aboard' ? ('welcome-aboard' as const) : null
 	};
 };
 
@@ -40,6 +47,10 @@ export const actions: Actions = {
 			ip = null;
 		}
 		recordUserAgreement(locals.user.id, ip);
-		redirect(303, '/');
+		// Same strict allowlist as the load's `next`: the ONLY non-home target
+		// is the welcome-aboard tour token, carried through the form as a
+		// hidden field (the ?/accept action URL replaces the query string, so
+		// a search param wouldn't survive the POST). Anything else goes home.
+		redirect(303, form.get('next') === 'welcome-aboard' ? '/welcome-aboard' : '/');
 	}
 };

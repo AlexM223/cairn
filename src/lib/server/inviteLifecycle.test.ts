@@ -13,7 +13,16 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { db } from './db';
 import { registerUser } from './auth';
 import { setSetting } from './settings';
-import { createInvites, revokeInvite, listInvites, deleteUser } from './admin';
+import {
+	createInvites,
+	revokeInvite,
+	listInvites,
+	deleteUser,
+	getInstanceName,
+	setInstanceName,
+	INSTANCE_NAME_MAX_LENGTH,
+	WELCOME_MESSAGE_MAX_LENGTH
+} from './admin';
 import { deleteOwnAccount } from './accountDeletion';
 
 function wipe(): void {
@@ -95,6 +104,51 @@ describe('invite lifecycle: create -> list -> redeem', () => {
 				inviteCode: invite.code
 			})
 		).rejects.toThrowError(expect.objectContaining({ code: 'bad_invite' }));
+	});
+});
+
+describe('come-aboard identity fields (cairn-s8g9a)', () => {
+	it('round-trips a per-invite welcome message and defaults it to null', async () => {
+		const admin = await makeAdmin();
+		const [withMsg] = createInvites({
+			createdBy: admin.id,
+			count: 1,
+			welcomeMessage: '  Welcome aboard, kiddo.  '
+		});
+		const [without] = createInvites({ createdBy: admin.id, count: 1 });
+		const listed = listInvites();
+		expect(listed.find((i) => i.id === withMsg.id)?.welcomeMessage).toBe('Welcome aboard, kiddo.');
+		expect(listed.find((i) => i.id === without.id)?.welcomeMessage).toBeNull();
+	});
+
+	it('rejects a NUL byte and an over-long welcome message', async () => {
+		const admin = await makeAdmin();
+		expect(() =>
+			createInvites({ createdBy: admin.id, count: 1, welcomeMessage: 'hi\u0000there' })
+		).toThrowError(expect.objectContaining({ code: 'invalid_welcome' }));
+		expect(() =>
+			createInvites({
+				createdBy: admin.id,
+				count: 1,
+				welcomeMessage: 'x'.repeat(WELCOME_MESSAGE_MAX_LENGTH + 1)
+			})
+		).toThrowError(expect.objectContaining({ code: 'invalid_welcome' }));
+		// Nothing was created by the failed calls.
+		expect(listInvites()).toHaveLength(0);
+	});
+
+	it('instance name: set, trim, clear, and reject bad input', () => {
+		expect(getInstanceName()).toBeNull();
+		setInstanceName('  The Martinez family node  ');
+		expect(getInstanceName()).toBe('The Martinez family node');
+		setInstanceName('');
+		expect(getInstanceName()).toBeNull();
+		expect(() => setInstanceName('bad\u0000name')).toThrowError(
+			expect.objectContaining({ code: 'invalid_instance_name' })
+		);
+		expect(() => setInstanceName('x'.repeat(INSTANCE_NAME_MAX_LENGTH + 1))).toThrowError(
+			expect.objectContaining({ code: 'invalid_instance_name' })
+		);
 	});
 });
 

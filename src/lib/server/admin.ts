@@ -249,6 +249,7 @@ export function listInvites(): InviteInfo[] {
 		revoked: number;
 		expires_at: string | null;
 		created_at: string;
+		welcome_message: string | null;
 	}[];
 
 	return rows.map((r) => ({
@@ -261,7 +262,8 @@ export function listInvites(): InviteInfo[] {
 		usedCount: r.used_count,
 		expiresAt: r.expires_at,
 		createdAt: r.created_at,
-		status: inviteStatus(r)
+		status: inviteStatus(r),
+		welcomeMessage: r.welcome_message
 	}));
 }
 
@@ -271,7 +273,12 @@ export interface CreateInvitesInput {
 	label?: string;
 	maxUses?: number;
 	expiresDays?: number | null;
+	/** Optional captain-written welcome shown on /invite/[code] (cairn-s8g9a). */
+	welcomeMessage?: string;
 }
+
+/** Longest welcome message an invite may carry — one warm paragraph, not an essay. */
+export const WELCOME_MESSAGE_MAX_LENGTH = 500;
 
 export function createInvites(input: CreateInvitesInput): InviteInfo[] {
 	// Reject an embedded NUL rather than let node:sqlite silently truncate the
@@ -282,6 +289,22 @@ export function createInvites(input: CreateInvitesInput): InviteInfo[] {
 			'invalid_label'
 		);
 	}
+	// Same NUL guard for the welcome message, plus a length cap: this text is
+	// rendered verbatim (Svelte-escaped) on a page anyone holding the invite
+	// link can see, so it must never truncate silently or balloon unbounded.
+	if (input.welcomeMessage != null && containsNulByte(input.welcomeMessage)) {
+		throw new AuthError(
+			'The welcome message contains a NUL character (U+0000), which cannot be stored.',
+			'invalid_welcome'
+		);
+	}
+	const welcomeMessage = input.welcomeMessage?.trim() || null;
+	if (welcomeMessage && welcomeMessage.length > WELCOME_MESSAGE_MAX_LENGTH) {
+		throw new AuthError(
+			`The welcome message is too long — keep it under ${WELCOME_MESSAGE_MAX_LENGTH} characters.`,
+			'invalid_welcome'
+		);
+	}
 	const count = Math.min(Math.max(1, input.count || 1), 50);
 	const maxUses = Math.min(Math.max(1, input.maxUses || 1), 1000);
 	const expiresAt =
@@ -290,7 +313,7 @@ export function createInvites(input: CreateInvitesInput): InviteInfo[] {
 			: null;
 
 	const insert = db.prepare(
-		'INSERT INTO invites (code, label, created_by, max_uses, expires_at) VALUES (?, ?, ?, ?, ?)'
+		'INSERT INTO invites (code, label, created_by, max_uses, expires_at, welcome_message) VALUES (?, ?, ?, ?, ?, ?)'
 	);
 	const created: number[] = [];
 	for (let i = 0; i < count; i++) {
@@ -302,7 +325,8 @@ export function createInvites(input: CreateInvitesInput): InviteInfo[] {
 					input.label?.trim() || null,
 					input.createdBy,
 					maxUses,
-					expiresAt
+					expiresAt,
+					welcomeMessage
 				);
 				created.push(Number(res.lastInsertRowid));
 				break;
@@ -317,6 +341,53 @@ export function createInvites(input: CreateInvitesInput): InviteInfo[] {
 
 export function revokeInvite(id: number): void {
 	db.prepare('UPDATE invites SET revoked = 1 WHERE id = ?').run(id);
+}
+
+// ---------- Instance identity (come-aboard, cairn-s8g9a) ----------
+//
+// The captain's name for this node — "Alex's node", "The Martinez family
+// node" — shown wherever the instance introduces itself to an invited crew
+// member (the /invite/[code] landing, the branded signup header, the
+// welcome-aboard first run). Distinct from the LEGAL operator name in
+// disclosures.ts (user_agreement_operator): that one is bound to the user
+// agreement and bumps the agreement version when edited, forcing every user
+// to re-accept — far too heavy a side effect for what is purely a hospitality
+// string. Stored under its own settings key with no coupling to either.
+
+const K_INSTANCE_NAME = 'instance_name';
+export const INSTANCE_NAME_MAX_LENGTH = 60;
+
+/** The admin-set node name, or null while unset (callers pick their own fallback). */
+export function getInstanceName(): string | null {
+	const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(K_INSTANCE_NAME) as
+		| { value: string }
+		| undefined;
+	const v = row?.value.trim();
+	return v ? v : null;
+}
+
+/** Save (or clear, with an empty string) the node name. Throws AuthError on bad input. */
+export function setInstanceName(name: string): void {
+	if (containsNulByte(name)) {
+		throw new AuthError(
+			'The node name contains a NUL character (U+0000), which cannot be stored.',
+			'invalid_instance_name'
+		);
+	}
+	const trimmed = name.trim();
+	if (trimmed.length > INSTANCE_NAME_MAX_LENGTH) {
+		throw new AuthError(
+			`The node name is too long — keep it under ${INSTANCE_NAME_MAX_LENGTH} characters.`,
+			'invalid_instance_name'
+		);
+	}
+	if (!trimmed) {
+		db.prepare('DELETE FROM settings WHERE key = ?').run(K_INSTANCE_NAME);
+		return;
+	}
+	db.prepare(
+		'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+	).run(K_INSTANCE_NAME, trimmed);
 }
 
 // ---------- Overview ----------

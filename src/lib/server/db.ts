@@ -124,6 +124,16 @@ db.exec(`
 	if (!walletCols.includes('master_fingerprint')) {
 		db.exec('ALTER TABLE wallets ADD COLUMN master_fingerprint TEXT');
 	}
+
+	// Come-aboard (cairn-s8g9a): an optional captain-written welcome message,
+	// shown on the /invite/[code] landing page to whoever holds this invite.
+	// Additive, NULL for every pre-existing invite.
+	const inviteCols = (db.prepare('PRAGMA table_info(invites)').all() as { name: string }[]).map(
+		(c) => c.name
+	);
+	if (!inviteCols.includes('welcome_message')) {
+		db.exec('ALTER TABLE invites ADD COLUMN welcome_message TEXT');
+	}
 	if (!walletCols.includes('derivation_path')) {
 		db.exec('ALTER TABLE wallets ADD COLUMN derivation_path TEXT');
 	}
