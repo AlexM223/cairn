@@ -480,6 +480,17 @@ Constructed from `getChainConfig()` (`settings.ts`). Notable methods:
 - `getAddressInfo` / `getAddressTxs()` — Electrum scripthash protocol only
   (no lifetime totalReceived/Sent field — Electrum has no equivalent without
   walking full history; the UI shows "unknown" rather than a misleading 0).
+  **Per-row graceful degrade (`cairn-om05x`):** `getAddressTxs()` used to let
+  a single verbose-lookup failure reject the whole page — fatal against a
+  public Electrum server that flatly rejects verbose transaction calls (a
+  capability/transport error, distinct from a genuine "no such transaction").
+  A definitive not-found (matching `getTxViaElectrum`'s own check) still drops
+  just that row; any other error instead degrades the row to what the history
+  index already knows — `{txid, height, time: null, fee: item.fee ?? null,
+  delta: null}` — rather than sinking the page. The same tolerance applies to
+  prevout resolution when computing a tx's fee/delta (a failed prevout fetch
+  degrades that tx's fee/delta precision instead of rejecting the row). See
+  §20.4 for the QA scenario.
 - `getMempoolSummary()` — Core `getmempoolinfo`; throws the "needs Core RPC"
   error when Core isn't configured.
 - `getFeeHistogram()` / `getMempoolBlocks()` — Electrum
@@ -1702,8 +1713,9 @@ standalone migration on a live funds DB).
 | `announcements` / `announcement_dismissals` | admin banner system |
 | `multisig_service_referrals` | admin-managed "buy a device / managed multisig service" links |
 | `device_keys` | cache of xpub last read off a HW device per (user, master fingerprint, purpose) |
-| `backup_reminders` | per-user dismissal timestamp for the periodic backup nudge |
+| `backup_reminders` | per-user dismissal timestamp for the periodic (90-day-stale-backup) reminder |
 | `wallet_backups` | one row per wallet once its config file has been downloaded |
+| `backup_nudges` | one row per still-unbacked wallet: `first_seen_at`/`last_shown_at`/`shown_count`/`stakes_bucket` — decaying-cadence state for the never-backed-up nudge (`cairn-gt05.5`, distinct from `backup_reminders` above); see § "Backup & restore" |
 
 **Mining (multi-user solo pool, epic `cairn-vn43`)**
 
@@ -2327,6 +2339,20 @@ that with error handling. A **global** SMTP config also exists via
 fallback/test-smtp route (`admin/notifications/test-smtp`,
 `notifications/channels/email/test-smtp`).
 
+**Deep links (`cairn-ay45q` P1, `cairn-fochc` follow-up):** `notify()` merges
+an explicit `payload.link` into the persisted `events.detail` JSON under the
+`link` key. `NotificationPanel`'s `linkFor()` is the canonical reader: an
+explicit `detail.link` wins when present (same-origin relative paths only),
+with a `txid` → `/explorer/tx/{txid}` fallback for older rows that predate
+the merge, and a non-tx `/explorer/*` link is suppressed when the explorer
+flag is off (tx detail itself stays exempt, `cairn-5yz3.3`). `activity/
++page.svelte` mirrors this exact `linkFor()` logic rather than reimplementing
+it, so the activity feed and the bell dropdown never disagree on where a
+given event actually links — before `cairn-fochc` the activity feed only
+ever linked via `txid`, so a `link`-only event (e.g. `sign_session_waiting`,
+which has no txid) rendered as plain unlinked text there even after the
+`detail.link` persistence fix landed.
+
 **Dispatch**: `notify(payload: NotificationPayload)` is called from deep
 inside domain code (e.g. `auth.ts`'s `registerUserWithHash` fires
 `admin_new_signup`) — always best-effort/non-throwing, so a notification
@@ -2528,6 +2554,65 @@ have:
   surfaced on `RestoreSummary.shares`, in the `admin/backup` restore-summary
   panel, and in the `admin_restore` notification detail (`sharesRestored`).
 
+### Wallet-config backup tracking & the decaying nudge (`src/lib/server/backups.ts`)
+
+Not to be confused with the instance-wide export/import above (`backup.ts`)
+— this module tracks, per wallet, whether the user has downloaded that
+wallet's own config backup (its public keys — needed to reconstruct the
+wallet, or for multisig, to find its coins at all). Scope is deliberately
+narrow: only multisigs with `source = 'created'` are ever nagged
+(`listUnbackedWallets`) — single-sig wallets reconstruct from the hardware
+device, and an imported multisig's config file already exists wherever it
+was imported from.
+
+Two independent nudge mechanisms live here:
+
+- **90-day stale-backup reminder** (pre-existing). `shouldShowBackupReminder`
+  is true only when the user HAS at least one backed-up wallet whose latest
+  download is >90 days old and they haven't dismissed within the last 90
+  days (`backup_reminders`, `dismissBackupReminder`). A user with zero
+  backups at all is out of scope here — the nudge below owns that case.
+- **Decaying, escalating nudge for still-unbacked wallets** (`cairn-gt05.5`,
+  v0.2.39, `docs/UX-BACKUP-NUDGE-AND-FIRST-DEPOSIT-SPEC.md` Spec A). Replaces
+  the old "show every session, dismiss is `sessionStorage`-only" logic, which
+  habituated into wallpaper and then alarm fatigue (F16,
+  `docs/UX-PSYCHOLOGY-RESEARCH-R2-2026-07-18.md`). State lives in
+  `backup_nudges` (one row per unbacked wallet: `first_seen_at`,
+  `last_shown_at`, `shown_count`, `stakes_bucket`). `getDueBackupNudge(userId)`
+  — called from the `(app)` layout load — returns at most one due nudge
+  (oldest unbacked wallet wins ties):
+  - **Decay ladder**: each time a wallet's nudge actually shows, its next
+    eligible time widens along `nextEligibleAt()`'s rung schedule — +3d, then
+    +10d, +30d, then +90d and flat from there (`DECAY_MS`, indexed by
+    `shownCount - 1`, clamped to the last rung). "Cadence widens, never
+    shortens."
+  - **72h hard cap** (`HARD_CAP_MS`): no wallet's nudge ever re-shows sooner
+    than 72h after its last real showing, regardless of decay position or an
+    escalation below — the floor that keeps this from ever becoming a
+    per-session ritual.
+  - **Stakes buckets, monotonic** (`BACKUP_NUDGE_BUCKET`: `NEW` < `MULTI` <
+    `FUNDED`, only ever raised via `raiseBucket()`): a second concurrently
+    unbacked wallet raises every unbacked row to at least `MULTI` for free at
+    load time (a fact about the whole set, no new data needed);
+    `escalateBackupNudge(userId, walletId, FUNDED)` is called from
+    `addressWatcher.ts`'s inbound-payment handler the moment a still-unbacked
+    wallet receives real funds — the highest-value moment to re-nudge, rather
+    than waiting out a decay window that can run to 90 days. Both are
+    best-effort/silent (never throw, never block the triggering action).
+    Raising a bucket bypasses the decay ladder but never the 72h cap: if the
+    cap already elapsed since the last real showing the nudge re-earns
+    immediately, otherwise the raise is recorded but stays deferred until the
+    cap clears.
+  - **Polymorphic copy**: `BackupNudge.variantId` is `'V1'..'V5'` (a calm
+    rotation, keyed off `shownCount % 5`, so the same wording doesn't repeat
+    every showing) for a normal due showing, or `'E-FUNDED'`/`'E-MULTI'` for a
+    showing that's specifically surfacing a just-applied escalation (detected
+    via a deliberate `shownCount === 0` / `last_shown_at === null` mismatch —
+    see `nextEligibleAt`'s doc comment for why that sentinel is safe). Copy
+    strings themselves live client-side in `(app)/+layout.svelte`, keyed by
+    `variantId`, so wording stays next to styling rather than baked into the
+    server module.
+
 ### Observability
 
 **Server logging** (`src/lib/server/logger.ts`): a single pino-based module.
@@ -2656,11 +2741,15 @@ Wraps every authenticated page with:
   still show `SyncBanner` normally.
 - `AnnouncementBanner` — admin announcements, server-filtered by flag/
   expiry/dismissal.
-- Backup nudge banners: an urgent "N wallets aren't backed up" banner
-  (dismiss via `sessionStorage cairn.backup.banner.dismissed`) and a gentler
-  90-day "reminder" banner (dismiss is a server POST to
-  `/api/backup-reminder/dismiss`, since it must persist across
-  browsers/devices).
+- Backup nudge banners: two distinct mechanisms. The still-unbacked-wallet
+  nudge (**rewritten `cairn-gt05.5`, v0.2.39** — see § "Backup & restore"
+  below for the full decay/escalation contract) is now a server-persisted
+  **decaying cadence**, not a per-session dismiss — it replaced the old
+  "shows every session until resolved, `sessionStorage`-dismissed" banner,
+  which habituated into wallpaper (F16). A gentler, separate 90-day
+  "reminder" banner still covers wallets that already HAVE a backup but it's
+  gone stale (dismiss is a server POST to `/api/backup-reminder/dismiss`,
+  since it must persist across browsers/devices) — unchanged by the rewrite.
 - `maybeRedirectToSecure()` fires in `onMount` to auto-hop returning users to
   the HTTPS listener (§9.7 below).
 - The old single global `max-width: 940px` cap (with per-page caps narrowing
@@ -2681,13 +2770,13 @@ Pages under `(app)`:
 | Route | Purpose |
 |---|---|
 | `+page.svelte` | Home/portfolio dashboard — the next-block footer's tip row shows the **confirmed** chain tip (`chain.tipHeight`/`tipTime`) and is labelled "Latest block" (not "Next block" — that name implied the not-yet-mined block; fixed `cairn-dtmi`); the adjacent fee line's "next ring ≈ N sat/vB" is a genuine next-block estimate and keeps its wording |
-| `activity/+page.svelte` | user activity feed |
+| `activity/+page.svelte` | user activity feed — event rows render via `linkFor()`, mirroring `NotificationPanel`'s deep-link resolution (see § Notifications system above, `cairn-fochc`) |
 | `wallets/+page.svelte` | wallet list |
 | `wallets/new/+page.svelte` | single-sig add-wallet wizard (§9.4) |
-| `wallets/[id]/+page.svelte` | single-sig wallet detail — **available-vs-maturing split** (`cairn-oae1.3`): Electrum's `confirmed` balance counts an immature coinbase (mining reward) output as spendable, but the send engine's `selectSpendCandidates` refuses to spend it (§ above) — showing the raw Electrum figure as "available" was misleading. `walletSync.ts`'s snapshot now carries a `maturingTotal` field (sum of coinbase-UTXO value not yet mature at the snapshot's `tipHeight`, computed by `sumImmatureCoinbase()`); the hero balance renders `scan.confirmed - maturingTotal` as the honest available figure, with a secondary "· N maturing — mining rewards not yet spendable" line (only shown when `maturingTotal > 0`) linking to the `#mining-rewards` anchor on the `MiningRewards` card below. `scan.confirmed` itself is UNCHANGED in the snapshot (still the full net-worth total the portfolio aggregate / list-view summaries rely on) — the split is a display-layer computation, not a data-model change. Same split applied to `wallets/multisig/[id]/+page.svelte` below. **Tx row coherence (`src/lib/shared/txRow.ts`, `cairn-jcwb`, v0.2.33):** `shouldShowNetworkFee()` only breaks out the row's "network fee" meta line when `delta < 0` — on a received (`delta >= 0`) row the fee is the *sender's* cost, not this wallet's, and showing it right next to "Received" read as a second, competing figure on the same row (DESIGN-MANIFESTO's "one hero number, never a competing figure" rule at row scope); an outgoing row still shows it since the fee genuinely came out of this wallet alongside the recipient amount. **Speed up control gating (`src/lib/shared/speedUp.ts`, `canOfferSpeedUp()`, `cairn-iare`, v0.2.33):** the inline Speed up button/rate input on an unconfirmed inflow is only rendered when `canOfferSpeedUp()` returns true — false only for the deterministic CPFP `parent_fee_unknown` case (§ shared fee-bump engine above), where a retry can never succeed because the same prevout-decoration lookup runs again at submit time; RBF replacement never reads the parent's fee so it's never gated off by this. Same predicate reused by the explorer tx-detail "Speed this up" CTA (`ownership.server.ts`) so all three surfaces can't drift apart on when to offer a control that's guaranteed to fail. Same tx-row helpers apply to `wallets/multisig/[id]/+page.svelte` below. |
+| `wallets/[id]/+page.svelte` | single-sig wallet detail — **available-vs-maturing split** (`cairn-oae1.3`): Electrum's `confirmed` balance counts an immature coinbase (mining reward) output as spendable, but the send engine's `selectSpendCandidates` refuses to spend it (§ above) — showing the raw Electrum figure as "available" was misleading. `walletSync.ts`'s snapshot now carries a `maturingTotal` field (sum of coinbase-UTXO value not yet mature at the snapshot's `tipHeight`, computed by `sumImmatureCoinbase()`); the hero balance renders `scan.confirmed - maturingTotal` as the honest available figure, with a secondary "· N maturing — mining rewards not yet spendable" line (only shown when `maturingTotal > 0`) linking to the `#mining-rewards` anchor on the `MiningRewards` card below. `scan.confirmed` itself is UNCHANGED in the snapshot (still the full net-worth total the portfolio aggregate / list-view summaries rely on) — the split is a display-layer computation, not a data-model change. Same split applied to `wallets/multisig/[id]/+page.svelte` below. **Tx row coherence (`src/lib/shared/txRow.ts`, `cairn-jcwb`, v0.2.33):** `shouldShowNetworkFee()` only breaks out the row's "network fee" meta line when `delta < 0` — on a received (`delta >= 0`) row the fee is the *sender's* cost, not this wallet's, and showing it right next to "Received" read as a second, competing figure on the same row (DESIGN-MANIFESTO's "one hero number, never a competing figure" rule at row scope); an outgoing row still shows it since the fee genuinely came out of this wallet alongside the recipient amount. **Speed up control gating (`src/lib/shared/speedUp.ts`, `canOfferSpeedUp()`, `cairn-iare`, v0.2.33):** the inline Speed up button/rate input on an unconfirmed inflow is only rendered when `canOfferSpeedUp()` returns true — false only for the deterministic CPFP `parent_fee_unknown` case (§ shared fee-bump engine above), where a retry can never succeed because the same prevout-decoration lookup runs again at submit time; RBF replacement never reads the parent's fee so it's never gated off by this. Same predicate reused by the explorer tx-detail "Speed this up" CTA (`ownership.server.ts`) so all three surfaces can't drift apart on when to offer a control that's guaranteed to fail. Same tx-row helpers apply to `wallets/multisig/[id]/+page.svelte` below. **First-deposit confidence (`cairn-gt05.6`, F17):** two mechanism-fact states, never reassurance-theater, both mirrored on the multisig detail page below — `neverFunded` (balance, tx count, and unconfirmed all zero) adds a line under the receive-address disclosure ("This address belongs to your wallet... nobody else can move it") answering "is this really mine" without a wait; `hasIncomingPending` (`scan.unconfirmed > 0`) renders a self-updating `.hw-pending-note` under the hero ("Your payment is on its way in... this is your own node telling you") that clears itself the moment the re-scan confirms it — both exist so a first-time depositor never has a reason to leave for a third-party block explorer. The tx-row confirmation meta also now reads "confirming now" instead of `burialRingsLabel(0)`'s usual unconfirmed copy specifically for an incoming (`delta >= 0`) 0-conf row. |
 | `wallets/[id]/send/+page.svelte` | single-sig send flow (§9.4) — the eyebrow's "available" figure and the max-amount client validation both come from `+page.server.ts`'s streamed `live.confirmed`, which now has immature-coinbase value folded out (`live.maturingTotal` carries the excluded sum) so client-side validation agrees with what the build engine will actually accept (`cairn-oae1.3`); a "Plus N from a mining reward still maturing" hint appears under the amount field when `maturingTotal > 0` |
 | `wallets/multisig/new/+page.svelte` | multisig creation wizard (§9.4) |
-| `wallets/multisig/[id]/+page.svelte` | multisig vault detail — same available-vs-maturing split as the single-sig detail page above (`MultisigSnapshot.maturingTotal`, `cairn-oae1.3`) |
+| `wallets/multisig/[id]/+page.svelte` | multisig vault detail — same available-vs-maturing split as the single-sig detail page above (`MultisigSnapshot.maturingTotal`, `cairn-oae1.3`); same first-deposit `neverFunded`/`hasIncomingPending` mechanism-fact states and "confirming now" 0-conf label as the single-sig page above (`cairn-gt05.6`). **Pending-signature drafts (`cairn-0pxk5`):** an unfinished `multisig_transactions` row (`status` `draft` or `awaiting_signature`) has no on-chain footprint, so it never surfaced in the Electrum-scan "Transactions" tab, which counts `detail.history.length` — a saved draft was otherwise undiscoverable short of the exact `?tx=` URL. A calm-amber "Awaiting signatures (N)" card now lists every such `scan.savedTxs` row with a "Review draft #N →" link to `/wallets/multisig/{id}/send?tx={id}` (the same deep-link shape `freezeRosterAndNotify` already emits), gated to `data.role !== 'viewer'` since the Send page 404s a pure viewer. Independent of the on-chain scan — a local DB read, so it still shows when `scanError` is set. Separately, `wallets/multisig/[id]/send/+page.server.ts`'s fresh-wizard load (no `?tx=`) now checks `listMultisigTransactionSummaries` for any other unfinished draft on the wallet and, if found, the Create step shows a dismissible `Banner(variant=warning)` — "A transaction draft is awaiting signatures — starting a new one won't affect it." with a "Resume draft" link — never an auto-redirect, agency stays with the user. |
 | `wallets/multisig/[id]/send/+page.svelte` | multisig send/co-sign flow |
 | `wallets/multisig/stateless/+page.svelte` | stateless (no-account) multisig PSBT signer |
 | `explorer/+page.svelte` | block explorer home — includes an "Up next" strip (up to 4 projected-block chips, fed by the same server-loaded `mempoolBlocks` snapshot, linking through to the full mempool treemap viz; hidden gracefully rather than erroring when the chain backend has no projection data). The tip-view block list (`data.before === null`) renders the dashed pending/mempool row **before** the `{#each blocks}` loop, so the next-block-to-be-mined always sorts **above** every confirmed block — it used to render after the loop, so pending sorted below confirmed blocks instead (`cairn-lynf`, fixed v0.2.26). `pending` stays gated to the tip view only, so paged/older history is unaffected. |
@@ -2764,9 +2853,17 @@ the same session, no reload required. The send flow's CTA button label
 string, not a rendered `Amount`, so it can't subscribe to the store itself)
 takes the same `fiatVisible` boolean as an explicit 4th argument from its
 two call sites (`cairn-9y49`) so "Send $x.xx" / "Broadcast — $x.xx" also
-falls back to a BTC/sats-only label when hidden. `AmountEntry`'s
-fiat-entry input mode is deliberately exempt — an amount the user is
-actively typing in fiat isn't a display readout the setting governs.
+falls back to a BTC/sats-only label when hidden. **Follow-up (`cairn-8pl9w`,
+v0.2.39): `AmountEntry` is no longer exempt.** It used to gate fiat
+eligibility on `fiatPrimaryPref` alone, so a Hidden setting still let its
+rate-anchor line ("1 BTC = $x"), fiat secondary line, and BTC→sats→USD
+entry-cycle stay reachable — a real leak, not the deliberate exemption the
+old comment claimed. `fiatEligible` now requires `fiatVisible` too; a
+Hidden setting keeps the rate-anchor line unrendered, forces the secondary
+line to the other Bitcoin-denominated unit, and — if the field happened to
+be mid-cycle in fiat entry mode when the setting flips to Hidden — resets
+`entryUnit` back to the BTC/sats `unitPref`, same enforcement doctrine as
+`Amount.svelte`.
 
 Used app-wide including the
 stateless multisig flow, single-sig send, explorer address history, and the
@@ -3305,7 +3402,18 @@ already stripped to digits, and the BTC/fiat modes now do too, via
 `amountInput.ts`'s pure `sanitizeDecimal()` (digits + at most one decimal
 point — drops letters, commas, extra dots) and `textToSats()` (parse to
 canonical sats, `0` on non-numeric/non-positive input) — previously a paste
-like `"0.001hello"` left the letters visible in the field (`cairn-wi8a`).
+like `"0.001hello"` left the letters visible in the field (`cairn-wi8a`). See
+§ "Fiat display: Hidden" above for `AmountEntry`'s `fiatVisible` gating
+(`cairn-8pl9w`).
+
+**Unit-respecting summary rail (`cairn-v5ass` follow-up to `cairn-nb8e`,
+v0.2.39).** The single-sig send page's Confirm-step summary rail
+(Amount/Remaining) used to hardcode `${formatBtc(...)} BTC` regardless of the
+`$lib/units` `unitPref` the hero `AmountEntry` field itself honors — a sats-
+preferring user would enter an amount in sats and then see it summarized back
+in BTC. `summaryUnitAmount()` now reads `$unitPref` the same way the hero
+field does, so the summary rail agrees with whatever unit the user actually
+typed in.
 
 **Unit-slip guards (R1, `cairn-9nvo`, v0.2.27).** A live secondary line under
 the amount always keeps the OTHER Bitcoin-denominated unit (and fiat, when a
@@ -3397,7 +3505,22 @@ internals, guided wizards" philosophy:
 
 - **`Term.svelte`** — inline glossary: technical words get a dotted
   underline and a hover/focus tooltip, a real `<button>` so keyboard users
-  get the same affordance as mouse hover.
+  get the same affordance as mouse hover. Tip copy is centralized in
+  `src/lib/termGlosses.ts` (`DESCRIPTOR_TIP_*`, `ELECTRUM_TIP`,
+  `CORE_RPC_TIP`, ...) rather than inlined per call site. **Admin surfaces
+  (`cairn-3hwc8`, v0.2.39):** a prior pass (`cairn-vxbk`) glossed jargon
+  app-wide but skipped `src/routes/(app)/admin/**` for a since-resolved
+  concurrent edit — `admin/settings` now wraps "Electrum" and "RPC" (in
+  "Bitcoin Core RPC") in `<Term>` with `ELECTRUM_TIP`/`CORE_RPC_TIP`. The
+  same follow-up also fixed a rename gap left behind by `cairn-vxbk`'s
+  Node→Health nav relabel: the admin `+layout.svelte` eyebrow
+  (`EyebrowBreadcrumb`, `<svelte:head>` title) still read "Node" while the
+  sidebar/nav link already said "Health" — both now say "Health", and the
+  overview hero's skeleton/loaded ring-progress line was reworded from "ring
+  N forming — N of 2,016 laid" to "difficulty period N forming — N of 2,016
+  blocks in" (dropping the burial-ring metaphor from admin copy, consistent
+  with the plain-language rule — the visual ring components themselves are
+  untouched, copy-only).
 - **`HowItWorks.svelte`** — collapsible "How does this work?" explainer per
   page, state remembered per page id so a user who dismissed it isn't
   nagged again.
@@ -3416,11 +3539,17 @@ internals, guided wizards" philosophy:
 - **`DevicePicker`'s universal fallback** — the philosophy that a wallet
   must never become a dead-end viewer with no way to sign, even if none of
   the explicitly-supported hardware applies.
-- **Backup nudges** in the `(app)` layout are tiered by urgency
-  (never-backed-up wallet = persistent warm-tan banner that returns every
-  session until resolved; stale backup = softer periodic reminder
-  dismissible for 90 days) rather than one generic "backup" nag —
-  proportionate friction matched to actual risk.
+- **Backup nudges** in the `(app)` layout are tiered by urgency and, as of
+  `cairn-gt05.5` (v0.2.39), by a server-persisted **decaying cadence** rather
+  than a fixed per-session show: a still-unbacked wallet's amber nudge
+  widens its own re-show interval (3d → 10d → 30d → 90d) each time it's
+  actually shown, capped so it never re-shows sooner than 72h regardless,
+  and escalates back to the tight cadence when the stakes genuinely rise
+  (a second unbacked wallet, or an unbacked wallet receiving its first
+  funds) — see § "Backup & restore" below for the full mechanism. A
+  separately-tracked stale (90-day-old) backup still gets its own softer
+  periodic reminder, server-dismissible for 90 days. Proportionate friction
+  matched to actual risk, not one generic "backup" nag on every visit.
 
 ---
 
@@ -4662,6 +4791,14 @@ Precondition: vault funded (16.5); `send`/`fee_bumping` flags on.
    - **Expected:** a `multisig_transactions` `draft` row; the per-transaction signer roster
      (`multisig_transaction_signers`) is frozen; cosigners get a `sign_session_waiting`
      notification with a **working deep link** to the send page.
+   - **Discoverability (`cairn-0pxk5`, v0.2.39):** back out to `/wallets/multisig/{id}`
+     without touching the notification — a calm-amber "Awaiting signatures (1)" card should
+     be visible with a "Review draft #N →" link to this same draft, independent of the
+     notification and independent of the on-chain scan (a draft has no on-chain footprint
+     yet). Then navigate straight to `/wallets/multisig/{id}/send` with **no** `?tx=` query —
+     the fresh Create-step wizard should show a warning banner ("A transaction draft is
+     awaiting signatures...") with a "Resume draft" link, not a silent brand-new wizard with
+     no indication the earlier draft exists.
 2. A signs first — either the file/PSBT round-trip via `MultisigFileSigner`, or **live-USB
    signing**, which is fully wired into this page at parity with single-sig: the Trezor,
    Ledger, BitBox02, and Jade (USB) tiles all drive real multisig co-signing here, not just
@@ -5557,10 +5694,21 @@ backups, clear house-standard errors, **never red for routine states**, working 
      `rotateError` — "Couldn't get a fresh address — check your connection and try again."
      Previously that second path just spun the button back to "Rotate" with no explanation
      (`cairn-sz1q`).
+   - ✅ **First-deposit confidence (`cairn-gt05.6`, v0.2.39):** on a wallet with zero balance,
+     zero tx history, and zero unconfirmed, the receive-address disclosure shows a
+     mechanism-fact confidence line ("This address belongs to your wallet... nobody else can
+     move it") — not reassurance filler, and it should disappear once the wallet has any
+     activity.
 6. Send funds in (real sats on mainnet, or 16.5 on regtest).
    - ✅ A `tx_received` then `tx_confirmed` notification arrives with a **working deep link**
      to the wallet/tx (broken deep links were a prior P1 — verify the link navigates
      correctly). SPV-verified before it fires (no fake alerts).
+   - ✅ **First-deposit-pending note (`cairn-gt05.6`, v0.2.39):** the instant the unconfirmed
+     inbound is visible to the node (before the first confirmation), the wallet detail hero
+     shows a self-updating "Your payment is on its way in" note naming the exact incoming
+     amount — answering "did it arrive" from the node's own data, no reason to leave for a
+     block explorer. It should clear itself automatically (no manual dismiss, no reload
+     needed) the moment the tx confirms.
 
 ### 21.5 First send `[optional signing leg: emulator/real-hw]`
 7. `/wallets/{id}/send` — **Create → Review → Sign → Confirm → Sent**.
@@ -5597,14 +5745,33 @@ backups, clear house-standard errors, **never red for routine states**, working 
      once-per-send check by design (F4: repeated warnings habituate).
 
 ### 21.6 Backup nudges (prominent backups)
-8. Throughout, verify tiered backup nudges:
-   - ✅ A never-backed-up wallet shows a persistent warm-tan "N wallets aren't backed up"
-     banner that returns each session until resolved (dismiss is sessionStorage-scoped).
-   - ✅ A stale (90-day) backup shows a softer periodic reminder whose dismissal **persists
-     across browsers/devices** (server POST `/api/backup-reminder/dismiss`), not just locally.
-   - ✅ An imported/created multisig surfaces its mandatory-backup UX (`source` gates it).
-   - ✅ Nudges are proportionate to risk (never-backed = louder than stale), not one generic
-     nag.
+8. Throughout, verify tiered, **decaying-cadence** backup nudges (`cairn-gt05.5`, v0.2.39 —
+   see § "Wallet-config backup tracking & the decaying nudge" for the full mechanism):
+   - ✅ Create a new multisig (`source='created'`) and leave it unbacked: the very first
+     `(app)` layout load shows a calm-amber "back up this wallet" nudge for it.
+   - ✅ Reload immediately (same session, well under 72h): the nudge does **not** re-show —
+     it is no longer a per-session/`sessionStorage` dismiss, it's a server-persisted decay
+     schedule (`backup_nudges` table). Confirm the first showing recorded `shown_count=1`
+     directly in the DB if convenient.
+   - ✅ **Escalation — second unbacked wallet:** create a second unbacked `created` multisig.
+     Its due nudge (and the first wallet's, if still eligible) reflects the `MULTI` stakes
+     tier — worth spot-checking the copy reads as more urgent than the lone-wallet `NEW`
+     variant, without needing to wait out the decay window.
+   - ✅ **Escalation — first funds in:** send funds to a still-unbacked wallet. The nudge for
+     that wallet should be eligible again within the 72h floor (not the wider decay rung it
+     would otherwise be on) — the `FUNDED` bucket, triggered from `addressWatcher.ts` the
+     moment the deposit is seen.
+   - ✅ Download that wallet's backup (`markBackedUp`): the nudge for it stops appearing
+     entirely (`listUnbackedWallets` excludes it) — verify no further nudge shows on
+     subsequent loads.
+   - ✅ Separately, a wallet that already HAS a backup but it's >90 days stale shows the
+     **distinct**, unchanged softer periodic reminder, whose dismissal **persists across
+     browsers/devices** (server POST `/api/backup-reminder/dismiss`), not just locally — this
+     mechanism did not change in the v0.2.39 rewrite.
+   - ✅ An imported multisig (`source != 'created'`) and single-sig wallets are never nudged
+     by either mechanism (`source` gates it).
+   - ✅ Nudges stay proportionate to risk (never-backed/escalated = louder and more frequent
+     than stale-backup) — never one generic "backup" nag shown identically every visit.
 
 ### 21.7 Global UX invariants (spot-check on any page)
    - ✅ Heartwood evergreen theme renders consistently in both Dark and Light
