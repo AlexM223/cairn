@@ -260,6 +260,10 @@
 	// "Yours" pip: viewer-scoped set of block heights the current user has a tx in
 	// (computed server-side in load, zero chain calls). O(1) per row.
 	const yoursSet = $derived(new Set(data.yoursHeights ?? []));
+	// "Found here" pip (cairn-r1hca): accepted blocks this instance's own pool
+	// found, newest first from the server. Keyed by hash (not height) since
+	// that's what the backend already dedupes pool attribution on.
+	const poolFoundSet = $derived(new Set(data.poolFoundHashes ?? []));
 	// "~N BTC moved" from total_out (sats) — extracted to $lib/format as
 	// formatMovedBtc so its render-guard hardening (cairn-6efi.11) is unit-tested.
 	function feeRangeLabel(range: [number, number] | null): string | null {
@@ -745,6 +749,11 @@
 							>
 								{formatNumber(block.height)}
 							</span>
+							{#if poolFoundSet.has(block.hash)}
+								<span class="found-pip" title="This instance's pool found this block">
+									Found here
+								</span>
+							{/if}
 							{#if yoursSet.has(block.height)}
 								<span class="yours-pip" title="One of your transactions is in this block">
 									Yours
@@ -753,7 +762,7 @@
 						</span>
 						<RingBar fullness={block.fullness} medianFee={block.medianFee} width={40} />
 						<span class="row-meta">
-							{timeAgo(block.time)}{#if poolLabel(block)} ·
+							{timeAgo(block.time)}{#if !poolFoundSet.has(block.hash) && poolLabel(block)} ·
 								<span class="row-pool">{poolLabel(block)}</span>{/if}{#if feeRangeLabel(block.feeRange)}
 								· <span class="row-detail">{feeRangeLabel(block.feeRange)}</span>{/if}{#if formatMovedBtc(block.total_out)}
 								· <span class="row-detail">{formatMovedBtc(block.total_out)}</span>{/if}
@@ -1404,7 +1413,9 @@
 	.row-headcol {
 		display: flex;
 		align-items: baseline;
+		flex-wrap: wrap;
 		gap: 7px;
+		row-gap: 3px;
 		width: 118px;
 		flex-shrink: 0;
 	}
@@ -1423,6 +1434,21 @@
 
 	/* "Yours" pip — sage, quiet; the viewer has a tx in this block. */
 	.yours-pip {
+		font-size: 9.5px;
+		font-weight: 600;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		color: var(--sage);
+		background: var(--sage-muted);
+		padding: 1px 6px;
+		border-radius: 999px;
+		white-space: nowrap;
+	}
+
+	/* "Found here" pip (cairn-r1hca) — same growth-green chip family as
+	   "Yours"; this instance's own pool found the block. Beats the generic
+	   "Likely {pool}" meta-line label for that row (never both). */
+	.found-pip {
 		font-size: 9.5px;
 		font-weight: 600;
 		letter-spacing: 0.04em;
@@ -1611,7 +1637,8 @@
 			font-size: 13.5px;
 		}
 
-		.yours-pip {
+		.yours-pip,
+		.found-pip {
 			font-size: 8.5px;
 			padding: 1px 5px;
 		}

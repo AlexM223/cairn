@@ -2,6 +2,7 @@ import { getChain } from '$lib/server/chain';
 import { classifySearch } from '$lib/server/search';
 import { getEpochStrip } from '$lib/server/chainEpochs';
 import { ownedBlockHeights } from './ownership.server';
+import { listPoolFoundBlockHashes } from '$lib/server/mining/readModels';
 import { readChainSnapshot } from '$lib/server/chainSnapshot';
 import { gatherNodeTrust } from '$lib/server/chain/nodeTrust';
 import { childLogger } from '$lib/server/logger';
@@ -127,6 +128,9 @@ export const load: PageServerLoad = async ({ url, depends, locals }) => {
 		before,
 		chain,
 		yoursHeights,
+		// Blocks THIS instance's pool found (cairn-r1hca): membership list for the
+		// "Found here" celebration badge on index rows. DB-only, no chain call.
+		poolFoundHashes: listPoolFoundBlockHashes(),
 		lastSyncedAt: snap?.lastSyncedAt ?? null,
 		// NodeTrust provenance chip (cairn-6efi.3). Synchronous + cached-only —
 		// no chain call — so it rides the instant-paint snapshot read above and

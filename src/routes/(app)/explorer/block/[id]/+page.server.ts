@@ -5,6 +5,10 @@ import { isNotFoundError } from '$lib/server/search';
 import { getEpochStrip } from '$lib/server/chainEpochs';
 import { gatherNodeTrust } from '$lib/server/chain/nodeTrust';
 import { ownedTxsInBlock, ownedTxids, type OwnedBlockTx } from '../../ownership.server';
+import {
+	getPoolBlockAttribution,
+	type PoolBlockAttribution
+} from '$lib/server/mining/readModels';
 import { childLogger } from '$lib/server/logger';
 import { sanitizeChainError } from '$lib/server/chainErrors';
 import type { PageServerLoad } from './$types';
@@ -29,6 +33,10 @@ interface BlockPageData {
 	 *  index lookup), consistent with the explorer index's block-level pip.
 	 *  Empty for anonymous viewers. */
 	ownedTxids: Set<string>;
+	/** Set when THIS instance's pool found the block (cairn-r1hca): the explorer
+	 *  celebrates it — "found by this pool / by you". Chain-free local lookup on
+	 *  mining_blocks by the now-known block hash; null for every other block. */
+	poolFound: PoolBlockAttribution | null;
 	/** The block hash/height parsed but no matching block exists on the backend. */
 	notFound: boolean;
 	/** The backend was unreachable or errored (distinct from a genuine 404). */
@@ -61,6 +69,7 @@ async function loadBlockData(
 			tipHeight: null,
 			yours: [],
 			ownedTxids: new Set(),
+			poolFound: null,
 			notFound: isNotFoundError(e),
 			error: isNotFoundError(e)
 				? null
@@ -95,6 +104,8 @@ async function loadBlockData(
 		// Per-row pip for this page's tx list (cairn-6efi.12) — same memoized
 		// index, no extra chain call.
 		ownedTxids: ownedTxids(userId, txsRes.txs.map((t) => t.txid)),
+		// Pool attribution (cairn-r1hca): local SQLite lookup, no chain call.
+		poolFound: getPoolBlockAttribution(block.hash, userId ?? null),
 		notFound: false,
 		error: null
 	};

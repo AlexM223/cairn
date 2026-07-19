@@ -13,6 +13,7 @@
 	import BurialRings, { burialRingsLabel } from '$lib/components/heartwood/BurialRings.svelte';
 	import RingBar from '$lib/components/heartwood/RingBar.svelte';
 	import ValueFlowBar from '$lib/components/heartwood/ValueFlowBar.svelte';
+	import PoolFoundBanner from '$lib/components/heartwood/PoolFoundBanner.svelte';
 	import CoreRpcRequiredNotice from '$lib/components/CoreRpcRequiredNotice.svelte';
 	import { blockPageTitle } from './blockTitle';
 	import { blockSubsidy } from '$lib/bitcoin';
@@ -62,6 +63,10 @@
 	// Per-row "Yours" pip (cairn-6efi.12): which txids on THIS page's tx list are
 	// the viewer's own. Same viewer-scoped, chain-free lookup as `yours`.
 	const ownedTxids = $derived(chain?.ownedTxids ?? new Set<string>());
+	// Set when THIS instance's pool found the block (cairn-r1hca) — drives the
+	// celebration banner. Chain-free, server-scoped (isYou/walletId only ever
+	// true/non-null for the finder themself).
+	const poolFound = $derived(chain?.poolFound ?? null);
 
 	const confirmations = $derived(
 		block !== null && tipHeight !== null ? Math.max(1, tipHeight - block.height + 1) : null
@@ -303,6 +308,20 @@
 					</div>
 				{/if}
 			</header>
+
+			<!-- ============================================ pool-found celebration -->
+			<!-- cairn-r1hca: this instance's own pool found the block being viewed.
+			     Sits right below the header, above every other section — the
+			     celebration is the first thing after the facts, before the tx list. -->
+			{#if poolFound}
+				<PoolFoundBanner
+					isYou={poolFound.isYou}
+					finderName={poolFound.finderName}
+					rewardSats={poolFound.rewardSats}
+					foundAt={poolFound.foundAt}
+					walletId={poolFound.walletId}
+				/>
+			{/if}
 
 			<!-- ================================================ value-flow bar -->
 			<!-- Renders nothing when its getblockstats aggregates are absent. -->
