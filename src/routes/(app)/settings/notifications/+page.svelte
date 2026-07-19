@@ -302,7 +302,17 @@
 				{ type: 'sign_session_complete', label: 'Ready to broadcast', desc: 'A multisig transaction has collected every signature and is ready to broadcast.' },
 				{ type: 'key_health_due', label: 'Key health check due', desc: 'A multisig key has not been verified in ~180 days.' },
 				{ type: 'backup_missing', label: 'Backup missing', desc: 'A wallet was created with no backup ever downloaded.' },
-				{ type: 'backup_stale', label: 'Backup stale', desc: 'Your instance backup is older than the reminder interval.' }
+				{ type: 'backup_stale', label: 'Backup stale', desc: 'Your instance backup is older than the reminder interval.' },
+				{ type: 'multisig_removed', label: 'Removed from a shared wallet', desc: 'A shared wallet was removed because its owner deleted their account.' },
+				{ type: 'cosigner_left', label: 'A co-signer left', desc: 'A co-signer deleted their account while still holding an unsigned slot on a shared wallet.' }
+			]
+		},
+		{
+			title: 'Mining',
+			events: [
+				{ type: 'mining_block_found', label: 'Block found', desc: 'Your miner found a block — the full reward pays your wallet.' },
+				{ type: 'mining_worker_offline', label: 'Miner offline', desc: 'One of your mining workers stopped submitting shares.' },
+				{ type: 'mining_best_share', label: 'New best share', desc: 'You reached a new personal-best share difficulty.' }
 			]
 		},
 		{

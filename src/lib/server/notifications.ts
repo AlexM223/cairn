@@ -69,7 +69,10 @@ export const DEFAULT_PREFERENCES: Record<string, NotificationChannelId[]> = {
 	security_failed_login: ['inapp'],
 	security_new_passkey: ['inapp'],
 	security_password_changed: ['inapp'],
-	security_new_device: ['inapp']
+	security_new_device: ['inapp'],
+	mining_block_found: ['inapp'],
+	mining_worker_offline: ['inapp'],
+	mining_best_share: ['inapp']
 };
 
 /** Every non-inapp channel id — the set resolveRecipients can enqueue. */

@@ -17,7 +17,7 @@ import { setSetting } from './settings';
 import { notify, resolveRecipients, DEFAULT_PREFERENCES, CHANNELS } from './notifications';
 import { recordActivity } from './activity';
 import { _internals } from './notificationQueue';
-import type { NotificationPayload } from './notifyTypes';
+import { NOTIFICATION_EVENT_TYPES, type NotificationPayload } from './notifyTypes';
 
 function wipe(): void {
 	db.exec(
@@ -46,6 +46,19 @@ function payload(over: Partial<NotificationPayload> = {}): NotificationPayload {
 		...over
 	};
 }
+
+describe('DEFAULT_PREFERENCES registry coverage (cairn-di3qn)', () => {
+	// Regression guard: every canonical event type in notifyTypes.ts must have a
+	// DEFAULT_PREFERENCES row, or enabledExternalChannels() silently treats it as
+	// "external delivery permanently disabled, no default" (notifications.ts:113)
+	// with no way for a user to opt in until a row is added here. Bidirectional so
+	// a stale/renamed key left behind in DEFAULT_PREFERENCES is also caught.
+	it('every emitted/declared event type has a DEFAULT_PREFERENCES entry', () => {
+		const declared = new Set<string>(NOTIFICATION_EVENT_TYPES);
+		const registered = new Set(Object.keys(DEFAULT_PREFERENCES));
+		expect([...declared].sort()).toEqual([...registered].sort());
+	});
+});
 
 describe('resolveRecipients', () => {
 	it('returns no external targets by default (DEFAULT_PREFERENCES is in-app only)', async () => {
