@@ -1403,6 +1403,46 @@ describe('getAddressTxs', () => {
 
 		await expect(svc.getAddressTxs(ADDRESS)).rejects.toThrow(/too much history/i);
 	});
+
+	// cairn-om05x: a capability/transport error on ANY single verbose lookup
+	// (e.g. a public Electrum server rejecting verbose calls entirely) must not
+	// sink the whole page — the affected row degrades to what the history index
+	// already knows instead of the whole call rejecting.
+	it('degrades a row to index-only data (no throw) when its verbose lookup hits a capability error', async () => {
+		const svc = makeService();
+		const history = [
+			{ tx_hash: TX2, height: 0, fee: 1_000 },
+			{ tx_hash: TX1, height: 800_000 }
+		];
+		const getTransaction = vi.fn(async (txid: string) => {
+			if (txid === TX1) return { vin: [], vout: [], blocktime: 1_750_000_000 };
+			throw new Error('verbose transactions are currently unsupported');
+		});
+		withElectrum(svc, { getHistory: vi.fn(async () => history), getTransaction });
+
+		const result = await svc.getAddressTxs(ADDRESS);
+
+		expect(result).toHaveLength(2);
+		expect(result[0]).toMatchObject({ txid: TX2, height: 0, time: null, delta: null, fee: 1_000 });
+		expect(result[1]).toMatchObject({ txid: TX1, height: 800_000 });
+	});
+
+	it('drops a row (does not throw) when its verbose lookup is a genuine not-found', async () => {
+		const svc = makeService();
+		const history = [
+			{ tx_hash: TX2, height: 0 },
+			{ tx_hash: TX1, height: 800_000 }
+		];
+		const getTransaction = vi.fn(async (txid: string) => {
+			if (txid === TX1) return { vin: [], vout: [], blocktime: 1_750_000_000 };
+			throw new Error('No such mempool or blockchain transaction');
+		});
+		withElectrum(svc, { getHistory: vi.fn(async () => history), getTransaction });
+
+		const result = await svc.getAddressTxs(ADDRESS);
+
+		expect(result.map((t) => t.txid)).toEqual([TX1]);
+	});
 });
 
 // ---- fee histogram (electrum-backed, cairn-zoz8.2) ----------------------------------

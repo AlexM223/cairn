@@ -1522,9 +1522,28 @@ export class ChainService {
 			return p;
 		};
 
-		return Promise.all(
-			pageItems.map(async (item) => {
-				const tx = await getVerbose(item.tx_hash);
+		const rows = await Promise.all(
+			pageItems.map(async (item): Promise<AddressTx | null> => {
+				let tx: VerboseTx;
+				try {
+					tx = await getVerbose(item.tx_hash);
+				} catch (e) {
+					// A definitive "no such tx" (matches getTxViaElectrum's own check) —
+					// drop the row; expected only if the history index and tx state raced.
+					if (/no such|not found/i.test(String(e))) return null;
+					// Anything else is a capability/transport error (e.g. a public
+					// Electrum server rejecting verbose calls entirely, cairn-om05x) —
+					// don't sink the whole page over one row. Degrade to what the
+					// history index already told us instead of throwing.
+					const confirmed = item.height > 0;
+					return {
+						txid: item.tx_hash,
+						height: confirmed ? item.height : 0,
+						time: null,
+						fee: item.fee ?? null,
+						delta: null
+					};
+				}
 				const coinbase = tx.vin.some((v) => typeof v.coinbase === 'string');
 				let delta = 0;
 				for (const out of tx.vout) {
@@ -1532,13 +1551,16 @@ export class ChainService {
 				}
 				// Resolve prevouts to attribute the spent side to this address and to
 				// compute the real fee (sum in − sum out). A coinbase has no prevouts
-				// and no fee.
+				// and no fee. A prevout fetch that fails (not-found or capability error
+				// alike) is treated the same as an unavailable prevout below — it
+				// degrades this tx's fee/delta precision rather than rejecting the
+				// whole row.
 				let fee: number | null = item.fee ?? null;
 				if (coinbase) {
 					fee = null;
 				} else {
 					const prevs = await Promise.all(
-						tx.vin.map((v) => (v.txid ? getVerbose(v.txid) : Promise.resolve(null)))
+						tx.vin.map((v) => (v.txid ? getVerbose(v.txid).catch(() => null) : Promise.resolve(null)))
 					);
 					let totalIn = 0;
 					let feeKnown = true;
@@ -1567,6 +1589,7 @@ export class ChainService {
 				};
 			})
 		);
+		return rows.filter((tx): tx is AddressTx => tx !== null);
 	}
 
 	/**
