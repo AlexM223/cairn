@@ -423,4 +423,34 @@
 	.field-line.muted {
 		color: var(--text-muted);
 	}
+
+	/* Mobile: the 86px hero + unit + cycle toggle overflows a 375px viewport
+	   (measured 410px -> 17px page-level horizontal scroll, cairn-86x5f).
+	   The page-level send styles can't reach into this component's scope, so
+	   the mobile scale lives here. flex-shrink + min-width keep the explicit
+	   ch-width from forcing overflow no matter the digit count. */
+	.hero-line {
+		max-width: 100%;
+		flex-wrap: nowrap;
+	}
+
+	.hero-input {
+		flex: 0 1 auto;
+		min-width: 0;
+	}
+
+	@media (max-width: 600px) {
+		.hero-line {
+			justify-content: center;
+		}
+
+		.hero-input {
+			font-size: 52px;
+			line-height: 1;
+		}
+
+		.hero-unit {
+			font-size: 20px;
+		}
+	}
 </style>
