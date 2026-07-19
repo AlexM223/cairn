@@ -73,6 +73,20 @@ export const actions: Actions = {
 		if (!/^[\x20-\x7e]*$/.test(poolTag))
 			return fail(400, { error: 'Pool tag must be plain ASCII text.' });
 
+		// Second (ASIC-class) listener: a separate high-floor Stratum port so big
+		// machines don't drown the low-floor standard port in trivially-easy shares.
+		const asicPortEnabled = form.get('asicPortEnabled') === 'on';
+
+		const asicStratumPort = Number(form.get('asicStratumPort'));
+		if (!Number.isInteger(asicStratumPort) || asicStratumPort < 1 || asicStratumPort > 65535)
+			return fail(400, { error: 'ASIC port must be between 1 and 65535.' });
+		if (asicStratumPort === port)
+			return fail(400, { error: 'The ASIC port must be different from the main Stratum port.' });
+
+		const asicShareDifficulty = Number(form.get('asicShareDifficulty'));
+		if (!Number.isFinite(asicShareDifficulty) || asicShareDifficulty <= 0)
+			return fail(400, { error: 'ASIC share difficulty must be greater than 0.' });
+
 		setSetting('mining_enabled', enabled ? 'true' : 'false');
 		setSetting('mining_bind', bind);
 		setSetting('mining_stratum_port', String(port));
@@ -80,6 +94,9 @@ export const actions: Actions = {
 		setSetting('mining_vardiff_enabled', vardiffEnabled ? 'true' : 'false');
 		setSetting('mining_vardiff_target_rate', String(vardiffTargetPerMin));
 		setSetting('mining_pool_tag', poolTag);
+		setSetting('mining_asic_port_enabled', asicPortEnabled ? 'true' : 'false');
+		setSetting('mining_asic_stratum_port', String(asicStratumPort));
+		setSetting('mining_asic_share_difficulty', String(asicShareDifficulty));
 
 		try {
 			await reconfigureMiningEngine();

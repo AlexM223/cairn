@@ -143,7 +143,10 @@ describe('admin/mining ?/save — validation (admin caller)', () => {
 				shareDifficulty: '2.5',
 				vardiffEnabled: 'on',
 				vardiffTargetPerMin: '12',
-				poolTag: 'Heartwood'
+				poolTag: 'Heartwood',
+				asicPortEnabled: 'on',
+				asicStratumPort: '3334',
+				asicShareDifficulty: '65536'
 			})
 		);
 		expect(res).toMatchObject({ saved: true });
@@ -154,6 +157,52 @@ describe('admin/mining ?/save — validation (admin caller)', () => {
 		expect(setSetting).toHaveBeenCalledWith('mining_vardiff_enabled', 'true');
 		expect(setSetting).toHaveBeenCalledWith('mining_vardiff_target_rate', '12');
 		expect(setSetting).toHaveBeenCalledWith('mining_pool_tag', 'Heartwood');
+		expect(setSetting).toHaveBeenCalledWith('mining_asic_port_enabled', 'true');
+		expect(setSetting).toHaveBeenCalledWith('mining_asic_stratum_port', '3334');
+		expect(setSetting).toHaveBeenCalledWith('mining_asic_share_difficulty', '65536');
 		expect(reconfigureMiningEngine).toHaveBeenCalledOnce();
+	});
+});
+
+describe('admin/mining ?/save — ASIC port validation (cairn-pz8v5)', () => {
+	const BASE = {
+		enabled: 'on',
+		bind: 'loopback',
+		port: '3333',
+		shareDifficulty: '1',
+		vardiffTargetPerMin: '10',
+		poolTag: 'Heartwood',
+		asicPortEnabled: 'on',
+		asicStratumPort: '3334',
+		asicShareDifficulty: '65536'
+	};
+
+	it('rejects an ASIC port equal to the main Stratum port', async () => {
+		const res = await actions.save(makeEvent(ADMIN, { ...BASE, port: '3333', asicStratumPort: '3333' }));
+		expect(res).toMatchObject({ status: 400 });
+		expect(setSetting).not.toHaveBeenCalled();
+		expect(reconfigureMiningEngine).not.toHaveBeenCalled();
+	});
+
+	it('rejects an out-of-range ASIC port', async () => {
+		const res = await actions.save(makeEvent(ADMIN, { ...BASE, asicStratumPort: '70000' }));
+		expect(res).toMatchObject({ status: 400 });
+		expect(setSetting).not.toHaveBeenCalled();
+	});
+
+	it('rejects a non-positive ASIC share difficulty', async () => {
+		const res = await actions.save(makeEvent(ADMIN, { ...BASE, asicShareDifficulty: '0' }));
+		expect(res).toMatchObject({ status: 400 });
+		expect(setSetting).not.toHaveBeenCalled();
+	});
+
+	it('persists asicPortEnabled=false when the switch is off (checkbox absent)', async () => {
+		const fields = { ...BASE };
+		delete (fields as Record<string, string>).asicPortEnabled;
+		const res = await actions.save(makeEvent(ADMIN, fields));
+		expect(res).toMatchObject({ saved: true });
+		expect(setSetting).toHaveBeenCalledWith('mining_asic_port_enabled', 'false');
+		expect(setSetting).toHaveBeenCalledWith('mining_asic_stratum_port', '3334');
+		expect(setSetting).toHaveBeenCalledWith('mining_asic_share_difficulty', '65536');
 	});
 });

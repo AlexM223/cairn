@@ -127,7 +127,10 @@ function buildEngineConfig(): MiningEngineConfig {
 		vardiffTargetPerMin: s.vardiffTargetPerMin,
 		maxDifficulty: MAX_DIFFICULTY,
 		maxConnections: MAX_CONNECTIONS,
-		blockPolicyShift: BLOCK_POLICY_SHIFT
+		blockPolicyShift: BLOCK_POLICY_SHIFT,
+		asicPortEnabled: s.asicPortEnabled,
+		asicPort: s.asicStratumPort,
+		asicShareDifficulty: s.asicShareDifficulty
 	};
 }
 
@@ -424,7 +427,11 @@ export async function handleBlockAccepted(
 	// next aggregates flush. Nudge-only; the client refetches its own view.
 	try {
 		livePublish('mining', { userId: solve.userId }, {});
-		livePublish('mining:pool', { admin: true }, {});
+		// Pool nudges are becoming user-visible (cairn-et38g): broadcast to every
+		// entitled connection rather than admins only. The nudge carries NO data —
+		// the underlying data endpoint stays access-gated; clients refetch their own
+		// permitted view.
+		livePublish('mining:pool', { broadcast: true }, {});
 	} catch (e) {
 		log.warn({ err: e }, 'block-found live nudge failed');
 	}

@@ -136,15 +136,26 @@ export interface ConnectionInfo {
 	readonly lastShareAt: number | null;
 }
 
+/** One bound Stratum listener's role + port + live connection count. */
+export interface ListenerInfo {
+	readonly role: 'standard' | 'asic';
+	readonly port: number;
+	readonly connections: number;
+}
+
 export interface EngineStatus {
 	readonly listening: boolean;
 	readonly bind: string;
+	/** The STANDARD listener's port (the primary advertised port). */
 	readonly port: number;
 	readonly lastTipHeight: number | null;
 	readonly lastJobAt: number | null;
 	readonly lastTemplateOk: boolean;
 	readonly minerCount: number;
+	/** COMBINED per-connection projection across every listener (standard + asic). */
 	readonly connections: ConnectionInfo[];
+	/** One entry per bound listener — one element when the ASIC port is disabled. */
+	readonly listeners: ListenerInfo[];
 	readonly fatalErrors: string[];
 }
 
@@ -168,6 +179,18 @@ export interface MiningEngineConfig {
 	readonly maxConnections: number;
 	/** REGTEST_POLICY_SHIFT: solve gate is min(networkTarget, shareTarget >> shift). 0 = production. */
 	readonly blockPolicyShift: number;
+	/**
+	 * Whether a SECOND (ASIC-class) Stratum listener runs alongside the standard
+	 * one. Same engine — same job pipeline, per-connection coinbase, auth table,
+	 * share/solve/reject handlers, and vardiff mechanism — differing ONLY in bind
+	 * port and difficulty floor (`asicShareDifficulty` = starting difficulty +
+	 * vardiff floor clamp). Keeps ASICs off the low-floor standard port.
+	 */
+	readonly asicPortEnabled: boolean;
+	/** Bind port for the ASIC listener (must differ from `port`). */
+	readonly asicPort: number;
+	/** Fixed/starting difficulty + vardiff floor for the ASIC listener. */
+	readonly asicShareDifficulty: number;
 }
 
 // ---------------------------------------------------------------------------

@@ -40,6 +40,12 @@
 	let vardiffTargetPerMin = $state(settings.vardiffTargetPerMin);
 	// svelte-ignore state_referenced_locally
 	let poolTag = $state(settings.poolTag);
+	// svelte-ignore state_referenced_locally
+	let asicPortEnabled = $state(settings.asicPortEnabled);
+	// svelte-ignore state_referenced_locally
+	let asicStratumPort = $state(settings.asicStratumPort);
+	// svelte-ignore state_referenced_locally
+	let asicShareDifficulty = $state(settings.asicShareDifficulty);
 
 	let saving = $state(false);
 
@@ -159,6 +165,57 @@
 					max="60"
 					bind:value={vardiffTargetPerMin}
 				/>
+			</div>
+		{/if}
+	</div>
+
+	<div class="subgroup">
+		<span class="subgroup-title">Big-machine port</span>
+
+		<label class="switch-row">
+			<input
+				type="checkbox"
+				name="asicPortEnabled"
+				bind:checked={asicPortEnabled}
+				role="switch"
+				aria-checked={asicPortEnabled}
+			/>
+			<span class="switch-track" class:on={asicPortEnabled}><span class="switch-knob"></span></span>
+			<span class="switch-text">Run a separate port for big machines</span>
+		</label>
+
+		<p class="hint">
+			Big machines (Antminer-class) should connect to this separate port. Its higher share bar
+			keeps them from drowning the pool in paperwork. Small miners keep using the main port above.
+		</p>
+
+		{#if asicPortEnabled}
+			<div class="row-fields fade-in">
+				<div class="field port-field">
+					<label class="label" for="asicStratumPort">Big-machine port</label>
+					<input
+						class="input mono"
+						id="asicStratumPort"
+						name="asicStratumPort"
+						type="number"
+						min="1"
+						max="65535"
+						bind:value={asicStratumPort}
+					/>
+				</div>
+				<div class="field">
+					<label class="label" for="asicShareDifficulty">Starting difficulty for big machines</label>
+					<input
+						class="input mono"
+						id="asicShareDifficulty"
+						name="asicShareDifficulty"
+						type="number"
+						min="1"
+						step="1"
+						bind:value={asicShareDifficulty}
+					/>
+					<span class="hint">Higher than the main port's, so a fast machine doesn't flood shares.</span>
+				</div>
 			</div>
 		{/if}
 	</div>

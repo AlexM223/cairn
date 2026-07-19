@@ -79,7 +79,12 @@ const config: MiningEngineConfig = {
 	vardiffTargetPerMin: 5,
 	maxDifficulty: 2 ** 20,
 	maxConnections: 64,
-	blockPolicyShift: 0 // easy nbits → every accepted share solves
+	blockPolicyShift: 0, // easy nbits → every accepted share solves
+	// Forced-solve tests exercise one listener; the dual-listener suite below
+	// enables the ASIC port explicitly.
+	asicPortEnabled: false,
+	asicPort: 0,
+	asicShareDifficulty: 65536
 };
 
 /** Raw-socket helper: subscribe + authorize + return en1 and the notify job fields. */
@@ -270,4 +275,177 @@ describe('MiningPool forced solve (fake rpc)', () => {
 			m.sock.destroy();
 		}
 	}, 40_000);
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Subscribe + authorize on a raw socket and capture the FIRST mining.set_difficulty
+ * and the jobId of the first mining.notify (the job broadcast). The server sends
+ * set_difficulty immediately before the personalized notify on authorize, so once
+ * a job exists (lastJobAt set) a fresh connection observes both.
+ */
+async function connectCapture(
+	port: number,
+	miningId: string
+): Promise<{ sock: net.Socket; setDiff: number; jobId: string }> {
+	const sock = net.connect(port, '127.0.0.1');
+	await new Promise<void>((res, rej) => {
+		sock.once('connect', () => res());
+		sock.once('error', rej);
+	});
+	let buf = '';
+	const pending = new Map<number, (r: { result: unknown; error: unknown }) => void>();
+	let setDiff: number | null = null;
+	let jobId: string | null = null;
+	const notifyWaiters: (() => void)[] = [];
+	sock.on('data', (chunk: Buffer) => {
+		buf += chunk.toString('utf8');
+		let idx: number;
+		while ((idx = buf.indexOf('\n')) >= 0) {
+			const line = buf.slice(0, idx).trim();
+			buf = buf.slice(idx + 1);
+			if (line.length === 0) continue;
+			const m = JSON.parse(line) as { id?: number; method?: string; params?: unknown[]; result?: unknown; error?: unknown };
+			if (m.method === 'mining.set_difficulty') {
+				setDiff = (m.params as number[])[0]!;
+			} else if (m.method === 'mining.notify') {
+				jobId = (m.params as unknown[])[0] as string;
+				notifyWaiters.splice(0).forEach((fn) => fn());
+			} else if (typeof m.id === 'number' && pending.has(m.id)) {
+				pending.get(m.id)!({ result: m.result, error: m.error });
+				pending.delete(m.id);
+			}
+		}
+	});
+	let nextId = 1;
+	const req = (method: string, params: unknown[]) =>
+		new Promise<{ result: unknown; error: unknown }>((resolve) => {
+			const id = nextId++;
+			pending.set(id, resolve);
+			sock.write(JSON.stringify({ id, method, params }) + '\n');
+		});
+	await req('mining.subscribe', ['dual/1']);
+	const auth = await req('mining.authorize', [miningId, 'x']);
+	if (auth.result !== true) throw new Error('authorize failed');
+	await new Promise<void>((resolve) => {
+		if (jobId !== null) resolve();
+		else notifyWaiters.push(resolve);
+	});
+	return { sock, setDiff: setDiff!, jobId: jobId! };
+}
+
+describe('MiningPool dual Stratum listeners (standard + ASIC) — cairn-pz8v5', () => {
+	const STD_DIFF = 0.000001;
+	const ASIC_DIFF = 0.5; // distinct high-ish floor; still cheap (we never mine here)
+
+	const dualConfig: MiningEngineConfig = {
+		...config,
+		shareDifficulty: STD_DIFF,
+		vardiffEnabled: false,
+		asicPortEnabled: true,
+		asicPort: 0, // ephemeral, distinct from the standard ephemeral port
+		asicShareDifficulty: ASIC_DIFF
+	};
+
+	it('binds two listeners on distinct ports, standard first, and reports the standard port as `port`', async () => {
+		const miner = makeMiner('dual-listeners');
+		pool = new MiningPool({
+			rpc: new FakeRpc(),
+			config: dualConfig,
+			authProvider: new MapAuthProvider([miner]),
+			tipPollIntervalMs: 25,
+			feeRefreshMs: 3_600_000,
+			log: () => {}
+		});
+		await pool.start();
+		const st = pool.status();
+		expect(st.listeners).toHaveLength(2);
+		expect(st.listeners[0]!.role).toBe('standard');
+		expect(st.listeners[1]!.role).toBe('asic');
+		expect(st.listeners[0]!.port).toBeGreaterThan(0);
+		expect(st.listeners[1]!.port).toBeGreaterThan(0);
+		expect(st.listeners[0]!.port).not.toBe(st.listeners[1]!.port);
+		expect(st.port).toBe(st.listeners[0]!.port);
+	});
+
+	it('announces each listener its OWN difficulty floor and broadcasts jobs to both', async () => {
+		const miner = makeMiner('dual-floor');
+		pool = new MiningPool({
+			rpc: new FakeRpc(),
+			config: dualConfig,
+			authProvider: new MapAuthProvider([miner]),
+			tipPollIntervalMs: 25,
+			feeRefreshMs: 3_600_000,
+			log: () => {}
+		});
+		await pool.start();
+		await until(() => pool!.status().lastJobAt !== null);
+		const { listeners } = pool.status();
+		const stdPort = listeners.find((l) => l.role === 'standard')!.port;
+		const asicPort = listeners.find((l) => l.role === 'asic')!.port;
+
+		const onStd = await connectCapture(stdPort, miner.miningId);
+		const onAsic = await connectCapture(asicPort, miner.miningId);
+		try {
+			// each connection's initial set_difficulty == its port's configured floor
+			expect(onStd.setDiff).toBe(STD_DIFF);
+			expect(onAsic.setDiff).toBe(ASIC_DIFF);
+			// both received a job broadcast (same jobId — one shared job pipeline)
+			expect(onStd.jobId).toBeTruthy();
+			expect(onAsic.jobId).toBe(onStd.jobId);
+
+			// status() combines connections across BOTH listeners
+			await until(() => pool!.status().minerCount === 2);
+			const st = pool!.status();
+			expect(st.connections).toHaveLength(2);
+			expect(st.connections.map((c) => c.difficulty).sort((a, b) => a - b)).toEqual(
+				[STD_DIFF, ASIC_DIFF].sort((a, b) => a - b)
+			);
+			expect(st.listeners.find((l) => l.role === 'standard')!.connections).toBe(1);
+			expect(st.listeners.find((l) => l.role === 'asic')!.connections).toBe(1);
+		} finally {
+			onStd.sock.destroy();
+			onAsic.sock.destroy();
+		}
+	}, 20_000);
+
+	it('runs only the standard listener when asicPortEnabled is false', async () => {
+		const miner = makeMiner('single-listener');
+		pool = new MiningPool({
+			rpc: new FakeRpc(),
+			config: { ...config, asicPortEnabled: false },
+			authProvider: new MapAuthProvider([miner]),
+			tipPollIntervalMs: 25,
+			feeRefreshMs: 3_600_000,
+			log: () => {}
+		});
+		await pool.start();
+		const st = pool.status();
+		expect(st.listeners).toHaveLength(1);
+		expect(st.listeners[0]!.role).toBe('standard');
+	});
+
+	it('fails start cleanly (closing the standard listener) when the ASIC port cannot bind', async () => {
+		// Occupy a port, then force the ASIC listener onto it so its bind fails.
+		const blocker = net.createServer();
+		await new Promise<void>((res) => blocker.listen(0, '127.0.0.1', () => res()));
+		const busyPort = (blocker.address() as net.AddressInfo).port;
+		try {
+			pool = new MiningPool({
+				rpc: new FakeRpc(),
+				config: { ...dualConfig, port: 0, asicPort: busyPort },
+				authProvider: new MapAuthProvider([makeMiner('bind-fail')]),
+				tipPollIntervalMs: 25,
+				feeRefreshMs: 3_600_000,
+				log: () => {}
+			});
+			await expect(pool.start()).rejects.toThrow();
+			// the standard listener that opened first must have been closed on the failed start
+			expect(pool.status().listening).toBe(false);
+			pool = null; // nothing left open to stop
+		} finally {
+			await new Promise<void>((res) => blocker.close(() => res()));
+		}
+	}, 20_000);
 });

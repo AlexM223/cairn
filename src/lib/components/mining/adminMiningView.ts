@@ -90,6 +90,10 @@ export interface AdminMiningSettingsView {
 	vardiffEnabled: boolean;
 	vardiffTargetPerMin: number;
 	poolTag: string;
+	/** Second (ASIC-class) high-floor Stratum listener. */
+	asicPortEnabled: boolean;
+	asicStratumPort: number;
+	asicShareDifficulty: number;
 }
 
 export interface AdminMiningView {
@@ -154,6 +158,9 @@ export const DEGRADED_ADMIN_MINING_VIEW: AdminMiningView = {
 		shareDifficulty: 1,
 		vardiffEnabled: true,
 		vardiffTargetPerMin: 10,
-		poolTag: 'Heartwood'
+		poolTag: 'Heartwood',
+		asicPortEnabled: true,
+		asicStratumPort: 3334,
+		asicShareDifficulty: 65536
 	}
 };

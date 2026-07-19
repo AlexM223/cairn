@@ -59,7 +59,15 @@ export class MiningPool {
 	private readonly config: MiningEngineConfig;
 	private readonly log: (msg: string) => void;
 
+	/** The standard-floor listener (default port 3333, low share difficulty). */
 	private readonly server: StratumServer;
+	/**
+	 * The optional high-floor ASIC listener (default port 3334). Runs the SAME
+	 * engine as {@link server} — same job pipeline, per-connection coinbase, auth
+	 * provider, share/solve/reject handlers, and vardiff mechanism — differing only
+	 * in bind port and difficulty floor. Null when `asicPortEnabled` is false.
+	 */
+	private readonly asicServer: StratumServer | null;
 	private poller: TipPoller | null = null;
 	private feeTimer: NodeJS.Timeout | null = null;
 
@@ -85,10 +93,17 @@ export class MiningPool {
 		this.config = opts.config;
 		this.log = opts.log ?? ((msg) => console.log(`[mining] ${msg}`));
 
-		const serverOpts: StratumServerOptions = {
-			port: this.config.port,
+		// Both listeners are wired IDENTICALLY — same auth provider, same solve
+		// queue, same share/reject sinks, same vardiff opts — and differ ONLY in
+		// bind port and difficulty floor (start difficulty + the vardiff floor clamp
+		// StratumServer applies against its own opts.shareDifficulty). A solve from
+		// either lands on the shared serialized queue and resolves against the shared
+		// jobsById map (both are handed the same BuiltJob by setJob), so which port
+		// found the block is irrelevant to assembly.
+		const makeServerOpts = (port: number, shareDifficulty: number): StratumServerOptions => ({
+			port,
 			host: this.config.bindHost,
-			shareDifficulty: this.config.shareDifficulty,
+			shareDifficulty,
 			network: this.config.network,
 			authProvider: opts.authProvider,
 			blockPolicyShift: this.config.blockPolicyShift,
@@ -105,8 +120,11 @@ export class MiningPool {
 						}
 					}
 				: {})
-		};
-		this.server = new StratumServer(serverOpts);
+		});
+		this.server = new StratumServer(makeServerOpts(this.config.port, this.config.shareDifficulty));
+		this.asicServer = this.config.asicPortEnabled
+			? new StratumServer(makeServerOpts(this.config.asicPort, this.config.asicShareDifficulty))
+			: null;
 	}
 
 	/** Invariant violations observed at runtime (a forced-solve harness asserts empty). */
@@ -122,6 +140,26 @@ export class MiningPool {
 			`stratum listening on ${this.config.bindHost}:${this.server.port} ` +
 				`(share difficulty ${this.config.shareDifficulty})`
 		);
+		if (this.asicServer) {
+			try {
+				await this.asicServer.listen();
+			} catch (err) {
+				// The ASIC port failed to bind (busy / same as the standard port). Close
+				// the standard listener we already opened so start() fails cleanly with
+				// no half-open engine, and re-throw for doStart() to record as fatal.
+				this.started = false;
+				try {
+					await this.server.close();
+				} catch {
+					/* best-effort — we are already failing the start */
+				}
+				throw err;
+			}
+			this.log(
+				`asic stratum listening on ${this.config.bindHost}:${this.asicServer.port} ` +
+					`(share difficulty ${this.config.asicShareDifficulty})`
+			);
+		}
 
 		this.poller = new TipPoller(this.opts.rpc, this.opts.tipPollIntervalMs ?? 1000);
 		this.poller.on('tip', (tip) => this.enqueue(() => this.handleTip(tip)));
@@ -145,21 +183,37 @@ export class MiningPool {
 			clearInterval(this.feeTimer);
 			this.feeTimer = null;
 		}
-		await this.server.close();
+		// Close BOTH listeners; the try/finally guarantees the ASIC listener is
+		// closed even if the standard close rejects (never leak a bound port).
+		try {
+			await this.server.close();
+		} finally {
+			if (this.asicServer) await this.asicServer.close();
+		}
 		await this.queue; // drain in-flight tip/solve/refresh handlers
 		this.log('stopped');
 	}
 
 	status(): EngineStatus {
+		const stdConns = this.server.connections();
+		const asicConns = this.asicServer ? this.asicServer.connections() : [];
 		return {
-			listening: this.server.listening,
+			// Honest only when BOTH configured listeners are up.
+			listening: this.server.listening && (this.asicServer === null || this.asicServer.listening),
 			bind: this.config.bindHost,
 			port: this.server.port,
 			lastTipHeight: this.lastTipHeight,
 			lastJobAt: this.lastJobAt,
 			lastTemplateOk: this.lastTemplateOk,
-			minerCount: this.server.minerCount,
-			connections: this.server.connections(),
+			minerCount: this.server.minerCount + (this.asicServer?.minerCount ?? 0),
+			// COMBINED across both listeners — readModels counts distinct users from this.
+			connections: [...stdConns, ...asicConns],
+			listeners: [
+				{ role: 'standard', port: this.server.port, connections: stdConns.length },
+				...(this.asicServer
+					? [{ role: 'asic' as const, port: this.asicServer.port, connections: asicConns.length }]
+					: [])
+			],
 			fatalErrors: [...this.fatal]
 		};
 	}
@@ -253,7 +307,10 @@ export class MiningPool {
 			this.jobsById.delete(oldest);
 		}
 		this.lastJobAt = Date.now();
+		// Both listeners mine the same job (same jobId, same merkle branches, each
+		// connection personalized by its own frozen payout inside the server).
 		this.server.setJob(built);
+		this.asicServer?.setJob(built);
 	}
 
 	// ------------------------------------------------------------------ solves
