@@ -140,7 +140,12 @@ async function startLocal(binary, port) {
 		`-rpcpassword=${RPC_PASS}`,
 		'-server=1',
 		'-listen=0',
-		'-fallbackfee=0.0001'
+		'-fallbackfee=0.0001',
+		// txindex: the electrum-shim proxies blockchain.transaction.get to
+		// getrawtransaction, which PSBT construction needs for arbitrary
+		// (non-wallet, non-mempool) funding txs — without it the send flow
+		// dies at review with "No such mempool transaction" (Move-3 QA).
+		'-txindex=1'
 	];
 	const proc = spawn(binary, args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
 	let stderrTail = '';
