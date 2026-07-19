@@ -106,10 +106,15 @@
 	}
 	const lane = $derived(laneFor(page.url.pathname));
 
-	// Persistent "back up your wallet(s)" banner. A lost config can mean lost
-	// funds, so it shows until resolved (server-tracked), dismissible only for the
-	// current session so it returns on the next visit until backups are done.
-	const unbacked = $derived(data.unbackedWallets ?? []);
+	// Persistent "back up your wallet(s)" banner — decaying + polymorphic +
+	// state-driven cadence (cairn-gt05.5, docs/UX-BACKUP-NUDGE-AND-FIRST-DEPOSIT-
+	// SPEC.md Spec A). The server (getDueBackupNudge, src/lib/server/backups.ts)
+	// owns WHEN this is due — a widening decay schedule instead of "every
+	// session" — and WHICH copy variant to show, so a never-dismissing user
+	// still only sees it on the decayed cadence, not every visit. This
+	// component's dismiss is a SESSION-ONLY hide-for-now on top of that; it does
+	// not reset the server-side decay clock.
+	const nudge = $derived(data.backupNudge);
 	let backupDismissed = $state(false);
 	$effect(() => {
 		backupDismissed = sessionStorage.getItem('cairn.backup.banner.dismissed') === '1';
@@ -118,6 +123,57 @@
 		backupDismissed = true;
 		sessionStorage.setItem('cairn.backup.banner.dismissed', '1');
 	}
+
+	// Polymorphic copy, keyed by the variantId the server selects (calm
+	// rotation V1..V5 by shown_count, or an escalated E-FUNDED / E-MULTI variant
+	// for one showing after a stakes-raising event) — kept here, next to the
+	// styling, per the spec. `{name}` / `{unbackedCount}` are interpolated by
+	// the render below rather than baked into these templates so the strings
+	// stay simple data, not markup.
+	interface NudgeInterp {
+		name: string;
+		unbackedCount: number;
+	}
+	const BACKUP_NUDGE_COPY: Record<string, { text: (n: NudgeInterp) => string; cta: (n: NudgeInterp) => string }> = {
+		V1: {
+			text: (n) => `${n.name} lives only on this server right now. Download its backup so you can always get it back.`,
+			cta: () => 'Download backup'
+		},
+		V2: {
+			text: (n) =>
+				`One thing left for ${n.name}: save its backup. Without it, losing this server means losing access to the funds.`,
+			cta: () => 'Save it now'
+		},
+		V3: {
+			text: (n) =>
+				`Still no backup for ${n.name}. It takes a minute, and it's the one copy that protects your bitcoin.`,
+			cta: () => 'Download backup'
+		},
+		V4: {
+			text: (n) =>
+				`A copy of ${n.name}'s setup only exists here. Keep one somewhere safe — a phone, a drive, a printout.`,
+			cta: () => 'Get the backup'
+		},
+		V5: {
+			text: (n) => `${n.name} still isn't backed up. Whenever you're ready, the file's right here.`,
+			cta: () => 'Download backup'
+		},
+		'E-FUNDED': {
+			text: (n) => `${n.name} now holds bitcoin and still has no backup. Save it now so a lost server can't cost you.`,
+			cta: (n) => `Back up ${n.name}`
+		},
+		'E-MULTI': {
+			text: (n) => `${n.unbackedCount} wallets still need backups. Start with ${n.name} — each one's setup exists only here.`,
+			cta: (n) => `Start with ${n.name}`
+		}
+	};
+	const nudgeCopy = $derived(nudge ? (BACKUP_NUDGE_COPY[nudge.variantId] ?? BACKUP_NUDGE_COPY.V1) : null);
+	const nudgeText = $derived(
+		nudge && nudgeCopy ? nudgeCopy.text({ name: nudge.name, unbackedCount: nudge.unbackedCount }) : ''
+	);
+	const nudgeCta = $derived(
+		nudge && nudgeCopy ? nudgeCopy.cta({ name: nudge.name, unbackedCount: nudge.unbackedCount }) : ''
+	);
 
 	// Separate, gentler 90-day periodic reminder for users whose backups have
 	// gone stale. Dismissal is SERVER-side (persists across browsers, lapses
@@ -190,19 +246,12 @@
 				     filtered by flag, expiry and this user's dismissals. -->
 				<AnnouncementBanner {announcement} />
 			{/each}
-			{#if unbacked.length > 0 && !backupDismissed}
+			{#if nudge && !backupDismissed}
 				<div class="backup-banner" role="status">
 					<Icon name="alert-triangle" size={16} />
 					<span class="grow">
-						{#if unbacked.length === 1}
-							<strong>{unbacked[0].name}</strong> isn't backed up.
-							<a href={unbacked[0].href}>Download its config</a> — without it, a lost server can mean
-							lost funds.
-						{:else}
-							<strong>{unbacked.length} wallets</strong> aren't backed up.
-							<a href={unbacked[0].href}>Start with {unbacked[0].name}</a> — a lost config can mean
-							permanently lost funds.
-						{/if}
+						{nudgeText}
+						<a href={nudge.href}>{nudgeCta}</a>
 					</span>
 					<button
 						type="button"
@@ -214,7 +263,7 @@
 					</button>
 				</div>
 			{/if}
-			{#if showReminder && !reminderDismissed && !(unbacked.length > 0 && !backupDismissed)}
+			{#if showReminder && !reminderDismissed && !(nudge && !backupDismissed)}
 				<div class="reminder-banner" role="status">
 					<Icon name="clock" size={16} />
 					<span class="grow">
@@ -282,10 +331,6 @@
 	.backup-banner :global(svg) {
 		color: var(--warning);
 		flex-shrink: 0;
-	}
-
-	.backup-banner strong {
-		color: var(--text);
 	}
 
 	.backup-banner a {

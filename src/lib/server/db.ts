@@ -974,6 +974,30 @@ db.exec(`
 	);
 `);
 
+// Decaying, polymorphic, state-driven backup NUDGE cadence (cairn-gt05.5,
+// docs/UX-BACKUP-NUDGE-AND-FIRST-DEPOSIT-SPEC.md Spec A). Distinct from
+// backup_reminders above (the 90-day "refresh your OLD backup" nudge for
+// wallets that already HAVE one): this table governs the "you don't have ANY
+// backup yet" amber banner in (app)/+layout.svelte, replacing its old
+// sessionStorage-only dismissal (which re-nagged on every new session — see
+// F16 in docs/UX-PSYCHOLOGY-RESEARCH-R2-2026-07-18.md). One row per
+// still-unbacked wallet, tracking when it last showed and how many times, so
+// the banner decays to widening intervals instead of nagging every visit, and
+// escalates (but never below a 72h floor) when the stakes genuinely rise —
+// see getDueBackupNudge / escalateBackupNudge in src/lib/server/backups.ts.
+db.exec(`
+	CREATE TABLE IF NOT EXISTS backup_nudges (
+		user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		wallet_kind   TEXT    NOT NULL,          -- 'multisig' (only created-multisigs are ever nudged)
+		wallet_id     INTEGER NOT NULL,
+		first_seen_at TEXT    NOT NULL,          -- earned moment (first time this wallet became due)
+		last_shown_at TEXT,                      -- last time the banner actually rendered for it
+		shown_count   INTEGER NOT NULL DEFAULT 0,
+		stakes_bucket INTEGER NOT NULL DEFAULT 0, -- highest stakes tier seen so far (0 NEW / 1 MULTI / 2 FUNDED)
+		PRIMARY KEY (user_id, wallet_kind, wallet_id)
+	);
+`);
+
 // Collaborative custody (see docs/COLLABORATIVE-CUSTODY-PLAN.md). Single-instance
 // only — several accounts on ONE Cairn instance sharing one multisig wallet. NO
 // federation/cross-instance concept exists or is planned. These tables extend the

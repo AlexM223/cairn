@@ -8,7 +8,11 @@ import {
 	isBackedUp,
 	listUnbackedWallets,
 	shouldShowBackupReminder,
-	dismissBackupReminder
+	dismissBackupReminder,
+	nextEligibleAt,
+	getDueBackupNudge,
+	escalateBackupNudge,
+	BACKUP_NUDGE_BUCKET
 } from './backups';
 
 // A known-valid mainnet xpub (same fixture family the xpub tests use).
@@ -17,7 +21,7 @@ const XPUB =
 
 function wipe(): void {
 	db.exec(
-		'DELETE FROM wallet_backups; DELETE FROM backup_reminders; DELETE FROM multisigs; DELETE FROM wallets; DELETE FROM sessions; DELETE FROM users; DELETE FROM settings;'
+		'DELETE FROM wallet_backups; DELETE FROM backup_reminders; DELETE FROM backup_nudges; DELETE FROM multisigs; DELETE FROM wallets; DELETE FROM sessions; DELETE FROM users; DELETE FROM settings;'
 	);
 }
 
@@ -135,6 +139,142 @@ describe('wallet-config backup tracking', () => {
 				"UPDATE backup_reminders SET dismissed_at = '2000-01-01T00:00:00.000Z' WHERE user_id = ?"
 			).run(user.id);
 			expect(shouldShowBackupReminder(user.id)).toBe(true);
+		});
+	});
+
+	// cairn-gt05.5 — decaying, polymorphic, state-driven backup-nudge cadence.
+	// docs/UX-BACKUP-NUDGE-AND-FIRST-DEPOSIT-SPEC.md Spec A.
+	describe('nextEligibleAt (pure decay-schedule function)', () => {
+		const DAY = 24 * 60 * 60 * 1000;
+		const HOUR = 60 * 60 * 1000;
+
+		it('is due immediately when never shown', () => {
+			expect(nextEligibleAt(null, 0)).toBe(0);
+		});
+
+		it('follows the +3 / +10 / +30 / +90 day ladder', () => {
+			const t0 = 1_000_000;
+			expect(nextEligibleAt(t0, 1)).toBe(t0 + 3 * DAY);
+			expect(nextEligibleAt(t0, 2)).toBe(t0 + 10 * DAY);
+			expect(nextEligibleAt(t0, 3)).toBe(t0 + 30 * DAY);
+			expect(nextEligibleAt(t0, 4)).toBe(t0 + 90 * DAY);
+		});
+
+		it('caps at the quarterly rung for any shownCount beyond 4 — cadence never shortens', () => {
+			const t0 = 1_000_000;
+			expect(nextEligibleAt(t0, 5)).toBe(t0 + 90 * DAY);
+			expect(nextEligibleAt(t0, 12)).toBe(t0 + 90 * DAY);
+		});
+
+		it('rung 0 (+3 days) equals the 72h hard cap — the equivalence escalation relies on', () => {
+			const t0 = 1_000_000;
+			expect(nextEligibleAt(t0, 1) - t0).toBe(72 * HOUR);
+		});
+
+		it('shownCount 0 with a real timestamp (the pending-escalation sentinel) still waits the 72h cap, not immediately', () => {
+			const t0 = 1_000_000;
+			expect(nextEligibleAt(t0, 0)).toBe(t0 + 72 * HOUR);
+		});
+	});
+
+	describe('getDueBackupNudge / escalateBackupNudge (decaying amber banner)', () => {
+		it('shows once at creation with the earned-moment V1 variant, then decays (no re-show same session)', async () => {
+			const user = await makeUser('a@example.com');
+			const ms = makeMultisig(user.id, 'Family vault', 'created');
+
+			const first = getDueBackupNudge(user.id);
+			expect(first).toMatchObject({ walletId: ms, variantId: 'V1', tone: 'calm', unbackedCount: 1 });
+
+			// Immediately again: decayed, not due.
+			expect(getDueBackupNudge(user.id)).toBeNull();
+		});
+
+		it('rotates through the calm copy variants across widening intervals, never repeating consecutively', async () => {
+			const user = await makeUser('a@example.com');
+			const ms = makeMultisig(user.id, 'Family vault', 'created');
+
+			const seen: string[] = [];
+			const n1 = getDueBackupNudge(user.id);
+			seen.push(n1!.variantId);
+
+			// Force each subsequent showing due by rewinding last_shown_at well past
+			// its interval — mirrors decay elapsing, without a real multi-day wait.
+			for (let i = 0; i < 4; i++) {
+				db.prepare(
+					"UPDATE backup_nudges SET last_shown_at = '2000-01-01T00:00:00.000Z' WHERE wallet_id = ?"
+				).run(ms);
+				const n = getDueBackupNudge(user.id);
+				expect(n).not.toBeNull();
+				seen.push(n!.variantId);
+			}
+
+			expect(seen).toEqual(['V1', 'V2', 'V3', 'V4', 'V5']);
+			for (let i = 1; i < seen.length; i++) expect(seen[i]).not.toBe(seen[i - 1]);
+		});
+
+		it('a second unbacked wallet escalates to E-MULTI once due, with the correct count', async () => {
+			const user = await makeUser('a@example.com');
+			const msA = makeMultisig(user.id, 'Vault A', 'created');
+			getDueBackupNudge(user.id); // shows V1 for A, stamps last_shown_at
+
+			makeMultisig(user.id, 'Vault B', 'created');
+			// A's cap hasn't elapsed yet — MULTI is recorded but not shown yet.
+			expect(getDueBackupNudge(user.id)?.walletId).not.toBe(msA);
+
+			// Once A's 72h cap elapses, its nudge is due again with E-MULTI.
+			db.prepare(
+				"UPDATE backup_nudges SET last_shown_at = '2000-01-01T00:00:00.000Z' WHERE wallet_id = ?"
+			).run(msA);
+			const escalated = getDueBackupNudge(user.id);
+			expect(escalated).toMatchObject({ walletId: msA, variantId: 'E-MULTI', tone: 'escalated', unbackedCount: 2 });
+		});
+
+		it('funds arriving on an unbacked wallet escalates to E-FUNDED, but never within 72h of the last showing', async () => {
+			const user = await makeUser('a@example.com');
+			const ms = makeMultisig(user.id, 'Family vault', 'created');
+			getDueBackupNudge(user.id); // V1, stamps last_shown_at = now
+
+			escalateBackupNudge(user.id, ms, BACKUP_NUDGE_BUCKET.FUNDED);
+			// Within the 72h cap of the real showing above — must not fire yet.
+			expect(getDueBackupNudge(user.id)).toBeNull();
+
+			// Cap elapsed: now due, with the escalated copy.
+			db.prepare(
+				"UPDATE backup_nudges SET last_shown_at = '2000-01-01T00:00:00.000Z' WHERE wallet_id = ?"
+			).run(ms);
+			const nudge = getDueBackupNudge(user.id);
+			expect(nudge).toMatchObject({ walletId: ms, variantId: 'E-FUNDED', tone: 'escalated' });
+		});
+
+		it('escalateBackupNudge no-ops for an imported multisig (never nudged at all)', async () => {
+			const user = await makeUser('a@example.com');
+			const ms = makeMultisig(user.id, 'Imported vault', 'imported');
+			escalateBackupNudge(user.id, ms, BACKUP_NUDGE_BUCKET.FUNDED);
+			expect(getDueBackupNudge(user.id)).toBeNull();
+		});
+
+		it('marking the wallet backed up removes it from the nudge entirely', async () => {
+			const user = await makeUser('a@example.com');
+			const ms = makeMultisig(user.id, 'Family vault', 'created');
+			getDueBackupNudge(user.id);
+			markBackedUp(user.id, 'multisig', ms);
+
+			db.prepare(
+				"UPDATE backup_nudges SET last_shown_at = '2000-01-01T00:00:00.000Z' WHERE wallet_id = ?"
+			).run(ms);
+			expect(getDueBackupNudge(user.id)).toBeNull();
+		});
+
+		it('decay state survives being re-read fresh (timestamp-persisted, not in-process)', async () => {
+			const user = await makeUser('a@example.com');
+			const ms = makeMultisig(user.id, 'Family vault', 'created');
+			getDueBackupNudge(user.id);
+
+			const row = db
+				.prepare('SELECT last_shown_at, shown_count FROM backup_nudges WHERE wallet_id = ?')
+				.get(ms) as { last_shown_at: string; shown_count: number };
+			expect(row.shown_count).toBe(1);
+			expect(row.last_shown_at).toEqual(expect.any(String));
 		});
 	});
 });

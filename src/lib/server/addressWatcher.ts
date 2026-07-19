@@ -30,6 +30,7 @@ import { createMultisigDeriver } from './bitcoin/multisig';
 import { GAP_LIMIT } from './bitcoin/gapLimitScanner';
 import { toMultisigConfig, type MultisigRow, type MultisigKeyRow } from './wallets/multisig';
 import { notify } from './notifications';
+import { escalateBackupNudge, BACKUP_NUDGE_BUCKET } from './backups';
 import { publish as livePublish } from './liveHub';
 import { verifyTxInclusion, parseBlockHeader, blockHash, meetsTarget, bitsToTarget } from './bitcoin/spv';
 import type { BlockHeader } from './bitcoin/spv';
@@ -924,6 +925,12 @@ async function handleScripthashChange(scripthash: string): Promise<void> {
 					detail: { txid, amountSats: receivedSats, walletId: w.walletId, walletKind: w.kind },
 					link
 				});
+				// cairn-gt05.5: an unbacked wallet that just took real money is the
+				// highest-value backup-nudge escalation — re-nudge now rather than
+				// waiting out a decay window that can run to 90 days. Best-effort and
+				// silent (no-ops for single-sig / imported / already-backed-up
+				// wallets); see escalateBackupNudge in ./backups.
+				escalateBackupNudge(w.userId, w.walletId, BACKUP_NUDGE_BUCKET.FUNDED);
 				// Live frame (Wave 2, LIVE-UPDATES-DESIGN.md §3.4): every field is already
 				// in hand here — no new DB read on the publish path (§3.1 invariant).
 				// User-scoped; the client debounces it into a tag-scoped reload.

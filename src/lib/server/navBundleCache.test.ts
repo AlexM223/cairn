@@ -9,6 +9,7 @@ import { cachedNavBundle, resetNavBundleCacheForTests, type NavBundle } from './
 
 function bundle(tag: string): NavBundle {
 	return {
+		backupNudge: null,
 		unbackedWallets: [],
 		showBackupReminder: false,
 		announcements: [{ tag } as unknown as NavBundle['announcements'][number]]

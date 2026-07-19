@@ -1,8 +1,9 @@
 // TTL cache for the (app) layout's per-navigation nav-chrome bundle
-// (unbacked-wallet nudge / backup reminder / active announcements).
+// (decaying backup nudge / unbacked-wallet list / backup reminder / active
+// announcements).
 //
 // src/routes/(app)/+layout.server.ts runs on every navigation and every full
-// document load, and all three of these reads are real node:sqlite queries
+// document load, and all of these reads are real node:sqlite queries
 // (joins/subselects), not the cheap single-keyed SELECTs cairn-xlrm already
 // trimmed from this same load. node:sqlite's DatabaseSync API is synchronous,
 // and Node is single-threaded, so each of these calls blocks the event loop —
@@ -21,10 +22,11 @@
 // appear; that's an acceptable trade for skipping three synchronous SQLite
 // queries on every nav.
 
-import type { UnbackedWallet } from './backups';
+import type { BackupNudge, UnbackedWallet } from './backups';
 import type { Announcement } from './announcements';
 
 export interface NavBundle {
+	backupNudge: BackupNudge | null;
 	unbackedWallets: UnbackedWallet[];
 	showBackupReminder: boolean;
 	announcements: Announcement[];

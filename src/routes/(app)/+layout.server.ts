@@ -1,6 +1,6 @@
 import { redirect } from '@sveltejs/kit';
 import { getUserAgreementOperator, DEFAULT_OPERATOR } from '$lib/server/disclosures';
-import { listUnbackedWallets, shouldShowBackupReminder } from '$lib/server/backups';
+import { getDueBackupNudge, listUnbackedWallets, shouldShowBackupReminder } from '$lib/server/backups';
 import { listActiveAnnouncementsFor } from '$lib/server/announcements';
 import { cachedNavBundle } from '$lib/server/navBundleCache';
 import { getInstanceMode } from '$lib/server/settings';
@@ -52,8 +52,18 @@ export const load: LayoutServerLoad = async ({ locals }) => {
 	// $lib/server/navBundleCache.ts for the full rationale and why serving a
 	// stale bundle for up to 15s is safe (every consumer already hides itself
 	// optimistically on the client the instant it's dismissed).
-	//  • unbackedWallets — wallets whose config has NEVER been downloaded (a lost
-	//    config can mean permanently lost funds, so this stays until resolved).
+	//  • backupNudge — the decaying, polymorphic "you don't have ANY backup yet"
+	//    nudge (cairn-gt05.5, docs/UX-BACKUP-NUDGE-AND-FIRST-DEPOSIT-SPEC.md
+	//    Spec A) that drives the layout's amber banner. getDueBackupNudge() both
+	//    computes AND stamps (last_shown_at / shown_count) the one due nudge, so
+	//    it's intentionally inside this cached closure: over-stamping on a 15s
+	//    cache miss is harmless (decay only ever widens), and the 15s staleness
+	//    just means a newly-due nudge can appear up to 15s late.
+	//  • unbackedWallets — the raw (non-decayed) unbacked-wallet list, kept
+	//    alongside backupNudge for consumers that need ongoing wallet HEALTH
+	//    status rather than nudge-display cadence — e.g. the Home health line
+	//    (cairn-md1k, src/routes/(app)/+page.svelte) — since "should we still
+	//    show it" and "is it still true" are deliberately different questions.
 	//  • showBackupReminder — a gentle, dismissable 90-day periodic reminder for
 	//    users who HAVE backups but haven't refreshed them in a while.
 	// locals.user is narrowed non-null above, but TS can't carry that narrowing
@@ -62,6 +72,7 @@ export const load: LayoutServerLoad = async ({ locals }) => {
 	// locals.user.id inside it.
 	const userId = locals.user.id;
 	const navBundle = cachedNavBundle(userId, () => ({
+		backupNudge: getDueBackupNudge(userId),
 		unbackedWallets: listUnbackedWallets(userId),
 		showBackupReminder: shouldShowBackupReminder(userId),
 		// Instance-wide admin announcements (active, unexpired, not dismissed by
@@ -113,6 +124,7 @@ export const load: LayoutServerLoad = async ({ locals }) => {
 			const operator = getUserAgreementOperator();
 			return operator === DEFAULT_OPERATOR ? null : operator;
 		})(),
+		backupNudge: navBundle.backupNudge,
 		unbackedWallets: navBundle.unbackedWallets,
 		showBackupReminder: navBundle.showBackupReminder,
 		// Where Cairn's own HTTPS listener is reachable (null = not running).
