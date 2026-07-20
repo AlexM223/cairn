@@ -15,7 +15,8 @@ const ENV_KEYS = [
 	'CAIRN_ELECTRUM_TLS',
 	'CAIRN_CORE_RPC_URL',
 	'CAIRN_CORE_RPC_USER',
-	'CAIRN_CORE_RPC_PASS'
+	'CAIRN_CORE_RPC_PASS',
+	'CAIRN_CORE_RPC_NETWORK'
 ] as const;
 
 let saved: Record<string, string | undefined>;
@@ -67,23 +68,20 @@ describe('seedChainConfigFromEnv', () => {
 		// Umbrel auto-connect design §4.1 A2: the settings UI's "auto-connected"
 		// card keys off this marker.
 		expect(getSetting('chain_provisioned_by')).toBe('umbrel-env');
+		// Core RPC gets its OWN provenance marker (zero-config Core RPC wave §B) —
+		// distinct from Electrum's chain_provisioned_by above.
+		expect(getSetting('core_rpc_provisioned_by')).toBe('umbrel-env');
 	});
 
-	it('never overrides values an admin has already set, even with env vars present', () => {
+	it('never overrides Electrum values an admin has already set, even with env vars present', () => {
 		setSetting('electrum_host', 'admin-chosen.example');
 		setSetting('electrum_port', '60001');
 		setSetting('electrum_tls', 'true');
 		setSetting('connection_mode', 'public');
-		setSetting('core_rpc_url', 'http://admin-chosen:8332');
-		setSetting('core_rpc_user', 'admin-user');
-		setSecretSetting('core_rpc_pass', 'admin-pass');
 
 		process.env.CAIRN_ELECTRUM_HOST = 'env-host.example';
 		process.env.CAIRN_ELECTRUM_PORT = '50001';
 		process.env.CAIRN_ELECTRUM_TLS = 'false';
-		process.env.CAIRN_CORE_RPC_URL = 'http://env-host:8332';
-		process.env.CAIRN_CORE_RPC_USER = 'env-user';
-		process.env.CAIRN_CORE_RPC_PASS = 'env-pass';
 
 		seedChainConfigFromEnv();
 
@@ -91,12 +89,203 @@ describe('seedChainConfigFromEnv', () => {
 		expect(getSetting('electrum_port')).toBe('60001');
 		expect(getSetting('electrum_tls')).toBe('true');
 		expect(getSetting('connection_mode')).toBe('public');
-		expect(getSetting('core_rpc_url')).toBe('http://admin-chosen:8332');
-		expect(getSetting('core_rpc_user')).toBe('admin-user');
-		expect(readSecretSetting('core_rpc_pass')).toBe('admin-pass');
 		// The provenance marker must not be stamped — this is a manually-entered
 		// connection, not an auto-connected one, even though the env vars exist.
 		expect(getSetting('chain_provisioned_by')).toBeNull();
+	});
+
+	describe('Core RPC — reconcile-on-boot with provenance (zero-config Core RPC wave §B)', () => {
+		it('manual-wins precedence: provenance stamped anything other than "umbrel-env" blocks env forever', () => {
+			// Models the (now-fixed) admin settings save path, which stamps
+			// 'manual' whenever a Core RPC URL is hand-entered through the plain
+			// form fields (+page.server.ts) — the realistic way an admin-set
+			// value acquires a provenance stamp today.
+			setSetting('core_rpc_url', 'http://admin-chosen:8332');
+			setSetting('core_rpc_user', 'admin-user');
+			setSecretSetting('core_rpc_pass', 'admin-pass');
+			setSetting('core_rpc_provisioned_by', 'manual');
+
+			process.env.CAIRN_CORE_RPC_URL = 'http://env-host:8332';
+			process.env.CAIRN_CORE_RPC_USER = 'env-user';
+			process.env.CAIRN_CORE_RPC_PASS = 'env-pass';
+
+			seedChainConfigFromEnv();
+
+			expect(getSetting('core_rpc_url')).toBe('http://admin-chosen:8332');
+			expect(getSetting('core_rpc_user')).toBe('admin-user');
+			expect(readSecretSetting('core_rpc_pass')).toBe('admin-pass');
+			expect(getSetting('core_rpc_provisioned_by')).toBe('manual');
+		});
+
+		it('manual-wins precedence: umbrel-detect (Wave B assisted-connect) also blocks env forever', () => {
+			setSetting('core_rpc_url', 'http://detected:8332');
+			setSetting('core_rpc_user', 'umbrel');
+			setSecretSetting('core_rpc_pass', 'detected-pass');
+			setSetting('core_rpc_provisioned_by', 'umbrel-detect');
+
+			process.env.CAIRN_CORE_RPC_URL = 'http://env-host:8332';
+			process.env.CAIRN_CORE_RPC_USER = 'env-user';
+			process.env.CAIRN_CORE_RPC_PASS = 'env-pass';
+
+			seedChainConfigFromEnv();
+
+			expect(getSetting('core_rpc_url')).toBe('http://detected:8332');
+			expect(readSecretSetting('core_rpc_pass')).toBe('detected-pass');
+			expect(getSetting('core_rpc_provisioned_by')).toBe('umbrel-detect');
+		});
+
+		it('env-seeds and stamps provenance on a fresh (never-touched) install', () => {
+			process.env.CAIRN_CORE_RPC_URL = 'http://10.21.21.8:8332';
+			process.env.CAIRN_CORE_RPC_USER = 'umbrel';
+			process.env.CAIRN_CORE_RPC_PASS = 'rotated-secret';
+
+			seedChainConfigFromEnv();
+
+			expect(getSetting('core_rpc_url')).toBe('http://10.21.21.8:8332');
+			expect(getSetting('core_rpc_user')).toBe('umbrel');
+			expect(readSecretSetting('core_rpc_pass')).toBe('rotated-secret');
+			expect(getSetting('core_rpc_provisioned_by')).toBe('umbrel-env');
+		});
+
+		// Empty-interpolation guard (§A, critical): the upcoming always-present
+		// store compose block means an install with the Bitcoin app NOT
+		// installed still gets CAIRN_CORE_RPC_URL=http://: (Docker Compose
+		// interpolates the missing vars to empty strings) — truthy, but useless.
+		// Must seed NOTHING and must never throw.
+		it('empty-interpolation guard: "http://:" with empty user/pass seeds nothing and does not throw', () => {
+			process.env.CAIRN_CORE_RPC_URL = 'http://:';
+			process.env.CAIRN_CORE_RPC_USER = '';
+			process.env.CAIRN_CORE_RPC_PASS = '';
+
+			expect(() => seedChainConfigFromEnv()).not.toThrow();
+
+			expect(getSetting('core_rpc_url')).toBeNull();
+			expect(getSetting('core_rpc_user')).toBeNull();
+			expect(readSecretSetting('core_rpc_pass')).toBeNull();
+			expect(getSetting('core_rpc_provisioned_by')).toBeNull();
+		});
+
+		it('empty-interpolation guard: "http://:" with a VALID user/pass still seeds nothing (the URL itself is the guard)', () => {
+			process.env.CAIRN_CORE_RPC_URL = 'http://:';
+			process.env.CAIRN_CORE_RPC_USER = 'umbrel';
+			process.env.CAIRN_CORE_RPC_PASS = 'realpass';
+
+			expect(() => seedChainConfigFromEnv()).not.toThrow();
+
+			expect(getSetting('core_rpc_url')).toBeNull();
+			expect(getSetting('core_rpc_provisioned_by')).toBeNull();
+		});
+
+		it('present-check: a valid URL with an empty CAIRN_CORE_RPC_USER seeds nothing', () => {
+			process.env.CAIRN_CORE_RPC_URL = 'http://10.21.21.8:8332';
+			process.env.CAIRN_CORE_RPC_USER = '';
+			process.env.CAIRN_CORE_RPC_PASS = 'realpass';
+
+			seedChainConfigFromEnv();
+
+			expect(getSetting('core_rpc_url')).toBeNull();
+			expect(readSecretSetting('core_rpc_pass')).toBeNull();
+		});
+
+		it('present-check: a valid URL with an empty CAIRN_CORE_RPC_PASS seeds nothing', () => {
+			process.env.CAIRN_CORE_RPC_URL = 'http://10.21.21.8:8332';
+			process.env.CAIRN_CORE_RPC_USER = 'umbrel';
+			process.env.CAIRN_CORE_RPC_PASS = '';
+
+			seedChainConfigFromEnv();
+
+			expect(getSetting('core_rpc_url')).toBeNull();
+			expect(getSetting('core_rpc_user')).toBeNull();
+		});
+
+		it('a non-URL CAIRN_CORE_RPC_URL ("not-a-url") seeds nothing and does not throw', () => {
+			process.env.CAIRN_CORE_RPC_URL = 'not-a-url';
+			process.env.CAIRN_CORE_RPC_USER = 'umbrel';
+			process.env.CAIRN_CORE_RPC_PASS = 'realpass';
+
+			expect(() => seedChainConfigFromEnv()).not.toThrow();
+			expect(getSetting('core_rpc_url')).toBeNull();
+		});
+
+		// Credential-rotation self-heal — the whole point of §B: reinstalling
+		// the Umbrel Bitcoin app rotates APP_BITCOIN_RPC_PASS. A seed-once
+		// write would leave Cairn stuck on the stale password (401 forever).
+		it('rotation: a changed env password overwrites the stored one while provenance is umbrel-env', () => {
+			process.env.CAIRN_CORE_RPC_URL = 'http://10.21.21.8:8332';
+			process.env.CAIRN_CORE_RPC_USER = 'umbrel';
+			process.env.CAIRN_CORE_RPC_PASS = 'password-X';
+			seedChainConfigFromEnv();
+			expect(readSecretSetting('core_rpc_pass')).toBe('password-X');
+			expect(getSetting('core_rpc_provisioned_by')).toBe('umbrel-env');
+
+			// Umbrel Bitcoin app reinstalled — rotates the password. Simulated
+			// restart: the env var now carries the new value.
+			process.env.CAIRN_CORE_RPC_PASS = 'password-Y';
+			seedChainConfigFromEnv();
+
+			expect(readSecretSetting('core_rpc_pass')).toBe('password-Y');
+			expect(getSetting('core_rpc_provisioned_by')).toBe('umbrel-env');
+		});
+
+		it('rotation: a changed env password does NOT overwrite once provenance is manual/umbrel-detect', () => {
+			process.env.CAIRN_CORE_RPC_URL = 'http://10.21.21.8:8332';
+			process.env.CAIRN_CORE_RPC_USER = 'umbrel';
+			process.env.CAIRN_CORE_RPC_PASS = 'password-X';
+			seedChainConfigFromEnv();
+			expect(readSecretSetting('core_rpc_pass')).toBe('password-X');
+
+			// Admin takes manual ownership (the settings page's "Switch to
+			// manual" override, or a hand-edit through the plain form).
+			setSetting('core_rpc_provisioned_by', 'manual');
+
+			process.env.CAIRN_CORE_RPC_PASS = 'password-Y';
+			seedChainConfigFromEnv();
+
+			expect(readSecretSetting('core_rpc_pass')).toBe('password-X'); // unchanged
+			expect(getSetting('core_rpc_provisioned_by')).toBe('manual');
+		});
+
+		// Network-mismatch guard (§C): CAIRN_CORE_RPC_NETWORK seeds the app's
+		// configured network (chain_network) as a pre-flight HINT, under the
+		// identical reconcile rule. The AUTHORITATIVE check against Core's own
+		// getblockchaininfo().chain happens at mining engine start
+		// (mining/index.ts's coreChainMatchesNetwork), not here.
+		it('reconciles chain_network from CAIRN_CORE_RPC_NETWORK alongside the URL/user/pass', () => {
+			process.env.CAIRN_CORE_RPC_URL = 'http://10.21.21.8:8332';
+			process.env.CAIRN_CORE_RPC_USER = 'umbrel';
+			process.env.CAIRN_CORE_RPC_PASS = 'realpass';
+			process.env.CAIRN_CORE_RPC_NETWORK = 'regtest';
+
+			seedChainConfigFromEnv();
+
+			expect(getSetting('chain_network')).toBe('regtest');
+		});
+
+		it('ignores an invalid CAIRN_CORE_RPC_NETWORK value rather than storing garbage', () => {
+			process.env.CAIRN_CORE_RPC_URL = 'http://10.21.21.8:8332';
+			process.env.CAIRN_CORE_RPC_USER = 'umbrel';
+			process.env.CAIRN_CORE_RPC_PASS = 'realpass';
+			process.env.CAIRN_CORE_RPC_NETWORK = 'signet'; // Cairn has no Signet support
+
+			seedChainConfigFromEnv();
+
+			expect(getSetting('chain_network')).toBeNull();
+		});
+
+		it('does not reconcile chain_network once provenance is manual, matching the URL/user/pass rule', () => {
+			setSetting('core_rpc_url', 'http://admin-chosen:8332');
+			setSetting('core_rpc_provisioned_by', 'manual');
+			setSetting('chain_network', 'mainnet');
+
+			process.env.CAIRN_CORE_RPC_URL = 'http://env-host:8332';
+			process.env.CAIRN_CORE_RPC_USER = 'env-user';
+			process.env.CAIRN_CORE_RPC_PASS = 'env-pass';
+			process.env.CAIRN_CORE_RPC_NETWORK = 'regtest';
+
+			seedChainConfigFromEnv();
+
+			expect(getSetting('chain_network')).toBe('mainnet');
+		});
 	});
 
 	// Wave A (design §4.1 A2): chain_provisioned_by must reflect whether the
@@ -148,15 +337,19 @@ describe('seedChainConfigFromEnv', () => {
 		expect(getSetting('connection_mode')).toBe('custom'); // flipped anyway
 	});
 
-	it('seeds only the env vars that are present, leaving the rest unset (partial env)', () => {
+	// Core RPC reconciliation is all-or-nothing (§B/§A): url + user + pass must
+	// ALL be present, or nothing Core-related seeds at all — a partial set
+	// (e.g. URL+user with no password yet) is exactly as useless/broken as the
+	// empty-interpolation case and must not seed a guaranteed-401 endpoint.
+	it('Core RPC: a partial env (no password) seeds nothing at all, not even the URL/user', () => {
 		process.env.CAIRN_CORE_RPC_URL = 'http://10.21.0.5:8332';
 		process.env.CAIRN_CORE_RPC_USER = 'cairn';
 		// No CAIRN_CORE_RPC_PASS, no Electrum vars at all.
 
 		seedChainConfigFromEnv();
 
-		expect(getSetting('core_rpc_url')).toBe('http://10.21.0.5:8332');
-		expect(getSetting('core_rpc_user')).toBe('cairn');
+		expect(getSetting('core_rpc_url')).toBeNull();
+		expect(getSetting('core_rpc_user')).toBeNull();
 		expect(readSecretSetting('core_rpc_pass')).toBeNull();
 		expect(getSetting('electrum_host')).toBeNull();
 		expect(getSetting('connection_mode')).toBeNull();
@@ -232,6 +425,8 @@ describe('seedChainConfigFromEnv', () => {
 	// "fix" by adding `.trim()` here too, corrupting passwords with edge
 	// whitespace with no test failing. Regression-locked verbatim below.
 	it('does NOT trim core_rpc_pass — leading/trailing whitespace is preserved verbatim', () => {
+		process.env.CAIRN_CORE_RPC_URL = 'http://10.21.21.8:8332';
+		process.env.CAIRN_CORE_RPC_USER = 'umbrel';
 		process.env.CAIRN_CORE_RPC_PASS = '  spaced-secret  ';
 		seedChainConfigFromEnv();
 		expect(readSecretSetting('core_rpc_pass')).toBe('  spaced-secret  ');

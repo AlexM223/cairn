@@ -83,6 +83,14 @@ export const PUT: RequestHandler = async (event) => {
 		}
 		setSetting(dbKey, String(body[key]));
 	}
+	// Mirrors the admin settings form action's provenance stamping (cairn
+	// zero-config Core RPC wave §B/§E): a scripted admin caller setting
+	// coreRpcUrl directly is just as much a manual action as typing it into
+	// the form, and must stamp 'manual' (not leave provenance null) so
+	// chainEnvSeed.ts's reconcile-on-boot never silently overwrites it later.
+	if ('coreRpcUrl' in body) {
+		setSetting('core_rpc_provisioned_by', String(body.coreRpcUrl).trim() ? 'manual' : '');
+	}
 	reconfigureChain();
 
 	return json({ settings: getPublicInstanceSettings() });

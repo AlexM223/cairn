@@ -203,6 +203,17 @@ export const actions: Actions = {
 				if (urlErr) return fail(400, { coreRpcTest: { ok: false, error: urlErr } });
 			}
 			setSetting('core_rpc_url', coreUrl);
+			// A submission through these plain fields is by definition a manual
+			// admin action — not the Umbrel assisted-connect path (that branch
+			// returns earlier and stamps 'umbrel-detect' itself), and not
+			// chainEnvSeed.ts's env reconcile (that never touches the UI). Stamp
+			// 'manual' provenance (not just leave it null) so the reconcile-on-boot
+			// rule (manual > auto-env > detect > none, cairn zero-config Core RPC
+			// wave §B) never silently overwrites what was just typed in here on a
+			// later boot. Clearing the field back to empty resets provenance to
+			// "none" too — nothing is configured, so nothing is "manually
+			// configured" either.
+			setSetting('core_rpc_provisioned_by', coreUrl ? 'manual' : '');
 		}
 		if (form.has('coreRpcUser')) {
 			setSetting('core_rpc_user', String(form.get('coreRpcUser') ?? '').trim());
@@ -270,6 +281,26 @@ export const actions: Actions = {
 		if (!locals.user?.isAdmin) return fail(403, { error: 'Admin access required.' });
 		setSetting('core_rpc_detected', 'dismissed');
 		return { coreRpcDismissed: true };
+	},
+
+	/**
+	 * "Switch to manual" override on the read-only auto-connected Core RPC card
+	 * (cairn zero-config Core RPC wave §E). Stamps a real `'manual'` value —
+	 * NOT null — over `core_rpc_provisioned_by`: chainEnvSeed.ts's
+	 * reconcile-on-boot only ever skips overwriting when provenance is
+	 * something OTHER than unset/'umbrel-env' (manual > auto-env > detect >
+	 * none), so leaving it null here would let the very next boot's env
+	 * reconcile silently re-stamp it 'umbrel-env' and keep overwriting
+	 * whatever the admin is about to hand-edit below. The currently-stored
+	 * core_rpc_url/user/pass are left exactly as they are — this action only
+	 * changes WHO owns the field going forward, revealing the plain editable
+	 * inputs (gated on provenance in +page.svelte) so the admin can then
+	 * change them.
+	 */
+	switchCoreRpcToManual: async ({ locals }) => {
+		if (!locals.user?.isAdmin) return fail(403, { error: 'Admin access required.' });
+		setSetting('core_rpc_provisioned_by', 'manual');
+		return { coreRpcSwitchedToManual: true };
 	},
 
 	unlockTeamMode: async ({ locals }) => {

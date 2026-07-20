@@ -39,6 +39,19 @@
 	// mode-independent (design §4).
 	const coreRpcIsConfigured = $derived(!!data.settings.coreRpcUrl);
 
+	// Umbrel zero-config Core RPC wave §E: while Core is auto-provisioned
+	// (env reconcile-on-boot OR the Wave B assisted-connect), the plain
+	// editable RPC url/user/pass fields below are replaced by a read-only
+	// summary card + "Switch to manual" override — editing them in place would
+	// be silently reverted by chainEnvSeed.ts's reconcile-on-boot on the next
+	// restart for the 'umbrel-env' case, and just generally shouldn't invite
+	// hand-editing a connection the admin didn't set up themselves.
+	const coreRpcAutoProvisioned = $derived(
+		coreRpcIsConfigured &&
+			(data.settings.coreRpcProvisionedBy === 'umbrel-env' ||
+				data.settings.coreRpcProvisionedBy === 'umbrel-detect')
+	);
+
 	// Umbrel Wave B assisted-connect (cairn-6uok follow-up cairn-3p9z). The
 	// card below posts straight to `?/save` (guarded by the shared `saving`
 	// state, same as the main "Save settings" button) with a
@@ -224,17 +237,31 @@
 		<!-- Core RPC provenance, once an assisted or env connect has actually
 		     completed (cairn-6uok: core_rpc_provisioned_by is now stamped
 		     'umbrel-detect' by the assisted-connect card's submit below). -->
-		{#if coreRpcIsConfigured && (data.settings.coreRpcProvisionedBy === 'umbrel-env' || data.settings.coreRpcProvisionedBy === 'umbrel-detect')}
+		{#if coreRpcAutoProvisioned}
 			<div class="provenance-card fade-in" role="status">
 				<span class="provenance-dot"></span>
 				<div class="provenance-text">
-					<span class="provenance-title">Connected to your Umbrel's Bitcoin Core</span>
+					<span class="provenance-title">Connected automatically to your Umbrel's Bitcoin node</span>
 					<span class="provenance-sub">
 						{data.settings.coreRpcProvisionedBy === 'umbrel-env'
 							? 'Set up from your Umbrel Bitcoin Node app.'
 							: 'Connected using the details found on your Umbrel.'}
 					</span>
+					<span class="provenance-detail mono">
+						{data.settings.coreRpcUrl}{#if data.settings.coreRpcUser}
+							· user {data.settings.coreRpcUser}{/if}
+						· password {data.settings.hasCoreRpcPass ? '••••••••' : '(none)'}
+					</span>
 				</div>
+				<button
+					type="submit"
+					form="settings-form"
+					formaction="?/switchCoreRpcToManual"
+					class="btn btn-ghost btn-sm"
+					disabled={testing !== null || saving}
+				>
+					Switch to manual
+				</button>
 			</div>
 		{/if}
 
@@ -415,84 +442,90 @@
 		     these inputs without first flipping to custom mode. Core RPC is now the
 		     sole source of the rich block/tx/mempool detail the Electrum protocol
 		     can't provide — there is no longer any third-party HTTP explorer API in
-		     the path (cairn-zoz8.16). -->
-		<div class="subgroup proxy-group">
-			<span class="subgroup-title">
-				Bitcoin Core <Term tip={CORE_RPC_TIP}>RPC</Term>
-				<span class="badge badge-neutral">self-hosted</span>
-			</span>
-			<p class="hint">
-				Point Heartwood at your own Bitcoin Core node's RPC interface for rich block and
-				mempool data without relying on any third-party explorer API. Fully self-hosted —
-				works on an Umbrel or other node with no public internet access, and works whether
-				you're on public servers or a custom Electrum server above.
-			</p>
-			<div class="field">
-				<label class="label" for="coreRpcUrl">RPC URL</label>
-				<input
-					class="input mono"
-					id="coreRpcUrl"
-					name="coreRpcUrl"
-					placeholder="http://127.0.0.1:8332"
-					bind:value={coreRpcUrlField}
-				/>
-			</div>
-			<div class="row-fields">
-				<div class="field grow">
-					<label class="label" for="coreRpcUser">RPC username</label>
+		     the path (cairn-zoz8.16).
+
+		     Hidden entirely while coreRpcAutoProvisioned (zero-config Core RPC wave
+		     §E) — the read-only provenance card above covers that state, with its
+		     own "Switch to manual" override that reveals these inputs again. -->
+		{#if !coreRpcAutoProvisioned}
+			<div class="subgroup proxy-group">
+				<span class="subgroup-title">
+					Bitcoin Core <Term tip={CORE_RPC_TIP}>RPC</Term>
+					<span class="badge badge-neutral">self-hosted</span>
+				</span>
+				<p class="hint">
+					Point Heartwood at your own Bitcoin Core node's RPC interface for rich block and
+					mempool data without relying on any third-party explorer API. Fully self-hosted —
+					works on an Umbrel or other node with no public internet access, and works whether
+					you're on public servers or a custom Electrum server above.
+				</p>
+				<div class="field">
+					<label class="label" for="coreRpcUrl">RPC URL</label>
 					<input
 						class="input mono"
-						id="coreRpcUser"
-						name="coreRpcUser"
-						autocomplete="off"
-						placeholder="rpcuser"
-						bind:value={coreRpcUserField}
+						id="coreRpcUrl"
+						name="coreRpcUrl"
+						placeholder="http://127.0.0.1:8332"
+						bind:value={coreRpcUrlField}
 					/>
 				</div>
-				<div class="field grow">
-					<label class="label" for="coreRpcPass">RPC password</label>
-					<input
-						class="input mono"
-						id="coreRpcPass"
-						name="coreRpcPass"
-						type="password"
-						autocomplete="off"
-						placeholder={data.settings.hasCoreRpcPass
-							? '•••••••• saved — leave blank to keep'
-							: 'RPC password'}
-						bind:this={coreRpcPassEl}
-					/>
+				<div class="row-fields">
+					<div class="field grow">
+						<label class="label" for="coreRpcUser">RPC username</label>
+						<input
+							class="input mono"
+							id="coreRpcUser"
+							name="coreRpcUser"
+							autocomplete="off"
+							placeholder="rpcuser"
+							bind:value={coreRpcUserField}
+						/>
+					</div>
+					<div class="field grow">
+						<label class="label" for="coreRpcPass">RPC password</label>
+						<input
+							class="input mono"
+							id="coreRpcPass"
+							name="coreRpcPass"
+							type="password"
+							autocomplete="off"
+							placeholder={data.settings.hasCoreRpcPass
+								? '•••••••• saved — leave blank to keep'
+								: 'RPC password'}
+							bind:this={coreRpcPassEl}
+						/>
+					</div>
 				</div>
-			</div>
-			{#if data.settings.hasCoreRpcPass}
-				<label class="tls-check">
-					<input type="checkbox" name="clearCoreRpcPass" />
-					<span>Clear the saved RPC password</span>
-				</label>
-			{/if}
-			<div class="test-row">
-				<button
-					type="submit"
-					class="btn btn-secondary btn-sm"
-					formaction="?/testCoreRpc"
-					disabled={testing !== null || saving}
-				>
-					{#if testing === 'coreRpc'}<span class="spinner"></span>{/if}
-					Test connection
-				</button>
-				{#if coreRpcResult}
-					{#if coreRpcResult.ok}
-						<span class="badge badge-success">
-							OK{coreRpcResult.chain ? ` — chain ${coreRpcResult.chain}` : ''}{coreRpcResult.blockHeight
-								? `, tip ${formatNumber(coreRpcResult.blockHeight)}`
-								: ''}
-						</span>
-					{:else}
-						<span class="badge badge-error">{coreRpcResult.error ?? 'Failed'}</span>
-					{/if}
+				{#if data.settings.hasCoreRpcPass}
+					<label class="tls-check">
+						<input type="checkbox" name="clearCoreRpcPass" />
+						<span>Clear the saved RPC password</span>
+					</label>
 				{/if}
+				<div class="test-row">
+					<button
+						type="submit"
+						class="btn btn-secondary btn-sm"
+						formaction="?/testCoreRpc"
+						disabled={testing !== null || saving}
+					>
+						{#if testing === 'coreRpc'}<span class="spinner"></span>{/if}
+						Test connection
+					</button>
+					{#if coreRpcResult}
+						{#if coreRpcResult.ok}
+							<span class="badge badge-success">
+								OK{coreRpcResult.chain ? ` — chain ${coreRpcResult.chain}` : ''}{coreRpcResult.blockHeight
+									? `, tip ${formatNumber(coreRpcResult.blockHeight)}`
+									: ''}
+							</span>
+						{:else}
+							<span class="badge badge-error">{coreRpcResult.error ?? 'Failed'}</span>
+						{/if}
+					{/if}
+				</div>
 			</div>
-		</div>
+		{/if}
 
 		<div class="subgroup proxy-group">
 			<span class="subgroup-title">Connection performance</span>
@@ -859,6 +892,13 @@
 
 	.provenance-sub {
 		color: var(--text-muted);
+	}
+
+	.provenance-detail {
+		margin-top: 2px;
+		color: var(--text-muted);
+		font-size: 11.5px;
+		word-break: break-all;
 	}
 
 	.provenance-card.core-detect {

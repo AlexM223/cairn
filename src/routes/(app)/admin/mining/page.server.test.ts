@@ -8,7 +8,7 @@
 // `locals.user?.isAdmin`. This pins that down for anon + non-admin and
 // confirms the mutation is never invoked in either denied case.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('$lib/server/settings', async (importOriginal) => {
 	const mod = await importOriginal<typeof import('$lib/server/settings')>();
@@ -33,7 +33,12 @@ vi.mock('$lib/server/mining', async (importOriginal) => {
 		// mock (engineFailedToStart's early `!s.enabled` return), so mocking
 		// these two is a no-op for them.
 		miningEngineStatus: vi.fn(),
-		miningFatalErrors: vi.fn(() => [])
+		miningFatalErrors: vi.fn(() => []),
+		// Umbrel-specific live diagnosis (zero-config Core RPC wave §D) —
+		// defaults to healthy so every pre-existing (non-Umbrel-focused) test in
+		// this file is unaffected; the Umbrel-message describe block below
+		// overrides this per-case.
+		probeCoreRpcHealth: vi.fn(async () => ({ ok: true }))
 	};
 });
 
@@ -43,7 +48,8 @@ import {
 	startMiningEngine,
 	stopMiningEngine,
 	miningEngineStatus,
-	miningFatalErrors
+	miningFatalErrors,
+	probeCoreRpcHealth
 } from '$lib/server/mining';
 import { actions } from './+page.server';
 
@@ -416,5 +422,151 @@ describe('admin/mining ?/startStop — honest failure when the engine cannot act
 		expect(setSetting).toHaveBeenCalledWith('mining_enabled', 'false');
 		expect(stopMiningEngine).toHaveBeenCalledOnce();
 		expect(res).toMatchObject({ toggled: true });
+	});
+});
+
+describe('admin/mining ?/startStop — Umbrel-specific honest errors (zero-config Core RPC wave §D)', () => {
+	// $env/dynamic/private is aliased straight to process.env in tests
+	// (src/tests/env-stub.ts) — CAIRN_PLATFORM is set/cleared directly.
+	const savedPlatform = process.env.CAIRN_PLATFORM;
+	beforeEach(() => {
+		process.env.CAIRN_PLATFORM = 'umbrel';
+	});
+	afterEach(() => {
+		if (savedPlatform === undefined) delete process.env.CAIRN_PLATFORM;
+		else process.env.CAIRN_PLATFORM = savedPlatform;
+	});
+
+	// getSetting is mocked module-wide to `() => null` by default (top of file);
+	// per-test overrides layer a tiny key->value map on top so
+	// `core_rpc_detected` / `core_rpc_provisioned_by` reads resolve as each
+	// case needs, while `mining_enabled` keeps flowing through
+	// wireMiningEnabledToggle's own implementation.
+	function wireMiningEnabledToggle(initial: 'true' | 'false', extra: Record<string, string> = {}): void {
+		let enabled = initial;
+		vi.mocked(getSetting).mockImplementation((key: string) => {
+			if (key === 'mining_enabled') return enabled;
+			if (key in extra) return extra[key];
+			return null;
+		});
+		vi.mocked(setSetting).mockImplementation((key: string, value: string) => {
+			if (key === 'mining_enabled') enabled = value as 'true' | 'false';
+		});
+	}
+
+	it('no env + no detection: "install the Bitcoin Node app" message', async () => {
+		wireMiningEnabledToggle('false');
+		vi.mocked(startMiningEngine).mockResolvedValue(undefined);
+		vi.mocked(miningEngineStatus).mockReturnValue({
+			running: false,
+			engine: null,
+			coreRpc: 'unconfigured',
+			startedAt: null
+		});
+		vi.mocked(miningFatalErrors).mockReturnValue([]);
+		// core_rpc_detected unset (default null from wireMiningEnabledToggle).
+
+		const res = await actions.startStop(makeEvent(ADMIN));
+
+		expect(res).toMatchObject({ status: 500 });
+		expect((res as { data?: { error?: string } }).data?.error).toMatch(/Umbrel's Bitcoin Node/);
+		expect((res as { data?: { error?: string } }).data?.error).toMatch(/App Store/);
+	});
+
+	it('Core detected but not yet connected: falls back to the manual/Settings message (not the "install" message)', async () => {
+		wireMiningEnabledToggle('false', { core_rpc_detected: 'umbrel' });
+		vi.mocked(startMiningEngine).mockResolvedValue(undefined);
+		vi.mocked(miningEngineStatus).mockReturnValue({
+			running: false,
+			engine: null,
+			coreRpc: 'unconfigured',
+			startedAt: null
+		});
+		vi.mocked(miningFatalErrors).mockReturnValue([]);
+
+		const res = await actions.startStop(makeEvent(ADMIN));
+
+		expect(res).toMatchObject({ status: 500 });
+		const msg = (res as { data?: { error?: string } }).data?.error;
+		expect(msg).toMatch(/Admin → Settings/);
+		expect(msg).not.toMatch(/App Store/);
+	});
+
+	it('env creds valid but node still syncing: "still syncing (block N)" message', async () => {
+		wireMiningEnabledToggle('false');
+		vi.mocked(startMiningEngine).mockResolvedValue(undefined);
+		vi.mocked(miningEngineStatus).mockReturnValue({
+			running: true, // TipPoller swallowed the connect entirely — reports running
+			engine: null,
+			coreRpc: 'down',
+			startedAt: Date.now()
+		});
+		vi.mocked(miningFatalErrors).mockReturnValue([]);
+		vi.mocked(probeCoreRpcHealth).mockResolvedValue({ ok: false, reason: 'syncing', blocks: 512_345 });
+
+		const res = await actions.startStop(makeEvent(ADMIN));
+
+		expect(res).toMatchObject({ status: 500 });
+		const msg = (res as { data?: { error?: string } }).data?.error;
+		expect(msg).toMatch(/still syncing/);
+		expect(msg).toMatch(/512,345/);
+	});
+
+	it('creds/transport failure (401/conn-refused): "couldn\'t reach your Bitcoin node" message', async () => {
+		wireMiningEnabledToggle('false');
+		vi.mocked(startMiningEngine).mockResolvedValue(undefined);
+		vi.mocked(miningEngineStatus).mockReturnValue({
+			running: true,
+			engine: null,
+			coreRpc: 'down',
+			startedAt: Date.now()
+		});
+		vi.mocked(miningFatalErrors).mockReturnValue([]);
+		vi.mocked(probeCoreRpcHealth).mockResolvedValue({ ok: false, reason: 'transport' });
+
+		const res = await actions.startStop(makeEvent(ADMIN));
+
+		expect(res).toMatchObject({ status: 500 });
+		const msg = (res as { data?: { error?: string } }).data?.error;
+		expect(msg).toMatch(/Couldn't reach your Bitcoin node's RPC/);
+	});
+
+	it('healthy on Umbrel: probeCoreRpcHealth ok + running -> success, no probe needed once coreRpc is already "ok"', async () => {
+		wireMiningEnabledToggle('false');
+		vi.mocked(startMiningEngine).mockResolvedValue(undefined);
+		vi.mocked(miningEngineStatus).mockReturnValue({
+			running: true,
+			engine: null,
+			coreRpc: 'ok',
+			startedAt: Date.now()
+		});
+		vi.mocked(miningFatalErrors).mockReturnValue([]);
+
+		const res = await actions.startStop(makeEvent(ADMIN));
+
+		expect(res).toMatchObject({ toggled: true });
+		// coreRpc is already 'ok' — the extra live probe is skipped entirely.
+		expect(probeCoreRpcHealth).not.toHaveBeenCalled();
+	});
+
+	it('non-Umbrel deployment: unchanged manual-config message even with the same unconfigured status', async () => {
+		delete process.env.CAIRN_PLATFORM; // not Umbrel for this one case
+		wireMiningEnabledToggle('false');
+		vi.mocked(startMiningEngine).mockResolvedValue(undefined);
+		vi.mocked(miningEngineStatus).mockReturnValue({
+			running: false,
+			engine: null,
+			coreRpc: 'unconfigured',
+			startedAt: null
+		});
+		vi.mocked(miningFatalErrors).mockReturnValue([]);
+
+		const res = await actions.startStop(makeEvent(ADMIN));
+
+		expect(res).toMatchObject({ status: 500 });
+		const msg = (res as { data?: { error?: string } }).data?.error;
+		expect(msg).toMatch(/Admin → Settings/);
+		expect(msg).not.toMatch(/App Store/);
+		expect(probeCoreRpcHealth).not.toHaveBeenCalled();
 	});
 });

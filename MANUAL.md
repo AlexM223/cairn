@@ -912,16 +912,36 @@ try/caught (none throw into the sequence):
 3. **`seedChainConfigFromEnv()`** (`chainEnvSeed.ts`) — **must run before
    anything that constructs `ChainService`** (the address watcher,
    first-sync, portfolio-warm all call `getChain()`). Seeds Electrum host/
-   port/TLS and Core RPC url/user/pass from `CAIRN_ELECTRUM_*`/
-   `CAIRN_CORE_RPC_*` env vars. Seed-once-if-unset, non-destructive: only
-   writes a setting if it has never been stored, so an admin's later manual
-   edit in Admin → Settings is never clobbered on restart. `core_rpc_pass`
-   goes through the encrypted `setSecretSetting()` path, never plaintext.
-   Setting `electrum_host` also flips `connection_mode` to `'custom'` if
-   unset (a stored host is otherwise inert in `'public'` mode). Only when the
-   adopted host actually got written does this also stamp
-   `chain_provisioned_by = 'umbrel-env'` (never on a no-op skip, so a
+   port/TLS from `CAIRN_ELECTRUM_*` env vars, seed-once-if-unset,
+   non-destructive: only writes a setting if it has never been stored, so an
+   admin's later manual edit in Admin → Settings is never clobbered on
+   restart. Setting `electrum_host` also flips `connection_mode` to
+   `'custom'` if unset (a stored host is otherwise inert in `'public'`
+   mode). Only when the adopted host actually got written does this also
+   stamp `chain_provisioned_by = 'umbrel-env'` (never on a no-op skip, so a
    manually-entered connection is never mislabeled as auto-connected).
+   **Bitcoin Core RPC is handled differently (v0.2.47, zero-config Core RPC
+   wave, `cairn-2ldr` reversal — the store now declares
+   `dependencies: [bitcoin]`, shipping separately from this app-side
+   change).** `CAIRN_CORE_RPC_URL/USER/PASS/NETWORK` are **reconciled on
+   every boot**, not seed-once — `core_rpc_url`/`user`/`pass` (encrypted via
+   `setSecretSetting()`, never plaintext) and `chain_network` (the pre-flight
+   hint for the mining engine's network-mismatch guard, see "Mining engine"
+   below) are OVERWRITTEN from env whenever `core_rpc_provisioned_by` is
+   unset or already `'umbrel-env'`; any other value (`'manual'` — stamped by
+   the Admin → Settings save action on a hand-entered Core RPC config, or by
+   the JSON `/api/admin/settings` endpoint; or `'umbrel-detect'` — the Wave B
+   assisted-connect flow below) blocks the overwrite forever, no matter what
+   env says (manual > auto-env > detect > none). This is what makes a
+   rotated Umbrel-Bitcoin-app RPC password (e.g. after reinstalling the app)
+   self-heal on the next restart instead of leaving Cairn 401ing forever. Two
+   guards protect the reconcile: an **empty-interpolation guard**
+   (`new URL()` parse + non-empty hostname/port check) — Umbrel's
+   always-present compose block interpolates the missing app's vars to
+   `http://:` when the Bitcoin app isn't installed, which is truthy but
+   useless, so it must seed NOTHING rather than a guaranteed-401 endpoint —
+   and an **all-or-nothing present-check** on user/pass: a partial env (e.g.
+   URL+user with no password yet) seeds nothing at all, not even the URL.
 4. **`probeAndSeedUmbrelElectrum()`** (`umbrelProbe.ts`, Wave A, see
    `docs/UMBREL-AUTOCONNECT-DESIGN.md`) — runs immediately after step 3, same
    before-`ChainService`-construction constraint applies. Strictly gated on
@@ -933,12 +953,29 @@ try/caught (none throw into the sequence):
    On the first reachable candidate, seeds `electrum_host`/`electrum_port`/
    `electrum_tls`, flips `connection_mode` to `'custom'`, and stamps
    `chain_provisioned_by = 'umbrel-probe'` — same seed-once-if-unset,
-   non-destructive contract as step 3. Covers Umbrel installs where
-   electrs/Fulcrum is running but Cairn's manifest doesn't declare a hard
-   `dependencies:` entry on it (so step 3's env vars never arrive). Never
-   throws; every candidate unreachable (or non-Umbrel platform, or already
-   configured) is a silent no-op — the existing public-server default /
-   manual Admin → Settings entry is unaffected.
+   non-destructive contract as step 3's Electrum half. Covers Umbrel installs
+   where electrs/Fulcrum is running but Cairn's manifest doesn't declare a
+   hard `dependencies:` entry on it (so step 3's env vars never arrive).
+   Never throws; every candidate unreachable (or non-Umbrel platform, or
+   already configured) is a silent no-op — the existing public-server
+   default / manual Admin → Settings entry is unaffected.
+4.5. **`probeAndDetectUmbrelCore()`** (`umbrelCoreProbe.ts`, Wave B Unit B1,
+   see `docs/UMBREL-AUTOCONNECT-WAVE-B-DESIGN.md`) — runs right after step 4,
+   same ordering constraint. Gated on `CAIRN_PLATFORM === 'umbrel'`,
+   `coreRpcConfigured()` false (so step 3's env reconcile, if it fired,
+   already blocks this), and `core_rpc_detected` unset. Sends a
+   credential-free JSON-RPC POST to the well-known Umbrel bitcoind address
+   (`http://10.21.21.8:8332`); a `401`/`403`/`200`/IBD-`503` response means a
+   listener answered, and seeds ONLY the advisory `core_rpc_detected='umbrel'`
+   marker — never `core_rpc_url`/`user`/`pass`, never touches
+   `connection_mode`. This is what drives the Admin → Settings
+   assisted-connect banner (one-paste: URL/user pre-filled from hardcoded
+   constants, admin pastes the password copied from the Umbrel Bitcoin app's
+   own Connect screen) for installs where the manifest dependency isn't wired
+   yet, or where the Bitcoin Node app was installed to an already-running
+   Heartwood without a restart (env-based reconcile only re-runs on
+   `hooks.server.ts` boot — see "installed Bitcoin Core after Heartwood" in
+   §1 below). Never throws.
 5. `migrateInstanceMode()`, `migratePlaintextSecretsAtRest()`,
    `ensureDefaultAgreementVersion()`.
 6. `startNotificationQueueWorker()`.
@@ -990,6 +1027,19 @@ client sees only "Something went wrong" plus the ID.
    baseline), never to a thrown error that would take the process down — but
    SPV verification itself fails *closed* (no proof → no notification,
    ever).
+7. **Installed the Umbrel Bitcoin Node app AFTER Heartwood was already
+   running? Restart Heartwood once (v0.2.47).** `seedChainConfigFromEnv()`'s
+   Core RPC reconcile and `probeAndDetectUmbrelCore()`'s detection probe both
+   run only inside `hooks.server.ts`'s `init()` — once, at process boot, not
+   on a poll/watch. Umbrel injects `CAIRN_CORE_RPC_*` (once the store
+   declares `dependencies: [bitcoin]`) into the container's environment at
+   container START, so a Bitcoin Node app installed after Heartwood was
+   already running won't be picked up until Heartwood's own container
+   restarts. On a bare Umbrel install without the manifest dependency yet,
+   the Wave B assisted-connect banner (Admin → Settings) has the same
+   restart-free path from the app's side (it needs its own probe to fire,
+   which also only runs at boot) — either way, a restart of the Heartwood app
+   from the Umbrel dashboard (or `docker restart`) is the fix, not a wait.
 
 ---
 
@@ -2560,7 +2610,20 @@ no-op unless **all three** gates hold: the `mining` feature flag is on
 instance-wide, the operator has turned mining on in settings
 (`mining_enabled`), and a Bitcoin Core RPC backend is configured
 (`getblocktemplate`/`submitblock` are Core-only — no Electrum path exists
-for mining). There is **no separate child process or second container** —
+for mining). A fourth check runs right after: a **network-mismatch guard**
+(v0.2.47, zero-config Core RPC wave) calls `getblockchaininfo()` and compares
+its authoritative `chain` field (`coreChainMatchesNetwork()`, mapping Core's
+`'main'/'test'/'testnet4'/'signet'/'regtest'` onto Cairn's own
+`'mainnet'/'testnet'/'regtest'`) against the instance's configured network —
+on a mismatch the engine REFUSES to start (a fatal, not a silent skip),
+because building block templates or paying block rewards against the wrong
+chain is a correctness/safety failure, not a connectivity hiccup. Cairn has
+no Signet support, so a Signet node never matches any configured network.
+`CAIRN_CORE_RPC_NETWORK` (seeded into the same `chain_network` setting by
+`chainEnvSeed.ts`, see below) is only the pre-flight HINT this check exists
+independently of — a wrong/absent hint doesn't skip the check, it's just one
+less nudge toward the right value. There is **no separate child process or
+second container** —
 `cairn-vn43.12`'s dev-mode child-process supervisor is obsolete; the engine
 (`MiningPool` in `miningPool.ts`, wrapping a `TipPoller` + `StratumServer` +
 serialized tip/solve event queue) runs inside the same Node process as the
@@ -2582,7 +2645,31 @@ Core not configured, feature flag off, or the newest fatal error) instead of
 a false success. This was a live bug found on Alex's Umbrel 2026-07-20:
 `startStop` was the one action that skipped this check, so clicking "Start
 mining engine" without a working Core RPC connection flashed success and
-silently did nothing. A durable shutdown flush is registered once, directly on
+silently did nothing.
+
+**Umbrel-specific honest errors (v0.2.47, zero-config Core RPC wave).**
+`TipPoller` (`mining/tipPoller.ts`) deliberately swallows every RPC connect
+failure and retries forever (correct for riding out a brief node restart),
+which means `miningEngineStatus().running` can be `true` moments after
+`engine.start()` even against completely wrong credentials or a node still in
+IBD — the generic fatal-errors message above has nothing to say about that,
+because nothing ever landed in `fatalErrors`. On `CAIRN_PLATFORM === 'umbrel'`
+only (never on a bare-metal/non-Umbrel deploy — `engineFailedToStart()`'s
+Umbrel branch is skipped entirely there), `engineFailedToStart()` now runs one
+extra live `getblockchaininfo()` probe (`probeCoreRpcHealth()`,
+`mining/index.ts`) whenever `miningEngineStatus().coreRpc !== 'ok'` (skipped
+once a real template round trip has already proven the connection healthy),
+and reports one of four honest, specific messages: (1) Core RPC unconfigured
+**and** `core_rpc_detected` unset — "install/start the Bitcoin Node app" (Wave
+B never even found a listener); (2) unconfigured but `core_rpc_detected` IS
+set — falls back to the generic "connect Bitcoin Core under Admin → Settings"
+message, since the assisted-connect banner already covers that state; (3) the
+probe reports `initialblockdownload: true` — "still syncing (block N)"; (4)
+the probe's `getblockchaininfo()` call itself fails (401, connection refused,
+timeout) — "couldn't reach your Bitcoin node's RPC, it may be restarting." A
+401 while `core_rpc_provisioned_by === 'umbrel-env'` also logs a warning
+(not shown to the admin) flagging that the reconcile-on-boot self-heal below
+should have already fixed it. A durable shutdown flush is registered once, directly on
 `process.once('SIGTERM'/'SIGINT')`, separately from `server.mjs`'s own
 signal handling — `server.mjs` runs in a different module graph (it only
 imports the built `handler.js`) and has no live handle to the engine

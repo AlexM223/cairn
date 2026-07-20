@@ -1,11 +1,13 @@
 import { fail } from '@sveltejs/kit';
+import { env } from '$env/dynamic/private';
 import { getAdminMiningView } from '$lib/server/mining/readModels';
 import {
 	reconfigureMiningEngine,
 	startMiningEngine,
 	stopMiningEngine,
 	miningEngineStatus,
-	miningFatalErrors
+	miningFatalErrors,
+	probeCoreRpcHealth
 } from '$lib/server/mining';
 import { readMiningSettings } from '$lib/server/mining/settings';
 import { getSetting, setSetting } from '$lib/server/settings';
@@ -27,16 +29,28 @@ function requireAdmin(locals: App.Locals) {
 
 const MINING_BINDS: readonly MiningBind[] = ['loopback', 'lan', 'all'];
 
+/** Manual-config message (unchanged, §F) — used on every non-Umbrel deployment
+ *  and on Umbrel once the Bitcoin Node app has at least been DETECTED (the
+ *  assisted-connect banner on Admin -> Settings already tells that story). */
+const MANUAL_CORE_RPC_MESSAGE =
+	"Mining needs your Bitcoin node. The pool builds block templates with your own node's help, and that connection isn't set up yet — connect Bitcoin Core under Admin → Settings, then start the engine.";
+
+/** Umbrel, no env-provided connection and no detection probe hit either — the
+ *  Bitcoin Node app most likely isn't installed/running at all (§D). */
+const UMBREL_NO_NODE_MESSAGE =
+	"Mining needs your Umbrel's Bitcoin Node. Open your Umbrel App Store, install (or start) the Bitcoin Node app, then restart Heartwood.";
+
 /**
  * Honest post-start/reconfigure verdict (v0.2.42 QA; extended v0.2.47 —
- * cairn-mining-silent-start): doStart() deliberately never throws — EVERY gate
- * (feature flag off, engine disabled in settings, Core RPC unconfigured) and
- * every listen failure (port in use, Core RPC unreachable, etc.) either
- * returns silently or lands in the fatal list, leaving the engine stopped —
- * so an action's own promise resolving is NOT proof the engine came back.
- * When settings say the engine should be running but it isn't, surface an
- * honest, specific reason instead of a false success. Null = genuinely fine
- * (running, or intentionally off).
+ * cairn-mining-silent-start, then again for the Umbrel zero-config Core RPC
+ * wave): doStart() deliberately never throws — EVERY gate (feature flag off,
+ * engine disabled in settings, Core RPC unconfigured) and every listen
+ * failure (port in use, Core RPC unreachable, etc.) either returns silently
+ * or lands in the fatal list, leaving the engine stopped — so an action's own
+ * promise resolving is NOT proof the engine came back. When settings say the
+ * engine should be running but it isn't, surface an honest, specific reason
+ * instead of a false success. Null = genuinely fine (running, or
+ * intentionally off).
  *
  * Previously this returned null for the `coreRpc === 'unconfigured'` case,
  * deferring to a "separate notice" — but that notice (CoreRpcRequiredNotice,
@@ -48,18 +62,66 @@ const MINING_BINDS: readonly MiningBind[] = ['loopback', 'lan', 'all'];
  * bug an operator hit with mining pointed at a Core RPC that wasn't actually
  * reachable. Every enabled-but-not-running outcome now gets an explicit
  * message.
+ *
+ * Umbrel-specific extension: `TipPoller` (mining/tipPoller.ts) deliberately
+ * swallows every RPC connect failure and retries forever, so
+ * `status.running === true` right after `engine.start()` is NOT proof Core is
+ * actually reachable — a fresh engine can report "running" against
+ * completely wrong credentials or a node still in IBD. On Umbrel (where we
+ * can give a specific, actionable reason instead of a generic fatal-errors
+ * dump) this now does one extra live `getblockchaininfo()` probe
+ * (probeCoreRpcHealth, mining/index.ts) whenever the pool hasn't already
+ * proven itself via a successful template round trip (`coreRpc !== 'ok'`),
+ * and reports syncing/transport failures honestly. Skipped entirely off
+ * Umbrel (§F) — non-Umbrel behavior is byte-for-byte unchanged.
  */
-function engineFailedToStart(): string | null {
+async function engineFailedToStart(): Promise<string | null> {
 	const s = readMiningSettings();
 	if (!s.enabled) return null; // stopped on purpose
 	if (!isFeatureEnabled('mining', null)) {
 		return "Mining isn't turned on for this instance — enable it under Admin → Feature flags, then start the engine.";
 	}
+
+	const isUmbrel = env.CAIRN_PLATFORM === 'umbrel';
 	const status = miningEngineStatus();
-	if (status.running) return null;
+
 	if (status.coreRpc === 'unconfigured') {
-		return "Mining needs your Bitcoin node. The pool builds block templates with your own node's help, and that connection isn't set up yet — connect Bitcoin Core under Admin → Settings, then start the engine.";
+		// Distinguish "nothing at all found" from "the Bitcoin Node app was
+		// detected but the admin hasn't pasted the password yet" — the latter
+		// already has its own assisted-connect banner on Admin -> Settings, so
+		// the generic manual-config copy (which also points there) still fits.
+		if (isUmbrel && getSetting('core_rpc_detected') === null) {
+			return UMBREL_NO_NODE_MESSAGE;
+		}
+		return MANUAL_CORE_RPC_MESSAGE;
 	}
+
+	if (isUmbrel && status.coreRpc !== 'ok') {
+		const health = await probeCoreRpcHealth();
+		if (!health.ok) {
+			if (health.reason === 'syncing') {
+				return health.blocks != null
+					? `Your Bitcoin node is still syncing (block ${health.blocks.toLocaleString()}). Mining will start automatically once it finishes.`
+					: 'Your Bitcoin node is still syncing. Mining will start automatically once it finishes.';
+			}
+			if (health.reason === 'transport') {
+				// The reconcile-on-boot credential-rotation self-heal (chainEnvSeed.ts
+				// §B) should have already fixed a 401 caused by a rotated Umbrel
+				// Bitcoin-app password on the NEXT restart — if we're still seeing a
+				// transport failure with umbrel-env provenance, that self-heal hasn't
+				// caught up yet (or something else is wrong); worth a log line to
+				// investigate, even though the admin-facing copy stays generic.
+				if (getSetting('core_rpc_provisioned_by') === 'umbrel-env') {
+					log.warn(
+						'Core RPC unreachable while provisioned via umbrel-env — expected the reconcile-on-boot rotation self-heal to have fixed this by now'
+					);
+				}
+				return "Couldn't reach your Bitcoin node's RPC — it may be restarting. Try again in a moment.";
+			}
+		}
+	}
+
+	if (status.running) return null;
 	const fatals = miningFatalErrors();
 	return fatals.length > 0
 		? `The mining engine failed to start: ${fatals[fatals.length - 1]}`
@@ -172,7 +234,7 @@ export const actions: Actions = {
 			return fail(500, { error: 'Settings saved, but the mining engine failed to restart with them.' });
 		}
 		{
-			const startError = engineFailedToStart();
+			const startError = await engineFailedToStart();
 			if (startError) return fail(500, { error: `Settings saved, but ${startError}` });
 		}
 
@@ -210,7 +272,7 @@ export const actions: Actions = {
 			// came up (this was the live silent-no-op bug: the button flipped
 			// mining_enabled, returned `{ toggled: true }`, and the pool never
 			// started — no error anywhere). Verify and surface an honest reason.
-			const startError = engineFailedToStart();
+			const startError = await engineFailedToStart();
 			if (startError) return fail(500, { error: startError });
 		}
 
@@ -227,7 +289,7 @@ export const actions: Actions = {
 		}
 		{
 			// reconfigure resolving is not proof of life — see engineFailedToStart.
-			const startError = engineFailedToStart();
+			const startError = await engineFailedToStart();
 			if (startError) return fail(500, { error: startError });
 		}
 		return { restarted: true };

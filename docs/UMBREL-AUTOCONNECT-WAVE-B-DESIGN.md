@@ -1,5 +1,44 @@
 # Umbrel zero-config Bitcoin Core RPC — Wave B (detect-and-surface)
 
+> **ADDENDUM (2026-07-20, v0.2.47, cairn-2ldr reversal, Alex P0 directive):**
+> This doc's §3/§11 "do not declare dependency" stance — the rejection of a
+> hard `dependencies: [bitcoin]` manifest entry on positioning grounds
+> ("no node required") — is **REVERSED**. Alex's 2026-07-20 P0 directive
+> explicitly requires zero-config Core RPC, which is only fully achievable
+> with the manifest dependency (Wave A2/`chainEnvSeed.ts`'s env-seeding path,
+> §0/§11 below): a hard dependency gets `CAIRN_CORE_RPC_URL/USER/PASS`
+> injected automatically by Umbrel on every boot, closing the credential wall
+> §2/§3 describe as otherwise unbridgeable. The store-side manifest change
+> (adding `dependencies: [bitcoin]` to the compose/package) ships in a
+> **separate, later release** from this one — this release (v0.2.47) is the
+> **app-side** half: `chainEnvSeed.ts` now RECONCILES Core RPC settings from
+> env on every boot (not just seed-once) with a `core_rpc_provisioned_by`
+> provenance rule (manual > auto-env > detect > none), so a rotated
+> Umbrel-Bitcoin-app RPC password self-heals without admin action; an
+> empty-interpolation guard protects against the always-present compose
+> block's `http://:` when the Bitcoin app isn't installed; and a
+> network-mismatch guard refuses to mine against a Core node reporting the
+> wrong chain. The Wave B detect-and-surface flow described below (§0/§5-§9)
+> remains live and unchanged — it's still the right fallback for any Umbrel
+> install where the dependency isn't declared yet (before the store-side
+> change ships) or where an operator installs the Bitcoin Node app to an
+> already-running Heartwood without a restart.
+>
+> **Fresh-install prompt**: declaring the dependency means the Umbrel App
+> Store will prompt a NEW installer to also install (or confirm) the Bitcoin
+> Node app before Heartwood installs — accepted as the right tradeoff for
+> true zero-config mining, per the P0 directive.
+>
+> **Existing installs are safe**: per `umbrel-apps`/`umbreld`'s own
+> `apps.ts`, dependency declarations are checked at INSTALL time only — there
+> is no dependency re-check on UPDATE. An existing Heartwood install with no
+> Bitcoin Node app will update cleanly to the version that adds the
+> dependency and simply keep running exactly as it does today (public
+> Electrum defaults, no Core RPC) until/unless the operator installs the
+> Bitcoin Node app — at which point this release's reconcile-on-boot picks it
+> up automatically on the next restart (see MANUAL.md's "installed Bitcoin
+> Core after Heartwood" note).
+
 Status: DESIGN ONLY (2026-07-12, bead cairn-ylz5, P1). Not yet built. Companion
 to `docs/UMBREL-AUTOCONNECT-DESIGN.md` (Wave A, shipped) — read that first; this
 doc reuses its gating vocabulary (platform gate, seed-once, provenance stamp,

@@ -17,20 +17,33 @@
 // ChainService construction time, so seeding has to land in the `settings`
 // table before that first read.
 //
-// Seed-once, per-setting, same non-destructive pattern as
+// Electrum fields are seed-once, per-setting, same non-destructive pattern as
 // instanceModeMigration.ts: each env var is written ONLY IF that setting has
 // never been stored. An operator who later edits Admin -> Settings must never
 // have a value clobbered by a restart — env vars from a compose file don't go
 // away, so this has to stay idempotent-and-non-destructive forever, not just
-// on the very first boot. core_rpc_pass goes through the same
-// setSecretSetting() encrypted-at-rest path the admin form uses, never
-// plaintext in the `settings` table.
+// on the very first boot.
+//
+// Bitcoin Core RPC fields are different (zero-config Core RPC wave, §B):
+// reconciled on EVERY boot rather than seed-once, gated by the
+// `core_rpc_provisioned_by` provenance marker (manual > auto-env > detect >
+// none — see reconcileCoreRpcFromEnv()'s doc comment below), so a rotated
+// Umbrel Bitcoin-app RPC password self-heals without admin action. Both an
+// empty-interpolation guard (§A — a compose block with no bitcoin app
+// installed interpolates the truthy-but-useless `http://:`) and a
+// network-mismatch guard (§C — the authoritative check lives at mining
+// engine start, this only seeds the pre-flight hint) protect it. core_rpc_pass
+// goes through the same setSecretSetting() encrypted-at-rest path the admin
+// form uses, never plaintext in the `settings` table.
 
 import { env } from '$env/dynamic/private';
-import { getSetting, setSetting, hasSecretSetting, setSecretSetting } from './settings';
+import { getSetting, setSetting, setSecretSetting, readSecretSetting } from './settings';
+import type { ChainNetwork } from '$lib/types';
 import { childLogger } from './logger';
 
 const log = childLogger('chain-env-seed');
+
+const CHAIN_NETWORKS: readonly ChainNetwork[] = ['mainnet', 'testnet', 'regtest'];
 
 /** true for '1'/'true' (case-insensitive), false for anything else (including '0'/'false'). */
 function parseBoolEnv(raw: string): boolean {
@@ -43,6 +56,133 @@ function seedIfUnset(key: string, value: string): boolean {
 	if (getSetting(key) !== null) return false;
 	setSetting(key, value);
 	return true;
+}
+
+/**
+ * Empty-interpolation guard (cairn zero-config Core RPC wave, §A): validates a
+ * candidate `CAIRN_CORE_RPC_URL` BEFORE it's ever written to settings. The
+ * upcoming always-present store compose block means a Cairn install with the
+ * Bitcoin app NOT installed still gets `CAIRN_CORE_RPC_URL=http://:` — Docker
+ * Compose interpolates the missing `${APP_BITCOIN_NODE_IP}:${APP_BITCOIN_RPC_PORT}`
+ * vars to empty strings rather than omitting the var entirely. That string is
+ * still *truthy* (`.trim()` non-empty), so a plain `if (url)` check treats it
+ * as a real value and seeds a connection that 401s/ECONNREFUSEDs forever.
+ * Requires BOTH a non-empty hostname and a non-empty port — `new URL('http://:')`
+ * already throws on its own, but the explicit hostname/port checks are kept as
+ * defense-in-depth against any other empty-but-parseable shape. Never throws;
+ * returns the parsed URL when valid, null otherwise.
+ */
+function validCoreRpcUrl(raw: string): URL | null {
+	let parsed: URL;
+	try {
+		parsed = new URL(raw);
+	} catch {
+		return null;
+	}
+	if (!parsed.hostname || !parsed.port) return null;
+	return parsed;
+}
+
+/**
+ * Reconcile Bitcoin Core RPC settings from env on EVERY boot — deliberately
+ * NOT seed-once like Electrum above (cairn zero-config Core RPC wave, §B).
+ * Reinstalling the Umbrel Bitcoin app rotates `APP_BITCOIN_RPC_PASS`; a
+ * seed-once write would leave Cairn stuck presenting the stale password
+ * forever (401 on every RPC call) until an admin noticed and manually
+ * re-pasted it under Admin -> Settings. Reconciling on every boot lets a
+ * rotated credential self-heal on the next restart with zero admin action.
+ *
+ * Provenance rule — manual > auto-env > detect > none — enforced via the
+ * `core_rpc_provisioned_by` marker (also read/written by the admin settings
+ * save path and the Wave B assisted-connect flow):
+ *   - unset (null) or `'umbrel-env'` -> this function may freely overwrite.
+ *   - anything else (`'manual'`, `'umbrel-detect'`) -> a human already made a
+ *     deliberate choice here; never touch it again, no matter what env says.
+ *
+ * Applies the §A empty-interpolation guard, and the same non-empty
+ * present-check to user/pass as the guard's spirit demands: an empty string
+ * for either must never seed/overwrite a real value (a compose block with a
+ * missing dependency can just as easily interpolate an empty user/pass as an
+ * empty host/port). `core_rpc_pass` is intentionally NOT trimmed, matching
+ * the seed-once path above.
+ *
+ * Also reconciles `chain_network` from `CAIRN_CORE_RPC_NETWORK` under the
+ * identical rule (§C) — this is only the PRE-FLIGHT hint the settings UI and
+ * mining engine start with; the AUTHORITATIVE check is
+ * `getblockchaininfo().chain` at engine start (mining/index.ts), which
+ * refuses to run against a node reporting a different chain than configured,
+ * env hint or not.
+ *
+ * Returns the setting keys actually WRITTEN this call (values that changed —
+ * re-reconciling the same already-current env is reported as a no-op, same
+ * `seededThisBoot` contract as the rest of this module). Never throws.
+ */
+function reconcileCoreRpcFromEnv(): string[] {
+	const applied: string[] = [];
+
+	const rawUrl = env.CAIRN_CORE_RPC_URL?.trim();
+	if (!rawUrl) return applied; // nothing to reconcile without a URL
+
+	if (!validCoreRpcUrl(rawUrl)) {
+		log.debug(
+			{ value: rawUrl },
+			'ignoring invalid/empty-interpolated CAIRN_CORE_RPC_URL — not reconciling Core RPC from env'
+		);
+		return applied;
+	}
+
+	const user = env.CAIRN_CORE_RPC_USER?.trim();
+	// Not trimmed — see the seed-once core_rpc_pass comment below; a password's
+	// leading/trailing whitespace is significant.
+	const pass = env.CAIRN_CORE_RPC_PASS;
+	if (!user || !pass) {
+		log.debug('CAIRN_CORE_RPC_URL present but user/pass missing or empty — not reconciling Core RPC from env');
+		return applied;
+	}
+
+	const provenance = getSetting('core_rpc_provisioned_by');
+	if (provenance !== null && provenance !== 'umbrel-env') {
+		log.debug(
+			{ provenance },
+			'Core RPC env present but provenance is manual/assisted-connect — never overriding (manual wins)'
+		);
+		return applied;
+	}
+
+	const write = (key: string, value: string): void => {
+		if (getSetting(key) !== value) {
+			setSetting(key, value);
+			applied.push(key);
+		}
+	};
+
+	write('core_rpc_url', rawUrl);
+	write('core_rpc_user', user);
+
+	if (readSecretSetting('core_rpc_pass') !== pass) {
+		setSecretSetting('core_rpc_pass', pass);
+		applied.push('core_rpc_pass');
+	}
+
+	const networkRaw = env.CAIRN_CORE_RPC_NETWORK?.trim();
+	if (networkRaw && (CHAIN_NETWORKS as readonly string[]).includes(networkRaw)) {
+		write('chain_network', networkRaw);
+	} else if (networkRaw) {
+		log.debug({ value: networkRaw }, 'ignoring invalid CAIRN_CORE_RPC_NETWORK');
+	}
+
+	if (provenance !== 'umbrel-env') {
+		write('core_rpc_provisioned_by', 'umbrel-env');
+	}
+
+	if (applied.length > 0) {
+		log.info(
+			{ event: 'core_rpc_env_reconciled', keys: applied },
+			'Bitcoin Core RPC settings reconciled from env (Umbrel zero-config, credential-rotation self-heal)'
+		);
+	}
+
+	return applied;
 }
 
 /**
@@ -112,24 +252,14 @@ export function seedChainConfigFromEnv(): string[] {
 			);
 		}
 
-		const coreRpcUrl = env.CAIRN_CORE_RPC_URL?.trim();
-		if (coreRpcUrl) note('core_rpc_url', seedIfUnset('core_rpc_url', coreRpcUrl));
-
-		const coreRpcUser = env.CAIRN_CORE_RPC_USER?.trim();
-		if (coreRpcUser) note('core_rpc_user', seedIfUnset('core_rpc_user', coreRpcUser));
-
-		// Not trimmed — a password's leading/trailing whitespace, however
-		// unlikely, is significant, and the admin form's own coreRpcPass field
-		// (+page.server.ts) doesn't trim it either.
-		const coreRpcPass = env.CAIRN_CORE_RPC_PASS;
-		if (coreRpcPass) {
-			if (!hasSecretSetting('core_rpc_pass')) {
-				setSecretSetting('core_rpc_pass', coreRpcPass);
-				seeded = true;
-				applied.push('core_rpc_pass');
-			} else {
-				skipped = true;
-			}
+		// Bitcoin Core RPC is reconciled on EVERY boot, not seed-once like the
+		// Electrum fields above — see reconcileCoreRpcFromEnv()'s doc comment
+		// (§B: credential-rotation self-heal + §A/§C empty-interpolation and
+		// network guards).
+		const coreApplied = reconcileCoreRpcFromEnv();
+		if (coreApplied.length > 0) {
+			seeded = true;
+			applied.push(...coreApplied);
 		}
 
 		if (seeded) {

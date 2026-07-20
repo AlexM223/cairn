@@ -27,6 +27,7 @@ import { networkFor } from './address';
 import { CERT_REISSUE_INTERVAL_SEC, issueCert, loadOrCreateAuthorityKey } from './sv2/authority';
 import { randomSecret32, staticFromSecret } from './sv2/crypto';
 import type { MiningEngineConfig, SolveEvent, ShareEvent, RejectEvent, EngineStatus } from './types';
+import type { ChainNetwork } from '$lib/types';
 import { getChain } from '../chain';
 import { getChainConfig } from '../settings';
 import { isFeatureEnabled } from '../featureFlags/resolve';
@@ -161,6 +162,58 @@ function deriveSv2Authority(): NonNullable<MiningPoolOptions['sv2Authority']> {
 }
 
 /**
+ * Maps Bitcoin Core's own chain-name vocabulary
+ * (`getblockchaininfo().chain`: `'main'`|`'test'`|`'testnet4'`|`'signet'`|`'regtest'`)
+ * onto Cairn's {@link ChainNetwork} (`'mainnet'`|`'testnet'`|`'regtest'`).
+ * Cairn has no Signet support, so a signet node never matches ANY configured
+ * network — an intentional refusal, not a gap. Exported for unit testing.
+ */
+export function coreChainMatchesNetwork(coreChain: string, network: ChainNetwork): boolean {
+	switch (network) {
+		case 'mainnet':
+			return coreChain === 'main';
+		case 'testnet':
+			return coreChain === 'test' || coreChain === 'testnet4';
+		case 'regtest':
+			return coreChain === 'regtest';
+		default:
+			return false;
+	}
+}
+
+/**
+ * Live Bitcoin Core RPC reachability + sync-state probe (Umbrel zero-config
+ * Core RPC wave, §D) — distinct from {@link miningEngineStatus}'s `coreRpc`
+ * field, which is DERIVED from whether the pool's own tip-poller has ever
+ * completed a `getblocktemplate` round trip. `TipPoller` (tipPoller.ts)
+ * deliberately swallows every connect failure and silently retries forever
+ * (a design choice that's correct for staying resilient across a brief node
+ * restart), which means a freshly-started engine reports `running: true`
+ * even against completely wrong credentials or a still-syncing node — this
+ * probe exists so the admin mining route can give an honest, specific reason
+ * instead of the previously-silent-dead-Start-button behavior. Used only by
+ * that route's Umbrel-specific copy; never called on the hot path. Never
+ * throws.
+ */
+export async function probeCoreRpcHealth(): Promise<
+	| { ok: true }
+	| { ok: false; reason: 'unconfigured' }
+	| { ok: false; reason: 'syncing'; blocks?: number }
+	| { ok: false; reason: 'transport' }
+> {
+	const core = getChain().core;
+	if (!core) return { ok: false, reason: 'unconfigured' };
+	try {
+		const info = await core.getBlockchainInfo();
+		if (info.initialblockdownload) return { ok: false, reason: 'syncing', blocks: info.blocks };
+		return { ok: true };
+	} catch (e) {
+		log.debug({ err: e }, 'probeCoreRpcHealth: getblockchaininfo failed');
+		return { ok: false, reason: 'transport' };
+	}
+}
+
+/**
  * Start the engine, idempotently. No-op (never throws) unless ALL gates hold:
  * the `mining` feature flag is on instance-wide, the operator enabled mining in
  * settings, and a Bitcoin Core RPC backend is configured. Concurrent callers
@@ -183,6 +236,34 @@ async function doStart(): Promise<void> {
 		if (!chain.coreConfigured || !chain.core) {
 			log.info('mining engine not started: Bitcoin Core RPC not configured');
 			return;
+		}
+
+		// Network-mismatch guard (Umbrel zero-config Core RPC wave, §C):
+		// getblockchaininfo().chain is the AUTHORITATIVE source of which network
+		// Core is actually serving — CAIRN_CORE_RPC_NETWORK (chainEnvSeed.ts)
+		// only seeds the app's configured network as a pre-flight HINT. A node
+		// that's been repointed at a different chain than the app expects (a
+		// rotated/reinstalled Umbrel Bitcoin app, or an operator's regtest test
+		// node behind a mainnet-configured instance) must never silently serve
+		// wrong-chain block templates or payout addresses — refuse outright
+		// rather than mine on it.
+		const configuredNetwork = getChainConfig().network;
+		try {
+			const info = await chain.core.getBlockchainInfo();
+			if (!coreChainMatchesNetwork(info.chain, configuredNetwork)) {
+				recordFatal(
+					`Bitcoin Core reports chain "${info.chain}", but this instance is configured for ` +
+						`${configuredNetwork} — refusing to start mining against a mismatched network.`
+				);
+				return;
+			}
+		} catch (e) {
+			// Can't confirm the network right now (node down/syncing/unreachable) —
+			// this guard's job is the network check specifically, not general
+			// reachability; let the normal tip/template flow (and the admin
+			// route's Umbrel-specific live diagnosis) surface transport failures
+			// as usual.
+			log.debug({ err: e }, 'network-mismatch pre-check could not reach Core RPC — continuing to start');
 		}
 
 		// Build the auth snapshot BEFORE listening so the first connecting miner
