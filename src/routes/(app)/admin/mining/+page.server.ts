@@ -9,6 +9,7 @@ import {
 } from '$lib/server/mining';
 import { readMiningSettings } from '$lib/server/mining/settings';
 import { getSetting, setSetting } from '$lib/server/settings';
+import { isFeatureEnabled } from '$lib/server/featureFlags/resolve';
 import { childLogger } from '$lib/server/logger';
 import { DEGRADED_ADMIN_MINING_VIEW, type MiningBind } from '$lib/components/mining/adminMiningView';
 import type { Actions, PageServerLoad } from './$types';
@@ -27,19 +28,38 @@ function requireAdmin(locals: App.Locals) {
 const MINING_BINDS: readonly MiningBind[] = ['loopback', 'lan', 'all'];
 
 /**
- * Honest post-reconfigure verdict (v0.2.42 QA): doStart() deliberately never
- * throws — a listen failure (port already in use, etc.) lands in the fatal
- * list and leaves the engine stopped — so `await reconfigureMiningEngine()`
- * resolving is NOT proof the engine came back. When settings say the engine
- * should be running but it isn't, surface the newest fatal error instead of a
- * false success. Null = genuinely fine (running, or intentionally off).
+ * Honest post-start/reconfigure verdict (v0.2.42 QA; extended v0.2.47 —
+ * cairn-mining-silent-start): doStart() deliberately never throws — EVERY gate
+ * (feature flag off, engine disabled in settings, Core RPC unconfigured) and
+ * every listen failure (port in use, Core RPC unreachable, etc.) either
+ * returns silently or lands in the fatal list, leaving the engine stopped —
+ * so an action's own promise resolving is NOT proof the engine came back.
+ * When settings say the engine should be running but it isn't, surface an
+ * honest, specific reason instead of a false success. Null = genuinely fine
+ * (running, or intentionally off).
+ *
+ * Previously this returned null for the `coreRpc === 'unconfigured'` case,
+ * deferring to a "separate notice" — but that notice (CoreRpcRequiredNotice,
+ * pre-emptively rendered by AdminEngineHealth) only covers the case where
+ * `chain.core` is null at page-load time. It does NOT cover a `startStop`
+ * click while `chain.core` is non-null but Core is actually unreachable
+ * (wrong credentials/host, node still syncing, etc.) — that path fell all the
+ * way through to a bare `{ toggled: true }` with no error anywhere: the live
+ * bug an operator hit with mining pointed at a Core RPC that wasn't actually
+ * reachable. Every enabled-but-not-running outcome now gets an explicit
+ * message.
  */
 function engineFailedToStart(): string | null {
 	const s = readMiningSettings();
-	const status = miningEngineStatus();
 	if (!s.enabled) return null; // stopped on purpose
-	if (status.coreRpc === 'unconfigured') return null; // can't run yet — separate notice
+	if (!isFeatureEnabled('mining', null)) {
+		return "Mining isn't turned on for this instance — enable it under Admin → Feature flags, then start the engine.";
+	}
+	const status = miningEngineStatus();
 	if (status.running) return null;
+	if (status.coreRpc === 'unconfigured') {
+		return "Mining needs your Bitcoin node. The pool builds block templates with your own node's help, and that connection isn't set up yet — connect Bitcoin Core under Admin → Settings, then start the engine.";
+	}
 	const fatals = miningFatalErrors();
 	return fatals.length > 0
 		? `The mining engine failed to start: ${fatals[fatals.length - 1]}`
@@ -181,6 +201,17 @@ export const actions: Actions = {
 					? 'Could not start the mining engine — check the fatal errors below.'
 					: 'Could not stop the mining engine cleanly.'
 			});
+		}
+
+		if (enabling) {
+			// doStart() never throws — every gate (Core RPC not configured/reachable,
+			// feature flag off, port conflict, ...) either no-ops silently or lands in
+			// the fatal list. startMiningEngine() resolving is NOT proof the engine
+			// came up (this was the live silent-no-op bug: the button flipped
+			// mining_enabled, returned `{ toggled: true }`, and the pool never
+			// started — no error anywhere). Verify and surface an honest reason.
+			const startError = engineFailedToStart();
+			if (startError) return fail(500, { error: startError });
 		}
 
 		return { toggled: true };

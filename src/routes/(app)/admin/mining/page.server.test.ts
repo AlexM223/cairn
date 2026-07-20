@@ -25,12 +25,26 @@ vi.mock('$lib/server/mining', async (importOriginal) => {
 		...mod,
 		reconfigureMiningEngine: vi.fn(),
 		startMiningEngine: vi.fn(),
-		stopMiningEngine: vi.fn()
+		stopMiningEngine: vi.fn(),
+		// The startStop-honesty tests below need a controllable post-start
+		// verdict without actually standing up a MiningPool + fake RPC — every
+		// other test in this file never reaches these because
+		// `readMiningSettings().enabled` is false under the default getSetting
+		// mock (engineFailedToStart's early `!s.enabled` return), so mocking
+		// these two is a no-op for them.
+		miningEngineStatus: vi.fn(),
+		miningFatalErrors: vi.fn(() => [])
 	};
 });
 
-import { setSetting } from '$lib/server/settings';
-import { reconfigureMiningEngine, startMiningEngine, stopMiningEngine } from '$lib/server/mining';
+import { getSetting, setSetting } from '$lib/server/settings';
+import {
+	reconfigureMiningEngine,
+	startMiningEngine,
+	stopMiningEngine,
+	miningEngineStatus,
+	miningFatalErrors
+} from '$lib/server/mining';
 import { actions } from './+page.server';
 
 const ADMIN = { id: 1, email: 'admin@example.com', displayName: 'Admin', isAdmin: true };
@@ -314,5 +328,93 @@ describe('admin/mining ?/save — ASIC subgroup toggle-off preserves port/diffic
 		expect(setSetting).toHaveBeenCalledWith('mining_asic_port_enabled', 'false');
 		expect(setSetting).toHaveBeenCalledWith('mining_asic_stratum_port', '3334');
 		expect(setSetting).toHaveBeenCalledWith('mining_asic_share_difficulty', '65536');
+	});
+});
+
+describe('admin/mining ?/startStop — honest failure when the engine cannot actually start (cairn-mining-silent-start)', () => {
+	// doStart() never throws (mining/index.ts doc comment) — every gate it
+	// checks either no-ops silently or lands in the fatal list, so
+	// `startMiningEngine()` resolving is NOT proof the pool came up. Before
+	// this fix, `startStop` was the ONE action (unlike `save`/`restart`) that
+	// never re-checked reality afterward: it just flipped `mining_enabled` and
+	// returned `{ toggled: true }` — the exact live bug (button flashes,
+	// nothing happens, no error anywhere) reported on Alex's Umbrel, where
+	// mining was turned on without a working Bitcoin Core RPC connection.
+	//
+	// `readMiningSettings().enabled` (real, unmocked) reads through the
+	// module's mocked `getSetting`, so each test wires `getSetting`/`setSetting`
+	// together over a tiny local `mining_enabled` cell: the action reads it once
+	// to decide the toggle direction, writes the flip, and `engineFailedToStart`
+	// (called afterward, still within the same action) must see that write.
+	function wireMiningEnabledToggle(initial: 'true' | 'false'): void {
+		let enabled = initial;
+		vi.mocked(getSetting).mockImplementation((key: string) => (key === 'mining_enabled' ? enabled : null));
+		vi.mocked(setSetting).mockImplementation((key: string, value: string) => {
+			if (key === 'mining_enabled') enabled = value as 'true' | 'false';
+		});
+	}
+
+	it('start without Core RPC configured: fails loudly instead of a false "toggled" success', async () => {
+		wireMiningEnabledToggle('false');
+		vi.mocked(startMiningEngine).mockResolvedValue(undefined); // doStart()'s real no-op behavior
+		vi.mocked(miningEngineStatus).mockReturnValue({
+			running: false,
+			engine: null,
+			coreRpc: 'unconfigured',
+			startedAt: null
+		});
+		vi.mocked(miningFatalErrors).mockReturnValue([]);
+
+		const res = await actions.startStop(makeEvent(ADMIN));
+
+		expect(setSetting).toHaveBeenCalledWith('mining_enabled', 'true');
+		expect(startMiningEngine).toHaveBeenCalledOnce();
+		expect(res).toMatchObject({ status: 500 });
+		expect((res as { data?: { error?: string } }).data?.error).toMatch(/bitcoin node/i);
+	});
+
+	it('start with Core RPC reachable but the engine still failed (fatal recorded): surfaces the fatal reason', async () => {
+		wireMiningEnabledToggle('false');
+		vi.mocked(startMiningEngine).mockResolvedValue(undefined);
+		vi.mocked(miningEngineStatus).mockReturnValue({
+			running: false,
+			engine: null,
+			coreRpc: 'down',
+			startedAt: null
+		});
+		vi.mocked(miningFatalErrors).mockReturnValue(['listen EADDRINUSE: address already in use :::3333']);
+
+		const res = await actions.startStop(makeEvent(ADMIN));
+
+		expect(res).toMatchObject({ status: 500 });
+		expect((res as { data?: { error?: string } }).data?.error).toMatch(/EADDRINUSE/);
+	});
+
+	it('start succeeds: the engine actually reached running state, so the toggle reports success', async () => {
+		wireMiningEnabledToggle('false');
+		vi.mocked(startMiningEngine).mockResolvedValue(undefined);
+		vi.mocked(miningEngineStatus).mockReturnValue({
+			running: true,
+			engine: null,
+			coreRpc: 'ok',
+			startedAt: Date.now()
+		});
+		vi.mocked(miningFatalErrors).mockReturnValue([]);
+
+		const res = await actions.startStop(makeEvent(ADMIN));
+
+		expect(res).toMatchObject({ toggled: true });
+	});
+
+	it('stop is unaffected: no post-check runs, no engine-status call needed to succeed', async () => {
+		// mining_enabled starts 'true' (already running) so this call is a stop.
+		wireMiningEnabledToggle('true');
+		vi.mocked(stopMiningEngine).mockResolvedValue(undefined);
+
+		const res = await actions.startStop(makeEvent(ADMIN));
+
+		expect(setSetting).toHaveBeenCalledWith('mining_enabled', 'false');
+		expect(stopMiningEngine).toHaveBeenCalledOnce();
+		expect(res).toMatchObject({ toggled: true });
 	});
 });

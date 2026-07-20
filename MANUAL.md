@@ -2568,7 +2568,21 @@ rest of Heartwood. `/admin/mining`'s settings-save action calls
 `reconfigureMiningEngine()` (full stop, re-read settings, start) so a
 config change takes effect without a process restart; its quick
 start/stop action flips only `mining_enabled` and drives the engine
-directly. A durable shutdown flush is registered once, directly on
+directly.
+
+**Honest start/stop verdicts (`cairn-52i0r`).** Because `doStart()` never
+throws, every gate above (feature flag off, `mining_enabled` off, Core RPC
+unconfigured/unreachable) or listen failure either no-ops silently or lands
+in `fatalErrors` — the `startMiningEngine()`/`reconfigureMiningEngine()`
+promise resolving is **never** proof the pool actually came up. All three
+`/admin/mining` actions (`save`, `startStop`, `restart`) call a shared
+`engineFailedToStart()` helper afterward that re-checks `miningEngineStatus()`
+and returns a plain-language `fail()` message (naming the specific cause —
+Core not configured, feature flag off, or the newest fatal error) instead of
+a false success. This was a live bug found on Alex's Umbrel 2026-07-20:
+`startStop` was the one action that skipped this check, so clicking "Start
+mining engine" without a working Core RPC connection flashed success and
+silently did nothing. A durable shutdown flush is registered once, directly on
 `process.once('SIGTERM'/'SIGINT')`, separately from `server.mjs`'s own
 signal handling — `server.mjs` runs in a different module graph (it only
 imports the built `handler.js`) and has no live handle to the engine
