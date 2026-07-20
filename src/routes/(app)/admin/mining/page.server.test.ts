@@ -277,3 +277,42 @@ describe('admin/mining ?/save — Stratum V2 validation (cairn-qfez8.9)', () => 
 		expect(setSetting).toHaveBeenCalledWith('mining_sv2_version_rolling', 'false');
 	});
 });
+
+describe('admin/mining ?/save — ASIC subgroup toggle-off preserves port/difficulty (cairn-qfez8.27)', () => {
+	const BASE = {
+		enabled: 'on',
+		bind: 'loopback',
+		port: '3333',
+		shareDifficulty: '1',
+		vardiffTargetPerMin: '10',
+		poolTag: 'Heartwood',
+		sv2Port: '3335',
+		sv2ShareDifficulty: '65536'
+	};
+
+	// REPRO (cairn-qfez8.27): before the fix, AdminPoolSettingsForm.svelte's
+	// {#if asicPortEnabled} block removed asicStratumPort/asicShareDifficulty
+	// from the DOM entirely when the subgroup was collapsed — so toggling ASIC
+	// off and saving posted a form with those two fields (and the checkbox)
+	// genuinely absent. This models that exact wire shape.
+	it('400s when asicPortEnabled, asicStratumPort, and asicShareDifficulty are all absent from form data', async () => {
+		const res = await actions.save(makeEvent(ADMIN, BASE));
+		expect(res).toMatchObject({ status: 400 });
+		expect(setSetting).not.toHaveBeenCalled();
+	});
+
+	// FIX: AdminPoolSettingsForm.svelte now ships the ASIC subgroup's
+	// port/difficulty as hidden <input>s when the subgroup is collapsed
+	// (mirroring the SV2 subgroup's pattern) instead of removing them from the
+	// DOM — so a save with the toggle off still posts the last-known values,
+	// exactly like the SV2-equivalent test above, and this succeeds.
+	it('persists asicPortEnabled=false with the last-known port/difficulty preserved via hidden inputs', async () => {
+		const res = await actions.save(
+			makeEvent(ADMIN, { ...BASE, asicStratumPort: '3334', asicShareDifficulty: '65536' })
+		);
+		expect(res).toMatchObject({ saved: true });
+		expect(setSetting).toHaveBeenCalledWith('mining_asic_port_enabled', 'false');
+		expect(setSetting).toHaveBeenCalledWith('mining_asic_stratum_port', '3334');
+		expect(setSetting).toHaveBeenCalledWith('mining_asic_share_difficulty', '65536');
+	});
+});

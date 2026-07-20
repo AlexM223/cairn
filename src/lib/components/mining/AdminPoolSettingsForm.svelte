@@ -225,6 +225,14 @@
 					<span class="hint">Higher than the main port's, so a fast machine doesn't flood shares.</span>
 				</div>
 			</div>
+		{:else}
+			<!-- Keep the fields present-but-hidden (not removed) so a submit while
+			     collapsed still posts the last-known values — same fix and same
+			     reasoning as the SV2 subgroup's hidden inputs below (cairn-qfez8.27):
+			     without these, +page.server.ts's unconditional asicStratumPort/
+			     asicShareDifficulty validation 400s a toggle-off + save. -->
+			<input type="hidden" name="asicStratumPort" value={asicStratumPort} />
+			<input type="hidden" name="asicShareDifficulty" value={asicShareDifficulty} />
 		{/if}
 	</div>
 
