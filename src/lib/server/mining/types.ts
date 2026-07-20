@@ -113,6 +113,15 @@ export interface SolveEvent {
 	readonly address: string;
 	readonly payoutScriptHex: string;
 	readonly coinbaseValueSats: bigint;
+	/**
+	 * The header version this solve was ground at, 8-char BE hex (cairn-qfez8.29).
+	 * ADDITIVE-OPTIONAL: absent on every V1 stratum.ts solve (no version field
+	 * on the V1 wire — the template version is implied). Present on SV2 solves
+	 * so `MiningPool.handleSolve` can re-`assemble` with the exact rolled
+	 * version the miner mined, rather than silently falling back to the
+	 * template version and producing a different block hash.
+	 */
+	readonly versionHex?: string;
 }
 
 /** A rejected submit (observability / abuse signal). */
@@ -269,19 +278,27 @@ export interface PersonalizeInput {
 export interface CoinbaseVariant {
 	readonly coinb1Hex: string;
 	readonly coinb2Hex: string;
-	/** Reconstruct the 80-byte share/block header for validation. */
+	/**
+	 * Reconstruct the 80-byte share/block header for validation. `versionHex`
+	 * is ADDITIVE-OPTIONAL (cairn-qfez8.29): absent = the template's own
+	 * version (V1's only behavior, byte-identical to before this param
+	 * existed). Passed by SV2 channel validation when BIP320 version rolling
+	 * is negotiated on the channel (sv2/channels.ts's `validateSubmit`).
+	 */
 	readonly headerFor: (
 		en1Hex: string,
 		en2Hex: string,
 		ntimeHex: string,
-		nonceHex: string
+		nonceHex: string,
+		versionHex?: string
 	) => Buffer;
-	/** Assemble the full consensus-valid block for submitblock. */
+	/** Assemble the full consensus-valid block for submitblock. Same additive-optional `versionHex` as {@link headerFor}. */
 	readonly assemble: (
 		en1Hex: string,
 		en2Hex: string,
 		ntimeHex: string,
-		nonceHex: string
+		nonceHex: string,
+		versionHex?: string
 	) => AssembledBlock;
 }
 

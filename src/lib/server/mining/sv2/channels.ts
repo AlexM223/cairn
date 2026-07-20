@@ -425,7 +425,14 @@ export function validateSubmit(
 	const en2Hex = fullExtranonce.subarray(4, 8).toString('hex');
 	const ntimeHex = hex8(msg.ntime);
 	const nonceHex = hex8(msg.nonce);
-	const header = job.variant.headerFor(en1Hex, en2Hex, ntimeHex, nonceHex);
+	// versionHex is ALWAYS passed (not only when versionRollingAllowed): when
+	// rolling is disallowed, msg.version has already been validated == baseVersion
+	// above, so this is a no-op override — but computing the header from the
+	// SUBMITTED version (rather than the job's closure-captured template
+	// version) is what makes rolled-version shares hash correctly at all
+	// (job.ts's additive-optional versionHex param, cairn-qfez8.29).
+	const versionHex = hex8(msg.version);
+	const header = job.variant.headerFor(en1Hex, en2Hex, ntimeHex, nonceHex, versionHex);
 	const hashDisplay = headerHashDisplay(header);
 	const hashValue = hashValueFromDisplay(hashDisplay);
 
@@ -466,7 +473,12 @@ export function validateSubmit(
 			walletId: ch.auth.walletId,
 			address: ch.auth.address,
 			payoutScriptHex: Buffer.from(ch.auth.payoutScript).toString('hex'),
-			coinbaseValueSats: job.coinbaseValueSats
+			coinbaseValueSats: job.coinbaseValueSats,
+			// Carries the SUBMITTED version so MiningPool.handleSolve re-assembles
+			// with the exact header the miner ground (cairn-qfez8.29) — see the
+			// headerFor call above for why this is always the submitted version,
+			// not conditionally only when rolling is negotiated.
+			versionHex
 		};
 		return { kind: 'solve', shareEvent, solveEvent };
 	}

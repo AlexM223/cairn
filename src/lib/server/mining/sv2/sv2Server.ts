@@ -38,6 +38,7 @@ import type {
 	SolveEvent
 } from '../types';
 import { difficultyToTarget } from '../wire';
+import { decideRetarget, normalizeVardiffOptions, type NormalizedVardiff, type VardiffOptions } from '../vardiff';
 import {
 	ChannelRegistry,
 	Sv2ChannelError,
@@ -56,20 +57,26 @@ import {
 	decodeSetupConnection,
 	decodeSubmitSharesExtended,
 	decodeSubmitSharesStandard,
+	decodeUpdateChannel,
 	encodeNewExtendedMiningJob,
 	encodeNewMiningJob,
 	encodeOpenExtendedMiningChannelSuccess,
 	encodeOpenMiningChannelError,
 	encodeOpenStandardMiningChannelSuccess,
 	encodeSetNewPrevHash,
+	encodeSetTarget,
 	encodeSetupConnectionError,
 	encodeSetupConnectionSuccess,
 	encodeSubmitSharesError,
 	encodeSubmitSharesSuccess,
-	targetToU256LE
+	encodeUpdateChannelError,
+	targetToU256LE,
+	u256LEToBigint
 } from './codec';
 import { ACT1_LEN, NoiseHandshakeError, NoiseResponder, type SignedCert } from './noise';
 import { EncryptedFrameReader, Sv2FrameError, sealFrame, type Frame } from './frames';
+
+export type { VardiffOptions };
 
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_MAX_CONNECTIONS = 64;
@@ -81,6 +88,14 @@ const HANDSHAKE_PRE_AUTH_MAX_BYTES = 4096;
 /** SetupConnection.flags bit1 (wire ref §4): REQUIRES_WORK_SELECTION — SetCustomMiningJob
  *  family is out of scope for v1 (channels.ts/codec.ts never implement it). */
 const REQUIRES_WORK_SELECTION = 1 << 1;
+/** SetupConnection.flags bit2 (wire ref §4/§5): the client will ONLY roll the
+ *  version field it is given, never mining a fixed one — REQUIRES_VERSION_ROLLING
+ *  ⊕ REQUIRES_FIXED_VERSION, and "client REQUIRES_VERSION_ROLLING ⇒ never
+ *  disallow rolling" (§5). If the server-wide setting has rolling off, a
+ *  connection declaring this is rejected at SetupConnection (cairn-qfez8.29) —
+ *  silently accepting and then failing every submit with
+ *  "version-rolling-not-allowed" would violate that MUST. */
+export const REQUIRES_VERSION_ROLLING = 1 << 2;
 const SV2_MINING_PROTOCOL = 0;
 const SV2_VERSION = 2;
 
@@ -109,7 +124,9 @@ export interface Sv2ServerOptions {
 	readonly blockPolicyShift?: number;
 	/** Simultaneous-connection cap. Default 64. */
 	readonly maxConnections?: number;
-	/** Server-wide version-rolling advertisement for every channel. Default false. */
+	/** Server-wide version-rolling advertisement for every channel. Default false.
+	 *  A connection whose SetupConnection declares REQUIRES_VERSION_ROLLING while
+	 *  this is false is rejected SetupConnection.Error (cairn-qfez8.29). */
 	readonly versionRollingAllowed?: boolean;
 	/** Noise static key + authority-signed cert this server presents to clients. */
 	readonly authority: Sv2AuthorityMaterial;
@@ -117,6 +134,11 @@ export interface Sv2ServerOptions {
 	readonly handshakeTimeoutMs?: number;
 	/** Cadence for `authority.reissueCert` (only relevant when it's provided). Default 12h. */
 	readonly certReissueIntervalMs?: number;
+	/** Per-channel variable difficulty (cairn-qfez8.28). ABSENT = static channel
+	 *  target (v0.2.45 behavior — every channel opens at `shareDifficulty` and
+	 *  never retargets). Mirrors `StratumServerOptions.vardiff`'s shape/semantics;
+	 *  the server emits `SetTarget` on retarget instead of `mining.set_difficulty`. */
+	readonly vardiff?: VardiffOptions;
 }
 
 type ConnPhase = 'handshake' | 'ready';
@@ -124,6 +146,14 @@ type ConnPhase = 'handshake' | 'ready';
 interface ChannelMeta {
 	sharesAccepted: number;
 	lastShareAt: number | null;
+}
+
+/** Per-channel vardiff bookkeeping (cairn-qfez8.28) — mirrors stratum.ts's
+ *  ConnState.shareTimes/lastAdjustAt, keyed by channel id instead of by
+ *  connection (one SV2 connection can own multiple channels). */
+interface ChannelVardiffState {
+	readonly shareTimes: number[];
+	lastAdjustAt: number;
 }
 
 interface ConnState {
@@ -145,7 +175,9 @@ export const SV2_ERRORS = {
 	WORK_SELECTION_NOT_SUPPORTED: 'requires-work-selection-not-supported',
 	UNKNOWN_USER: 'unknown-user',
 	INVALID_PAYOUT_ADDRESS: 'invalid-payout-address',
-	UNKNOWN_CHANNEL: 'unknown-channel'
+	UNKNOWN_CHANNEL: 'unknown-channel',
+	VERSION_ROLLING_NOT_SUPPORTED: 'requires-version-rolling-not-supported',
+	INVALID_MAXIMUM_TARGET: 'invalid-maximum-target'
 } as const;
 
 export class Sv2Server {
@@ -154,11 +186,13 @@ export class Sv2Server {
 	private readonly registry = new ChannelRegistry();
 	private readonly channelConn = new Map<number, ConnState>();
 	private readonly channelMeta = new Map<number, ChannelMeta>();
+	private readonly channelVardiff = new Map<number, ChannelVardiffState>();
 	private readonly conns = new Set<ConnState>();
 	private readonly channelTarget: bigint;
 	private readonly versionRollingAllowed: boolean;
 	private readonly maxConnections: number;
 	private readonly handshakeTimeoutMs: number;
+	private readonly vd: NormalizedVardiff | null;
 	private readonly log: (msg: string) => void;
 	private currentCert: SignedCert;
 	private currentBuilt: BuiltJob | null = null;
@@ -179,6 +213,10 @@ export class Sv2Server {
 		this.versionRollingAllowed = opts.versionRollingAllowed ?? false;
 		this.maxConnections = opts.maxConnections ?? DEFAULT_MAX_CONNECTIONS;
 		this.handshakeTimeoutMs = opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
+		// Same validation + defaults V1's vardiff option gets (normalizeVardiffOptions
+		// throws the identical messages); floor is this listener's own shareDifficulty,
+		// exactly like StratumServer's ctor guard.
+		this.vd = normalizeVardiffOptions(opts.vardiff, opts.shareDifficulty);
 		this.log = opts.log ?? (() => {});
 		this.currentCert = opts.authority.cert;
 		this.server = createServer((socket) => this.onConnection(socket));
@@ -315,6 +353,7 @@ export class Sv2Server {
 			this.registry.close(id);
 			this.channelConn.delete(id);
 			this.channelMeta.delete(id);
+			this.channelVardiff.delete(id);
 		}
 		conn.channelIds.clear();
 	}
@@ -415,6 +454,9 @@ export class Sv2Server {
 			case MSG.CloseChannel:
 				this.handleCloseChannel(conn, frame.payload);
 				return;
+			case MSG.UpdateChannel:
+				this.handleUpdateChannel(conn, frame.payload);
+				return;
 			default:
 				// Unknown/unsupported message type: log and ignore (wire ref §5 —
 				// "unknown extension_type ... discard/ignore"), never crash.
@@ -454,6 +496,25 @@ export class Sv2Server {
 			);
 			return;
 		}
+		// wire ref §5: "client REQUIRES_VERSION_ROLLING ⇒ never disallow rolling."
+		// If the server-wide setting has rolling off, the spec-correct answer is
+		// to refuse the connection here — every channel this connection opens
+		// gets `versionRollingAllowed = this.versionRollingAllowed` (server-wide,
+		// see handleOpenStandard/handleOpenExtended), so silently accepting would
+		// mean every subsequent rolled-version submit fails
+		// "version-rolling-not-allowed" instead (cairn-qfez8.29).
+		if ((msg.flags & REQUIRES_VERSION_ROLLING) !== 0 && !this.versionRollingAllowed) {
+			this.sendMsgThenClose(
+				conn,
+				MSG.SetupConnectionError,
+				false,
+				encodeSetupConnectionError({
+					flags: msg.flags & REQUIRES_VERSION_ROLLING,
+					errorCode: SV2_ERRORS.VERSION_ROLLING_NOT_SUPPORTED
+				})
+			);
+			return;
+		}
 		conn.setupDone = true;
 		this.sendMsg(
 			conn,
@@ -467,6 +528,7 @@ export class Sv2Server {
 		conn.channelIds.add(ch.id);
 		this.channelConn.set(ch.id, conn);
 		this.channelMeta.set(ch.id, { sharesAccepted: 0, lastShareAt: null });
+		if (this.vd !== null) this.channelVardiff.set(ch.id, { shareTimes: [], lastAdjustAt: this.vd.now() });
 		if (this.currentBuilt) {
 			const jm = installJob(ch, this.currentBuilt);
 			this.sendJobMessages(conn, jm);
@@ -576,7 +638,64 @@ export class Sv2Server {
 		this.registry.close(msg.channelId);
 		this.channelConn.delete(msg.channelId);
 		this.channelMeta.delete(msg.channelId);
+		this.channelVardiff.delete(msg.channelId);
 		conn.channelIds.delete(msg.channelId);
+	}
+
+	/**
+	 * UpdateChannel (wire ref §4, cairn-qfez8.28): client-driven nominal-hashrate
+	 * declaration + a self-imposed `maximum_target` ceiling. Two independent
+	 * effects:
+	 *  1. The declared hashrate is treated as a fresh vardiff baseline — the
+	 *     observation window restarts (mirrors stratum.ts's authorize-time
+	 *     `lastAdjustAt = now()`, stratum.ts:553) so the next retarget decision
+	 *     judges only POST-update share timing, not a mix of old/new regimes.
+	 *  2. Spec MUST: "if [maximum_target] smaller than current, server MUST
+	 *     honor via SetTarget" — applied immediately, independent of (and never
+	 *     gated by) the vardiff loop being enabled at all.
+	 * `UpdateChannel.Error` is reserved for actually invalid input (unknown
+	 * channel, or a zero/malformed maximum_target) — never for "the requested
+	 * target doesn't need a change" (that's a silent no-op, not an error).
+	 */
+	private handleUpdateChannel(conn: ConnState, payload: Uint8Array): void {
+		const msg = decodeUpdateChannel(payload);
+		const ch = this.registry.get(msg.channelId);
+		const owner = this.channelConn.get(msg.channelId);
+		if (ch === undefined || owner !== conn) {
+			this.sendMsg(
+				conn,
+				MSG.UpdateChannelError,
+				true,
+				encodeUpdateChannelError({ channelId: msg.channelId, errorCode: SV2_ERRORS.UNKNOWN_CHANNEL })
+			);
+			this.emitReject('other');
+			return;
+		}
+		let maximumTarget: bigint;
+		try {
+			maximumTarget = u256LEToBigint(msg.maximumTarget);
+		} catch {
+			maximumTarget = -1n; // fall through to the same invalid-target rejection below
+		}
+		if (maximumTarget <= 0n) {
+			this.sendMsg(
+				conn,
+				MSG.UpdateChannelError,
+				true,
+				encodeUpdateChannelError({ channelId: ch.id, errorCode: SV2_ERRORS.INVALID_MAXIMUM_TARGET })
+			);
+			this.emitReject('other', ch.auth.userId, ch.userIdentity || ch.auth.miningId);
+			return;
+		}
+		const state = this.channelVardiff.get(ch.id);
+		if (this.vd !== null && state !== undefined) {
+			state.shareTimes.length = 0;
+			state.lastAdjustAt = this.vd.now();
+		}
+		if (maximumTarget < ch.target) {
+			ch.target = maximumTarget;
+			this.sendSetTarget(conn, ch);
+		}
 	}
 
 	private sendJobMessages(conn: ConnState, jm: JobMessages): void {
@@ -588,6 +707,47 @@ export class Sv2Server {
 		if (jm.setPrevHash) {
 			this.sendMsg(conn, MSG.SetNewPrevHash, true, encodeSetNewPrevHash(jm.setPrevHash));
 		}
+	}
+
+	private sendSetTarget(conn: ConnState, ch: Channel): void {
+		this.sendMsg(conn, MSG.SetTarget, true, encodeSetTarget({ channelId: ch.id, maximumTarget: targetToU256LE(ch.target) }));
+	}
+
+	/**
+	 * Vardiff retarget on an accepted share (cairn-qfez8.28) — the SV2 analog
+	 * of stratum.ts's `recordAcceptedShare`. Mutates `ch.target` and emits
+	 * `SetTarget` in the SAME synchronous step (see vardiff.ts's module doc for
+	 * why that makes V1's announce/pending hold-off unnecessary here): any
+	 * `FrozenJob` already installed on this channel keeps its own snapshotted
+	 * `target` (sv2/channels.ts) regardless of this mutation — only jobs
+	 * installed AFTER this point see the new target, satisfying the wire ref
+	 * §4 "future jobs only, never retroactive" rule structurally, not by
+	 * timing.
+	 */
+	private recordAcceptedShareVardiff(conn: ConnState, ch: Channel): void {
+		const vd = this.vd;
+		if (vd === null) return;
+		const state = this.channelVardiff.get(ch.id);
+		if (state === undefined) return; // channel closed mid-flight — nothing to update
+		const now = vd.now();
+		state.shareTimes.push(now);
+		const windowCutoff = now - vd.windowMs;
+		while (state.shareTimes.length > 0 && state.shareTimes[0]! <= windowCutoff) state.shareTimes.shift();
+		if (now - state.lastAdjustAt < vd.adjustIntervalMs) return;
+		const observeMs = Math.min(now - state.lastAdjustAt, vd.windowMs);
+		const next = decideRetarget({
+			shareCount: state.shareTimes.length,
+			observeMs,
+			currentDifficulty: targetToDifficulty(ch.target),
+			targetSharesPerMin: vd.targetSharesPerMin,
+			maxDifficulty: vd.maxDifficulty,
+			floorDifficulty: this.opts.shareDifficulty
+		});
+		if (next === null) return;
+		ch.target = difficultyToTarget(next);
+		state.lastAdjustAt = now;
+		state.shareTimes.length = 0;
+		this.sendSetTarget(conn, ch);
 	}
 
 	private handleSubmit(conn: ConnState, payload: Uint8Array, kind: 'standard' | 'extended'): void {
@@ -640,5 +800,9 @@ export class Sv2Server {
 		);
 		this.opts.onShare(result.shareEvent);
 		if (result.kind === 'solve') this.opts.onSolve(result.solveEvent);
+		// After the ack (mirrors stratum.ts: submit response first, set_difficulty/
+		// SetTarget second — stratum.ts:656,667) so a retarget never delays the
+		// share's own success response.
+		this.recordAcceptedShareVardiff(conn, ch);
 	}
 }

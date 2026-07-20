@@ -153,14 +153,26 @@ export function buildJob(template: GbtTemplate, cfg: JobConfig): BuiltJob {
 				coinb2
 			]);
 
-		const headerFor = (en1Hex: string, en2Hex: string, ntimeArg: string, nonceHex: string): Buffer => {
+		const headerFor = (
+			en1Hex: string,
+			en2Hex: string,
+			ntimeArg: string,
+			nonceHex: string,
+			versionOverrideHex?: string
+		): Buffer => {
 			const coinbaseTxidLE = sha256d(coinbaseFor(en1Hex, en2Hex));
 			const root = applyBranches(coinbaseTxidLE, branches);
-			return buildHeader(versionHex, template.previousblockhash, root, ntimeArg, nbitsHex, nonceHex);
+			return buildHeader(versionOverrideHex ?? versionHex, template.previousblockhash, root, ntimeArg, nbitsHex, nonceHex);
 		};
 
-		const assemble = (en1Hex: string, en2Hex: string, ntimeArg: string, nonceHex: string): AssembledBlock => {
-			const header = headerFor(en1Hex, en2Hex, ntimeArg, nonceHex);
+		const assemble = (
+			en1Hex: string,
+			en2Hex: string,
+			ntimeArg: string,
+			nonceHex: string,
+			versionOverrideHex?: string
+		): AssembledBlock => {
+			const header = headerFor(en1Hex, en2Hex, ntimeArg, nonceHex, versionOverrideHex);
 			const legacyCoinbase = coinbaseFor(en1Hex, en2Hex);
 			const coinbaseTxidDisplay = internalToDisplay(sha256d(legacyCoinbase));
 			let coinbaseSerialized = legacyCoinbase;

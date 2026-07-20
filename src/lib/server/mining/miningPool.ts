@@ -182,6 +182,18 @@ export class MiningPool {
 				onSolve: (e) => this.enqueue(() => this.handleSolve(e)),
 				onReject: (e) => opts.onReject?.(e),
 				authority: opts.sv2Authority,
+				// SAME vardiff config the V1 listeners get above (mining_vardiff_enabled
+				// / mining_vardiff_target_rate / the shared maxDifficulty ceiling) —
+				// cairn-qfez8.28. Per-channel retarget math lives in sv2/sv2Server.ts;
+				// this is additive plumbing only.
+				...(this.config.vardiffEnabled
+					? {
+							vardiff: {
+								targetSharesPerMin: this.config.vardiffTargetPerMin,
+								maxDifficulty: this.config.maxDifficulty
+							}
+						}
+					: {}),
 				...(opts.sv2CertReissueIntervalMs !== undefined
 					? { certReissueIntervalMs: opts.sv2CertReissueIntervalMs }
 					: {})
@@ -434,7 +446,12 @@ export class MiningPool {
 		// assemble the exact winning block.
 		const payoutScript = Buffer.from(e.payoutScriptHex, 'hex');
 		const variant = built.personalize({ payoutScript });
-		const assembled = variant.assemble(e.extranonce1Hex, e.extranonce2Hex, e.ntimeHex, e.nonceHex);
+		// e.versionHex is additive-optional (cairn-qfez8.29): undefined on every
+		// V1 solve (assemble falls back to the template version, byte-identical
+		// to before this param existed), set on SV2 solves that rolled the
+		// header version — assembling with anything else would hash to a
+		// different block than the one the miner actually found.
+		const assembled = variant.assemble(e.extranonce1Hex, e.extranonce2Hex, e.ntimeHex, e.nonceHex, e.versionHex);
 		// Load-bearing: the block we assemble must hash to exactly what the miner
 		// found. A mismatch means the frozen payout / job diverged — never submit.
 		if (assembled.blockHashDisplay !== e.hashDisplay) {

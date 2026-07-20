@@ -441,6 +441,161 @@ describe('validateSubmit — accept / reject / solve (extended channel)', () => 
 	});
 });
 
+// --- Version rolling (cairn-qfez8.29, BIP320 mask 0x1fffe000) ----------------
+
+describe('validateSubmit — version rolling', () => {
+	function setupRolling(target: bigint, versionRollingAllowed: boolean) {
+		const reg = new ChannelRegistry();
+		const ch = reg.openExtended(AUTH_A, 'alice.rig1', 4, target, versionRollingAllowed);
+		const built = buildJob(TEMPLATE_A, cfg('vr-job', true));
+		const { frozen } = installJob(ch, built, NOW_MS);
+		return { reg, ch, built, frozen };
+	}
+
+	it('rolling disallowed: a version different from the base version is rejected version-rolling-not-allowed', () => {
+		const { ch, frozen } = setupRolling(MAX_U256, false);
+		const baseVersion = parseInt(frozen.baseVersionHex, 16);
+		const result = validateSubmit(
+			ch,
+			{
+				channelId: ch.id,
+				sequenceNumber: 1,
+				jobId: frozen.sv2JobId,
+				ntime: parseInt(frozen.ntimeHex, 16),
+				version: (baseVersion ^ 0x00002000) >>> 0, // inside the BIP320 mask — still rejected when rolling is off
+				nonce: 0,
+				extranonce: Buffer.from('00000000', 'hex')
+			},
+			{ nowMs: NOW_MS }
+		);
+		expect(result).toEqual({ kind: 'reject', reason: 'other', errorCode: 'version-rolling-not-allowed' });
+	});
+
+	it('rolling allowed: a version with bits outside the BIP320 mask (0x1fffe000) is rejected version-rolling-not-allowed', () => {
+		const { ch, frozen } = setupRolling(MAX_U256, true);
+		const baseVersion = parseInt(frozen.baseVersionHex, 16);
+		const result = validateSubmit(
+			ch,
+			{
+				channelId: ch.id,
+				sequenceNumber: 1,
+				jobId: frozen.sv2JobId,
+				ntime: parseInt(frozen.ntimeHex, 16),
+				version: (baseVersion ^ 0x00000001) >>> 0, // bit 0 is OUTSIDE the mask
+				nonce: 0,
+				extranonce: Buffer.from('00000000', 'hex')
+			},
+			{ nowMs: NOW_MS }
+		);
+		expect(result).toEqual({ kind: 'reject', reason: 'other', errorCode: 'version-rolling-not-allowed' });
+	});
+
+	/**
+	 * The cairn-qfez8.29 regression this whole suite exists to catch: BEFORE the
+	 * fix, `validateSubmit` decoded+validated `msg.version` but always hashed the
+	 * header at the job's closure-captured BASE version (job.ts's `headerFor` had
+	 * no version param) — so a rolled-version share would grade against the WRONG
+	 * hash. This test picks a channel target sitting EXACTLY between the
+	 * base-version hash and the rolled-version hash for one fixed (nonce,
+	 * extranonce): the two versions are on OPPOSITE sides of the accept/reject
+	 * line, so whichever version `validateSubmit` actually hashes with is
+	 * unambiguous from the accept/reject outcome alone.
+	 */
+	it('rolling allowed: validateSubmit hashes the SUBMITTED (rolled) version, not the job base version', () => {
+		const reg = new ChannelRegistry();
+		const ch = reg.openExtended(AUTH_A, 'alice.rig1', 4, 1n, true); // placeholder target, set precisely below
+		const built = buildJob(TEMPLATE_A, cfg('vr-precise', true));
+		const variant = built.personalize({ payoutScript: AUTH_A.payoutScript });
+		const baseVersionHex = built.job.versionHex;
+		const baseVersion = parseInt(baseVersionHex, 16);
+		const rolledVersion = (baseVersion ^ 0x00002000) >>> 0; // one bit inside the mask
+		const rolledVersionHex = rolledVersion.toString(16).padStart(8, '0');
+		const nonceHex = '00000007';
+		const en2Hex = '30303030';
+		// extended channel, min_extranonce_size 4: server prefix IS en1 (4 bytes),
+		// the submitted extranonce IS en2 — exactly what validateSubmit reconstructs.
+		const en1Hex = ch.extranoncePrefixHex;
+		expect(en1Hex).toHaveLength(8);
+
+		const baseHeader = variant.headerFor(en1Hex, en2Hex, built.job.ntimeHex, nonceHex); // default = base version
+		const rolledHeader = variant.headerFor(en1Hex, en2Hex, built.job.ntimeHex, nonceHex, rolledVersionHex);
+		const hashA = hashValueFromDisplay(headerHashDisplay(baseHeader));
+		const hashB = hashValueFromDisplay(headerHashDisplay(rolledHeader));
+		expect(hashA).not.toBe(hashB); // sanity: version really does change the hash
+
+		// Target = the SMALLER of the two hashes: exactly one version's hash
+		// clears it, the other doesn't.
+		const target = hashA < hashB ? hashA : hashB;
+		ch.target = target;
+		const { frozen } = installJob(ch, built, NOW_MS);
+
+		const result = validateSubmit(
+			ch,
+			{
+				channelId: ch.id,
+				sequenceNumber: 1,
+				jobId: frozen.sv2JobId,
+				ntime: parseInt(frozen.ntimeHex, 16),
+				version: rolledVersion,
+				nonce: 7,
+				extranonce: Buffer.from(en2Hex, 'hex')
+			},
+			{ nowMs: NOW_MS }
+		);
+		if (hashB <= target) {
+			// The rolled version's hash is the one that clears the target — the
+			// FIX accepts here; the pre-fix bug (always hashing at baseVersion,
+			// hashA > target in this branch) would have rejected.
+			expect(result.kind).not.toBe('reject');
+		} else {
+			// The rolled version's hash MISSES the target — the FIX rejects
+			// low_difficulty here; the pre-fix bug (always hashing at baseVersion,
+			// hashA == target in this branch, which clears it) would have
+			// WRONGLY accepted.
+			expect(result.kind).toBe('reject');
+			if (result.kind === 'reject') expect(result.errorCode).toBe('difficulty-too-low');
+		}
+	});
+
+	it('rolling allowed: a solve carries the SUBMITTED (rolled) version on the SolveEvent, and re-`assemble`ing at that version reproduces the exact solved block hash', () => {
+		const { ch, frozen, built } = setupRolling(NETWORK_TARGET, true); // channel target == network target: easy solve
+		const baseVersion = parseInt(frozen.baseVersionHex, 16);
+		const rolledVersion = (baseVersion ^ 0x00004000) >>> 0;
+		const base: Omit<SubmitSharesExtended, 'nonce'> = {
+			channelId: ch.id,
+			sequenceNumber: 1,
+			jobId: frozen.sv2JobId,
+			ntime: parseInt(frozen.ntimeHex, 16),
+			version: rolledVersion,
+			extranonce: Buffer.from('cafed00d', 'hex')
+		};
+		const { result } = findNonceForKind(ch, frozen.sv2JobId, base, 'solve', { nowMs: NOW_MS });
+		expect(result.kind).toBe('solve');
+		if (result.kind !== 'solve') return;
+		expect(result.solveEvent.versionHex).toBe(rolledVersion.toString(16).padStart(8, '0'));
+		// Mirrors MiningPool.handleSolve exactly: re-personalize + assemble with
+		// the SolveEvent's own (rolled) versionHex.
+		const variant = built.personalize({ payoutScript: AUTH_A.payoutScript });
+		const assembled = variant.assemble(
+			result.solveEvent.extranonce1Hex,
+			result.solveEvent.extranonce2Hex,
+			result.solveEvent.ntimeHex,
+			result.solveEvent.nonceHex,
+			result.solveEvent.versionHex
+		);
+		expect(assembled.blockHashDisplay).toBe(result.solveEvent.hashDisplay);
+		// Assembling at the BASE version instead would NOT reproduce the same
+		// hash — proving the versionHex plumbing is load-bearing, not a no-op.
+		const assembledAtBase = variant.assemble(
+			result.solveEvent.extranonce1Hex,
+			result.solveEvent.extranonce2Hex,
+			result.solveEvent.ntimeHex,
+			result.solveEvent.nonceHex
+		);
+		expect(assembledAtBase.blockHashDisplay).not.toBe(result.solveEvent.hashDisplay);
+	});
+});
+
 // --- Standard-channel submit path --------------------------------------------
 
 describe('validateSubmit — standard channel', () => {

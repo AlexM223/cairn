@@ -2651,8 +2651,9 @@ subgroup's toggle + fade-in fields shape: enable switch, port (default
 `3335`), starting/fixed share difficulty (default `65536` — ASIC-oriented,
 same rationale as the ASIC listener's floor, since SV2's first real clients
 are expected to be ASIC firmware/proxies rather than low-power USB miners),
-and a version-rolling switch (off by default, server-wide — not yet
-per-channel/negotiated). `+page.server.ts`'s `?/save` action validates the
+and a version-rolling switch (off by default; server-wide, but actually
+negotiated per-channel as of `cairn-qfez8.29`/v0.2.46 — see below).
+`+page.server.ts`'s `?/save` action validates the
 port range and rejects a collision against **both** other ports (the main
 Stratum port and the ASIC port, since all three listeners can run at once)
 before persisting `mining_sv2_enabled`/`mining_sv2_port`/
@@ -2673,13 +2674,43 @@ off, so an instance that never turns SV2 on never even mints/persists an
 authority key (`loadOrCreateAuthorityKey()` is create-on-first-call, called
 lazily only when `settings.sv2Enabled` is true).
 
-**Known limitation (v1, SV2):** vardiff and version-rolling negotiation are
-NOT yet active on the SV2 listener — it ships static per-channel targets
-(the admin-configured starting difficulty is also the fixed difficulty) and
-the version-rolling switch only sets a server-wide advertisement, not a
-per-channel negotiated mask. Both are tracked as SV2 v2 follow-ups
-(`docs/SV2-IMPLEMENTATION-PLAN.md`), same "ships static, degrades gracefully"
-posture as the ASIC port's `mining.configure` limitation just below.
+**Vardiff on the SV2 listener (`cairn-qfez8.28`, v0.2.46).** SV2 channels now
+retarget with the SAME settings V1 uses (`mining_vardiff_enabled` /
+`mining_vardiff_target_rate`, plus the shared `maxDifficulty` overflow-DoS
+ceiling) — `MiningPool` passes an identical `vardiff` block to `Sv2Server` as
+it does to both V1 `StratumServer`s. The retarget MATH is a deliberate
+standalone port of V1's formula (`src/lib/server/mining/vardiff.ts`) — rate
+vs `targetSharesPerMin` → ×2/÷2, power-of-two snap, clamp to
+`[shareDifficulty, maxDifficulty]` — NOT a shared import from `stratum.ts`:
+V1 is a frozen money path, so this is a careful duplicate rather than a
+refactor of it. Where V1 pushes `mining.set_difficulty`, SV2 sends `SetTarget`
+per channel; the change applies to jobs installed AFTER the retarget only —
+an already-announced job keeps grading against its own `FrozenJob.target`
+snapshotted at announce time (`sv2/channels.ts`), so this never retroactively
+moves work already in flight (wire ref §4). `UpdateChannel` (client-declared
+nominal hashrate + a self-imposed `maximum_target` ceiling) is honored:
+declaring a SMALLER `maximum_target` than the current channel target gets an
+immediate `SetTarget` (spec MUST); a larger one is a silent no-op; an unknown
+channel or a zero/malformed `maximum_target` gets `UpdateChannel.Error`.
+
+**Version rolling on the SV2 listener (`cairn-qfez8.29`, v0.2.46).** When
+`mining_sv2_version_rolling` is on, `NewExtendedMiningJob.version_rolling_allowed`
+reflects it and `sv2/channels.ts`'s `validateSubmit` accepts a submitted
+header version that differs from the job's base version as long as every
+changed bit is inside the BIP320 mask `0x1fffe000` — bits outside the mask
+(or ANY version change when the setting is off) reject
+`version-rolling-not-allowed`. The submitted version is what actually gets
+hashed: `job.ts`'s `headerFor`/`assemble` gained an ADDITIVE-OPTIONAL
+`versionHex` param (absent = the template version, byte-identical to every
+V1 call site and to every SV2 call before this param existed — `parity.test.ts`
+guards this), and `SolveEvent` gained an additive-optional `versionHex` so
+`MiningPool.handleSolve` re-`assemble`s a solved block at the exact rolled
+version the miner ground, not the template's. `SetupConnection`: a client
+that declares `REQUIRES_VERSION_ROLLING` while the setting is off gets
+`SetupConnection.Error` (wire ref §5's "client REQUIRES_VERSION_ROLLING ⇒
+never disallow rolling" — silently accepting and failing every later submit
+would violate that MUST); with the setting on, such a connection is accepted
+normally.
 
 **Known limitation (ASIC port, v0.2.42):** the Stratum server answers
 `mining.configure` (BIP-320 version-rolling negotiation) with error 20
@@ -2744,8 +2775,8 @@ convention as the chain config):**
 | `mining_asic_share_difficulty` | `65536` | starting/floor share difficulty for the ASIC listener — high enough that an S19/S21-class machine doesn't swamp the share tracker |
 | `mining_sv2_enabled` | `false` | whether the native Stratum V2 listener runs (`cairn-qfez8.8`/`.9`) — off by default, purely additive on top of the two V1 listeners |
 | `mining_sv2_port` | `3335` | Stratum V2 TCP listen port; admin save rejects a value equal to `mining_stratum_port` OR `mining_asic_stratum_port` |
-| `mining_sv2_share_difficulty` | `65536` | fixed per-channel share difficulty for the SV2 listener — v1 ships static targets, no vardiff yet, so this is both the floor and the steady-state value |
-| `mining_sv2_version_rolling` | `false` | server-wide version-rolling advertisement for every SV2 channel — not yet per-channel negotiated |
+| `mining_sv2_share_difficulty` | `65536` | starting/floor share difficulty for the SV2 listener — same `mining_vardiff_enabled`/`mining_vardiff_target_rate` vardiff as V1 retargets every SV2 channel from here (`cairn-qfez8.28`, v0.2.46) |
+| `mining_sv2_version_rolling` | `false` | server-wide version-rolling advertisement for every SV2 channel — negotiated per-channel via `NewExtendedMiningJob.version_rolling_allowed` + BIP320-mask submit validation (`cairn-qfez8.29`, v0.2.46); a client that REQUIRES version rolling while this is off is refused at `SetupConnection` |
 
 **Notification types + quiet-hours behavior.** Three `mining_*` entries in
 `NOTIFICATION_EVENT_TYPES` (`notifyTypes.ts`):

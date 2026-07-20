@@ -20,21 +20,26 @@ import {
 	decodeNewExtendedMiningJob,
 	decodeNewMiningJob,
 	decodeSetNewPrevHash,
+	decodeSetTarget,
 	decodeSetupConnectionError,
 	decodeSetupConnectionSuccess,
 	decodeSubmitSharesError,
 	decodeSubmitSharesSuccess,
+	decodeUpdateChannelError,
 	encodeOpenExtendedMiningChannel,
 	encodeOpenStandardMiningChannel,
 	encodeSetupConnection,
 	encodeSubmitSharesExtended,
 	encodeSubmitSharesStandard,
+	encodeUpdateChannel,
 	targetToU256LE,
 	u256LEToBigint,
 	type NewExtendedMiningJob,
 	type NewMiningJob,
 	type SetNewPrevHash,
-	type SetupConnectionSuccess
+	type SetTarget,
+	type SetupConnectionSuccess,
+	type UpdateChannelError
 } from './codec';
 import { ACT2_LEN, NoiseInitiator } from './noise';
 import { EncryptedFrameReader, sealFrame, type Frame } from './frames';
@@ -106,6 +111,8 @@ export class Sv2TestClient {
 	private readonly submitWaiters = new Map<string, (r: SubmitResult) => void>();
 	private readonly jobsByChannel = new Map<number, Mailbox<JobAnnouncement>>();
 	private readonly prevHashByChannel = new Map<number, Mailbox<SetNewPrevHash>>();
+	private readonly setTargetByChannel = new Map<number, Mailbox<SetTarget>>();
+	private readonly updateChannelErrorByChannel = new Map<number, Mailbox<UpdateChannelError>>();
 
 	/** Raw log of every decoded inbound frame — useful for assertions/debugging. */
 	readonly received: Frame[] = [];
@@ -221,6 +228,16 @@ export class Sv2TestClient {
 				this.prevHashMailbox(m.channelId).push(m);
 				return;
 			}
+			case MSG.SetTarget: {
+				const m = decodeSetTarget(frame.payload);
+				this.setTargetMailbox(m.channelId).push(m);
+				return;
+			}
+			case MSG.UpdateChannelError: {
+				const m = decodeUpdateChannelError(frame.payload);
+				this.updateChannelErrorMailbox(m.channelId).push(m);
+				return;
+			}
 			case MSG.SubmitSharesSuccess: {
 				const m = decodeSubmitSharesSuccess(frame.payload);
 				this.resolveSubmit(m.channelId, m.lastSequenceNumber, { ok: true });
@@ -250,6 +267,24 @@ export class Sv2TestClient {
 		if (!mb) {
 			mb = new Mailbox<SetNewPrevHash>();
 			this.prevHashByChannel.set(channelId, mb);
+		}
+		return mb;
+	}
+
+	private setTargetMailbox(channelId: number): Mailbox<SetTarget> {
+		let mb = this.setTargetByChannel.get(channelId);
+		if (!mb) {
+			mb = new Mailbox<SetTarget>();
+			this.setTargetByChannel.set(channelId, mb);
+		}
+		return mb;
+	}
+
+	private updateChannelErrorMailbox(channelId: number): Mailbox<UpdateChannelError> {
+		let mb = this.updateChannelErrorByChannel.get(channelId);
+		if (!mb) {
+			mb = new Mailbox<UpdateChannelError>();
+			this.updateChannelErrorByChannel.set(channelId, mb);
 		}
 		return mb;
 	}
@@ -346,6 +381,36 @@ export class Sv2TestClient {
 		return this.prevHashMailbox(channelId).next(timeoutMs);
 	}
 
+	/** Wait for the next SetTarget on `channelId` (cairn-qfez8.28 vardiff retarget / UpdateChannel honor). */
+	awaitSetTarget(channelId: number, timeoutMs?: number): Promise<SetTarget> {
+		return this.setTargetMailbox(channelId).next(timeoutMs);
+	}
+
+	/** Wait for the next UpdateChannel.Error on `channelId`. */
+	awaitUpdateChannelError(channelId: number, timeoutMs?: number): Promise<UpdateChannelError> {
+		return this.updateChannelErrorMailbox(channelId).next(timeoutMs);
+	}
+
+	/**
+	 * UpdateChannel (wire ref §4, cairn-qfez8.28): client-declared nominal
+	 * hashrate + a self-imposed `maximum_target` ceiling. No direct ack in the
+	 * happy path — the server replies with `SetTarget` ONLY when it actually
+	 * changes the channel target (honoring a smaller `maximum_target`, spec
+	 * MUST), or `UpdateChannel.Error` on invalid input. Use `awaitSetTarget`/
+	 * `awaitUpdateChannelError` to observe the outcome.
+	 */
+	updateChannel(a: { channelId: number; nominalHashRate?: number; maximumTarget?: Uint8Array }): void {
+		this.send(
+			MSG.UpdateChannel,
+			true,
+			encodeUpdateChannel({
+				channelId: a.channelId,
+				nominalHashRate: a.nominalHashRate ?? 1_000_000,
+				maximumTarget: a.maximumTarget ?? targetToU256LE(MAX_TARGET)
+			})
+		);
+	}
+
 	submitExtended(a: {
 		channelId: number;
 		jobId: number;
@@ -425,6 +490,13 @@ export interface MineParams {
 	/** Share (or solve) target to grind for. */
 	readonly target: bigint;
 	readonly maxTries?: number;
+	/**
+	 * Grind at a ROLLED version instead of `job.version` (cairn-qfez8.29 version
+	 * rolling e2e coverage). Additive-optional — absent = `job.version` (byte-
+	 * identical to before this field existed). Caller is responsible for keeping
+	 * it within the BIP320 mask (0x1fffe000) when the channel negotiated rolling.
+	 */
+	readonly versionOverride?: number;
 }
 
 export interface MineResult {
@@ -444,7 +516,7 @@ export function mineOnce(p: MineParams): MineResult | null {
 	);
 	const prevHashDisplay = internalToDisplay(Buffer.from(p.prevHash.prevHash));
 	const ntime = p.prevHash.minNtime;
-	const version = p.job.version;
+	const version = p.versionOverride ?? p.job.version;
 	const versionHex = hex8(version);
 	const ntimeHex = hex8(ntime);
 	const nbitsHex = hex8(p.prevHash.nbits);
@@ -487,7 +559,7 @@ export function hashValueForMine(p: MineParams, nonce: number): bigint {
 	);
 	const prevHashDisplay = internalToDisplay(Buffer.from(p.prevHash.prevHash));
 	const header = buildHeader(
-		hex8(p.job.version),
+		hex8(p.versionOverride ?? p.job.version),
 		prevHashDisplay,
 		merkleRoot,
 		hex8(p.prevHash.minNtime),

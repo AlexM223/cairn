@@ -17,7 +17,8 @@ import { MapAuthProvider, type BuiltJob, type GbtTemplate, type MinerAuth, type 
 import { bitsToTarget } from '../wire';
 import { issueCert } from './authority';
 import { randomSecret32, staticFromSecret } from './crypto';
-import { Sv2Server, type Sv2ServerOptions } from './sv2Server';
+import { targetToU256LE } from './codec';
+import { REQUIRES_VERSION_ROLLING, Sv2Server, type Sv2ServerOptions } from './sv2Server';
 import { Sv2TestClient, hashValueForMine, mineOnce, mineOnceStandard, u256LEToBigint, type MineParams } from './testClient';
 
 const REGTEST = NETWORKS.regtest;
@@ -551,5 +552,393 @@ describe('Sv2Server — setJob fan-out + close()', () => {
 		await h.server.close();
 		await closed;
 		expect(h.server.listening).toBe(false);
+	}, 10_000);
+});
+
+// ---------------------------------------------------------------------------
+// Vardiff (cairn-qfez8.28)
+// ---------------------------------------------------------------------------
+
+describe('Sv2Server — vardiff (cairn-qfez8.28)', () => {
+	it('retargets on a sustained accepted-share flood, emits SetTarget, and an ACTIVE job keeps grading against its FROZEN (pre-retarget) target', async () => {
+		let clock = 5_000_000;
+		// Deliberately the easiest representable difficulty (matches makeServer()'s
+		// own default) — real DIFF1-scale difficulties expect ~2^32 hashes per
+		// share, far too slow for a unit test to grind.
+		const EASY_DIFF = 0.000001;
+		const h = track(
+			makeServer({
+				shareDifficulty: EASY_DIFF,
+				vardiff: {
+					targetSharesPerMin: 0.001, // measured rate always "too fast" -> always wants to double
+					maxDifficulty: 2 ** 20,
+					adjustIntervalMs: 1000,
+					windowMs: 60_000,
+					now: () => clock
+				}
+			})
+		);
+		await h.server.listen();
+		const miner = makeMiner('vd-e2e');
+		h.authProvider.set(miner);
+		const built = makeBuilt(makeTemplate('tip-vd'), 'job-vd', true);
+		h.server.setJob(built);
+
+		const { client, socket } = await connectClient(h);
+		try {
+			await client.setupConnection();
+			const open = await client.openExtendedChannel(miner.miningId);
+			const job = await client.awaitJob(open.channelId);
+			const prevHash = await client.awaitPrevHash(open.channelId);
+			const extendedJob = job.kind === 'extended' ? job.msg : (() => { throw new Error('expected extended'); })();
+			const oldTarget = u256LEToBigint(open.target);
+
+			const extranonce = Buffer.from('0000000b', 'hex');
+			const base: MineParams = { job: extendedJob, prevHash, extranoncePrefix: open.extranoncePrefix, extranonce, target: oldTarget };
+			const found1 = mineOnce(base);
+			expect(found1).not.toBeNull();
+
+			clock += 1500; // cross adjustIntervalMs since channel-open (lastAdjustAt baseline)
+			const r1 = await client.submitExtended({
+				channelId: open.channelId,
+				jobId: extendedJob.jobId,
+				nonce: found1!.nonce,
+				ntime: found1!.ntime,
+				version: found1!.version,
+				extranonce
+			});
+			expect(r1.ok).toBe(true);
+
+			// The accepted share crossed adjustIntervalMs at an always-too-fast rate
+			// -> the channel retargets HARDER (smaller target) and SetTarget fires.
+			const setTarget = await client.awaitSetTarget(open.channelId);
+			const newTarget = u256LEToBigint(setTarget.maximumTarget);
+			expect(newTarget).toBeLessThan(oldTarget);
+
+			// Find a nonce that clears the OLD target but NOT the new one (excluding
+			// the nonce already spent above) — accepting it against the SAME
+			// (never re-announced) job id is only possible if validateSubmit grades
+			// against the job's FROZEN announce-time target, not the live ch.target
+			// vardiff just moved. This is the "future jobs only, never retroactive"
+			// wire-ref §4 invariant, proven end-to-end.
+			let inBandNonce = -1;
+			for (let nonce = 0; nonce < 200_000; nonce++) {
+				if (nonce === found1!.nonce) continue;
+				const v = hashValueForMine(base, nonce);
+				if (v <= oldTarget && v > newTarget) {
+					inBandNonce = nonce;
+					break;
+				}
+			}
+			expect(inBandNonce).toBeGreaterThanOrEqual(0);
+			const r2 = await client.submitExtended({
+				channelId: open.channelId,
+				jobId: extendedJob.jobId, // SAME job id — never re-announced after the retarget
+				nonce: inBandNonce,
+				ntime: found1!.ntime,
+				version: found1!.version,
+				extranonce
+			});
+			expect(r2.ok).toBe(true);
+			expect(h.shares).toHaveLength(2);
+		} finally {
+			client.close();
+			socket.destroy();
+		}
+	}, 20_000);
+
+	it('never announces a target below the floor (shareDifficulty) under a sustained low-rate regime', async () => {
+		let clock = 6_000_000;
+		const FLOOR_DIFFICULTY = 0.000001; // easiest representable difficulty — see the previous test's comment
+		const h = track(
+			makeServer({
+				shareDifficulty: FLOOR_DIFFICULTY,
+				vardiff: {
+					targetSharesPerMin: 100_000, // always above the measured rate -> always wants to halve
+					maxDifficulty: 2 ** 20,
+					adjustIntervalMs: 1000,
+					windowMs: 60_000,
+					now: () => clock
+				}
+			})
+		);
+		await h.server.listen();
+		const miner = makeMiner('vd-floor');
+		h.authProvider.set(miner);
+		const built = makeBuilt(makeTemplate('tip-vd-floor'), 'job-vd-floor', true);
+		h.server.setJob(built);
+
+		const { client, socket } = await connectClient(h);
+		try {
+			await client.setupConnection();
+			const open = await client.openExtendedChannel(miner.miningId);
+			const job = await client.awaitJob(open.channelId);
+			const prevHash = await client.awaitPrevHash(open.channelId);
+			const extendedJob = job.kind === 'extended' ? job.msg : (() => { throw new Error('expected extended'); })();
+			const floorTarget = u256LEToBigint(open.target);
+
+			for (let i = 0; i < 5; i++) {
+				clock += 1500;
+				const extranonce = Buffer.alloc(4);
+				extranonce.writeUInt32BE(0x100 + i, 0);
+				const base: MineParams = { job: extendedJob, prevHash, extranoncePrefix: open.extranoncePrefix, extranonce, target: floorTarget };
+				const found = mineOnce(base);
+				expect(found).not.toBeNull();
+				const r = await client.submitExtended({
+					channelId: open.channelId,
+					jobId: extendedJob.jobId,
+					nonce: found!.nonce,
+					ntime: found!.ntime,
+					version: found!.version,
+					extranonce
+				});
+				expect(r.ok).toBe(true);
+			}
+			// The floor clamp means every retarget decision is a no-op (already at
+			// the floor) — no SetTarget should ever have been sent.
+			await expect(client.awaitSetTarget(open.channelId, 300)).rejects.toThrow(/timed out/);
+		} finally {
+			client.close();
+			socket.destroy();
+		}
+	}, 20_000);
+});
+
+// ---------------------------------------------------------------------------
+// UpdateChannel (cairn-qfez8.28)
+// ---------------------------------------------------------------------------
+
+describe('Sv2Server — UpdateChannel', () => {
+	it('honors a smaller maximum_target immediately via SetTarget (spec MUST)', async () => {
+		const h = track(makeServer({ shareDifficulty: 1 }));
+		await h.server.listen();
+		const miner = makeMiner('uc-honor');
+		h.authProvider.set(miner);
+		h.server.setJob(makeBuilt(makeTemplate('tip-uc-honor'), 'job-uc-honor', true));
+
+		const { client, socket } = await connectClient(h);
+		try {
+			await client.setupConnection();
+			const open = await client.openExtendedChannel(miner.miningId);
+			await client.awaitJob(open.channelId);
+			const currentTarget = u256LEToBigint(open.target);
+			const smallerTarget = currentTarget / 4n;
+
+			client.updateChannel({ channelId: open.channelId, maximumTarget: targetToU256LE(smallerTarget) });
+			const setTarget = await client.awaitSetTarget(open.channelId);
+			expect(u256LEToBigint(setTarget.maximumTarget)).toBe(smallerTarget);
+		} finally {
+			client.close();
+			socket.destroy();
+		}
+	}, 10_000);
+
+	it('a LARGER maximum_target than current is a silent no-op — no SetTarget, no Error', async () => {
+		const h = track(makeServer({ shareDifficulty: 1 }));
+		await h.server.listen();
+		const miner = makeMiner('uc-noop');
+		h.authProvider.set(miner);
+		h.server.setJob(makeBuilt(makeTemplate('tip-uc-noop'), 'job-uc-noop', true));
+
+		const { client, socket } = await connectClient(h);
+		try {
+			await client.setupConnection();
+			const open = await client.openExtendedChannel(miner.miningId);
+			await client.awaitJob(open.channelId);
+			const currentTarget = u256LEToBigint(open.target);
+			const largerTarget = currentTarget * 2n;
+
+			client.updateChannel({ channelId: open.channelId, maximumTarget: targetToU256LE(largerTarget) });
+			await expect(client.awaitSetTarget(open.channelId, 300)).rejects.toThrow(/timed out/);
+			await expect(client.awaitUpdateChannelError(open.channelId, 300)).rejects.toThrow(/timed out/);
+		} finally {
+			client.close();
+			socket.destroy();
+		}
+	}, 10_000);
+
+	it('an unknown/foreign channel_id replies UpdateChannel.Error unknown-channel', async () => {
+		const h = track(makeServer());
+		await h.server.listen();
+		const { client, socket } = await connectClient(h);
+		try {
+			await client.setupConnection();
+			client.updateChannel({ channelId: 999_999 });
+			const err = await client.awaitUpdateChannelError(999_999);
+			expect(err.errorCode).toBe('unknown-channel');
+		} finally {
+			client.close();
+			socket.destroy();
+		}
+	}, 10_000);
+
+	it('a zero maximum_target replies UpdateChannel.Error invalid-maximum-target', async () => {
+		const h = track(makeServer());
+		await h.server.listen();
+		const miner = makeMiner('uc-invalid');
+		h.authProvider.set(miner);
+		h.server.setJob(makeBuilt(makeTemplate('tip-uc-invalid'), 'job-uc-invalid', true));
+
+		const { client, socket } = await connectClient(h);
+		try {
+			await client.setupConnection();
+			const open = await client.openExtendedChannel(miner.miningId);
+			await client.awaitJob(open.channelId);
+			client.updateChannel({ channelId: open.channelId, maximumTarget: targetToU256LE(0n) });
+			const err = await client.awaitUpdateChannelError(open.channelId);
+			expect(err.errorCode).toBe('invalid-maximum-target');
+		} finally {
+			client.close();
+			socket.destroy();
+		}
+	}, 10_000);
+});
+
+// ---------------------------------------------------------------------------
+// Version rolling (cairn-qfez8.29)
+// ---------------------------------------------------------------------------
+
+describe('Sv2Server — version rolling (cairn-qfez8.29)', () => {
+	it('SetupConnection: REQUIRES_VERSION_ROLLING is rejected when the server-wide setting is off', async () => {
+		const h = track(makeServer({ versionRollingAllowed: false }));
+		await h.server.listen();
+		const socket = net.connect(h.server.port, '127.0.0.1');
+		await new Promise<void>((resolve, reject) => {
+			socket.once('connect', () => resolve());
+			socket.once('error', reject);
+		});
+		socket.on('error', () => {});
+		const client = new Sv2TestClient(h.authorityXonly32);
+		await client.connect(socket);
+		try {
+			await expect(client.setupConnection(REQUIRES_VERSION_ROLLING)).rejects.toThrow(/SetupConnection\.Error/);
+		} finally {
+			client.close();
+			socket.destroy();
+		}
+	}, 10_000);
+
+	it('SetupConnection: REQUIRES_VERSION_ROLLING succeeds when the server-wide setting is on', async () => {
+		const h = track(makeServer({ versionRollingAllowed: true }));
+		await h.server.listen();
+		const { client, socket } = await connectClient(h);
+		try {
+			const setup = await client.setupConnection(REQUIRES_VERSION_ROLLING);
+			expect(setup.usedVersion).toBe(2);
+		} finally {
+			client.close();
+			socket.destroy();
+		}
+	}, 10_000);
+
+	it('a rolled version within the BIP320 mask is accepted when the channel negotiated rolling', async () => {
+		const h = track(makeServer({ versionRollingAllowed: true }));
+		await h.server.listen();
+		const miner = makeMiner('vr-ok');
+		h.authProvider.set(miner);
+		h.server.setJob(makeBuilt(makeTemplate('tip-vr-ok'), 'job-vr-ok', true));
+
+		const { client, socket } = await connectClient(h);
+		try {
+			await client.setupConnection(REQUIRES_VERSION_ROLLING);
+			const open = await client.openExtendedChannel(miner.miningId);
+			const job = await client.awaitJob(open.channelId);
+			const prevHash = await client.awaitPrevHash(open.channelId);
+			const extendedJob = job.kind === 'extended' ? job.msg : (() => { throw new Error('expected extended'); })();
+			expect(extendedJob.versionRollingAllowed).toBe(true);
+			const channelTarget = u256LEToBigint(open.target);
+			const rolledVersion = (extendedJob.version ^ 0x00002000) >>> 0; // inside the BIP320 mask
+			const extranonce = Buffer.from('0000000d', 'hex');
+			const base: MineParams = {
+				job: extendedJob,
+				prevHash,
+				extranoncePrefix: open.extranoncePrefix,
+				extranonce,
+				target: channelTarget,
+				versionOverride: rolledVersion
+			};
+			const found = mineOnce(base);
+			expect(found).not.toBeNull();
+			expect(found!.version).toBe(rolledVersion);
+
+			const result = await client.submitExtended({
+				channelId: open.channelId,
+				jobId: extendedJob.jobId,
+				nonce: found!.nonce,
+				ntime: found!.ntime,
+				version: found!.version,
+				extranonce
+			});
+			expect(result.ok).toBe(true);
+			expect(h.shares).toHaveLength(1);
+		} finally {
+			client.close();
+			socket.destroy();
+		}
+	}, 20_000);
+
+	it('a version with bits outside the BIP320 mask is rejected even when rolling is negotiated', async () => {
+		const h = track(makeServer({ versionRollingAllowed: true }));
+		await h.server.listen();
+		const miner = makeMiner('vr-outside');
+		h.authProvider.set(miner);
+		h.server.setJob(makeBuilt(makeTemplate('tip-vr-outside'), 'job-vr-outside', true));
+
+		const { client, socket } = await connectClient(h);
+		try {
+			await client.setupConnection(REQUIRES_VERSION_ROLLING);
+			const open = await client.openExtendedChannel(miner.miningId);
+			const job = await client.awaitJob(open.channelId);
+			const prevHash = await client.awaitPrevHash(open.channelId);
+			const extendedJob = job.kind === 'extended' ? job.msg : (() => { throw new Error('expected extended'); })();
+			const outsideVersion = (extendedJob.version ^ 0x00000001) >>> 0; // bit 0 is OUTSIDE the mask
+
+			const result = await client.submitExtended({
+				channelId: open.channelId,
+				jobId: extendedJob.jobId,
+				nonce: 0,
+				ntime: prevHash.minNtime,
+				version: outsideVersion,
+				extranonce: Buffer.from('0000000e', 'hex')
+			});
+			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.errorCode).toBe('version-rolling-not-allowed');
+		} finally {
+			client.close();
+			socket.destroy();
+		}
+	}, 10_000);
+
+	it('a rolled version is rejected when the channel did NOT negotiate rolling (server-wide setting off)', async () => {
+		const h = track(makeServer({ versionRollingAllowed: false }));
+		await h.server.listen();
+		const miner = makeMiner('vr-off');
+		h.authProvider.set(miner);
+		h.server.setJob(makeBuilt(makeTemplate('tip-vr-off'), 'job-vr-off', true));
+
+		const { client, socket } = await connectClient(h);
+		try {
+			await client.setupConnection(); // no REQUIRES_VERSION_ROLLING — connects fine
+			const open = await client.openExtendedChannel(miner.miningId);
+			const job = await client.awaitJob(open.channelId);
+			const prevHash = await client.awaitPrevHash(open.channelId);
+			const extendedJob = job.kind === 'extended' ? job.msg : (() => { throw new Error('expected extended'); })();
+			expect(extendedJob.versionRollingAllowed).toBe(false);
+			const rolledVersion = (extendedJob.version ^ 0x00002000) >>> 0;
+
+			const result = await client.submitExtended({
+				channelId: open.channelId,
+				jobId: extendedJob.jobId,
+				nonce: 0,
+				ntime: prevHash.minNtime,
+				version: rolledVersion,
+				extranonce: Buffer.from('0000000f', 'hex')
+			});
+			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.errorCode).toBe('version-rolling-not-allowed');
+		} finally {
+			client.close();
+			socket.destroy();
+		}
 	}, 10_000);
 });
