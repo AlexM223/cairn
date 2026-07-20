@@ -78,6 +78,51 @@ describe('encryptSecret / decryptSecret round-trip', () => {
 	});
 });
 
+describe('per-domain label refactor (qfez8.21) back-compat', () => {
+	it('a legacy envelope (no `l` field) still decrypts under the default label', () => {
+		// Simulates an envelope written by the pre-refactor code, which never
+		// serialized an `l` field at all.
+		const secret = 'legacy-smtp-app-password';
+		const envelope = JSON.parse(encryptSecret(secret)) as Record<string, unknown>;
+		expect(envelope.l).toBeUndefined();
+		expect(decryptSecret(JSON.stringify(envelope))).toBe(secret);
+	});
+
+	it('encryptSecret(value) with no label argument omits `l` entirely (byte-identical to pre-refactor envelopes)', () => {
+		const envelope = JSON.parse(encryptSecret('unlabeled')) as Record<string, unknown>;
+		expect('l' in envelope).toBe(false);
+		expect(Object.keys(envelope).sort()).toEqual(['data', 'iv', 'tag', 'v']);
+	});
+
+	it('a labelled envelope round-trips under its own domain', () => {
+		const secret = 'sv2-authority-secret-hex';
+		const envelope = encryptSecret(secret, 'cairn:sv2-authority');
+		const parsed = JSON.parse(envelope) as Record<string, unknown>;
+		expect(parsed.l).toBe('cairn:sv2-authority');
+		expect(decryptSecret(envelope)).toBe(secret);
+	});
+
+	it('a labelled envelope decrypted under the wrong label fails (auth-tag mismatch)', () => {
+		const envelope = JSON.parse(encryptSecret('secret', 'cairn:sv2-authority')) as Record<string, unknown>;
+		envelope.l = 'cairn:some-other-domain';
+		expect(() => decryptSecret(JSON.stringify(envelope))).toThrow(SecretKeyError);
+	});
+
+	it('two different labels produce non-interchangeable ciphertext for the same plaintext', () => {
+		const a = encryptSecret('same plaintext', 'domain-a');
+		const b = encryptSecret('same plaintext', 'domain-b');
+		expect(() => decryptSecret(JSON.stringify({ ...JSON.parse(a), l: 'domain-b' }))).toThrow(SecretKeyError);
+		expect(decryptSecret(a)).toBe('same plaintext');
+		expect(decryptSecret(b)).toBe('same plaintext');
+	});
+
+	it('rejects a non-string label', () => {
+		const envelope = JSON.parse(encryptSecret('secret')) as Record<string, unknown>;
+		envelope.l = 12345;
+		expect(() => decryptSecret(JSON.stringify(envelope))).toThrow(SecretKeyError);
+	});
+});
+
 describe('decryptSecret tamper detection', () => {
 	it('fails when the ciphertext (data) is tampered with', () => {
 		const env = JSON.parse(encryptSecret('secret'));

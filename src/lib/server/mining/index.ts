@@ -18,12 +18,14 @@
  *   60s timer            → worker-offline watcher
  *   15s timer            → aggregates flush (owned by MiningAggregates)
  */
-import { MiningPool } from './miningPool';
+import { MiningPool, type MiningPoolOptions } from './miningPool';
 import { getAuthTable, refreshAuthTable } from './authTable';
 import { MiningAggregates } from './aggregates';
 import { publish as livePublish } from '../liveHub';
 import { readMiningSettings } from './settings';
 import { networkFor } from './address';
+import { CERT_REISSUE_INTERVAL_SEC, issueCert, loadOrCreateAuthorityKey } from './sv2/authority';
+import { randomSecret32, staticFromSecret } from './sv2/crypto';
 import type { MiningEngineConfig, SolveEvent, ShareEvent, RejectEvent, EngineStatus } from './types';
 import { getChain } from '../chain';
 import { getChainConfig } from '../settings';
@@ -130,7 +132,31 @@ function buildEngineConfig(): MiningEngineConfig {
 		blockPolicyShift: BLOCK_POLICY_SHIFT,
 		asicPortEnabled: s.asicPortEnabled,
 		asicPort: s.asicStratumPort,
-		asicShareDifficulty: s.asicShareDifficulty
+		asicShareDifficulty: s.asicShareDifficulty,
+		sv2Enabled: s.sv2Enabled,
+		sv2Port: s.sv2Port,
+		sv2ShareDifficulty: s.sv2ShareDifficulty,
+		sv2VersionRolling: s.sv2VersionRolling
+	};
+}
+
+/**
+ * Derive fresh SV2 Noise authority material (cairn-qfez8.8): the durable,
+ * persisted authority key (authority.ts — encrypted via secretKey.ts, loaded
+ * or created on first use) signs a cert for a BRAND-NEW per-boot static
+ * keypair (plan §d.3 — never persisted, bounded compromise window; a fresh
+ * one is minted every engine (re)start). Only called when `sv2Enabled`.
+ */
+function deriveSv2Authority(): NonNullable<MiningPoolOptions['sv2Authority']> {
+	const { secret32: authoritySecret32 } = loadOrCreateAuthorityKey();
+	const staticSecret32 = randomSecret32();
+	const { xonly32: staticXonly32, ell64: staticEll64 } = staticFromSecret(staticSecret32);
+	const cert = issueCert(staticXonly32, authoritySecret32);
+	return {
+		staticPriv32: staticSecret32,
+		staticEll64,
+		cert,
+		reissueCert: () => issueCert(staticXonly32, authoritySecret32)
 	};
 }
 
@@ -175,7 +201,15 @@ async function doStart(): Promise<void> {
 			onBlockAccepted: (solve, blockHash, coinbaseTxid) =>
 				void handleBlockAccepted(solve, blockHash, coinbaseTxid),
 			onBlockRejected: (solve, reason) => handleBlockRejected(solve, reason),
-			log: (msg) => log.info(msg)
+			log: (msg) => log.info(msg),
+			// MiningPool is deliberately DB/SvelteKit-free (the standalone forced-
+			// solve QA driver imports it directly with no `$env` resolution), so the
+			// SV2 Noise authority/static-key material — which persists via
+			// settings.ts -> db.ts -> `$env/dynamic/private` — is derived HERE, the
+			// already-DB-coupled integration bridge, and injected like the auth
+			// snapshot. Skipped entirely when SV2 is off (no point touching the
+			// authority key on every boot of an instance that never enables it).
+			...(config.sv2Enabled ? { sv2Authority: deriveSv2Authority(), sv2CertReissueIntervalMs: CERT_REISSUE_INTERVAL_SEC * 1000 } : {})
 		});
 		await engine.start();
 		pool = engine;

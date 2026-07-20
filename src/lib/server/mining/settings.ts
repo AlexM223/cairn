@@ -43,6 +43,14 @@ export interface MiningSettings {
 	asicStratumPort: number;
 	/** Vardiff floor + starting difficulty for the ASIC listener (defaults 65536). */
 	asicShareDifficulty: number;
+	/** Whether the native Stratum V2 listener runs (cairn-qfez8.8). Off by default. */
+	sv2Enabled: boolean;
+	/** Bind port for the SV2 listener (defaults 3335, per qfez8.5). */
+	sv2Port: number;
+	/** Fixed share difficulty for the SV2 listener (v1: static channel targets, no vardiff). */
+	sv2ShareDifficulty: number;
+	/** Server-wide version-rolling advertisement for every SV2 channel. Off by default (parity with V1). */
+	sv2VersionRolling: boolean;
 }
 
 /**
@@ -65,6 +73,15 @@ export const DEFAULT_SHARE_DIFFICULTY = 0.5;
  */
 export const DEFAULT_ASIC_SHARE_DIFFICULTY = 65536;
 
+/**
+ * Default SV2 listener share difficulty. ASIC-oriented like
+ * {@link DEFAULT_ASIC_SHARE_DIFFICULTY} — SV2's first real-world clients are
+ * expected to be ASIC firmware/proxies, not low-power USB miners, and v1
+ * ships a static (non-vardiff) channel target, so the floor should already be
+ * a sane steady-state weight rather than a low ramp-up value.
+ */
+export const DEFAULT_SV2_SHARE_DIFFICULTY = DEFAULT_ASIC_SHARE_DIFFICULTY;
+
 const DEFAULTS = {
 	enabled: false,
 	bind: 'loopback' as MiningBind,
@@ -75,7 +92,11 @@ const DEFAULTS = {
 	poolTag: 'Heartwood',
 	asicPortEnabled: true,
 	asicStratumPort: 3334,
-	asicShareDifficulty: DEFAULT_ASIC_SHARE_DIFFICULTY
+	asicShareDifficulty: DEFAULT_ASIC_SHARE_DIFFICULTY,
+	sv2Enabled: false,
+	sv2Port: 3335,
+	sv2ShareDifficulty: DEFAULT_SV2_SHARE_DIFFICULTY,
+	sv2VersionRolling: false
 };
 
 /**
@@ -145,6 +166,10 @@ export function readMiningSettings(): MiningSettings {
 		poolTag: getSetting('mining_pool_tag') || DEFAULTS.poolTag,
 		asicPortEnabled: boolSetting('mining_asic_port_enabled', DEFAULTS.asicPortEnabled),
 		asicStratumPort: intSetting('mining_asic_stratum_port', DEFAULTS.asicStratumPort),
-		asicShareDifficulty: floatSetting('mining_asic_share_difficulty', DEFAULTS.asicShareDifficulty)
+		asicShareDifficulty: floatSetting('mining_asic_share_difficulty', DEFAULTS.asicShareDifficulty),
+		sv2Enabled: boolSetting('mining_sv2_enabled', DEFAULTS.sv2Enabled),
+		sv2Port: intSetting('mining_sv2_port', DEFAULTS.sv2Port),
+		sv2ShareDifficulty: floatSetting('mining_sv2_share_difficulty', DEFAULTS.sv2ShareDifficulty),
+		sv2VersionRolling: boolSetting('mining_sv2_version_rolling', DEFAULTS.sv2VersionRolling)
 	};
 }

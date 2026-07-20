@@ -273,7 +273,7 @@ export interface AdminMiningView {
 		lastTemplateAgoSec: number | null;
 		fatalErrors: string[];
 		/** Per-listener breakdown (standard + optional ASIC port, cairn-pz8v5). */
-		listeners: { role: 'standard' | 'asic'; port: number; connections: number }[];
+		listeners: { role: 'standard' | 'asic' | 'sv2'; port: number; connections: number }[];
 	};
 	pool: { connectedWorkers: number; connectedUsers: number; hashrateNow: number; hashrate24h: number };
 	hashrateSeries: { t: number; hashrate: number }[];

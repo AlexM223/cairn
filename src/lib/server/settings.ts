@@ -55,14 +55,21 @@ export function setSetting(key: string, value: string): void {
  * sensitive. An empty value is stored as '' — the explicit-clear convention —
  * and must stay falsy for presence checks. Any legacy copy of the key still in
  * the plain `settings` table is removed so a stale plaintext row can't linger.
+ *
+ * `label` (qfez8.21) domain-separates the derived cipher key for callers
+ * outside the legacy smtp/core-rpc/telegram/nostr set — e.g. SV2's
+ * `mining_sv2_authority_secret` uses `'cairn:sv2-authority'`. Omitted =
+ * secretKey.ts's legacy default label, so every pre-existing call site is
+ * byte-identical. The label rides in the envelope (secretKey.ts's `Envelope.l`),
+ * so `readSecretSetting` needs no matching param — it self-describes on decrypt.
  */
-export function setSecretSetting(key: string, value: string): void {
+export function setSecretSetting(key: string, value: string, label?: string): void {
 	db.prepare(
 		`INSERT INTO instance_secrets (key, value_enc, updated_at)
 		 VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 		 ON CONFLICT(key) DO UPDATE SET value_enc = excluded.value_enc,
 		                                updated_at = excluded.updated_at`
-	).run(key, value === '' ? '' : encryptSecret(value));
+	).run(key, value === '' ? '' : encryptSecret(value, label));
 	db.prepare('DELETE FROM settings WHERE key = ?').run(key);
 }
 

@@ -86,11 +86,15 @@ export function getInstanceKey(): Buffer {
 	return cachedKey;
 }
 
-/** The AES-256 cipher key for this domain, derived from the instance key. */
-function cipherKey(): Buffer {
-	return Buffer.from(
-		hkdfSync('sha256', getInstanceKey(), Buffer.alloc(0), Buffer.from(HKDF_INFO, 'utf8'), 32)
-	);
+/**
+ * The AES-256 cipher key for a domain, derived from the instance key via
+ * HKDF-SHA256 with that domain's label as the `info` field. Defaults to the
+ * legacy notification-SMTP label so every pre-existing call site (and every
+ * envelope already on disk with no `l` field) keeps computing byte-identical
+ * keys — see the `Envelope.l` doc comment below for the back-compat contract.
+ */
+function cipherKey(label: string = HKDF_INFO): Buffer {
+	return Buffer.from(hkdfSync('sha256', getInstanceKey(), Buffer.alloc(0), Buffer.from(label, 'utf8'), 32));
 }
 
 interface Envelope {
@@ -98,18 +102,38 @@ interface Envelope {
 	iv: string;
 	tag: string;
 	data: string;
+	/**
+	 * Domain-separation label this envelope was encrypted under (qfez8.21:
+	 * generalizing the previously-hardcoded single `HKDF_INFO` label to
+	 * per-caller domains — e.g. `'cairn:sv2-authority'` for the SV2 authority
+	 * secret). OMITTED (not merely equal to the legacy label — actually absent
+	 * from the JSON) whenever `label === HKDF_INFO`, so every envelope written
+	 * before this field existed, and every envelope written afterwards under
+	 * the legacy label, serialize to byte-identical JSON. `decryptSecret`
+	 * defaults a missing `l` to `HKDF_INFO`, so old ciphertexts for
+	 * `core_rpc_pass` / per-user SMTP passwords keep decrypting unchanged.
+	 * `ENVELOPE_VERSION` is NOT bumped for this change — it's purely additive.
+	 */
+	l?: string;
 }
 
-/** Encrypt a secret into a versioned base64 JSON envelope (safe to store at rest). */
-export function encryptSecret(plaintext: string): string {
+/**
+ * Encrypt a secret into a versioned base64 JSON envelope (safe to store at
+ * rest). `label` domain-separates the derived cipher key from other secrets
+ * sharing the same instance key (e.g. SV2's authority secret vs. SMTP
+ * passwords) — it defaults to the legacy label so existing call sites
+ * (`encryptSecret(value)`) are unaffected.
+ */
+export function encryptSecret(plaintext: string, label: string = HKDF_INFO): string {
 	const iv = randomBytes(12);
-	const cipher = createCipheriv('aes-256-gcm', cipherKey(), iv);
+	const cipher = createCipheriv('aes-256-gcm', cipherKey(label), iv);
 	const data = Buffer.concat([cipher.update(Buffer.from(plaintext, 'utf8')), cipher.final()]);
 	const envelope: Envelope = {
 		v: ENVELOPE_VERSION,
 		iv: iv.toString('base64'),
 		tag: cipher.getAuthTag().toString('base64'),
-		data: data.toString('base64')
+		data: data.toString('base64'),
+		...(label !== HKDF_INFO ? { l: label } : {})
 	};
 	return JSON.stringify(envelope);
 }
@@ -153,7 +177,13 @@ export function decryptSecret(envelopeText: string): string {
 	if (typeof env.iv !== 'string' || typeof env.tag !== 'string' || typeof env.data !== 'string') {
 		throw new SecretKeyError('Malformed secret envelope (missing iv/tag/data).');
 	}
-	const decipher = createDecipheriv('aes-256-gcm', cipherKey(), Buffer.from(env.iv, 'base64'));
+	if (env.l !== undefined && typeof env.l !== 'string') {
+		throw new SecretKeyError('Malformed secret envelope (non-string label).');
+	}
+	// Self-describing: a legacy envelope (no `l`) decrypts under the same
+	// default label encryptSecret() used before this field existed.
+	const label = env.l ?? HKDF_INFO;
+	const decipher = createDecipheriv('aes-256-gcm', cipherKey(label), Buffer.from(env.iv, 'base64'));
 	decipher.setAuthTag(Buffer.from(env.tag, 'base64'));
 	try {
 		const plaintext = Buffer.concat([

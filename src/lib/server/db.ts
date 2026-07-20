@@ -1302,8 +1302,12 @@ db.exec(`
 // needing a code audit: value_enc is ALWAYS a secretKey.ts envelope (or '' for
 // an explicitly cleared secret), written only via settings.ts's
 // setSecretSetting. backup.ts excludes this table from exports by construction.
-// Current keys: smtp_pass, core_rpc_pass, telegram_bot_token,
-// nostr_sender_privkey (migrated out of `settings` at startup).
+// setSecretSetting (qfez8.21) takes an optional domain `label` that rides in
+// the envelope, so callers outside the legacy default domain (e.g. SV2's
+// authority secret) share this same table/function instead of hand-rolling
+// their own upsert. Current keys: smtp_pass, core_rpc_pass, telegram_bot_token,
+// nostr_sender_privkey (migrated out of `settings` at startup),
+// mining_sv2_authority_secret (SV2 Noise authority keypair, cairn-qfez8.8).
 db.exec(`
 	CREATE TABLE IF NOT EXISTS instance_secrets (
 		key        TEXT PRIMARY KEY,

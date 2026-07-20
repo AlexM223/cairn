@@ -12,7 +12,7 @@ vi.mock('../settings', () => ({
 	getSetting: (k: string) => store.get(k) ?? null
 }));
 
-import { readMiningSettings, DEFAULT_ASIC_SHARE_DIFFICULTY } from './settings';
+import { readMiningSettings, DEFAULT_ASIC_SHARE_DIFFICULTY, DEFAULT_SV2_SHARE_DIFFICULTY } from './settings';
 
 const savedPlatform = process.env.CAIRN_PLATFORM;
 
@@ -47,6 +47,34 @@ describe('readMiningSettings — ASIC port defaults', () => {
 		expect(s.asicPortEnabled).toBe(false);
 		expect(s.asicStratumPort).toBe(4444);
 		expect(s.asicShareDifficulty).toBe(1024);
+	});
+});
+
+describe('readMiningSettings — SV2 listener defaults (cairn-qfez8.8)', () => {
+	it('defaults the SV2 listener OFF, port 3335, ASIC-tier difficulty, version rolling off', () => {
+		const s = readMiningSettings();
+		expect(s.sv2Enabled).toBe(false);
+		expect(s.sv2Port).toBe(3335);
+		expect(s.sv2ShareDifficulty).toBe(DEFAULT_SV2_SHARE_DIFFICULTY);
+		expect(s.sv2VersionRolling).toBe(false);
+	});
+
+	it('the SV2 default port does not collide with the standard or ASIC ports', () => {
+		const s = readMiningSettings();
+		expect(s.sv2Port).not.toBe(s.stratumPort);
+		expect(s.sv2Port).not.toBe(s.asicStratumPort);
+	});
+
+	it('reads admin-saved SV2 settings over the defaults', () => {
+		store.set('mining_sv2_enabled', 'true');
+		store.set('mining_sv2_port', '4335');
+		store.set('mining_sv2_share_difficulty', '2048');
+		store.set('mining_sv2_version_rolling', 'true');
+		const s = readMiningSettings();
+		expect(s.sv2Enabled).toBe(true);
+		expect(s.sv2Port).toBe(4335);
+		expect(s.sv2ShareDifficulty).toBe(2048);
+		expect(s.sv2VersionRolling).toBe(true);
 	});
 });
 

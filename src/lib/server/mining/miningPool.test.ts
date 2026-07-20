@@ -13,7 +13,10 @@ import * as bitcoin from 'bitcoinjs-lib';
 import { afterEach, describe, expect, it } from 'vitest';
 import { NETWORKS, addressToOutputScript } from './address';
 import { buildJob } from './job';
-import { MiningPool } from './miningPool';
+import { MiningPool, type MiningPoolOptions } from './miningPool';
+import { issueCert, loadOrCreateAuthorityKey } from './sv2/authority';
+import { randomSecret32, staticFromSecret } from './sv2/crypto';
+import { Sv2TestClient, mineOnce, u256LEToBigint, type MineParams } from './sv2/testClient';
 import { MapAuthProvider, type GbtTemplate, type MinerAuth, type MiningEngineConfig, type SolveEvent } from './types';
 import { difficultyToTarget, hashValueFromDisplay, headerHashDisplay } from './wire';
 
@@ -84,7 +87,14 @@ const config: MiningEngineConfig = {
 	// enables the ASIC port explicitly.
 	asicPortEnabled: false,
 	asicPort: 0,
-	asicShareDifficulty: 65536
+	asicShareDifficulty: 65536,
+	// SV2 off by default here too — the dedicated SV2 integration suite below
+	// enables it explicitly (cairn-qfez8.8). V1-only tests must see IDENTICAL
+	// behavior with sv2Enabled:false.
+	sv2Enabled: false,
+	sv2Port: 0,
+	sv2ShareDifficulty: DIFF,
+	sv2VersionRolling: false
 };
 
 /** Raw-socket helper: subscribe + authorize + return en1 and the notify job fields. */
@@ -448,4 +458,156 @@ describe('MiningPool dual Stratum listeners (standard + ASIC) — cairn-pz8v5', 
 			await new Promise<void>((res) => blocker.close(() => res()));
 		}
 	}, 20_000);
+});
+
+// ---------------------------------------------------------------------------
+// SV2 listener wiring (cairn-qfez8.8, Phase 4): the pool constructs a THIRD
+// listener when sv2Enabled, includes it in status(), fans installJob to it,
+// and handleSolve accepts an SV2-originated SolveEvent exactly like a V1 one
+// (same jobsById lookup, same re-personalize + assemble + submitblock path).
+// ---------------------------------------------------------------------------
+
+const sv2Config: MiningEngineConfig = {
+	...config,
+	sv2Enabled: true,
+	sv2Port: 0,
+	sv2ShareDifficulty: DIFF,
+	sv2VersionRolling: false
+};
+
+/**
+ * MiningPool is deliberately DB/SvelteKit-free (miningPool.ts's module doc
+ * comment — the forced-solve QA driver imports it with no `$env` resolution),
+ * so it no longer derives SV2 authority material itself; the caller (normally
+ * mining/index.ts's deriveSv2Authority) injects it via
+ * MiningPoolOptions.sv2Authority. Mirrors that derivation for these tests.
+ */
+function makeSv2Authority(): { authorityXonly32: Uint8Array; material: NonNullable<MiningPoolOptions['sv2Authority']> } {
+	const { secret32: authoritySecret32, xonly32: authorityXonly32 } = loadOrCreateAuthorityKey();
+	const staticSecret32 = randomSecret32();
+	const { xonly32: staticXonly32, ell64: staticEll64 } = staticFromSecret(staticSecret32);
+	const cert = issueCert(staticXonly32, authoritySecret32);
+	return {
+		authorityXonly32,
+		material: {
+			staticPriv32: staticSecret32,
+			staticEll64,
+			cert,
+			reissueCert: () => issueCert(staticXonly32, authoritySecret32)
+		}
+	};
+}
+
+describe('MiningPool SV2 listener (cairn-qfez8.8)', () => {
+	it('constructs the SV2 listener when enabled, lists it in status(), and fans a job to a connected SV2 client', async () => {
+		const { authorityXonly32, material: sv2Authority } = makeSv2Authority();
+		const miner = makeMiner('sv2-status');
+		pool = new MiningPool({
+			rpc: new FakeRpc(),
+			config: sv2Config,
+			authProvider: new MapAuthProvider([miner]),
+			sv2Authority,
+			tipPollIntervalMs: 25,
+			feeRefreshMs: 3_600_000,
+			log: () => {}
+		});
+		await pool.start();
+		await until(() => pool!.status().lastJobAt !== null);
+		const listener = pool!.status().listeners.find((l) => l.role === 'sv2');
+		expect(listener).toBeDefined();
+		expect(listener!.port).toBeGreaterThan(0);
+
+		const socket = net.connect(listener!.port, '127.0.0.1');
+		await new Promise<void>((res, rej) => {
+			socket.once('connect', () => res());
+			socket.once('error', rej);
+		});
+		const client = new Sv2TestClient(authorityXonly32);
+		try {
+			await client.connect(socket);
+			await client.setupConnection();
+			const open = await client.openExtendedChannel(miner.miningId);
+			const job = await client.awaitJob(open.channelId);
+			expect(job.kind).toBe('extended');
+
+			await until(() => pool!.status().minerCount === 1);
+			const st = pool!.status();
+			expect(st.connections).toHaveLength(1);
+			expect(st.connections[0]!.protocol).toBe('sv2');
+			expect(st.listeners.find((l) => l.role === 'sv2')!.connections).toBe(1);
+		} finally {
+			client.close();
+			socket.destroy();
+		}
+	}, 20_000);
+
+	it('an SV2-originated solve is accepted by handleSolve: submitblock + onBlockAccepted, same as a V1 solve', async () => {
+		const { authorityXonly32, material: sv2Authority } = makeSv2Authority();
+		const rpc = new FakeRpc();
+		const miner = makeMiner('sv2-solver');
+		const accepted: { solve: SolveEvent; blockHash: string; coinbaseTxid: string }[] = [];
+		pool = new MiningPool({
+			rpc,
+			config: sv2Config,
+			authProvider: new MapAuthProvider([miner]),
+			sv2Authority,
+			tipPollIntervalMs: 25,
+			feeRefreshMs: 3_600_000,
+			onBlockAccepted: (solve, blockHash, coinbaseTxid) => accepted.push({ solve, blockHash, coinbaseTxid }),
+			log: () => {}
+		});
+		await pool.start();
+		const sv2Port = pool!.status().listeners.find((l) => l.role === 'sv2')!.port;
+		await until(() => pool!.status().lastJobAt !== null);
+
+		const socket = net.connect(sv2Port, '127.0.0.1');
+		await new Promise<void>((res, rej) => {
+			socket.once('connect', () => res());
+			socket.once('error', rej);
+		});
+		const client = new Sv2TestClient(authorityXonly32);
+		try {
+			await client.connect(socket);
+			await client.setupConnection();
+			const open = await client.openExtendedChannel(miner.miningId);
+			const job = await client.awaitJob(open.channelId);
+			const prevHash = await client.awaitPrevHash(open.channelId);
+			const extendedJob = job.kind === 'extended' ? job.msg : (() => { throw new Error('expected extended'); })();
+			// At this low SV2 share difficulty the channel target is the binding
+			// (harder) constraint vs. the regtest-easy network target — same
+			// reasoning as sv2Server.test.ts's solve-path test.
+			const channelTarget = u256LEToBigint(open.target);
+			const extranonce = Buffer.from('00000099', 'hex');
+			const base: MineParams = {
+				job: extendedJob,
+				prevHash,
+				extranoncePrefix: open.extranoncePrefix,
+				extranonce,
+				target: channelTarget
+			};
+			const found = mineOnce(base);
+			expect(found).not.toBeNull();
+
+			const result = await client.submitExtended({
+				channelId: open.channelId,
+				jobId: extendedJob.jobId,
+				nonce: found!.nonce,
+				ntime: found!.ntime,
+				version: found!.version,
+				extranonce
+			});
+			expect(result.ok).toBe(true);
+
+			await until(() => accepted.length === 1);
+			expect(rpc.submitted).toHaveLength(1);
+			expect(accepted[0]!.solve.payoutScriptHex).toBe(Buffer.from(miner.payoutScript).toString('hex'));
+			expect(accepted[0]!.solve.userId).toBe(miner.userId);
+			// No invariant violations — the SV2 solve resolved against the SAME
+			// jobsById map / re-personalize / assemble path as a V1 solve.
+			expect(pool!.status().fatalErrors).toEqual([]);
+		} finally {
+			client.close();
+			socket.destroy();
+		}
+	}, 40_000);
 });

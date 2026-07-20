@@ -20,6 +20,24 @@
 import { randomBytes } from 'node:crypto';
 import { buildJob } from './job';
 import { StratumServer, type StratumServerOptions } from './stratum';
+// Imported from the concrete file, not the './sv2' barrel: the forced-solve
+// e2e QA driver runs this module through a raw Node ESM loader
+// (scripts/qa/mining-ts-loader.mjs) that only appends '.ts' to extensionless
+// specifiers resolving to a FILE, not a directory-index — a bare './sv2'
+// import throws ERR_UNSUPPORTED_DIR_IMPORT there even though vitest/Vite
+// resolve it fine. './sv2/index.ts' still exists as the barrel for bundler-
+// resolved consumers (plan §a.8); this module just doesn't use it.
+//
+// Deliberately NOT imported here: './sv2/authority' (Noise authority-key
+// custody). It persists via settings.ts -> db.ts, which imports SvelteKit's
+// `$env/dynamic/private` — a virtual module the same QA driver's raw-Node
+// loader cannot resolve (no SvelteKit runtime). MiningPool must stay
+// DB/SvelteKit-free (that's WHY authProvider is injected rather than looked
+// up here), so SV2 authority material is injected too, via
+// `MiningPoolOptions.sv2Authority` — the caller (mining/index.ts, which is
+// already DB/settings-coupled and never touched by the QA driver) derives it
+// from authority.ts and hands it in, exactly like the auth snapshot.
+import { Sv2Server, type Sv2ServerOptions } from './sv2/sv2Server';
 import { TipPoller, type ChainTip, type RpcLike } from './tipPoller';
 import type {
 	AuthProvider,
@@ -52,6 +70,17 @@ export interface MiningPoolOptions {
 	readonly log?: (msg: string) => void;
 	readonly tipPollIntervalMs?: number;
 	readonly feeRefreshMs?: number;
+	/**
+	 * Noise authority/static-key material for the SV2 listener (cairn-qfez8.8).
+	 * Required for the SV2 listener to actually start — see the module doc
+	 * comment for why MiningPool never derives this itself. Ignored when
+	 * `config.sv2Enabled` is false; if `sv2Enabled` is true but this is
+	 * omitted, the SV2 listener is skipped (logged, non-fatal) rather than
+	 * constructed without a cert.
+	 */
+	readonly sv2Authority?: Sv2ServerOptions['authority'];
+	/** Cadence for `sv2Authority.reissueCert` (only relevant when it's provided). */
+	readonly sv2CertReissueIntervalMs?: number;
 }
 
 export class MiningPool {
@@ -68,6 +97,15 @@ export class MiningPool {
 	 * in bind port and difficulty floor. Null when `asicPortEnabled` is false.
 	 */
 	private readonly asicServer: StratumServer | null;
+	/**
+	 * The optional native Stratum V2 listener (default port 3335, cairn-qfez8.8).
+	 * A THIRD listener sharing the same job pipeline/auth provider/share-solve-
+	 * reject sinks as {@link server}/{@link asicServer} — differs in wire
+	 * protocol (Noise-encrypted binary SV2, not JSON-line V1) and in having no
+	 * vardiff (v1 ships a static per-channel target). Null when `sv2Enabled` is
+	 * false. V1 behavior is unaffected either way (frozen).
+	 */
+	private readonly sv2Server: Sv2Server | null;
 	private poller: TipPoller | null = null;
 	private feeTimer: NodeJS.Timeout | null = null;
 
@@ -125,6 +163,36 @@ export class MiningPool {
 		this.asicServer = this.config.asicPortEnabled
 			? new StratumServer(makeServerOpts(this.config.asicPort, this.config.asicShareDifficulty))
 			: null;
+
+		// SV2: same sinks/auth as the two V1 listeners above, plus the Noise
+		// authority/static-key material the CALLER derived (see MiningPoolOptions
+		// .sv2Authority's doc comment for why MiningPool never derives it itself).
+		if (this.config.sv2Enabled && opts.sv2Authority) {
+			const sv2Opts: Sv2ServerOptions = {
+				port: this.config.sv2Port,
+				host: this.config.bindHost,
+				shareDifficulty: this.config.sv2ShareDifficulty,
+				network: this.config.network,
+				authProvider: opts.authProvider,
+				blockPolicyShift: this.config.blockPolicyShift,
+				maxConnections: this.config.maxConnections,
+				versionRollingAllowed: this.config.sv2VersionRolling,
+				log: this.log,
+				onShare: (e) => opts.onShare?.(e),
+				onSolve: (e) => this.enqueue(() => this.handleSolve(e)),
+				onReject: (e) => opts.onReject?.(e),
+				authority: opts.sv2Authority,
+				...(opts.sv2CertReissueIntervalMs !== undefined
+					? { certReissueIntervalMs: opts.sv2CertReissueIntervalMs }
+					: {})
+			};
+			this.sv2Server = new Sv2Server(sv2Opts);
+		} else {
+			if (this.config.sv2Enabled && !opts.sv2Authority) {
+				this.log('sv2Enabled but no sv2Authority material supplied — SV2 listener not started');
+			}
+			this.sv2Server = null;
+		}
 	}
 
 	/** Invariant violations observed at runtime (a forced-solve harness asserts empty). */
@@ -160,6 +228,30 @@ export class MiningPool {
 					`(share difficulty ${this.config.asicShareDifficulty})`
 			);
 		}
+		if (this.sv2Server) {
+			try {
+				await this.sv2Server.listen();
+			} catch (err) {
+				// Same "no half-open engine" rule as the ASIC branch above, extended
+				// to close BOTH V1 listeners we already opened.
+				this.started = false;
+				try {
+					await this.server.close();
+				} catch {
+					/* best-effort — we are already failing the start */
+				} finally {
+					if (this.asicServer) {
+						try {
+							await this.asicServer.close();
+						} catch {
+							/* best-effort */
+						}
+					}
+				}
+				throw err;
+			}
+			this.log(`sv2 stratum listening on ${this.config.bindHost}:${this.sv2Server.port}`);
+		}
 
 		this.poller = new TipPoller(this.opts.rpc, this.opts.tipPollIntervalMs ?? 1000);
 		this.poller.on('tip', (tip) => this.enqueue(() => this.handleTip(tip)));
@@ -183,12 +275,17 @@ export class MiningPool {
 			clearInterval(this.feeTimer);
 			this.feeTimer = null;
 		}
-		// Close BOTH listeners; the try/finally guarantees the ASIC listener is
-		// closed even if the standard close rejects (never leak a bound port).
+		// Close every listener; nested try/finally guarantees the ASIC and SV2
+		// listeners are closed even if an earlier close rejects (never leak a
+		// bound port).
 		try {
 			await this.server.close();
 		} finally {
-			if (this.asicServer) await this.asicServer.close();
+			try {
+				if (this.asicServer) await this.asicServer.close();
+			} finally {
+				if (this.sv2Server) await this.sv2Server.close();
+			}
 		}
 		await this.queue; // drain in-flight tip/solve/refresh handlers
 		this.log('stopped');
@@ -197,21 +294,28 @@ export class MiningPool {
 	status(): EngineStatus {
 		const stdConns = this.server.connections();
 		const asicConns = this.asicServer ? this.asicServer.connections() : [];
+		const sv2Conns = this.sv2Server ? this.sv2Server.connections() : [];
 		return {
-			// Honest only when BOTH configured listeners are up.
-			listening: this.server.listening && (this.asicServer === null || this.asicServer.listening),
+			// Honest only when EVERY configured listener is up.
+			listening:
+				this.server.listening &&
+				(this.asicServer === null || this.asicServer.listening) &&
+				(this.sv2Server === null || this.sv2Server.listening),
 			bind: this.config.bindHost,
 			port: this.server.port,
 			lastTipHeight: this.lastTipHeight,
 			lastJobAt: this.lastJobAt,
 			lastTemplateOk: this.lastTemplateOk,
-			minerCount: this.server.minerCount + (this.asicServer?.minerCount ?? 0),
-			// COMBINED across both listeners — readModels counts distinct users from this.
-			connections: [...stdConns, ...asicConns],
+			minerCount: this.server.minerCount + (this.asicServer?.minerCount ?? 0) + (this.sv2Server?.minerCount ?? 0),
+			// COMBINED across every listener — readModels counts distinct users from this.
+			connections: [...stdConns, ...asicConns, ...sv2Conns],
 			listeners: [
 				{ role: 'standard', port: this.server.port, connections: stdConns.length },
 				...(this.asicServer
 					? [{ role: 'asic' as const, port: this.asicServer.port, connections: asicConns.length }]
+					: []),
+				...(this.sv2Server
+					? [{ role: 'sv2' as const, port: this.sv2Server.port, connections: sv2Conns.length }]
 					: [])
 			],
 			fatalErrors: [...this.fatal]
@@ -307,10 +411,13 @@ export class MiningPool {
 			this.jobsById.delete(oldest);
 		}
 		this.lastJobAt = Date.now();
-		// Both listeners mine the same job (same jobId, same merkle branches, each
-		// connection personalized by its own frozen payout inside the server).
+		// Every listener mines the same job (same jobId, same merkle branches,
+		// each connection/channel personalized by its own frozen payout inside
+		// the listener). handleSolve resolves by jobId regardless of which
+		// listener the solve came from.
 		this.server.setJob(built);
 		this.asicServer?.setJob(built);
+		this.sv2Server?.setJob(built);
 	}
 
 	// ------------------------------------------------------------------ solves

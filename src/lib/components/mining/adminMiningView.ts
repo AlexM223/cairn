@@ -25,8 +25,8 @@ export interface AdminMiningEngineView {
 	/** Seconds since the last getblocktemplate refresh, or null if never. */
 	lastTemplateAgoSec: number | null;
 	fatalErrors: string[];
-	/** Per-listener breakdown (standard + optional ASIC port, cairn-pz8v5). */
-	listeners: { role: 'standard' | 'asic'; port: number; connections: number }[];
+	/** Per-listener breakdown (standard + optional ASIC + optional SV2 port, cairn-pz8v5/qfez8.8). */
+	listeners: { role: 'standard' | 'asic' | 'sv2'; port: number; connections: number }[];
 }
 
 /** Friendly label for the engine's configured network exposure. */

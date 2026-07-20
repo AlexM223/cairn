@@ -134,11 +134,15 @@ export interface ConnectionInfo {
 	readonly difficulty: number;
 	readonly sharesAccepted: number;
 	readonly lastShareAt: number | null;
+	/** Which protocol this connection speaks. Additive — absent/undefined means
+	 *  'v1' (every existing StratumServer connection); Sv2Server.connections()
+	 *  is the only producer of 'sv2'. */
+	readonly protocol?: 'v1' | 'sv2';
 }
 
 /** One bound Stratum listener's role + port + live connection count. */
 export interface ListenerInfo {
-	readonly role: 'standard' | 'asic';
+	readonly role: 'standard' | 'asic' | 'sv2';
 	readonly port: number;
 	readonly connections: number;
 }
@@ -191,6 +195,19 @@ export interface MiningEngineConfig {
 	readonly asicPort: number;
 	/** Fixed/starting difficulty + vardiff floor for the ASIC listener. */
 	readonly asicShareDifficulty: number;
+	/**
+	 * Whether the native Stratum V2 listener runs (cairn-qfez8.8) — a THIRD
+	 * listener alongside `server`/`asicServer`, sharing the same job pipeline,
+	 * auth provider, and share/solve/reject sinks. Off by default: SV2 is new
+	 * and additive, never required for the V1 engine to function.
+	 */
+	readonly sv2Enabled: boolean;
+	/** Bind port for the SV2 listener (must differ from `port`/`asicPort`). */
+	readonly sv2Port: number;
+	/** Fixed share difficulty for the SV2 listener (v1 ships static channel targets, no vardiff). */
+	readonly sv2ShareDifficulty: number;
+	/** Server-wide version-rolling advertisement for every SV2 channel. */
+	readonly sv2VersionRolling: boolean;
 }
 
 // ---------------------------------------------------------------------------
