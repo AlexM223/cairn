@@ -33,6 +33,7 @@
 					<tr>
 						<th>User</th>
 						<th>Worker</th>
+						<th></th>
 						<th class="num">Hashrate</th>
 						<th class="num">Difficulty</th>
 						<th class="num">Last share</th>
@@ -44,6 +45,11 @@
 						<tr>
 							<td>{m.userName}</td>
 							<td class="mono">{m.worker}</td>
+							<td>
+								<span class="protocol-badge" class:v2={m.protocol === 'sv2'}>
+									{m.protocol === 'sv2' ? 'V2' : 'V1'}
+								</span>
+							</td>
 							<td class="num tabular">{formatHashrate(m.hashrate)}</td>
 							<td class="num tabular">{formatNumber(m.difficulty)}</td>
 							<td class="num tabular">{agoLabel(m.lastShareAgoSec)}</td>
@@ -85,5 +91,27 @@
 
 	.pip.online {
 		background: var(--sage);
+	}
+
+	/* Muted chip, not a semantic color — protocol is informational, not a
+	   health/status signal (manifesto §2: accent/semantics are rationed to
+	   things that carry meaning). V2 gets a slightly stronger border/text so
+	   it reads as "the newer one" without borrowing accent or sage. */
+	.protocol-badge {
+		display: inline-flex;
+		align-items: center;
+		padding: 2px 7px;
+		border-radius: 999px;
+		border: 1px solid var(--border-subtle);
+		font-size: 10.5px;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+		color: var(--text-muted);
+		white-space: nowrap;
+	}
+
+	.protocol-badge.v2 {
+		border-color: var(--border);
+		color: var(--text-secondary);
 	}
 </style>

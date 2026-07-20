@@ -44,7 +44,8 @@ export const load: PageServerLoad = async (event) => {
 					stratumPort: 0,
 					bind: '',
 					shareDifficulty: 0,
-					asicPort: null
+					asicPort: null,
+					sv2: null
 				},
 				connection: null,
 				payout: null,

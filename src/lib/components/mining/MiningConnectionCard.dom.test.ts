@@ -26,13 +26,21 @@ function baseProps(bind: Bind) {
 		stratumPort: 3333,
 		bind,
 		asicPort: null as { port: number; shareDifficulty: number } | null,
+		sv2: null as { port: number; authorityPubkey: string } | null,
 		hasWorkers: true
 	};
 }
 
 let mounted: Record<string, unknown> | undefined;
 
-function renderCard(bind: Bind, opts?: { isAdmin?: boolean; asicPort?: { port: number; shareDifficulty: number } }) {
+function renderCard(
+	bind: Bind,
+	opts?: {
+		isAdmin?: boolean;
+		asicPort?: { port: number; shareDifficulty: number };
+		sv2?: { port: number; authorityPubkey: string };
+	}
+) {
 	// Plain URL vs SvelteKit's route-literal-typed `pathname` — runtime shape is
 	// identical; the cast only satisfies the generated union type.
 	page.url = new URL('http://minerbox.local:3000/mining') as typeof page.url;
@@ -41,6 +49,7 @@ function renderCard(bind: Bind, opts?: { isAdmin?: boolean; asicPort?: { port: n
 	const target = document.body.appendChild(document.createElement('div'));
 	const props = baseProps(bind);
 	if (opts?.asicPort) props.asicPort = opts.asicPort;
+	if (opts?.sv2) props.sv2 = opts.sv2;
 	mounted = mount(MiningConnectionCard, { target, props }) as Record<string, unknown>;
 	flushSync();
 	return target;
@@ -105,6 +114,29 @@ describe('MiningConnectionCard (cairn-bm7c2, UI half)', () => {
 		const text = target.textContent ?? '';
 
 		expect(text).not.toContain('stratum+tcp://');
+		expect(text).toContain('only reachable from this computer');
+	});
+});
+
+describe('MiningConnectionCard — Stratum V2 row (cairn-qfez8.9)', () => {
+	it('renders the stratum2+tcp:// address with the authority pubkey once bound to lan', () => {
+		const target = renderCard('lan', { sv2: { port: 3335, authorityPubkey: 'AbCdEf123456' } });
+		const text = target.textContent ?? '';
+
+		expect(text).toContain('stratum2+tcp://minerbox.local:3335/AbCdEf123456');
+		expect(text).toContain('Next-generation miners');
+	});
+
+	it('does not render the SV2 row when the admin has not enabled it', () => {
+		const target = renderCard('lan');
+		expect(target.textContent).not.toContain('stratum2+tcp://');
+	});
+
+	it('does not render the SV2 row when loopback-only, even with SV2 configured', () => {
+		const target = renderCard('loopback', { sv2: { port: 3335, authorityPubkey: 'AbCdEf123456' } });
+		const text = target.textContent ?? '';
+
+		expect(text).not.toContain('stratum2+tcp://');
 		expect(text).toContain('only reachable from this computer');
 	});
 });

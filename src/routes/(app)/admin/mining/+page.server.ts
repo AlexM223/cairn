@@ -110,6 +110,26 @@ export const actions: Actions = {
 		if (!Number.isFinite(asicShareDifficulty) || asicShareDifficulty <= 0)
 			return fail(400, { error: 'ASIC share difficulty must be greater than 0.' });
 
+		// Native Stratum V2 listener (cairn-qfez8.9): a THIRD, optional listener —
+		// same port/difficulty validation shape as the ASIC port above, plus the
+		// same mutual-collision check against BOTH other ports (not just the main
+		// one) since all three can be enabled at once.
+		const sv2Enabled = form.get('sv2Enabled') === 'on';
+
+		const sv2Port = Number(form.get('sv2Port'));
+		if (!Number.isInteger(sv2Port) || sv2Port < 1 || sv2Port > 65535)
+			return fail(400, { error: 'Stratum V2 port must be between 1 and 65535.' });
+		if (sv2Port === port)
+			return fail(400, { error: 'The Stratum V2 port must be different from the main Stratum port.' });
+		if (sv2Port === asicStratumPort)
+			return fail(400, { error: 'The Stratum V2 port must be different from the big-machine port.' });
+
+		const sv2ShareDifficulty = Number(form.get('sv2ShareDifficulty'));
+		if (!Number.isFinite(sv2ShareDifficulty) || sv2ShareDifficulty <= 0)
+			return fail(400, { error: 'Stratum V2 share difficulty must be greater than 0.' });
+
+		const sv2VersionRolling = form.get('sv2VersionRolling') === 'on';
+
 		setSetting('mining_enabled', enabled ? 'true' : 'false');
 		setSetting('mining_bind', bind);
 		setSetting('mining_stratum_port', String(port));
@@ -120,6 +140,10 @@ export const actions: Actions = {
 		setSetting('mining_asic_port_enabled', asicPortEnabled ? 'true' : 'false');
 		setSetting('mining_asic_stratum_port', String(asicStratumPort));
 		setSetting('mining_asic_share_difficulty', String(asicShareDifficulty));
+		setSetting('mining_sv2_enabled', sv2Enabled ? 'true' : 'false');
+		setSetting('mining_sv2_port', String(sv2Port));
+		setSetting('mining_sv2_share_difficulty', String(sv2ShareDifficulty));
+		setSetting('mining_sv2_version_rolling', sv2VersionRolling ? 'true' : 'false');
 
 		try {
 			await reconfigureMiningEngine();

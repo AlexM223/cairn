@@ -2617,6 +2617,70 @@ engine stays stopped), so the admin `?/save` and `?/restart` actions verify
 error when settings say the engine should be running but it isn't — a
 resolved `reconfigureMiningEngine()` alone is NOT proof of life (v0.2.42).
 
+**Native Stratum V2 listener + admin UI (`cairn-qfez8.8`/`.9`).** A THIRD,
+optional listener — `Sv2Server` (`sv2/sv2Server.ts`) — binds alongside the
+standard and ASIC V1 listeners whenever `mining_sv2_enabled` is on (default
+`false`). Same job pipeline, `AuthProvider`, and share/solve/reject sinks as
+the V1 listeners (`MiningPool.status()`'s `listeners` array grows a third
+`{role: 'sv2', port, connections}` entry, and `connections` stays combined
+across all three — `readModels.ts`'s `getAdminMiningView()` cross-references
+that combined array against `agg.liveAllMiners()` by `(userId, worker)` to
+badge each miner row V1/V2, since the share-aggregate projection itself
+carries no protocol field). Protocol split lives in
+`ConnectionInfo.protocol` (`types.ts`) — `undefined`/absent means V1 (every
+existing `StratumServer` connection), `'sv2'` is the only value
+`Sv2Server.connections()` ever produces.
+
+Noise-protocol trust anchor: a durable **authority keypair**
+(`sv2/authority.ts`, `loadOrCreateAuthorityKey()`) is generated once on
+first SV2 enable and persisted **encrypted** via `secretKey.ts`'s per-domain
+envelope under `instance_secrets` key `mining_sv2_authority_secret` — never
+rotated automatically (rotation invalidates every pinned client; an
+explicit future admin action, out of scope for v1). Its base58check-encoded
+x-only pubkey (`authorityPubBase58`) is the trust anchor a V2 client pins,
+published as the path component of the connection string:
+`stratum2+tcp://<host>:<port>/<base58-authority-pubkey>`. A fresh
+**static (session) key** is generated per `Sv2Server` boot and certified by
+the authority key (`issueCert`); the cert is re-issued on a background
+cadence (half its validity window) so a long-uptime instance's cert is
+always refreshed well before it actually expires.
+
+**Admin settings form (`AdminPoolSettingsForm.svelte`).** A third subgroup,
+"Next-generation miner connections (Stratum V2)," mirrors the ASIC
+subgroup's toggle + fade-in fields shape: enable switch, port (default
+`3335`), starting/fixed share difficulty (default `65536` — ASIC-oriented,
+same rationale as the ASIC listener's floor, since SV2's first real clients
+are expected to be ASIC firmware/proxies rather than low-power USB miners),
+and a version-rolling switch (off by default, server-wide — not yet
+per-channel/negotiated). `+page.server.ts`'s `?/save` action validates the
+port range and rejects a collision against **both** other ports (the main
+Stratum port and the ASIC port, since all three listeners can run at once)
+before persisting `mining_sv2_enabled`/`mining_sv2_port`/
+`mining_sv2_share_difficulty`/`mining_sv2_version_rolling` and calling
+`reconfigureMiningEngine()` — same pattern as every other settings field on
+this form.
+
+**Connection info (`MiningConnectionCard.svelte`, `/mining`).** When the
+admin has SV2 on, the per-user connection card grows a third address row —
+"Next-generation miners (Stratum V2)" — showing the full
+`stratum2+tcp://host:port/<authorityPubkey>` string via the same `CopyText`
+affordance as the V1 rows, gated behind the same loopback-honesty check
+(`isOpen`, i.e. `bind !== 'loopback'`) so a raw TCP endpoint is never shown
+as copyable when it can't actually be reached off-box. The authority pubkey
+flows server → client through `getUserMiningView()`'s `engine.sv2` field
+(`{port, authorityPubkey} | null`) — `null` whenever `mining_sv2_enabled` is
+off, so an instance that never turns SV2 on never even mints/persists an
+authority key (`loadOrCreateAuthorityKey()` is create-on-first-call, called
+lazily only when `settings.sv2Enabled` is true).
+
+**Known limitation (v1, SV2):** vardiff and version-rolling negotiation are
+NOT yet active on the SV2 listener — it ships static per-channel targets
+(the admin-configured starting difficulty is also the fixed difficulty) and
+the version-rolling switch only sets a server-wide advertisement, not a
+per-channel negotiated mask. Both are tracked as SV2 v2 follow-ups
+(`docs/SV2-IMPLEMENTATION-PLAN.md`), same "ships static, degrades gracefully"
+posture as the ASIC port's `mining.configure` limitation just below.
+
 **Known limitation (ASIC port, v0.2.42):** the Stratum server answers
 `mining.configure` (BIP-320 version-rolling negotiation) with error 20
 "unknown method". Real ASIC firmware — exactly the hardware the 3334 port
@@ -2678,6 +2742,10 @@ convention as the chain config):**
 | `mining_asic_port_enabled` | `true` | whether the second, high-floor Stratum listener for ASIC-class hardware runs (`cairn-pz8v5`) |
 | `mining_asic_stratum_port` | `3334` | Stratum V1 TCP listen port for the ASIC listener; admin save rejects a value equal to `mining_stratum_port` |
 | `mining_asic_share_difficulty` | `65536` | starting/floor share difficulty for the ASIC listener — high enough that an S19/S21-class machine doesn't swamp the share tracker |
+| `mining_sv2_enabled` | `false` | whether the native Stratum V2 listener runs (`cairn-qfez8.8`/`.9`) — off by default, purely additive on top of the two V1 listeners |
+| `mining_sv2_port` | `3335` | Stratum V2 TCP listen port; admin save rejects a value equal to `mining_stratum_port` OR `mining_asic_stratum_port` |
+| `mining_sv2_share_difficulty` | `65536` | fixed per-channel share difficulty for the SV2 listener — v1 ships static targets, no vardiff yet, so this is both the floor and the steady-state value |
+| `mining_sv2_version_rolling` | `false` | server-wide version-rolling advertisement for every SV2 channel — not yet per-channel negotiated |
 
 **Notification types + quiet-hours behavior.** Three `mining_*` entries in
 `NOTIFICATION_EVENT_TYPES` (`notifyTypes.ts`):
@@ -3361,7 +3429,10 @@ ASIC port — plus a line explaining big machines get a separate lane so
 their flood of work doesn't drown out the small ones; with the ASIC
 listener off it falls back to the single "Pool address" field as before.
 Neither address block renders while loopback-only, regardless of ASIC-port
-state.
+state. **SV2 row (`cairn-qfez8.9`):** when the admin has SV2 on, a third
+field appears — "Next-generation miners (Stratum V2)" — showing
+`stratum2+tcp://host:port/<authorityPubkey>`, same `CopyText` affordance,
+same loopback gating as the two V1 rows above.
 
 **Honest odds framing**: the odds panel computes solo probability from the user's own **measured**
 current hashrate against the network's current `getnetworkhashps` — not a
@@ -6102,6 +6173,45 @@ guarantee of the exact filename:
      immediately-and-silently-broken (some in-flight shares under the old
      id before the refresh should still land) and not indefinitely valid
      either.
+7. **Stratum V2 listener + admin surface (`cairn-qfez8.8`/`.9`/`.10`).** Run
+   the SV2 unit/integration suites: `npx vitest run src/lib/server/mining/sv2`
+   (covers `crypto`, `codec`, `frames`, `noise`, `authority`, `channels`,
+   `sv2Server`, plus `parity.test.ts`'s V1/V2 byte-identical block-assembly
+   assertion and `hardening.test.ts`) — all must be green before touching
+   the UI. The SV2 forced-solve regtest e2e now exists at
+   `sv2/forcedSolveSv2.e2e.test.ts` (Phase 5, `docs/SV2-IMPLEMENTATION-PLAN.md`,
+   bead `cairn-qfez8.10`) — same shape as `../forcedSolve.e2e.test.ts`'s
+   `describe.skipIf(!BITCOIND_AVAILABLE || !PORT_AVAILABLE)` gate and hermetic
+   port allocation via `scripts/qa/mining-regtest-node.mjs`, but drives the
+   engine directly in-process (no `--experimental-transform-types` child-process
+   bootstrap needed). One regtest node + one `MiningPool` with both the V1
+   standard listener and the SV2 listener enabled covers three cases: (a) an
+   SV2 extended channel solving a real regtest block end to end (Noise
+   handshake → solve → `submitblock` accepted → coinbase pays the winner's
+   payout script exactly), (b) an SV2 standard channel (server-computed
+   `merkle_root`) doing the same, and (c) V1 and V2 connected to the same pool
+   simultaneously, each solving in turn under its own identity, with a
+   stale-job SV2 share correctly rejected after a V1 solve invalidates it.
+   Unlike the V1 driver it does not assert a `mining_blocks` DB row — `MiningPool`
+   is deliberately DB-free, so that's left to the already-covered V1 e2e.
+   `parity.test.ts`'s byte-identical block-assembly assertion remains
+   additional coverage for "SV2 and V1 assemble the same block" at the unit
+   level. Then, at `/admin/mining`: enable
+   the "Next-generation miner connections (Stratum V2)" switch, save, and
+   confirm (a) the engine reconfigures without a fatal error, (b) "Listening
+   on" grows a third port, (c) reloading the page shows the toggle still on.
+   At `/mining` (a non-loopback bind), confirm the connection card grows a
+   third row with a `stratum2+tcp://host:port/<base58 pubkey>` string that
+   copies correctly, and that the row disappears again when the admin turns
+   SV2 back off or when the bind is loopback-only. Connect `sv2/testClient.ts`
+   (or a real SV2-speaking miner) and confirm its connection badges "V2" —
+   not "V1" — in the admin miners table, while an ordinary V1 connection on
+   the same page still badges "V1".
+   - **PASS:** SV2 off by default; enabling it never disturbs the two V1
+     listeners; the connection string round-trips (copy → paste → a test
+     client connects); the V1/V2 badge matches each connection's actual
+     protocol; the row/badge honestly disappear when SV2 or LAN exposure is
+     off.
 
 ---
 

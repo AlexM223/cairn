@@ -105,6 +105,17 @@ describe('getUserMiningView isolation', () => {
 		expect(view.odds).toBeNull(); // no Core → no network hashrate
 		expect(view.wallets.length).toBeGreaterThan(0);
 		expect(view.wallets[0]).toHaveProperty('eligible');
+		// SV2 off by default — no authority key minted, no connection info.
+		expect(view.engine.sv2).toBeNull();
+	});
+
+	it('surfaces the SV2 connection info once the admin enables it (cairn-qfez8.9)', async () => {
+		setSetting('mining_sv2_enabled', 'true');
+		const view = await getUserMiningView(alice);
+		expect(view.engine.sv2).not.toBeNull();
+		expect(view.engine.sv2!.port).toBe(3335); // DEFAULTS.sv2Port
+		expect(typeof view.engine.sv2!.authorityPubkey).toBe('string');
+		expect(view.engine.sv2!.authorityPubkey.length).toBeGreaterThan(0);
 	});
 
 	it('hides connection once a previously-enabled user disables mining, but keeps earnings (cairn-p10q)', async () => {
@@ -151,5 +162,11 @@ describe('getAdminMiningView', () => {
 		expect(view.blocks.map((b) => b.height)).toContain(840000);
 		expect(view.settings).toHaveProperty('poolTag');
 		expect(view.engine).toHaveProperty('coreRpc');
+		// cairn-qfez8.9: SV2 settings surfaced (off by default), and every
+		// miner row carries a protocol badge — 'v1' here since no live SV2
+		// socket connection exists for these share-only test fixtures.
+		expect(view.settings.sv2Enabled).toBe(false);
+		expect(view.settings.sv2Port).toBe(3335);
+		for (const m of view.miners) expect(m.protocol).toBe('v1');
 	});
 });

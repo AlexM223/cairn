@@ -10,7 +10,7 @@
 	 */
 	import { enhance } from '$app/forms';
 	import Term from '$lib/components/Term.svelte';
-	import { STRATUM_TIP } from '$lib/termGlosses';
+	import { STRATUM_TIP, STRATUM_V2_TIP } from '$lib/termGlosses';
 	import type { AdminMiningSettingsView, MiningBind } from './adminMiningView';
 
 	let {
@@ -46,6 +46,14 @@
 	let asicStratumPort = $state(settings.asicStratumPort);
 	// svelte-ignore state_referenced_locally
 	let asicShareDifficulty = $state(settings.asicShareDifficulty);
+	// svelte-ignore state_referenced_locally
+	let sv2Enabled = $state(settings.sv2Enabled);
+	// svelte-ignore state_referenced_locally
+	let sv2Port = $state(settings.sv2Port);
+	// svelte-ignore state_referenced_locally
+	let sv2ShareDifficulty = $state(settings.sv2ShareDifficulty);
+	// svelte-ignore state_referenced_locally
+	let sv2VersionRolling = $state(settings.sv2VersionRolling);
 
 	let saving = $state(false);
 
@@ -217,6 +225,79 @@
 					<span class="hint">Higher than the main port's, so a fast machine doesn't flood shares.</span>
 				</div>
 			</div>
+		{/if}
+	</div>
+
+	<div class="subgroup">
+		<span class="subgroup-title">Next-generation miner connections (Stratum V2)</span>
+
+		<label class="switch-row">
+			<input
+				type="checkbox"
+				name="sv2Enabled"
+				bind:checked={sv2Enabled}
+				role="switch"
+				aria-checked={sv2Enabled}
+			/>
+			<span class="switch-track" class:on={sv2Enabled}><span class="switch-knob"></span></span>
+			<span class="switch-text">Enable <Term tip={STRATUM_V2_TIP}>Stratum V2</Term></span>
+		</label>
+
+		<p class="hint">
+			Encrypted and verified — miners that speak this newer protocol can confirm they're really
+			talking to your server. Off by default; existing miners keep working either way.
+		</p>
+
+		{#if sv2Enabled}
+			<div class="row-fields fade-in">
+				<div class="field port-field">
+					<label class="label" for="sv2Port">Stratum V2 port</label>
+					<input
+						class="input mono"
+						id="sv2Port"
+						name="sv2Port"
+						type="number"
+						min="1"
+						max="65535"
+						bind:value={sv2Port}
+					/>
+				</div>
+				<div class="field">
+					<label class="label" for="sv2ShareDifficulty">Starting difficulty</label>
+					<input
+						class="input mono"
+						id="sv2ShareDifficulty"
+						name="sv2ShareDifficulty"
+						type="number"
+						min="0.001"
+						step="0.001"
+						bind:value={sv2ShareDifficulty}
+					/>
+					<span class="hint">Fixed for now — this listener doesn't auto-adjust difficulty yet.</span>
+				</div>
+			</div>
+
+			<label class="switch-row">
+				<input
+					type="checkbox"
+					name="sv2VersionRolling"
+					bind:checked={sv2VersionRolling}
+					role="switch"
+					aria-checked={sv2VersionRolling}
+				/>
+				<span class="switch-track" class:on={sv2VersionRolling}><span class="switch-knob"></span></span>
+				<span class="switch-text">Allow version rolling</span>
+			</label>
+		{:else}
+			<!-- Keep the fields present-but-hidden (not removed) so a submit while
+			     collapsed still posts the last-known values, matching the ASIC
+			     subgroup's fade-in/hide pattern above — nothing to persist here
+			     since the inputs simply don't render; the server keeps the prior
+			     stored value via readMiningSettings' unset-falls-back-to-DEFAULTS
+			     rule, and the hidden inputs below preserve the operator's last
+			     edited values across a re-toggle within this session. -->
+			<input type="hidden" name="sv2Port" value={sv2Port} />
+			<input type="hidden" name="sv2ShareDifficulty" value={sv2ShareDifficulty} />
 		{/if}
 	</div>
 

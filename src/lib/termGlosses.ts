@@ -32,6 +32,10 @@ export const TIMECHAIN_TIP =
 export const STRATUM_TIP =
 	'Stratum is the protocol miners speak to a pool — it hands out work and collects the shares they find.';
 
+// Admin > Mining > Stratum V2 section (cairn-qfez8.9).
+export const STRATUM_V2_TIP =
+	'Stratum V2 is a newer version of the mining protocol. The connection is encrypted, and your miner can verify it is really talking to this server — not an impersonator.';
+
 // Explorer de-jargon pass (UX-REDESIGN-SPEC.md §2.5 + §4 glossary, cairn-gt05.4).
 
 // The raw fee-rate unit, kept on the surface beside a plain-language time via

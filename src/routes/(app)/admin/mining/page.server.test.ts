@@ -146,7 +146,11 @@ describe('admin/mining ?/save — validation (admin caller)', () => {
 				poolTag: 'Heartwood',
 				asicPortEnabled: 'on',
 				asicStratumPort: '3334',
-				asicShareDifficulty: '65536'
+				asicShareDifficulty: '65536',
+				sv2Enabled: 'on',
+				sv2Port: '3335',
+				sv2ShareDifficulty: '65536',
+				sv2VersionRolling: 'on'
 			})
 		);
 		expect(res).toMatchObject({ saved: true });
@@ -160,6 +164,10 @@ describe('admin/mining ?/save — validation (admin caller)', () => {
 		expect(setSetting).toHaveBeenCalledWith('mining_asic_port_enabled', 'true');
 		expect(setSetting).toHaveBeenCalledWith('mining_asic_stratum_port', '3334');
 		expect(setSetting).toHaveBeenCalledWith('mining_asic_share_difficulty', '65536');
+		expect(setSetting).toHaveBeenCalledWith('mining_sv2_enabled', 'true');
+		expect(setSetting).toHaveBeenCalledWith('mining_sv2_port', '3335');
+		expect(setSetting).toHaveBeenCalledWith('mining_sv2_share_difficulty', '65536');
+		expect(setSetting).toHaveBeenCalledWith('mining_sv2_version_rolling', 'true');
 		expect(reconfigureMiningEngine).toHaveBeenCalledOnce();
 	});
 });
@@ -174,7 +182,9 @@ describe('admin/mining ?/save — ASIC port validation (cairn-pz8v5)', () => {
 		poolTag: 'Heartwood',
 		asicPortEnabled: 'on',
 		asicStratumPort: '3334',
-		asicShareDifficulty: '65536'
+		asicShareDifficulty: '65536',
+		sv2Port: '3335',
+		sv2ShareDifficulty: '65536'
 	};
 
 	it('rejects an ASIC port equal to the main Stratum port', async () => {
@@ -204,5 +214,66 @@ describe('admin/mining ?/save — ASIC port validation (cairn-pz8v5)', () => {
 		expect(setSetting).toHaveBeenCalledWith('mining_asic_port_enabled', 'false');
 		expect(setSetting).toHaveBeenCalledWith('mining_asic_stratum_port', '3334');
 		expect(setSetting).toHaveBeenCalledWith('mining_asic_share_difficulty', '65536');
+	});
+});
+
+describe('admin/mining ?/save — Stratum V2 validation (cairn-qfez8.9)', () => {
+	const BASE = {
+		enabled: 'on',
+		bind: 'loopback',
+		port: '3333',
+		shareDifficulty: '1',
+		vardiffTargetPerMin: '10',
+		poolTag: 'Heartwood',
+		asicPortEnabled: 'on',
+		asicStratumPort: '3334',
+		asicShareDifficulty: '65536',
+		sv2Enabled: 'on',
+		sv2Port: '3335',
+		sv2ShareDifficulty: '65536'
+	};
+
+	it('rejects an out-of-range SV2 port without persisting anything', async () => {
+		const res = await actions.save(makeEvent(ADMIN, { ...BASE, sv2Port: '70000' }));
+		expect(res).toMatchObject({ status: 400 });
+		expect(setSetting).not.toHaveBeenCalled();
+		expect(reconfigureMiningEngine).not.toHaveBeenCalled();
+	});
+
+	it('rejects an SV2 port equal to the main Stratum port', async () => {
+		const res = await actions.save(makeEvent(ADMIN, { ...BASE, sv2Port: '3333' }));
+		expect(res).toMatchObject({ status: 400 });
+		expect(setSetting).not.toHaveBeenCalled();
+	});
+
+	it('rejects an SV2 port equal to the big-machine (ASIC) port', async () => {
+		const res = await actions.save(makeEvent(ADMIN, { ...BASE, sv2Port: '3334' }));
+		expect(res).toMatchObject({ status: 400 });
+		expect(setSetting).not.toHaveBeenCalled();
+	});
+
+	it('rejects a non-positive SV2 share difficulty', async () => {
+		const res = await actions.save(makeEvent(ADMIN, { ...BASE, sv2ShareDifficulty: '0' }));
+		expect(res).toMatchObject({ status: 400 });
+		expect(setSetting).not.toHaveBeenCalled();
+	});
+
+	it('persists sv2Enabled=false when the switch is off (checkbox absent)', async () => {
+		const fields = { ...BASE };
+		delete (fields as Record<string, string>).sv2Enabled;
+		const res = await actions.save(makeEvent(ADMIN, fields));
+		expect(res).toMatchObject({ saved: true });
+		expect(setSetting).toHaveBeenCalledWith('mining_sv2_enabled', 'false');
+		expect(setSetting).toHaveBeenCalledWith('mining_sv2_port', '3335');
+		expect(setSetting).toHaveBeenCalledWith('mining_sv2_share_difficulty', '65536');
+	});
+
+	it('persists sv2Enabled=true with the configured port/difficulty', async () => {
+		const res = await actions.save(makeEvent(ADMIN, BASE));
+		expect(res).toMatchObject({ saved: true });
+		expect(setSetting).toHaveBeenCalledWith('mining_sv2_enabled', 'true');
+		expect(setSetting).toHaveBeenCalledWith('mining_sv2_port', '3335');
+		expect(setSetting).toHaveBeenCalledWith('mining_sv2_share_difficulty', '65536');
+		expect(setSetting).toHaveBeenCalledWith('mining_sv2_version_rolling', 'false');
 	});
 });

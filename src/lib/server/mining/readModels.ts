@@ -19,6 +19,7 @@ import {
 	miningFatalErrors,
 	getNetworkHashps
 } from './index';
+import { authorityPubBase58, loadOrCreateAuthorityKey } from './sv2/authority';
 import { getChain } from '../chain';
 import { coinbaseMaturity } from '$lib/shared/coinbase';
 import { soloOdds } from '$lib/shared/hashrate';
@@ -43,6 +44,13 @@ export interface UserMiningView {
 		 * uses this to steer big machines to the right port in plain language.
 		 */
 		asicPort: { port: number; shareDifficulty: number } | null;
+		/**
+		 * The native Stratum V2 listener (cairn-qfez8.9), null when the admin
+		 * hasn't turned it on. `authorityPubkey` is the base58check-encoded
+		 * trust anchor (`authorityPubBase58`) a V2 client pins — published as
+		 * the path component of `stratum2+tcp://host:port/<pubkey>`.
+		 */
+		sv2: { port: number; authorityPubkey: string } | null;
 	};
 	connection: { miningId: string; workerFormat: string; password: 'x' } | null;
 	payout: { walletId: number; walletName: string; address: string } | null;
@@ -247,6 +255,12 @@ export async function getUserMiningView(userId: number): Promise<UserMiningView>
 			shareDifficulty: settings.shareDifficulty,
 			asicPort: settings.asicPortEnabled
 				? { port: settings.asicStratumPort, shareDifficulty: settings.asicShareDifficulty }
+				: null,
+			// Only touch the authority-key store when SV2 is actually on — an
+			// instance that never enables it should never mint/persist a key
+			// (loadOrCreateAuthorityKey() creates-on-first-call).
+			sv2: settings.sv2Enabled
+				? { port: settings.sv2Port, authorityPubkey: authorityPubBase58(loadOrCreateAuthorityKey().xonly32) }
 				: null
 		},
 		connection,
@@ -285,6 +299,10 @@ export interface AdminMiningView {
 		difficulty: number;
 		lastShareAgoSec: number | null;
 		online: boolean;
+		/** Which protocol this connection speaks. 'v1' when unknown (a share-
+		 *  aggregate row with no live socket match, or a V1 connection —
+		 *  ConnectionInfo.protocol is undefined for V1). */
+		protocol: 'v1' | 'sv2';
 	}[];
 	userBreakdown: {
 		userId: number;
@@ -313,6 +331,10 @@ export interface AdminMiningView {
 		asicPortEnabled: boolean;
 		asicStratumPort: number;
 		asicShareDifficulty: number;
+		sv2Enabled: boolean;
+		sv2Port: number;
+		sv2ShareDifficulty: number;
+		sv2VersionRolling: boolean;
 	};
 }
 
@@ -343,6 +365,15 @@ export async function getAdminMiningView(): Promise<AdminMiningView> {
 	const engineStatus = engineDisplayStatus();
 	const lastJobAt = status.engine?.lastJobAt ?? null;
 
+	// Per-connection protocol lookup (cairn-qfez8.9 badges): status.engine.connections
+	// is the live socket-level projection (carries ConnectionInfo.protocol);
+	// liveMiners below is the share-aggregate projection (no protocol field of
+	// its own), so key-match the two by (userId, worker) to badge each miner
+	// row without threading protocol through the aggregates module.
+	const liveConnections = status.engine?.connections ?? [];
+	const protocolByKey = new Map<string, 'v1' | 'sv2'>();
+	for (const c of liveConnections) protocolByKey.set(`${c.userId}/${c.worker}`, c.protocol ?? 'v1');
+
 	// live miners + names
 	const liveMiners = agg.liveAllMiners();
 	const names = userNames([
@@ -359,7 +390,8 @@ export async function getAdminMiningView(): Promise<AdminMiningView> {
 		hashrate: m.hashrate.now,
 		difficulty: m.currentDiff,
 		lastShareAgoSec: m.lastShareAtMs === null ? null : Math.round((now - m.lastShareAtMs) / 1000),
-		online: m.lastShareAtMs !== null && now - m.lastShareAtMs < ONLINE_THRESHOLD_MS
+		online: m.lastShareAtMs !== null && now - m.lastShareAtMs < ONLINE_THRESHOLD_MS,
+		protocol: protocolByKey.get(`${m.userId}/${m.worker}`) ?? 'v1'
 	}));
 
 	const poolHashrateNow = liveMiners.reduce((a, m) => a + m.hashrate.now, 0);
@@ -382,7 +414,7 @@ export async function getAdminMiningView(): Promise<AdminMiningView> {
 	}));
 
 	// connectedUsers = distinct users with a live Stratum connection
-	const connections = status.engine?.connections ?? [];
+	const connections = liveConnections;
 	const connectedUsers = new Set(connections.map((c) => c.userId)).size;
 
 	// hashrate series (pool rows, last 24h)
@@ -447,7 +479,11 @@ export async function getAdminMiningView(): Promise<AdminMiningView> {
 			poolTag: settings.poolTag,
 			asicPortEnabled: settings.asicPortEnabled,
 			asicStratumPort: settings.asicStratumPort,
-			asicShareDifficulty: settings.asicShareDifficulty
+			asicShareDifficulty: settings.asicShareDifficulty,
+			sv2Enabled: settings.sv2Enabled,
+			sv2Port: settings.sv2Port,
+			sv2ShareDifficulty: settings.sv2ShareDifficulty,
+			sv2VersionRolling: settings.sv2VersionRolling
 		}
 	};
 }

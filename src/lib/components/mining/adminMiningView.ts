@@ -61,6 +61,8 @@ export interface AdminMinerRow {
 	difficulty: number;
 	lastShareAgoSec: number | null;
 	online: boolean;
+	/** Which Stratum protocol this connection speaks (cairn-qfez8.9 badges). */
+	protocol: 'v1' | 'sv2';
 }
 
 export interface AdminUserBreakdownRow {
@@ -96,6 +98,12 @@ export interface AdminMiningSettingsView {
 	asicPortEnabled: boolean;
 	asicStratumPort: number;
 	asicShareDifficulty: number;
+	/** Native Stratum V2 listener (cairn-qfez8.9). Off by default. */
+	sv2Enabled: boolean;
+	sv2Port: number;
+	sv2ShareDifficulty: number;
+	/** Server-wide version-rolling advertisement for every SV2 channel. */
+	sv2VersionRolling: boolean;
 }
 
 export interface AdminMiningView {
@@ -164,6 +172,10 @@ export const DEGRADED_ADMIN_MINING_VIEW: AdminMiningView = {
 		poolTag: 'Heartwood',
 		asicPortEnabled: true,
 		asicStratumPort: 3334,
-		asicShareDifficulty: 65536
+		asicShareDifficulty: 65536,
+		sv2Enabled: false,
+		sv2Port: 3335,
+		sv2ShareDifficulty: 65536,
+		sv2VersionRolling: false
 	}
 };

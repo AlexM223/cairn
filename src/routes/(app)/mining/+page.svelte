@@ -38,6 +38,8 @@
 			shareDifficulty: number;
 			/** High-difficulty-floor listener for ASIC-class hardware, null when disabled. */
 			asicPort: { port: number; shareDifficulty: number } | null;
+			/** Native Stratum V2 listener, null when the admin hasn't enabled it. */
+			sv2: { port: number; authorityPubkey: string } | null;
 		};
 		connection: { miningId: string; workerFormat: string; password: string } | null;
 		payout: { walletId: number; walletName: string; address: string } | null;
@@ -218,6 +220,7 @@
 					stratumPort={view.engine.stratumPort}
 					bind={view.engine.bind}
 					asicPort={view.engine.asicPort}
+					sv2={view.engine.sv2}
 					hasWorkers={view.workers.length > 0}
 				/>
 			</div>

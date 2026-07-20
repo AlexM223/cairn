@@ -29,6 +29,7 @@
 		stratumPort,
 		bind,
 		asicPort,
+		sv2,
 		hasWorkers
 	}: {
 		miningId: string;
@@ -39,6 +40,8 @@
 		bind: 'loopback' | 'lan' | 'all';
 		/** Second (ASIC-class) high-floor listener, null when the admin hasn't enabled it. */
 		asicPort: { port: number; shareDifficulty: number } | null;
+		/** Native Stratum V2 listener, null when the admin hasn't enabled it (cairn-qfez8.9). */
+		sv2: { port: number; authorityPubkey: string } | null;
 		hasWorkers: boolean;
 	} = $props();
 
@@ -49,6 +52,12 @@
 
 	function address(port: number): string {
 		return `stratum+tcp://${host}:${port}`;
+	}
+
+	/** stratum2+tcp://host:port/<base58-authority-pubkey> (docs/SV2-IMPLEMENTATION-PLAN.md §a.5) —
+	 *  the pubkey is the trust anchor a V2 miner pins, so it rides in the URL itself. */
+	function sv2Address(port: number, authorityPubkey: string): string {
+		return `stratum2+tcp://${host}:${port}/${authorityPubkey}`;
 	}
 
 	let confirmingRegenerate = $state(false);
@@ -110,6 +119,18 @@
 				<div class="field">
 					<dt>Pool address</dt>
 					<dd><CopyText value={address(stratumPort)} mono /></dd>
+				</div>
+			{/if}
+			{#if sv2}
+				<div class="field">
+					<dt>Next-generation miners (Stratum V2)</dt>
+					<dd>
+						<CopyText value={sv2Address(sv2.port, sv2.authorityPubkey)} mono />
+						<span class="field-hint">
+							Encrypted and verified — this address lets a V2 miner confirm it's really talking to
+							this server.
+						</span>
+					</dd>
 				</div>
 			{/if}
 		{/if}
