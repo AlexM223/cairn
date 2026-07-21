@@ -338,3 +338,49 @@ Fourteen pen-strokes clear the entire non-federation decision backlog. Items D1�
 manifesto edit pass; D12–D14 are bead/process actions. After this sheet is annotated, the
 per-topic ratification sections in the amendments doc and the decision brief are historical —
 this sheet is the record.
+
+---
+
+## Addendum — 2026-07-20: P0 UX simplification (4-section nav, one settings page)
+
+Full spec: `docs/UX-SIMPLIFICATION-SPEC.md` (canonical, supersedes `UX-REDESIGN-SPEC.md` §2.7 nav
+decision). Two items below the fold on this ballot's original scope, recorded here rather than as
+new D-numbers since they were adjudicated directly by Alex rather than run through the
+recommend/ratify format above.
+
+### D15. 4-section primary nav — RATIFIED
+
+**Decision:** Alex ratified the 4-section nav model: Home / Wallets / Mining / Explorer, with
+Mining and Explorer conditionally shown per the resolved instance feature flags (`flags.mining !==
+false`, `flags.explorer !== false`). Activity drops out of primary nav (kept as a route, surfaced
+via Home's "Recent activity" block + account menu). This **supersedes** the `UX-REDESIGN-SPEC.md`
+§2.7 nav decision (which specified Home / Wallets / Activity with Explorer parked in the account
+menu). Gear icon (→ `/settings`) is permanent chrome, not a nav slot.
+
+**Status: RATIFIED — ACCEPT.** Encoded verbatim as adjudicated decision #1 in
+`UX-SIMPLIFICATION-SPEC.md` §0. No further confirmation needed; implementation proceeds per the
+wave plan in that spec (§12).
+
+### D16. Explorer fresh-install default flip (OFF → ON) — PENDING ALEX CONFIRMATION
+
+**Question:** Should the `explorer` feature flag's fresh-install default change from OFF to ON
+(mining stays OFF)?
+
+**Status as shipped in the spec: adjudicated as ACCEPT, but flagged PENDING ALEX CONFIRMATION** —
+this one was folded into the same simplification pass on the orchestrator's recommendation rather
+than sent back through a separate ballot cycle, because it is small, scoped, and fully reversible.
+Alex should explicitly confirm or reject before the implementation wave (W3, `UX-SIMPLIFICATION-
+SPEC.md` §12) that flips the migration ships.
+
+**Rationale for the default:** the own-node block explorer needs zero operator configuration and
+is the clearest sovereignty payoff in the product (manifesto framing) — currently invisible on
+every fresh install behind a flag most operators never discover, now doubly so since the flag-grid
+UI that could toggle it is being deleted. Mining stays OFF because it requires a stratum port and
+hardware setup a brand-new saver shouldn't meet before adding a wallet.
+
+**Guardrails already encoded (`UX-SIMPLIFICATION-SPEC.md` R14):** the migration must be scoped to
+fresh installs only — any existing install with a stored `explorer` row (either value) is left
+untouched; only a brand-new database receives the ON default. Reversible at any time via the new
+Settings → Explorer toggle.
+
+**DECISION (D16): ACCEPT / REJECT / MODIFY — ______**
