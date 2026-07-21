@@ -353,7 +353,10 @@ export function openDb(dbPath) {
 // ---------------------------------------------------------------- HTTP
 
 /**
- * Authenticated GET. Returns { status, text }.
+ * Authenticated GET. Returns { status, text, headers } — `headers` is a
+ * plain lowercase-keyed object (just enough to read e.g. `location` off a
+ * manual-mode 3xx; not a full Headers object) so redirect-stub assertions
+ * (route-crawl.mjs's REDIRECT_ROUTES) don't need their own fetch plumbing.
  * @param {string} url
  * @param {string} cookie
  */
@@ -363,5 +366,6 @@ export async function getWithCookie(url, cookie) {
 		redirect: 'manual'
 	});
 	const text = await res.text().catch(() => '');
-	return { status: res.status, text };
+	const headers = { location: res.headers.get('location') ?? undefined };
+	return { status: res.status, text, headers };
 }

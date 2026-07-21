@@ -17,6 +17,12 @@
 //   6. Authenticated GET-crawl a fixed route list. Assert every response is
 //      200, body has no "Internal Error" / raw JS stack trace, and
 //      GET /api/health is 200.
+//   6a. GET-crawl the deleted-page redirect stubs (`/admin/settings`,
+//      `/admin/feature-flags` — UX Simplification Wave 2, cairn-6c91u.2,
+//      docs/UX-SIMPLIFICATION-SPEC.md §5/§9) with redirect:'manual' and
+//      assert each is a 307 to its documented `/settings#...` anchor target,
+//      not just "not a 5xx" — a page-that-used-to-render silently turning
+//      into an unasserted redirect would otherwise slip through.
 //   7. Kill the electrum shim (simulating the node going unreachable) and
 //      re-crawl a subset of routes. Assert still no 5xx, health still 200,
 //      and the chain-down copy string appears on /.
@@ -46,8 +52,37 @@ const CHAIN_DOWN_COPY = "Can't reach your Bitcoin node";
 const STACK_MARKERS = ['Internal Error'];
 const STACK_FRAME_RE = /\n\s*at\s+\S+\s*\(?[^\s()]+:\d+:\d+\)?/;
 
-const AUTHED_ROUTES = ['/', '/wallets', '/wallets/new', '/settings', '/admin', '/admin/settings', '/explorer'];
+// docs/UX-SIMPLIFICATION-SPEC.md §2/§9: primary nav is now dynamic — Mining
+// and Explorer only join it when their instance flag resolves true — but the
+// routes underneath are always the right shape for an admin session to hit
+// directly regardless of nav visibility, so they stay in this fixed crawl
+// list. `/explorer/tx/[txid]` is exempt from the explorer flag app-wide
+// (spec §9 R6, src/routes/(app)/explorer/+layout.server.ts) — it's crawled
+// here on a random, guaranteed-nonexistent txid purely to prove the route
+// itself renders a graceful "not found" page rather than a 5xx, independent
+// of any real transaction data (this throwaway instance seeds no wallets).
+const NONEXISTENT_TXID = 'ff'.repeat(32);
+const AUTHED_ROUTES = [
+	'/',
+	'/wallets',
+	'/wallets/new',
+	'/settings',
+	'/admin',
+	'/explorer',
+	`/explorer/tx/${NONEXISTENT_TXID}`
+];
 const POST_OUTAGE_ROUTES = ['/', '/wallets', '/explorer'];
+
+// docs/UX-SIMPLIFICATION-SPEC.md §5.3/§9: both pages were deleted outright —
+// `/admin/feature-flags` (the 25-row toggle grid) and `/admin/settings` (node
+// connection / registration / factory reset) — and replaced with tiny
+// `+page.server.ts` redirect(307, ...) stubs so old bookmarks and
+// notification/health deep links still resolve, into the one merged
+// `/settings` page's admin groups.
+const REDIRECT_ROUTES = [
+	{ from: '/admin/settings', toPrefix: '/settings#node-connection' },
+	{ from: '/admin/feature-flags', toPrefix: '/settings#mining' }
+];
 
 const failures = [];
 function assertTrue(cond, msg) {
@@ -67,6 +102,18 @@ async function crawl(base, cookie, routes, label) {
 		console.log(`[route-crawl] ${label} GET ${route} -> ${status}`);
 		assertTrue(status < 500, `${label} GET ${route} is not a 5xx (got ${status})`);
 		assertTrue(!bodyLooksBroken(text), `${label} GET ${route} body has no "Internal Error" / raw stack trace`);
+	}
+}
+
+async function crawlRedirects(base, cookie, routes) {
+	for (const { from, toPrefix } of routes) {
+		const { status, headers } = await getWithCookie(`${base}${from}`, cookie);
+		console.log(`[route-crawl] redirect-stub GET ${from} -> ${status} ${headers?.location ?? ''}`);
+		assertTrue(status === 307, `redirect-stub GET ${from} is a 307 (got ${status})`);
+		assertTrue(
+			typeof headers?.location === 'string' && headers.location.startsWith(toPrefix),
+			`redirect-stub GET ${from} Location starts with "${toPrefix}" (got ${headers?.location})`
+		);
 	}
 }
 
@@ -107,6 +154,9 @@ async function main() {
 
 		console.log('[route-crawl] --- authenticated crawl (chain up) ---');
 		await crawl(app.base, session.cookie, AUTHED_ROUTES, 'chain-up');
+
+		console.log('[route-crawl] --- deleted-page redirect stubs ---');
+		await crawlRedirects(app.base, session.cookie, REDIRECT_ROUTES);
 
 		const health = await getWithCookie(`${app.base}/api/health`, session.cookie);
 		assertTrue(health.status === 200, `GET /api/health is 200 (got ${health.status})`);

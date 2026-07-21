@@ -929,8 +929,8 @@ try/caught (none throw into the sequence):
    hint for the mining engine's network-mismatch guard, see "Mining engine"
    below) are OVERWRITTEN from env whenever `core_rpc_provisioned_by` is
    unset or already `'umbrel-env'`; any other value (`'manual'` — stamped by
-   the Admin → Settings save action on a hand-entered Core RPC config, or by
-   the JSON `/api/admin/settings` endpoint; or `'umbrel-detect'` — the Wave B
+   `/settings`'s admin Node-connection save action on a hand-entered Core RPC
+   config, or by the JSON `/api/admin/settings` endpoint; or `'umbrel-detect'` — the Wave B
    assisted-connect flow below) blocks the overwrite forever, no matter what
    env says (manual > auto-env > detect > none). This is what makes a
    rotated Umbrel-Bitcoin-app RPC password (e.g. after reinstalling the app)
@@ -2185,18 +2185,26 @@ This deliberately never gates the read path a cosigner already has
 (`getViewableMultisig`) — toggling back to solo must not silently revoke
 access already granted.
 
-`admin/users/[id]`'s `+page.server.ts` (the per-user feature-override
-detail page) now also calls `assertTeamMode()` in both `load()` and the
-`setOverride` action (`cairn-7xlf`, fixed) — it had been missing entirely,
-so `/admin/users` 404'd in solo mode while `/admin/users/2` kept rendering
-the full override UI and its action kept writing, contradicting the admin
-layout's own doc comment that every route under the Users/Invites tabs
-404s via `assertTeamMode()`. `admin/feature-flags`'s lead copy and its
-per-flag "N user overrides" badge now also check `data.instanceMode ===
-'team'` before linking to `/admin/users` (`cairn-369e`) — solo mode has no
-reachable Users page to link to, so the badge renders as plain text and the
-"set a per-user exception" sentence is omitted rather than dead-ending in a
-404.
+`admin/users/[id]`'s `+page.server.ts` (the per-user detail page) still
+calls `assertTeamMode()` in both `load()` and its remaining actions
+(`cairn-7xlf`, fixed) — it had been missing entirely, so `/admin/users`
+404'd in solo mode while `/admin/users/2` kept rendering, contradicting the
+"every route under the Users/Invites tabs 404s via `assertTeamMode()`"
+invariant.
+
+**The per-user feature-flag override grid is gone (UX Simplification Wave 2,
+`cairn-6c91u.2`, `docs/UX-SIMPLIFICATION-SPEC.md` §3.1).** `admin/users/[id]`
+no longer renders the tri-state per-flag override table or its "N user
+overrides" badge — that was the per-user half of the 25-row flags grid, the
+same "creator got lost" surface the global `/admin/feature-flags` page was.
+**The engine underneath is untouched**: `user_feature_flags` (table),
+`resolve.ts`'s per-user branch, and `isFeatureEnabled()`'s per-user-wins-
+either-direction resolution all still run — any override row written before
+the grid was removed (or via the API/DB path since) is still honored, it's
+just no longer settable or visible from this page. `/admin/feature-flags`
+itself is now a `+page.server.ts` 307 redirect stub to `/settings#mining`
+(the grid's routes/actions are deleted, not merely hidden) — see §9's route
+map and §11's QA-gate notes.
 
 ### User & account deletion invariants (`userDeletion.ts`)
 
@@ -2429,10 +2437,18 @@ typed as the **literal** `true`, not `boolean` — a flag that tried to
 default off would fail to type-check, making "no flag ships pre-disabled" a
 compiler guarantee. 25 flags today: `send`, `multisig_create`,
 `coin_control`, `csv_export`, `address_book`, `qr_scan`, `stateless_signer`,
-`wallet_config_export/import`, `explorer` (defaults on, but fresh installs
-get it toggled off as a newcomer-declutter default via
-`explorerDefaultMigration.ts` — NOT an admin restriction, hence its
-differently-worded `userMessage`; every `/explorer/**` link app-wide —
+`wallet_config_export/import`, `explorer` (defaults on; **fresh installs now
+also default it on** via `explorerDefaultMigration.ts`, flipped from the
+original off-by-default in UX Simplification Wave 3 (`cairn-6c91u.3`,
+`docs/UX-SIMPLIFICATION-SPEC.md` §6, decision recorded pending Alex
+confirmation, reversible any time via Settings → Explorer) — the own-node
+explorer is a zero-config sovereignty payoff, so the newcomer-declutter
+rationale flipped in its favor; a pre-existing install's own stored row
+(ON or OFF, from an earlier boot of this migration or an admin's own
+toggle) is never touched, only a genuinely user-less DB gets the new
+default. `explorer`'s `userMessage` still reads as an operator choice, not
+an error, hence its differently-worded copy; every `/explorer/**` link
+app-wide —
 multisig detail, send-sent pages, activity feed, wallet detail — degrades to
 plain non-interactive text via `svelte:element` when the flag is off rather
 than a dead link; `cairn-o90e` closed the last two pages (activity, wallet
@@ -2471,6 +2487,28 @@ On a disabled flag: logs a `warn` to `/admin/logs` (userId, flag, method,
 path — no secrets) and throws 403 with the flag's `userMessage` via
 `apiError()`. **Any new gated action must call this server-side** — client
 hiding alone is not enforcement.
+
+**Flag disposition — UI vs code-only (UX Simplification Wave 2,
+`cairn-6c91u.2`, `docs/UX-SIMPLIFICATION-SPEC.md` §3.2).** Only two of the 25
+flags have an admin-facing toggle at all: `mining` and `explorer` — plain
+ON/OFF switches in `/settings`'s admin-only Mining and Explorer groups
+(`#mining`/`#explorer` anchors), because they change what the product *is*
+for every user on the instance, a decision an operator legitimately makes.
+Both toggles write through the same `setGlobalFlag(key, enabled, adminId)`
+(`src/lib/server/featureFlags/admin.ts`) the old grid used, so
+`requireFeature`, nav visibility (`primaryNav()`, §9), and the mining
+Stratum listener all read the identical resolved value — flipping the
+Settings switch is byte-for-byte the same write the deleted grid page made.
+The other 23 flags (`send`, `multisig_create`, `coin_control`,
+`csv_export`, `address_book`, `qr_scan`, `stateless_signer`,
+`wallet_config_export/import`, `hw_trezor/ledger/coldcard/bitbox02/jade`,
+`notify_email/telegram/ntfy/nostr/webhook`, `announcement_banners`,
+`referral_links`, `batch_transactions`, `fee_bumping`, `tx_review`) are
+**code-only**: default ON, no admin UI anywhere, but still fully
+settable via the DB or an admin API token against the flag endpoints — no
+capability was removed, only the 25-row toggle-grid screen. `/admin/feature-
+flags` (the old grid) and the per-user override grid on `/admin/users/[id]`
+are both gone; see the note in §7 above and §9's route map.
 
 ### Notifications system (`notifications.ts`, `notifyTypes.ts`, `channels/`)
 
@@ -3090,20 +3128,62 @@ routes.
 
 **`(app)` — main authenticated shell.** Layout: `src/routes/(app)/+layout.svelte`.
 
-> **UX Phase 4 nav rewrite (`cairn-gt05.4`, move3/ux-polish) — read this first;
-> where the shell narrative below disagrees, Phase 4 wins.** Primary navigation
-> is now exactly **three destinations — Home / Wallets / Activity — identical on
-> the desktop rail/sidebar and the mobile tab row**, derived from
-> `src/lib/nav.ts` (`PRIMARY_NAV`, `accountMenuLinks()`, `isNavActive()` — unit
-> tested in `nav.test.ts`). Everything else reaches the app through the
-> **account menu** on the avatar: Explore the blockchain (`/explorer`,
-> flag-gated), Mining (flag-gated), Health (`/admin`, admin-only — the
-> Node→Health rename is complete in shell chrome), Settings, Notifications,
-> Sign out; the unread-notifications badge sits on the avatar. The duplicate
-> `<nav>`-landmark a11y bug is fixed: only the active breakpoint's nav is
-> exposed (inactive tiers are `display:none`, so exactly one navigation
-> landmark per rendered viewport). The active nav item is the only
-> accent-colored nav element.
+> **UX Simplification nav rewrite (epic `cairn-6c91u`, `docs/UX-SIMPLIFICATION-
+> SPEC.md` §2) — read this first; where the shell narrative below disagrees,
+> this wins, and it supersedes the older UX Phase 4 three-destination model
+> (`cairn-gt05.4`) described in `docs/UX-REDESIGN-SPEC.md` §2.7.** Primary
+> navigation is now a **dynamic 2–4-item builder**, identical on the desktop
+> rail/sidebar and the mobile tab row: `primaryNav({ flags })` in
+> `src/lib/nav.ts` always returns Home (`/`) and Wallets (`/wallets`), then
+> appends Mining (`/mining`) iff `flags.mining !== false` and Explorer
+> (`/explorer`) iff `flags.explorer !== false` — the exact predicate
+> `requireFeature()` resolves to, so a visible tab is always a reachable route
+> and vice versa (nav-visible ⇔ route-reachable is a load-bearing invariant,
+> spec R2/R5). Fresh installs (mining OFF, explorer ON) land on **Home /
+> Wallets / Explorer**; both instance flags off collapses to **Home /
+> Wallets** — calm, not broken, since Settings always carries both toggles
+> regardless of state (see below). Activity lost its nav slot to Mining/
+> Explorer but the route is not deleted: Home's dashboard carries an inline
+> "Recent activity" block with a "See all →" link to the full `/activity`
+> page, and the account menu keeps a Activity entry too — two reachability
+> paths cover the one freed slot.
+>
+> A gear icon — always present, `HWSidebar`'s rail bottom on desktop,
+> `MobileTopBar`'s top-right on mobile — links to `/settings` from every page.
+> The avatar/account menu (`accountMenuLinks()`, unit tested in
+> `nav.test.ts`) is now just **Activity, Health (admin-only, → `/admin`),
+> Settings** (Notifications/Terms/Sign out are rendered by the shell around
+> this list) — Explorer and Mining left the menu entirely since they're
+> primary nav items now, and Feature flags never had a menu entry to remove.
+> A feature the user has no access to is simply absent from the menu (not
+> shown disabled) — the server-side gate is the real boundary, hiding the
+> link is the courtesy. The duplicate `<nav>`-landmark a11y bug from the
+> Phase 4 era is unaffected by this rewrite: only the active breakpoint's nav
+> is exposed (inactive tiers are `display:none`). The active nav item is the
+> only accent-colored nav element.
+>
+> **Where everything else went (spec §4/§5).** There is no more persistent
+> admin tab strip and no more standalone `/admin/feature-flags` or
+> `/admin/settings` pages. `/settings` is now the **one** settings page:
+> personal groups (Account, Display, Security, Advanced, Danger zone) render
+> for every signed-in user; four admin-only groups append after them for
+> `user.isAdmin` — **Node connection** (moved verbatim from the old
+> `/admin/settings`, incl. the Umbrel assisted-connect card), **Mining**
+> (the instance ON/OFF toggle + a "Pool operator settings ›" link to
+> `/admin/mining`), **Explorer** (the instance ON/OFF toggle), and
+> **Instance** (registration mode, team-mode toggle, user agreement, and
+> link rows into the surviving `/admin/*` subpages, with **Factory reset** as
+> its last, red, typed-confirm row). Every migrated admin form action calls
+> `requireAdmin(event)` first since `/settings` sits outside any admin
+> layout guard. `/admin` itself stays as the **Health** hub — monitoring
+> only (status headline + Node/Backups/Storage/Users duty rows), no config
+> footer, no tab strip; the surviving admin subpages (`activity`, `users`,
+> `invites`, `mining`, `backup`, `notifications`, `announcements`,
+> `referral-settings`, `logs`) are reached contextually from Health's own
+> body rows and from Settings' Instance group, not from a permanent nav row.
+> `/admin/settings` and `/admin/feature-flags` are now tiny `+page.server.ts`
+> redirect stubs (307 → `/settings#node-connection` and `/settings#mining`
+> respectively) so old bookmarks and notification deep links still resolve.
 
 Wraps every authenticated page with:
 - Three shell tiers (`docs/DESKTOP-LAYOUT-DESIGN.md` is canonical; where this
@@ -3154,8 +3234,8 @@ Wraps every authenticated page with:
   its `'public'` default AND `chain_provisioned_by` unset, i.e. a fresh
   install nobody has touched) renders a calm neutral `.neutral`-variant
   banner ("Heartwood isn't connected to the Bitcoin network yet", admin-only
-  "Connect a node" link to `/admin/settings`, operator-facing copy for
-  non-admins) instead of red warning styling; any other unhealthy state
+  "Connect a node" link to `/settings#node-connection`, operator-facing copy
+  for non-admins) instead of red warning styling; any other unhealthy state
   (admin configured it, or Umbrel auto-connected, and it's now actually
   unreachable) keeps the original red "can't reach it" copy/styling. Fixed
   `cairn-7zjo` (`c90481f`/`85a24da`) — previously every unhealthy state used
@@ -3227,14 +3307,15 @@ Pages under `(app)`:
 | `mining/+page.svelte` | this user's own solo-mining dashboard (§ "Mining engine" above, § "Mining dashboard client" below) — flag-gated (`mining`), scoped entirely to the viewing user by `getUserMiningView` |
 | `recovery-setup/+page.svelte` | post-signup recovery/backup setup flow |
 | `welcome-aboard/+page.svelte` | 4-step guided first-run tour for invited crew (see §7 "Come aboard") — reached from the signup page's post-invite redirect through the agreement gate's `next=welcome-aboard` threading; sessionStorage-resumable (`_components/welcomeProgress.ts`) |
-| `settings/+page.svelte` | general settings — **UX Phase 3 (`cairn-gt05.3`)**: five named groups in order ACCOUNT / DISPLAY (Units + Fiat + Theme merged) / SECURITY (Recovery phrase ranked first, Passkeys, Devices & sessions) / ADVANCED (collapsed: API tokens, Contacts — rendered only when team mode is on (`settingsView.ts` `showContactsRow()`), Download my data, About) / DANGER ZONE (collapsed, red, one sentence + the existing typed-DELETE confirm — the 4-bullet caveat wall is gone). Presentational regroup only; form actions unchanged. |
+| `settings/+page.svelte` | **the one settings page (UX Simplification Wave 2, `cairn-6c91u.2`, spec §4)** — personal groups render for every signed-in user, in order: Account (`#set-account`: profile, password, notifications link), Display (`#set-display`: units/fiat/theme, unchanged from UX Phase 3), Security (`#set-security`: recovery, passkeys, devices, tokens, contacts when team mode), Advanced (`#set-advanced`, collapsed), Danger zone (`#set-danger`, collapsed, red, typed-DELETE). Four admin-only groups append after them, visible only for `user.isAdmin` and loaded only inside that guard in `+page.server.ts` (a non-admin's payload carries none of this): Node connection (`#node-connection` — moved verbatim from the deleted `/admin/settings`, incl. chain source, Electrum/Core RPC fields + Test connection, the Umbrel assisted-connect card, Tor/performance advanced fields), Mining (`#mining` — the instance ON/OFF toggle, writes the `mining` flag via `setGlobalFlag`; a "Pool operator settings ›" link to `/admin/mining` appears when on), Explorer (`#explorer` — the instance ON/OFF toggle, same `setGlobalFlag` path), Instance (`#instance`, collapsed — registration mode, team-mode toggle, user agreement editor, link rows to the surviving `/admin/*` subpages, and Factory reset as its last, red, typed-RESET-confirm row, `#factory-reset`). Every admin-group form action calls `requireAdmin(event)` first (personal actions keep `requireUser`) since this page has no admin-layout wrapper to lean on. |
 | `settings/contacts` | address book |
 | `settings/devices` | linked/trusted devices |
 | `settings/notifications` | per-user notification prefs incl. SMTP |
 | `settings/tokens` | API tokens |
-| `admin/+layout.svelte` + `admin/+page.svelte` | **the Health page (UX Phase 3, `cairn-gt05.3` — renamed from "Node")**: one status headline ("● All systems healthy" / "⚠ N things need your attention", dot always paired with text — no hue-only status), then four monitored duty rows — Node ("Connected · at the tip" plain language; host:port/uptime/backend internals live inside its Details expander), Backups (promoted, amber + inline "Back up now" when unbacked), Storage (% full), Users — then an "Instance settings →" link row, with Factory reset demoted to the bottom in muted red behind the existing typed confirm. The duty verdicts come from the shared `src/lib/health.ts` `deriveHealth()` object, the same derivation Home's Health line and the layout banners read (one truth, three altitudes; the gt05.5 decaying backup-nudge cadence is unchanged). The old 12-tab strip is collapsed: Health/Activity/[Users/Invites]/Settings/Mining stay as tabs; Feature flags, Notification delivery, Announcements, Referrals, Logs, Backup keep their routes (reachable via Health's links / direct URL, eyebrow reads "HEALTH · <SECTION>") but leave the strip. |
-| `admin/mining/+page.svelte` | operator's cross-user solo-mining dashboard: engine health/start-stop-restart, pool-wide hashrate hero + chart, per-miner + per-user breakdowns, blocks-found ledger, engine settings form (§ "Mining engine" above, § "Mining dashboard client" below) |
-| `admin/activity`, `admin/announcements`, `admin/backup`, `admin/feature-flags`, `admin/invites`, `admin/logs`, `admin/notifications`, `admin/referral-settings`, `admin/settings`, `admin/users[/[id]]` | admin-only surfaces; the nav link itself is hidden (not just gated) for non-admins |
+| `admin/+layout.svelte` + `admin/+page.svelte` | **the Health hub (renamed "Node"→"Health" in UX Phase 3; **the persistent tab strip is now gone entirely**, UX Simplification Wave 3, `cairn-6c91u.3`, spec §5.2)**: one status headline ("● All systems healthy" / "⚠ N things need your attention"), then monitored duty rows — Node, Backups (promoted, amber + inline "Back up now" when unbacked), Storage, Users (`/admin/users` link, team mode only) — then a quiet "rare admin destinations" footer link row (`.instance .foot-links`): "Instance settings →" (`/settings#node-connection`), Registration (`/settings#instance`), Activity log, Invites (team), Backup schedule, Notification delivery, Announcements, Referrals, Logs, Mining, Agreement. **No Feature flags link** — that page is gone. The duty verdicts come from the shared `src/lib/health.ts` `deriveHealth()` object, the same derivation Home's Health line reads (one truth, multiple altitudes). `admin/+layout.svelte`'s `sections` array is now a breadcrumb lookup only (so a directly-opened subpage can still name itself in the eyebrow "HEALTH · <SECTION>"), not a rendered tab row — there is no `.admin-nav` element in the DOM anymore. |
+| `admin/mining/+page.svelte` | operator's cross-user solo-mining dashboard: engine health/start-stop-restart, pool-wide hashrate hero + chart, per-miner + per-user breakdowns, blocks-found ledger, engine settings form (§ "Mining engine" above, § "Mining dashboard client" below); reached from Settings → Mining → "Pool operator settings ›" |
+| `admin/activity`, `admin/announcements`, `admin/backup`, `admin/invites`, `admin/logs`, `admin/notifications`, `admin/referral-settings`, `admin/users[/[id]]` | admin-only surfaces that **stay** as real pages; reached from Health's footer link row and/or Settings' Instance group, not from a permanent nav strip. `admin/users/[id]` no longer renders the per-user feature-flag override grid (§7). |
+| `admin/settings`, `admin/feature-flags` | **deleted as pages** — both are now bare `+page.server.ts` `load` functions that `redirect(307, …)` to `/settings#node-connection` and `/settings#mining` respectively (spec §5.3/§9), keeping old bookmarks and notification/health deep links alive. Their content lives in `/settings`'s admin groups now (see the `settings/+page.svelte` row above); nothing under either old route renders UI anymore. |
 | `vaults/{new,[id],[id]/send,stateless}` + `_components` | **empty scaffolding only** — `git ls-files` returns zero tracked files under any of these dirs. Mirrors the `wallets` tree in shape (list → `[id]` → send) but nothing is implemented. Any hit on `/vaults*` (bare or with a path) is 301-redirected to the equivalent `/wallets` (or `/wallets/multisig`) route by `hooks.server.ts:505-516` before it would ever reach these directories — see §7 and the Part II route note. Don't start building real `/vaults` pages without checking scope first. |
 
 **`(auth)` — unauthenticated.** `+layout.server.ts`/`+layout.svelte`,
@@ -3482,9 +3563,9 @@ exact order, first match wins:
    the connection card already is the primary thing to show there.
 
 **Admin runbook (`/admin/mining`).** Enabling the pool for the first time
-requires the `mining` feature flag on instance-wide (`/admin/feature-flags`
-— it ships `defaultEnabled: true` but soft-launch-defaults to off on fresh
-installs via `miningDefaultMigration.ts`, mirroring `explorer`'s pattern)
+requires the `mining` feature flag on instance-wide (the Mining toggle in
+`/settings`'s admin groups, `#mining` — it ships `defaultEnabled: true` but
+soft-launch-defaults to off on fresh installs via `miningDefaultMigration.ts`)
 **and** the admin turning it on here: either the quick start/stop toggle
 on `AdminEngineHealth` (flips only `mining_enabled`, fast — doesn't touch
 the rest of the settings form) or a full `AdminPoolSettingsForm` save
@@ -3682,7 +3763,9 @@ further down. The Key step
 renders its own method cards from `./deviceMethods.ts` (`METHOD_CARDS` +
 `visibleMethodCards`), which gate each hardware tile on its `hw_*` flag (QR on
 `qr_scan`, paste never gated) exactly like `DevicePicker` — turning off e.g.
-`hw_trezor` in `/admin/feature-flags` hides Trezor here too (cairn-cl13); the
+`hw_trezor` (code-only flag, no admin UI since UX Simplification Wave 2 —
+settable via DB/API token only, see §8's flag-disposition note) hides
+Trezor here too (cairn-cl13); the
 `create` action also `requireFeature`-guards the submitted `deviceType` so a
 hand-crafted POST can't bypass a disabled flag. `DevicePicker` itself is used on
 the Finish step's "change signing device" sub-flow. Also uses
@@ -4411,8 +4494,8 @@ The table below is built from source, not from either doc alone.
 
 **No env var configures the Electrum/chain backend directly at runtime** —
 that's a live-editable setting in the `settings` SQLite table
-(`src/lib/server/settings.ts`), changeable from `/admin/settings` with no
-restart. The `CAIRN_ELECTRUM_*`/`CAIRN_CORE_RPC_*` env vars only *seed* that
+(`src/lib/server/settings.ts`), changeable from `/settings`'s admin Node-
+connection group with no restart. The `CAIRN_ELECTRUM_*`/`CAIRN_CORE_RPC_*` env vars only *seed* that
 table on first boot: each one is written into `settings` only if that
 setting has never been stored before, so a restart never clobbers an
 admin's later manual edit. If none of them are set (and the Wave A probe
@@ -4441,10 +4524,12 @@ that records which network the *custom* Electrum/Core RPC backend is actually on
 threaded through `getChainConfig().network` and gating `parseXpub()`'s prefix validation
 (see §"Single-sig derivation"). Always forced back to `mainnet` in `'public'` connection
 mode, since the public default server is always mainnet. Settable via `PUT
-/api/admin/settings` (`chainNetwork` key) or the `/admin/settings` form UI: a "Network"
+/api/admin/settings` (`chainNetwork` key) or the `/settings` admin form UI: a "Network"
 selector (Mainnet/Testnet/Regtest) rendered inside the "Custom" connection-mode fields
 only — it's hidden whenever `'Public servers'` is selected, since the setting is ignored
-there, and the public radio card's description says as much ("always mainnet"). The
+there, and the public radio card's description says as much ("always mainnet"), rendered
+inside `/settings`'s admin Node-connection group (`#node-connection`) since the UX
+Simplification merge. The
 selector carries a one-line caution that changing the network changes which keys and
 addresses are valid. Saving it (like every other field on this form) calls
 `reconfigureChain()`, which re-reads `getChainConfig()` and re-syncs `parseXpub()`'s
@@ -4454,9 +4539,10 @@ default network via `setDefaultNetwork()` immediately — no restart needed.
 `core_rpc_url`/`core_rpc_user`/`core_rpc_pass` have no relationship to the
 Electrum `connection_mode` toggle — `getChainConfig()` returns `coreRpc*` in
 both `'public'` and `'custom'` modes, since Core is "configured" purely by
-whether `core_rpc_url` is set. The `/admin/settings` `save` form action
-(`src/routes/(app)/admin/settings/+page.server.ts`) and the JSON endpoint
-(`src/routes/api/admin/settings/+server.ts`) both write these three keys
+whether `core_rpc_url` is set. `/settings`'s admin `save` form action
+(`src/routes/(app)/settings/+page.server.ts` — moved from the deleted
+`src/routes/(app)/admin/settings/+page.server.ts`, spec §4) and the JSON
+endpoint (`src/routes/api/admin/settings/+server.ts`, unchanged) both write these three keys
 whenever the submitted payload includes them, regardless of `connection_mode`
 — a field **absent** from the payload always means "leave the stored value
 unchanged," never "clear it" (a field present-but-empty is a deliberate
@@ -4468,9 +4554,9 @@ to cairn-6uok this was only true of the JSON endpoint — the form action wrote
 Wave B assisted-connect flow, `docs/UMBREL-AUTOCONNECT-WAVE-B-DESIGN.md`) was
 silently dropped, never persisted.
 
-**The `/admin/settings` UI now matches that backend contract too
-(`cairn-3p9z`, swept into `03879a0`).** The Bitcoin Core RPC subgroup in
-`+page.svelte` used to be nested inside the same `connectionMode === 'custom'`
+**The Node-connection UI (now in `/settings`, formerly `/admin/settings`)
+matches that backend contract too (`cairn-3p9z`, swept into `03879a0`).**
+The Bitcoin Core RPC subgroup used to be nested inside the same `connectionMode === 'custom'`
 conditional as the manual Electrum fields, so a `'public'`-mode admin had no
 way to even reach the Core RPC inputs without first flipping to custom mode
 — cosmetic by then, since the backend already accepted and persisted those
@@ -4706,10 +4792,19 @@ to copy against a shared/long-lived DB).
 - **`qa:route-crawl`** (`scripts/qa/route-crawl.mjs`) — spins up a throwaway
   regtest `bitcoind` + this repo's Electrum shim, boots the app for real,
   mines 110 blocks, seeds an admin session, and authenticated-crawls `/`,
-  `/wallets`, `/wallets/new`, `/settings`, `/admin`, `/admin/settings`,
-  `/explorer`, `/api/health`, asserting no 5xx / raw stack trace. Then kills
-  the shim and re-crawls to confirm the degraded (chain-down) path also
-  renders cleanly instead of 500ing, including a hard assertion that `GET /`
+  `/wallets`, `/wallets/new`, `/settings`, `/admin`, `/explorer`,
+  `/explorer/tx/<nonexistent-txid>` (proves the flag-exempt tx-detail route,
+  §9 spec R6, renders a graceful "not found" rather than a 500 even with no
+  seeded wallet data), `/api/health`, asserting no 5xx / raw stack trace.
+  **Separately** (UX Simplification Wave 5, `cairn-6c91u.5`) it GETs the two
+  deleted-page redirect stubs with `redirect: 'manual'` and asserts each is a
+  literal `307` whose `Location` starts with its documented `/settings#...`
+  anchor: `/admin/settings` → `/settings#node-connection`, `/admin/feature-
+  flags` → `/settings#mining` — a stricter check than "not a 5xx," since a
+  redirect stub that silently started 200-rendering (or 404ing) would
+  otherwise slip through the plain crawl. Then kills the shim and re-crawls a
+  route subset to confirm the degraded (chain-down) path also renders
+  cleanly instead of 500ing, including a hard assertion that `GET /`
   contains the chain-down copy — this is what `cairn-favlc`'s SSR fix (§20.4)
   made reliable; it was soft-checked (WARN) until that fix landed.
 - **`qa:notif-deeplink`** (`scripts/qa/notif-deeplink.mjs`) — verifies a
@@ -5314,10 +5409,10 @@ to the vault-e2e module-level harness for regtest signing scenarios.
   (email + password; passkeys are additive, not required. They **are** usable on the
   self-signed HTTPS origin — that secure-context address is the one place a browser will run
   the ceremony — but not on the plain-HTTP origin, cairn-ib7w).
-- Additional users: registration mode is `open`/`invite`/`closed` (`/admin/settings`,
-  `/admin/invites`). Multi-user *management* (invites, contacts, shares) is gated on
-  `instance_mode = 'team'`; a fresh install defaults to **solo** — flip it in
-  `/admin/settings` before testing §17 collaborative scenarios.
+- Additional users: registration mode is `open`/`invite`/`closed` (`/settings`'s admin
+  Instance group, `#instance`; `/admin/invites`). Multi-user *management* (invites, contacts,
+  shares) is gated on `instance_mode = 'team'`; a fresh install defaults to **solo** — flip
+  team mode in `/settings#instance` before testing §17 collaborative scenarios.
 - Umbrel/Docker auto-admin: `CAIRN_ADMIN_PASSWORD` (or `APP_PASSWORD`) seeds the first
   admin non-interactively → forced `/setup-admin`.
 
@@ -5331,8 +5426,8 @@ to the vault-e2e module-level harness for regtest signing scenarios.
 - **Regtest chain:** `docker compose -p vault-e2e down` wipes bitcoind (no volume); re-mine
   on next `up`.
 - **Do NOT** reset by editing `settings` rows by hand mid-run — chain backend config is a
-  live DB setting; change it through `/admin/settings` so `reconfigureChain()` resets the
-  in-memory caches/health counters too.
+  live DB setting; change it through `/settings`'s admin Node-connection group so
+  `reconfigureChain()` resets the in-memory caches/health counters too.
 
 ### 16.8 QA automation practice — hard-won rules
 
@@ -5376,7 +5471,7 @@ expensive way (one bead was closed NOT-A-BUG, one was nearly false-filed):
 
 ## 17. Multi-user collaborative multisig scenarios
 
-Preconditions for all of §17 unless stated: instance in **team** mode (`/admin/settings`);
+Preconditions for all of §17 unless stated: instance in **team** mode (`/settings#instance`);
 two test users exist — **A** (owner) and **B** (cosigner-to-be); A and B have an
 **accepted contact** relationship (`/settings/contacts` — sharing requires it, guarding
 against share-via-leaked-user-id). Multisig create flag on (`multisig_create`, default on).
@@ -5497,7 +5592,7 @@ As B (cosigner) verify each is **denied** (expected 403/404, or the control is a
   routes never called them).
 
 ### 17.7 Solo-mode vs team-mode difference `[none]`
-1. In `/admin/settings` set instance mode to **solo**.
+1. In `/settings#instance` (admin group) set instance mode to **solo**.
    - **Expected:** management surfaces (invites, contacts, multisig-share creation) return
      **404** (`assertTeamMode` — "not disabled, just narrower"), and their nav entries hide.
 2. Confirm a previously-granted cosigner (B) can **still read/sign** the vault — solo mode
@@ -5919,8 +6014,8 @@ was ever stored).
 - **PASS:** one network broadcast; concurrent same-row loser is blocked, not double-sent.
 
 ### 20.4 Electrum server down / flaky — chain health degradation UX `[none]`
-1. In `/admin/settings` point Electrum at a dead/black-holing host and save (triggers
-   `reconfigureChain()`).
+1. In `/settings` (admin Node-connection group) point Electrum at a dead/black-holing host
+   and save (triggers `reconfigureChain()`).
    - **Expected:** after `UNHEALTHY_AFTER = 2` consecutive connect failures, the instance-
      wide `ChainHealthBanner` ("can't reach the Bitcoin network") appears; the initial dial
      is bounded by the connect-timeout (`armConnectTimeout`, cairn-vn48 — no infinite hang).
@@ -6093,18 +6188,18 @@ sub-scenarios need `CAIRN_PLATFORM=umbrel` set and a fresh `settings` table (no
    container (16.4) re-addressed/port-forwarded to one of those IPs works for this, or run
    the real Umbrel target (16.3).
    - **Expected:** boot log's "startup config honored" line shows the Electrum host/port
-     seeded this boot; `/admin/settings` shows Connection mode = Custom with the probed
-     host/port and an "auto-connected" indicator. Query the `settings` table (or the admin
-     settings page) to confirm `chain_provisioned_by = 'umbrel-probe'`.
+     seeded this boot; `/settings` (admin Node-connection group) shows Connection mode =
+     Custom with the probed host/port and an "auto-connected" indicator. Query the `settings`
+     table (or the Settings page) to confirm `chain_provisioned_by = 'umbrel-probe'`.
 2. **Untouched when nothing is reachable — wizard still works.** Boot the same way but with
    neither `10.21.21.10:50001` nor `10.21.21.200:50002` reachable (nothing listening, or
    blocked).
    - **Expected:** boot succeeds normally (probe never throws); `connection_mode` stays
      unset and Cairn falls back to the public-server default
-     (`electrum.blockstream.info:50002`). `/admin/settings` shows Connection mode = Public,
-     no auto-connected indicator, `chain_provisioned_by` stays `null`.
-   - Then manually walk `/admin/settings` → Custom connection → enter an Electrum host by
-     hand and save.
+     (`electrum.blockstream.info:50002`). `/settings` (admin Node-connection group) shows
+     Connection mode = Public, no auto-connected indicator, `chain_provisioned_by` stays `null`.
+   - Then manually walk `/settings#node-connection` → Custom connection → enter an Electrum
+     host by hand and save.
    - **Expected:** the manual entry works exactly as it does today (§12's "Settings stored in
      DB vs env" boundary) — the probe having run and found nothing does not block or alter
      the manual wizard/form path in any way.
@@ -6123,8 +6218,9 @@ distinct unhealthy states must never be confused — do this alongside 16.6's DB
    regular user, desktop and mobile (375x812).
    - **Expected:** a single calm, neutral-toned banner ("Heartwood isn't connected to the
      Bitcoin network yet") — `.neutral` surface-tone styling, **not** red. Admin sees a
-     "Connect a node" link to `/admin/settings`; non-admin sees "ask your instance operator"
-     copy, no link. `SyncBanner` is absent from the DOM (suppressed, since `deriveSyncStatus`
+     "Connect a node" link to `/settings#node-connection`; non-admin sees "ask your instance
+     operator" copy, no link. `SyncBanner` is absent from the DOM (suppressed, since
+     `deriveSyncStatus`
      reaches phase `'unreachable'` for this state too — one banner, not two).
 2. **State 2 — configured but unreachable** (this is 20.4's scenario). An admin has explicitly
    set `connection_mode` (even to `'public'`) or Umbrel auto-connected
@@ -6139,8 +6235,9 @@ distinct unhealthy states must never be confused — do this alongside 16.6's DB
   answers.
 
 ### 20.16 Umbrel Bitcoin Core detect-and-connect card (Wave B) `[none]`
-Covers `umbrelCoreProbe.ts` (Wave B Unit B1) and the assisted-connect card in
-`/admin/settings` (Unit B3, `docs/UMBREL-AUTOCONNECT-WAVE-B-DESIGN.md`,
+Covers `umbrelCoreProbe.ts` (Wave B Unit B1) and the assisted-connect card, now in
+`/settings`'s admin Node-connection group (moved verbatim from the deleted `/admin/settings`,
+UX Simplification Wave 2, `cairn-6c91u.2`; Unit B3, `docs/UMBREL-AUTOCONNECT-WAVE-B-DESIGN.md`,
 `cairn-6uok`/`cairn-3p9z` fixed). Distinct from 20.14 — that scenario is the Electrum
 auto-*connect* probe; this one is Core RPC detect-and-*surface only* (bitcoind's RPC
 always needs a password Cairn is never handed automatically, so it can't silently
@@ -6148,7 +6245,7 @@ auto-connect the way Electrum does).
 1. Boot with `CAIRN_PLATFORM=umbrel` and something answering at the well-known
    Umbrel bitcoind address (`10.21.21.8:8332`) — the regtest stack's `bitcoind`
    re-addressed/port-forwarded there works, or use a real Umbrel target (16.3).
-   With `core_rpc_url` still unset, load `/admin/settings`.
+   With `core_rpc_url` still unset, load `/settings#node-connection`.
    - **Expected:** a "Bitcoin Core detected on your Umbrel" card renders (`settings.
      core_rpc_detected === 'umbrel' && !coreRpcConfigured()`), with the RPC address/
      username already filled in (`UMBREL_CORE_RPC_URL`/`UMBREL_CORE_RPC_USER`,
@@ -6171,7 +6268,7 @@ auto-connect the way Electrum does).
      changes; this only silences the nudge (covers the design doc's "Core
      uninstalled later" stale-banner case).
 4. With `core_rpc_url` already configured (from step 2, or configured any other
-   way), reload `/admin/settings`.
+   way), reload `/settings#node-connection`.
    - **Expected:** the Bitcoin Core RPC subgroup renders unconditionally
      regardless of `connectionMode` (public or custom) — `cairn-3p9z` fixed the
      prior bug where these fields were only reachable after flipping to custom
@@ -6255,7 +6352,7 @@ guarantee of the exact filename:
      requests (the `cairn-xlrm` sync-SQLite hazard this design is built to
      avoid), and post-run aggregate totals reconcile with shares sent.
 3. **Flag-gate on/off.** With the `mining` feature flag off instance-wide
-   (`/admin/feature-flags`): `/mining` and `/admin/mining` both render their
+   (the Mining toggle in `/settings`'s admin groups, `#mining`): `/mining` and `/admin/mining` both render their
    flag-off empty state (`FeatureDisabled`-style, per `requireFeature`'s
    convention) regardless of `mining_enabled`, and `startMiningEngine()`
    never opens the Stratum port even if a stale `mining_enabled=true`
@@ -6510,12 +6607,15 @@ backups, clear house-standard errors, **never red for routine states**, working 
      avatar's existing treatment), and the backup-banner "Dismiss for now" icon button in
      `src/routes/(app)/+layout.svelte` (`.backup-banner-dismiss`, invisible `::after`,
      `inset: -13px` — visual icon stays 18×18, same pattern) — conservative hit-area
-     expansion, no visual redesign (`cairn-amyl`). `/admin/*` sub-nav tabs (`+layout.svelte`
-     `.toggle`, `min-height: 44px` scoped to the `max-width: 900px` media query, desktop
-     unaffected) and the feature-flags switch row (`/admin/feature-flags`, `.switch::after`,
-     `inset: -11px -2px`, visual switch unchanged at 40×22) now meet 44px on mobile too;
-     desktop admin density (feature-flag table row height, sub-nav pill height above 900px)
-     stays as-is by product intent.
+     expansion, no visual redesign (`cairn-amyl`). The `/admin/*` sub-nav-tabs 44px fix
+     and the feature-flags switch-row 44px fix (`/admin/feature-flags`, `.switch::after`)
+     are now **moot, not regressed** — both surfaces (the persistent admin tab strip, the
+     flags grid page) were deleted outright in the UX Simplification pass (spec §5.2/§3.1),
+     taking the fixed elements with them; don't go looking for either. Spot-check the
+     **new** admin-only tap targets that replaced them instead: `/settings`'s Mining/
+     Explorer toggle switches and the Health hub's footer link row — desktop admin
+     density above 900px stays as-is by product intent, mobile is the only tier that
+     must hit 44px.
 - **PASS (journey):** every ✅ above holds through one uninterrupted new-user pass. Any raw
   internal leaked without explanation, any red used for a routine state, any broken
   notification deep link, any silent wizard failure, or a missing/weak backup nudge is a ❌.
@@ -6618,42 +6718,69 @@ Covers `/settings/notifications` (all five external channels, quiet hours) and t
   once with the correct channel routing.
 
 ### 22.3 Feature-flag admin flow `[none]`
-Exercises the full admin flag lifecycle, not just server-side enforcement (already
-covered in Part I §8). All three UI-parity bugs found in the 2026-07-06 browser pass
-(`cairn-8dup`, `cairn-1x3w`, `cairn-jyh7`) are closed — this scenario is the
-regression guard for their fixes, run against current HEAD.
-1. As admin, `/admin/feature-flags` → toggle `csv_export` off globally.
-   - **Expected:** the row's switch flips server-authoritatively (no optimistic
-     flip — a re-render confirms the persisted state), and its "N user overrides"
-     badge (if any) only links to `/admin/users` when `instanceMode === 'team'`
-     (`cairn-369e`) — plain text in solo mode.
-2. As a non-admin user, open a wallet detail page and the multisig-create card on
-   `/wallets/new`.
-   - **Expected:** the CSV export control renders a greyed `FeatureDisabled` chip
-     ("disabled by your administrator"), not a silently vanished button
-     (`cairn-8dup`, `FeatureDisabled.svelte`).
-3. Disable `coin_control` globally, then open that user's `/wallets/{id}/send`.
-   - **Expected:** the manual UTXO-selection UI is gated behind
-     `data.flags.coin_control` with a `FeatureDisabled` note, selection stays empty
-     (falls back to automatic coin selection) — not still fully interactive
-     (`cairn-jyh7`, fixed).
-4. With `coin_control` still off, attempt to build a send anyway (bypassing the UI
-   gate via a direct API call, or by racing a flag flip mid-session).
-   - **Expected:** the server's `requireFeature()` 403s with the real reason
-     ("Coin control has been disabled by your administrator"), and the client
-     build-error handler shows that exact message — it reads `body.error ?? body.
-     message`, matching `requireFeature`'s `error(403, def.userMessage)` JSON shape
-     (`cairn-1x3w`, fixed; previously only `body.error` was read and the real
-     reason was swallowed by the generic fallback).
-5. Set a **per-user override** for one flag from `/admin/users/[id]` (opposite of
-   the global default), confirming solo-vs-team gating: with `instanceMode ===
-   'solo'`, `/admin/users` 404s but a direct per-user override set before the switch
-   to solo still resolves correctly for that user (§7's "toggling back to solo must
-   not silently revoke access already granted" — verify the *reverse* direction here:
-   an override survives the mode toggle either way).
-- **PASS:** every disabled flag with a UI surface shows an explanatory `FeatureDisabled`
-  chip, never a silent disappearance; server 403 reasons reach the user unmangled;
-  per-user overrides persist correctly across solo/team toggles.
+**Rewritten for UX Simplification Wave 5 (`cairn-6c91u.5`, `docs/UX-SIMPLIFICATION-
+SPEC.md` §3).** The 25-row `/admin/feature-flags` grid and the per-user override grid on
+`/admin/users/[id]` are both **deleted** (Wave 2, `cairn-6c91u.2`) — only `mining` and
+`explorer` still have an admin UI at all, now as plain Settings toggles. The three
+2026-07-06 UI-parity bugs this scenario used to regression-guard (`cairn-8dup`,
+`cairn-1x3w`, `cairn-jyh7`) are still real regressions to watch for, just exercised via
+different entry points below since their original entry point (the grid) no longer exists.
+1. **Settings toggle → nav visibility → route gate, in lockstep (spec R2/R5).** As admin,
+   in `/settings` toggle **Mining** (`#mining`) off, then on; separately toggle
+   **Explorer** (`#explorer`) off, then on.
+   - **Expected:** each toggle flips server-authoritatively via the same
+     `setGlobalFlag(key, enabled, adminId)` the old grid used (re-render confirms
+     persisted state, no optimistic flip). Within one page load after each change, the
+     primary nav (`primaryNav()`, §9) gains/loses the Mining/Explorer tab to match, and
+     `GET /mining` / `GET /explorer` gain/lose reachability (403 while off) — nav-visible
+     must never diverge from route-reachable. Turning Mining ON does **not** auto-start
+     the pool (the separate `mining_enabled` operator toggle in `/admin/mining` still
+     governs that, §8 "Mining engine").
+2. **Code-only flag, no UI — set it off via the surviving DB/API path** (spec §3.2's "23
+   code-only flags" list: `send`, `multisig_create`, `coin_control`, `csv_export`,
+   `address_book`, `qr_scan`, `stateless_signer`, `wallet_config_export/import`, `hw_*`,
+   `notify_*`, `announcement_banners`, `referral_links`, `batch_transactions`,
+   `fee_bumping`, `tx_review` — none of these are reachable from any admin screen anymore).
+   Disable `csv_export` globally either by writing the `feature_flags` row directly
+   (`UPDATE`/`INSERT ... key='csv_export', enabled=0`) or via an admin API token against
+   the flag-write endpoint — there is no page to click through.
+   - **Expected:** `resolveAllFlags()`/`requireFeature()` treat this identically to the old
+     grid's write (the DB row is the only thing either mechanism ever read) — a wallet
+     detail page and the multisig-create card on `/wallets/new` render a greyed
+     `FeatureDisabled` chip ("disabled by your administrator"), not a silently vanished
+     button (`cairn-8dup`, `FeatureDisabled.svelte`).
+3. Disable `coin_control` the same code-only way, then open that user's
+   `/wallets/{id}/send`.
+   - **Expected:** the manual UTXO-selection UI is gated behind `data.flags.coin_control`
+     with a `FeatureDisabled` note, selection stays empty (falls back to automatic coin
+     selection) — not still fully interactive (`cairn-jyh7`, fixed).
+4. With `coin_control` still off, attempt to build a send anyway (bypassing the UI gate
+   via a direct API call, or by racing a flag flip mid-session).
+   - **Expected:** the server's `requireFeature()` 403s with the real reason ("Coin
+     control has been disabled by your administrator"), and the client build-error
+     handler shows that exact message — it reads `body.error ?? body.message`, matching
+     `requireFeature`'s `error(403, def.userMessage)` JSON shape (`cairn-1x3w`, fixed;
+     previously only `body.error` was read and the real reason was swallowed by the
+     generic fallback).
+5. **Per-user override — data-safety check, no UI to set it anymore.** Write a
+   `user_feature_flags` row directly for one user (opposite of the global default) —
+   there is no `/admin/users/[id]` UI for this now, only the table + `resolve.ts`'s
+   per-user branch, which the spec explicitly keeps alive so pre-existing overrides
+   aren't stranded (§7/§11 R7). Confirm solo-vs-team gating around it: with
+   `instanceMode === 'solo'`, `/admin/users` 404s, but the override row you just wrote
+   still resolves correctly for that user (§7's "toggling back to solo must not silently
+   revoke access already granted" — verify the *reverse* direction here too: an override
+   survives the mode toggle either way, regardless of how it was written).
+6. **Redirect stubs.** `GET /admin/feature-flags` and `GET /admin/settings` (no-follow)
+   both 307 — to `/settings#mining` and `/settings#node-connection` respectively — the
+   same assertion `qa:route-crawl` runs automatically (§13); confirm manually here too
+   since a browser follows the redirect and lands on the right anchor's group already
+   expanded/scrolled-to.
+- **PASS:** Mining/Explorer toggles keep nav and route gating in lockstep; every
+  disabled code-only flag with a UI surface elsewhere still shows an explanatory
+  `FeatureDisabled` chip, never a silent disappearance; server 403 reasons reach the user
+  unmangled; a per-user override written directly persists correctly across solo/team
+  toggles; both deleted admin pages redirect to the correct Settings anchor.
 
 ### 22.4 Auth beyond password happy-path `[none]`
 Extends §16.6 (which only covers signup/login happy-path) — passkeys, recovery,

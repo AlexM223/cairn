@@ -517,6 +517,17 @@ features collapse into Details/Advanced. Destructive actions are red, collapsed,
 
 ### 2.7 Navigation (`src/routes/(app)/+layout.svelte`, `heartwood/MobileTabRow.svelte`, `HWRail.svelte`)
 
+> **Superseded (2026-07-20).** The nav decision below (3 primary destinations — Home /
+> Wallets / Activity, with Explorer/Health/Settings/Notifications parked in the account
+> menu) has been overruled by explicit owner directive. The canonical nav model is now
+> `docs/UX-SIMPLIFICATION-SPEC.md` §2: a **dynamic 2–4-item** primary nav (Home, Wallets,
+> plus Mining/Explorer when their instance flag is on), Activity reachable via Home's
+> "Recent activity" block + the account menu, and a gear icon (always present) to the one
+> `/settings` page. Everything else in this section (the problem diagnosis, the account-menu
+> shape for non-nav items) is superseded along with it — see the simplification spec for
+> what actually shipped (epic `cairn-6c91u`, waves W1–W5). The rest of this document
+> (screen-level content, phase 1–3 work) is unaffected and remains canonical.
+
 **Current problems** (audit §Nav): **8 destinations, all equal weight**, no primary/secondary
 distinction. **Duplicate nav landmarks** in the accessibility tree ("Home" ×3, "Wallets" ×2, "Explorer"
 ×2, "Activity" ×2) at every viewport — a real a11y bug. "Node" is an opaque label.
