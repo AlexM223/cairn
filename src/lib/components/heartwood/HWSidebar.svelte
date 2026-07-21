@@ -194,6 +194,24 @@
 			<span class="sync-line">Chain sync</span>
 		</div>
 
+		<!-- Gear icon → /settings (docs/UX-SIMPLIFICATION-SPEC.md §2.3, decision 3):
+		     always present at the rail bottom, distinct from the account menu's
+		     own Settings link (spec keeps both — the gear is the always-visible
+		     affordance, the menu entry is the reachable-anywhere fallback). -->
+		<a
+			href="/settings"
+			class="settings-link"
+			class:active={isActive('/settings')}
+			aria-label="Settings"
+			title="Settings"
+			aria-current={isActive('/settings') ? 'page' : undefined}
+		>
+			<span class="nav-icon">
+				<Icon name="settings" size={18} strokeWidth={1.6} />
+			</span>
+			<span class="settings-label">Settings</span>
+		</a>
+
 		<div class="menu-wrap" bind:this={menuWrap}>
 			<button
 				type="button"
@@ -221,16 +239,10 @@
 						<div class="menu-name truncate">{user.displayName}</div>
 						<div class="menu-email truncate">{user.email}</div>
 					</div>
-					{#each menuEntries as entry (entry.href)}
-						<a
-							href={entry.href}
-							class="menu-item"
-							role="menuitem"
-							onclick={() => (menuOpen = false)}
-						>
-							{entry.label}
-						</a>
-					{/each}
+					<!-- Account menu order (spec §2.3, decision 3): Notifications, Activity,
+					     Health, Settings, Terms, Sign out. Notifications opens an in-place
+					     panel (not a navigation) so it's rendered here rather than via
+					     accountMenuLinks(), which supplies the navigable middle. -->
 					<button
 						type="button"
 						class="menu-item"
@@ -247,6 +259,16 @@
 							>
 						{/if}
 					</button>
+					{#each menuEntries as entry (entry.href)}
+						<a
+							href={entry.href}
+							class="menu-item"
+							role="menuitem"
+							onclick={() => (menuOpen = false)}
+						>
+							{entry.label}
+						</a>
+					{/each}
 					<a href="/terms" class="menu-item" role="menuitem" onclick={() => (menuOpen = false)}>
 						Terms
 					</a>
@@ -391,6 +413,39 @@
 	}
 
 	.sync-line {
+		display: none;
+	}
+
+	/* Gear → /settings, always present at the rail bottom (spec §2.3). Reuses
+	   the same active/hover treatment as a .nav-row so it reads as part of the
+	   same nav language without joining the primaryNav item list. */
+	.settings-link {
+		width: 68px;
+		height: 44px;
+		margin-bottom: 8px;
+		border-radius: 11px;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 4px;
+		color: var(--text-muted);
+		background: transparent;
+		transition:
+			color 120ms var(--ease),
+			background 120ms var(--ease);
+	}
+
+	.settings-link:hover {
+		color: var(--text-secondary);
+	}
+
+	.settings-link.active {
+		color: var(--accent-bright);
+		background: var(--accent-muted);
+	}
+
+	.settings-label {
 		display: none;
 	}
 
@@ -656,6 +711,23 @@
 			font-weight: 500;
 			color: var(--text-secondary);
 			white-space: nowrap;
+		}
+
+		.rail:not(.collapsed) .settings-link {
+			width: 100%;
+			height: 40px;
+			flex-direction: row;
+			justify-content: flex-start;
+			gap: 12px;
+			padding: 0 12px;
+			margin-bottom: 3px;
+		}
+
+		.rail:not(.collapsed) .settings-label {
+			display: block;
+			font-size: var(--t-body-size);
+			font-weight: 500;
+			line-height: 1;
 		}
 
 		.rail:not(.collapsed) .menu-wrap {

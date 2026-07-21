@@ -12,7 +12,7 @@
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
 	import NavProgress from '$lib/components/heartwood/NavProgress.svelte';
 	import { maybeRedirectToSecure } from '$lib/secureRedirect';
-	import { PRIMARY_NAV, accountMenuLinks } from '$lib/nav';
+	import { primaryNav, accountMenuLinks } from '$lib/nav';
 	import { deriveHealth } from '$lib/health';
 	import { chainHealth as liveChainHealth } from '$lib/live/chainHealth.svelte';
 
@@ -41,21 +41,27 @@
 		void maybeRedirectToSecure(data.httpsPort ?? null);
 	});
 
-	// Primary nav (spec §2.7, cairn-gt05.4): exactly three destinations, the
-	// same set on the desktop rail and the mobile tab row. Everything else —
-	// Explorer, Mining, Health, Settings, Notifications — reaches the app
-	// through the account menu. A feature the user has no access to is absent
-	// from that menu (not shown disabled); the server-side gate (requireFeature
-	// / admin auth) is the real boundary, hiding the link is the courtesy.
+	// Primary nav (docs/UX-SIMPLIFICATION-SPEC.md §2, cairn-6c91u.1): dynamic
+	// 2-4 destinations — Home/Wallets always, Mining/Explorer iff their
+	// instance flag resolves true (the same predicate requireFeature() uses) —
+	// the same set on the desktop rail and the mobile tab row. Everything else
+	// — Health, Settings, Notifications, Activity — reaches the app through
+	// the gear icon (always present, → /settings) and the account menu. A
+	// feature the user has no access to is absent from that menu (not shown
+	// disabled); the server-side gate (requireFeature / admin auth) is the
+	// real boundary, hiding the link is the courtesy.
 	const flags = $derived(data.flags ?? {});
-	const nav = PRIMARY_NAV;
-	const tabs = PRIMARY_NAV.map(({ href, label }) => ({ href, label }));
+	const nav = $derived(primaryNav({ flags }));
+	const tabs = $derived(nav.map(({ href, label }) => ({ href, label })));
 	const menuEntries = $derived(accountMenuLinks({ isAdmin: data.user.isAdmin, flags }));
 
 	// Heartwood mobile shell, tab vs flow (verified against src/routes/(app)):
 	// - Tab pages (top bar + text-tab row): `/`, `/explorer/**` (block/tx/address
 	//   details are still explorer browsing and keep the search top bar),
-	//   `/wallets` and `/vaults` exactly (top-level lists), `/activity`.
+	//   `/wallets` and `/vaults` exactly (top-level lists), `/activity`,
+	//   `/mining/**` (cairn-6c91u.1: Mining joined the dynamic primary nav, so
+	//   it now gets the full tab-page treatment — top bar AND the bottom tab
+	//   row — instead of the old bespoke top-bar-only special case).
 	// - Flow pages (back-circle header): everything else — wallet/vault detail,
 	//   send/sign wizards, `/settings/**`, `/admin/**`, `/recovery-setup`.
 	// `/vaults` currently exists only as empty scaffolding dirs; it mirrors the
@@ -63,22 +69,12 @@
 	function isTabRoute(pathname: string): boolean {
 		if (pathname === '/' || pathname === '/wallets' || pathname === '/vaults') return true;
 		if (pathname === '/activity') return true;
+		if (pathname === '/mining' || pathname.startsWith('/mining/')) return true;
 		return pathname === '/explorer' || pathname.startsWith('/explorer/');
 	}
 	const isTab = $derived(isTabRoute(page.url.pathname));
 	const isExplorer = $derived(
 		page.url.pathname === '/explorer' || page.url.pathname.startsWith('/explorer/')
-	);
-	// Mining (cairn-5e2k): a primary dashboard section (it's in the sidebar
-	// nav, not a drill-down flow), but per the comment above it deliberately
-	// doesn't take a 5th mobile tab slot. Without its own top bar it fell
-	// through to the flow-page branch below — Back-circle only, no way to
-	// reach any other section, a dead end whenever the page was opened
-	// directly (bookmark, notification, reload). It gets the same top bar as
-	// the tab pages (Home link + account menu) so it's always one tap from
-	// the rest of the app, without joining the bottom tab row.
-	const isMining = $derived(
-		page.url.pathname === '/mining' || page.url.pathname.startsWith('/mining/')
 	);
 
 	// Route → content lane (docs/DESKTOP-LAYOUT-DESIGN.md §2/§4). Two measures
@@ -209,15 +205,6 @@
 				{menuEntries}
 			/>
 			<MobileTabRow {tabs} />
-		{:else if isMining}
-			<!-- cairn-5e2k: standard tab-page top bar (Home link + account menu)
-			     without the bottom tab row — see isMining comment above. -->
-			<MobileTopBar
-				variant="dial"
-				user={data.user}
-				operatorName={data.operatorName ?? null}
-				{menuEntries}
-			/>
 		{:else}
 			<!-- Flow pages: back circle only. The centered eyebrow + spacer row is
 			     composed by each flow page as its lane lands (cairn-koy4.5/6). -->

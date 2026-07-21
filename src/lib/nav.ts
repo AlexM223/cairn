@@ -1,40 +1,48 @@
-// Primary-nav model (UX-REDESIGN-SPEC.md §2.7, cairn-gt05.4): exactly three
-// primary destinations, identical on the desktop rail and the mobile tab row.
-// Every other destination reaches the app through the account menu (the avatar
-// is the single "everything else" escape hatch). Kept as a plain module so the
-// derivation — 3 primaries, feature-flag gating, admin gating — is
-// unit-testable away from the shell markup.
+// Primary-nav model (docs/UX-SIMPLIFICATION-SPEC.md §2, cairn-6c91u.1):
+// dynamic 2-4 destinations, identical on the desktop rail and the mobile tab
+// row. Home and Wallets are always present; Mining and Explorer appear only
+// when their instance feature flag resolves true — the flag predicate here
+// (`flags.x !== false`) MUST match the exact predicate `requireFeature()`
+// resolves to, so nav-visible always implies route-reachable (spec R2/R5).
+// Everything else (Health, Settings, Notifications, Activity) reaches the app
+// through the gear icon (always present, → /settings) and the account menu.
+// Kept as a plain module so the derivation is unit-testable away from the
+// shell markup.
 
 export type NavItem = { href: string; label: string; icon: string };
 export type AccountMenuLink = { href: string; label: string };
 export type FeatureFlags = Partial<Record<string, boolean>>;
 
-/** The three primaries — same set on desktop and mobile, Home leftmost. The
+/** Home + Wallets always; Mining/Explorer iff their instance flag isn't
+ *  explicitly off — same set on desktop and mobile, Home leftmost. The
  *  active item is the only accent-colored nav element (manifesto §2/§5). */
-export const PRIMARY_NAV: NavItem[] = [
-	{ href: '/', label: 'Home', icon: 'dashboard' },
-	{ href: '/wallets', label: 'Wallets', icon: 'wallet' },
-	{ href: '/activity', label: 'Activity', icon: 'activity' }
-];
+export function primaryNav(opts: { flags?: FeatureFlags | null }): NavItem[] {
+	const flags = opts.flags ?? {};
+	return [
+		{ href: '/', label: 'Home', icon: 'dashboard' },
+		{ href: '/wallets', label: 'Wallets', icon: 'wallet' },
+		...(flags.mining !== false ? [{ href: '/mining', label: 'Mining', icon: 'flame' }] : []),
+		...(flags.explorer !== false ? [{ href: '/explorer', label: 'Explorer', icon: 'blocks' }] : [])
+	];
+}
 
 /**
- * The account menu's link entries, in menu order. A feature the user has no
- * access to is absent (not shown disabled) — the server-side gate
- * (requireFeature / admin auth) is the real boundary; hiding the link is the
- * courtesy. "Health" (the renamed Node/admin surface) is admin-only.
- *
- * Mining is not in the spec's §2.7 menu sketch, but it left the primary nav
- * here and would otherwise be unreachable — it keeps the account-menu slot the
- * mobile shell already gave it (cairn-vn43.5).
+ * The account menu's navigable link entries, in menu order (spec §2.3,
+ * decision 3): Notifications (opens an in-place panel, not a navigation) and
+ * Terms/Sign out are rendered by the shell around this list, so together with
+ * it the full menu order is Notifications, Activity, Health, Settings, Terms,
+ * Sign out. A feature the user has no access to is absent (not shown
+ * disabled) — the server-side gate (requireFeature / admin auth) is the real
+ * boundary; hiding the link is the courtesy. "Health" (the renamed Node/admin
+ * surface) is admin-only. Explorer/Mining left this menu — they're primary
+ * nav items now.
  */
 export function accountMenuLinks(opts: {
 	isAdmin: boolean;
 	flags?: FeatureFlags | null;
 }): AccountMenuLink[] {
-	const flags = opts.flags ?? {};
 	return [
-		...(flags.explorer !== false ? [{ href: '/explorer', label: 'Explore the blockchain' }] : []),
-		...(flags.mining !== false ? [{ href: '/mining', label: 'Mining' }] : []),
+		{ href: '/activity', label: 'Activity' },
 		...(opts.isAdmin ? [{ href: '/admin', label: 'Health' }] : []),
 		{ href: '/settings', label: 'Settings' }
 	];

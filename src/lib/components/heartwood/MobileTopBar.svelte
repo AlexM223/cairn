@@ -15,6 +15,7 @@
 	// visible at a time (complementary CSS breakpoints + aria-hidden). The
 	// unread badge rides on the avatar itself.
 	import NotificationPanel from '$lib/components/NotificationPanel.svelte';
+	import Icon from '$lib/components/Icon.svelte';
 	import { notifUnread } from '$lib/live/notifUnread.svelte';
 	import { viewport } from '$lib/viewport.svelte';
 	import type { AccountMenuLink } from '$lib/nav';
@@ -137,6 +138,13 @@
 			</span>
 		{/if}
 
+		<!-- Gear icon → /settings (docs/UX-SIMPLIFICATION-SPEC.md §2.3, decision
+		     3): always present in the mobile top bar, top-right, alongside the
+		     avatar — mirrors the desktop rail's gear at the rail bottom. -->
+		<a href="/settings" class="settings-btn" aria-label="Settings" title="Settings">
+			<Icon name="settings" size={17} strokeWidth={1.6} />
+		</a>
+
 		<div class="menu-wrap" bind:this={menuWrap}>
 			<button
 				type="button"
@@ -160,16 +168,10 @@
 						<div class="menu-name truncate">{user.displayName}</div>
 						<div class="menu-email truncate">{user.email}</div>
 					</div>
-					{#each menuEntries as entry (entry.href)}
-						<a
-							href={entry.href}
-							class="menu-item"
-							role="menuitem"
-							onclick={() => (menuOpen = false)}
-						>
-							{entry.label}
-						</a>
-					{/each}
+					<!-- Account menu order (spec §2.3, decision 3): Notifications, Activity,
+					     Health, Settings, Terms, Sign out. Notifications opens an in-place
+					     panel (not a navigation) so it's rendered here rather than via
+					     accountMenuLinks(), which supplies the navigable middle. -->
 					<button
 						type="button"
 						class="menu-item"
@@ -186,6 +188,16 @@
 							>
 						{/if}
 					</button>
+					{#each menuEntries as entry (entry.href)}
+						<a
+							href={entry.href}
+							class="menu-item"
+							role="menuitem"
+							onclick={() => (menuOpen = false)}
+						>
+							{entry.label}
+						</a>
+					{/each}
 					<a href="/terms" class="menu-item" role="menuitem" onclick={() => (menuOpen = false)}>
 						Terms
 					</a>
@@ -236,6 +248,20 @@
 	}
 
 	.search-btn {
+		position: relative;
+		width: 32px;
+		height: 32px;
+		border-radius: var(--radius-icon-btn);
+		border: 1px solid var(--border-control);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--text-secondary);
+	}
+
+	/* Gear → /settings (spec §2.3): same icon-button treatment as .search-btn,
+	   always present next to the avatar. */
+	.settings-btn {
 		position: relative;
 		width: 32px;
 		height: 32px;
@@ -318,6 +344,13 @@
 		/* Same invisible-hit-area treatment for the 32x32 Explorer search icon
 		   (cairn-amyl): -6px => 44x44 effective, visual unchanged. */
 		.search-btn::after {
+			content: '';
+			position: absolute;
+			inset: -6px;
+		}
+
+		/* Same treatment for the 32x32 gear icon (cairn-6c91u.1). */
+		.settings-btn::after {
 			content: '';
 			position: absolute;
 			inset: -6px;
