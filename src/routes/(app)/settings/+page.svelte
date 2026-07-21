@@ -957,12 +957,14 @@
 				<label class="radio-card" class:selected={connectionMode === 'public'}>
 					<input type="radio" name="connectionMode" value="public" bind:group={connectionMode} />
 					<span class="radio-label">Public servers <span class="badge badge-neutral">default</span></span>
-					<span class="radio-desc">electrum.blockstream.info (Electrum) — always mainnet</span>
+					<span class="radio-desc"
+						>electrum.blockstream.info (<Term tip={ELECTRUM_TIP}>Electrum</Term>) — always mainnet</span
+					>
 				</label>
 				<label class="radio-card" class:selected={connectionMode === 'custom'}>
 					<input type="radio" name="connectionMode" value="custom" bind:group={connectionMode} />
 					<span class="radio-label">Your own node</span>
-					<span class="radio-desc">Your own Electrum server and data sources</span>
+					<span class="radio-desc">Your own <Term tip={ELECTRUM_TIP}>Electrum</Term> server and data sources</span>
 				</label>
 			</div>
 
@@ -1017,7 +1019,7 @@
 					<div class="provenance-text">
 						<span class="provenance-title">Bitcoin Core detected on your Umbrel</span>
 						<span class="provenance-sub">
-							Connect it for full block and transaction details in the explorer. Paste the RPC
+							Connect it for full block and transaction details in the explorer. Paste the node
 							password (copy it from your Umbrel Bitcoin app's Connect screen) below — the
 							address and username are already filled in.
 						</span>
@@ -1028,7 +1030,7 @@
 							class="input mono assisted-pass"
 							type="password"
 							autocomplete="off"
-							placeholder="RPC password"
+							placeholder="Node password"
 							bind:value={assistedCoreRpcPass}
 							name="coreRpcPass"
 							form="settings-form"
@@ -1196,7 +1198,7 @@
 								autocomplete="off"
 								placeholder={admin.settings.hasCoreRpcPass
 									? '•••••••• saved — leave blank to keep'
-									: 'RPC password'}
+									: 'Node password'}
 								bind:this={coreRpcPassEl}
 							/>
 						</div>

@@ -56,3 +56,11 @@ export const RING_TIP =
 // "not one removed" is dead as a surface label ("every block still stands").
 export const NO_REORG_TIP =
 	'No blocks have been reorganized out — the chain your node follows has only ever grown.';
+
+// UX simplification jargon sweep (docs/UX-SIMPLIFICATION-SPEC.md §8, cairn-6c91u.4).
+
+export const VARDIFF_TIP =
+	'Vardiff automatically raises or lowers how hard each share has to be, so a miner reports in at a steady, manageable rate whether it is a tiny USB stick or a warehouse of machines.';
+
+export const STATELESS_SIGNER_TIP =
+	"A stateless signer works entirely from a wallet's config file — Heartwood never saves the wallet, so nothing about it lingers here after you close the tab.";

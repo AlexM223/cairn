@@ -16,6 +16,7 @@
 	import type { StatelessScanResult } from '$lib/server/stateless';
 	import type { FeeEstimates } from '$lib/types';
 	import { quorumLabel, MULTISIG_SCRIPT_LABELS } from '../labels';
+	import { STATELESS_SIGNER_TIP } from '$lib/termGlosses';
 	// Reused signers: the QR signer is a props-driven pass-through (the DEVICE
 	// does the multisig math) and the Trezor signer needs no server state at
 	// all (Trezor keeps no multisig memory — the full cosigner set travels with
@@ -432,7 +433,7 @@
 </script>
 
 <svelte:head>
-	<title>Stateless signer · Heartwood</title>
+	<title>Sign from a backup file · Heartwood</title>
 </svelte:head>
 
 <div class="stateless-page hw-owns-header">
@@ -443,17 +444,19 @@
 	     this page composes its own so the shell's bare fallback is suppressed. -->
 	<header class="flow-header">
 		<BackCircle href="/wallets" />
-		<span class="flow-eyebrow">Stateless signer</span>
+		<span class="flow-eyebrow">Sign from a backup file</span>
 		<span class="flow-spacer"></span>
 	</header>
 
 	<div class="eyebrow-row">
-		<EyebrowBreadcrumb path={['Wallets']} current="Stateless signer" />
+		<EyebrowBreadcrumb path={['Wallets']} current="Sign from a backup file" />
 	</div>
 
 	<p class="lead text-secondary">
 		Work a multisig wallet straight from its config file — balance, spend, sign, broadcast —
-		without saving anything to Heartwood.
+		without saving anything to Heartwood. Also called a <Term tip={STATELESS_SIGNER_TIP}
+			>stateless signer</Term
+		>.
 	</p>
 
 	<!-- ============================================================= LOAD -->
@@ -726,7 +729,7 @@
 							>
 								<Icon name={coinsOpen ? 'chevron-down' : 'chevron-right'} size={14} />
 								<span
-									>Coin control (optional{selectedCoins.size > 0
+									>Choose which coins to spend (optional{selectedCoins.size > 0
 										? ` — ${selectedCoins.size} selected`
 										: ''})</span
 								>

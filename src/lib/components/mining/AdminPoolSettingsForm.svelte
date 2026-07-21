@@ -10,7 +10,7 @@
 	 */
 	import { enhance } from '$app/forms';
 	import Term from '$lib/components/Term.svelte';
-	import { STRATUM_TIP, STRATUM_V2_TIP } from '$lib/termGlosses';
+	import { STRATUM_TIP, STRATUM_V2_TIP, VARDIFF_TIP } from '$lib/termGlosses';
 	import type { AdminMiningSettingsView, MiningBind } from './adminMiningView';
 
 	let {
@@ -107,7 +107,7 @@
 
 	<div class="row-fields">
 		<div class="field port-field">
-			<label class="label" for="port"><Term tip={STRATUM_TIP}>Stratum</Term> port</label>
+			<label class="label" for="port">Miner connection port <Term tip={STRATUM_TIP}>(stratum)</Term></label>
 			<input
 				class="input mono"
 				id="port"
@@ -158,7 +158,7 @@
 				aria-checked={vardiffEnabled}
 			/>
 			<span class="switch-track" class:on={vardiffEnabled}><span class="switch-knob"></span></span>
-			<span class="switch-text">Auto-adjust difficulty (vardiff)</span>
+			<span class="switch-text">Auto-adjust difficulty (<Term tip={VARDIFF_TIP}>vardiff</Term>)</span>
 		</label>
 
 		{#if vardiffEnabled}
