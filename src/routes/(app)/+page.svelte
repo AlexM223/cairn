@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { enhance } from '$app/forms';
 	import { page } from '$app/state';
 	import Icon from '$lib/components/Icon.svelte';
 	import HeartwoodMark from '$lib/components/heartwood/HeartwoodMark.svelte';
@@ -179,6 +180,20 @@
 	const unbackedCount = $derived(page.data.unbackedWallets?.length ?? 0);
 	const health = $derived(deriveHomeHealth({ unbackedCount, chainHealthy }));
 
+	// --- First-run "Set up your Heartwood" card (UX Simplification Wave 3,
+	//     cairn-6c91u.3, spec §7): admin-only, dismissible, calm — no new
+	//     primary buttons, one accent, sats-first untouched. Reuses the same
+	//     chain-health signal as the line above (no extra probe) and the flags
+	//     + instanceMode the layout already threads through page.data. ---
+	// svelte-ignore state_referenced_locally — intentionally seeds local UI
+	// state once; the dismiss action below flips it optimistically instead of
+	// waiting on a reactive re-derivation from `data`.
+	let firstRunDismissed = $state(data.firstRunCardDismissed);
+	const isAdmin = $derived(!!page.data.user?.isAdmin);
+	const miningOff = $derived(page.data.flags?.mining === false);
+	const teamMode = $derived(page.data.instanceMode === 'team');
+	const showFirstRunCard = $derived(isAdmin && !firstRunDismissed);
+
 	const showWalletList = $derived(portfolio ? shouldShowWalletList(portfolio.walletCount) : false);
 	const showRecentActivity = $derived(
 		portfolio ? shouldShowRecentActivity(portfolio.recentActivity.length) : false
@@ -224,6 +239,57 @@
 <div class="home">
 	<GroveField volume="present" />
 	<div class="home-body">
+		{#if showFirstRunCard}
+			<!-- ==================================== FIRST-RUN SETUP CARD (§7) -->
+			<section class="setup-card fade-in" aria-label="Set up your Heartwood">
+				<div class="setup-head">
+					<span class="setup-title">Set up your Heartwood</span>
+					<form
+						method="POST"
+						action="?/dismissFirstRunCard"
+						use:enhance={() => {
+							firstRunDismissed = true;
+							return async () => {};
+						}}
+					>
+						<button type="submit" class="setup-dismiss" aria-label="Dismiss">
+							<Icon name="x" size={15} />
+						</button>
+					</form>
+				</div>
+				<ul class="setup-rows">
+					<li class="setup-row">
+						<span class="setup-row-text">
+							{#if chainHealthy}
+								<span class="mini-dot sage" aria-hidden="true"></span> Your node is connected.
+							{:else}
+								<span class="mini-dot amber" aria-hidden="true"></span> Your node isn't connected yet.
+							{/if}
+						</span>
+						<a class="setup-row-link" href="/settings#node-connection">
+							Node connection <Icon name="chevron-right" size={12} />
+						</a>
+					</li>
+					{#if miningOff}
+						<li class="setup-row">
+							<span class="setup-row-text">Mine bitcoin with people you trust.</span>
+							<a class="setup-row-link" href="/settings#mining">
+								Turn on mining <Icon name="chevron-right" size={12} />
+							</a>
+						</li>
+					{/if}
+					{#if teamMode}
+						<li class="setup-row">
+							<span class="setup-row-text">Bring your crew onto this Heartwood.</span>
+							<a class="setup-row-link" href="/admin/invites">
+								Invite your crew <Icon name="chevron-right" size={12} />
+							</a>
+						</li>
+					{/if}
+				</ul>
+			</section>
+		{/if}
+
 		{#if !data.hasWallets && !portfolio}
 			<!-- ============================================== ZERO-WALLET STATE A -->
 			<section class="zero-state fade-in">
@@ -537,6 +603,108 @@
 	.home-body {
 		position: relative;
 		z-index: 1;
+	}
+
+	/* --- first-run setup card (§7): calm surface, no new primary buttons, one
+	   accent, hairline rows echoing the rest of the app's row grammar. --- */
+	.setup-card {
+		margin-bottom: 28px;
+		padding: 16px 20px;
+		background: var(--surface);
+		border: 1px solid var(--border-control);
+		border-radius: var(--radius-strip);
+	}
+
+	.setup-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+	}
+
+	.setup-title {
+		font-size: 13.5px;
+		font-weight: 600;
+		color: var(--text);
+	}
+
+	.setup-dismiss {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 26px;
+		height: 26px;
+		background: none;
+		border: none;
+		border-radius: var(--radius-icon-btn);
+		color: var(--text-faint);
+		cursor: pointer;
+	}
+
+	.setup-dismiss:hover {
+		color: var(--text-secondary);
+	}
+
+	.setup-rows {
+		list-style: none;
+		margin: 6px 0 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.setup-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		padding: 10px 0;
+		border-top: 1px solid var(--hairline);
+		font-size: 13px;
+	}
+
+	.setup-row-text {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		color: var(--text-secondary);
+	}
+
+	.setup-row-link {
+		flex-shrink: 0;
+		display: inline-flex;
+		align-items: center;
+		gap: 2px;
+		font-size: 12.5px;
+		font-weight: 500;
+		color: var(--accent);
+		white-space: nowrap;
+	}
+
+	.setup-row-link:hover {
+		color: var(--accent-hover);
+	}
+
+	.mini-dot {
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		flex-shrink: 0;
+		display: inline-block;
+	}
+
+	.mini-dot.sage {
+		background: var(--sage);
+	}
+
+	.mini-dot.amber {
+		background: var(--attention);
+	}
+
+	@media (max-width: 900px) {
+		.setup-row {
+			flex-wrap: wrap;
+		}
 	}
 
 	/* --- zero-wallet state A (spec §2.1): ring mark, headline, one button,

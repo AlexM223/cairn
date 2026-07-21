@@ -51,7 +51,7 @@
 </script>
 
 <svelte:head>
-	<title>Invites — Admin — Heartwood</title>
+	<title>Invites — Health — Heartwood</title>
 </svelte:head>
 
 <section class="hw-section create-section fade-in">

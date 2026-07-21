@@ -333,8 +333,12 @@
 	<span class="foot-links">
 		<a class="foot-cta" href="/settings#node-connection">Instance settings →</a>
 		· <a href="/settings#instance">Registration: <span class="cap">{data.registrationMode}</span></a>
+		· <a href="/admin/activity">Activity log</a>
+		{#if isTeam}
+			· <a href="/admin/invites">Invites</a>
+		{/if}
 		· <a href="/admin/backup">Backup schedule</a>
-		·		· <a href="/admin/notifications">Notification delivery</a>
+		· <a href="/admin/notifications">Notification delivery</a>
 		· <a href="/admin/announcements">Announcements</a>
 		· <a href="/admin/referral-settings">Referrals</a>
 		· <a href="/admin/logs">Logs</a>

@@ -50,7 +50,7 @@
 </script>
 
 <svelte:head>
-	<title>Users — Admin — Heartwood</title>
+	<title>Users — Health — Heartwood</title>
 </svelte:head>
 
 {#if form?.error}

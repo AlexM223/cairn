@@ -75,7 +75,7 @@
 </script>
 
 <svelte:head>
-	<title>Mining — Admin — Heartwood</title>
+	<title>Mining — Health — Heartwood</title>
 </svelte:head>
 
 {#if form?.error}

@@ -19,7 +19,7 @@
 </script>
 
 <svelte:head>
-	<title>Referral links — Admin — Heartwood</title>
+	<title>Referral links — Health — Heartwood</title>
 </svelte:head>
 
 {#if data.flags?.referral_links === false}

@@ -83,7 +83,7 @@
 </script>
 
 <svelte:head>
-	<title>Announcements — Admin — Heartwood</title>
+	<title>Announcements — Health — Heartwood</title>
 </svelte:head>
 
 {#if !data.enabled}

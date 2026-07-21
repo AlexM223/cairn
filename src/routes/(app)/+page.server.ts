@@ -1,5 +1,9 @@
 import { db } from '$lib/server/db';
-import type { PageServerLoad } from './$types';
+import { getSetting, setSetting } from '$lib/server/settings';
+import { requireAdmin } from '$lib/server/api';
+import type { Actions, PageServerLoad } from './$types';
+
+const FIRST_RUN_CARD_DISMISSED_KEY = 'first_run_card_dismissed';
 
 export const load: PageServerLoad = async ({ locals, parent }) => {
 	// The layout's load() redirects to /login when locals.user is null, but
@@ -22,6 +26,24 @@ export const load: PageServerLoad = async ({ locals, parent }) => {
 		).n) > 0;
 
 	return {
-		hasWallets
+		hasWallets,
+		// First-run "Set up your Heartwood" card (UX Simplification Wave 3,
+		// cairn-6c91u.3, docs/UX-SIMPLIFICATION-SPEC.md §7): admin-only,
+		// dismissible. Persisted the same way as the Umbrel assisted-connect
+		// card's dismiss (settings.ts's dismissCoreDetection action) — one
+		// instance-wide settings row, not a per-user preference. Non-admins
+		// never see the card, so this is always reported dismissed for them —
+		// no reason to leak the real value into a payload that never renders it.
+		firstRunCardDismissed: locals.user!.isAdmin
+			? getSetting(FIRST_RUN_CARD_DISMISSED_KEY) === '1'
+			: true
 	};
+};
+
+export const actions: Actions = {
+	dismissFirstRunCard: async (event) => {
+		requireAdmin(event);
+		setSetting(FIRST_RUN_CARD_DISMISSED_KEY, '1');
+		return { dismissed: true };
+	}
 };

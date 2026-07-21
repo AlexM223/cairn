@@ -131,10 +131,11 @@ if (!globalThis.__cairnProcessGuardInstalled) {
 // is invoked once into the module-scope `initReady` promise, and `handle`
 // awaits that promise as its first step instead.
 async function init(): Promise<void> {
-	// UX Wave A (docs/UX-PLAN.md): decide whether the block explorer defaults
-	// off, before anything below can create a user. MUST run first — its
-	// "genuinely new install" test is a literal zero-user database, which is
-	// only true before bootstrapAdminFromEnv() (next) runs. See
+	// UX Simplification Wave 3 (cairn-6c91u.3, docs/UX-SIMPLIFICATION-SPEC.md
+	// §6): decide whether the block explorer defaults on for a fresh install,
+	// before anything below can create a user. MUST run first — its "genuinely
+	// new install" test is a literal zero-user database, which is only true
+	// before bootstrapAdminFromEnv() (next) runs. See
 	// explorerDefaultMigration.ts for the full rationale. Idempotent; never
 	// throws.
 	try {

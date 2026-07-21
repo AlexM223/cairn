@@ -158,7 +158,7 @@
 </script>
 
 <svelte:head>
-	<title>Notifications — Admin — Heartwood</title>
+	<title>Notifications — Health — Heartwood</title>
 </svelte:head>
 
 <div class="stack settings-form fade-in">

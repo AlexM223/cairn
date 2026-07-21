@@ -97,7 +97,7 @@
 	}
 </script>
 
-<svelte:head><title>Activity log — Admin — Heartwood</title></svelte:head>
+<svelte:head><title>Activity log — Health — Heartwood</title></svelte:head>
 
 <div class="head">
 	<div>
