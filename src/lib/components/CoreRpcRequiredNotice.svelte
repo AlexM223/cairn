@@ -56,7 +56,7 @@
 	// (cairn-zoz8.8) reintroduces the Core RPC subgroup on the admin settings
 	// page; until it names its own anchor, link to the page generally. If/when it
 	// adds an id (e.g. `#core-rpc`), append it here so the link deep-jumps.
-	const SETTINGS_HREF = '/admin/settings';
+	const SETTINGS_HREF = '/settings#node-connection';
 </script>
 
 {#if compact}

@@ -119,7 +119,7 @@ export const FEATURE_FLAGS: FeatureFlagDef[] = [
 		// deliberately avoids "disabled by your administrator" so it reads
 		// correctly for a solo self-hoster who never touched any setting.
 		userMessage:
-			"The explorer isn't enabled on this instance. An admin can turn it on under Admin → Feature flags.",
+			"The explorer isn't enabled on this instance. An admin can turn it on in Settings → Explorer.",
 		defaultEnabled: true
 	},
 
@@ -240,7 +240,7 @@ export const FEATURE_FLAGS: FeatureFlagDef[] = [
 		// before they've even added a wallet. Not an admin restriction, so this
 		// deliberately avoids "disabled by your administrator" phrasing.
 		userMessage:
-			"Mining isn't enabled on this instance. An admin can turn it on under Admin → Feature flags.",
+			"Mining isn't enabled on this instance. An admin can turn it on in Settings → Mining.",
 		defaultEnabled: true
 	},
 	{

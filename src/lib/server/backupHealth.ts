@@ -130,7 +130,7 @@ function scanStale(nowMs: number): void {
 			title: 'Instance backup is getting old',
 			body: `The last instance backup was ${days} days ago. Download a fresh encrypted backup so a recent copy exists off this server.`,
 			detail: { lastBackupAt: last, ageDays: days },
-			link: '/admin/settings'
+			link: '/settings#node-connection'
 		});
 		setSetting('backup_stale_notified_at', new Date(nowMs).toISOString());
 		log.info({ ageDays: days }, 'backup_stale reminder fired');

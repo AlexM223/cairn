@@ -116,7 +116,7 @@
 			<strong>{headline(health)}</strong>
 			<span class="detail">{subline(health)}</span>
 			{#if isAdmin}
-				<a href="/admin/settings">
+				<a href="/settings#node-connection">
 					{health.neverConfigured ? 'Connect a node' : 'Review connection settings'}
 				</a>
 			{/if}

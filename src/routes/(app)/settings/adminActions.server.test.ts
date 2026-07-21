@@ -1,19 +1,16 @@
-// Regression test for the admin-settings action auth-bypass fix. SvelteKit
-// form `actions` do NOT run a parent route's load() (see hooks.server.ts's
-// admin-guard comment) — a POST straight to /admin/settings?/save (or any
-// other action here) skipped the layout's isAdmin gate entirely and, before
-// the fix, reached setSetting/setSecretSetting/reconfigureChain/testElectrum/
-// testCoreRpc for an anonymous or non-admin caller. Every action now starts
-// with `if (!locals.user?.isAdmin) return fail(403, ...)`. This pins that
-// down for anon + non-admin, confirms the mutation is never invoked in either
-// denied case, and confirms a real admin still reaches it.
+// Regression test for the merged Settings page's admin actions
+// (docs/UX-SIMPLIFICATION-SPEC.md §4.2, cairn-6c91u.2). The old
+// /admin/settings actions moved wholesale into /settings; /settings is NOT under
+// an admin layout, so each migrated action's own `requireAdmin(event)` guard is
+// the ONLY server-side boundary. requireAdmin throws 401 for an anonymous caller
+// and 403 for a signed-in non-admin, and never reaches the mutation in either
+// case; a real admin still reaches it. The extensive core_rpc_* / chainNetwork /
+// assisted-connect regressions (cairn-6uok / x6pr / 3p9z) ride along unchanged.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('$lib/server/settings', async (importOriginal) => {
 	const mod = await importOriginal<typeof import('$lib/server/settings')>();
-	// readSecretSetting is stubbed so the testCoreRpc action's "blank password =
-	// use the stored one" fallback doesn't reach the real DB in these unit tests.
 	return {
 		...mod,
 		setSetting: vi.fn(),
@@ -57,16 +54,13 @@ import { actions } from './+page.server';
 const ADMIN = { id: 1, email: 'admin@example.com', displayName: 'Admin', isAdmin: true };
 const NON_ADMIN = { id: 2, email: 'user@example.com', displayName: 'User', isAdmin: false };
 
-/** Minimal RequestEvent for invoking a settings action. `locals.user` is
- *  `undefined` for the anon case — same as hooks.server.ts leaves it when
- *  getSessionUser() finds no cookie. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function makeEvent(user: typeof ADMIN | undefined, fields: Record<string, string> = {}): any {
 	const body = new FormData();
 	for (const [k, v] of Object.entries(fields)) body.set(k, v);
 	return {
 		locals: { user },
-		request: new Request('http://localhost/admin/settings', { method: 'POST', body })
+		request: new Request('http://localhost/settings', { method: 'POST', body })
 	};
 }
 
@@ -74,80 +68,100 @@ beforeEach(() => {
 	vi.clearAllMocks();
 });
 
-describe('admin/settings actions — anon and non-admin are denied a 403 fail(), mutation never runs', () => {
+describe('settings admin actions — anon (401) and non-admin (403) are denied, mutation never runs', () => {
 	it('save', async () => {
-		for (const user of [undefined, NON_ADMIN]) {
-			const res = await actions.save(makeEvent(user));
-			expect(res).toMatchObject({ status: 403 });
-			expect(setSetting).not.toHaveBeenCalled();
-			expect(setSecretSetting).not.toHaveBeenCalled();
-			expect(reconfigureChain).not.toHaveBeenCalled();
-		}
+		await expect(actions.save(makeEvent(undefined))).rejects.toMatchObject({ status: 401 });
+		await expect(actions.save(makeEvent(NON_ADMIN))).rejects.toMatchObject({ status: 403 });
+		expect(setSetting).not.toHaveBeenCalled();
+		expect(setSecretSetting).not.toHaveBeenCalled();
+		expect(reconfigureChain).not.toHaveBeenCalled();
 	});
 
 	it('saveAgreement', async () => {
-		for (const user of [undefined, NON_ADMIN]) {
-			const res = await actions.saveAgreement(makeEvent(user));
-			expect(res).toMatchObject({ status: 403 });
-			expect(setUserAgreement).not.toHaveBeenCalled();
-		}
+		await expect(actions.saveAgreement(makeEvent(undefined))).rejects.toMatchObject({ status: 401 });
+		await expect(actions.saveAgreement(makeEvent(NON_ADMIN))).rejects.toMatchObject({ status: 403 });
+		expect(setUserAgreement).not.toHaveBeenCalled();
 	});
 
 	it('testElectrum', async () => {
-		for (const user of [undefined, NON_ADMIN]) {
-			const res = await actions.testElectrum(
-				makeEvent(user, { electrumHost: '10.0.0.5', electrumPort: '50001' })
-			);
-			expect(res).toMatchObject({ status: 403 });
-			expect(testElectrum).not.toHaveBeenCalled();
-		}
+		const fields = { electrumHost: '10.0.0.5', electrumPort: '50001' };
+		await expect(actions.testElectrum(makeEvent(undefined, fields))).rejects.toMatchObject({
+			status: 401
+		});
+		await expect(actions.testElectrum(makeEvent(NON_ADMIN, fields))).rejects.toMatchObject({
+			status: 403
+		});
+		expect(testElectrum).not.toHaveBeenCalled();
 	});
 
 	it('testCoreRpc', async () => {
-		for (const user of [undefined, NON_ADMIN]) {
-			const res = await actions.testCoreRpc(
-				makeEvent(user, { coreRpcUrl: 'http://127.0.0.1:8332' })
-			);
-			expect(res).toMatchObject({ status: 403 });
-			expect(testCoreRpc).not.toHaveBeenCalled();
-		}
+		const fields = { coreRpcUrl: 'http://127.0.0.1:8332' };
+		await expect(actions.testCoreRpc(makeEvent(undefined, fields))).rejects.toMatchObject({
+			status: 401
+		});
+		await expect(actions.testCoreRpc(makeEvent(NON_ADMIN, fields))).rejects.toMatchObject({
+			status: 403
+		});
+		expect(testCoreRpc).not.toHaveBeenCalled();
+	});
+
+	it('toggleFlag', async () => {
+		const fields = { key: 'mining', enabled: 'true' };
+		await expect(actions.toggleFlag(makeEvent(undefined, fields))).rejects.toMatchObject({
+			status: 401
+		});
+		await expect(actions.toggleFlag(makeEvent(NON_ADMIN, fields))).rejects.toMatchObject({
+			status: 403
+		});
 	});
 
 	it('unlockTeamMode', async () => {
-		for (const user of [undefined, NON_ADMIN]) {
-			const res = await actions.unlockTeamMode(makeEvent(user));
-			expect(res).toMatchObject({ status: 403 });
-			expect(setSetting).not.toHaveBeenCalled();
-		}
+		await expect(actions.unlockTeamMode(makeEvent(undefined))).rejects.toMatchObject({
+			status: 401
+		});
+		await expect(actions.unlockTeamMode(makeEvent(NON_ADMIN))).rejects.toMatchObject({ status: 403 });
+		expect(setSetting).not.toHaveBeenCalled();
 	});
 
 	it('lockTeamMode', async () => {
-		for (const user of [undefined, NON_ADMIN]) {
-			const res = await actions.lockTeamMode(makeEvent(user));
-			expect(res).toMatchObject({ status: 403 });
-			expect(setSetting).not.toHaveBeenCalled();
-		}
+		await expect(actions.lockTeamMode(makeEvent(undefined))).rejects.toMatchObject({ status: 401 });
+		await expect(actions.lockTeamMode(makeEvent(NON_ADMIN))).rejects.toMatchObject({ status: 403 });
+		expect(setSetting).not.toHaveBeenCalled();
 	});
 
 	it('resetInstance', async () => {
-		for (const user of [undefined, NON_ADMIN]) {
-			const res = await actions.resetInstance(makeEvent(user, { confirm: 'RESET' }));
-			expect(res).toMatchObject({ status: 403 });
-			expect(resetInstance).not.toHaveBeenCalled();
-			expect(invalidateWalletCache).not.toHaveBeenCalled();
-		}
+		await expect(
+			actions.resetInstance(makeEvent(undefined, { confirm: 'RESET' }))
+		).rejects.toMatchObject({ status: 401 });
+		await expect(
+			actions.resetInstance(makeEvent(NON_ADMIN, { confirm: 'RESET' }))
+		).rejects.toMatchObject({ status: 403 });
+		expect(resetInstance).not.toHaveBeenCalled();
+		expect(invalidateWalletCache).not.toHaveBeenCalled();
 	});
 
 	it('dismissCoreDetection', async () => {
-		for (const user of [undefined, NON_ADMIN]) {
-			const res = await actions.dismissCoreDetection(makeEvent(user));
-			expect(res).toMatchObject({ status: 403 });
-			expect(setSetting).not.toHaveBeenCalled();
-		}
+		await expect(actions.dismissCoreDetection(makeEvent(undefined))).rejects.toMatchObject({
+			status: 401
+		});
+		await expect(actions.dismissCoreDetection(makeEvent(NON_ADMIN))).rejects.toMatchObject({
+			status: 403
+		});
+		expect(setSetting).not.toHaveBeenCalled();
+	});
+
+	it('switchCoreRpcToManual', async () => {
+		await expect(actions.switchCoreRpcToManual(makeEvent(undefined))).rejects.toMatchObject({
+			status: 401
+		});
+		await expect(actions.switchCoreRpcToManual(makeEvent(NON_ADMIN))).rejects.toMatchObject({
+			status: 403
+		});
+		expect(setSetting).not.toHaveBeenCalled();
 	});
 });
 
-describe('admin/settings actions — a real admin still reaches the mutation', () => {
+describe('settings admin actions — a real admin still reaches the mutation', () => {
 	it('save persists settings and reconfigures the chain', async () => {
 		const res = await actions.save(makeEvent(ADMIN, { electrumPoolSize: '2' }));
 		expect(res).toEqual({ saved: true });
@@ -214,18 +228,18 @@ describe('admin/settings actions — a real admin still reaches the mutation', (
 		expect(res).toEqual({ coreRpcDismissed: true });
 		expect(setSetting).toHaveBeenCalledWith('core_rpc_detected', 'dismissed');
 	});
+
+	it('switchCoreRpcToManual stamps manual provenance', async () => {
+		const res = await actions.switchCoreRpcToManual(makeEvent(ADMIN));
+		expect(res).toEqual({ coreRpcSwitchedToManual: true });
+		expect(setSetting).toHaveBeenCalledWith('core_rpc_provisioned_by', 'manual');
+	});
 });
 
-// Regression tests for cairn-6uok: core_rpc_url/core_rpc_user/core_rpc_pass
-// used to be written ONLY inside the `connectionMode === 'custom'` block, so
-// (a) a 'public'-mode submission that included Core RPC fields (e.g. the
-// Umbrel Wave B assisted-connect flow) silently dropped them — never
-// persisted — and (b) within that block, a field simply absent from the
-// FormData (`form.get(...) ?? ''`) was written as an empty string, clearing
-// whatever was already stored. The fix moves the three writes outside the
-// custom-only block and gates each on `form.has(...)`, so "absent from the
-// payload" now always means "leave unchanged," in every connectionMode.
-describe('admin/settings save action — core_rpc_* persistence (cairn-6uok)', () => {
+// Regression tests for cairn-6uok: core_rpc_url/core_rpc_user/core_rpc_pass are
+// only written when PRESENT in the payload (form.has), so "absent" means "leave
+// unchanged," in every connectionMode.
+describe('settings save action — core_rpc_* persistence (cairn-6uok)', () => {
 	it('preserves existing core_rpc_* settings when the payload omits them entirely (public mode)', async () => {
 		const res = await actions.save(
 			makeEvent(ADMIN, { connectionMode: 'public', electrumPoolSize: '2' })
@@ -269,7 +283,7 @@ describe('admin/settings save action — core_rpc_* persistence (cairn-6uok)', (
 		expect(setSecretSetting).toHaveBeenCalledWith('core_rpc_pass', 'hunter2');
 	});
 
-	it('persists core_rpc_* fields present in the payload even while connectionMode is public (assisted-connect), and never mutates connection_mode away from public', async () => {
+	it('persists core_rpc_* fields present in the payload even while connectionMode is public, and never mutates connection_mode away from public', async () => {
 		const res = await actions.save(
 			makeEvent(ADMIN, {
 				connectionMode: 'public',
@@ -301,7 +315,7 @@ describe('admin/settings save action — core_rpc_* persistence (cairn-6uok)', (
 		expect(setSetting).toHaveBeenCalledWith('core_rpc_user', '');
 	});
 
-	it('a blank-but-present coreRpcPass does not overwrite the stored secret (existing "blank means keep" convention)', async () => {
+	it('a blank-but-present coreRpcPass does not overwrite the stored secret', async () => {
 		const res = await actions.save(
 			makeEvent(ADMIN, {
 				connectionMode: 'public',
@@ -341,10 +355,6 @@ describe('admin/settings save action — core_rpc_* persistence (cairn-6uok)', (
 		expect(setSetting).toHaveBeenCalledWith('electrum_port', '50001');
 	});
 
-	// Esplora is fully removed (cairn-zoz8.16): a stray esploraUrl field on a
-	// submission (e.g. an old cached form, or a scripted caller) must be silently
-	// ignored — never persisted, never an error, and it must not block the rest of
-	// the save.
 	it('ignores a stray esploraUrl form field without error or persistence', async () => {
 		const res = await actions.save(
 			makeEvent(ADMIN, {
@@ -360,12 +370,9 @@ describe('admin/settings save action — core_rpc_* persistence (cairn-6uok)', (
 	});
 });
 
-// Regression tests for cairn-x6pr (admin UI follow-up to cairn-10ox): the
-// chainNetwork field is only read/written inside the connectionMode ===
-// 'custom' branch, mirroring getChainConfig()'s "always mainnet in public
-// mode" behavior — a chainNetwork submitted alongside connectionMode=public
-// must be silently ignored, never persisted.
-describe('admin/settings save action — chainNetwork (cairn-x6pr)', () => {
+// Regression tests for cairn-x6pr: chainNetwork is only read/written inside the
+// connectionMode === 'custom' branch.
+describe('settings save action — chainNetwork (cairn-x6pr)', () => {
 	it('persists chain_network when present in custom mode', async () => {
 		const res = await actions.save(
 			makeEvent(ADMIN, {
@@ -421,15 +428,11 @@ describe('admin/settings save action — chainNetwork (cairn-x6pr)', () => {
 	});
 });
 
-// Regression tests for the Umbrel Wave B assisted-connect follow-up
-// (cairn-6uok's own scope note; filed as cairn-3p9z): the `save` action's
-// `coreRpcAssisted=umbrel` branch is a distinct, minimal submission from the
-// detected-Core-on-Umbrel card. Unlike the general save path above, it (a)
-// validates with testCoreRpc() BEFORE persisting anything, (b) stamps
-// core_rpc_provisioned_by='umbrel-detect' on success, and (c) returns before
-// touching registration_mode/connection_mode/electrum_*/etc, so it can never
-// mutate the operator's connection_mode as a side effect of connecting Core.
-describe('admin/settings save action — Umbrel Wave B assisted-connect (cairn-6uok follow-up cairn-3p9z)', () => {
+// Regression tests for the Umbrel Wave B assisted-connect (cairn-3p9z): the
+// `coreRpcAssisted=umbrel` branch validates with testCoreRpc() BEFORE persisting,
+// stamps 'umbrel-detect' provenance, and returns before touching
+// registration_mode/connection_mode.
+describe('settings save action — Umbrel Wave B assisted-connect (cairn-3p9z)', () => {
 	it('validates with testCoreRpc() before persisting, then persists core_rpc_* and stamps provenance', async () => {
 		const res = await actions.save(
 			makeEvent(ADMIN, {
@@ -451,25 +454,8 @@ describe('admin/settings save action — Umbrel Wave B assisted-connect (cairn-6
 		expect(setSecretSetting).toHaveBeenCalledWith('core_rpc_pass', 'hunter2');
 		expect(setSetting).toHaveBeenCalledWith('core_rpc_provisioned_by', 'umbrel-detect');
 		expect(reconfigureChain).toHaveBeenCalledTimes(1);
-		// Never touches connection_mode/registration_mode — the assisted branch
-		// returns before the general save logic runs.
 		expect(setSetting).not.toHaveBeenCalledWith('connection_mode', expect.anything());
 		expect(setSetting).not.toHaveBeenCalledWith('registration_mode', expect.anything());
-	});
-
-	it('persists core_rpc_* mode-independently even while connectionMode would be public', async () => {
-		const res = await actions.save(
-			makeEvent(ADMIN, {
-				coreRpcAssisted: 'umbrel',
-				connectionMode: 'public',
-				coreRpcUrl: 'http://10.21.21.8:8332',
-				coreRpcUser: 'umbrel',
-				coreRpcPass: 'hunter2'
-			})
-		);
-		expect(res).toMatchObject({ saved: true });
-		expect(setSetting).toHaveBeenCalledWith('core_rpc_url', 'http://10.21.21.8:8332');
-		expect(setSetting).not.toHaveBeenCalledWith('connection_mode', expect.anything());
 	});
 
 	it('a testCoreRpc() failure persists nothing and returns the error', async () => {

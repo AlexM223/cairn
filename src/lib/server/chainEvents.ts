@@ -83,7 +83,7 @@ export function wireChainEvents(electrum: ElectrumPool): void {
 				title: 'Bitcoin node connection restored',
 				body: `Heartwood reconnected to its Bitcoin backend (${server}).`,
 				detail: { server },
-				link: '/admin/settings'
+				link: '/settings#node-connection'
 			});
 		}
 		if (connected === true) return;
@@ -113,7 +113,7 @@ export function wireChainEvents(electrum: ElectrumPool): void {
 					title: 'Bitcoin node connection down',
 					body: `Heartwood has been unable to reach its Bitcoin backend (${server}) for over a minute. Wallet balances and sends may be stale until it reconnects.`,
 					detail: { server },
-					link: '/admin/settings'
+					link: '/settings#node-connection'
 				});
 			}, OUTAGE_GRACE_MS);
 			outageTimer.unref?.();

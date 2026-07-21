@@ -13,11 +13,20 @@
 	import GroveField from '$lib/components/heartwood/GroveField.svelte';
 	import BackCircle from '$lib/components/heartwood/BackCircle.svelte';
 	import Modal from '$lib/components/heartwood/Modal.svelte';
+	import Term from '$lib/components/Term.svelte';
+	import { ELECTRUM_TIP, CORE_RPC_TIP } from '$lib/termGlosses';
+	import { CHAIN_DOWN, CHAIN_DOWN_PROXY } from '$lib/chainStatusCopy';
+	import { formatNumber } from '$lib/format';
 	import { showContactsRow } from '$lib/settingsView';
+	import type { SubmitFunction } from '@sveltejs/kit';
 
-	let { data } = $props();
+	let { data, form } = $props();
 
 	const user = $derived(page.data.user);
+	// Admin-config groups (Node connection / Mining / Explorer / Instance) render
+	// only for admins; their backing data lives under data.admin (null for
+	// non-admins, so it never leaves the server for a regular user — spec §4.2).
+	const admin = $derived(data.admin);
 	let savingProfile = $state(false);
 	let savingPassword = $state(false);
 
@@ -197,6 +206,94 @@
 	}
 
 	const avatarInitial = $derived((user?.displayName || user?.email || '?').trim().charAt(0).toUpperCase());
+
+	// ======================================================================
+	// Admin-config groups (spec §4.1: Node connection / Mining / Explorer /
+	// Instance). Moved verbatim from the old /admin/settings page. Every value
+	// here is under `admin` (= data.admin), which is null for non-admins — so
+	// these derivations optional-chain through it and the markup is gated on
+	// `user.isAdmin && admin`. None of this state is meaningful for a regular
+	// user; it just idles.
+	// ======================================================================
+
+	// svelte-ignore state_referenced_locally — intentionally seeds local UI state
+	let connectionMode = $state(admin?.settings.connectionMode ?? 'public');
+	let saving = $state(false);
+	let testing = $state<'electrum' | 'coreRpc' | null>(null);
+
+	// Umbrel Wave B assisted-connect constants — mirror
+	// src/lib/server/umbrelCoreProbe.ts (that module is $lib/server-only and
+	// can't be imported into this isomorphic component). NEVER read from a probe
+	// response — keep in sync only if the well-known Umbrel address changes.
+	const UMBREL_CORE_RPC_URL = 'http://10.21.21.8:8332';
+	const UMBREL_CORE_RPC_USER = 'umbrel';
+
+	// svelte-ignore state_referenced_locally
+	let coreRpcUrlField = $state(admin?.settings.coreRpcUrl ?? '');
+	// svelte-ignore state_referenced_locally
+	let coreRpcUserField = $state(admin?.settings.coreRpcUser ?? '');
+	let coreRpcPassEl = $state<HTMLInputElement | undefined>();
+
+	const coreRpcIsConfigured = $derived(!!admin?.settings.coreRpcUrl);
+	const coreRpcAutoProvisioned = $derived(
+		coreRpcIsConfigured &&
+			(admin?.settings.coreRpcProvisionedBy === 'umbrel-env' ||
+				admin?.settings.coreRpcProvisionedBy === 'umbrel-detect')
+	);
+
+	let assistedCoreRpcPass = $state('');
+
+	type TestResult = { ok: boolean; tipHeight?: number; error?: string } | null;
+	type CoreRpcTestResult =
+		| { ok: boolean; blockHeight?: number; chain?: string; error?: string }
+		| null;
+
+	let electrumResult = $state<TestResult>(null);
+	let coreRpcResult = $state<CoreRpcTestResult>(null);
+
+	// User agreement editor (its own form/action, independent of chain settings).
+	// svelte-ignore state_referenced_locally
+	let agreementText = $state(admin?.agreement.text ?? '');
+	// svelte-ignore state_referenced_locally
+	let operatorName = $state(admin?.agreement.operator ?? '');
+	let savingAgreement = $state(false);
+	let savingRegistration = $state(false);
+	let togglingTeamMode = $state(false);
+
+	// Factory reset (moved into the admin Instance group, spec §4.1 / brief).
+	let confirmingReset = $state(false);
+	let resetConfirmText = $state('');
+	let resetting = $state(false);
+
+	$effect(() => {
+		if (form?.electrumTest) electrumResult = form.electrumTest as TestResult;
+	});
+	$effect(() => {
+		if (form?.coreRpcTest) coreRpcResult = form.coreRpcTest as CoreRpcTestResult;
+	});
+
+	const chainHealth = $derived(admin?.chainHealth ?? null);
+	function agoLabel(atMs: number | null): string {
+		if (atMs === null) return '';
+		const secs = Math.max(0, Math.round((Date.now() - atMs) / 1000));
+		if (secs < 60) return 'just now';
+		const mins = Math.round(secs / 60);
+		if (mins < 60) return `${mins}m ago`;
+		return `${Math.round(mins / 60)}h ago`;
+	}
+
+	// Shared enhance for the Mining/Explorer instance toggles + the team-mode and
+	// agreement/registration mini-forms: reload the page data (so the toggle
+	// reflects and the nav can pick up a flag flip on its next resolution) and
+	// surface a toast.
+	function toggleEnhance(successMsg: string, errorMsg: string): SubmitFunction {
+		return () =>
+			async ({ update, result }) => {
+				await update();
+				if (result.type === 'success') toast.success(successMsg);
+				else if (result.type === 'failure') toast.error(errorMsg);
+			};
+	}
 </script>
 
 <svelte:head>
@@ -242,6 +339,13 @@
 			<a href="#set-security">Security</a>
 			<a href="#set-advanced">Advanced</a>
 			<a href="#set-danger">Danger zone</a>
+			{#if user.isAdmin}
+				<span class="settings-nav-sep">Admin</span>
+				<a href="#node-connection">Node connection</a>
+				<a href="#mining">Mining</a>
+				<a href="#explorer">Explorer</a>
+				<a href="#instance">Instance</a>
+			{/if}
 		</nav>
 
 		<div class="settings-content">
@@ -797,6 +901,777 @@
 		</div>
 		{/if}
 	</section>
+
+	{#if user.isAdmin && admin}
+		<!-- ============ Admin-config groups (spec §4.1, appended for admins) ==== -->
+
+		<!-- ===================================== NODE CONNECTION (group 6) -->
+		<h2 class="group-title" id="node-connection">Node connection</h2>
+		<p class="group-lead hint">
+			Where Heartwood reads chain data from. Public servers work out of the box; point it at your
+			own node for full sovereignty.
+		</p>
+
+		<form
+			id="settings-form"
+			method="POST"
+			action="?/save"
+			class="admin-form"
+			use:enhance={({ action }) => {
+				const which = action.search.includes('testElectrum')
+					? ('electrum' as const)
+					: action.search.includes('testCoreRpc')
+						? ('coreRpc' as const)
+						: null;
+				if (which) testing = which;
+				else saving = true;
+
+				const watchdog = setTimeout(() => {
+					if (which && testing === which) {
+						const timedOut = { ok: false, error: 'Timed out — no response from the server.' };
+						if (which === 'electrum') electrumResult = timedOut;
+						else coreRpcResult = timedOut;
+					}
+					testing = null;
+					saving = false;
+				}, 20_000);
+
+				return async ({ update, result }) => {
+					clearTimeout(watchdog);
+					const wasSaving = !which;
+					saving = false;
+					testing = null;
+					await update({ reset: false });
+					if (wasSaving) {
+						if (result.type === 'failure') {
+							const msg = result.data?.error;
+							toast.error(typeof msg === 'string' ? msg : 'Could not save settings.');
+						} else if (result.type === 'success') {
+							toast.success('Saved — connection updated.');
+						}
+					}
+				};
+			}}
+		>
+			<div class="radio-group">
+				<label class="radio-card" class:selected={connectionMode === 'public'}>
+					<input type="radio" name="connectionMode" value="public" bind:group={connectionMode} />
+					<span class="radio-label">Public servers <span class="badge badge-neutral">default</span></span>
+					<span class="radio-desc">electrum.blockstream.info (Electrum) — always mainnet</span>
+				</label>
+				<label class="radio-card" class:selected={connectionMode === 'custom'}>
+					<input type="radio" name="connectionMode" value="custom" bind:group={connectionMode} />
+					<span class="radio-label">Your own node</span>
+					<span class="radio-desc">Your own Electrum server and data sources</span>
+				</label>
+			</div>
+
+			{#if admin.settings.chainProvisionedBy === 'umbrel-env' || admin.settings.chainProvisionedBy === 'umbrel-probe'}
+				<div class="provenance-card fade-in" role="status">
+					<span class="provenance-dot"></span>
+					<div class="provenance-text">
+						<span class="provenance-title">
+							Connected automatically to your Umbrel's Electrum server
+						</span>
+						<span class="provenance-sub">
+							{admin.settings.chainProvisionedBy === 'umbrel-env'
+								? 'Set up from your Umbrel Bitcoin Node app.'
+								: 'Found automatically on your Umbrel.'} You can still point this at a different
+							server below.
+						</span>
+					</div>
+				</div>
+			{/if}
+
+			{#if coreRpcAutoProvisioned}
+				<div class="provenance-card fade-in" role="status">
+					<span class="provenance-dot"></span>
+					<div class="provenance-text">
+						<span class="provenance-title">Connected automatically to your Umbrel's Bitcoin node</span>
+						<span class="provenance-sub">
+							{admin.settings.coreRpcProvisionedBy === 'umbrel-env'
+								? 'Set up from your Umbrel Bitcoin Node app.'
+								: 'Connected using the details found on your Umbrel.'}
+						</span>
+						<span class="provenance-detail mono">
+							{admin.settings.coreRpcUrl}{#if admin.settings.coreRpcUser}
+								· user {admin.settings.coreRpcUser}{/if}
+							· password {admin.settings.hasCoreRpcPass ? '••••••••' : '(none)'}
+						</span>
+					</div>
+					<button
+						type="submit"
+						form="settings-form"
+						formaction="?/switchCoreRpcToManual"
+						class="btn btn-ghost btn-sm"
+						disabled={testing !== null || saving}
+					>
+						Switch to manual
+					</button>
+				</div>
+			{/if}
+
+			{#if admin.settings.coreRpcDetected === 'umbrel' && !coreRpcIsConfigured}
+				<div class="provenance-card core-detect fade-in" role="status">
+					<span class="provenance-dot detect"></span>
+					<div class="provenance-text">
+						<span class="provenance-title">Bitcoin Core detected on your Umbrel</span>
+						<span class="provenance-sub">
+							Connect it for full block and transaction details in the explorer. Paste the RPC
+							password (copy it from your Umbrel Bitcoin app's Connect screen) below — the
+							address and username are already filled in.
+						</span>
+						<input type="hidden" name="coreRpcAssisted" value="umbrel" form="settings-form" />
+						<input type="hidden" name="coreRpcUrl" value={UMBREL_CORE_RPC_URL} form="settings-form" />
+						<input type="hidden" name="coreRpcUser" value={UMBREL_CORE_RPC_USER} form="settings-form" />
+						<input
+							class="input mono assisted-pass"
+							type="password"
+							autocomplete="off"
+							placeholder="RPC password"
+							bind:value={assistedCoreRpcPass}
+							name="coreRpcPass"
+							form="settings-form"
+						/>
+						{#if form?.coreRpcTest && !form.coreRpcTest.ok}
+							<span class="badge badge-error">{form.coreRpcTest.error ?? 'Failed'}</span>
+						{/if}
+					</div>
+					<div class="assisted-connect-actions">
+						<button
+							type="submit"
+							form="settings-form"
+							formaction="?/save"
+							class="btn btn-secondary btn-sm"
+							disabled={testing !== null || saving}
+						>
+							{saving ? 'Connecting…' : 'Connect'}
+						</button>
+						<button
+							type="submit"
+							form="settings-form"
+							formaction="?/dismissCoreDetection"
+							class="btn btn-ghost btn-sm"
+							disabled={testing !== null || saving}
+						>
+							Dismiss
+						</button>
+					</div>
+				</div>
+			{/if}
+
+			{#if connectionMode === 'custom'}
+				<div class="custom-fields fade-in">
+					<div class="subgroup">
+						<span class="subgroup-title">Network</span>
+						<p class="hint">
+							Which Bitcoin network your server and node are actually running. Changing this
+							changes which keys and addresses are valid — only switch it if your Electrum server
+							and Core node are on that network too.
+						</p>
+						<div class="field">
+							<label class="label" for="chainNetwork">Network</label>
+							<select
+								class="input"
+								id="chainNetwork"
+								name="chainNetwork"
+								value={admin.settings.chainNetwork}
+							>
+								<option value="mainnet">Mainnet</option>
+								<option value="testnet">Testnet</option>
+								<option value="regtest">Regtest</option>
+							</select>
+						</div>
+					</div>
+
+					<div class="subgroup">
+						<span class="subgroup-title">Your node address (<Term tip={ELECTRUM_TIP}>Electrum</Term> server)</span>
+						<div class="row-fields">
+							<div class="field grow">
+								<label class="label" for="electrumHost">Host</label>
+								<input
+									class="input mono"
+									id="electrumHost"
+									name="electrumHost"
+									placeholder="umbrel.local"
+									value={admin.settings.electrumHost}
+								/>
+							</div>
+							<div class="field port">
+								<label class="label" for="electrumPort">Port</label>
+								<input
+									class="input mono"
+									id="electrumPort"
+									name="electrumPort"
+									type="number"
+									min="1"
+									max="65535"
+									value={admin.settings.electrumPort}
+								/>
+							</div>
+							<label class="tls-check">
+								<input type="checkbox" name="electrumTls" checked={admin.settings.electrumTls} />
+								<span>TLS</span>
+							</label>
+						</div>
+						<label class="tls-insecure">
+							<input
+								type="checkbox"
+								name="electrumTlsInsecure"
+								checked={admin.settings.electrumTlsInsecure}
+							/>
+							<span>
+								Allow self-signed certificate (skip TLS verification) — only for a self-hosted
+								server you trust on a trusted network. Leaving this on lets a network attacker
+								impersonate the server.
+							</span>
+						</label>
+						<div class="test-row">
+							<button
+								type="submit"
+								class="btn btn-secondary btn-sm"
+								formaction="?/testElectrum"
+								disabled={testing !== null || saving}
+							>
+								{#if testing === 'electrum'}<span class="spinner"></span>{/if}
+								Test connection
+							</button>
+							{#if electrumResult}
+								{#if electrumResult.ok}
+									<span class="badge badge-success">
+										Connected{electrumResult.tipHeight
+											? ` — tip ${formatNumber(electrumResult.tipHeight)}`
+											: ''}
+									</span>
+								{:else}
+									<span class="badge badge-error">{electrumResult.error ?? 'Failed'}</span>
+								{/if}
+							{/if}
+						</div>
+					</div>
+				</div>
+			{/if}
+
+			{#if !coreRpcAutoProvisioned}
+				<div class="subgroup proxy-group">
+					<span class="subgroup-title">
+						Your Bitcoin node (<Term tip={CORE_RPC_TIP}>Bitcoin Core RPC</Term>)
+						<span class="badge badge-neutral">self-hosted</span>
+					</span>
+					<p class="hint">
+						Point Heartwood at your own Bitcoin Core node's RPC interface for rich block and mempool
+						data without relying on any third-party explorer API. Fully self-hosted — works on an
+						Umbrel or other node with no public internet access, and works whether you're on public
+						servers or a custom Electrum server above.
+					</p>
+					<div class="field">
+						<label class="label" for="coreRpcUrl">Node address</label>
+						<input
+							class="input mono"
+							id="coreRpcUrl"
+							name="coreRpcUrl"
+							placeholder="http://127.0.0.1:8332"
+							bind:value={coreRpcUrlField}
+						/>
+					</div>
+					<div class="row-fields">
+						<div class="field grow">
+							<label class="label" for="coreRpcUser">Node username</label>
+							<input
+								class="input mono"
+								id="coreRpcUser"
+								name="coreRpcUser"
+								autocomplete="off"
+								placeholder="rpcuser"
+								bind:value={coreRpcUserField}
+							/>
+						</div>
+						<div class="field grow">
+							<label class="label" for="coreRpcPass">Node password</label>
+							<input
+								class="input mono"
+								id="coreRpcPass"
+								name="coreRpcPass"
+								type="password"
+								autocomplete="off"
+								placeholder={admin.settings.hasCoreRpcPass
+									? '•••••••• saved — leave blank to keep'
+									: 'RPC password'}
+								bind:this={coreRpcPassEl}
+							/>
+						</div>
+					</div>
+					{#if admin.settings.hasCoreRpcPass}
+						<label class="tls-check">
+							<input type="checkbox" name="clearCoreRpcPass" />
+							<span>Clear the saved node password</span>
+						</label>
+					{/if}
+					<div class="test-row">
+						<button
+							type="submit"
+							class="btn btn-secondary btn-sm"
+							formaction="?/testCoreRpc"
+							disabled={testing !== null || saving}
+						>
+							{#if testing === 'coreRpc'}<span class="spinner"></span>{/if}
+							Test connection
+						</button>
+						{#if coreRpcResult}
+							{#if coreRpcResult.ok}
+								<span class="badge badge-success">
+									OK{coreRpcResult.chain ? ` — chain ${coreRpcResult.chain}` : ''}{coreRpcResult.blockHeight
+										? `, tip ${formatNumber(coreRpcResult.blockHeight)}`
+										: ''}
+								</span>
+							{:else}
+								<span class="badge badge-error">{coreRpcResult.error ?? 'Failed'}</span>
+							{/if}
+						{/if}
+					</div>
+				</div>
+			{/if}
+
+			<div class="subgroup proxy-group">
+				<span class="subgroup-title">Performance — simultaneous connections</span>
+				<p class="hint">
+					How many parallel connections Heartwood opens to the Electrum server. More connections let
+					wallet balance lookups run at the same time instead of queuing, which speeds up loading
+					many wallets. 1 disables pooling. Most setups are fine with the default.
+				</p>
+				<div class="row-fields">
+					<div class="field port">
+						<label class="label" for="electrumPoolSize">Connections</label>
+						<input
+							class="input mono"
+							id="electrumPoolSize"
+							name="electrumPoolSize"
+							type="number"
+							min="1"
+							max="4"
+							value={admin.settings.electrumPoolSize}
+						/>
+					</div>
+				</div>
+			</div>
+
+			<div class="subgroup proxy-group">
+				<span class="subgroup-title">
+					Privacy — route through Tor (<Term tip="SOCKS5 is a proxy protocol; a Tor daemon exposes one on 127.0.0.1:9050.">SOCKS5</Term>)
+					<span class="badge badge-neutral">optional</span>
+				</span>
+				<p class="hint">
+					Route all chain traffic (Electrum + explorer) through a SOCKS5 proxy so the servers never
+					see your real IP address. For Tor, run a Tor daemon and point this at its SOCKS port
+					(usually 127.0.0.1:9050). Applies whether you use the public servers or your own node.
+					Leave both blank to connect directly.
+				</p>
+				<div class="row-fields">
+					<div class="field grow">
+						<label class="label" for="socks5Host">Proxy host</label>
+						<input
+							class="input mono"
+							id="socks5Host"
+							name="socks5Host"
+							placeholder="127.0.0.1"
+							value={admin.settings.socks5Host ?? ''}
+						/>
+					</div>
+					<div class="field port">
+						<label class="label" for="socks5Port">Port</label>
+						<input
+							class="input mono"
+							id="socks5Port"
+							name="socks5Port"
+							type="number"
+							min="1"
+							max="65535"
+							placeholder="9050"
+							value={admin.settings.socks5Port ?? ''}
+						/>
+					</div>
+				</div>
+				{#if chainHealth}
+					<div class="health-line" class:health-bad={!chainHealth.healthy} role="status">
+						{#if !chainHealth.healthy}
+							<span class="health-dot bad"></span>
+							<span>
+								{chainHealth.proxyConfigured
+									? CHAIN_DOWN_PROXY
+									: CHAIN_DOWN}{chainHealth.lastErrorAt
+									? ` — last failure ${agoLabel(chainHealth.lastErrorAt)}`
+									: ''}{chainHealth.lastError ? ` (${chainHealth.lastError})` : ''}.
+							</span>
+						{:else}
+							<span class="health-dot ok"></span>
+							<span>
+								Chain transport healthy{chainHealth.lastOkAt
+									? ` — last connected ${agoLabel(chainHealth.lastOkAt)}`
+									: ''}.
+							</span>
+						{/if}
+					</div>
+				{/if}
+			</div>
+
+			<div class="save-row">
+				<button class="btn btn-primary" disabled={saving || testing !== null}>
+					{#if saving}<span class="spinner"></span>{/if}
+					Save settings
+				</button>
+			</div>
+		</form>
+
+		<!-- ===================================== MINING (group 7) -->
+		<h2 class="group-title" id="mining">Mining</h2>
+		<div class="hw-row static toggle-row">
+			<div class="row-textblock">
+				<span class="row-title">Mining</span>
+				<span class="row-desc">Let people on this Heartwood mine to the pool.</span>
+			</div>
+			<div class="unit-toggle" role="group" aria-label="Mining">
+				{#each [{ v: true, l: 'On' }, { v: false, l: 'Off' }] as opt (opt.l)}
+					<form
+						method="POST"
+						action="?/toggleFlag"
+						use:enhance={toggleEnhance('Mining setting saved.', 'Could not update mining.')}
+					>
+						<input type="hidden" name="key" value="mining" />
+						<input type="hidden" name="enabled" value={String(opt.v)} />
+						<button
+							type="submit"
+							class="unit"
+							class:active={admin.miningEnabled === opt.v}
+							aria-pressed={admin.miningEnabled === opt.v}>{opt.l}</button
+						>
+					</form>
+				{/each}
+			</div>
+		</div>
+		{#if admin.miningEnabled}
+			<a class="hw-row" href="/admin/mining">
+				<span class="row-title">Pool operator settings</span>
+				<span class="row-meta">stratum, payouts, difficulty</span>
+				<span class="chev"><Icon name="chevron-right" size={14} /></span>
+			</a>
+		{/if}
+
+		<!-- ===================================== EXPLORER (group 8) -->
+		<h2 class="group-title" id="explorer">Explorer</h2>
+		<div class="hw-row static toggle-row">
+			<div class="row-textblock">
+				<span class="row-title">Block explorer</span>
+				<span class="row-desc">Browse blocks, transactions and the mempool.</span>
+			</div>
+			<div class="unit-toggle" role="group" aria-label="Block explorer">
+				{#each [{ v: true, l: 'On' }, { v: false, l: 'Off' }] as opt (opt.l)}
+					<form
+						method="POST"
+						action="?/toggleFlag"
+						use:enhance={toggleEnhance('Explorer setting saved.', 'Could not update explorer.')}
+					>
+						<input type="hidden" name="key" value="explorer" />
+						<input type="hidden" name="enabled" value={String(opt.v)} />
+						<button
+							type="submit"
+							class="unit"
+							class:active={admin.explorerEnabled === opt.v}
+							aria-pressed={admin.explorerEnabled === opt.v}>{opt.l}</button
+						>
+					</form>
+				{/each}
+			</div>
+		</div>
+
+		<!-- ===================================== INSTANCE (group 9, collapsed) -->
+		<button
+			type="button"
+			class="hw-row group-toggle"
+			id="instance"
+			aria-expanded={!!open.instance}
+			aria-controls="instance-rows"
+			onclick={() => toggleRow('instance')}
+		>
+			<span class="group-title inline">Instance</span>
+			<span class="chev" class:down={open.instance}><Icon name="chevron-right" size={14} /></span>
+		</button>
+
+		{#if open.instance}
+			<div class="group-rows fade-in" id="instance-rows">
+				<!-- Registration + operator name (posts to ?/save; form.has-guarded) -->
+				<form
+					method="POST"
+					action="?/save"
+					class="admin-form inner"
+					use:enhance={() => {
+						savingRegistration = true;
+						return async ({ update, result }) => {
+							savingRegistration = false;
+							await update({ reset: false });
+							if (result.type === 'success') toast.success('Registration saved.');
+							else if (result.type === 'failure') {
+								const msg = result.data?.error;
+								toast.error(typeof msg === 'string' ? msg : 'Could not save.');
+							}
+						};
+					}}
+				>
+					<div class="panel-sub-title">Registration</div>
+					<p class="hint">Who can create an account on this instance.</p>
+					<div class="radio-group">
+						{#each [['open', 'Open', 'Anyone with the URL can sign up'], ['invite', 'Invite only', 'New accounts need an invite code'], ['closed', 'Closed', 'No new accounts']] as [value, label, desc] (value)}
+							<label class="radio-card" class:selected={admin.settings.registrationMode === value}>
+								<input
+									type="radio"
+									name="registrationMode"
+									{value}
+									checked={admin.settings.registrationMode === value}
+								/>
+								<span class="radio-label">{label}</span>
+								<span class="radio-desc">{desc}</span>
+							</label>
+						{/each}
+					</div>
+					<div class="field" style="max-width: 420px">
+						<label class="label" for="operatorName">Operator name</label>
+						<input
+							class="input"
+							id="operatorName"
+							name="operatorName"
+							placeholder="e.g. Acme Bitcoin Services, or your name"
+							bind:value={operatorName}
+						/>
+						<span class="hint">
+							Shown to users as “This instance is operated by …” on the terms they accept. Changing
+							it re-prompts users to accept.
+						</span>
+					</div>
+					<div class="actions">
+						<button class="btn btn-primary" disabled={savingRegistration}>
+							{#if savingRegistration}<span class="spinner"></span>{/if}
+							Save registration
+						</button>
+					</div>
+				</form>
+
+				<!-- Team features -->
+				<form
+					method="POST"
+					action={admin.settings.instanceMode === 'team' ? '?/lockTeamMode' : '?/unlockTeamMode'}
+					class="admin-form inner"
+					use:enhance={toggleEnhance(
+						admin.settings.instanceMode === 'team' ? 'Team features hidden.' : 'Team features unlocked.',
+						'Could not update team features.'
+					)}
+				>
+					<div class="panel-sub-title">Team features</div>
+					<p class="hint">
+						Multi-user features — other accounts, invites, contacts, and multisig wallet sharing —
+						stay hidden until you turn this on. Nothing is deleted either way; this only shows or
+						hides the nav.
+					</p>
+					<div class="actions" style="justify-content: flex-start">
+						{#if admin.settings.instanceMode === 'team'}
+							<span class="badge badge-neutral">Unlocked</span>
+							<button class="btn btn-secondary btn-sm" disabled={togglingTeamMode}>
+								{#if togglingTeamMode}<span class="spinner"></span>{/if}
+								Hide team features again
+							</button>
+						{:else}
+							<button class="btn btn-secondary btn-sm" disabled={togglingTeamMode}>
+								{#if togglingTeamMode}<span class="spinner"></span>{/if}
+								Unlock team features
+							</button>
+						{/if}
+					</div>
+				</form>
+
+				<!-- User agreement editor -->
+				<button
+					type="button"
+					class="hw-row"
+					aria-expanded={!!open.agreement}
+					onclick={() => toggleRow('agreement')}
+				>
+					<span class="row-title">User agreement</span>
+					<span class="row-meta">version {admin.agreement.version}</span>
+					<span class="chev" class:down={open.agreement}><Icon name="chevron-right" size={14} /></span>
+				</button>
+				{#if open.agreement}
+					<div class="row-panel fade-in">
+						<form
+							method="POST"
+							action="?/saveAgreement"
+							class="stack inner"
+							use:enhance={() => {
+								savingAgreement = true;
+								return async ({ update, result }) => {
+									savingAgreement = false;
+									await update({ reset: false });
+									if (result.type === 'success') toast.success('Agreement saved.');
+									else if (result.type === 'failure') {
+										const msg = result.data?.error;
+										toast.error(typeof msg === 'string' ? msg : 'Could not save the agreement.');
+									}
+								};
+							}}
+						>
+							<p class="hint">
+								The terms every user must accept before using this instance. Saving a change bumps
+								the version, so existing users re-accept on their next visit.
+								<a href="/terms" target="_blank" rel="noopener">Preview the public terms page →</a>
+							</p>
+							<div class="field">
+								<label class="label" for="agreementText">Agreement text</label>
+								<textarea
+									class="input mono agreement-text"
+									id="agreementText"
+									name="agreementText"
+									rows="14"
+									bind:value={agreementText}
+								></textarea>
+								<span class="hint">
+									Blank lines separate paragraphs. Start a paragraph with an UPPERCASE lead-in
+									(e.g. “NOT A CUSTODIAN.”) and it renders bold.
+								</span>
+							</div>
+							<div class="actions">
+								<button class="btn btn-primary" disabled={savingAgreement}>
+									{#if savingAgreement}<span class="spinner"></span>{/if}
+									Save agreement
+								</button>
+							</div>
+						</form>
+					</div>
+				{/if}
+
+				<!-- Link rows to the surviving admin subpages (spec §4.1). -->
+				<a class="hw-row" href="/admin/notifications">
+					<span class="row-title">Notification delivery</span>
+					<span class="row-meta">SMTP + channels</span>
+					<span class="chev"><Icon name="chevron-right" size={14} /></span>
+				</a>
+				{#if showContactsRow(page.data.instanceMode)}
+					<a class="hw-row" href="/admin/announcements">
+						<span class="row-title">Announcements</span>
+						<span class="row-meta">instance-wide banners</span>
+						<span class="chev"><Icon name="chevron-right" size={14} /></span>
+					</a>
+				{/if}
+				<a class="hw-row" href="/admin/referral-settings">
+					<span class="row-title">Referrals</span>
+					<span class="row-meta">invite links</span>
+					<span class="chev"><Icon name="chevron-right" size={14} /></span>
+				</a>
+				<a class="hw-row" href="/admin/backup">
+					<span class="row-title">Backup</span>
+					<span class="row-meta">config backup &amp; restore</span>
+					<span class="chev"><Icon name="chevron-right" size={14} /></span>
+				</a>
+				<a class="hw-row" href="/admin/logs">
+					<span class="row-title">Logs</span>
+					<span class="row-meta">system activity</span>
+					<span class="chev"><Icon name="chevron-right" size={14} /></span>
+				</a>
+				{#if showContactsRow(page.data.instanceMode)}
+					<a class="hw-row" href="/admin/users">
+						<span class="row-title">Users &amp; invites</span>
+						<span class="row-meta">manage accounts</span>
+						<span class="chev"><Icon name="chevron-right" size={14} /></span>
+					</a>
+				{/if}
+				<a class="hw-row" href="/admin">
+					<span class="row-title">Instance health</span>
+					<span class="row-meta">node, backups, storage</span>
+					<span class="chev"><Icon name="chevron-right" size={14} /></span>
+				</a>
+
+				<!-- Factory reset — LAST, red, typed-confirm, collapsed (brief §1). -->
+				<section class="danger-zone" id="factory-reset">
+					<button
+						type="button"
+						class="hw-row group-toggle"
+						aria-expanded={!!open.factoryReset}
+						aria-controls="factory-reset-rows"
+						onclick={() => toggleRow('factoryReset')}
+					>
+						<span class="group-title danger-title inline">Factory reset</span>
+						<span class="chev" class:down={open.factoryReset}><Icon name="chevron-right" size={14} /></span>
+					</button>
+
+					{#if open.factoryReset}
+						<div class="group-rows fade-in" id="factory-reset-rows">
+							<p class="hint">
+								Reset this instance: deletes all users, sessions, wallets, and invites, and returns
+								Heartwood to first-run setup. Settings and node configuration are wiped too.
+								Heartwood only ever holds public keys, so no funds are at risk, but nothing else
+								survives.
+							</p>
+							{#if !confirmingReset}
+								<div>
+									<button
+										type="button"
+										class="btn btn-secondary danger-btn"
+										onclick={() => {
+											confirmingReset = true;
+											resetConfirmText = '';
+										}}
+									>
+										Reset this instance
+									</button>
+								</div>
+							{:else}
+								<form
+									method="POST"
+									action="?/resetInstance"
+									class="reset-confirm"
+									use:enhance={() => {
+										resetting = true;
+										return async ({ update }) => {
+											resetting = false;
+											await update();
+										};
+									}}
+								>
+									<label class="label" for="resetConfirm">
+										This cannot be undone. Type <strong>RESET</strong> to confirm.
+									</label>
+									<div class="reset-row">
+										<input
+											class="input mono"
+											id="resetConfirm"
+											name="confirm"
+											autocomplete="off"
+											spellcheck="false"
+											placeholder="RESET"
+											bind:value={resetConfirmText}
+										/>
+										<button
+											class="btn btn-secondary danger-btn"
+											disabled={resetConfirmText !== 'RESET' || resetting}
+										>
+											{#if resetting}<span class="spinner"></span>{/if}
+											Erase everything
+										</button>
+										<button
+											type="button"
+											class="btn btn-ghost"
+											onclick={() => {
+												confirmingReset = false;
+												resetConfirmText = '';
+											}}
+										>
+											Cancel
+										</button>
+									</div>
+								</form>
+							{/if}
+						</div>
+					{/if}
+				</section>
+			</div>
+		{/if}
+	{/if}
 		</div>
 	</div>
 </div>
@@ -831,7 +1706,8 @@
 
 	/* Section anchors: offset the jump so the sticky chrome doesn't cover the
 	   landed row. */
-	.settings-content :where([id^='set-']) {
+	.settings-content :where([id^='set-']),
+	.settings-content :where(#node-connection, #mining, #explorer, #instance, #factory-reset) {
 		scroll-margin-top: 24px;
 	}
 
@@ -869,6 +1745,16 @@
 		.settings-nav a:hover {
 			color: var(--text);
 			background: var(--surface);
+		}
+
+		.settings-nav-sep {
+			margin-top: 10px;
+			padding: 0 12px 2px;
+			font-size: 10.5px;
+			font-weight: 600;
+			letter-spacing: 0.14em;
+			text-transform: uppercase;
+			color: var(--text-faint);
 		}
 
 		.settings-content {
@@ -1467,5 +2353,288 @@
 
 	.delete-row .input {
 		max-width: 160px;
+	}
+
+	/* ============ Admin-config groups (moved from /admin/settings) ============ */
+
+	.group-lead {
+		margin: 2px 0 14px;
+		max-width: var(--measure-reading);
+	}
+
+	.admin-form {
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
+		max-width: 760px;
+	}
+
+	.admin-form.inner {
+		gap: 12px;
+		padding: 14px 0 18px;
+		border-bottom: 1px solid var(--hairline);
+	}
+
+	/* Mining/Explorer toggle rows: a text block + the On/Off unit-toggle. */
+	.toggle-row {
+		justify-content: space-between;
+	}
+
+	.row-textblock {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
+	}
+
+	.row-desc {
+		font-size: 12.5px;
+		color: var(--text-muted);
+	}
+
+	.toggle-row .unit-toggle form {
+		display: contents;
+	}
+
+	.radio-group {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+		gap: 10px;
+	}
+
+	.radio-card {
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+		padding: 12px 14px;
+		background: var(--bg-input);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-strip);
+		cursor: pointer;
+		transition: border-color 120ms var(--ease);
+	}
+
+	.radio-card:hover {
+		border-color: var(--border-ghost);
+	}
+
+	.radio-card.selected,
+	.radio-card:has(input:checked) {
+		border-color: var(--accent);
+	}
+
+	.radio-card input {
+		position: absolute;
+		opacity: 0;
+	}
+
+	.radio-label {
+		font-size: 13.5px;
+		font-weight: 500;
+		display: flex;
+		align-items: center;
+		gap: 7px;
+	}
+
+	.radio-desc {
+		font-size: 12px;
+		color: var(--text-muted);
+	}
+
+	.provenance-card {
+		display: flex;
+		align-items: flex-start;
+		gap: 10px;
+		font-size: 12.5px;
+		background: var(--sage-muted);
+		border: 1px solid rgba(131, 184, 146, 0.3);
+		border-radius: var(--radius-control);
+		padding: 10px 12px;
+	}
+
+	.provenance-dot {
+		flex-shrink: 0;
+		width: 7px;
+		height: 7px;
+		margin-top: 4px;
+		border-radius: 50%;
+		background: var(--sage);
+	}
+
+	.provenance-dot.detect {
+		background: var(--accent);
+	}
+
+	.provenance-text {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		flex: 1;
+		min-width: 0;
+	}
+
+	.provenance-title {
+		font-weight: 500;
+	}
+
+	.provenance-sub {
+		color: var(--text-muted);
+	}
+
+	.provenance-detail {
+		margin-top: 2px;
+		color: var(--text-muted);
+		font-size: 11.5px;
+		word-break: break-all;
+	}
+
+	.provenance-card.core-detect {
+		background: var(--bg-input);
+		border-color: var(--border-ghost);
+		align-items: center;
+		flex-wrap: wrap;
+	}
+
+	.assisted-pass {
+		margin-top: 6px;
+		max-width: 220px;
+	}
+
+	.assisted-connect-actions {
+		display: flex;
+		gap: 8px;
+		flex-shrink: 0;
+	}
+
+	.custom-fields {
+		display: flex;
+		flex-direction: column;
+		gap: 20px;
+		border-top: 1px solid var(--hairline);
+		padding-top: 18px;
+	}
+
+	.subgroup {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+
+	.proxy-group {
+		border-top: 1px solid var(--hairline);
+		padding-top: 18px;
+	}
+
+	.subgroup-title {
+		font-size: 13px;
+		font-weight: 600;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+
+	.row-fields {
+		display: flex;
+		gap: 12px;
+		align-items: flex-end;
+		flex-wrap: wrap;
+	}
+
+	.port {
+		flex: 0 0 110px;
+	}
+
+	.tls-check {
+		display: flex;
+		align-items: center;
+		gap: 7px;
+		font-size: 13.5px;
+		padding: 9px 0;
+		cursor: pointer;
+	}
+
+	.tls-check input {
+		accent-color: var(--accent);
+	}
+
+	.tls-insecure {
+		display: flex;
+		align-items: flex-start;
+		gap: 8px;
+		font-size: 12.5px;
+		line-height: 1.5;
+		color: var(--text-muted);
+		cursor: pointer;
+	}
+
+	.tls-insecure input {
+		margin-top: 2px;
+		accent-color: var(--accent);
+	}
+
+	.test-row {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		flex-wrap: wrap;
+	}
+
+	.health-line {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		font-size: 12.5px;
+		color: var(--text-muted);
+	}
+
+	.health-line.health-bad {
+		color: var(--attention);
+	}
+
+	.health-dot {
+		flex-shrink: 0;
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		transform: translateY(-1px);
+	}
+
+	.health-dot.ok {
+		background: var(--sage);
+	}
+
+	.health-dot.bad {
+		background: var(--attention);
+	}
+
+	.save-row {
+		display: flex;
+		justify-content: flex-end;
+		padding: 6px 0 4px;
+	}
+
+	.agreement-text {
+		resize: vertical;
+		font-size: 12.5px;
+		line-height: 1.6;
+		min-height: 220px;
+	}
+
+	.reset-confirm {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.reset-row {
+		display: flex;
+		gap: 10px;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+
+	.reset-row .input {
+		flex: 0 1 180px;
 	}
 </style>

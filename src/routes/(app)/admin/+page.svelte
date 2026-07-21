@@ -139,7 +139,7 @@
 				{#if !connected && !nodeLoading}
 					<p class="panel-attn">
 						{node.error ?? `${CHAIN_DOWN}.`}
-						<a href="/admin/settings#node-connection">Check the connection →</a>
+						<a href="/settings#node-connection">Check the connection →</a>
 					</p>
 				{/if}
 				<div class="panel-flex">
@@ -331,11 +331,10 @@
      sections collapse behind these quiet links — the routes all still work. -->
 <div class="instance fade-in">
 	<span class="foot-links">
-		<a class="foot-cta" href="/admin/settings">Instance settings →</a>
-		· <a href="/admin/settings#registration">Registration: <span class="cap">{data.registrationMode}</span></a>
+		<a class="foot-cta" href="/settings#node-connection">Instance settings →</a>
+		· <a href="/settings#instance">Registration: <span class="cap">{data.registrationMode}</span></a>
 		· <a href="/admin/backup">Backup schedule</a>
-		· <a href="/admin/feature-flags">Feature flags</a>
-		· <a href="/admin/notifications">Notification delivery</a>
+		·		· <a href="/admin/notifications">Notification delivery</a>
 		· <a href="/admin/announcements">Announcements</a>
 		· <a href="/admin/referral-settings">Referrals</a>
 		· <a href="/admin/logs">Logs</a>
@@ -344,7 +343,7 @@
 	</span>
 	<!-- Bottom of page, muted red, confirm-gated: the reset flow itself (typed
 	     confirmation) lives on its own settings subsection. -->
-	<a class="foot-reset" href="/admin/settings#factory-reset">Factory reset…</a>
+	<a class="foot-reset" href="/settings#factory-reset">Factory reset…</a>
 </div>
 
 <style>
