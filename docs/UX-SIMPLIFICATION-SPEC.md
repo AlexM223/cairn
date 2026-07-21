@@ -248,15 +248,21 @@ the personal groups.
 | 2 | **Display preferences** | all | Units (BTC/sats) · Show USD estimate · Primary display (BTC-sats / Fiat, sats-first default — manifesto §3 MUST) · Theme |
 | 3 | **Security** | all | Recovery · Passkeys · Devices & sessions (→ `/settings/devices`) · API tokens (→ `/settings/tokens`) · Contacts (team mode only, → `/settings/contacts`) |
 | 4 | **Advanced** (collapsed) | all | Anything not promoted above — download my data, about this app. Expander label "Advanced" only. |
-| 5 | **Danger zone** (collapsed, red) | all | Delete my account (typed confirm). Admin also gets **Factory reset** (typed RESET confirm), anchor `#factory-reset`. |
+| 5 | **Danger zone** (collapsed, red) | all | Delete my account (typed confirm) only. Factory reset does **not** live here — see group 9. |
 | 6 | **Node connection** | admin only | Moved verbatim from `/admin/settings`: Chain source (Public servers / Your own node radio) · Your node address (Electrum host/port, Advanced expander + Test connection, `?/testElectrum`) · Bitcoin Core / node RPC (address/username/password + Test connection, `?/testCore`; Umbrel auto-connect provenance banner preserved) · Privacy (route through Tor, Advanced) · Performance (simultaneous connections, Advanced, glossed). Anchor `#node-connection`. |
 | 7 | **Mining** | admin only | Instance Mining toggle (ON/OFF, writes `mining` flag via `setGlobalFlag`). When ON: "Pool operator settings ›" link to `/admin/mining`. |
 | 8 | **Explorer** | admin only | Block explorer toggle (ON/OFF, writes `explorer` flag via `setGlobalFlag`). |
-| 9 | **Instance** (collapsed) | admin only | Registration mode + operator name · Team features toggle (unlock/hide) · User agreement editor · rows linking to: Notification delivery/SMTP (→ `/admin/notifications`) · Announcements (→ `/admin/announcements`, team) · Referrals (→ `/admin/referral-settings`) · Backup (→ `/admin/backup`) · Logs (→ `/admin/logs`) · Users & invites (→ `/admin/users`, team mode only) · Instance health (→ `/admin`). Factory reset lives in Danger zone (group 5), not here — "Factory reset last: red, typed-confirm, collapsed" per directive is satisfied by keeping it the final row of Danger zone rather than duplicating a second danger block. |
+| 9 | **Instance** (collapsed) | admin only | Registration mode + operator name · Team features toggle (unlock/hide) · User agreement editor · rows linking to: Notification delivery/SMTP (→ `/admin/notifications`) · Announcements (→ `/admin/announcements`, team) · Referrals (→ `/admin/referral-settings`) · Backup (→ `/admin/backup`) · Logs (→ `/admin/logs`) · Users & invites (→ `/admin/users`, team mode only) · Instance health (→ `/admin`). **Factory reset** (typed RESET confirm, red) is the last row of this group, anchor `#factory-reset`. |
 
 Ordering rationale: personal groups (1–5) come first per directive item 6's literal order
 (Account, Display preferences, Security, Advanced, Danger zone), then admin groups append
-(Node connection, Mining, Explorer, Instance) as specified. Anchors:
+(Node connection, Mining, Explorer, Instance) as specified. Factory reset is instance-scoped
+destruction (wipes all users, sessions, wallets, invites on the instance), not personal-scoped
+destruction (deleting your own account) — putting it in group 5's Danger zone next to
+delete-my-account would blur that distinction and put an instance-wide irreversible action one
+tap away from a personal one for admins who are also regular users. It is instead the final row
+of group 9 (Instance, admin-only), keeping it red / typed-confirm / collapsed as directed while
+scoping it correctly. Anchors:
 `#account #display #security #advanced #danger #node-connection #mining #explorer #instance
 #factory-reset`.
 
